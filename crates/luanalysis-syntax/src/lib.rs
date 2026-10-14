@@ -120,12 +120,65 @@ pub enum ExprKind {
         base: Box<Expr>,
         name: Name,
     },
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Unary {
+        op: UnaryOperator,
+        op_span: Span,
+        value: Box<Expr>,
+    },
+    Binary {
+        op: BinaryOperator,
+        op_span: Span,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
     Function(Function),
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
     },
+    MethodCall {
+        receiver: Box<Expr>,
+        name: Name,
+        args: Vec<Expr>,
+    },
     Error,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOperator {
+    Not,
+    Length,
+    Negate,
+    BitwiseNot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    FloorDivide,
+    Modulo,
+    Power,
+    Concat,
+    Equal,
+    NotEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    ShiftLeft,
+    ShiftRight,
+    And,
+    Or,
 }
 
 #[derive(Clone, Debug, PartialEq)]

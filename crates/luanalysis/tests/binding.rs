@@ -171,3 +171,22 @@ fn parameter_annotations_are_source_references_to_parameter_declarations() {
         [OccurrenceKind::Annotation, OccurrenceKind::Read]
     );
 }
+
+#[test]
+fn operators_indices_and_method_calls_preserve_variable_occurrences() {
+    let source = "local item = {x = 1}\nlocal index = \"x\"\nlocal argument = 2\nitem[index] = -argument + #index\nlocal result = item:method(argument and not index)";
+    let graph = bound(source);
+    let item = binding(source, &graph, "local item", 6);
+    let index = binding(source, &graph, "local index", 6);
+    let argument = binding(source, &graph, "local argument", 6);
+    assert_eq!(graph.references(item).count(), 2);
+    assert_eq!(graph.references(index).count(), 3);
+    assert_eq!(graph.references(argument).count(), 2);
+    assert!(
+        graph
+            .references(item)
+            .all(|occurrence| occurrence.kind == OccurrenceKind::Read)
+    );
+    assert_eq!(graph.binding_at(source.find(":method").unwrap() + 1), None);
+    assert_eq!(graph.binding_at(source.find("{x").unwrap() + 1), None);
+}

@@ -286,6 +286,10 @@ impl Binder {
         match &expression.kind {
             ExprKind::Name(name) => self.name(name, OccurrenceKind::Write),
             ExprKind::Field { base, .. } => self.expression(base),
+            ExprKind::Index { base, index } => {
+                self.expression(base);
+                self.expression(index);
+            }
             ExprKind::Parenthesized(inner) => self.target(inner),
             _ => self.expression(expression),
         }
@@ -296,6 +300,15 @@ impl Binder {
             ExprKind::Name(name) => self.name(name, OccurrenceKind::Read),
             ExprKind::Parenthesized(inner) => self.expression(inner),
             ExprKind::Field { base, .. } => self.expression(base),
+            ExprKind::Index { base, index } => {
+                self.expression(base);
+                self.expression(index);
+            }
+            ExprKind::Unary { value, .. } => self.expression(value),
+            ExprKind::Binary { left, right, .. } => {
+                self.expression(left);
+                self.expression(right);
+            }
             ExprKind::Table(fields) => {
                 for field in fields {
                     self.expression(&field.value);
@@ -304,6 +317,12 @@ impl Binder {
             ExprKind::Function(function) => self.function(function),
             ExprKind::Call { callee, args } => {
                 self.expression(callee);
+                for argument in args {
+                    self.expression(argument);
+                }
+            }
+            ExprKind::MethodCall { receiver, args, .. } => {
+                self.expression(receiver);
                 for argument in args {
                     self.expression(argument);
                 }

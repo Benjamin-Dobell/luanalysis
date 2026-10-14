@@ -138,9 +138,8 @@ fn declaration_checking_does_not_execute_captured_writes() {
 }
 
 #[test]
-fn inference_and_result_packs_fail_explicitly_until_native_providers_exist() {
+fn unsupported_result_packs_fail_explicitly() {
     for source in [
-        "---@param value number\nlocal function identity(value) return value end",
         "---@return number, string\nlocal function pair() return 1, \"second\" end",
         "---@return void\nlocal function nothing() end\nlocal value = nothing()",
     ] {

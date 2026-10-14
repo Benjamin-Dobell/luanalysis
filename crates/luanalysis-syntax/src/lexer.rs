@@ -355,6 +355,13 @@ impl Lexer<'_> {
             }
             valid &= self.digits(false) > 0;
         }
+        // Lua scans adjoining dots as part of the numeral before validating it.
+        // `1..2` is malformed; concatenation needs whitespace after the number.
+        if self.at(".") {
+            valid = false;
+            while self.pos < self.source.len()
+                && (self.char() == '.' || identifier_continue(self.char())) { self.advance(); }
+        }
         if self.pos < self.source.len() && identifier_continue(self.char()) {
             valid = false;
             while self.pos < self.source.len() && identifier_continue(self.char()) {

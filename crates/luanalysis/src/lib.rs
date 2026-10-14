@@ -6,12 +6,15 @@
 
 pub mod bind;
 mod functions;
+mod native_functions;
+mod operators;
 
 use bind::{BindingId, BoundFile};
-use luanalysis_engine::{Engine, Property, Type, TypeQueries};
+use luanalysis_engine::{Engine, NativeFunctionKey, Property, Type, TypeQueries};
 use luanalysis_syntax::{
     Expr, ExprKind, Name, Span, Stmt, StmtKind, TypeAnnotation, TypeExpr, TypeExprKind,
 };
+use native_functions::NativeRegistry;
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,9 +44,38 @@ pub struct CheckReport {
     pub bindings: Vec<BindingInfo>,
     pub types: Vec<TypeInfo>,
     pub bound: Option<BoundFile>,
+    pending_bindings: Vec<(BindingId, Type)>,
+    pending_types: Vec<(Span, Type)>,
 }
 
 impl CheckReport {
+    fn append(&mut self, mut other: Self) {
+        self.diagnostics.append(&mut other.diagnostics);
+        self.bindings.append(&mut other.bindings);
+        self.types.append(&mut other.types);
+        self.pending_bindings.append(&mut other.pending_bindings);
+        self.pending_types.append(&mut other.pending_types);
+    }
+
+    fn render(&mut self, engine: &mut dyn TypeQueries) {
+        for (binding, ty) in std::mem::take(&mut self.pending_bindings) {
+            let displayed = describe_native(&ty, engine, &mut Vec::new());
+            for info in self
+                .bindings
+                .iter_mut()
+                .filter(|info| info.binding == binding)
+            {
+                info.ty.clone_from(&displayed);
+            }
+        }
+        for (span, ty) in std::mem::take(&mut self.pending_types) {
+            let displayed = describe_native(&ty, engine, &mut Vec::new());
+            for info in self.types.iter_mut().filter(|info| info.span == span) {
+                info.ty.clone_from(&displayed);
+            }
+        }
+    }
+
     /// Returns an owned report's displayed type at an original UTF-8 byte offset.
     pub fn type_at(&self, byte_offset: usize) -> Option<&str> {
         if let Some(occurrence) = self
@@ -108,10 +140,12 @@ enum Write {
 struct Checker<'a> {
     engine: &'a mut dyn TypeQueries,
     bound: &'a BoundFile,
+    native: Option<&'a NativeRegistry>,
     locals: HashMap<BindingId, Binding>,
     assigned_fields: HashMap<Reference, Type>,
     report: CheckReport,
     return_type: Option<Type>,
+    return_values: Vec<Type>,
 }
 
 /// Checks the documented native subset without generating TypeScript source.
@@ -131,43 +165,88 @@ pub fn check(source: &str) -> CheckReport {
             bindings: Vec::new(),
             types: Vec::new(),
             bound: None,
+            pending_bindings: Vec::new(),
+            pending_types: Vec::new(),
         };
     }
     let bound = bind::bind(&file);
-    let mut report = Engine::new().with_session(|engine| {
-        let mut checker = Checker {
-            engine,
-            bound: &bound,
-            locals: HashMap::new(),
-            assigned_fields: HashMap::new(),
-            report: CheckReport::default(),
-            return_type: None,
-        };
-        checker.statements(&file.statements);
-        checker.report.diagnostics.sort_by(|a, b| {
-            (a.span.start, a.span.end, a.code, &a.message).cmp(&(
-                b.span.start,
-                b.span.end,
-                b.code,
-                &b.message,
-            ))
-        });
-        checker.report.diagnostics.dedup();
-        checker
-            .report
-            .bindings
-            .sort_by_key(|binding| binding.span.start);
-        checker
-            .report
-            .types
-            .sort_by_key(|info| (info.span.start, info.span.end));
-        checker.report
-    });
-    report.bound = Some(bound);
-    report
+    Engine::new().with_native_provider(
+        move || NativeRegistry::new(file, bound),
+        |registry, engine| {
+            let mut report = {
+                let mut checker = Checker {
+                    engine,
+                    bound: registry.bound(),
+                    native: Some(registry),
+                    locals: HashMap::new(),
+                    assigned_fields: HashMap::new(),
+                    report: CheckReport::default(),
+                    return_type: None,
+                    return_values: Vec::new(),
+                };
+                checker.statements(registry.statements());
+                checker.report
+            };
+            registry.check_all_bodies(engine);
+            report.append(registry.take_report());
+            report.render(engine);
+            // Explicit display demands can complete a previously unqueried signature.
+            report.append(registry.take_report());
+            report.diagnostics.sort_by(|a, b| {
+                (a.span.start, a.span.end, a.code, &a.message).cmp(&(
+                    b.span.start,
+                    b.span.end,
+                    b.code,
+                    &b.message,
+                ))
+            });
+            report.diagnostics.dedup();
+            report.bindings.sort_by_key(|binding| binding.span.start);
+            report.bindings.dedup();
+            report
+                .types
+                .sort_by_key(|info| (info.span.start, info.span.end));
+            report.types.dedup();
+            report.bound = Some(registry.bound().clone());
+            report
+        },
+    )
 }
 
 impl Checker<'_> {
+    fn resolve_local(&mut self, binding: BindingId) -> Option<&Binding> {
+        if !self.locals.contains_key(&binding) {
+            if let Some(native) = self.native {
+                if let Some(value) = native.resolve_binding(binding, self.engine) {
+                    self.locals.insert(binding, value);
+                }
+            }
+        }
+        self.locals.get(&binding)
+    }
+
+    fn record_binding(&mut self, name: &Name, binding: BindingId, ty: &Type) {
+        if let Some(native) = self.native {
+            if let Some(value) = self.locals.get(&binding) {
+                native.publish_binding(binding, value);
+            }
+        }
+        self.report.bindings.push(BindingInfo {
+            binding,
+            name: name.text.clone(),
+            span: name.span,
+            ty: describe(ty),
+        });
+        self.report.pending_bindings.push((binding, ty.clone()));
+    }
+
+    fn record_expression_type(&mut self, span: Span, ty: &Type) {
+        self.report.types.push(TypeInfo {
+            span,
+            ty: describe(ty),
+        });
+        self.report.pending_types.push((span, ty.clone()));
+    }
     /// Returns true when this straight-line block terminates with a return or
     /// an explicitly declared nonreturning call.
     fn statements(&mut self, statements: &[Stmt]) -> bool {
@@ -198,13 +277,19 @@ impl Checker<'_> {
                     return true;
                 }
                 StmtKind::Call(expr) => {
-                    if let ExprKind::Call { callee, args } = &expr.kind {
-                        if matches!(
-                            self.call_expression(callee, args, expr.span, true),
-                            Type::Never
-                        ) {
-                            return true;
+                    let result = match &expr.kind {
+                        ExprKind::Call { callee, args } => {
+                            self.call_expression(callee, args, expr.span, true)
                         }
+                        ExprKind::MethodCall {
+                            receiver,
+                            name,
+                            args,
+                        } => self.method_call_expression(receiver, name, args, expr.span, true),
+                        _ => Type::Any,
+                    };
+                    if matches!(result, Type::Never) {
+                        return true;
                     }
                 }
             }
@@ -270,7 +355,7 @@ impl Checker<'_> {
             ExprKind::Name(name) => match self
                 .bound
                 .binding_at(name.span.start)
-                .and_then(|id| self.locals.get(&id))
+                .and_then(|id| self.resolve_local(id))
             {
                 Some(binding) => binding.value.clone(),
                 None => {
@@ -327,12 +412,22 @@ impl Checker<'_> {
             }
             ExprKind::Function(function) => self.function_expression(function),
             ExprKind::Call { callee, args } => self.call_expression(callee, args, expr.span, false),
+            ExprKind::Unary { op, op_span, value } => self.unary_expression(*op, *op_span, value),
+            ExprKind::Binary {
+                op,
+                op_span,
+                left,
+                right,
+            } => self.binary_expression(*op, *op_span, left, right),
+            ExprKind::Index { base, index } => self.index_expression(expr, base, index),
+            ExprKind::MethodCall {
+                receiver,
+                name,
+                args,
+            } => self.method_call_expression(receiver, name, args, expr.span, false),
             ExprKind::Error => Type::Any,
         };
-        self.report.types.push(TypeInfo {
-            span: expr.span,
-            ty: describe(&ty),
-        });
+        self.record_expression_type(expr.span, &ty);
         ty
     }
 
@@ -385,12 +480,7 @@ impl Checker<'_> {
                 .bound
                 .binding_at(name.span.start)
                 .expect("bound Lua declaration");
-            self.report.bindings.push(BindingInfo {
-                binding: id,
-                name: name.text.clone(),
-                span: name.span,
-                ty: describe(&constraint),
-            });
+            let displayed = constraint.clone();
             self.locals.insert(
                 id,
                 Binding {
@@ -400,6 +490,7 @@ impl Checker<'_> {
                         && matches!(widened, Type::Nil | Type::Undefined),
                 },
             );
+            self.record_binding(name, id, &displayed);
         }
     }
 
@@ -432,7 +523,7 @@ impl Checker<'_> {
                         );
                         continue;
                     };
-                    let Some(binding) = self.locals.get(&id) else {
+                    let Some(binding) = self.resolve_local(id) else {
                         continue;
                     };
                     let constraint = binding.constraint.clone();
@@ -445,18 +536,34 @@ impl Checker<'_> {
                         ));
                     }
                 }
-                ExprKind::Field { base, name } => {
+                ExprKind::Field { .. } | ExprKind::Index { .. } => {
+                    let (base, key, key_span) = match &target.kind {
+                        ExprKind::Field { base, name } => {
+                            (base.as_ref(), name.text.clone(), name.span)
+                        }
+                        ExprKind::Index { base, index } => {
+                            self.expression(index);
+                            let Some(key) = operators::literal_string_key(index)
+                                .and_then(|key| std::str::from_utf8(key).ok())
+                            else {
+                                self.error("LUA2019", index.span, "typed numeric and dynamic table indices require the table/indexer integration");
+                                continue;
+                            };
+                            (base.as_ref(), key.to_owned(), index.span)
+                        }
+                        _ => unreachable!(),
+                    };
                     let receiver = self.expression(base);
                     if matches!(receiver, Type::Any) {
                         continue;
                     }
-                    let Some(constraint) = self.engine.property_type(&receiver, &name.text) else {
+                    let Some(constraint) = self.engine.property_type(&receiver, &key) else {
                         self.error(
                             "TS2339",
-                            name.span,
+                            key_span,
                             format!(
                                 "Property '{}' does not exist on type '{}'.",
-                                name.text,
+                                key,
                                 describe(&receiver)
                             ),
                         );
@@ -525,6 +632,14 @@ impl Checker<'_> {
             ExprKind::Field { base, name } => {
                 let mut reference = self.reference(base)?;
                 reference.path.push(name.text.clone());
+                Some(reference)
+            }
+            ExprKind::Index { base, index } => {
+                let key = std::str::from_utf8(operators::literal_string_key(index)?)
+                    .ok()?
+                    .to_owned();
+                let mut reference = self.reference(base)?;
+                reference.path.push(key);
                 Some(reference)
             }
             _ => None,
@@ -626,6 +741,76 @@ pub fn describe(ty: &Type) -> String {
                 .join(", "),
             describe(&function.returns)
         ),
+        // Native declarations remain references during checking. Expanding
+        // their signatures here would create artificial return-demand cycles.
+        Type::NativeFunction(_) => "function".into(),
+        Type::NativeTypeParameter(_) => "type parameter".into(),
+    }
+}
+
+fn describe_native(
+    ty: &Type,
+    engine: &mut dyn TypeQueries,
+    stack: &mut Vec<NativeFunctionKey>,
+) -> String {
+    match ty {
+        Type::NativeTypeParameter(_) => engine.format(ty),
+        Type::NativeFunction(key) => {
+            if stack.contains(key) {
+                return "<recursive function>".into();
+            }
+            if stack.len() >= 64 {
+                return "...".into();
+            }
+            stack.push(*key);
+            let signature = engine.native_function_signature(*key);
+            let text = describe_native(&Type::Function(signature), engine, stack);
+            stack.pop();
+            text
+        }
+        Type::Function(function) => {
+            let parameters: Vec<_> = function
+                .params
+                .iter()
+                .map(|parameter| {
+                    format!(
+                        "{}{}: {}",
+                        parameter.name,
+                        if parameter.optional { "?" } else { "" },
+                        describe_native(&parameter.ty, engine, stack)
+                    )
+                })
+                .collect();
+            format!(
+                "fun({}): {}",
+                parameters.join(", "),
+                describe_native(&function.returns, engine, stack)
+            )
+        }
+        Type::Union(types) => types
+            .iter()
+            .map(|ty| describe_native(ty, engine, stack))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        Type::Intersection(types) => types
+            .iter()
+            .map(|ty| describe_native(ty, engine, stack))
+            .collect::<Vec<_>>()
+            .join(" & "),
+        Type::Shape(properties) | Type::FreshShape(properties) => format!(
+            "{{ {} }}",
+            properties
+                .iter()
+                .map(|property| format!(
+                    "{}{}: {}",
+                    property.name,
+                    if property.optional { "?" } else { "" },
+                    describe_native(&property.ty, engine, stack)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        _ => describe(ty),
     }
 }
 

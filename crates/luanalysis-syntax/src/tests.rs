@@ -164,27 +164,21 @@ fn long_comments_match_their_exact_bracket_level() {
 
 #[test]
 fn negative_and_lua_hexadecimal_numbers_keep_original_spelling() {
-    let file = parse("local x, y, z = - 0x1.fp-2, .25, 1.e+2\n");
+    let source = "local x, y, z = - 0x1.fp-2, .25, 1.e+2\n";
+    let file = parse(source);
     assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
-    assert_eq!(
-        locals(&file, 0)
-            .1
-            .iter()
-            .map(|value| &value.kind)
-            .collect::<Vec<_>>(),
-        [
-            &ExprKind::Number("-0x1.fp-2".to_owned()),
-            &ExprKind::Number(".25".to_owned()),
-            &ExprKind::Number("1.e+2".to_owned()),
-        ]
-    );
+    let values = locals(&file, 0).1;
+    let ExprKind::Unary { op, op_span, value } = &values[0].kind else { panic!("expected unary negation") };
+    assert_eq!(*op, UnaryOperator::Negate);
+    assert_eq!(&source[op_span.start..op_span.end], "-");
+    assert_eq!(value.kind, ExprKind::Number("0x1.fp-2".to_owned()));
+    assert_eq!(values[1].kind, ExprKind::Number(".25".to_owned()));
+    assert_eq!(values[2].kind, ExprKind::Number("1.e+2".to_owned()));
 }
 
 #[test]
 fn unsupported_lua_and_annotation_forms_are_reported_and_recover() {
     for unsupported in [
-        "local x = 1 + 2",
-        "local x = object[1]",
         "local x = {1, 2}",
         "local x = {[1] = 'one'}",
         "local function f(...) end",
@@ -204,6 +198,129 @@ fn unsupported_lua_and_annotation_forms_are_reported_and_recover() {
         assert!(file.statements.iter().any(|stmt| {
             matches!(&stmt.kind, StmtKind::Local { names, .. } if names.iter().any(|name| name.text == "recovery"))
         }), "did not recover after {unsupported}: {:?}", file.diagnostics);
+    }
+}
+
+fn expression_shape(expr: &Expr) -> String {
+    match &expr.kind {
+        ExprKind::Name(name) => name.text.clone(),
+        ExprKind::Number(spelling) => spelling.clone(),
+        ExprKind::Unary { op, value, .. } => format!("{op:?}({})", expression_shape(value)),
+        ExprKind::Binary { op, left, right, .. } => format!("{op:?}({},{})", expression_shape(left), expression_shape(right)),
+        ExprKind::Parenthesized(value) => format!("Paren({})", expression_shape(value)),
+        ExprKind::Field { base, name } => format!("Field({},{})", expression_shape(base), name.text),
+        ExprKind::Call { callee, args } => format!("Call({};{})", expression_shape(callee), args.iter().map(expression_shape).collect::<Vec<_>>().join(",")),
+        other => panic!("unexpected expression for shape assertion: {other:?}"),
+    }
+}
+
+#[test]
+fn operators_follow_lua_precedence_and_associativity() {
+    for (expression, expected) in [
+        ("-2^2", "Negate(Power(2,2))"),
+        ("2^-2", "Power(2,Negate(2))"),
+        ("2^3^2", "Power(2,Power(3,2))"),
+        ("2^-2^3", "Power(2,Negate(Power(2,3)))"),
+        ("a..b..c", "Concat(a,Concat(b,c))"),
+        ("a-b-c", "Subtract(Subtract(a,b),c)"),
+        ("not a == b", "Equal(Not(a),b)"),
+        ("a or b and c", "Or(a,And(b,c))"),
+        ("a+b..c+d", "Concat(Add(a,b),Add(c,d))"),
+        ("a|b~c&d<<e", "BitwiseOr(a,BitwiseXor(b,BitwiseAnd(c,ShiftLeft(d,e))))"),
+        ("a<<b..c", "ShiftLeft(a,Concat(b,c))"),
+        ("a<b<c", "Less(Less(a,b),c)"),
+        ("#f().x^2", "Length(Power(Field(Call(f;),x),2))"),
+        ("a - -b", "Subtract(a,Negate(b))"),
+        ("a--b", "a"),
+    ] {
+        let source = format!("local result = {expression}\n");
+        let file = parse(&source);
+        assert!(file.diagnostics.is_empty(), "{expression}: {:?}", file.diagnostics);
+        assert_eq!(expression_shape(&locals(&file, 0).1[0]), expected, "{expression}");
+    }
+}
+
+#[test]
+fn every_binary_operator_retains_its_original_token_span() {
+    for (token, expected) in [
+        ("+", BinaryOperator::Add), ("-", BinaryOperator::Subtract), ("*", BinaryOperator::Multiply),
+        ("/", BinaryOperator::Divide), ("//", BinaryOperator::FloorDivide), ("%", BinaryOperator::Modulo),
+        ("^", BinaryOperator::Power), ("..", BinaryOperator::Concat), ("==", BinaryOperator::Equal),
+        ("~=", BinaryOperator::NotEqual), ("<", BinaryOperator::Less), ("<=", BinaryOperator::LessEqual),
+        (">", BinaryOperator::Greater), (">=", BinaryOperator::GreaterEqual), ("&", BinaryOperator::BitwiseAnd),
+        ("|", BinaryOperator::BitwiseOr), ("~", BinaryOperator::BitwiseXor), ("<<", BinaryOperator::ShiftLeft),
+        (">>", BinaryOperator::ShiftRight), ("and", BinaryOperator::And), ("or", BinaryOperator::Or),
+    ] {
+        let source = format!("local result = left {token} right\n");
+        let file = parse(&source);
+        assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+        let ExprKind::Binary { op, op_span, .. } = &locals(&file, 0).1[0].kind else { panic!("expected binary {token}") };
+        assert_eq!(*op, expected);
+        assert_eq!(&source[op_span.start..op_span.end], token);
+    }
+}
+
+#[test]
+fn indexed_access_assignment_and_method_calls_preserve_lua_spans() {
+    let source = "local value = object[key + 1].name\nobject['x'] = value\nlocal result = object:method(value, key)\nobject:notify()\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let ExprKind::Field { base, .. } = &locals(&file, 0).1[0].kind else { panic!("expected field") };
+    let ExprKind::Index { index, .. } = &base.kind else { panic!("expected index") };
+    assert_eq!(&source[index.span.start..index.span.end], "key + 1");
+    let StmtKind::Assign { targets, .. } = &file.statements[1].kind else { panic!("expected index assignment") };
+    assert!(matches!(targets[0].kind, ExprKind::Index { .. }));
+    let ExprKind::MethodCall { receiver, name, args } = &locals(&file, 2).1[0].kind else { panic!("expected method call") };
+    assert_eq!(&source[receiver.span.start..receiver.span.end], "object");
+    assert_eq!(&source[name.span.start..name.span.end], "method");
+    assert_eq!(args.len(), 2);
+    assert!(matches!(file.statements[3].kind, StmtKind::Call(Expr { kind: ExprKind::MethodCall { .. }, .. })));
+}
+
+#[test]
+fn native_vector_arithmetic_fixture_parses_without_translation() {
+    let file = parse(include_str!("../tests/fixtures/vector-operators.lua"));
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    assert_eq!(file.statements.len(), 7);
+}
+
+#[test]
+fn lua_rejects_adjoining_numeric_dots_before_concatenation() {
+    for numeral in ["1..2", "1.. 2", ".1..2", "0x1..2", "1...2"] {
+        let file = parse(&format!("local value = {numeral}\n"));
+        assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("numeric literal")), "{numeral}: {:?}", file.diagnostics);
+    }
+    for expression in ["1 ..2", "1. ..2", "0xe+1"] {
+        let file = parse(&format!("local value = {expression}\n"));
+        assert!(file.diagnostics.is_empty(), "{expression}: {:?}", file.diagnostics);
+    }
+}
+
+#[test]
+fn malformed_operators_and_index_suffixes_recover_at_the_next_statement() {
+    for expression in ["1 +", "not", "object[1 + ]", "object:method", "1 + )", "#"] {
+        let source = format!("local value = {expression}\nlocal recovery = 7\n");
+        let file = parse(&source);
+        assert!(!file.diagnostics.is_empty(), "{expression}");
+        assert!(file.statements.iter().any(|stmt| matches!(&stmt.kind, StmtKind::Local { names, .. } if names.iter().any(|name| name.text == "recovery"))), "{expression}: {:?}", file.diagnostics);
+    }
+}
+
+#[test]
+fn constructed_operator_and_index_chains_remain_bounded() {
+    for expression in [
+        format!("root{}", " + value".repeat(8192)),
+        format!("root{}", " ^ value".repeat(8192)),
+        format!("{}root", "not ".repeat(1024)),
+        format!("root{}", "[index]".repeat(8192)),
+        format!("root{}", ":method()".repeat(8192)),
+    ] {
+        let source = format!("local value = {expression}\nlocal recovery = 7\n");
+        let file = parse(&source);
+        assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("nesting exceeds")));
+        assert_eq!(locals(&file, 1).0[0].text, "recovery");
+        drop(file.clone());
+        drop(file);
     }
 }
 

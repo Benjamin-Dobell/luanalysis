@@ -1,7 +1,7 @@
 //! Annotated native functions and scalar calls. Lazy return inference and Lua
 //! result packs deliberately remain separate integration gates.
 
-use super::{Binding, BindingInfo, Checker, describe};
+use super::{Binding, Checker, describe};
 use luanalysis_engine::{CallError, FunctionType, Parameter, Type};
 use luanalysis_syntax::{Expr, Function, Name, Span};
 use std::collections::HashSet;
@@ -65,6 +65,25 @@ impl Checker<'_> {
     }
 
     fn function_signature(&mut self, function: &Function) -> FunctionType {
+        let (params, returned) = self.signature_parts(function);
+        let returned = returned.unwrap_or_else(|| {
+            self.error(
+                "LUA2014",
+                function.span,
+                "function return inference requires the native declaration provider",
+            );
+            Type::Any
+        });
+        FunctionType {
+            params,
+            returns: Box::new(returned),
+        }
+    }
+
+    pub(super) fn signature_parts(
+        &mut self,
+        function: &Function,
+    ) -> (Vec<Parameter>, Option<Type>) {
         let context = function
             .annotations
             .type_annotation
@@ -150,31 +169,34 @@ impl Checker<'_> {
         }
         let returns = if let Some(annotation) = &function.annotations.returns {
             match annotation.types.as_slice() {
-                [ty] => self.annotation(ty),
+                [ty] => Some(self.annotation(ty)),
                 _ => {
                     self.error(
                         "LUA2016",
                         annotation.span,
                         "multiple function results require the pending result-pack integration",
                     );
-                    Type::Any
+                    Some(Type::Any)
                 }
             }
         } else if let Some(context) = context {
-            *context.returns
+            Some(*context.returns)
         } else {
-            self.error("LUA2014", function.span, "function return inference requires the pending native lazy-declaration integration; add @return or a function @type");
-            Type::Any
+            None
         };
-        FunctionType {
-            params,
-            returns: Box::new(returns),
-        }
+        (params, returns)
     }
 
     pub(super) fn local_function(&mut self, name: &Name, function: &Function) {
-        let signature = self.function_signature(function);
-        let ty = Type::Function(signature.clone());
+        let legacy_signature = self
+            .native
+            .is_none()
+            .then(|| self.function_signature(function));
+        let ty = if let Some(native) = self.native {
+            Type::NativeFunction(native.key_for(function))
+        } else {
+            Type::Function(legacy_signature.as_ref().unwrap().clone())
+        };
         let mut constraint = ty.clone();
         if let Some(annotation) = &function.annotations.type_annotation {
             if let [expected] = annotation.types.as_slice() {
@@ -196,16 +218,16 @@ impl Checker<'_> {
                 evolves_from_nil: false,
             },
         );
-        self.report.bindings.push(BindingInfo {
-            binding,
-            name: name.text.clone(),
-            span: name.span,
-            ty: describe(&constraint),
-        });
-        self.function_body(function, &signature);
+        self.record_binding(name, binding, &constraint);
+        if let Some(signature) = legacy_signature {
+            self.function_body(function, &signature);
+        }
     }
 
     pub(super) fn function_expression(&mut self, function: &Function) -> Type {
+        if let Some(native) = self.native {
+            return Type::NativeFunction(native.key_for(function));
+        }
         let signature = self.function_signature(function);
         self.function_body(function, &signature);
         Type::Function(signature)
@@ -238,12 +260,7 @@ impl Checker<'_> {
                     evolves_from_nil: false,
                 },
             );
-            self.report.bindings.push(BindingInfo {
-                binding,
-                name: name.text.clone(),
-                span: name.span,
-                ty: describe(&ty),
-            });
+            self.record_binding(name, binding, &ty);
         }
         let returned = self.statements(&function.body);
         if !returned && !self.engine.allows_implicit_return(&signature.returns) {
@@ -292,6 +309,7 @@ impl Checker<'_> {
                 values.first().map_or(span, |value| value.span),
             );
         }
+        self.return_values.push(value);
     }
 
     pub(super) fn call_expression(
@@ -303,10 +321,23 @@ impl Checker<'_> {
     ) -> Type {
         let callee_type = self.expression(callee);
         let arguments: Vec<_> = args.iter().map(|arg| self.expression(arg)).collect();
-        let result = self.engine.call(&callee_type, &arguments);
+        let spans: Vec<_> = args.iter().map(|arg| arg.span).collect();
+        self.call_types(&callee_type, &arguments, &spans, callee.span, span, discard)
+    }
+
+    pub(super) fn call_types(
+        &mut self,
+        callee_type: &Type,
+        arguments: &[Type],
+        argument_spans: &[Span],
+        callee_span: Span,
+        span: Span,
+        discard: bool,
+    ) -> Type {
+        let result = self.engine.call(callee_type, arguments);
         for error in result.errors {
             match error {
-                CallError::NotCallable => self.error("TS2349", callee.span, format!("Type '{}' has no call signatures.", describe(&callee_type))),
+                CallError::NotCallable => self.error("TS2349", callee_span, format!("Type '{}' has no call signatures.", describe(callee_type))),
                 CallError::Arity { actual, minimum, maximum } => {
                     let expected = match maximum {
                         Some(maximum) if maximum == minimum => minimum.to_string(),
@@ -316,9 +347,9 @@ impl Checker<'_> {
                     self.error("TS2554", span, format!("Expected {expected} arguments, but got {actual}."));
                 }
                 CallError::Argument { index, source, target } => {
-                    self.error("TS2345", args.get(index).map_or(span, |arg| arg.span), format!("Argument of type '{}' is not assignable to parameter of type '{}'.", describe(&source), describe(&target)));
+                    self.error("TS2345", argument_spans.get(index).copied().unwrap_or(span), format!("Argument of type '{}' is not assignable to parameter of type '{}'.", describe(&source), describe(&target)));
                 }
-                unsupported => self.error("LUA2018", callee.span, format!("native call form {unsupported:?} requires a later call-checking integration")),
+                unsupported => self.error("LUA2018", callee_span, format!("native call form {unsupported:?} requires a later call-checking integration")),
             }
         }
         // `void` does not establish a Lua result count. Its zero/multiple-result

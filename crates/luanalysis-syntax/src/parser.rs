@@ -1,6 +1,7 @@
 use crate::{
-    CommentKind, Diagnostic, Expr, ExprKind, File, Function, FunctionAnnotations, Name, Span, Stmt,
-    StmtKind, TableField, Token, TokenKind, TypeAnnotation, TypeExpr, TypeExprKind, lex, types,
+    BinaryOperator, CommentKind, Diagnostic, Expr, ExprKind, File, Function, FunctionAnnotations,
+    Name, Span, Stmt, StmtKind, TableField, Token, TokenKind, TypeAnnotation, TypeExpr, TypeExprKind,
+    UnaryOperator, lex, types,
 };
 
 pub fn parse(source: &str) -> File {
@@ -24,8 +25,9 @@ pub fn parse(source: &str) -> File {
         pending_annotations: FunctionAnnotations::default(),
         depth: 0,
         block_depth: 0,
+        loop_depth: 0,
     };
-    let statements = parser.statements(false);
+    let statements = parser.statements(&[]);
     File {
         statements,
         comments,
@@ -42,6 +44,7 @@ struct Parser<'a> {
     pending_annotations: FunctionAnnotations,
     depth: usize,
     block_depth: usize,
+    loop_depth: usize,
 }
 
 impl Parser<'_> {
@@ -92,13 +95,13 @@ impl Parser<'_> {
     fn significant_symbol(&self, value: &str) -> bool {
         matches!(&self.tokens[self.significant_index()].kind, TokenKind::Symbol(symbol) if symbol == value)
     }
-    fn statements(&mut self, stop_at_end: bool) -> Vec<Stmt> {
+    fn statements(&mut self, terminators: &[&str]) -> Vec<Stmt> {
         let mut statements = Vec::new();
         let mut returned = false;
         let mut return_semicolon_used = false;
         loop {
             self.leading_trivia();
-            if self.eof() || (stop_at_end && self.keyword("end")) { break; }
+            if self.eof() || terminators.iter().any(|word| self.keyword(word)) { break; }
             if self.symbol(";") {
                 if returned {
                     if return_semicolon_used {
@@ -206,7 +209,7 @@ impl Parser<'_> {
                 return None;
             }
             self.block_depth += 1;
-            let mut body = self.statements(true);
+            let mut body = self.statements(&["end"]);
             self.block_depth -= 1;
             let body_end = self.current().span.start;
             let end = self.expect_end();
@@ -290,7 +293,7 @@ impl Parser<'_> {
         let mut targets = self.expr_list();
         if !self.significant_symbol("=") {
             self.unattached_annotations(&annotations);
-            if targets.len() == 1 && matches!(targets[0].kind, ExprKind::Call { .. }) {
+            if targets.len() == 1 && matches!(targets[0].kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
                 let call = targets.pop().unwrap();
                 let span = call.span;
                 return Some(Stmt { kind: StmtKind::Call(call), span });
@@ -302,7 +305,7 @@ impl Parser<'_> {
         self.inner_trivia();
         self.pos += 1;
         for target in &targets {
-            if !matches!(target.kind, ExprKind::Name(_) | ExprKind::Field { .. }) {
+            if !matches!(target.kind, ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. }) {
                 self.diagnostics.push(Diagnostic {
                     span: target.span,
                     message: "invalid assignment target".to_owned(),
@@ -337,12 +340,16 @@ impl Parser<'_> {
         self.unattached_annotations(&annotations);
     }
     fn expect_end(&mut self) -> Span {
-        if self.keyword("end") {
+        self.expect_keyword("end")
+    }
+    fn expect_keyword(&mut self, word: &str) -> Span {
+        self.inner_trivia();
+        if self.keyword(word) {
             let span = self.current().span;
             self.pos += 1;
             span
         } else {
-            self.error("expected 'end' to close Lua block or function");
+            self.error(format!("expected '{word}' in Lua statement"));
             self.current().span
         }
     }
@@ -380,7 +387,10 @@ impl Parser<'_> {
         }
         let close_params = self.expect(")");
         self.block_depth += 1;
-        let mut body = self.statements(true);
+        let enclosing_loop_depth = self.loop_depth;
+        self.loop_depth = 0;
+        let mut body = self.statements(&["end"]);
+        self.loop_depth = enclosing_loop_depth;
         self.block_depth -= 1;
         let body_end = self.current().span.start;
         let end = self.expect_end();
@@ -410,13 +420,14 @@ impl Parser<'_> {
     // Track the depth of the constructed tree as well as recursive parser calls.
     // Postfix access is parsed iteratively but still creates nested boxed nodes.
     fn expr_with_depth(&mut self) -> (Expr, usize) {
+        self.expr_binding_power(0)
+    }
+    fn expr_binding_power(&mut self, min_precedence: u8) -> (Expr, usize) {
         self.inner_trivia();
         let start = self.current().span;
         if self.depth + self.block_depth >= 128 {
             self.error("expression nesting exceeds 128");
-            if !self.eof() {
-                self.pos += 1;
-            }
+            self.recover_expression();
             return (
                 Expr {
                     kind: ExprKind::Error,
@@ -426,8 +437,48 @@ impl Parser<'_> {
             );
         }
         self.depth += 1;
+        let (mut expr, mut built_depth) = self.prefix_with_suffix();
+        let mut binary_exceeded = false;
+        loop {
+            let next = &self.tokens[self.significant_index()];
+            let Some((op, precedence, rhs_precedence)) = binary_operator(&next.kind) else { break; };
+            if precedence < min_precedence { break; }
+            self.inner_trivia();
+            let op_span = self.current().span;
+            self.pos += 1;
+            let (right, right_depth) = self.expr_binding_power(rhs_precedence);
+            let span = expr.span.join(right.span);
+            if binary_exceeded || built_depth.max(right_depth) >= 128 {
+                if !binary_exceeded {
+                    self.diagnostics.push(Diagnostic { span: op_span, message: "binary expression nesting exceeds 128".to_owned() });
+                }
+                expr = Expr { kind: ExprKind::Error, span };
+                built_depth = 1;
+                binary_exceeded = true;
+            } else {
+                expr = Expr { kind: ExprKind::Binary { op, op_span, left: Box::new(expr), right: Box::new(right) }, span };
+                built_depth = built_depth.max(right_depth) + 1;
+            }
+        }
+        self.depth -= 1;
+        (expr, built_depth)
+    }
+    fn prefix_with_suffix(&mut self) -> (Expr, usize) {
+        let start = self.current().span;
         let mut built_depth = 1;
-        let mut expr = match self.current().kind.clone() {
+        let mut expr = if let Some(op) = unary_operator(&self.current().kind) {
+            self.pos += 1;
+            // Lua exponentiation binds more tightly than unary operators.
+            let (value, value_depth) = self.expr_binding_power(13);
+            let span = start.join(value.span);
+            if value_depth >= 128 {
+                self.diagnostics.push(Diagnostic { span: start, message: "unary expression nesting exceeds 128".to_owned() });
+                Expr { kind: ExprKind::Error, span }
+            } else {
+                built_depth = value_depth + 1;
+                Expr { kind: ExprKind::Unary { op, op_span: start, value: Box::new(value) }, span }
+            }
+        } else { match self.current().kind.clone() {
             TokenKind::Identifier(text) => {
                 self.pos += 1;
                 Expr {
@@ -470,24 +521,6 @@ impl Parser<'_> {
                 let span = function.span;
                 Expr { kind: ExprKind::Function(function), span }
             }
-            TokenKind::Symbol(symbol) if symbol == "-" => {
-                self.pos += 1;
-                self.inner_trivia();
-                if let TokenKind::Number(spelling) = self.current().kind.clone() {
-                    let span = start.join(self.current().span);
-                    self.pos += 1;
-                    Expr {
-                        kind: ExprKind::Number(format!("-{spelling}")),
-                        span,
-                    }
-                } else {
-                    self.error("unary operators are currently supported only for negative numeric literals");
-                    Expr {
-                        kind: ExprKind::Error,
-                        span: start,
-                    }
-                }
-            }
             TokenKind::Symbol(symbol) if symbol == "(" => {
                 self.pos += 1;
                 let (inner, inner_depth) = self.expr_with_depth();
@@ -519,7 +552,7 @@ impl Parser<'_> {
                 self.error(
                     "expected an expression; this Lua expression form is unsupported in this slice",
                 );
-                if !self.eof() && !self.symbol(",") && !self.symbol("}") && !self.symbol(")") {
+                if !self.expression_boundary() {
                     self.pos += 1;
                 }
                 Expr {
@@ -527,11 +560,52 @@ impl Parser<'_> {
                     span: start,
                 }
             }
-        };
+        }};
         let mut postfix_exceeded = false;
-        while self.significant_symbol(".") || self.significant_symbol("(") {
+        while self.significant_symbol(".") || self.significant_symbol("(")
+            || self.significant_symbol("[") || self.significant_symbol(":") {
             self.inner_trivia();
             let postfix_start = self.current().span;
+            if self.symbol("[") {
+                self.pos += 1;
+                let (index, index_depth) = self.expr_with_depth();
+                let end = self.expect("]");
+                let span = expr.span.join(end);
+                if postfix_exceeded || built_depth.max(index_depth) >= 128 {
+                    if !postfix_exceeded {
+                        self.diagnostics.push(Diagnostic { span: postfix_start.join(end), message: "indexed expression nesting exceeds 128".to_owned() });
+                    }
+                    expr = Expr { kind: ExprKind::Error, span };
+                    built_depth = 1;
+                    postfix_exceeded = true;
+                } else {
+                    expr = Expr { kind: ExprKind::Index { base: Box::new(expr), index: Box::new(index) }, span };
+                    built_depth = built_depth.max(index_depth) + 1;
+                }
+                continue;
+            }
+            if self.symbol(":") {
+                self.pos += 1;
+                let Some(name) = self.name() else { break; };
+                if !self.significant_symbol("(") {
+                    self.error("Lua ':' access requires a method call argument list");
+                    break;
+                }
+                let (args, args_span, args_depth) = self.call_args();
+                let span = expr.span.join(args_span);
+                if postfix_exceeded || built_depth.max(args_depth) >= 128 {
+                    if !postfix_exceeded {
+                        self.diagnostics.push(Diagnostic { span: postfix_start.join(args_span), message: "method call nesting exceeds 128".to_owned() });
+                    }
+                    expr = Expr { kind: ExprKind::Error, span };
+                    built_depth = 1;
+                    postfix_exceeded = true;
+                } else {
+                    expr = Expr { kind: ExprKind::MethodCall { receiver: Box::new(expr), name, args }, span };
+                    built_depth = built_depth.max(args_depth) + 1;
+                }
+                continue;
+            }
             if self.symbol("(") {
                 let (args, args_span, args_depth) = self.call_args();
                 let span = expr.span.join(args_span);
@@ -579,8 +653,26 @@ impl Parser<'_> {
             };
             built_depth += 1;
         }
-        self.depth -= 1;
         (expr, built_depth)
+    }
+    fn expression_boundary(&self) -> bool {
+        self.eof() || matches!(&self.current().kind,
+            TokenKind::Symbol(symbol) if matches!(symbol.as_str(), "," | ";" | ")" | "]" | "}"))
+            || matches!(&self.current().kind, TokenKind::Keyword(keyword)
+                if matches!(keyword.as_str(), "local" | "return" | "do" | "end" | "then"
+                    | "else" | "elseif" | "until" | "if" | "while" | "for" | "repeat"))
+    }
+    fn recover_expression(&mut self) {
+        let mut nesting = 0_usize;
+        while !self.eof() {
+            if nesting == 0 && (self.expression_boundary() || matches!(self.current().kind, TokenKind::Newline)) { break; }
+            if self.symbol("(") || self.symbol("[") || self.symbol("{") { nesting += 1; }
+            if self.symbol(")") || self.symbol("]") || self.symbol("}") {
+                if nesting == 0 { break; }
+                nesting -= 1;
+            }
+            self.pos += 1;
+        }
     }
     fn call_args(&mut self) -> (Vec<Expr>, Span, usize) {
         let start = self.expect("(");
@@ -708,6 +800,52 @@ impl Parser<'_> {
     }
 }
 
+fn unary_operator(kind: &TokenKind) -> Option<UnaryOperator> {
+    match kind {
+        TokenKind::Keyword(word) if word == "not" => Some(UnaryOperator::Not),
+        TokenKind::Symbol(symbol) => match symbol.as_str() {
+            "#" => Some(UnaryOperator::Length),
+            "-" => Some(UnaryOperator::Negate),
+            "~" => Some(UnaryOperator::BitwiseNot),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Inclusive Pratt powers adapted from Lua 5.4's lparser.c priorities.
+/// Concat and exponentiation associate right; all other binary operators left.
+fn binary_operator(kind: &TokenKind) -> Option<(BinaryOperator, u8, u8)> {
+    let (op, precedence, right_associative) = match kind {
+        TokenKind::Keyword(word) if word == "or" => (BinaryOperator::Or, 1, false),
+        TokenKind::Keyword(word) if word == "and" => (BinaryOperator::And, 2, false),
+        TokenKind::Symbol(symbol) => match symbol.as_str() {
+            "==" => (BinaryOperator::Equal, 3, false),
+            "~=" => (BinaryOperator::NotEqual, 3, false),
+            "<" => (BinaryOperator::Less, 3, false),
+            "<=" => (BinaryOperator::LessEqual, 3, false),
+            ">" => (BinaryOperator::Greater, 3, false),
+            ">=" => (BinaryOperator::GreaterEqual, 3, false),
+            "|" => (BinaryOperator::BitwiseOr, 4, false),
+            "~" => (BinaryOperator::BitwiseXor, 5, false),
+            "&" => (BinaryOperator::BitwiseAnd, 6, false),
+            "<<" => (BinaryOperator::ShiftLeft, 7, false),
+            ">>" => (BinaryOperator::ShiftRight, 7, false),
+            ".." => (BinaryOperator::Concat, 9, true),
+            "+" => (BinaryOperator::Add, 10, false),
+            "-" => (BinaryOperator::Subtract, 10, false),
+            "*" => (BinaryOperator::Multiply, 11, false),
+            "/" => (BinaryOperator::Divide, 11, false),
+            "//" => (BinaryOperator::FloorDivide, 11, false),
+            "%" => (BinaryOperator::Modulo, 11, false),
+            "^" => (BinaryOperator::Power, 14, true),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some((op, precedence, if right_associative { precedence } else { precedence + 1 }))
+}
+
 fn function_initializer(value: &mut Expr) -> Option<&mut Function> {
     match &mut value.kind {
         ExprKind::Function(function) => Some(function),
@@ -752,11 +890,23 @@ fn statements_depth(body: &[Stmt]) -> usize {
                 StmtKind::Call(expr) => pending.push((Node::Expression(expr), depth + 1)),
             },
             Node::Expression(expr) => match &expr.kind {
-                ExprKind::Parenthesized(base) | ExprKind::Field { base, .. } => {
+                ExprKind::Parenthesized(base) | ExprKind::Field { base, .. } | ExprKind::Unary { value: base, .. } => {
                     pending.push((Node::Expression(base), depth + 1));
+                }
+                ExprKind::Binary { left, right, .. } => {
+                    pending.push((Node::Expression(left), depth + 1));
+                    pending.push((Node::Expression(right), depth + 1));
+                }
+                ExprKind::Index { base, index } => {
+                    pending.push((Node::Expression(base), depth + 1));
+                    pending.push((Node::Expression(index), depth + 1));
                 }
                 ExprKind::Call { callee, args } => {
                     pending.push((Node::Expression(callee), depth + 1));
+                    pending.extend(args.iter().map(|arg| (Node::Expression(arg), depth + 1)));
+                }
+                ExprKind::MethodCall { receiver, args, .. } => {
+                    pending.push((Node::Expression(receiver), depth + 1));
                     pending.extend(args.iter().map(|arg| (Node::Expression(arg), depth + 1)));
                 }
                 ExprKind::Table(fields) => {
