@@ -21,6 +21,7 @@ pub struct BindingId(pub usize);
 pub enum ScopeKind {
     File,
     Block,
+    Loop,
     Function,
 }
 
@@ -41,6 +42,7 @@ pub enum DeclarationKind {
     Local,
     LocalFunction,
     Parameter,
+    LoopVariable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -278,6 +280,77 @@ impl Binder {
                     }
                 }
                 StmtKind::Call(expression) => self.expression(expression),
+                StmtKind::If {
+                    branches,
+                    else_branch,
+                } => {
+                    for branch in branches {
+                        self.expression(&branch.condition);
+                        self.enter_scope(ScopeKind::Block, branch.body_span);
+                        self.statements(&branch.body);
+                        self.leave_scope();
+                    }
+                    if let Some(branch) = else_branch {
+                        self.enter_scope(ScopeKind::Block, branch.body_span);
+                        self.statements(&branch.body);
+                        self.leave_scope();
+                    }
+                }
+                StmtKind::While {
+                    condition,
+                    body,
+                    body_span,
+                } => {
+                    self.expression(condition);
+                    self.enter_scope(ScopeKind::Loop, *body_span);
+                    self.statements(body);
+                    self.leave_scope();
+                }
+                StmtKind::Repeat {
+                    body,
+                    condition,
+                    body_span,
+                } => {
+                    self.enter_scope(ScopeKind::Loop, body_span.join(condition.span));
+                    self.statements(body);
+                    self.expression(condition);
+                    self.leave_scope();
+                }
+                StmtKind::NumericFor {
+                    name,
+                    start,
+                    limit,
+                    step,
+                    body,
+                    body_span,
+                } => {
+                    self.expression(start);
+                    self.expression(limit);
+                    if let Some(step) = step {
+                        self.expression(step);
+                    }
+                    self.enter_scope(ScopeKind::Loop, *body_span);
+                    self.declare(name, DeclarationKind::LoopVariable, body_span.start);
+                    self.statements(body);
+                    self.leave_scope();
+                }
+                StmtKind::GenericFor {
+                    names,
+                    values,
+                    body,
+                    body_span,
+                } => {
+                    for value in values {
+                        self.expression(value);
+                    }
+                    self.enter_scope(ScopeKind::Loop, *body_span);
+                    for name in names {
+                        self.declare(name, DeclarationKind::LoopVariable, body_span.start);
+                    }
+                    self.statements(body);
+                    self.leave_scope();
+                }
+                StmtKind::Break => {}
             }
         }
     }

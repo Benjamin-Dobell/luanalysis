@@ -182,7 +182,6 @@ fn unsupported_lua_and_annotation_forms_are_reported_and_recover() {
         "local x = {1, 2}",
         "local x = {[1] = 'one'}",
         "local function f(...) end",
-        "if true then end",
         "---@type number[]",
         "---@type fun<T>(x: T): T",
         "---@class MyClass",
@@ -454,12 +453,103 @@ fn missing_end_bad_parameters_and_annotations_are_diagnosed() {
         "do local x = 1", "local function f(x,) return x end", "local function f(...) end",
         "---@param x number\nlocal x = 1", "---@param x number\n---@param x string\nlocal function f(x) end",
         "local function f() return 1 local x = 2 end", "local x = f(1,)",
-        "---@generic T\nlocal function f(x) return x end", "function global() end",
+        "---@generic T = number\nlocal function f(x) return x end", "function global() end",
     ] {
         let file = parse(source);
         assert!(!file.diagnostics.is_empty(), "invalid or unsupported input escaped diagnosis: {source}");
     }
 }
+
+#[test]
+fn control_flow_clauses_and_loop_headers_preserve_original_spans() {
+    let source = "if first then\nlocal value = 1\nelseif second then\nlocal value = 2\nelse\nlocal value = 3\nend\nwhile count < 3 do\ncount = count + 1\nbreak\nend\nrepeat\nlocal finished = count > 0\nuntil finished\nfor index = 1, 10, -2 do\nlocal value = index\nend\nfor key, value in iterator(state), initial do\nlocal copy = value\nend\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    assert_eq!(file.statements.len(), 5);
+    let StmtKind::If { branches, else_branch } = &file.statements[0].kind else { panic!("expected if") };
+    assert_eq!(branches.len(), 2);
+    assert_eq!(&source[branches[1].condition.span.start..branches[1].condition.span.end], "second");
+    assert!(source[branches[0].body_span.end..].starts_with("elseif"));
+    assert!(source[branches[1].body_span.end..].starts_with("else"));
+    let else_branch = else_branch.as_ref().unwrap();
+    assert!(source[else_branch.body_span.start..else_branch.body_span.end].contains("local value = 3"));
+    let StmtKind::While { body, body_span, .. } = &file.statements[1].kind else { panic!("expected while") };
+    assert!(matches!(body[1].kind, StmtKind::Break));
+    assert!(source[body_span.end..].starts_with("end"));
+    let StmtKind::Repeat { body, condition, body_span } = &file.statements[2].kind else { panic!("expected repeat") };
+    assert_eq!(body.len(), 1);
+    assert!(source[body_span.end..].starts_with("until"));
+    assert_eq!(&source[condition.span.start..condition.span.end], "finished");
+    assert_eq!(file.statements[2].span.end, condition.span.end);
+    let StmtKind::NumericFor { name, start, limit, step, .. } = &file.statements[3].kind else { panic!("expected numeric for") };
+    assert_eq!(name.text, "index");
+    assert_eq!(&source[start.span.start..start.span.end], "1");
+    assert_eq!(&source[limit.span.start..limit.span.end], "10");
+    assert_eq!(expression_shape(step.as_ref().unwrap()), "Negate(2)");
+    let StmtKind::GenericFor { names, values, body, .. } = &file.statements[4].kind else { panic!("expected generic for") };
+    assert_eq!(names.iter().map(|name| name.text.as_str()).collect::<Vec<_>>(), ["key", "value"]);
+    assert_eq!(values.len(), 2);
+    assert_eq!(body.len(), 1);
+}
+
+#[test]
+fn returns_are_terminal_within_each_if_branch() {
+    let file = parse("local function choose(value) if value then return 1; elseif other then return 2 else return 3 end end\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let invalid = parse("if value then return 1 local misplaced = 2 else return 3 end\n");
+    assert!(invalid.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("return must be")));
+}
+
+#[test]
+fn break_scope_does_not_cross_function_boundaries() {
+    let source = "while true do\nlocal function invalid() break end\ndo break end\nend\n";
+    let file = parse(source);
+    assert_eq!(file.diagnostics.len(), 1, "{:?}", file.diagnostics);
+    let diagnostic = &file.diagnostics[0];
+    assert_eq!(&source[diagnostic.span.start..diagnostic.span.end], "break");
+    assert!(diagnostic.message.contains("outside a loop"));
+    assert_eq!(diagnostic.span.start, source.find("break").unwrap());
+    assert!(!parse("break").diagnostics.is_empty());
+}
+
+#[test]
+fn malformed_control_headers_report_errors_and_recover_after_the_block() {
+    for invalid in [
+        "if true local value = 1 end", "while true local value = 1 end",
+        "repeat local value = 1 until", "for index = 1 do end", "for key iterator do end",
+        "if true then elseif then end",
+    ] {
+        let source = format!("{invalid}\nlocal recovery = 7\n");
+        let file = parse(&source);
+        assert!(!file.diagnostics.is_empty(), "{invalid}");
+        assert!(file.statements.iter().any(|stmt| matches!(&stmt.kind, StmtKind::Local { names, .. } if names.iter().any(|name| name.text == "recovery"))), "{invalid}: {:?}", file.diagnostics);
+    }
+}
+
+#[test]
+fn nested_control_statements_are_bounded_and_recover_without_stack_overflow() {
+    for (opening, closing) in [("if true then\n", "end\n"), ("while true do\n", "end\n"), ("repeat\n", "until true\n")] {
+        let source = format!("{}local value = 1\n{}local recovery = 7\n", opening.repeat(1024), closing.repeat(1024));
+        let file = parse(&source);
+        assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("nesting exceeds")), "{opening}");
+        assert!(file.statements.iter().any(|stmt| matches!(&stmt.kind, StmtKind::Local { names, .. } if names.iter().any(|name| name.text == "recovery"))), "{opening}: {:?}", file.diagnostics);
+        drop(file.clone());
+        drop(file);
+    }
+}
+
+#[test]
+fn postfix_operations_require_lua_prefix_expressions() {
+    for invalid in ["function() return 1 end()", "{x = 1}.x", "true[1]", "'value':method()", "nil.field"] {
+        let file = parse(&format!("local value = {invalid}\n"));
+        assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("postfix access")), "{invalid}: {:?}", file.diagnostics);
+    }
+    for valid in ["(function() return 1 end)()", "({x = 1}).x", "(true)[1]", "('value'):method()", "(nil).field"] {
+        let file = parse(&format!("local value = {valid}\n"));
+        assert!(file.diagnostics.is_empty(), "{valid}: {:?}", file.diagnostics);
+    }
+}
+
 
 #[test]
 fn excessive_call_chains_and_mixed_function_trees_are_bounded() {

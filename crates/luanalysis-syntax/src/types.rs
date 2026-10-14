@@ -1,6 +1,7 @@
 use crate::{
-    Comment, Diagnostic, FunctionAnnotations, FunctionType, FunctionTypeParam, Name, ParamAnnotation,
-    Span, Token, TokenKind, TypeAnnotation, TypeExpr, TypeExprKind, TypeField, lex,
+    Comment, Diagnostic, FunctionAnnotations, FunctionType, FunctionTypeParam, GenericParameter,
+    Name, ParamAnnotation, Span, Token, TokenKind, TypeAnnotation, TypeExpr, TypeExprKind,
+    TypeField, lex,
 };
 
 /// Parse only documentation tags. Ordinary prose remains a retained comment.
@@ -43,11 +44,11 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
                 .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                 .unwrap_or(tag.len());
             let tag_name = &tag[..tag_len];
-            if !matches!(tag_name, "type" | "param" | "return") {
+            if !matches!(tag_name, "type" | "param" | "return" | "generic") {
                 diagnostics.push(Diagnostic {
                     span: Span::new(tag_offset, tag_offset + 1 + tag_len),
                     message: format!(
-                        "unsupported Luanalysis annotation @{tag_name}; this slice supports @type, @param, and @return"
+                        "unsupported Luanalysis annotation @{tag_name}; this slice supports @type, @param, @return, and @generic"
                     ),
                 });
             } else {
@@ -83,11 +84,19 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
                 let annotation_span = Span::new(tag_offset, types_offset + types.len());
                 let mut group = FunctionAnnotations::default();
                 match tag_name {
+                    "generic" => {
+                        group.generics = parser.generic_parameters();
+                    }
                     "param" => {
                         if let Some(name) = parser.name() {
                             let optional = parser.take("?").is_some();
                             let ty = parser.union();
-                            group.params.push(ParamAnnotation { name, ty, optional, span: annotation_span });
+                            group.params.push(ParamAnnotation {
+                                name,
+                                ty,
+                                optional,
+                                span: annotation_span,
+                            });
                         }
                     }
                     "return" => {
@@ -105,7 +114,9 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
                     _ => unreachable!(),
                 }
                 if !parser.eof() {
-                    parser.error(format!("unsupported or unexpected syntax after @{tag_name}"));
+                    parser.error(format!(
+                        "unsupported or unexpected syntax after @{tag_name}"
+                    ));
                 }
                 diagnostics.extend(parser.diagnostics);
                 merge_annotations(&mut result, group, &mut diagnostics);
@@ -116,28 +127,75 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
     (result, diagnostics)
 }
 
-pub(crate) fn merge_annotations(target: &mut FunctionAnnotations, incoming: FunctionAnnotations, diagnostics: &mut Vec<Diagnostic>) {
+pub(crate) fn merge_annotations(
+    target: &mut FunctionAnnotations,
+    incoming: FunctionAnnotations,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for generic in incoming.generics {
+        if target
+            .generics
+            .iter()
+            .any(|existing| existing.name.text == generic.name.text)
+        {
+            diagnostics.push(Diagnostic {
+                span: generic.name.span,
+                message: format!("multiple @generic declarations for {}", generic.name.text),
+            });
+        } else {
+            target.generics.push(generic);
+        }
+    }
     for param in incoming.params {
-        if target.params.iter().any(|existing| existing.name.text == param.name.text) {
-            diagnostics.push(Diagnostic { span: param.span, message: format!("multiple @param annotations for {}", param.name.text) });
-        } else { target.params.push(param); }
+        if target
+            .params
+            .iter()
+            .any(|existing| existing.name.text == param.name.text)
+        {
+            diagnostics.push(Diagnostic {
+                span: param.span,
+                message: format!("multiple @param annotations for {}", param.name.text),
+            });
+        } else {
+            target.params.push(param);
+        }
     }
     if let Some(returns) = incoming.returns {
         if target.returns.is_some() {
-            diagnostics.push(Diagnostic { span: returns.span, message: "multiple @return annotations for one function".to_owned() });
-        } else { target.returns = Some(returns); }
+            diagnostics.push(Diagnostic {
+                span: returns.span,
+                message: "multiple @return annotations for one function".to_owned(),
+            });
+        } else {
+            target.returns = Some(returns);
+        }
     }
     if let Some(annotation) = incoming.type_annotation {
         if target.type_annotation.is_some() {
-            diagnostics.push(Diagnostic { span: annotation.span, message: "multiple @type annotations for one declaration".to_owned() });
-        } else { target.type_annotation = Some(annotation); }
+            diagnostics.push(Diagnostic {
+                span: annotation.span,
+                message: "multiple @type annotations for one declaration".to_owned(),
+            });
+        } else {
+            target.type_annotation = Some(annotation);
+        }
     }
 }
 
 pub(crate) fn annotation_spans(group: &FunctionAnnotations) -> Vec<Span> {
-    group.params.iter().map(|param| param.span)
+    group
+        .generics
+        .iter()
+        .map(|generic| generic.span)
+        .chain(group.params.iter().map(|param| param.span))
         .chain(group.returns.iter().map(|returns| returns.span))
-        .chain(group.type_annotation.iter().map(|annotation| annotation.span)).collect()
+        .chain(
+            group
+                .type_annotation
+                .iter()
+                .map(|annotation| annotation.span),
+        )
+        .collect()
 }
 
 struct TypeParser {
@@ -198,6 +256,54 @@ impl TypeParser {
             None
         }
     }
+    fn generic_parameters(&mut self) -> Vec<GenericParameter> {
+        let mut parameters = Vec::new();
+        loop {
+            // Documentation's xGENERIC lexer accepts ID without reserving
+            // Lua keywords, unlike the lexer shared with Lua expressions.
+            let name = if let TokenKind::Identifier(text) | TokenKind::Keyword(text) =
+                self.current().kind.clone()
+            {
+                let span = self.current().span;
+                self.pos += 1;
+                Name { text, span }
+            } else {
+                self.error("expected a type parameter name after @generic or ','".to_owned());
+                break;
+            };
+            let constraint = if self.take(":").is_some() {
+                // doc.bnf: generic_def ::= ID (EXTENDS ty)?. A constraint is
+                // one `ty`, rather than `complex_ty`; unions must be wrapped
+                // in parentheses. A function constraint's bare return also
+                // cannot consume the comma between generic declarations.
+                self.comma_ends_type += 1;
+                let ty = self.primary();
+                self.comma_ends_type -= 1;
+                Some(ty)
+            } else {
+                None
+            };
+            let span = constraint
+                .as_ref()
+                .map_or(name.span, |ty| name.span.join(ty.span));
+            parameters.push(GenericParameter {
+                name,
+                constraint,
+                span,
+            });
+            if self.symbol("=") {
+                self.error(
+                    "generic parameter defaults are invalid Luanalysis annotation syntax"
+                        .to_owned(),
+                );
+                break;
+            }
+            if self.take(",").is_none() {
+                break;
+            }
+        }
+        parameters
+    }
     fn return_list(&mut self) -> Vec<TypeExpr> {
         if self.take("(").is_some() {
             let types = self.list();
@@ -205,7 +311,9 @@ impl TypeParser {
             types
         } else if self.comma_ends_type > 0 {
             vec![self.union()]
-        } else { self.list() }
+        } else {
+            self.list()
+        }
     }
     fn union(&mut self) -> TypeExpr {
         let first = self.primary();
@@ -286,16 +394,28 @@ impl TypeParser {
         self.pos += 1;
         let mut params = Vec::new();
         if self.symbol("<") {
-            self.error("generic function types are unsupported until generic inference is implemented".to_owned());
-            while !self.eof() && !self.symbol("(") { self.pos += 1; }
+            self.error(
+                "generic function types are unsupported until generic inference is implemented"
+                    .to_owned(),
+            );
+            while !self.eof() && !self.symbol("(") {
+                self.pos += 1;
+            }
         }
         if self.take("(").is_some() {
             while !self.eof() && !self.symbol(")") {
                 let param_start = self.current().span;
                 let Some(name) = self.name() else {
-                    self.error("variadic and unnamed function parameters are unsupported in this slice".to_owned());
-                    while !self.eof() && !self.symbol(",") && !self.symbol(")") { self.pos += 1; }
-                    if self.take(",").is_some() { continue; }
+                    self.error(
+                        "variadic and unnamed function parameters are unsupported in this slice"
+                            .to_owned(),
+                    );
+                    while !self.eof() && !self.symbol(",") && !self.symbol(")") {
+                        self.pos += 1;
+                    }
+                    if self.take(",").is_some() {
+                        continue;
+                    }
                     break;
                 };
                 let optional = self.take("?").is_some();
@@ -304,22 +424,50 @@ impl TypeParser {
                     let ty = self.union();
                     self.comma_ends_type -= 1;
                     Some(ty)
-                } else { None };
-                let end = ty.as_ref().map_or(self.tokens[self.pos - 1].span, |ty| ty.span);
-                params.push(FunctionTypeParam { name, ty, optional, span: param_start.join(end) });
-                if self.take(",").is_some() { continue; }
+                } else {
+                    None
+                };
+                let end = ty
+                    .as_ref()
+                    .map_or(self.tokens[self.pos - 1].span, |ty| ty.span);
+                params.push(FunctionTypeParam {
+                    name,
+                    ty,
+                    optional,
+                    span: param_start.join(end),
+                });
+                if self.take(",").is_some() {
+                    continue;
+                }
                 if !self.symbol(")") {
                     self.error("expected ',' or ')' after function type parameter".to_owned());
-                    while !self.eof() && !self.symbol(")") { self.pos += 1; }
+                    while !self.eof() && !self.symbol(")") {
+                        self.pos += 1;
+                    }
                 }
                 break;
             }
             self.expect(")");
         }
-        let returns = if self.take(":").is_some() { self.return_list() } else { Vec::new() };
-        let end = if self.pos > 0 { self.tokens[self.pos - 1].span } else { start };
+        let returns = if self.take(":").is_some() {
+            self.return_list()
+        } else {
+            Vec::new()
+        };
+        let end = if self.pos > 0 {
+            self.tokens[self.pos - 1].span
+        } else {
+            start
+        };
         let span = start.join(end);
-        TypeExpr { kind: TypeExprKind::Function(FunctionType { params, returns, span }), span }
+        TypeExpr {
+            kind: TypeExprKind::Function(FunctionType {
+                params,
+                returns,
+                span,
+            }),
+            span,
+        }
     }
     fn record(&mut self) -> TypeExpr {
         let start = self.expect("{");

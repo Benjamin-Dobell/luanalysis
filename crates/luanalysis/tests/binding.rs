@@ -190,3 +190,101 @@ fn operators_indices_and_method_calls_preserve_variable_occurrences() {
     assert_eq!(graph.binding_at(source.find(":method").unwrap() + 1), None);
     assert_eq!(graph.binding_at(source.find("{x").unwrap() + 1), None);
 }
+
+#[test]
+fn conditional_branch_scopes_do_not_leak_into_other_conditions_or_after_end() {
+    let source = "local value = 1\nif value then\nlocal value = value\nelseif value then\nlocal value = value\nelse\nlocal value = value\nend\nlocal after = value";
+    let graph = bound(source);
+    let outer = binding(source, &graph, "local value = 1", 6);
+    assert_eq!(binding(source, &graph, "if value then", 3), outer);
+    assert_eq!(binding(source, &graph, "elseif value then", 7), outer);
+    assert_eq!(binding(source, &graph, "after = value", 8), outer);
+    let inner: Vec<_> = graph
+        .declarations
+        .iter()
+        .filter(|declaration| declaration.name == "value" && declaration.id != outer)
+        .collect();
+    assert_eq!(inner.len(), 3);
+    assert_ne!(inner[0].scope, inner[1].scope);
+    assert_ne!(inner[1].scope, inner[2].scope);
+    for declaration in inner {
+        let initializer = graph
+            .occurrences
+            .iter()
+            .find(|occurrence| {
+                occurrence.span.start > declaration.span.end
+                    && occurrence.kind == OccurrenceKind::Read
+                    && occurrence.scope == declaration.scope
+            })
+            .unwrap();
+        assert_eq!(initializer.binding, Some(outer));
+    }
+}
+
+#[test]
+fn repeat_conditions_keep_body_locals_active_then_restore_the_outer_scope() {
+    let source = "local value = 1\nrepeat\nlocal value = 2\nuntil value\nlocal after = value";
+    let graph = bound(source);
+    let outer = binding(source, &graph, "local value = 1", 6);
+    let inner = binding(source, &graph, "local value = 2", 6);
+    assert_eq!(binding(source, &graph, "until value", 6), inner);
+    assert_eq!(binding(source, &graph, "after = value", 8), outer);
+    assert_eq!(
+        graph.scope_at(source.find("until value").unwrap() + 6),
+        Some(graph.declaration(inner).scope)
+    );
+    assert_eq!(
+        graph.scope(graph.declaration(inner).scope).kind,
+        ScopeKind::Loop
+    );
+}
+
+#[test]
+fn numeric_loop_headers_resolve_before_the_loop_variable_is_declared() {
+    let source = "local i = 1\nfor i = i, i, i do\nlocal value = i\nend\nlocal after = i";
+    let graph = bound(source);
+    let outer = binding(source, &graph, "local i = 1", 6);
+    let counter = binding(source, &graph, "for i = i", 4);
+    assert_eq!(
+        graph.declaration(counter).kind,
+        DeclarationKind::LoopVariable
+    );
+    assert_ne!(outer, counter);
+    let header_start = source.find("for i").unwrap();
+    let header_end = source.find(" do").unwrap();
+    let reads: Vec<_> = graph
+        .occurrences
+        .iter()
+        .filter(|occurrence| {
+            occurrence.kind == OccurrenceKind::Read
+                && occurrence.span.start > header_start
+                && occurrence.span.end <= header_end
+        })
+        .collect();
+    assert_eq!(reads.len(), 3);
+    assert!(
+        reads
+            .iter()
+            .all(|occurrence| occurrence.binding == Some(outer))
+    );
+    assert_eq!(binding(source, &graph, "value = i", 8), counter);
+    assert_eq!(binding(source, &graph, "after = i", 8), outer);
+}
+
+#[test]
+fn generic_loop_values_resolve_before_all_iteration_variables() {
+    let source = "local key = 1\nfor key, value in factory(key) do\nlocal first = key\nlocal second = value\nend\nlocal after = key\nlocal missing = value";
+    let graph = bound(source);
+    let outer = binding(source, &graph, "local key = 1", 6);
+    let key = binding(source, &graph, "for key, value", 4);
+    let value = binding(source, &graph, "for key, value", 9);
+    assert_ne!(key, outer);
+    assert_eq!(binding(source, &graph, "factory(key)", 8), outer);
+    assert_eq!(binding(source, &graph, "first = key", 8), key);
+    assert_eq!(binding(source, &graph, "second = value", 9), value);
+    assert_eq!(binding(source, &graph, "after = key", 8), outer);
+    assert_eq!(
+        graph.binding_at(source.find("missing = value").unwrap() + 10),
+        None
+    );
+}

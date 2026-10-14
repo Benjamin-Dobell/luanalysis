@@ -4,6 +4,9 @@ use crate::{
     UnaryOperator, lex, types,
 };
 
+#[path = "control.rs"]
+mod control;
+
 pub fn parse(source: &str) -> File {
     let lexed = lex(source);
     let comments = lexed
@@ -199,6 +202,11 @@ impl Parser<'_> {
     fn statement(&mut self) -> Option<Stmt> {
         let start = self.current().span;
         let mut annotations = std::mem::take(&mut self.pending_annotations);
+        if matches!(&self.current().kind, TokenKind::Keyword(word)
+            if matches!(word.as_str(), "if" | "while" | "repeat" | "for" | "break")) {
+            self.unattached_annotations(&annotations);
+            return self.control_statement(start);
+        }
         if self.keyword("do") {
             self.unattached_annotations(&annotations);
             self.pos += 1;
@@ -466,21 +474,39 @@ impl Parser<'_> {
     fn prefix_with_suffix(&mut self) -> (Expr, usize) {
         let start = self.current().span;
         let mut built_depth = 1;
-        let mut expr = if let Some(op) = unary_operator(&self.current().kind) {
-            self.pos += 1;
-            // Lua exponentiation binds more tightly than unary operators.
-            let (value, value_depth) = self.expr_binding_power(13);
-            let span = start.join(value.span);
-            if value_depth >= 128 {
-                self.diagnostics.push(Diagnostic { span: start, message: "unary expression nesting exceeds 128".to_owned() });
-                Expr { kind: ExprKind::Error, span }
-            } else {
-                built_depth = value_depth + 1;
-                Expr { kind: ExprKind::Unary { op, op_span: start, value: Box::new(value) }, span }
+        let mut suffix_eligible = false;
+        let mut expr = if unary_operator(&self.current().kind).is_some() {
+            // A prefix chain is right-nested but can be collected without
+            // recursive parser frames. This also bounds adversarial `not` runs.
+            let mut operators = Vec::new();
+            while let Some(op) = unary_operator(&self.current().kind) {
+                operators.push((op, self.current().span));
+                self.pos += 1;
+                self.inner_trivia();
             }
+            // Lua exponentiation binds more tightly than unary operators.
+            let (mut value, mut value_depth) = self.expr_binding_power(13);
+            let mut unary_exceeded = false;
+            for (op, op_span) in operators.into_iter().rev() {
+                let span = op_span.join(value.span);
+                if unary_exceeded || value_depth >= 128 {
+                    if !unary_exceeded {
+                        self.diagnostics.push(Diagnostic { span: op_span, message: "unary expression nesting exceeds 128".to_owned() });
+                    }
+                    value = Expr { kind: ExprKind::Error, span };
+                    value_depth = 1;
+                    unary_exceeded = true;
+                } else {
+                    value = Expr { kind: ExprKind::Unary { op, op_span, value: Box::new(value) }, span };
+                    value_depth += 1;
+                }
+            }
+            built_depth = value_depth;
+            value
         } else { match self.current().kind.clone() {
             TokenKind::Identifier(text) => {
                 self.pos += 1;
+                suffix_eligible = true;
                 Expr {
                     kind: ExprKind::Name(Name { text, span: start }),
                     span: start,
@@ -523,6 +549,7 @@ impl Parser<'_> {
             }
             TokenKind::Symbol(symbol) if symbol == "(" => {
                 self.pos += 1;
+                suffix_eligible = true;
                 let (inner, inner_depth) = self.expr_with_depth();
                 let end = self.expect(")");
                 let span = start.join(end);
@@ -566,6 +593,13 @@ impl Parser<'_> {
             || self.significant_symbol("[") || self.significant_symbol(":") {
             self.inner_trivia();
             let postfix_start = self.current().span;
+            if !suffix_eligible {
+                self.error("Lua postfix access and calls require a name or parenthesized expression");
+                expr = Expr { kind: ExprKind::Error, span: expr.span };
+                built_depth = 1;
+                postfix_exceeded = true;
+                suffix_eligible = true;
+            }
             if self.symbol("[") {
                 self.pos += 1;
                 let (index, index_depth) = self.expr_with_depth();
@@ -773,12 +807,21 @@ impl Parser<'_> {
         }
     }
     fn recover_block(&mut self) {
-        let mut depth = 1_usize;
+        self.recover_block_until("end", true);
+    }
+    fn recover_block_until(&mut self, terminator: &str, consume_terminator: bool) {
+        let mut terminators = vec![terminator];
         while !self.eof() {
-            if self.keyword("do") || self.keyword("function") { depth += 1; }
-            if self.keyword("end") {
-                depth -= 1;
-                if depth == 0 { self.pos += 1; break; }
+            if self.keyword("do") || self.keyword("function") || self.keyword("if") {
+                terminators.push("end");
+            } else if self.keyword("repeat") {
+                terminators.push("until");
+            } else if terminators.last().is_some_and(|word| self.keyword(word)) {
+                terminators.pop();
+                if terminators.is_empty() {
+                    if consume_terminator { self.pos += 1; }
+                    break;
+                }
             }
             self.pos += 1;
         }
@@ -888,6 +931,30 @@ fn statements_depth(body: &[Stmt]) -> usize {
                     pending.extend(function.body.iter().map(|stmt| (Node::Statement(stmt), depth + 2)));
                 }
                 StmtKind::Call(expr) => pending.push((Node::Expression(expr), depth + 1)),
+                StmtKind::If { branches, else_branch } => {
+                    for branch in branches {
+                        pending.push((Node::Expression(&branch.condition), depth + 2));
+                        pending.extend(branch.body.iter().map(|stmt| (Node::Statement(stmt), depth + 2)));
+                    }
+                    if let Some(branch) = else_branch {
+                        pending.extend(branch.body.iter().map(|stmt| (Node::Statement(stmt), depth + 2)));
+                    }
+                }
+                StmtKind::While { condition, body, .. } | StmtKind::Repeat { condition, body, .. } => {
+                    pending.push((Node::Expression(condition), depth + 1));
+                    pending.extend(body.iter().map(|stmt| (Node::Statement(stmt), depth + 1)));
+                }
+                StmtKind::NumericFor { start, limit, step, body, .. } => {
+                    pending.push((Node::Expression(start), depth + 1));
+                    pending.push((Node::Expression(limit), depth + 1));
+                    if let Some(step) = step { pending.push((Node::Expression(step), depth + 1)); }
+                    pending.extend(body.iter().map(|stmt| (Node::Statement(stmt), depth + 1)));
+                }
+                StmtKind::GenericFor { values, body, .. } => {
+                    pending.extend(values.iter().map(|expr| (Node::Expression(expr), depth + 1)));
+                    pending.extend(body.iter().map(|stmt| (Node::Statement(stmt), depth + 1)));
+                }
+                StmtKind::Break => {},
             },
             Node::Expression(expr) => match &expr.kind {
                 ExprKind::Parenthesized(base) | ExprKind::Field { base, .. } | ExprKind::Unary { value: base, .. } => {

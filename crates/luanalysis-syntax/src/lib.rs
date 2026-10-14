@@ -97,6 +97,51 @@ pub enum StmtKind {
     Return(Vec<Expr>),
     /// Lua permits call expressions as statements, but not arbitrary expressions.
     Call(Expr),
+    If {
+        branches: Vec<IfBranch>,
+        else_branch: Option<ElseBranch>,
+    },
+    While {
+        condition: Expr,
+        body: Vec<Stmt>,
+        body_span: Span,
+    },
+    /// The body's local declarations remain visible in the `until` condition.
+    Repeat {
+        body: Vec<Stmt>,
+        condition: Expr,
+        body_span: Span,
+    },
+    NumericFor {
+        name: Name,
+        start: Box<Expr>,
+        limit: Box<Expr>,
+        step: Option<Box<Expr>>,
+        body: Vec<Stmt>,
+        body_span: Span,
+    },
+    GenericFor {
+        names: Vec<Name>,
+        values: Vec<Expr>,
+        body: Vec<Stmt>,
+        body_span: Span,
+    },
+    Break,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IfBranch {
+    pub condition: Expr,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+    pub body_span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ElseBranch {
+    pub body: Vec<Stmt>,
+    pub span: Span,
+    pub body_span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -193,9 +238,17 @@ pub struct Function {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FunctionAnnotations {
+    pub generics: Vec<GenericParameter>,
     pub params: Vec<ParamAnnotation>,
     pub returns: Option<TypeAnnotation>,
     pub type_annotation: Option<TypeAnnotation>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GenericParameter {
+    pub name: Name,
+    pub constraint: Option<TypeExpr>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -260,3 +313,6 @@ pub struct TypeField {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod generic_tests;
