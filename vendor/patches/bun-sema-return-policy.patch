@@ -1,0 +1,33 @@
+--- a/src/sema/check/errors_flow.rs
++++ b/src/sema/check/errors_flow.rs
+@@ -113,6 +113,12 @@
+         self.maybe_type_of_kind(t, |_, t| t == TypeId::VOID)
+     }
+ 
++    /// The return-type policy of `checkAllCodePathsInNonVoidFunctionReturnOrThrow`.
++    /// The caller has already unwrapped the return type of an async or generator function.
++    pub fn allows_implicit_return_without_explicit_return(&self, returned: TypeId) -> bool {
++        self.maybe_void(returned) || self.is_any(returned) || returned.is_undefined()
++    }
++
+     /// `checkFunctionOrMethodDeclaration`, `checkFunctionExpressionOrObjectLiteralMethod`: 8030 for
+     /// a `@type` tag on a function.
+     pub(super) fn check_full_signature(&mut self, file: FileId, func: FnId) {
+@@ -143,7 +149,7 @@
+         returned: TypeId,
+     ) -> bool {
+         let t = self.unwrap_return_type(file, func, returned);
+-        self.maybe_void(t) || self.is_any(t) || t.is_undefined()
++        self.allows_implicit_return_without_explicit_return(t)
+     }
+ 
+     /// `checkAllCodePathsInNonVoidFunctionReturnOrThrow`
+@@ -201,7 +207,7 @@
+             return;
+         };
+         if let Some(t) = declared
+-            && (self.maybe_void(t) || self.is_any(t) || t.is_undefined())
++            && self.allows_implicit_return_without_explicit_return(t)
+         {
+             return;
+         }

@@ -7,7 +7,7 @@
 
 mod native;
 
-use bun_sema::check::{Checker, Program};
+use bun_sema::check::{Checker, Program, ResolvedTypeCallError};
 use bun_sema::hir;
 use bun_sema::program::Files;
 use bun_sema::resolve::{Host, Options, ParseOptions, ScriptKind};
@@ -82,6 +82,31 @@ pub struct Relation {
     pub target: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallResult {
+    pub return_type: Type,
+    pub errors: Vec<CallError>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CallError {
+    NotCallable,
+    UnsupportedGeneric,
+    UnsupportedOverloads,
+    UnsupportedRest,
+    UnsupportedThis,
+    Arity {
+        actual: usize,
+        minimum: usize,
+        maximum: Option<usize>,
+    },
+    Argument {
+        index: usize,
+        source: Type,
+        target: Type,
+    },
+}
+
 /// Queries available during one native checker session. All inputs and outputs
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
@@ -90,6 +115,8 @@ pub trait TypeQueries {
     fn widen(&mut self, ty: &Type) -> Type;
     fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type>;
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type;
+    fn call(&mut self, callee: &Type, arguments: &[Type]) -> CallResult;
+    fn allows_implicit_return(&mut self, returned: &Type) -> bool;
     fn format(&mut self, ty: &Type) -> String;
 }
 
@@ -130,6 +157,14 @@ impl Engine {
         self.with_session(|queries| queries.assignment_value(declared, assigned))
     }
 
+    pub fn call(&self, callee: &Type, arguments: &[Type]) -> CallResult {
+        self.with_session(|queries| queries.call(callee, arguments))
+    }
+
+    pub fn allows_implicit_return(&self, returned: &Type) -> bool {
+        self.with_session(|queries| queries.allows_implicit_return(returned))
+    }
+
     pub fn format(&self, ty: &Type) -> String {
         self.with_session(|queries| queries.format(ty))
     }
@@ -140,6 +175,11 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn allows_implicit_return(&mut self, returned: &Type) -> bool {
+        let returned = import_type(self.checker, returned);
+        self.checker
+            .allows_implicit_return_without_explicit_return(returned)
+    }
     fn is_assignable(&mut self, source: &Type, target: &Type) -> bool {
         let source = import_type(self.checker, source);
         let target = import_type(self.checker, target);
@@ -179,6 +219,45 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             declared
         };
         export_type(self.checker, value)
+    }
+
+    fn call(&mut self, callee: &Type, arguments: &[Type]) -> CallResult {
+        let callee = import_type(self.checker, callee);
+        let arguments: Vec<_> = arguments
+            .iter()
+            .map(|argument| import_type(self.checker, argument))
+            .collect();
+        let result = self.checker.call_resolved_types(callee, &arguments);
+        let return_type = export_type(self.checker, result.ret);
+        let errors = result
+            .errors
+            .into_iter()
+            .map(|error| match error {
+                ResolvedTypeCallError::NotCallable => CallError::NotCallable,
+                ResolvedTypeCallError::UnsupportedGeneric => CallError::UnsupportedGeneric,
+                ResolvedTypeCallError::UnsupportedOverloads => CallError::UnsupportedOverloads,
+                ResolvedTypeCallError::UnsupportedRest => CallError::UnsupportedRest,
+                ResolvedTypeCallError::UnsupportedThis => CallError::UnsupportedThis,
+                ResolvedTypeCallError::Arity { actual, min, max } => CallError::Arity {
+                    actual,
+                    minimum: min,
+                    maximum: max,
+                },
+                ResolvedTypeCallError::Argument {
+                    index,
+                    source,
+                    target,
+                } => CallError::Argument {
+                    index,
+                    source: export_type(self.checker, source),
+                    target: export_type(self.checker, target),
+                },
+            })
+            .collect();
+        CallResult {
+            return_type,
+            errors,
+        }
     }
 
     fn format(&mut self, ty: &Type) -> String {
@@ -280,9 +359,13 @@ fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
         Type::Function(function) => {
             let mut params = Vec::new();
             for param in &function.params {
+                let mut ty = import_type(checker, &param.ty);
+                if param.optional {
+                    ty = checker.optional(ty);
+                }
                 params.push(SigParam {
                     name: checker.atoms().intern(param.name.as_bytes()),
-                    ty: import_type(checker, &param.ty),
+                    ty,
                     optional: param.optional,
                     rest: false,
                     is_required_rest: false,
@@ -311,7 +394,7 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
     }
     match checker.data(ty) {
         TypeData::Intrinsic(kind) => match kind {
-            Intrinsic::Any => Type::Any,
+            Intrinsic::Any | Intrinsic::Error => Type::Any,
             Intrinsic::Unknown => Type::Unknown,
             Intrinsic::Never => Type::Never,
             Intrinsic::Null | Intrinsic::NullWidening => Type::Nil,
@@ -616,5 +699,206 @@ mod tests {
         assert!(result.assignable);
         assert_eq!(result.source, "number");
         assert_eq!(result.target, "number");
+    }
+
+    fn function(parameter: Type, optional: bool, returns: Type) -> Type {
+        Type::Function(FunctionType {
+            params: vec![Parameter {
+                name: "value".into(),
+                ty: parameter,
+                optional,
+            }],
+            returns: Box::new(returns),
+        })
+    }
+
+    #[test]
+    fn native_scalar_call_checks_argument_types_and_arity() {
+        let engine = Engine::new();
+        let callee = function(Type::Number, false, Type::String);
+        let success = engine.call(&callee, &[Type::NumberLiteral(42.0)]);
+        assert_eq!(success.return_type, Type::String);
+        assert!(success.errors.is_empty());
+        assert_eq!(
+            engine.call(&callee, &[]).errors,
+            vec![CallError::Arity {
+                actual: 0,
+                minimum: 1,
+                maximum: Some(1),
+            }]
+        );
+        assert_eq!(
+            engine.call(&callee, &[Type::Number, Type::Number]).errors,
+            vec![CallError::Arity {
+                actual: 2,
+                minimum: 1,
+                maximum: Some(1),
+            }]
+        );
+        let failure = engine.call(&callee, &[Type::Boolean]);
+        assert_eq!(failure.return_type, Type::String);
+        assert_eq!(
+            failure.errors,
+            vec![CallError::Argument {
+                index: 0,
+                source: Type::Boolean,
+                target: Type::Number,
+            }]
+        );
+        let two_parameters = Type::Function(FunctionType {
+            params: vec![
+                Parameter {
+                    name: "first".into(),
+                    ty: Type::Number,
+                    optional: false,
+                },
+                Parameter {
+                    name: "second".into(),
+                    ty: Type::String,
+                    optional: false,
+                },
+            ],
+            returns: Box::new(Type::Boolean),
+        });
+        assert_eq!(
+            engine
+                .call(&two_parameters, &[Type::String, Type::Number])
+                .errors,
+            vec![CallError::Argument {
+                index: 0,
+                source: Type::String,
+                target: Type::Number,
+            }]
+        );
+    }
+
+    #[test]
+    fn native_call_optional_parameters_accept_omission_and_nil() {
+        let engine = Engine::new();
+        let callee = function(Type::Number, true, Type::String);
+        assert!(engine.call(&callee, &[]).errors.is_empty());
+        assert!(engine.call(&callee, &[Type::Nil]).errors.is_empty());
+        assert!(engine.call(&callee, &[Type::Number]).errors.is_empty());
+        assert!(matches!(
+            engine.call(&callee, &[Type::String]).errors.as_slice(),
+            [CallError::Argument { index: 0, .. }]
+        ));
+    }
+
+    #[test]
+    fn native_call_uses_function_variance_and_union_signatures() {
+        let engine = Engine::new();
+        let callback = function(Type::Number, false, Type::String);
+        let takes_callback = function(callback, false, Type::Boolean);
+        assert!(
+            engine
+                .call(
+                    &takes_callback,
+                    &[function(Type::Unknown, false, Type::String)]
+                )
+                .errors
+                .is_empty()
+        );
+        assert!(matches!(
+            engine
+                .call(
+                    &takes_callback,
+                    &[function(Type::String, false, Type::String)]
+                )
+                .errors
+                .as_slice(),
+            [CallError::Argument { index: 0, .. }]
+        ));
+        let callee = Type::Union(vec![
+            function(Type::Number, false, Type::String),
+            function(Type::Number, false, Type::Number),
+        ]);
+        let result = engine.call(&callee, &[Type::Number]);
+        assert!(result.errors.is_empty());
+        assert!(engine.is_assignable(&Type::String, &result.return_type));
+        assert!(engine.is_assignable(&Type::Number, &result.return_type));
+        let disjoint = Type::Union(vec![
+            function(Type::Number, false, Type::String),
+            function(Type::String, false, Type::String),
+        ]);
+        assert!(matches!(
+            engine.call(&disjoint, &[Type::Number]).errors.as_slice(),
+            [CallError::Argument {
+                target: Type::Never,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn native_calls_report_noncallable_and_unsupported_overloads() {
+        let engine = Engine::new();
+        assert_eq!(
+            engine.call(&Type::Number, &[]).errors,
+            vec![CallError::NotCallable]
+        );
+        assert_eq!(
+            engine.call(&Type::Unknown, &[]).errors,
+            vec![CallError::NotCallable]
+        );
+        let untyped = engine.call(&Type::Any, &[Type::Number, Type::String]);
+        assert_eq!(untyped.return_type, Type::Any);
+        assert!(untyped.errors.is_empty());
+        let overloaded = Type::Intersection(vec![
+            function(Type::Number, false, Type::String),
+            function(Type::String, false, Type::Number),
+        ]);
+        assert_eq!(
+            engine.call(&overloaded, &[Type::Number]).errors,
+            vec![CallError::UnsupportedOverloads]
+        );
+    }
+
+    #[test]
+    fn native_call_boundary_rejects_this_and_correlated_rest_metadata() {
+        with_checker(|checker| {
+            let signature = |checker: &Checker<'_, '_>, this, params: &[SigParam]| {
+                let sig = checker.types().intern_sig(SigData::Synth {
+                    type_params: checker.list(&[]),
+                    params: checker.list(params),
+                    ret: TypeId::STRING,
+                    this,
+                    of: checker.list(&[]),
+                    is_union: false,
+                });
+                let mut shape = Shape::new_in(checker.arena);
+                shape.call.push(sig);
+                checker.synth(shape)
+            };
+            let with_this = signature(checker, Some(TypeId::NUMBER), &[]);
+            let result = checker.call_resolved_types(with_this, &[]);
+            assert!(matches!(
+                result.errors.as_slice(),
+                [ResolvedTypeCallError::UnsupportedThis]
+            ));
+            assert_eq!(result.ret, TypeId::STRING);
+            let flags = [bun_sema::types::ElemFlags::REQUIRED; 2];
+            let first = checker.tuple(&[TypeId::STRING, TypeId::NUMBER], &flags, false);
+            let second = checker.tuple(&[TypeId::NUMBER, TypeId::STRING], &flags, false);
+            let correlated = checker.union(&[first, second]);
+            let with_rest = signature(
+                checker,
+                None,
+                &[SigParam {
+                    name: checker.atoms().intern(b"arguments"),
+                    ty: correlated,
+                    optional: false,
+                    rest: true,
+                    is_required_rest: false,
+                    declaration: None,
+                }],
+            );
+            let result = checker.call_resolved_types(with_rest, &[TypeId::STRING, TypeId::NUMBER]);
+            assert!(matches!(
+                result.errors.as_slice(),
+                [ResolvedTypeCallError::UnsupportedRest]
+            ));
+            assert_eq!(result.ret, TypeId::STRING);
+        });
     }
 }

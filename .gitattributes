@@ -1,0 +1,2 @@
+# Unified patches retain the required space prefix on blank context lines.
+vendor/patches/*.patch -whitespace

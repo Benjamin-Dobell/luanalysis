@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Extract the pinned parser-independent bun_sema dependency closure.
 
-Rust source adaptations are explicit, hash-verified patches. Cargo manifests lose development-only
-edges and standalone binary/test targets so the extracted libraries do not pull
-in Bun's parser or runtime. The upstream checkout is read-only.
+Rust source adaptations are explicit, hash-verified patches. Cargo manifests
+lose development-only edges and standalone binary/test targets so the extracted
+libraries do not pull in Bun's parser or runtime. The upstream checkout is
+read-only.
 """
 
 import argparse
-import difflib
 import hashlib
 import json
 import re
 import subprocess
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -20,9 +21,23 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE_ADAPTATIONS = [{
     "path": "src/sema/check/flow.rs",
     "patch": "vendor/patches/bun-sema-assignment-visibility.patch",
-    "before": b"    pub(super) fn assignment_reduced_type(&mut self, declared: TypeId, assigned: TypeId) -> TypeId {\n",
-    "after": b"    pub fn assignment_reduced_type(&mut self, declared: TypeId, assigned: TypeId) -> TypeId {\n",
     "reason": "Expose the existing type-only assignment transfer to the Lua adapter; body unchanged.",
+}, {
+    "path": "src/sema/check/call.rs",
+    "patch": "vendor/patches/bun-sema-resolved-calls.patch",
+    "reason": "Add a scalar resolved-type call boundary using native signature, arity, argument-relation and return workers.",
+}, {
+    "path": "src/sema/check/errors_call.rs",
+    "patch": "vendor/patches/bun-sema-resolved-calls.patch",
+    "reason": "Share the native applicability relation step between TS calls and resolved-type calls.",
+}, {
+    "path": "src/sema/check/mod.rs",
+    "patch": "vendor/patches/bun-sema-resolved-calls.patch",
+    "reason": "Export the resolved-type call result and error records.",
+}, {
+    "path": "src/sema/check/errors_flow.rs",
+    "patch": "vendor/patches/bun-sema-return-policy.patch",
+    "reason": "Expose the native empty-function return policy and share its unchanged predicate with existing TS checks.",
 }]
 
 
@@ -32,6 +47,31 @@ def git(source, *args):
 
 def sections(text):
     return re.split(r"(?m)(?=^\[)", text)
+
+
+def patched_sources(source):
+    """Apply each reviewed patch once to pristine files in an isolated directory."""
+    by_patch = {}
+    for adaptation in SOURCE_ADAPTATIONS:
+        by_patch.setdefault(adaptation["patch"], set()).add(adaptation["path"])
+    all_paths = set().union(*by_patch.values())
+    with tempfile.TemporaryDirectory(prefix="luanalysis-bun-extract-") as directory:
+        temporary = Path(directory)
+        for path in all_paths:
+            target = temporary / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(git(source, "show", f"{REVISION}:{path}"))
+        for patch_name, paths in by_patch.items():
+            patch = (ROOT / patch_name).read_bytes()
+            stats = subprocess.check_output(
+                ["git", "apply", "--numstat", "-z"], input=patch, cwd=temporary)
+            changed = {record.split(b"\t", 2)[2].decode()
+                       for record in stats.split(b"\0") if record}
+            if changed != paths:
+                raise SystemExit(f"patch paths differ from source adaptations: {patch_name}")
+            subprocess.run(["git", "apply", "--whitespace=nowarn"],
+                           input=patch, cwd=temporary, check=True)
+        return {path: (temporary / path).read_bytes() for path in all_paths}
 
 
 def main():
@@ -45,6 +85,7 @@ def main():
         parser.error(f"expected {REVISION}; source is {head}")
     if git(source, "status", "--porcelain", "--untracked-files=no"):
         parser.error("the upstream checkout must have no tracked modifications")
+    adapted_sources = patched_sources(source)
     original_root = git(source, "show", f"{REVISION}:Cargo.toml").decode()
     workspace = tomllib.loads(original_root)["workspace"]
     inherited = workspace["dependencies"]
@@ -102,20 +143,7 @@ def main():
                                              for p in ["parser", "driver", "baselines", "standalone"]):
             continue
         raw = git(source, "show", f"{REVISION}:{path}")
-        adapted = raw
-        for adaptation in SOURCE_ADAPTATIONS:
-            if adaptation["path"] != path:
-                continue
-            if raw.count(adaptation["before"]) != 1:
-                raise SystemExit(f"source adaptation no longer matches exactly once: {path}")
-            adapted = adapted.replace(adaptation["before"], adaptation["after"], 1)
-            expected = "".join(difflib.unified_diff(
-                raw.decode().splitlines(keepends=True), adapted.decode().splitlines(keepends=True),
-                fromfile="a/" + path, tofile="b/" + path))
-            patch_file = ROOT / adaptation["patch"]
-            if patch_file.read_text() != expected:
-                raise SystemExit(f"reviewable patch does not match extraction: {patch_file}")
-        output(path, adapted, path)
+        output(path, adapted_sources.get(path, raw), path)
     for path, manifest in closure.values():
         output(path + "/Cargo.toml", manifest.encode(), path + "/Cargo.toml")
     for original, target in [("LICENSE.md", "LICENSE.md"),

@@ -13,6 +13,33 @@ pub struct ResolvedCall {
     pub ret: TypeId,
 }
 
+/// A call whose callee and arguments have already been resolved by a foreign frontend.
+/// Type ids belong to the checker session; this does not retain frontend nodes or positions.
+#[derive(Clone, Debug)]
+pub struct ResolvedTypeCall {
+    pub ret: TypeId,
+    pub errors: Vec<ResolvedTypeCallError>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ResolvedTypeCallError {
+    NotCallable,
+    UnsupportedGeneric,
+    UnsupportedOverloads,
+    UnsupportedRest,
+    UnsupportedThis,
+    Arity {
+        actual: usize,
+        min: usize,
+        max: Option<usize>,
+    },
+    Argument {
+        index: usize,
+        source: TypeId,
+        target: TypeId,
+    },
+}
+
 impl crate::table::Packed for ResolvedCall {
     type Cell = std::sync::atomic::AtomicU64;
     #[inline]
@@ -154,6 +181,89 @@ enum SigParent {
 }
 
 impl<'p, 's> Checker<'p, 's> {
+    /// Check a single non-generic call signature against already-resolved argument types.
+    /// Signature discovery, callable-union combination, arity, parameter lookup and type
+    /// relations use the same workers as `resolve_call`. Contextual argument checking and
+    /// generic inference require frontend expressions and are deliberately not approximated.
+    pub fn call_resolved_types(&mut self, callee: TypeId, args: &[TypeId]) -> ResolvedTypeCall {
+        if self.is_any(callee) {
+            return ResolvedTypeCall {
+                ret: TypeId::ANY,
+                errors: Vec::new(),
+            };
+        }
+        let signatures = self.signatures(callee, false);
+        let candidates = self.candidates_in_order(&signatures);
+        let error = if candidates.is_empty() {
+            Some(ResolvedTypeCallError::NotCallable)
+        } else if candidates.len() != 1 {
+            Some(ResolvedTypeCallError::UnsupportedOverloads)
+        } else if !self.sig_type_params(candidates[0]).is_empty() {
+            Some(ResolvedTypeCallError::UnsupportedGeneric)
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            return ResolvedTypeCall {
+                ret: TypeId::ERROR,
+                errors: vec![error],
+            };
+        }
+        let sig = candidates[0];
+        let params = self.sig_params(sig);
+        let ret = self.sig_return(sig);
+        let error = if self.sig_this_type(sig).is_some_and(|ty| ty != TypeId::VOID) {
+            Some(ResolvedTypeCallError::UnsupportedThis)
+        } else if self.non_array_rest_type(&params).is_some() {
+            // The native applicability worker compares this rest as a whole argument tuple.
+            // Comparing positions separately would discard correlations between tuple members.
+            Some(ResolvedTypeCallError::UnsupportedRest)
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            return ResolvedTypeCall {
+                ret,
+                errors: vec![error],
+            };
+        }
+        if !self.has_correct_arity_for_count(
+            &params,
+            matches!(params, List::Own(_)),
+            args.len(),
+            None,
+            false,
+        ) {
+            let min = self.min_argument_count(&params);
+            let max = (!self.has_effective_rest_parameter(&params))
+                .then(|| self.parameter_count(&params));
+            return ResolvedTypeCall {
+                ret,
+                errors: vec![ResolvedTypeCallError::Arity {
+                    actual: args.len(),
+                    min,
+                    max,
+                }],
+            };
+        }
+        // `choose_overload` goes straight to Assignable for one non-generic candidate.
+        let mut errors = Vec::new();
+        for (index, &source) in args.iter().enumerate() {
+            let Some(target) = self.param_type_at(&params, index) else {
+                continue;
+            };
+            if !self.is_resolved_call_argument_applicable(source, target, Relation::Assignable) {
+                errors.push(ResolvedTypeCallError::Argument {
+                    index,
+                    source,
+                    target,
+                });
+                break;
+            }
+        }
+        ResolvedTypeCall { ret, errors }
+    }
+
     /// `isContextSensitive`. For `JsxAttributes`: `is_jsx_attributes_context_sensitive`.
     pub fn is_context_sensitive(&self, file: FileId, e: ExprId) -> bool {
         if self.is_stack_low() {

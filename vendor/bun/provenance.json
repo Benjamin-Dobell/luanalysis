@@ -42,6 +42,30 @@
       "patch": "vendor/patches/bun-sema-assignment-visibility.patch",
       "reason": "Expose the existing type-only assignment transfer to the Lua adapter; body unchanged.",
       "patch_sha256": "de3ab5bd41ba0f4122a777d76fb94cf3517ae4d2d68457518f8dbdcbf42ab8c8"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-resolved-calls.patch",
+      "reason": "Add a scalar resolved-type call boundary using native signature, arity, argument-relation and return workers.",
+      "patch_sha256": "339c9a3266240a118ed03684c8c3309e64a46bda7b26cf90410692a4a3de05af"
+    },
+    {
+      "path": "src/sema/check/errors_call.rs",
+      "patch": "vendor/patches/bun-sema-resolved-calls.patch",
+      "reason": "Share the native applicability relation step between TS calls and resolved-type calls.",
+      "patch_sha256": "339c9a3266240a118ed03684c8c3309e64a46bda7b26cf90410692a4a3de05af"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-resolved-calls.patch",
+      "reason": "Export the resolved-type call result and error records.",
+      "patch_sha256": "339c9a3266240a118ed03684c8c3309e64a46bda7b26cf90410692a4a3de05af"
+    },
+    {
+      "path": "src/sema/check/errors_flow.rs",
+      "patch": "vendor/patches/bun-sema-return-policy.patch",
+      "reason": "Expose the native empty-function return policy and share its unchanged predicate with existing TS checks.",
+      "patch_sha256": "e72ace9bd214d9d462f81fa48807dd5c449031bce926ab029b70592f0db4700e"
     }
   ],
   "files": {
@@ -738,7 +762,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09"
+      "extracted_sha256": "e3635b391beefff9b5e23aa76a0cab613731f048c28dae5a4cfd50a0d79e573f"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -788,7 +812,7 @@
     "src/sema/check/errors_call.rs": {
       "upstream": "src/sema/check/errors_call.rs",
       "sha256": "d3afd92a719df2d061cc57fdbaaceab03111588613ea9748fe20a3a2cfab230f",
-      "extracted_sha256": "d3afd92a719df2d061cc57fdbaaceab03111588613ea9748fe20a3a2cfab230f"
+      "extracted_sha256": "836ea82186b08c868c021c03c1b6edf0e92821d3f3338ee83791c612218ecce0"
     },
     "src/sema/check/errors_circular.rs": {
       "upstream": "src/sema/check/errors_circular.rs",
@@ -838,7 +862,7 @@
     "src/sema/check/errors_flow.rs": {
       "upstream": "src/sema/check/errors_flow.rs",
       "sha256": "c49a610470b640cd0af8e9b14852bde5b4b339dab917cd7d57d2028b97bdae7f",
-      "extracted_sha256": "c49a610470b640cd0af8e9b14852bde5b4b339dab917cd7d57d2028b97bdae7f"
+      "extracted_sha256": "7dd3fabb6005d489ded36bba498d7076264b0c13b0bf7c831f8b5682e344f6de"
     },
     "src/sema/check/errors_grammar.rs": {
       "upstream": "src/sema/check/errors_grammar.rs",
@@ -998,7 +1022,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a"
+      "extracted_sha256": "ccd83d751b92ff43fa2419a32cc51ac62cfdc6f5c7a143dde68ce73f564f8790"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",

@@ -117,7 +117,7 @@ use std::sync::atomic::AtomicBool;
 use symbols::{AliasTarget, ExcludedMeanings};
 use task::{Open, OrderDependent, Stored, Task};
 
-pub use call::ResolvedCall;
+pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
 pub use shape::Members;
 pub use spans::compute_ecma_line_starts;
 

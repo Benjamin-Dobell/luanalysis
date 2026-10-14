@@ -921,6 +921,17 @@ impl Checker<'_, '_> {
         Some(filled)
     }
 
+    /// The relation step of `isSignatureApplicable`, after an argument has been resolved under
+    /// its parameter's contextual type. Foreign frontends may supply that resolved type directly.
+    pub(super) fn is_resolved_call_argument_applicable(
+        &mut self,
+        actual: TypeId,
+        expected: TypeId,
+        relation: Relation,
+    ) -> bool {
+        self.related(actual, expected, relation)
+    }
+
     /// `isSignatureApplicable`. Where something could not be determined the result is true, except
     /// in the subtype pass.
     pub(super) fn is_signature_applicable(
@@ -1003,7 +1014,7 @@ impl Checker<'_, '_> {
             } else {
                 actual
             };
-            if self.related(actual, expected, relation) {
+            if self.is_resolved_call_argument_applicable(actual, expected, relation) {
                 continue;
             }
             self.note_parameter_types_resolved(sig, &params, i + 1);
