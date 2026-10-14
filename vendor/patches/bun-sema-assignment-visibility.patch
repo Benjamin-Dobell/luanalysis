@@ -1,0 +1,11 @@
+--- a/src/sema/check/flow.rs
++++ b/src/sema/check/flow.rs
+@@ -6999,7 +6999,7 @@
+     }
+ 
+     /// `getAssignmentReducedType`
+-    pub(super) fn assignment_reduced_type(&mut self, declared: TypeId, assigned: TypeId) -> TypeId {
++    pub fn assignment_reduced_type(&mut self, declared: TypeId, assigned: TypeId) -> TypeId {
+         if declared == assigned {
+             return declared;
+         }

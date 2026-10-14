@@ -24,9 +24,5 @@ rustc-hash = "2"
 smallvec.workspace = true
 bitflags.workspace = true
 
-[dev-dependencies]
-# The native symbols that Bun's C and C++ side provides to `bun_core`.
-bun_sema_standalone = { path = "standalone" }
-
 [lints]
 workspace = true

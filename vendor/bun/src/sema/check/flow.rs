@@ -6999,7 +6999,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// `getAssignmentReducedType`
-    pub(super) fn assignment_reduced_type(&mut self, declared: TypeId, assigned: TypeId) -> TypeId {
+    pub fn assignment_reduced_type(&mut self, declared: TypeId, assigned: TypeId) -> TypeId {
         if declared == assigned {
             return declared;
         }
