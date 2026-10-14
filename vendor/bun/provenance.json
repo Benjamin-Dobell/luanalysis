@@ -404,6 +404,18 @@
       "patch": "vendor/patches/bun-sema-captured-environments.patch",
       "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
       "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/flow.rs",
+      "patch": "vendor/patches/bun-sema-runtime-predicates.patch",
+      "reason": "Add original-source primitive runtime predicates using the native typeof narrowing worker and shared flow/reachability traversal.",
+      "patch_sha256": "7e02bce5546f7518ff0b7451d339321457951f0fa550581bcca6ea0d31d047e8"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-runtime-predicates.patch",
+      "reason": "Add original-source primitive runtime predicates using the native typeof narrowing worker and shared flow/reachability traversal.",
+      "patch_sha256": "7e02bce5546f7518ff0b7451d339321457951f0fa550581bcca6ea0d31d047e8"
     }
   ],
   "source_additions": {
@@ -412,7 +424,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "f35990868c827fa3e3fdffe96c76fcf46e9860cd407b38e855157163720d045e",
+      "extracted_sha256": "7f0722d4d9e561e7e66a489032a320774bfee03f221ffe11d0af5b007dd211d1",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     }
   },
@@ -1325,7 +1337,7 @@
     "src/sema/check/flow.rs": {
       "upstream": "src/sema/check/flow.rs",
       "sha256": "eca4c6e84d836502b89074917574c1f0623497ab0b0f11b06b729296b4d2c467",
-      "extracted_sha256": "16e554e93d0f55397fa600bb3b257179fe00992270acab4a0c7f252b2262ac08"
+      "extracted_sha256": "510400364372fbd7d7e00690afde2cc58559a7ba76360201b4fa034c78df2623"
     },
     "src/sema/check/grammarchecks.rs": {
       "upstream": "src/sema/check/grammarchecks.rs",

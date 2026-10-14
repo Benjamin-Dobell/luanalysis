@@ -3726,7 +3726,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// `narrowTypeByLiteralExpression`
-    fn narrow_type_by_typeof_name(&mut self, ty: TypeId, name: Atom, sense: bool) -> TypeId {
+    pub(super) fn narrow_type_by_typeof_name(&mut self, ty: TypeId, name: Atom, sense: bool) -> TypeId {
         use facts::*;
         if ty == TypeId::UNRESOLVED {
             return ty;

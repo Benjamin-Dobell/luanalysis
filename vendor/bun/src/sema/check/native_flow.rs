@@ -42,6 +42,14 @@ pub enum NativeWriteRelation {
 }
 
 #[derive(Clone, Debug)]
+pub enum NativeRuntimeType {
+    Nil,
+    Boolean,
+    Number,
+    String,
+}
+
+#[derive(Clone, Debug)]
 pub enum NativePredicate {
     Truthy {
         subject: Option<NativeReferenceKey>,
@@ -53,6 +61,13 @@ pub enum NativePredicate {
         other: NativeValueKey,
         input: NativeFlowKey,
         /// Whether the source operator tests equality, as opposed to inequality.
+        equals: bool,
+    },
+    RuntimeType {
+        subject: NativeReferenceKey,
+        value: NativeValueKey,
+        input: NativeFlowKey,
+        kind: NativeRuntimeType,
         equals: bool,
     },
     Unsupported(&'static str),
@@ -220,6 +235,7 @@ impl NativeDomain<'_> {
         let (subject, input) = match predicate {
             NativePredicate::Truthy { subject, input, .. } => (*subject, *input),
             NativePredicate::Equal { subject, input, .. } => (Some(*subject), *input),
+            NativePredicate::RuntimeType { subject, input, .. } => (Some(*subject), *input),
             NativePredicate::Unsupported(_) => return true,
         };
         if !self.edge(at, input) {
@@ -328,6 +344,7 @@ impl FlowDomain for NativeDomain<'_> {
                 let applies = match &predicate {
                     NativePredicate::Truthy { subject, .. } => *subject == Some(walk.reference),
                     NativePredicate::Equal { subject, .. } => *subject == walk.reference,
+                    NativePredicate::RuntimeType { subject, .. } => *subject == walk.reference,
                     NativePredicate::Unsupported(feature) => {
                         self.provider
                             .flow_error(at, NativeFlowError::Unsupported(feature));
@@ -402,6 +419,9 @@ impl FlowDomain for NativeDomain<'_> {
             ) => {
                 let other = checker.native_flow_value(self.provider, other, input);
                 checker.native_equal_flow_type(previous.ty, other, equals == sense)
+            }
+            NativeTransfer::Predicate(NativePredicate::RuntimeType { kind, equals, .. }, sense) => {
+                checker.native_runtime_type(previous.ty, &kind, equals == sense)
             }
             NativeTransfer::Predicate(NativePredicate::Unsupported(_), _) => TypeId::ERROR,
         };
@@ -603,6 +623,14 @@ impl ReachDomain for NativeDomain<'_> {
                         }
                     }
                     NativePredicate::Equal { .. } => ReachStep::Follow(before),
+                    NativePredicate::RuntimeType { value, input, kind, equals, .. } => {
+                        let value = checker.native_flow_value(self.provider, value, input);
+                        if checker.native_runtime_type(value, &kind, equals == sense).is_never() {
+                            ReachStep::Value(false)
+                        } else {
+                            ReachStep::Follow(before)
+                        }
+                    }
                     NativePredicate::Unsupported(feature) => {
                         self.provider.flow_error(at, NativeFlowError::Unsupported(feature));
                         ReachStep::Value(false)
@@ -643,6 +671,15 @@ impl ReachDomain for NativeDomain<'_> {
 }
 
 impl<'s, 'p> Checker<'s, 'p> {
+    fn native_runtime_type(&mut self, ty: TypeId, kind: &NativeRuntimeType, sense: bool) -> TypeId {
+        let name = match kind {
+            NativeRuntimeType::Nil => known::undefined,
+            NativeRuntimeType::Boolean => known::boolean,
+            NativeRuntimeType::Number => known::number,
+            NativeRuntimeType::String => known::string,
+        };
+        self.narrow_type_by_typeof_name(ty, name, sense)
+    }
     /// Type at an original-source graph node through the same walker used by TS.
     pub fn native_flow_type(
         &mut self,

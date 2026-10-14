@@ -87,6 +87,11 @@ SOURCE_ADAPTATIONS.extend({
     "check/explain_relation.rs", "check/infer.rs", "check/instantiate.rs", "check/mod.rs",
     "check/print.rs", "check/relate.rs", "check/shape.rs", "check/symbols.rs",
 ])
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-runtime-predicates.patch",
+    "reason": "Add original-source primitive runtime predicates using the native typeof narrowing worker and shared flow/reachability traversal.",
+} for path in ["flow.rs", "native_flow.rs"])
 
 
 def git(source, *args):
