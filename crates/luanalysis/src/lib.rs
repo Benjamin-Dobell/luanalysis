@@ -4,9 +4,13 @@
 //! literal widening, member lookup, freshness and assignability use the pinned
 //! Bun core. Generic inference, branch flow and project services come later.
 
+pub mod bind;
+mod functions;
+
+use bind::{BindingId, BoundFile};
 use luanalysis_engine::{Engine, Property, Type, TypeQueries};
 use luanalysis_syntax::{
-    Expr, ExprKind, Name, Span, StmtKind, TypeAnnotation, TypeExpr, TypeExprKind,
+    Expr, ExprKind, Name, Span, Stmt, StmtKind, TypeAnnotation, TypeExpr, TypeExprKind,
 };
 use std::collections::HashMap;
 
@@ -19,7 +23,14 @@ pub struct Diagnostic {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BindingInfo {
+    pub binding: BindingId,
     pub name: String,
+    pub span: Span,
+    pub ty: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeInfo {
     pub span: Span,
     pub ty: String,
 }
@@ -28,10 +39,48 @@ pub struct BindingInfo {
 pub struct CheckReport {
     pub diagnostics: Vec<Diagnostic>,
     pub bindings: Vec<BindingInfo>,
+    pub types: Vec<TypeInfo>,
+    pub bound: Option<BoundFile>,
 }
 
+impl CheckReport {
+    /// Returns an owned report's displayed type at an original UTF-8 byte offset.
+    pub fn type_at(&self, byte_offset: usize) -> Option<&str> {
+        if let Some(occurrence) = self
+            .bound
+            .as_ref()
+            .and_then(|bound| bound.occurrence_at(byte_offset))
+        {
+            if matches!(
+                occurrence.kind,
+                bind::OccurrenceKind::Declaration | bind::OccurrenceKind::Annotation
+            ) {
+                let binding = occurrence.binding?;
+                return self
+                    .bindings
+                    .iter()
+                    .find(|info| info.binding == binding)
+                    .map(|info| info.ty.as_str());
+            }
+        }
+        if let Some(info) = self
+            .types
+            .iter()
+            .filter(|info| info.span.start <= byte_offset && byte_offset < info.span.end)
+            .min_by_key(|info| info.span.end - info.span.start)
+        {
+            return Some(&info.ty);
+        }
+        let binding = self.bound.as_ref()?.binding_at(byte_offset)?;
+        self.bindings
+            .iter()
+            .find(|info| info.binding == binding)
+            .map(|info| info.ty.as_str())
+    }
+}
+
+#[derive(Clone)]
 struct Binding {
-    id: usize,
     constraint: Type,
     value: Type,
     evolves_from_nil: bool,
@@ -39,7 +88,7 @@ struct Binding {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Reference {
-    binding: usize,
+    binding: BindingId,
     path: Vec<String>,
 }
 
@@ -52,15 +101,17 @@ impl Reference {
 }
 
 enum Write {
-    Local(String, Type),
+    Local(BindingId, Type),
     Field(Reference, Type),
 }
 
 struct Checker<'a> {
     engine: &'a mut dyn TypeQueries,
-    locals: HashMap<String, Binding>,
+    bound: &'a BoundFile,
+    locals: HashMap<BindingId, Binding>,
     assigned_fields: HashMap<Reference, Type>,
     report: CheckReport,
+    return_type: Option<Type>,
 }
 
 /// Checks the documented native subset without generating TypeScript source.
@@ -78,38 +129,89 @@ pub fn check(source: &str) -> CheckReport {
                 })
                 .collect(),
             bindings: Vec::new(),
+            types: Vec::new(),
+            bound: None,
         };
     }
-    Engine::new().with_session(|engine| {
+    let bound = bind::bind(&file);
+    let mut report = Engine::new().with_session(|engine| {
         let mut checker = Checker {
             engine,
+            bound: &bound,
             locals: HashMap::new(),
             assigned_fields: HashMap::new(),
             report: CheckReport::default(),
+            return_type: None,
         };
-        for statement in &file.statements {
+        checker.statements(&file.statements);
+        checker.report.diagnostics.sort_by(|a, b| {
+            (a.span.start, a.span.end, a.code, &a.message).cmp(&(
+                b.span.start,
+                b.span.end,
+                b.code,
+                &b.message,
+            ))
+        });
+        checker.report.diagnostics.dedup();
+        checker
+            .report
+            .bindings
+            .sort_by_key(|binding| binding.span.start);
+        checker
+            .report
+            .types
+            .sort_by_key(|info| (info.span.start, info.span.end));
+        checker.report
+    });
+    report.bound = Some(bound);
+    report
+}
+
+impl Checker<'_> {
+    /// Returns true when this straight-line block terminates with a return or
+    /// an explicitly declared nonreturning call.
+    fn statements(&mut self, statements: &[Stmt]) -> bool {
+        for statement in statements {
             match &statement.kind {
                 StmtKind::Local {
                     names,
                     values,
                     annotation,
-                } => checker.local(names, values, annotation.as_ref()),
+                } => {
+                    self.local(names, values, annotation.as_ref());
+                }
                 StmtKind::Assign {
                     targets,
                     values,
                     annotation,
-                } => checker.assign(targets, values, annotation.as_ref()),
+                } => {
+                    self.assign(targets, values, annotation.as_ref());
+                }
+                StmtKind::Block { body, .. } => {
+                    if self.statements(body) {
+                        return true;
+                    }
+                }
+                StmtKind::LocalFunction { name, function } => self.local_function(name, function),
+                StmtKind::Return(values) => {
+                    self.return_statement(values, statement.span);
+                    return true;
+                }
+                StmtKind::Call(expr) => {
+                    if let ExprKind::Call { callee, args } = &expr.kind {
+                        if matches!(
+                            self.call_expression(callee, args, expr.span, true),
+                            Type::Never
+                        ) {
+                            return true;
+                        }
+                    }
+                }
             }
         }
-        checker
-            .report
-            .diagnostics
-            .sort_by_key(|error| (error.span.start, error.span.end));
-        checker.report
-    })
-}
+        false
+    }
 
-impl Checker<'_> {
     fn error(&mut self, code: &'static str, span: Span, message: impl Into<String>) {
         self.report.diagnostics.push(Diagnostic {
             code,
@@ -148,12 +250,13 @@ impl Checker<'_> {
                     .collect(),
             ),
             TypeExprKind::Parenthesized(ty) => self.annotation(ty),
+            TypeExprKind::Function(function) => self.function_annotation(function),
             TypeExprKind::Error => Type::Any,
         }
     }
 
     fn expression(&mut self, expr: &Expr) -> Type {
-        match &expr.kind {
+        let ty = match &expr.kind {
             ExprKind::Nil => Type::Nil,
             ExprKind::Boolean(value) => Type::BooleanLiteral(*value),
             ExprKind::Number(spelling) => match number(spelling) {
@@ -164,7 +267,11 @@ impl Checker<'_> {
                 }
             },
             ExprKind::String(value) => Type::StringLiteral(value.clone()),
-            ExprKind::Name(name) => match self.locals.get(&name.text) {
+            ExprKind::Name(name) => match self
+                .bound
+                .binding_at(name.span.start)
+                .and_then(|id| self.locals.get(&id))
+            {
                 Some(binding) => binding.value.clone(),
                 None => {
                     self.error(
@@ -218,8 +325,15 @@ impl Checker<'_> {
                     Type::Any
                 }
             }
+            ExprKind::Function(function) => self.function_expression(function),
+            ExprKind::Call { callee, args } => self.call_expression(callee, args, expr.span, false),
             ExprKind::Error => Type::Any,
-        }
+        };
+        self.report.types.push(TypeInfo {
+            span: expr.span,
+            ty: describe(&ty),
+        });
+        ty
     }
 
     fn compatible(&mut self, value: &Type, target: &Type, origin: Span) -> bool {
@@ -267,16 +381,19 @@ impl Checker<'_> {
                 .unwrap_or_else(|| widened.clone());
             self.compatible(&value, &constraint, origin);
             let narrowed = self.engine.assignment_value(&constraint, &value);
-            let id = self.report.bindings.len();
+            let id = self
+                .bound
+                .binding_at(name.span.start)
+                .expect("bound Lua declaration");
             self.report.bindings.push(BindingInfo {
+                binding: id,
                 name: name.text.clone(),
                 span: name.span,
                 ty: describe(&constraint),
             });
             self.locals.insert(
-                name.text.clone(),
+                id,
                 Binding {
-                    id,
                     constraint,
                     value: narrowed,
                     evolves_from_nil: annotations.get(index).is_none()
@@ -307,7 +424,7 @@ impl Checker<'_> {
                 .unwrap_or((Type::Nil, target.span));
             match &target.kind {
                 ExprKind::Name(name) => {
-                    let Some(binding) = self.locals.get(&name.text) else {
+                    let Some(id) = self.bound.binding_at(name.span.start) else {
                         self.error(
                             "TS2304",
                             name.span,
@@ -315,12 +432,15 @@ impl Checker<'_> {
                         );
                         continue;
                     };
+                    let Some(binding) = self.locals.get(&id) else {
+                        continue;
+                    };
                     let constraint = binding.constraint.clone();
                     if binding.evolves_from_nil && !matches!(value, Type::Nil | Type::Undefined) {
                         self.error("LUA2005", origin, "inference for a nil-initialized local requires the pending flow integration");
                     } else if self.compatible(&value, &constraint, origin) {
                         writes.push(Write::Local(
-                            name.text.clone(),
+                            id,
                             self.engine.assignment_value(&constraint, &value),
                         ));
                     }
@@ -361,8 +481,8 @@ impl Checker<'_> {
         let replaced: Vec<_> = writes
             .iter()
             .filter_map(|write| match write {
-                Write::Local(name, _) => self.locals.get(name).map(|binding| Reference {
-                    binding: binding.id,
+                Write::Local(id, _) => self.locals.get(id).map(|_| Reference {
+                    binding: *id,
                     path: Vec::new(),
                 }),
                 Write::Field(reference, _) => Some(reference.clone()),
@@ -372,10 +492,10 @@ impl Checker<'_> {
         // right-to-left, so a repeated destination retains its leftmost value.
         for write in writes.into_iter().rev() {
             match write {
-                Write::Local(name, value) => {
-                    if let Some(binding) = self.locals.get_mut(&name) {
+                Write::Local(id, value) => {
+                    if let Some(binding) = self.locals.get_mut(&id) {
                         self.assigned_fields
-                            .retain(|reference, _| reference.binding != binding.id);
+                            .retain(|reference, _| reference.binding != id);
                         binding.value = value;
                     }
                 }
@@ -397,8 +517,8 @@ impl Checker<'_> {
 
     fn reference(&self, expr: &Expr) -> Option<Reference> {
         match &expr.kind {
-            ExprKind::Name(name) => self.locals.get(&name.text).map(|binding| Reference {
-                binding: binding.id,
+            ExprKind::Name(name) => self.bound.binding_at(name.span.start).map(|id| Reference {
+                binding: id,
                 path: Vec::new(),
             }),
             ExprKind::Parenthesized(inner) => self.reference(inner),

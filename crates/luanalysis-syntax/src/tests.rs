@@ -184,14 +184,13 @@ fn negative_and_lua_hexadecimal_numbers_keep_original_spelling() {
 fn unsupported_lua_and_annotation_forms_are_reported_and_recover() {
     for unsupported in [
         "local x = 1 + 2",
-        "local x = call(1)",
         "local x = object[1]",
         "local x = {1, 2}",
         "local x = {[1] = 'one'}",
-        "local function f() end",
+        "local function f(...) end",
         "if true then end",
         "---@type number[]",
-        "---@type fun(x: number): string",
+        "---@type fun<T>(x: T): T",
         "---@class MyClass",
         "---@type { [string]: number }",
         "---@type number |",
@@ -205,6 +204,175 @@ fn unsupported_lua_and_annotation_forms_are_reported_and_recover() {
         assert!(file.statements.iter().any(|stmt| {
             matches!(&stmt.kind, StmtKind::Local { names, .. } if names.iter().any(|name| name.text == "recovery"))
         }), "did not recover after {unsupported}: {:?}", file.diagnostics);
+    }
+}
+
+#[test]
+fn native_functions_blocks_calls_and_annotations_keep_source_locations() {
+    let source = include_str!("../tests/fixtures/functions.lua");
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    assert_eq!(file.statements.len(), 5);
+    let StmtKind::LocalFunction { name, function } = &file.statements[0].kind else { panic!("expected local function") };
+    assert_eq!(name.text, "identity");
+    assert_eq!(&source[name.span.start..name.span.end], "identity");
+    assert_eq!(&source[function.params[0].span.start..function.params[0].span.end], "value");
+    assert_eq!(source.as_bytes()[function.body_span.start - 1], b')');
+    assert!(source[function.body_span.end..].starts_with("end"));
+    let param = &function.annotations.params[0];
+    assert_eq!(&source[param.name.span.start..param.name.span.end], "value");
+    assert_eq!(&source[param.ty.span.start..param.ty.span.end], "number");
+    assert_eq!(function.annotations.returns.as_ref().unwrap().types[0].kind, TypeExprKind::Named("number".to_owned()));
+    let StmtKind::Block { body, body_span } = &function.body[0].kind else { panic!("expected lexical block") };
+    assert_eq!(body.len(), 1);
+    assert!(source[body_span.start..body_span.end].contains("local copied = value"));
+    assert!(matches!(function.body[1].kind, StmtKind::Return(_)));
+    let ExprKind::Function(function) = &locals(&file, 1).1[0].kind else { panic!("expected function expression") };
+    assert_eq!(function.annotations.params[0].name.text, "flag");
+    assert_eq!(function.annotations.returns.as_ref().unwrap().types[0].kind, TypeExprKind::Named("string".to_owned()));
+    let ExprKind::Call { callee, args } = &locals(&file, 3).1[0].kind else { panic!("expected call") };
+    assert_eq!(&source[callee.span.start..callee.span.end], "boxed.callback");
+    assert_eq!(&source[args[0].span.start..args[0].span.end], "identity(1)");
+    assert!(matches!(file.statements[4].kind, StmtKind::Call(_)));
+}
+
+#[test]
+fn function_type_annotations_preserve_optional_parameters_and_return_lists() {
+    let source = "---@type fun(value: number, flag?: boolean): (string, nil)\nlocal callback = function(value, flag) return 'yes', nil end\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let (_, values, annotation) = locals(&file, 0);
+    let TypeExprKind::Function(function_type) = &annotation.unwrap().types[0].kind else { panic!("expected function type") };
+    assert_eq!(function_type.params.len(), 2);
+    assert_eq!(function_type.params[0].name.text, "value");
+    assert!(function_type.params[1].optional);
+    assert_eq!(function_type.returns.len(), 2);
+    assert_eq!(&source[function_type.params[1].span.start..function_type.params[1].span.end], "flag?: boolean");
+    let ExprKind::Function(function) = &values[0].kind else { panic!("expected function") };
+    let StmtKind::Return(values) = &function.body[0].kind else { panic!("expected return") };
+    assert_eq!(values.len(), 2);
+}
+
+#[test]
+fn callback_function_types_respect_surrounding_parameter_and_record_commas() {
+    let file = parse("---@type fun(callback: fun(value: number): string, value: number): string\nlocal apply = function(callback, value) return callback(value) end\n---@type {callback: fun(value: number): string, count: number}\nlocal object = {callback = apply, count = 1}\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let TypeExprKind::Function(function) = &locals(&file, 0).2.unwrap().types[0].kind else { panic!("expected function type") };
+    assert_eq!(function.params.len(), 2);
+    let TypeExprKind::Function(callback) = &function.params[0].ty.as_ref().unwrap().kind else { panic!("expected callback type") };
+    assert_eq!(callback.returns.len(), 1);
+    let TypeExprKind::Record(fields) = &locals(&file, 1).2.unwrap().types[0].kind else { panic!("expected record") };
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[1].name.text, "count");
+}
+
+#[test]
+fn annotations_attach_to_the_correct_function_and_do_not_escape_blocks() {
+    let source = "do\n---@param x number\n---@return number\nlocal function nested(x) return x end\nend\nlocal function plain(x) return x end\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let StmtKind::Block { body, .. } = &file.statements[0].kind else { panic!("expected block") };
+    let StmtKind::LocalFunction { function, .. } = &body[0].kind else { panic!("expected nested function") };
+    assert_eq!(function.annotations.params.len(), 1);
+    let StmtKind::LocalFunction { function, .. } = &file.statements[1].kind else { panic!("expected plain function") };
+    assert_eq!(function.annotations, FunctionAnnotations::default());
+    let orphan = parse("do\n---@param x number\nend\nlocal function next(x) return x end\n");
+    assert!(!orphan.diagnostics.is_empty());
+    let StmtKind::LocalFunction { function, .. } = &orphan.statements[1].kind else { panic!("expected next function") };
+    assert!(function.annotations.params.is_empty());
+}
+
+#[test]
+fn function_type_constraints_and_context_share_the_original_annotation() {
+    for initializer in ["function(x) return x end", "(function(x) return x end)", "((function(x) return x end))"] {
+        let source = format!("---@type fun(x: number): number\n---@param x number\n---@return number\nlocal identity = {initializer}\nlocal result = identity(1)\n");
+        let file = parse(&source);
+        assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+        let (_, values, annotation) = locals(&file, 0);
+        let annotation = annotation.unwrap();
+        let mut value = &values[0];
+        while let ExprKind::Parenthesized(inner) = &value.kind { value = inner; }
+        let ExprKind::Function(function) = &value.kind else { panic!("expected function initializer") };
+        assert_eq!(function.annotations.type_annotation.as_ref(), Some(annotation));
+        assert_eq!(function.annotations.params.len(), 1);
+        assert!(function.annotations.returns.is_some());
+        assert_eq!(&source[function.span.start..function.span.end], "function(x) return x end");
+        assert_eq!(&source[annotation.span.start..annotation.span.end], "@type fun(x: number): number");
+    }
+}
+
+#[test]
+fn scalar_constraints_do_not_become_function_context() {
+    let file = parse("---@type number\nlocal f = (function(x) return x end)\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let (_, values, annotation) = locals(&file, 0);
+    assert!(annotation.is_some());
+    let ExprKind::Parenthesized(value) = &values[0].kind else { panic!("expected parentheses") };
+    let ExprKind::Function(function) = &value.kind else { panic!("expected function") };
+    assert!(function.annotations.type_annotation.is_none());
+    let alias = parse("---@type fun(x: number): number\nlocal alias = identity\n---@type fun(x: number): number\nalias = identity\n");
+    assert!(alias.diagnostics.is_empty(), "{:?}", alias.diagnostics);
+    assert!(locals(&alias, 0).2.is_some());
+}
+
+#[test]
+fn return_accepts_one_terminal_semicolon_and_diagnoses_additional_ones() {
+    for source in ["return;", "local function f() return 1; end", "do return; end", "return 1 --comment\n;"] {
+        let file = parse(source);
+        assert!(file.diagnostics.is_empty(), "{source}: {:?}", file.diagnostics);
+    }
+    for source in ["return;;", "local function f() return 1;; end", "return; --comment\n;"] {
+        let file = parse(source);
+        assert_eq!(file.diagnostics.len(), 1, "{source}: {:?}", file.diagnostics);
+        let diagnostic = &file.diagnostics[0];
+        assert!(diagnostic.message.contains("at most one terminal semicolon"));
+        assert_eq!(&source[diagnostic.span.start..diagnostic.span.end], ";");
+        assert_eq!(diagnostic.span.start, source.rfind(';').unwrap());
+    }
+}
+
+#[test]
+fn missing_end_bad_parameters_and_annotations_are_diagnosed() {
+    for source in [
+        "do local x = 1", "local function f(x,) return x end", "local function f(...) end",
+        "---@param x number\nlocal x = 1", "---@param x number\n---@param x string\nlocal function f(x) end",
+        "local function f() return 1 local x = 2 end", "local x = f(1,)",
+        "---@generic T\nlocal function f(x) return x end", "function global() end",
+    ] {
+        let file = parse(source);
+        assert!(!file.diagnostics.is_empty(), "invalid or unsupported input escaped diagnosis: {source}");
+    }
+}
+
+#[test]
+fn excessive_call_chains_and_mixed_function_trees_are_bounded() {
+    let source = format!("local value = root{}\nlocal recovery = 7\n", "()".repeat(8192));
+    let file = parse(&source);
+    assert_eq!(file.diagnostics.len(), 1);
+    assert!(file.diagnostics[0].message.contains("nesting exceeds"));
+    assert_eq!(&source[file.diagnostics[0].span.start..file.diagnostics[0].span.end], "()");
+    assert_eq!(locals(&file, 1).0[0].text, "recovery");
+    drop(file.clone());
+    drop(file);
+    let nested = format!("local value = {}root{}{}\nlocal recovery = 7\n", "function() return ".repeat(40), ".field".repeat(120), " end".repeat(40));
+    let file = parse(&nested);
+    assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("nesting exceeds")));
+    assert_eq!(locals(&file, 1).0[0].text, "recovery");
+    drop(file.clone());
+    drop(file);
+}
+
+#[test]
+fn deeply_nested_do_blocks_and_functions_recover_without_stack_overflow() {
+    for source in [
+        format!("{}local value = 1\n{}\nlocal recovery = 7\n", "do\n".repeat(1024), "end\n".repeat(1024)),
+        format!("local value = {}1{}\nlocal recovery = 7\n", "function() return ".repeat(1024), " end".repeat(1024)),
+    ] {
+        let file = parse(&source);
+        assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("nesting exceeds")));
+        assert!(file.statements.iter().any(|stmt| matches!(&stmt.kind, StmtKind::Local { names, .. } if names.iter().any(|name| name.text == "recovery"))));
+        drop(file.clone());
+        drop(file);
     }
 }
 

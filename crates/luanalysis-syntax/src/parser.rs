@@ -1,6 +1,6 @@
 use crate::{
-    CommentKind, Diagnostic, Expr, ExprKind, File, Name, Span, Stmt, StmtKind, TableField, Token,
-    TokenKind, TypeAnnotation, lex, types,
+    CommentKind, Diagnostic, Expr, ExprKind, File, Function, FunctionAnnotations, Name, Span, Stmt,
+    StmtKind, TableField, Token, TokenKind, TypeAnnotation, TypeExpr, TypeExprKind, lex, types,
 };
 
 pub fn parse(source: &str) -> File {
@@ -21,32 +21,11 @@ pub fn parse(source: &str) -> File {
         tokens: lexed.tokens,
         pos: 0,
         diagnostics: lexed.diagnostics,
-        pending_annotation: None,
+        pending_annotations: FunctionAnnotations::default(),
         depth: 0,
+        block_depth: 0,
     };
-    let mut statements = Vec::new();
-    loop {
-        parser.leading_trivia();
-        if parser.eof() {
-            break;
-        }
-        if parser.take_symbol(";").is_some() {
-            continue;
-        }
-        let before = parser.pos;
-        if let Some(stmt) = parser.statement() {
-            statements.push(stmt);
-        }
-        if parser.pos == before {
-            parser.pos += 1;
-        }
-    }
-    if let Some(annotation) = parser.pending_annotation.take() {
-        parser.diagnostics.push(Diagnostic {
-            span: annotation.span,
-            message: "@type annotation is not attached to a declaration or assignment".to_owned(),
-        });
-    }
+    let statements = parser.statements(false);
     File {
         statements,
         comments,
@@ -60,8 +39,9 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
     diagnostics: Vec<Diagnostic>,
-    pending_annotation: Option<TypeAnnotation>,
+    pending_annotations: FunctionAnnotations,
     depth: usize,
+    block_depth: usize,
 }
 
 impl Parser<'_> {
@@ -112,6 +92,47 @@ impl Parser<'_> {
     fn significant_symbol(&self, value: &str) -> bool {
         matches!(&self.tokens[self.significant_index()].kind, TokenKind::Symbol(symbol) if symbol == value)
     }
+    fn statements(&mut self, stop_at_end: bool) -> Vec<Stmt> {
+        let mut statements = Vec::new();
+        let mut returned = false;
+        let mut return_semicolon_used = false;
+        loop {
+            self.leading_trivia();
+            if self.eof() || (stop_at_end && self.keyword("end")) { break; }
+            if self.symbol(";") {
+                if returned {
+                    if return_semicolon_used {
+                        self.error("Lua return accepts at most one terminal semicolon");
+                    }
+                    return_semicolon_used = true;
+                }
+                self.pos += 1;
+                continue;
+            }
+            if returned {
+                self.error("return must be the final statement in its Lua block");
+                returned = false;
+            }
+            let before = self.pos;
+            if let Some(stmt) = self.statement() {
+                returned = matches!(stmt.kind, StmtKind::Return(_));
+                return_semicolon_used = false;
+                statements.push(stmt);
+            }
+            if self.pos == before { self.pos += 1; }
+        }
+        let annotations = std::mem::take(&mut self.pending_annotations);
+        self.unattached_annotations(&annotations);
+        statements
+    }
+    fn unattached_annotations(&mut self, annotations: &FunctionAnnotations) {
+        for span in types::annotation_spans(annotations) {
+            self.diagnostics.push(Diagnostic {
+                span,
+                message: "Luanalysis annotation is not attached to a compatible declaration or function".to_owned(),
+            });
+        }
+    }
     fn leading_trivia(&mut self) {
         loop {
             match self.current().kind.clone() {
@@ -121,9 +142,9 @@ impl Parser<'_> {
                     if comment.kind != CommentKind::Documentation {
                         continue;
                     }
-                    let (annotation, diagnostics) = types::annotation(&comment);
+                    let (annotations, diagnostics) = types::annotations(&comment);
                     self.diagnostics.extend(diagnostics);
-                    if let Some(annotation) = annotation {
+                    if !types::annotation_spans(&annotations).is_empty() {
                         let line_start = self.source[..comment.span.start]
                             .rfind(['\r', '\n'])
                             .map_or(0, |index| index + 1);
@@ -131,17 +152,9 @@ impl Parser<'_> {
                             .chars()
                             .all(|ch| matches!(ch, ' ' | '\t'));
                         if !standalone {
-                            self.diagnostics.push(Diagnostic {
-                                span: annotation.span, message: "this slice requires @type annotations before a declaration or assignment".to_owned(),
-                            });
-                        } else if self.pending_annotation.is_some() {
-                            self.diagnostics.push(Diagnostic {
-                                span: annotation.span,
-                                message: "multiple @type annotations for one declaration"
-                                    .to_owned(),
-                            });
+                            self.unattached_annotations(&annotations);
                         } else {
-                            self.pending_annotation = Some(annotation);
+                            types::merge_annotations(&mut self.pending_annotations, annotations, &mut self.diagnostics);
                         }
                     }
                 }
@@ -156,11 +169,11 @@ impl Parser<'_> {
                 TokenKind::Comment(comment) => {
                     self.pos += 1;
                     if comment.kind == CommentKind::Documentation {
-                        let (annotation, diagnostics) = types::annotation(&comment);
+                        let (annotations, diagnostics) = types::annotations(&comment);
                         self.diagnostics.extend(diagnostics);
-                        if let Some(annotation) = annotation {
+                        for span in types::annotation_spans(&annotations) {
                             self.diagnostics.push(Diagnostic {
-                                span: annotation.span, message: "@type annotations inside expressions are unsupported in this slice".to_owned(),
+                                span, message: "annotations inside expressions are unsupported unless attached to a function declaration".to_owned(),
                             });
                         }
                     }
@@ -182,15 +195,50 @@ impl Parser<'_> {
     }
     fn statement(&mut self) -> Option<Stmt> {
         let start = self.current().span;
-        let annotation = self.pending_annotation.take();
+        let mut annotations = std::mem::take(&mut self.pending_annotations);
+        if self.keyword("do") {
+            self.unattached_annotations(&annotations);
+            self.pos += 1;
+            let body_start = self.tokens[self.pos - 1].span.end;
+            if self.block_depth + self.depth >= 128 {
+                self.error("block nesting exceeds 128");
+                self.recover_block();
+                return None;
+            }
+            self.block_depth += 1;
+            let mut body = self.statements(true);
+            self.block_depth -= 1;
+            let body_end = self.current().span.start;
+            let end = self.expect_end();
+            if statements_depth(&body) >= 128 {
+                self.diagnostics.push(Diagnostic { span: start.join(end), message: "block nesting exceeds 128".to_owned() });
+                body.clear();
+            }
+            return Some(Stmt { kind: StmtKind::Block { body, body_span: Span::new(body_start, body_end) }, span: start.join(end) });
+        }
+        if self.keyword("return") {
+            self.unattached_annotations(&annotations);
+            self.pos += 1;
+            let next = &self.tokens[self.significant_index()];
+            let empty = matches!(&next.kind, TokenKind::Eof)
+                || matches!(&next.kind, TokenKind::Keyword(word) if word == "end")
+                || matches!(&next.kind, TokenKind::Symbol(symbol) if symbol == ";");
+            let values = if empty { Vec::new() } else { self.expr_list() };
+            let end = values.last().map_or(start, |value| value.span);
+            return Some(Stmt { kind: StmtKind::Return(values), span: start.join(end) });
+        }
         if self.keyword("local") {
             self.pos += 1;
             if self.tokens[self.significant_index()].kind
                 == TokenKind::Keyword("function".to_owned())
             {
-                self.error("local functions are unsupported in this first frontend slice");
-                self.recover_statement();
-                return None;
+                self.inner_trivia();
+                let function_start = self.current().span;
+                self.pos += 1;
+                let Some(name) = self.name() else { self.recover_statement(); return None; };
+                let (function, _) = self.function_body(function_start, annotations);
+                let span = start.join(function.span);
+                return Some(Stmt { kind: StmtKind::LocalFunction { name, function }, span });
             }
             let Some(first) = self.name() else {
                 self.recover_statement();
@@ -206,13 +254,19 @@ impl Parser<'_> {
                 };
                 names.push(name);
             }
-            let values = if self.significant_symbol("=") {
+            let mut values = if self.significant_symbol("=") {
                 self.inner_trivia();
                 self.pos += 1;
                 self.expr_list()
             } else {
                 Vec::new()
             };
+            let annotation = annotations.type_annotation.take();
+            if annotation.as_ref().is_some_and(function_type_annotation)
+                && values.len() == 1 && function_initializer(&mut values[0]).is_some() {
+                annotations.type_annotation = annotation.clone();
+            }
+            self.attach_function_annotations(&mut values, annotations);
             let end = values
                 .last()
                 .map_or(names.last().unwrap().span, |value| value.span);
@@ -226,15 +280,22 @@ impl Parser<'_> {
             });
         }
         if matches!(&self.current().kind, TokenKind::Keyword(_)) {
+            self.unattached_annotations(&annotations);
             self.error(
-                "unsupported Lua statement; this slice supports local declarations and assignments",
+                "unsupported Lua statement; branches, loops, and global function declarations are not implemented",
             );
             self.recover_statement();
             return None;
         }
-        let targets = self.expr_list();
+        let mut targets = self.expr_list();
         if !self.significant_symbol("=") {
-            self.error("expected an assignment; calls and other expression statements are unsupported in this slice");
+            self.unattached_annotations(&annotations);
+            if targets.len() == 1 && matches!(targets[0].kind, ExprKind::Call { .. }) {
+                let call = targets.pop().unwrap();
+                let span = call.span;
+                return Some(Stmt { kind: StmtKind::Call(call), span });
+            }
+            self.error("expected an assignment or function call; other expression statements are invalid Lua");
             self.recover_statement();
             return None;
         }
@@ -248,7 +309,13 @@ impl Parser<'_> {
                 });
             }
         }
-        let values = self.expr_list();
+        let mut values = self.expr_list();
+        let annotation = annotations.type_annotation.take();
+        if annotation.as_ref().is_some_and(function_type_annotation)
+            && values.len() == 1 && function_initializer(&mut values[0]).is_some() {
+            annotations.type_annotation = annotation.clone();
+        }
+        self.attach_function_annotations(&mut values, annotations);
         let end = values.last().map_or(start, |value| value.span);
         Some(Stmt {
             kind: StmtKind::Assign {
@@ -258,6 +325,75 @@ impl Parser<'_> {
             },
             span: start.join(end),
         })
+    }
+    fn attach_function_annotations(&mut self, values: &mut [Expr], annotations: FunctionAnnotations) {
+        if types::annotation_spans(&annotations).is_empty() { return; }
+        if let [value] = values {
+            if let Some(function) = function_initializer(value) {
+                types::merge_annotations(&mut function.annotations, annotations, &mut self.diagnostics);
+                return;
+            }
+        }
+        self.unattached_annotations(&annotations);
+    }
+    fn expect_end(&mut self) -> Span {
+        if self.keyword("end") {
+            let span = self.current().span;
+            self.pos += 1;
+            span
+        } else {
+            self.error("expected 'end' to close Lua block or function");
+            self.current().span
+        }
+    }
+    fn function_body(&mut self, start: Span, annotations: FunctionAnnotations) -> (Function, usize) {
+        if self.block_depth + self.depth >= 128 {
+            self.error("function nesting exceeds 128");
+            self.recover_block();
+            let end = self.tokens[self.pos.saturating_sub(1)].span;
+            return (Function {
+                params: Vec::new(), body: Vec::new(), annotations,
+                span: start.join(end), body_span: Span::new(end.end, end.end),
+            }, 2);
+        }
+        self.expect("(");
+        let mut params = Vec::new();
+        self.inner_trivia();
+        while !self.eof() && !self.symbol(")") {
+            let Some(name) = self.name() else {
+                self.error("variadic and malformed function parameter lists are unsupported in this slice");
+                while !self.eof() && !self.symbol(")") { self.pos += 1; }
+                break;
+            };
+            params.push(name);
+            self.inner_trivia();
+            if self.take_symbol(",").is_some() {
+                self.inner_trivia();
+                if self.symbol(")") { self.error("trailing comma in Lua function parameter list"); }
+                continue;
+            }
+            if !self.symbol(")") {
+                self.error("expected ',' or ')' after function parameter");
+                while !self.eof() && !self.symbol(")") { self.pos += 1; }
+            }
+            break;
+        }
+        let close_params = self.expect(")");
+        self.block_depth += 1;
+        let mut body = self.statements(true);
+        self.block_depth -= 1;
+        let body_end = self.current().span.start;
+        let end = self.expect_end();
+        let mut built_depth = statements_depth(&body) + 2;
+        if built_depth > 128 {
+            self.diagnostics.push(Diagnostic { span: start.join(end), message: "function nesting exceeds 128".to_owned() });
+            body.clear();
+            built_depth = 2;
+        }
+        (Function {
+            params, body, annotations, span: start.join(end),
+            body_span: Span::new(close_params.end, body_end.max(close_params.end)),
+        }, built_depth)
     }
     fn expr_list(&mut self) -> Vec<Expr> {
         let mut values = vec![self.expr()];
@@ -276,7 +412,7 @@ impl Parser<'_> {
     fn expr_with_depth(&mut self) -> (Expr, usize) {
         self.inner_trivia();
         let start = self.current().span;
-        if self.depth >= 128 {
+        if self.depth + self.block_depth >= 128 {
             self.error("expression nesting exceeds 128");
             if !self.eof() {
                 self.pos += 1;
@@ -326,6 +462,13 @@ impl Parser<'_> {
                     kind: ExprKind::Boolean(keyword == "true"),
                     span: start,
                 }
+            }
+            TokenKind::Keyword(keyword) if keyword == "function" => {
+                self.pos += 1;
+                let (function, function_depth) = self.function_body(start, FunctionAnnotations::default());
+                built_depth = function_depth;
+                let span = function.span;
+                Expr { kind: ExprKind::Function(function), span }
             }
             TokenKind::Symbol(symbol) if symbol == "-" => {
                 self.pos += 1;
@@ -386,9 +529,25 @@ impl Parser<'_> {
             }
         };
         let mut postfix_exceeded = false;
-        while self.significant_symbol(".") {
+        while self.significant_symbol(".") || self.significant_symbol("(") {
             self.inner_trivia();
             let postfix_start = self.current().span;
+            if self.symbol("(") {
+                let (args, args_span, args_depth) = self.call_args();
+                let span = expr.span.join(args_span);
+                if postfix_exceeded || built_depth.max(args_depth) >= 128 {
+                    if !postfix_exceeded {
+                        self.diagnostics.push(Diagnostic { span: args_span, message: "call expression nesting exceeds 128".to_owned() });
+                    }
+                    expr = Expr { kind: ExprKind::Error, span };
+                    built_depth = 1;
+                    postfix_exceeded = true;
+                } else {
+                    expr = Expr { kind: ExprKind::Call { callee: Box::new(expr), args }, span };
+                    built_depth = built_depth.max(args_depth) + 1;
+                }
+                continue;
+            }
             self.pos += 1;
             let Some(name) = self.name() else {
                 break;
@@ -422,6 +581,30 @@ impl Parser<'_> {
         }
         self.depth -= 1;
         (expr, built_depth)
+    }
+    fn call_args(&mut self) -> (Vec<Expr>, Span, usize) {
+        let start = self.expect("(");
+        let mut args = Vec::new();
+        let mut built_depth = 0;
+        self.inner_trivia();
+        while !self.eof() && !self.symbol(")") {
+            let (arg, arg_depth) = self.expr_with_depth();
+            args.push(arg);
+            built_depth = built_depth.max(arg_depth);
+            self.inner_trivia();
+            if self.take_symbol(",").is_some() {
+                self.inner_trivia();
+                if self.symbol(")") { self.error("trailing comma in Lua function call arguments"); }
+                continue;
+            }
+            if !self.symbol(")") {
+                self.error("expected ',' or ')' after function call argument");
+                while !self.eof() && !self.symbol(")") { self.pos += 1; }
+            }
+            break;
+        }
+        let end = self.expect(")");
+        (args, start.join(end), built_depth)
     }
     fn table(&mut self) -> (Expr, usize) {
         let start = self.expect("{");
@@ -491,8 +674,20 @@ impl Parser<'_> {
         )
     }
     fn recover_statement(&mut self) {
-        while !self.eof() && !matches!(self.current().kind, TokenKind::Newline) && !self.symbol(";")
+        while !self.eof() && !matches!(self.current().kind, TokenKind::Newline)
+            && !self.symbol(";") && !self.keyword("end")
         {
+            self.pos += 1;
+        }
+    }
+    fn recover_block(&mut self) {
+        let mut depth = 1_usize;
+        while !self.eof() {
+            if self.keyword("do") || self.keyword("function") { depth += 1; }
+            if self.keyword("end") {
+                depth -= 1;
+                if depth == 0 { self.pos += 1; break; }
+            }
             self.pos += 1;
         }
     }
@@ -511,4 +706,68 @@ impl Parser<'_> {
             self.pos += 1;
         }
     }
+}
+
+fn function_initializer(value: &mut Expr) -> Option<&mut Function> {
+    match &mut value.kind {
+        ExprKind::Function(function) => Some(function),
+        ExprKind::Parenthesized(inner) => function_initializer(inner),
+        _ => None,
+    }
+}
+
+fn function_type_annotation(annotation: &TypeAnnotation) -> bool {
+    fn function_type(ty: &TypeExpr) -> bool {
+        match &ty.kind {
+            TypeExprKind::Function(_) => true,
+            TypeExprKind::Parenthesized(inner) => function_type(inner),
+            _ => false,
+        }
+    }
+    annotation.types.len() == 1 && function_type(&annotation.types[0])
+}
+
+/// Count constructed native statement/expression depth without recursive walks.
+/// This keeps function bodies from multiplying independently bounded call chains.
+fn statements_depth(body: &[Stmt]) -> usize {
+    enum Node<'a> { Statement(&'a Stmt), Expression(&'a Expr) }
+    let mut pending = body.iter().map(|stmt| (Node::Statement(stmt), 1_usize)).collect::<Vec<_>>();
+    let mut max_depth = 0;
+    while let Some((node, depth)) = pending.pop() {
+        max_depth = max_depth.max(depth);
+        match node {
+            Node::Statement(stmt) => match &stmt.kind {
+                StmtKind::Local { values, .. } | StmtKind::Return(values) => {
+                    pending.extend(values.iter().map(|expr| (Node::Expression(expr), depth + 1)));
+                }
+                StmtKind::Assign { targets, values, .. } => {
+                    pending.extend(targets.iter().chain(values).map(|expr| (Node::Expression(expr), depth + 1)));
+                }
+                StmtKind::Block { body, .. } => {
+                    pending.extend(body.iter().map(|stmt| (Node::Statement(stmt), depth + 1)));
+                }
+                StmtKind::LocalFunction { function, .. } => {
+                    pending.extend(function.body.iter().map(|stmt| (Node::Statement(stmt), depth + 2)));
+                }
+                StmtKind::Call(expr) => pending.push((Node::Expression(expr), depth + 1)),
+            },
+            Node::Expression(expr) => match &expr.kind {
+                ExprKind::Parenthesized(base) | ExprKind::Field { base, .. } => {
+                    pending.push((Node::Expression(base), depth + 1));
+                }
+                ExprKind::Call { callee, args } => {
+                    pending.push((Node::Expression(callee), depth + 1));
+                    pending.extend(args.iter().map(|arg| (Node::Expression(arg), depth + 1)));
+                }
+                ExprKind::Table(fields) => {
+                    pending.extend(fields.iter().map(|field| (Node::Expression(&field.value), depth + 1)));
+                }
+                ExprKind::Function(function) => {
+                    pending.extend(function.body.iter().map(|stmt| (Node::Statement(stmt), depth + 2)));
+                }
+                _ => {},
+            },
+        }
+    }
+    max_depth
 }

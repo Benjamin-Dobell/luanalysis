@@ -1,8 +1,9 @@
 //! A native, source-preserving Lua and Luanalysis annotation frontend.
 //!
 //! This first slice deliberately accepts local declarations, assignments,
-//! scalar literals, named table fields, property access, and `@type` annotations
-//! containing primitives, unions, and records. Unsupported syntax is diagnosed;
+//! scalar literals, named table fields, property access, lexical blocks,
+//! functions, calls, returns, and Luanalysis function/type annotations.
+//! Unsupported syntax is diagnosed;
 //! it is never translated to TypeScript or treated as successfully checked.
 
 mod lexer;
@@ -83,6 +84,19 @@ pub enum StmtKind {
         values: Vec<Expr>,
         annotation: Option<TypeAnnotation>,
     },
+    Block {
+        body: Vec<Stmt>,
+        body_span: Span,
+    },
+    /// The name is in scope inside its own function body, unlike `local f = ...`.
+    LocalFunction {
+        name: Name,
+        function: Function,
+    },
+    /// Retained as a list so multiple return packs can be implemented later.
+    Return(Vec<Expr>),
+    /// Lua permits call expressions as statements, but not arbitrary expressions.
+    Call(Expr),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,7 +120,37 @@ pub enum ExprKind {
         base: Box<Expr>,
         name: Name,
     },
+    Function(Function),
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
     Error,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Function {
+    pub params: Vec<Name>,
+    pub body: Vec<Stmt>,
+    pub annotations: FunctionAnnotations,
+    pub span: Span,
+    /// Original source between the closing parameter `)` and the final `end`.
+    pub body_span: Span,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FunctionAnnotations {
+    pub params: Vec<ParamAnnotation>,
+    pub returns: Option<TypeAnnotation>,
+    pub type_annotation: Option<TypeAnnotation>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParamAnnotation {
+    pub name: Name,
+    pub ty: TypeExpr,
+    pub optional: bool,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -135,7 +179,23 @@ pub enum TypeExprKind {
     Union(Vec<TypeExpr>),
     Record(Vec<TypeField>),
     Parenthesized(Box<TypeExpr>),
+    Function(FunctionType),
     Error,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FunctionType {
+    pub params: Vec<FunctionTypeParam>,
+    pub returns: Vec<TypeExpr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FunctionTypeParam {
+    pub name: Name,
+    pub ty: Option<TypeExpr>,
+    pub optional: bool,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
