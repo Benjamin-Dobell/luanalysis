@@ -6,6 +6,9 @@ use super::errors::Container;
 use super::expr::TargetKind;
 use super::related::Place;
 use super::shape::UntypedProperty;
+use super::flow_walk::{FlowDomain, FlowStep, FlowType, ReachDomain, ReachStep, WalkState};
+use super::flow_walk::MAX_STEPS;
+pub(super) use super::flow_walk::MAX_FLOW_DEPTH;
 use super::*;
 use crate::bind::{
     Decl, Flow, FlowId, FlowTarget, FnOwner, MemberOwner, Parent, PatParent, SymbolId, UNREACHABLE,
@@ -151,6 +154,8 @@ impl Eq for Reference {}
 /// nested computation for the same node has assigned.
 #[derive(Default)]
 pub(super) struct FlowMemo {
+    /// Original-source caches are never indexed by a TS file/node identifier.
+    pub(super) native_state: super::native_flow::NativeFlowState,
     /// See `index_narrowing_subjects`: the file it is for; indexed by symbol, the first flow node
     /// with a test, a `switch` or an assignment that concerns it (empty: the file has no such
     /// filter); one bit per symbol, for call statements that have not all been found idle; those
@@ -215,7 +220,7 @@ pub(super) struct FlowMemo {
     /// initial type, then the reference.
     flow_loop_cache: FxHashMap<FlowLoopKey, SmallVec<[(Reference, TypeId); 1]>>,
     /// `Checker::work` when it got its latest entry.
-    flow_loop_cached_at: u64,
+    pub(super) flow_loop_cached_at: u64,
     /// `switchStatementLinks`
     switch_statement_links: FxHashMap<(FileId, StmtId), SwitchStatementLinks>,
     /// `contextFreeTypes`, for the results that depend on the incomplete type of a loop in
@@ -319,59 +324,6 @@ enum Crossing {
     PastLastAssignment(SymbolId, ExprId),
 }
 
-/// `FlowType`
-#[derive(Copy, Clone)]
-struct FlowType {
-    ty: TypeId,
-    /// It depends on the types collected so far by a loop whose analysis is in progress.
-    incomplete: bool,
-}
-
-impl FlowType {
-    /// `newFlowType`
-    fn new(ty: TypeId, incomplete: bool) -> FlowType {
-        FlowType {
-            ty: if incomplete && ty.is_never() {
-                TypeId::SILENT_NEVER
-            } else {
-                ty
-            },
-            incomplete,
-        }
-    }
-}
-
-/// `sharedFlows[sharedFlowStart:]`
-#[derive(Default)]
-struct SharedFlows {
-    few: SmallVec<[(FlowId, FlowType); 8]>,
-    /// Overflow entries, added once `few` was full.
-    many: FxHashMap<FlowId, FlowType>,
-}
-
-impl SharedFlows {
-    fn get(&self, flow: FlowId) -> Option<FlowType> {
-        match self.few.iter().find(|known| known.0 == flow) {
-            Some(known) => Some(known.1),
-            None if self.many.is_empty() => None,
-            None => self.many.get(&flow).copied(),
-        }
-    }
-
-    /// A node that is visited again while its type is computed has two entries. The search finds
-    /// the first.
-    fn push(&mut self, flow: FlowId, ty: FlowType) {
-        if self.get(flow).is_some() {
-            return;
-        }
-        if self.few.len() < self.few.inline_size() {
-            self.few.push((flow, ty));
-        } else {
-            self.many.insert(flow, ty);
-        }
-    }
-}
-
 /// What an invocation of `getTypeAtFlowNode` does to the type at `flow.Antecedent`.
 enum Pending {
     Cond(ExprId, bool),
@@ -420,20 +372,17 @@ struct Walk {
     /// How many starts of functions the path to the current flow node has crossed. Each
     /// antecedent of a label reaches the start of its function on a path of its own.
     crossed: u32,
-    shared_flows: SharedFlows,
-    /// `reduceLabels`: the start of each `finally` block being traversed backwards, and the label
-    /// whose antecedents are used instead.
-    reduced: Vec<(FlowId, FlowId)>,
-    /// How many back edges of loops are being followed.
-    back_edges: u32,
-    steps: u32,
-    /// The number of nested `getTypeAtFlowNode` invocations that would be in progress.
-    depth: u32,
-    /// The depth reached `MAX_FLOW_DEPTH` (`flowAnalysisDisabled`): the result is errorType.
-    too_deep: bool,
+    traversal: WalkState<FlowId>,
 }
 
-const MAX_STEPS: u32 = 2_000_000;
+impl std::ops::Deref for Walk {
+    type Target = WalkState<FlowId>;
+    fn deref(&self) -> &Self::Target { &self.traversal }
+}
+
+impl std::ops::DerefMut for Walk {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.traversal }
+}
 
 /// A key for a name or for `this`, not necessarily unique. 0 for any other root of a reference.
 fn root_key(root: Root) -> u32 {
@@ -597,9 +546,6 @@ impl About {
     }
 }
 
-/// `getTypeAtFlowNode`: the invocation that finds this many in progress bails out.
-pub(super) const MAX_FLOW_DEPTH: u32 = 2000;
-
 /// See `first_unsettled_call`.
 const NEVER_RETURNS: u32 = u32::MAX - 1;
 
@@ -742,12 +688,196 @@ impl Walk {
                 Crossing::No
             },
             crossed: 0,
-            shared_flows: SharedFlows::default(),
-            reduced: Vec::new(),
-            back_edges: 0,
-            steps: 0,
-            depth: 0,
-            too_deep: false,
+            traversal: WalkState::default(),
+        }
+    }
+}
+
+/// The TS domain keeps its HIR operations and existing memo namespaces. Only
+/// traversal/joins/loop progression are delegated to the common walker.
+struct TsFlowDomain { file: FileId }
+
+impl FlowDomain for TsFlowDomain {
+    type Node = FlowId;
+    type Transfer = Pending;
+    type Walk = Walk;
+
+    fn state(walk: &Walk) -> &WalkState<FlowId> { &walk.traversal }
+    fn state_mut(walk: &mut Walk) -> &mut WalkState<FlowId> { &mut walk.traversal }
+    fn declared(walk: &Walk) -> TypeId { walk.declared }
+    fn crossed(walk: &Walk) -> u32 { walk.crossed }
+    fn set_crossed(walk: &mut Walk, crossed: u32) { walk.crossed = crossed; }
+    fn initial(&self, checker: &mut Checker<'_, '_>, walk: &mut Walk) -> TypeId { checker.initial_of(walk) }
+    fn starts_as_declared(&self, checker: &mut Checker<'_, '_>, walk: &mut Walk) -> bool { checker.starts_as_declared(walk) }
+    fn shared(&self, checker: &Checker<'_, '_>, node: FlowId) -> bool { checker.bound(self.file).is_shared(node) }
+
+    fn step(&self, checker: &mut Checker<'_, '_>, walk: &mut Walk, node: FlowId) -> FlowStep<FlowId, Pending> {
+        let file = self.file;
+        let bound = checker.bound(file);
+        match bound.flow[node.idx()] {
+            Flow::Unreachable => FlowStep::Value(checker.convert_auto_to_any(walk.declared)),
+            Flow::Start { outer, arrow } => {
+                let is_this = arrow && walk.reference.root == Root::This && walk.reference.path.is_empty();
+                if outer.is_some() && (is_this || checker.settle_crossing(walk)) {
+                    FlowStep::Follow { before: outer, transfer: None, count_passed: false }
+                } else { FlowStep::Initial }
+            }
+            Flow::StartInvoked { outer, arrow } => {
+                let continues = walk.reference.path.is_empty() && match walk.reference.root {
+                    Root::Symbol(_) | Root::Global(_) => true,
+                    Root::This => arrow,
+                    Root::Super | Root::ImportMeta | Root::NewTarget(_) | Root::Pattern(_) | Root::Params(_) | Root::Other => false,
+                };
+                if continues || checker.settle_crossing(walk) {
+                    FlowStep::Follow { before: outer, transfer: None, count_passed: false }
+                } else { FlowStep::Initial }
+            }
+            Flow::Assign { before, target } => {
+                let transfer = match checker.type_at_assignment(walk, node, target) {
+                    AtAssignment::Type(ty) => return FlowStep::Value(ty),
+                    AtAssignment::Antecedent(transfer) => Some(transfer),
+                    AtAssignment::Unaffected => None,
+                };
+                FlowStep::Follow { before, transfer, count_passed: false }
+            }
+            Flow::ArrayMutation { before, expr } => {
+                let transfer = (checker.is_automatic_type(walk.declared) && checker.is_mutation_of(&walk.reference, expr)).then_some(Pending::Mutation(expr));
+                FlowStep::Follow { before, transfer, count_passed: false }
+            }
+            Flow::Cond { before, expr, sense } => {
+                let transfer = (checker.is_automatic_type(walk.declared) || checker.is_test_about(&walk.reference, node, expr)).then_some(Pending::Cond(expr, sense));
+                FlowStep::Follow { before, transfer, count_passed: true }
+            }
+            Flow::Switch { before, stmt, from, to } => FlowStep::Follow { before, transfer: Some(Pending::Switch(stmt, from, to)), count_passed: false },
+            Flow::Call { before, call } => {
+                if checker.flow_memo.is_idle_call(file, node) {
+                    let (arrived_at, passed) = checker.before_idle_calls(file, node, before);
+                    walk.steps = walk.steps.saturating_add(passed);
+                    return FlowStep::Follow { before: arrived_at, transfer: None, count_passed: false };
+                }
+                let (sig, is_cached) = checker.effects_signature_and_is_cached(file, call);
+                if is_cached { checker.note_settled_call(file, node, sig.is_none()); }
+                let transfer = if let Some(sig) = sig {
+                    match checker.sig_predicate(sig) {
+                        Some(predicate) if predicate.asserts => Some(Pending::Assert(call)),
+                        _ if checker.sig_return(sig).is_never() => return FlowStep::Value(TypeId::UNREACHABLE_NEVER),
+                        _ => None,
+                    }
+                } else { None };
+                FlowStep::Follow { before, transfer, count_passed: false }
+            }
+            Flow::Reduce { before, label, instead } => FlowStep::Reduce { before, label, instead },
+            Flow::Label { .. } => {
+                let antecedents = branch_label_antecedents(bound, node, &walk.reduced);
+                if antecedents.len() == 1 { return FlowStep::Branch { edges: antecedents.to_vec(), bypass: None }; }
+                let mut bypass = None;
+                let mut edges = Vec::new();
+                for &edge in antecedents {
+                    if bypass.is_none() && matches!(bound.flow[edge.idx()], Flow::Switch { from, to, .. } if from == to) { bypass = Some(edge); }
+                    else { edges.push(edge); }
+                }
+                FlowStep::Branch { edges, bypass }
+            }
+            Flow::Loop { start, len } => FlowStep::Loop { edges: bound.edges(start, len).to_vec() },
+        }
+    }
+
+    fn transfer(&self, checker: &mut Checker<'_, '_>, walk: &Walk, transfer: Pending, previous: FlowType) -> FlowType {
+        let mut ty = previous.ty;
+        let mut incomplete = previous.incomplete;
+        let seen = match transfer { Pending::Mutation(_) | Pending::Nothing => ty, _ => checker.finalize_evolving_array(ty) };
+        let narrowed = match transfer {
+            Pending::NonNull => { incomplete = false; ty = seen; checker.non_nullable_type_if_needed(seen) }
+            Pending::Nothing => seen,
+            Pending::Cond(..) if ty.is_never() => seen,
+            Pending::Cond(expr, sense) => checker.narrow(&walk.reference, seen, expr, sense),
+            Pending::Switch(stmt, from, to) => checker.narrow_by_switch(&walk.reference, seen, stmt, from as usize, to as usize),
+            Pending::Assert(call) => checker.narrow_by_assertion(&walk.reference, seen, call),
+            Pending::Compound => checker.base_of_literal(seen),
+            Pending::Mutation(expr) => { ty = checker.after_array_mutation(self.file, ty, expr); seen }
+        };
+        if narrowed != seen { ty = FlowType::new(narrowed, incomplete).ty; }
+        FlowType { ty, incomplete }
+    }
+
+    fn empty_transfer(&self) -> Pending { Pending::Nothing }
+    fn bypass_live(&self, checker: &mut Checker<'_, '_>, node: FlowId) -> bool {
+        match checker.bound(self.file).flow[node.idx()] {
+            Flow::Switch { stmt, .. } => !checker.is_exhaustive_switch(self.file, stmt),
+            _ => true,
+        }
+    }
+    fn has_key(&self, checker: &mut Checker<'_, '_>, walk: &mut Walk) -> bool {
+        if let Some(key) = walk.has_reference_key { return key; }
+        let key = checker.has_flow_reference_key(&walk.reference);
+        if key && checker.hands_out_symbol_ids() { checker.get_symbol_ids_of_flow_reference(&walk.reference); }
+        walk.has_reference_key = Some(key);
+        key
+    }
+    fn loop_cached(&self, checker: &Checker<'_, '_>, walk: &Walk, node: FlowId, initial: TypeId) -> Option<TypeId> {
+        checker.flow_memo.cached_flow_loop_type(&(self.file, node, walk.declared, initial), &walk.reference)
+    }
+    fn loop_active(&self, checker: &Checker<'_, '_>, walk: &Walk, node: FlowId, initial: TypeId) -> Option<(TypeId, usize)> {
+        checker.flow_loops.iter().rfind(|entry| entry.0 == node && entry.1 == walk.reference && entry.2 == walk.declared && entry.3 == initial).map(|entry| (entry.4, entry.5))
+    }
+    fn push_loop(&self, checker: &mut Checker<'_, '_>, walk: &Walk, node: FlowId, initial: TypeId, ty: TypeId) {
+        checker.flow_loops.push((node, walk.reference.clone(), walk.declared, initial, ty, checker.stack.len()));
+    }
+    fn update_loop(&self, checker: &mut Checker<'_, '_>, ty: TypeId) { if let Some(entry) = checker.flow_loops.last_mut() { entry.4 = ty; } }
+    fn pop_loop(&self, checker: &mut Checker<'_, '_>) { checker.flow_loops.pop(); }
+    fn save_loop(&self, checker: &mut Checker<'_, '_>, walk: &Walk, node: FlowId, initial: TypeId, ty: TypeId) {
+        checker.flow_memo.flow_loop_cache.entry((self.file, node, walk.declared, initial)).or_default().push((walk.reference.clone(), ty));
+        checker.flow_memo.flow_loop_cached_at = checker.work;
+    }
+    fn disabled(&self, checker: &Checker<'_, '_>, _: &Walk) -> bool { checker.flow_analysis_disabled.contains(&self.file) }
+    fn too_deep(&self, checker: &mut Checker<'_, '_>, walk: &Walk, _: FlowId) {
+        checker.disable_flow_analysis(self.file);
+        checker.report_flow_control_error(&walk.reference);
+    }
+    fn step_limit(&self, _: &mut Checker<'_, '_>, _: &Walk, _: FlowId) {}
+    fn finish(&self, checker: &mut Checker<'_, '_>, walk: &Walk, evolved: TypeId) -> TypeId {
+        let expression = walk.reference.at;
+        let result = if matches!(checker.data(evolved), TypeData::EvolvingArray(_)) && expression.is_some() && checker.is_evolving_array_operation_target(self.file, expression) {
+            checker.auto_array_type
+        } else { checker.finalize_evolving_array(evolved) };
+        if result == TypeId::UNREACHABLE_NEVER || expression.is_some() && !result.is_never() && checker.is_operand_of_non_null(self.file, expression) && checker.type_with_facts(result, facts::NE_UNDEFINED_OR_NULL).is_never() { walk.declared }
+        else { result }
+    }
+    fn back_edge<R>(&self, checker: &mut Checker<'_, '_>, work: impl FnOnce(&mut Checker<'_, '_>) -> R) -> R { work(checker) }
+}
+
+impl ReachDomain for TsFlowDomain {
+    type Node = FlowId;
+    fn latest(&self, checker: &Checker<'_, '_>, node: FlowId) -> Option<bool> {
+        ((self.file, node) == (checker.last_flow_node.0, checker.last_flow_node.1)).then_some(checker.last_flow_node.2)
+    }
+    fn reset_latest(&self, checker: &mut Checker<'_, '_>) { checker.last_flow_node.1 = FlowId::NONE; }
+    fn shared(&self, checker: &Checker<'_, '_>, node: FlowId) -> bool { checker.bound(self.file).is_shared(node) }
+    fn cached(&self, checker: &Checker<'_, '_>, node: FlowId) -> Option<bool> { checker.p.flow_node_reachable.get(&checker.task, &(self.file, node)) }
+    fn remember(&self, checker: &mut Checker<'_, '_>, node: FlowId, reachable: bool, _stored: Stored) { checker.p.flow_node_reachable.rewrite(&checker.task, (self.file, node), reachable); }
+    fn step(&self, checker: &mut Checker<'_, '_>, node: FlowId, reduced: &[(FlowId, FlowId)]) -> ReachStep<FlowId> {
+        let file = self.file;
+        let bound = checker.bound(file);
+        match bound.flow[node.idx()] {
+            Flow::Unreachable => ReachStep::Value(false),
+            Flow::Start { .. } | Flow::StartInvoked { .. } => ReachStep::Value(true),
+            Flow::Assign { before, .. } | Flow::Cond { before, .. } | Flow::ArrayMutation { before, .. } => ReachStep::Follow(before),
+            Flow::Call { before, call } => {
+                let sig = if checker.flow_memo.is_idle_call(file, node) { None } else {
+                    let (sig, cached) = checker.effects_signature_and_is_cached(file, call);
+                    if cached { checker.note_settled_call(file, node, sig.is_none()); }
+                    sig
+                };
+                if let Some(sig) = sig && (checker.asserts_false_expression(file, call, sig) || checker.sig_return(sig).is_never()) { ReachStep::Value(false) }
+                else { ReachStep::Follow(before) }
+            }
+            Flow::Switch { before, stmt, from, to } => {
+                if from == to && checker.is_exhaustive_switch(file, stmt) { ReachStep::Value(false) }
+                else { ReachStep::Follow(before) }
+            }
+            Flow::Reduce { before, label, instead } => ReachStep::Reduce { before, label, instead },
+            Flow::Label { .. } => ReachStep::Branch(branch_label_antecedents(bound, node, reduced).to_vec()),
+            Flow::Loop { start, len } => match bound.edges(start, len).first() { Some(&entry) => ReachStep::Follow(entry), None => ReachStep::Value(false) },
         }
     }
 }
@@ -809,7 +939,7 @@ fn is_skipped_by_mark_node_assignments(kind: Kind) -> bool {
 }
 
 /// See `Checker::begin_memoizable`.
-struct Memoizable {
+pub(super) struct Memoizable {
     scope: Scope,
     /// `Checker::relation_too_complex` and `Checker::reliability` around it.
     too_complex: bool,
@@ -819,14 +949,14 @@ struct Memoizable {
 impl<'p, 's> Checker<'p, 's> {
     /// The result of `work`, and the permission to store it in a memo table: it is finished, and computing it again would raise none of
     /// the flags that relations, unions and intersections raise for their callers.
-    fn run_memoizable<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> (T, Option<Stored>) {
+    pub(super) fn run_memoizable<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> (T, Option<Stored>) {
         let begun = self.begin_memoizable();
         let result = work(self);
         (result, self.end_memoizable(begun))
     }
 
     /// `run_memoizable` in two halves, for work that is not a call. They nest.
-    fn begin_memoizable(&mut self) -> Memoizable {
+    pub(super) fn begin_memoizable(&mut self) -> Memoizable {
         Memoizable {
             scope: self.begin_scope(),
             too_complex: std::mem::take(&mut self.relation_too_complex),
@@ -834,7 +964,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
     }
 
-    fn end_memoizable(&mut self, begun: Memoizable) -> Option<Stored> {
+    pub(super) fn end_memoizable(&mut self, begun: Memoizable) -> Option<Stored> {
         let raises_no_flag = !self.relation_too_complex && self.reliability == 0;
         self.relation_too_complex |= begun.too_complex;
         self.reliability |= begun.reliability;
@@ -1727,7 +1857,8 @@ impl<'p, 's> Checker<'p, 's> {
     /// `ExhaustiveStateComputing`: it goes on with an empty `flowLoopStack`
     /// (`checkExpressionCached`), and what is checked again from `stack[since]` ends at that state.
     pub(super) fn flow_loop_pushed_since(&self, since: usize) -> Option<usize> {
-        let pushed = self.flow_loops.last().map(|pushed| pushed.5);
+        let pushed = self.flow_loops.last().map(|pushed| pushed.5)
+            .into_iter().chain(self.flow_memo.native_state.loops.last().map(|pushed| pushed.depth)).max();
         let computing = self.flow_memo.exhaustive_states_computing.last();
         pushed
             .filter(|&depth| depth > since && self.is_flow_loop_visible(depth))
@@ -1743,7 +1874,8 @@ impl<'p, 's> Checker<'p, 's> {
     /// Whether `flow_loop_pushed_since` may have a depth.
     #[inline]
     pub(super) fn is_flow_loop_or_exhaustive_state_in_progress(&self) -> bool {
-        !self.flow_loops.is_empty() || !self.flow_memo.exhaustive_states_computing.is_empty()
+        !self.flow_loops.is_empty() || !self.flow_memo.native_state.loops.is_empty()
+            || !self.flow_memo.exhaustive_states_computing.is_empty()
     }
 
     /// `containsMatchingReference(reference, e)`: `e` is `x.a` or `x` for `x.a.b`.
@@ -3388,6 +3520,40 @@ impl<'p, 's> Checker<'p, 's> {
             self.flow_memo.equal_types.insert(key, narrowed);
         }
         narrowed
+    }
+
+    /// Native primitive equality uses strict equality, never JS coercion.
+    pub fn native_equal_flow_type(&mut self, ty: TypeId, other: TypeId, equal: bool) -> TypeId {
+        let value = self.regular(other);
+        self.narrow_by_equal_type(ty, other, value, false, equal)
+    }
+
+    /// Lua's truth domain consists of nil and false only. These type-only
+    /// operations share union filtering/intersections and native constraints;
+    /// facts::TRUTHY/FALSY would wrongly discard zero and the empty string.
+    pub fn lua_truthiness_type(&mut self, ty: TypeId, sense: bool) -> TypeId {
+        if self.is_any(ty) || ty.is_never() { return ty; }
+        if self.is_type_param(ty) {
+            let constraint = self.base_constraint_of(ty).unwrap_or(TypeId::UNKNOWN);
+            let candidate = if constraint == ty { TypeId::UNKNOWN } else { constraint };
+            let candidate = self.lua_truthiness_type(candidate, sense);
+            return self.intersection(&[ty, candidate]);
+        }
+        if ty == TypeId::UNKNOWN {
+            // This session's native language has Lua primitives/objects, rather
+            // than JS symbols/bigints/null. Preserve every possible Lua value.
+            return if sense {
+                self.union(&[TypeId::NUMBER, TypeId::STRING, TypeId::TRUE, TypeId::OBJECT])
+            } else { self.union(&[TypeId::UNDEFINED, TypeId::FALSE]) };
+        }
+        if sense {
+            let non_nil = self.native_equal_flow_type(ty, TypeId::UNDEFINED, false);
+            self.native_equal_flow_type(non_nil, TypeId::FALSE, false)
+        } else {
+            let nil = self.native_equal_flow_type(ty, TypeId::UNDEFINED, true);
+            let false_type = self.native_equal_flow_type(ty, TypeId::FALSE, true);
+            self.union(&[nil, false_type])
+        }
     }
 
     /// Narrows `ty` given whether it is equal (`sense`) to a value of type `as_written`.
@@ -5726,55 +5892,10 @@ impl<'p, 's> Checker<'p, 's> {
         }
     }
 
-    /// `getFlowTypeOfReferenceEx`, once the `FlowState` is set up.
+    /// `getFlowTypeOfReferenceEx`, through the shared reference finalization.
     fn get_flow_type_of_reference(&mut self, mut walk: Walk, flow: FlowId) -> TypeId {
-        let (file, e, declared) = (walk.reference.file, walk.reference.at, walk.declared);
-        if self.flow_analysis_disabled.contains(&file) {
-            return TypeId::ERROR;
-        }
-        self.flow_invocation_count += 1;
-        let outer = std::mem::replace(&mut self.walk_declared, declared);
-        let evolved = self.flow_type(&mut walk, flow);
-        self.walk_declared = outer;
-        // The walk that completes a loop goes on with the entries that the back edges left in
-        // `sharedFlows`. The next walk finds the loop in `flowLoopCache`, and may find another
-        // type. What follows from this one stays in `flowTypeCache`.
-        let depth = self.flow_type_cache_depth;
-        if evolved.incomplete && depth != usize::MAX && self.is_flow_loop_visible(depth) {
-            self.taint_from(depth);
-        }
-        let evolved = evolved.ty;
-        // errorType, and `reportFlowControlError`
-        if walk.too_deep {
-            self.disable_flow_analysis(file);
-            self.report_flow_control_error(&walk.reference);
-            return TypeId::ERROR;
-        }
-        if walk.steps >= MAX_STEPS {
-            return declared;
-        }
-        // An operation that adds elements to an evolving array sees `autoArrayType`, whatever its
-        // element type is by then.
-        let result = if matches!(self.data(evolved), TypeData::EvolvingArray(_))
-            && e.is_some()
-            && self.is_evolving_array_operation_target(file, e)
-        {
-            self.auto_array_type
-        } else {
-            self.finalize_evolving_array(evolved)
-        };
-        // `x!` where `x` has been narrowed to only the types that `!` removes.
-        if result == TypeId::UNREACHABLE_NEVER
-            || e.is_some()
-                && !result.is_never()
-                && self.is_operand_of_non_null(file, e)
-                && self
-                    .type_with_facts(result, facts::NE_UNDEFINED_OR_NULL)
-                    .is_never()
-        {
-            return declared;
-        }
-        result
+        let domain = TsFlowDomain { file: walk.reference.file };
+        self.walk_flow_reference(&domain, &mut walk, flow).ty
     }
 
     /// `getFlowTypeOfDestructuring` for a binding pattern element that is not a rest element.
@@ -6327,7 +6448,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// `finalizeEvolvingArrayType`, `createFinalArrayType`
-    fn finalize_evolving_array(&mut self, ty: TypeId) -> TypeId {
+    pub(super) fn finalize_evolving_array(&mut self, ty: TypeId) -> TypeId {
         let TypeData::EvolvingArray(element) = *self.data(ty) else {
             return ty;
         };
@@ -6354,11 +6475,10 @@ impl<'p, 's> Checker<'p, 's> {
     /// evolving arrays.
     /// A type that is not part of the initial type of the reference was introduced by `instanceof`,
     /// `in` or a type guard, and is removed again where it joins a type it is a subtype of.
-    fn union_or_evolving(&mut self, types: &[TypeId], walk: &mut Walk) -> TypeId {
+    pub(super) fn flow_join(&mut self, types: &[TypeId], initial: TypeId) -> TypeId {
         if types.len() < 2 {
             return self.union_or_evolving_with(types, false);
         }
-        let initial = self.initial_of(walk);
         let is_subset = |c: &Self, t: TypeId| {
             t == initial
                 || t.is_never()
@@ -6369,7 +6489,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// `getUnionOrEvolvingArrayType`
-    fn union_or_evolving_with(&mut self, types: &[TypeId], subtype_reduction: bool) -> TypeId {
+    pub(super) fn union_or_evolving_with(&mut self, types: &[TypeId], subtype_reduction: bool) -> TypeId {
         if let [only] = *types
             && !matches!(
                 self.data(only),
@@ -6552,381 +6672,9 @@ impl<'p, 's> Checker<'p, 's> {
         self.evolving_array(element)
     }
 
-    /// `getTypeAtFlowNode`
+    /// `getTypeAtFlowNode`, through the shared TS/native traversal.
     fn flow_type(&mut self, walk: &mut Walk, start: FlowId) -> FlowType {
-        if walk.too_deep {
-            return FlowType::new(TypeId::ERROR, false);
-        }
-        let file = walk.reference.file;
-        let bound = self.bound(file);
-        // The invocations that wait for the type at their antecedent, the outermost first, each
-        // with its `sharedFlow`. They go on afterwards, the innermost first.
-        let mut pending: SmallVec<[(Pending, FlowId); 8]> = SmallVec::new();
-        // Number of invocations for a condition that does not apply to the reference and that have
-        // no `sharedFlow`: they return what they get.
-        let mut passed = 0;
-        let mut flow = start;
-        // `sharedFlow` of the innermost invocation.
-        let mut shared_flow = FlowId::NONE;
-        let (depth, crossed) = (walk.depth, walk.crossed);
-        let mut incomplete = false;
-        let mut ty = loop {
-            walk.steps += 1;
-            if walk.steps >= MAX_STEPS {
-                break walk.declared;
-            }
-            walk.depth = depth + 1 + pending.len() as u32 + passed;
-            if walk.depth > MAX_FLOW_DEPTH {
-                walk.too_deep = true;
-                break TypeId::ERROR;
-            }
-            if bound.is_shared(flow) {
-                if let Some(known) = walk.shared_flows.get(flow) {
-                    incomplete = known.incomplete;
-                    shared_flow = FlowId::NONE;
-                    break known.ty;
-                }
-                shared_flow = flow;
-            }
-            match bound.flow[flow.idx()] {
-                // "Simply return the non-auto declared type to reduce follow-on errors."
-                Flow::Unreachable => break self.convert_auto_to_any(walk.declared),
-                Flow::Start { outer, arrow } => {
-                    // An arrow function has no `this` of its own.
-                    let is_this = arrow
-                        && walk.reference.root == Root::This
-                        && walk.reference.path.is_empty();
-                    if outer.is_some() && (is_this || self.settle_crossing(walk)) {
-                        flow = outer;
-                        continue;
-                    }
-                    break self.initial_of(walk);
-                }
-                Flow::StartInvoked { outer, arrow } => {
-                    let continues = walk.reference.path.is_empty()
-                        && match walk.reference.root {
-                            Root::Symbol(_) | Root::Global(_) => true,
-                            Root::This => arrow,
-                            // Never walked without a path, or walked with `crosses_functions`.
-                            Root::Super
-                            | Root::ImportMeta
-                            | Root::NewTarget(_)
-                            | Root::Pattern(_)
-                            | Root::Params(_)
-                            | Root::Other => false,
-                        };
-                    if continues || self.settle_crossing(walk) {
-                        flow = outer;
-                        continue;
-                    }
-                    break self.initial_of(walk);
-                }
-                Flow::Assign { before, target } => {
-                    match self.type_at_assignment(walk, flow, target) {
-                        AtAssignment::Type(t) => break t,
-                        AtAssignment::Antecedent(then) => {
-                            pending.push((then, std::mem::take(&mut shared_flow)));
-                        }
-                        AtAssignment::Unaffected => {}
-                    }
-                    flow = before;
-                }
-                Flow::ArrayMutation { before, expr } => {
-                    // `getTypeAtFlowArrayMutation`: a mutation of a different reference is skipped.
-                    if self.is_automatic_type(walk.declared)
-                        && self.is_mutation_of(&walk.reference, expr)
-                    {
-                        pending.push((Pending::Mutation(expr), std::mem::take(&mut shared_flow)));
-                    }
-                    flow = before;
-                }
-                Flow::Cond {
-                    before,
-                    expr,
-                    sense,
-                } => {
-                    // Every condition is applied to an evolving array.
-                    if self.is_automatic_type(walk.declared)
-                        || self.is_test_about(&walk.reference, flow, expr)
-                    {
-                        let then = Pending::Cond(expr, sense);
-                        pending.push((then, std::mem::take(&mut shared_flow)));
-                    } else if shared_flow.is_some() {
-                        pending.push((Pending::Nothing, std::mem::take(&mut shared_flow)));
-                    } else {
-                        passed += 1;
-                    }
-                    flow = before;
-                }
-                Flow::Switch {
-                    before,
-                    stmt,
-                    from,
-                    to,
-                } => {
-                    let then = Pending::Switch(stmt, from, to);
-                    pending.push((then, std::mem::take(&mut shared_flow)));
-                    flow = before;
-                }
-                Flow::Call { before, call } => {
-                    if self.flow_memo.is_idle_call(file, flow) {
-                        let (arrived_at, passed) = self.before_idle_calls(file, flow, before);
-                        walk.steps = walk.steps.saturating_add(passed);
-                        flow = arrived_at;
-                        continue;
-                    }
-                    // `getTypeAtFlowCall`
-                    let (sig, is_cached) = self.effects_signature_and_is_cached(file, call);
-                    if is_cached {
-                        self.note_settled_call(file, flow, sig.is_none());
-                    }
-                    if let Some(sig) = sig {
-                        match self.sig_predicate(sig) {
-                            Some(predicate) if predicate.asserts => {
-                                let then = Pending::Assert(call);
-                                pending.push((then, std::mem::take(&mut shared_flow)));
-                            }
-                            _ if self.sig_return(sig).is_never() => {
-                                break TypeId::UNREACHABLE_NEVER;
-                            }
-                            _ => {}
-                        }
-                    }
-                    flow = before;
-                }
-                Flow::Reduce {
-                    before,
-                    label,
-                    instead,
-                } => {
-                    walk.reduced.push((label, instead));
-                    let t = self.flow_type(walk, before);
-                    walk.reduced.pop();
-                    incomplete = t.incomplete;
-                    break t.ty;
-                }
-                Flow::Label { .. } => {
-                    let antecedents = branch_label_antecedents(bound, flow, &walk.reduced);
-                    if let [only] = *antecedents {
-                        flow = only;
-                        continue;
-                    }
-                    // `getTypeAtFlowBranchLabel`
-                    let mut types: SmallVec<[TypeId; 4]> = SmallVec::new();
-                    // The path that bypasses a `switch` when no case matched. It does not exist if
-                    // the `switch` is exhaustive, which is only computed when it would change the
-                    // result: the computation can re-enter here.
-                    let mut bypass = None;
-                    let mut settled = false;
-                    for &edge in antecedents {
-                        if bypass.is_none()
-                            && let Flow::Switch { stmt, from, to, .. } = bound.flow[edge.idx()]
-                            && from == to
-                        {
-                            bypass = Some((edge, stmt));
-                            continue;
-                        }
-                        let t = self.flow_type(walk, edge);
-                        if t.ty == walk.declared && self.starts_as_declared(walk) {
-                            types.clear();
-                            types.push(t.ty);
-                            incomplete = false;
-                            settled = true;
-                            break;
-                        }
-                        if !types.contains(&t.ty) {
-                            types.push(t.ty);
-                        }
-                        incomplete |= t.incomplete;
-                    }
-                    if !settled && let Some((edge, stmt)) = bypass {
-                        let t = self.flow_type(walk, edge);
-                        if !t.ty.is_never()
-                            && !types.contains(&t.ty)
-                            && !self.is_exhaustive_switch(file, stmt)
-                        {
-                            incomplete |= t.incomplete;
-                            if t.ty == walk.declared && self.starts_as_declared(walk) {
-                                types.clear();
-                                incomplete = false;
-                            }
-                            types.push(t.ty);
-                        }
-                    }
-                    break FlowType::new(self.union_or_evolving(&types, walk), incomplete).ty;
-                }
-                Flow::Loop { start, len } => {
-                    let edges = bound.edges(start, len);
-                    match *edges {
-                        // A loop label without antecedents: it follows `while (true) {}`.
-                        [] => break self.convert_auto_to_any(walk.declared),
-                        [only] => {
-                            flow = only;
-                            continue;
-                        }
-                        _ => {}
-                    }
-                    // `getTypeAtFlowLoopLabel`: a reference without a key has its declared type at
-                    // a loop label.
-                    let has_key = match walk.has_reference_key {
-                        Some(has_key) => has_key,
-                        None => {
-                            let has_key = self.has_flow_reference_key(&walk.reference);
-                            if has_key && self.hands_out_symbol_ids() {
-                                self.get_symbol_ids_of_flow_reference(&walk.reference);
-                            }
-                            walk.has_reference_key = Some(has_key);
-                            has_key
-                        }
-                    };
-                    if !has_key {
-                        break walk.declared;
-                    }
-                    let initial = self.initial_of(walk);
-                    let key = (file, flow, walk.declared, initial);
-                    if let Some(cached) =
-                        self.flow_memo.cached_flow_loop_type(&key, &walk.reference)
-                    {
-                        break cached;
-                    }
-                    // `flowLoopStack` belongs to the checker: a walk with the same key, started while another walk follows a back edge
-                    // of this loop, gets the union of the antecedent types found so far, marked incomplete.
-                    if let Some(i) = self.flow_loops.iter().rposition(|l| {
-                        l.0 == flow
-                            && l.1 == walk.reference
-                            && l.2 == walk.declared
-                            && l.3 == initial
-                    }) {
-                        let (so_far, depth) = (self.flow_loops[i].4, self.flow_loops[i].5);
-                        if self.is_flow_loop_visible(depth) {
-                            // Nothing computed from an incomplete type is cached.
-                            self.taint_from(depth);
-                            incomplete = true;
-                            break FlowType::new(so_far, true).ty;
-                        }
-                    }
-                    let entry = self.flow_type(walk, edges[0]);
-                    // The result is incomplete only if the first antecedent is.
-                    incomplete = entry.incomplete;
-                    let entry = entry.ty;
-                    let mut types: SmallVec<[TypeId; 4]> = smallvec![entry];
-                    // A walk in which a cycle is left unmarked behind `eager` is not one tsgo makes:
-                    // nothing of it is in `flowLoopCache`.
-                    let refusals = self.unmarked_refusals;
-                    // Once the type is the declared type, only subtypes could be added. Unlike at a
-                    // branch label, the initial type is not considered.
-                    if entry != walk.declared {
-                        // One pass: each back edge sees the types of the antecedents before it.
-                        walk.back_edges += 1;
-                        self.flow_loops.push((
-                            flow,
-                            walk.reference.clone(),
-                            walk.declared,
-                            initial,
-                            entry,
-                            self.stack.len(),
-                        ));
-                        let mut restarted = None;
-                        for &edge in &edges[1..] {
-                            let cache = std::mem::take(&mut self.flow_type_cache);
-                            let depth = std::mem::replace(
-                                &mut self.flow_type_cache_depth,
-                                self.stack.len(),
-                            );
-                            let t = self.flow_type(walk, edge).ty;
-                            self.flow_type_cache = cache;
-                            self.flow_type_cache_depth = depth;
-                            // "Control flow analysis was restarted and completed by checkExpressionCached."
-                            restarted = (self.flow_memo)
-                                .cached_flow_loop_type(&key, &walk.reference)
-                                .filter(|_| self.unmarked_refusals == refusals);
-                            if restarted.is_some() {
-                                break;
-                            }
-                            if t == walk.declared {
-                                types.push(t);
-                                break;
-                            }
-                            if !types.contains(&t) {
-                                types.push(t);
-                                let so_far = self.union_or_evolving_with(&types, false);
-                                if let Some(shared) = self.flow_loops.last_mut() {
-                                    shared.4 = so_far;
-                                }
-                            }
-                        }
-                        self.flow_loops.pop();
-                        walk.back_edges -= 1;
-                        if let Some(cached) = restarted {
-                            incomplete = false;
-                            break cached;
-                        }
-                    }
-                    let result = FlowType::new(self.union_or_evolving(&types, walk), incomplete);
-                    // A result that depends on a speculative evaluation, a provisional type or a
-                    // walk that bailed out is not cached.
-                    if !incomplete
-                        && !walk.too_deep
-                        && walk.steps < MAX_STEPS
-                        && self.unmarked_refusals == refusals
-                    {
-                        self.flow_memo
-                            .flow_loop_cache
-                            .entry(key)
-                            .or_default()
-                            .push((walk.reference.clone(), result.ty));
-                        self.flow_memo.flow_loop_cached_at = self.work;
-                    }
-                    break result.ty;
-                }
-            }
-        };
-        (walk.depth, walk.crossed) = (depth, crossed);
-        if walk.too_deep {
-            return FlowType::new(TypeId::ERROR, false);
-        }
-        if shared_flow.is_some() {
-            walk.shared_flows
-                .push(shared_flow, FlowType { ty, incomplete });
-        }
-        let reference = &walk.reference;
-        while let Some((then, shared_flow)) = pending.pop() {
-            // A condition is applied to the finalized array type; if it narrows nothing, the array
-            // stays evolving. `getTypeAtFlowArrayMutation` does not finalize it.
-            let seen = match then {
-                Pending::Mutation(_) | Pending::Nothing => ty,
-                _ => self.finalize_evolving_array(ty),
-            };
-            let narrowed = match then {
-                // Applied to the finalized array type: the array stops evolving.
-                Pending::NonNull => {
-                    incomplete = false;
-                    ty = seen;
-                    self.non_nullable_type_if_needed(seen)
-                }
-                Pending::Nothing => seen,
-                // Only `getTypeAtFlowCondition` returns `never` as it is.
-                Pending::Cond(..) if ty.is_never() => seen,
-                Pending::Cond(expr, sense) => self.narrow(reference, seen, expr, sense),
-                Pending::Switch(stmt, from, to) => {
-                    self.narrow_by_switch(reference, seen, stmt, from as usize, to as usize)
-                }
-                Pending::Assert(call) => self.narrow_by_assertion(reference, seen, call),
-                Pending::Compound => self.base_of_literal(seen),
-                Pending::Mutation(expr) => {
-                    ty = self.after_array_mutation(file, ty, expr);
-                    seen
-                }
-            };
-            if narrowed != seen {
-                ty = FlowType::new(narrowed, incomplete).ty;
-            }
-            if shared_flow.is_some() {
-                walk.shared_flows
-                    .push(shared_flow, FlowType { ty, incomplete });
-            }
-        }
-        FlowType { ty, incomplete }
+        self.walk_flow(&TsFlowDomain { file: walk.reference.file }, walk, start)
     }
 
     /// `checkNonNullTypeWithReporter`: `ty` without `null` and `undefined`, where neither is
@@ -8063,99 +7811,14 @@ impl<'p, 's> Checker<'p, 's> {
         reachable
     }
 
-    /// `isReachableFlowNodeWorker`
+    /// `isReachableFlowNodeWorker`, through the shared TS/native traversal.
     fn is_reachable_worker(
         &mut self,
         file: FileId,
-        mut flow: FlowId,
+        flow: FlowId,
         reduced: &mut Vec<(FlowId, FlowId)>,
     ) -> bool {
-        let bound = self.bound(file);
-        // TypeScript calls itself at a shared node and stores what it gets. A function with 30,000
-        // statements has as many in a row, so here these invocations wait in a list, the outermost
-        // first.
-        let mut shared: SmallVec<[(FlowId, Memoizable); 2]> = SmallVec::new();
-        let reachable = loop {
-            if (file, flow) == (self.last_flow_node.0, self.last_flow_node.1) {
-                break self.last_flow_node.2;
-            }
-            if bound.is_shared(flow) {
-                if let Some(kept) = self.p.flow_node_reachable.get(&self.task, &(file, flow)) {
-                    break kept;
-                }
-                shared.push((flow, self.begin_memoizable()));
-            }
-            match bound.flow[flow.idx()] {
-                Flow::Unreachable => break false,
-                Flow::Start { .. } | Flow::StartInvoked { .. } => break true,
-                Flow::Assign { before, .. }
-                | Flow::Cond { before, .. }
-                | Flow::ArrayMutation { before, .. } => flow = before,
-                Flow::Call { before, call } => {
-                    let sig = if self.flow_memo.is_idle_call(file, flow) {
-                        None
-                    } else {
-                        let (sig, is_cached) = self.effects_signature_and_is_cached(file, call);
-                        if is_cached {
-                            self.note_settled_call(file, flow, sig.is_none());
-                        }
-                        sig
-                    };
-                    if let Some(sig) = sig
-                        && (self.asserts_false_expression(file, call, sig)
-                            || self.sig_return(sig).is_never())
-                    {
-                        break false;
-                    }
-                    flow = before;
-                }
-                Flow::Switch {
-                    before,
-                    stmt,
-                    from,
-                    to,
-                } => {
-                    if from == to && self.is_exhaustive_switch(file, stmt) {
-                        break false;
-                    }
-                    flow = before;
-                }
-                Flow::Reduce {
-                    before,
-                    label,
-                    instead,
-                } => {
-                    if self.is_stack_low() {
-                        break true;
-                    }
-                    // "Cache is unreliable once we start adjusting labels"
-                    self.last_flow_node.1 = FlowId::NONE;
-                    reduced.push((label, instead));
-                    let reachable = self.is_reachable_worker(file, before, reduced);
-                    reduced.pop();
-                    break reachable;
-                }
-                Flow::Label { .. } => {
-                    // One native frame per label. With `allowUnreachableCode: true` no earlier statement has filled the cache.
-                    if self.is_stack_low() {
-                        break true;
-                    }
-                    break branch_label_antecedents(bound, flow, reduced)
-                        .iter()
-                        .any(|&edge| self.is_reachable_worker(file, edge, reduced));
-                }
-                Flow::Loop { start, len } => match bound.edges(start, len).first() {
-                    Some(&entry) => flow = entry,
-                    None => break false,
-                },
-            }
-        };
-        while let Some((flow, begun)) = shared.pop() {
-            if self.end_memoizable(begun).is_some() {
-                (self.p.flow_node_reachable).rewrite(&self.task, (file, flow), reachable);
-            }
-        }
-        reachable
+        self.walk_reachable(&TsFlowDomain { file }, flow, reduced)
     }
 
     /// `isPostSuperFlowNode`

@@ -306,8 +306,44 @@
       "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
       "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
       "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/flow.rs",
+      "patch": "vendor/patches/bun-sema-native-flow.patch",
+      "reason": "Extract shared TS/native flow traversal and add original-source graph providers with native loop, narrowing and reachability workers.",
+      "patch_sha256": "73804b0c565fae6b5033a06f48e190355dc4250246ce6f11af3a9ce3caabd11d"
+    },
+    {
+      "path": "src/sema/check/flow_walk.rs",
+      "patch": "vendor/patches/bun-sema-native-flow.patch",
+      "reason": "Extract shared TS/native flow traversal and add original-source graph providers with native loop, narrowing and reachability workers.",
+      "added": true,
+      "patch_sha256": "73804b0c565fae6b5033a06f48e190355dc4250246ce6f11af3a9ce3caabd11d"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-flow.patch",
+      "reason": "Extract shared TS/native flow traversal and add original-source graph providers with native loop, narrowing and reachability workers.",
+      "added": true,
+      "patch_sha256": "73804b0c565fae6b5033a06f48e190355dc4250246ce6f11af3a9ce3caabd11d"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-flow.patch",
+      "reason": "Extract shared TS/native flow traversal and add original-source graph providers with native loop, narrowing and reachability workers.",
+      "patch_sha256": "73804b0c565fae6b5033a06f48e190355dc4250246ce6f11af3a9ce3caabd11d"
     }
   ],
+  "source_additions": {
+    "src/sema/check/flow_walk.rs": {
+      "extracted_sha256": "e6e19f756448f41aa78852bcd3bc49e665e3c3ccd4466ede5d0f81d05c9e447e",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
+    },
+    "src/sema/check/native_flow.rs": {
+      "extracted_sha256": "f35990868c827fa3e3fdffe96c76fcf46e9860cd407b38e855157163720d045e",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
+    }
+  },
   "files": {
     "Cargo.lock": {
       "upstream": "Cargo.lock",
@@ -1217,7 +1253,7 @@
     "src/sema/check/flow.rs": {
       "upstream": "src/sema/check/flow.rs",
       "sha256": "eca4c6e84d836502b89074917574c1f0623497ab0b0f11b06b729296b4d2c467",
-      "extracted_sha256": "c65727d4012d6accbed12515e01e5ce0ed01497d2d283a7e4f15811d2beeb8b3"
+      "extracted_sha256": "16e554e93d0f55397fa600bb3b257179fe00992270acab4a0c7f252b2262ac08"
     },
     "src/sema/check/grammarchecks.rs": {
       "upstream": "src/sema/check/grammarchecks.rs",
@@ -1262,7 +1298,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "7418fdbc2d1a3a4e75444aa7bd0015b2f1651f6da168e6e94dfc287be73cbefb"
+      "extracted_sha256": "0e0d7f0ba835f05761f91ff9b265e3be8b35a5cf4a0a55c290e043452c0758ba"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",

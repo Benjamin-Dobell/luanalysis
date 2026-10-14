@@ -1,0 +1,2300 @@
+diff --git a/src/sema/check/flow.rs b/src/sema/check/flow.rs
+--- a/src/sema/check/flow.rs
++++ b/src/sema/check/flow.rs
+@@ -6,6 +6,9 @@
+ use super::expr::TargetKind;
+ use super::related::Place;
+ use super::shape::UntypedProperty;
++use super::flow_walk::{FlowDomain, FlowStep, FlowType, ReachDomain, ReachStep, WalkState};
++use super::flow_walk::MAX_STEPS;
++pub(super) use super::flow_walk::MAX_FLOW_DEPTH;
+ use super::*;
+ use crate::bind::{
+     Decl, Flow, FlowId, FlowTarget, FnOwner, MemberOwner, Parent, PatParent, SymbolId, UNREACHABLE,
+@@ -151,6 +154,8 @@
+ /// nested computation for the same node has assigned.
+ #[derive(Default)]
+ pub(super) struct FlowMemo {
++    /// Original-source caches are never indexed by a TS file/node identifier.
++    pub(super) native_state: super::native_flow::NativeFlowState,
+     /// See `index_narrowing_subjects`: the file it is for; indexed by symbol, the first flow node
+     /// with a test, a `switch` or an assignment that concerns it (empty: the file has no such
+     /// filter); one bit per symbol, for call statements that have not all been found idle; those
+@@ -215,7 +220,7 @@
+     /// initial type, then the reference.
+     flow_loop_cache: FxHashMap<FlowLoopKey, SmallVec<[(Reference, TypeId); 1]>>,
+     /// `Checker::work` when it got its latest entry.
+-    flow_loop_cached_at: u64,
++    pub(super) flow_loop_cached_at: u64,
+     /// `switchStatementLinks`
+     switch_statement_links: FxHashMap<(FileId, StmtId), SwitchStatementLinks>,
+     /// `contextFreeTypes`, for the results that depend on the incomplete type of a loop in
+@@ -319,59 +324,6 @@
+     PastLastAssignment(SymbolId, ExprId),
+ }
+ 
+-/// `FlowType`
+-#[derive(Copy, Clone)]
+-struct FlowType {
+-    ty: TypeId,
+-    /// It depends on the types collected so far by a loop whose analysis is in progress.
+-    incomplete: bool,
+-}
+-
+-impl FlowType {
+-    /// `newFlowType`
+-    fn new(ty: TypeId, incomplete: bool) -> FlowType {
+-        FlowType {
+-            ty: if incomplete && ty.is_never() {
+-                TypeId::SILENT_NEVER
+-            } else {
+-                ty
+-            },
+-            incomplete,
+-        }
+-    }
+-}
+-
+-/// `sharedFlows[sharedFlowStart:]`
+-#[derive(Default)]
+-struct SharedFlows {
+-    few: SmallVec<[(FlowId, FlowType); 8]>,
+-    /// Overflow entries, added once `few` was full.
+-    many: FxHashMap<FlowId, FlowType>,
+-}
+-
+-impl SharedFlows {
+-    fn get(&self, flow: FlowId) -> Option<FlowType> {
+-        match self.few.iter().find(|known| known.0 == flow) {
+-            Some(known) => Some(known.1),
+-            None if self.many.is_empty() => None,
+-            None => self.many.get(&flow).copied(),
+-        }
+-    }
+-
+-    /// A node that is visited again while its type is computed has two entries. The search finds
+-    /// the first.
+-    fn push(&mut self, flow: FlowId, ty: FlowType) {
+-        if self.get(flow).is_some() {
+-            return;
+-        }
+-        if self.few.len() < self.few.inline_size() {
+-            self.few.push((flow, ty));
+-        } else {
+-            self.many.insert(flow, ty);
+-        }
+-    }
+-}
+-
+ /// What an invocation of `getTypeAtFlowNode` does to the type at `flow.Antecedent`.
+ enum Pending {
+     Cond(ExprId, bool),
+@@ -420,20 +372,17 @@
+     /// How many starts of functions the path to the current flow node has crossed. Each
+     /// antecedent of a label reaches the start of its function on a path of its own.
+     crossed: u32,
+-    shared_flows: SharedFlows,
+-    /// `reduceLabels`: the start of each `finally` block being traversed backwards, and the label
+-    /// whose antecedents are used instead.
+-    reduced: Vec<(FlowId, FlowId)>,
+-    /// How many back edges of loops are being followed.
+-    back_edges: u32,
+-    steps: u32,
+-    /// The number of nested `getTypeAtFlowNode` invocations that would be in progress.
+-    depth: u32,
+-    /// The depth reached `MAX_FLOW_DEPTH` (`flowAnalysisDisabled`): the result is errorType.
+-    too_deep: bool,
++    traversal: WalkState<FlowId>,
+ }
+ 
+-const MAX_STEPS: u32 = 2_000_000;
++impl std::ops::Deref for Walk {
++    type Target = WalkState<FlowId>;
++    fn deref(&self) -> &Self::Target { &self.traversal }
++}
++
++impl std::ops::DerefMut for Walk {
++    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.traversal }
++}
+ 
+ /// A key for a name or for `this`, not necessarily unique. 0 for any other root of a reference.
+ fn root_key(root: Root) -> u32 {
+@@ -596,9 +545,6 @@
+             .any(|chain| chain.0 == root && (chain.1 == 0 || chain.1 == first))
+     }
+ }
+-
+-/// `getTypeAtFlowNode`: the invocation that finds this many in progress bails out.
+-pub(super) const MAX_FLOW_DEPTH: u32 = 2000;
+ 
+ /// See `first_unsettled_call`.
+ const NEVER_RETURNS: u32 = u32::MAX - 1;
+@@ -742,12 +688,196 @@
+                 Crossing::No
+             },
+             crossed: 0,
+-            shared_flows: SharedFlows::default(),
+-            reduced: Vec::new(),
+-            back_edges: 0,
+-            steps: 0,
+-            depth: 0,
+-            too_deep: false,
++            traversal: WalkState::default(),
++        }
++    }
++}
++
++/// The TS domain keeps its HIR operations and existing memo namespaces. Only
++/// traversal/joins/loop progression are delegated to the common walker.
++struct TsFlowDomain { file: FileId }
++
++impl FlowDomain for TsFlowDomain {
++    type Node = FlowId;
++    type Transfer = Pending;
++    type Walk = Walk;
++
++    fn state(walk: &Walk) -> &WalkState<FlowId> { &walk.traversal }
++    fn state_mut(walk: &mut Walk) -> &mut WalkState<FlowId> { &mut walk.traversal }
++    fn declared(walk: &Walk) -> TypeId { walk.declared }
++    fn crossed(walk: &Walk) -> u32 { walk.crossed }
++    fn set_crossed(walk: &mut Walk, crossed: u32) { walk.crossed = crossed; }
++    fn initial(&self, checker: &mut Checker<'_, '_>, walk: &mut Walk) -> TypeId { checker.initial_of(walk) }
++    fn starts_as_declared(&self, checker: &mut Checker<'_, '_>, walk: &mut Walk) -> bool { checker.starts_as_declared(walk) }
++    fn shared(&self, checker: &Checker<'_, '_>, node: FlowId) -> bool { checker.bound(self.file).is_shared(node) }
++
++    fn step(&self, checker: &mut Checker<'_, '_>, walk: &mut Walk, node: FlowId) -> FlowStep<FlowId, Pending> {
++        let file = self.file;
++        let bound = checker.bound(file);
++        match bound.flow[node.idx()] {
++            Flow::Unreachable => FlowStep::Value(checker.convert_auto_to_any(walk.declared)),
++            Flow::Start { outer, arrow } => {
++                let is_this = arrow && walk.reference.root == Root::This && walk.reference.path.is_empty();
++                if outer.is_some() && (is_this || checker.settle_crossing(walk)) {
++                    FlowStep::Follow { before: outer, transfer: None, count_passed: false }
++                } else { FlowStep::Initial }
++            }
++            Flow::StartInvoked { outer, arrow } => {
++                let continues = walk.reference.path.is_empty() && match walk.reference.root {
++                    Root::Symbol(_) | Root::Global(_) => true,
++                    Root::This => arrow,
++                    Root::Super | Root::ImportMeta | Root::NewTarget(_) | Root::Pattern(_) | Root::Params(_) | Root::Other => false,
++                };
++                if continues || checker.settle_crossing(walk) {
++                    FlowStep::Follow { before: outer, transfer: None, count_passed: false }
++                } else { FlowStep::Initial }
++            }
++            Flow::Assign { before, target } => {
++                let transfer = match checker.type_at_assignment(walk, node, target) {
++                    AtAssignment::Type(ty) => return FlowStep::Value(ty),
++                    AtAssignment::Antecedent(transfer) => Some(transfer),
++                    AtAssignment::Unaffected => None,
++                };
++                FlowStep::Follow { before, transfer, count_passed: false }
++            }
++            Flow::ArrayMutation { before, expr } => {
++                let transfer = (checker.is_automatic_type(walk.declared) && checker.is_mutation_of(&walk.reference, expr)).then_some(Pending::Mutation(expr));
++                FlowStep::Follow { before, transfer, count_passed: false }
++            }
++            Flow::Cond { before, expr, sense } => {
++                let transfer = (checker.is_automatic_type(walk.declared) || checker.is_test_about(&walk.reference, node, expr)).then_some(Pending::Cond(expr, sense));
++                FlowStep::Follow { before, transfer, count_passed: true }
++            }
++            Flow::Switch { before, stmt, from, to } => FlowStep::Follow { before, transfer: Some(Pending::Switch(stmt, from, to)), count_passed: false },
++            Flow::Call { before, call } => {
++                if checker.flow_memo.is_idle_call(file, node) {
++                    let (arrived_at, passed) = checker.before_idle_calls(file, node, before);
++                    walk.steps = walk.steps.saturating_add(passed);
++                    return FlowStep::Follow { before: arrived_at, transfer: None, count_passed: false };
++                }
++                let (sig, is_cached) = checker.effects_signature_and_is_cached(file, call);
++                if is_cached { checker.note_settled_call(file, node, sig.is_none()); }
++                let transfer = if let Some(sig) = sig {
++                    match checker.sig_predicate(sig) {
++                        Some(predicate) if predicate.asserts => Some(Pending::Assert(call)),
++                        _ if checker.sig_return(sig).is_never() => return FlowStep::Value(TypeId::UNREACHABLE_NEVER),
++                        _ => None,
++                    }
++                } else { None };
++                FlowStep::Follow { before, transfer, count_passed: false }
++            }
++            Flow::Reduce { before, label, instead } => FlowStep::Reduce { before, label, instead },
++            Flow::Label { .. } => {
++                let antecedents = branch_label_antecedents(bound, node, &walk.reduced);
++                if antecedents.len() == 1 { return FlowStep::Branch { edges: antecedents.to_vec(), bypass: None }; }
++                let mut bypass = None;
++                let mut edges = Vec::new();
++                for &edge in antecedents {
++                    if bypass.is_none() && matches!(bound.flow[edge.idx()], Flow::Switch { from, to, .. } if from == to) { bypass = Some(edge); }
++                    else { edges.push(edge); }
++                }
++                FlowStep::Branch { edges, bypass }
++            }
++            Flow::Loop { start, len } => FlowStep::Loop { edges: bound.edges(start, len).to_vec() },
++        }
++    }
++
++    fn transfer(&self, checker: &mut Checker<'_, '_>, walk: &Walk, transfer: Pending, previous: FlowType) -> FlowType {
++        let mut ty = previous.ty;
++        let mut incomplete = previous.incomplete;
++        let seen = match transfer { Pending::Mutation(_) | Pending::Nothing => ty, _ => checker.finalize_evolving_array(ty) };
++        let narrowed = match transfer {
++            Pending::NonNull => { incomplete = false; ty = seen; checker.non_nullable_type_if_needed(seen) }
++            Pending::Nothing => seen,
++            Pending::Cond(..) if ty.is_never() => seen,
++            Pending::Cond(expr, sense) => checker.narrow(&walk.reference, seen, expr, sense),
++            Pending::Switch(stmt, from, to) => checker.narrow_by_switch(&walk.reference, seen, stmt, from as usize, to as usize),
++            Pending::Assert(call) => checker.narrow_by_assertion(&walk.reference, seen, call),
++            Pending::Compound => checker.base_of_literal(seen),
++            Pending::Mutation(expr) => { ty = checker.after_array_mutation(self.file, ty, expr); seen }
++        };
++        if narrowed != seen { ty = FlowType::new(narrowed, incomplete).ty; }
++        FlowType { ty, incomplete }
++    }
++
++    fn empty_transfer(&self) -> Pending { Pending::Nothing }
++    fn bypass_live(&self, checker: &mut Checker<'_, '_>, node: FlowId) -> bool {
++        match checker.bound(self.file).flow[node.idx()] {
++            Flow::Switch { stmt, .. } => !checker.is_exhaustive_switch(self.file, stmt),
++            _ => true,
++        }
++    }
++    fn has_key(&self, checker: &mut Checker<'_, '_>, walk: &mut Walk) -> bool {
++        if let Some(key) = walk.has_reference_key { return key; }
++        let key = checker.has_flow_reference_key(&walk.reference);
++        if key && checker.hands_out_symbol_ids() { checker.get_symbol_ids_of_flow_reference(&walk.reference); }
++        walk.has_reference_key = Some(key);
++        key
++    }
++    fn loop_cached(&self, checker: &Checker<'_, '_>, walk: &Walk, node: FlowId, initial: TypeId) -> Option<TypeId> {
++        checker.flow_memo.cached_flow_loop_type(&(self.file, node, walk.declared, initial), &walk.reference)
++    }
++    fn loop_active(&self, checker: &Checker<'_, '_>, walk: &Walk, node: FlowId, initial: TypeId) -> Option<(TypeId, usize)> {
++        checker.flow_loops.iter().rfind(|entry| entry.0 == node && entry.1 == walk.reference && entry.2 == walk.declared && entry.3 == initial).map(|entry| (entry.4, entry.5))
++    }
++    fn push_loop(&self, checker: &mut Checker<'_, '_>, walk: &Walk, node: FlowId, initial: TypeId, ty: TypeId) {
++        checker.flow_loops.push((node, walk.reference.clone(), walk.declared, initial, ty, checker.stack.len()));
++    }
++    fn update_loop(&self, checker: &mut Checker<'_, '_>, ty: TypeId) { if let Some(entry) = checker.flow_loops.last_mut() { entry.4 = ty; } }
++    fn pop_loop(&self, checker: &mut Checker<'_, '_>) { checker.flow_loops.pop(); }
++    fn save_loop(&self, checker: &mut Checker<'_, '_>, walk: &Walk, node: FlowId, initial: TypeId, ty: TypeId) {
++        checker.flow_memo.flow_loop_cache.entry((self.file, node, walk.declared, initial)).or_default().push((walk.reference.clone(), ty));
++        checker.flow_memo.flow_loop_cached_at = checker.work;
++    }
++    fn disabled(&self, checker: &Checker<'_, '_>, _: &Walk) -> bool { checker.flow_analysis_disabled.contains(&self.file) }
++    fn too_deep(&self, checker: &mut Checker<'_, '_>, walk: &Walk, _: FlowId) {
++        checker.disable_flow_analysis(self.file);
++        checker.report_flow_control_error(&walk.reference);
++    }
++    fn step_limit(&self, _: &mut Checker<'_, '_>, _: &Walk, _: FlowId) {}
++    fn finish(&self, checker: &mut Checker<'_, '_>, walk: &Walk, evolved: TypeId) -> TypeId {
++        let expression = walk.reference.at;
++        let result = if matches!(checker.data(evolved), TypeData::EvolvingArray(_)) && expression.is_some() && checker.is_evolving_array_operation_target(self.file, expression) {
++            checker.auto_array_type
++        } else { checker.finalize_evolving_array(evolved) };
++        if result == TypeId::UNREACHABLE_NEVER || expression.is_some() && !result.is_never() && checker.is_operand_of_non_null(self.file, expression) && checker.type_with_facts(result, facts::NE_UNDEFINED_OR_NULL).is_never() { walk.declared }
++        else { result }
++    }
++    fn back_edge<R>(&self, checker: &mut Checker<'_, '_>, work: impl FnOnce(&mut Checker<'_, '_>) -> R) -> R { work(checker) }
++}
++
++impl ReachDomain for TsFlowDomain {
++    type Node = FlowId;
++    fn latest(&self, checker: &Checker<'_, '_>, node: FlowId) -> Option<bool> {
++        ((self.file, node) == (checker.last_flow_node.0, checker.last_flow_node.1)).then_some(checker.last_flow_node.2)
++    }
++    fn reset_latest(&self, checker: &mut Checker<'_, '_>) { checker.last_flow_node.1 = FlowId::NONE; }
++    fn shared(&self, checker: &Checker<'_, '_>, node: FlowId) -> bool { checker.bound(self.file).is_shared(node) }
++    fn cached(&self, checker: &Checker<'_, '_>, node: FlowId) -> Option<bool> { checker.p.flow_node_reachable.get(&checker.task, &(self.file, node)) }
++    fn remember(&self, checker: &mut Checker<'_, '_>, node: FlowId, reachable: bool, _stored: Stored) { checker.p.flow_node_reachable.rewrite(&checker.task, (self.file, node), reachable); }
++    fn step(&self, checker: &mut Checker<'_, '_>, node: FlowId, reduced: &[(FlowId, FlowId)]) -> ReachStep<FlowId> {
++        let file = self.file;
++        let bound = checker.bound(file);
++        match bound.flow[node.idx()] {
++            Flow::Unreachable => ReachStep::Value(false),
++            Flow::Start { .. } | Flow::StartInvoked { .. } => ReachStep::Value(true),
++            Flow::Assign { before, .. } | Flow::Cond { before, .. } | Flow::ArrayMutation { before, .. } => ReachStep::Follow(before),
++            Flow::Call { before, call } => {
++                let sig = if checker.flow_memo.is_idle_call(file, node) { None } else {
++                    let (sig, cached) = checker.effects_signature_and_is_cached(file, call);
++                    if cached { checker.note_settled_call(file, node, sig.is_none()); }
++                    sig
++                };
++                if let Some(sig) = sig && (checker.asserts_false_expression(file, call, sig) || checker.sig_return(sig).is_never()) { ReachStep::Value(false) }
++                else { ReachStep::Follow(before) }
++            }
++            Flow::Switch { before, stmt, from, to } => {
++                if from == to && checker.is_exhaustive_switch(file, stmt) { ReachStep::Value(false) }
++                else { ReachStep::Follow(before) }
++            }
++            Flow::Reduce { before, label, instead } => ReachStep::Reduce { before, label, instead },
++            Flow::Label { .. } => ReachStep::Branch(branch_label_antecedents(bound, node, reduced).to_vec()),
++            Flow::Loop { start, len } => match bound.edges(start, len).first() { Some(&entry) => ReachStep::Follow(entry), None => ReachStep::Value(false) },
+         }
+     }
+ }
+@@ -809,7 +939,7 @@
+ }
+ 
+ /// See `Checker::begin_memoizable`.
+-struct Memoizable {
++pub(super) struct Memoizable {
+     scope: Scope,
+     /// `Checker::relation_too_complex` and `Checker::reliability` around it.
+     too_complex: bool,
+@@ -819,14 +949,14 @@
+ impl<'p, 's> Checker<'p, 's> {
+     /// The result of `work`, and the permission to store it in a memo table: it is finished, and computing it again would raise none of
+     /// the flags that relations, unions and intersections raise for their callers.
+-    fn run_memoizable<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> (T, Option<Stored>) {
++    pub(super) fn run_memoizable<T>(&mut self, work: impl FnOnce(&mut Self) -> T) -> (T, Option<Stored>) {
+         let begun = self.begin_memoizable();
+         let result = work(self);
+         (result, self.end_memoizable(begun))
+     }
+ 
+     /// `run_memoizable` in two halves, for work that is not a call. They nest.
+-    fn begin_memoizable(&mut self) -> Memoizable {
++    pub(super) fn begin_memoizable(&mut self) -> Memoizable {
+         Memoizable {
+             scope: self.begin_scope(),
+             too_complex: std::mem::take(&mut self.relation_too_complex),
+@@ -834,7 +964,7 @@
+         }
+     }
+ 
+-    fn end_memoizable(&mut self, begun: Memoizable) -> Option<Stored> {
++    pub(super) fn end_memoizable(&mut self, begun: Memoizable) -> Option<Stored> {
+         let raises_no_flag = !self.relation_too_complex && self.reliability == 0;
+         self.relation_too_complex |= begun.too_complex;
+         self.reliability |= begun.reliability;
+@@ -1727,7 +1857,8 @@
+     /// `ExhaustiveStateComputing`: it goes on with an empty `flowLoopStack`
+     /// (`checkExpressionCached`), and what is checked again from `stack[since]` ends at that state.
+     pub(super) fn flow_loop_pushed_since(&self, since: usize) -> Option<usize> {
+-        let pushed = self.flow_loops.last().map(|pushed| pushed.5);
++        let pushed = self.flow_loops.last().map(|pushed| pushed.5)
++            .into_iter().chain(self.flow_memo.native_state.loops.last().map(|pushed| pushed.depth)).max();
+         let computing = self.flow_memo.exhaustive_states_computing.last();
+         pushed
+             .filter(|&depth| depth > since && self.is_flow_loop_visible(depth))
+@@ -1743,7 +1874,8 @@
+     /// Whether `flow_loop_pushed_since` may have a depth.
+     #[inline]
+     pub(super) fn is_flow_loop_or_exhaustive_state_in_progress(&self) -> bool {
+-        !self.flow_loops.is_empty() || !self.flow_memo.exhaustive_states_computing.is_empty()
++        !self.flow_loops.is_empty() || !self.flow_memo.native_state.loops.is_empty()
++            || !self.flow_memo.exhaustive_states_computing.is_empty()
+     }
+ 
+     /// `containsMatchingReference(reference, e)`: `e` is `x.a` or `x` for `x.a.b`.
+@@ -3388,6 +3520,40 @@
+             self.flow_memo.equal_types.insert(key, narrowed);
+         }
+         narrowed
++    }
++
++    /// Native primitive equality uses strict equality, never JS coercion.
++    pub fn native_equal_flow_type(&mut self, ty: TypeId, other: TypeId, equal: bool) -> TypeId {
++        let value = self.regular(other);
++        self.narrow_by_equal_type(ty, other, value, false, equal)
++    }
++
++    /// Lua's truth domain consists of nil and false only. These type-only
++    /// operations share union filtering/intersections and native constraints;
++    /// facts::TRUTHY/FALSY would wrongly discard zero and the empty string.
++    pub fn lua_truthiness_type(&mut self, ty: TypeId, sense: bool) -> TypeId {
++        if self.is_any(ty) || ty.is_never() { return ty; }
++        if self.is_type_param(ty) {
++            let constraint = self.base_constraint_of(ty).unwrap_or(TypeId::UNKNOWN);
++            let candidate = if constraint == ty { TypeId::UNKNOWN } else { constraint };
++            let candidate = self.lua_truthiness_type(candidate, sense);
++            return self.intersection(&[ty, candidate]);
++        }
++        if ty == TypeId::UNKNOWN {
++            // This session's native language has Lua primitives/objects, rather
++            // than JS symbols/bigints/null. Preserve every possible Lua value.
++            return if sense {
++                self.union(&[TypeId::NUMBER, TypeId::STRING, TypeId::TRUE, TypeId::OBJECT])
++            } else { self.union(&[TypeId::UNDEFINED, TypeId::FALSE]) };
++        }
++        if sense {
++            let non_nil = self.native_equal_flow_type(ty, TypeId::UNDEFINED, false);
++            self.native_equal_flow_type(non_nil, TypeId::FALSE, false)
++        } else {
++            let nil = self.native_equal_flow_type(ty, TypeId::UNDEFINED, true);
++            let false_type = self.native_equal_flow_type(ty, TypeId::FALSE, true);
++            self.union(&[nil, false_type])
++        }
+     }
+ 
+     /// Narrows `ty` given whether it is equal (`sense`) to a value of type `as_written`.
+@@ -5726,55 +5892,10 @@
+         }
+     }
+ 
+-    /// `getFlowTypeOfReferenceEx`, once the `FlowState` is set up.
++    /// `getFlowTypeOfReferenceEx`, through the shared reference finalization.
+     fn get_flow_type_of_reference(&mut self, mut walk: Walk, flow: FlowId) -> TypeId {
+-        let (file, e, declared) = (walk.reference.file, walk.reference.at, walk.declared);
+-        if self.flow_analysis_disabled.contains(&file) {
+-            return TypeId::ERROR;
+-        }
+-        self.flow_invocation_count += 1;
+-        let outer = std::mem::replace(&mut self.walk_declared, declared);
+-        let evolved = self.flow_type(&mut walk, flow);
+-        self.walk_declared = outer;
+-        // The walk that completes a loop goes on with the entries that the back edges left in
+-        // `sharedFlows`. The next walk finds the loop in `flowLoopCache`, and may find another
+-        // type. What follows from this one stays in `flowTypeCache`.
+-        let depth = self.flow_type_cache_depth;
+-        if evolved.incomplete && depth != usize::MAX && self.is_flow_loop_visible(depth) {
+-            self.taint_from(depth);
+-        }
+-        let evolved = evolved.ty;
+-        // errorType, and `reportFlowControlError`
+-        if walk.too_deep {
+-            self.disable_flow_analysis(file);
+-            self.report_flow_control_error(&walk.reference);
+-            return TypeId::ERROR;
+-        }
+-        if walk.steps >= MAX_STEPS {
+-            return declared;
+-        }
+-        // An operation that adds elements to an evolving array sees `autoArrayType`, whatever its
+-        // element type is by then.
+-        let result = if matches!(self.data(evolved), TypeData::EvolvingArray(_))
+-            && e.is_some()
+-            && self.is_evolving_array_operation_target(file, e)
+-        {
+-            self.auto_array_type
+-        } else {
+-            self.finalize_evolving_array(evolved)
+-        };
+-        // `x!` where `x` has been narrowed to only the types that `!` removes.
+-        if result == TypeId::UNREACHABLE_NEVER
+-            || e.is_some()
+-                && !result.is_never()
+-                && self.is_operand_of_non_null(file, e)
+-                && self
+-                    .type_with_facts(result, facts::NE_UNDEFINED_OR_NULL)
+-                    .is_never()
+-        {
+-            return declared;
+-        }
+-        result
++        let domain = TsFlowDomain { file: walk.reference.file };
++        self.walk_flow_reference(&domain, &mut walk, flow).ty
+     }
+ 
+     /// `getFlowTypeOfDestructuring` for a binding pattern element that is not a rest element.
+@@ -6327,7 +6448,7 @@
+     }
+ 
+     /// `finalizeEvolvingArrayType`, `createFinalArrayType`
+-    fn finalize_evolving_array(&mut self, ty: TypeId) -> TypeId {
++    pub(super) fn finalize_evolving_array(&mut self, ty: TypeId) -> TypeId {
+         let TypeData::EvolvingArray(element) = *self.data(ty) else {
+             return ty;
+         };
+@@ -6354,11 +6475,10 @@
+     /// evolving arrays.
+     /// A type that is not part of the initial type of the reference was introduced by `instanceof`,
+     /// `in` or a type guard, and is removed again where it joins a type it is a subtype of.
+-    fn union_or_evolving(&mut self, types: &[TypeId], walk: &mut Walk) -> TypeId {
++    pub(super) fn flow_join(&mut self, types: &[TypeId], initial: TypeId) -> TypeId {
+         if types.len() < 2 {
+             return self.union_or_evolving_with(types, false);
+         }
+-        let initial = self.initial_of(walk);
+         let is_subset = |c: &Self, t: TypeId| {
+             t == initial
+                 || t.is_never()
+@@ -6369,7 +6489,7 @@
+     }
+ 
+     /// `getUnionOrEvolvingArrayType`
+-    fn union_or_evolving_with(&mut self, types: &[TypeId], subtype_reduction: bool) -> TypeId {
++    pub(super) fn union_or_evolving_with(&mut self, types: &[TypeId], subtype_reduction: bool) -> TypeId {
+         if let [only] = *types
+             && !matches!(
+                 self.data(only),
+@@ -6552,381 +6672,9 @@
+         self.evolving_array(element)
+     }
+ 
+-    /// `getTypeAtFlowNode`
++    /// `getTypeAtFlowNode`, through the shared TS/native traversal.
+     fn flow_type(&mut self, walk: &mut Walk, start: FlowId) -> FlowType {
+-        if walk.too_deep {
+-            return FlowType::new(TypeId::ERROR, false);
+-        }
+-        let file = walk.reference.file;
+-        let bound = self.bound(file);
+-        // The invocations that wait for the type at their antecedent, the outermost first, each
+-        // with its `sharedFlow`. They go on afterwards, the innermost first.
+-        let mut pending: SmallVec<[(Pending, FlowId); 8]> = SmallVec::new();
+-        // Number of invocations for a condition that does not apply to the reference and that have
+-        // no `sharedFlow`: they return what they get.
+-        let mut passed = 0;
+-        let mut flow = start;
+-        // `sharedFlow` of the innermost invocation.
+-        let mut shared_flow = FlowId::NONE;
+-        let (depth, crossed) = (walk.depth, walk.crossed);
+-        let mut incomplete = false;
+-        let mut ty = loop {
+-            walk.steps += 1;
+-            if walk.steps >= MAX_STEPS {
+-                break walk.declared;
+-            }
+-            walk.depth = depth + 1 + pending.len() as u32 + passed;
+-            if walk.depth > MAX_FLOW_DEPTH {
+-                walk.too_deep = true;
+-                break TypeId::ERROR;
+-            }
+-            if bound.is_shared(flow) {
+-                if let Some(known) = walk.shared_flows.get(flow) {
+-                    incomplete = known.incomplete;
+-                    shared_flow = FlowId::NONE;
+-                    break known.ty;
+-                }
+-                shared_flow = flow;
+-            }
+-            match bound.flow[flow.idx()] {
+-                // "Simply return the non-auto declared type to reduce follow-on errors."
+-                Flow::Unreachable => break self.convert_auto_to_any(walk.declared),
+-                Flow::Start { outer, arrow } => {
+-                    // An arrow function has no `this` of its own.
+-                    let is_this = arrow
+-                        && walk.reference.root == Root::This
+-                        && walk.reference.path.is_empty();
+-                    if outer.is_some() && (is_this || self.settle_crossing(walk)) {
+-                        flow = outer;
+-                        continue;
+-                    }
+-                    break self.initial_of(walk);
+-                }
+-                Flow::StartInvoked { outer, arrow } => {
+-                    let continues = walk.reference.path.is_empty()
+-                        && match walk.reference.root {
+-                            Root::Symbol(_) | Root::Global(_) => true,
+-                            Root::This => arrow,
+-                            // Never walked without a path, or walked with `crosses_functions`.
+-                            Root::Super
+-                            | Root::ImportMeta
+-                            | Root::NewTarget(_)
+-                            | Root::Pattern(_)
+-                            | Root::Params(_)
+-                            | Root::Other => false,
+-                        };
+-                    if continues || self.settle_crossing(walk) {
+-                        flow = outer;
+-                        continue;
+-                    }
+-                    break self.initial_of(walk);
+-                }
+-                Flow::Assign { before, target } => {
+-                    match self.type_at_assignment(walk, flow, target) {
+-                        AtAssignment::Type(t) => break t,
+-                        AtAssignment::Antecedent(then) => {
+-                            pending.push((then, std::mem::take(&mut shared_flow)));
+-                        }
+-                        AtAssignment::Unaffected => {}
+-                    }
+-                    flow = before;
+-                }
+-                Flow::ArrayMutation { before, expr } => {
+-                    // `getTypeAtFlowArrayMutation`: a mutation of a different reference is skipped.
+-                    if self.is_automatic_type(walk.declared)
+-                        && self.is_mutation_of(&walk.reference, expr)
+-                    {
+-                        pending.push((Pending::Mutation(expr), std::mem::take(&mut shared_flow)));
+-                    }
+-                    flow = before;
+-                }
+-                Flow::Cond {
+-                    before,
+-                    expr,
+-                    sense,
+-                } => {
+-                    // Every condition is applied to an evolving array.
+-                    if self.is_automatic_type(walk.declared)
+-                        || self.is_test_about(&walk.reference, flow, expr)
+-                    {
+-                        let then = Pending::Cond(expr, sense);
+-                        pending.push((then, std::mem::take(&mut shared_flow)));
+-                    } else if shared_flow.is_some() {
+-                        pending.push((Pending::Nothing, std::mem::take(&mut shared_flow)));
+-                    } else {
+-                        passed += 1;
+-                    }
+-                    flow = before;
+-                }
+-                Flow::Switch {
+-                    before,
+-                    stmt,
+-                    from,
+-                    to,
+-                } => {
+-                    let then = Pending::Switch(stmt, from, to);
+-                    pending.push((then, std::mem::take(&mut shared_flow)));
+-                    flow = before;
+-                }
+-                Flow::Call { before, call } => {
+-                    if self.flow_memo.is_idle_call(file, flow) {
+-                        let (arrived_at, passed) = self.before_idle_calls(file, flow, before);
+-                        walk.steps = walk.steps.saturating_add(passed);
+-                        flow = arrived_at;
+-                        continue;
+-                    }
+-                    // `getTypeAtFlowCall`
+-                    let (sig, is_cached) = self.effects_signature_and_is_cached(file, call);
+-                    if is_cached {
+-                        self.note_settled_call(file, flow, sig.is_none());
+-                    }
+-                    if let Some(sig) = sig {
+-                        match self.sig_predicate(sig) {
+-                            Some(predicate) if predicate.asserts => {
+-                                let then = Pending::Assert(call);
+-                                pending.push((then, std::mem::take(&mut shared_flow)));
+-                            }
+-                            _ if self.sig_return(sig).is_never() => {
+-                                break TypeId::UNREACHABLE_NEVER;
+-                            }
+-                            _ => {}
+-                        }
+-                    }
+-                    flow = before;
+-                }
+-                Flow::Reduce {
+-                    before,
+-                    label,
+-                    instead,
+-                } => {
+-                    walk.reduced.push((label, instead));
+-                    let t = self.flow_type(walk, before);
+-                    walk.reduced.pop();
+-                    incomplete = t.incomplete;
+-                    break t.ty;
+-                }
+-                Flow::Label { .. } => {
+-                    let antecedents = branch_label_antecedents(bound, flow, &walk.reduced);
+-                    if let [only] = *antecedents {
+-                        flow = only;
+-                        continue;
+-                    }
+-                    // `getTypeAtFlowBranchLabel`
+-                    let mut types: SmallVec<[TypeId; 4]> = SmallVec::new();
+-                    // The path that bypasses a `switch` when no case matched. It does not exist if
+-                    // the `switch` is exhaustive, which is only computed when it would change the
+-                    // result: the computation can re-enter here.
+-                    let mut bypass = None;
+-                    let mut settled = false;
+-                    for &edge in antecedents {
+-                        if bypass.is_none()
+-                            && let Flow::Switch { stmt, from, to, .. } = bound.flow[edge.idx()]
+-                            && from == to
+-                        {
+-                            bypass = Some((edge, stmt));
+-                            continue;
+-                        }
+-                        let t = self.flow_type(walk, edge);
+-                        if t.ty == walk.declared && self.starts_as_declared(walk) {
+-                            types.clear();
+-                            types.push(t.ty);
+-                            incomplete = false;
+-                            settled = true;
+-                            break;
+-                        }
+-                        if !types.contains(&t.ty) {
+-                            types.push(t.ty);
+-                        }
+-                        incomplete |= t.incomplete;
+-                    }
+-                    if !settled && let Some((edge, stmt)) = bypass {
+-                        let t = self.flow_type(walk, edge);
+-                        if !t.ty.is_never()
+-                            && !types.contains(&t.ty)
+-                            && !self.is_exhaustive_switch(file, stmt)
+-                        {
+-                            incomplete |= t.incomplete;
+-                            if t.ty == walk.declared && self.starts_as_declared(walk) {
+-                                types.clear();
+-                                incomplete = false;
+-                            }
+-                            types.push(t.ty);
+-                        }
+-                    }
+-                    break FlowType::new(self.union_or_evolving(&types, walk), incomplete).ty;
+-                }
+-                Flow::Loop { start, len } => {
+-                    let edges = bound.edges(start, len);
+-                    match *edges {
+-                        // A loop label without antecedents: it follows `while (true) {}`.
+-                        [] => break self.convert_auto_to_any(walk.declared),
+-                        [only] => {
+-                            flow = only;
+-                            continue;
+-                        }
+-                        _ => {}
+-                    }
+-                    // `getTypeAtFlowLoopLabel`: a reference without a key has its declared type at
+-                    // a loop label.
+-                    let has_key = match walk.has_reference_key {
+-                        Some(has_key) => has_key,
+-                        None => {
+-                            let has_key = self.has_flow_reference_key(&walk.reference);
+-                            if has_key && self.hands_out_symbol_ids() {
+-                                self.get_symbol_ids_of_flow_reference(&walk.reference);
+-                            }
+-                            walk.has_reference_key = Some(has_key);
+-                            has_key
+-                        }
+-                    };
+-                    if !has_key {
+-                        break walk.declared;
+-                    }
+-                    let initial = self.initial_of(walk);
+-                    let key = (file, flow, walk.declared, initial);
+-                    if let Some(cached) =
+-                        self.flow_memo.cached_flow_loop_type(&key, &walk.reference)
+-                    {
+-                        break cached;
+-                    }
+-                    // `flowLoopStack` belongs to the checker: a walk with the same key, started while another walk follows a back edge
+-                    // of this loop, gets the union of the antecedent types found so far, marked incomplete.
+-                    if let Some(i) = self.flow_loops.iter().rposition(|l| {
+-                        l.0 == flow
+-                            && l.1 == walk.reference
+-                            && l.2 == walk.declared
+-                            && l.3 == initial
+-                    }) {
+-                        let (so_far, depth) = (self.flow_loops[i].4, self.flow_loops[i].5);
+-                        if self.is_flow_loop_visible(depth) {
+-                            // Nothing computed from an incomplete type is cached.
+-                            self.taint_from(depth);
+-                            incomplete = true;
+-                            break FlowType::new(so_far, true).ty;
+-                        }
+-                    }
+-                    let entry = self.flow_type(walk, edges[0]);
+-                    // The result is incomplete only if the first antecedent is.
+-                    incomplete = entry.incomplete;
+-                    let entry = entry.ty;
+-                    let mut types: SmallVec<[TypeId; 4]> = smallvec![entry];
+-                    // A walk in which a cycle is left unmarked behind `eager` is not one tsgo makes:
+-                    // nothing of it is in `flowLoopCache`.
+-                    let refusals = self.unmarked_refusals;
+-                    // Once the type is the declared type, only subtypes could be added. Unlike at a
+-                    // branch label, the initial type is not considered.
+-                    if entry != walk.declared {
+-                        // One pass: each back edge sees the types of the antecedents before it.
+-                        walk.back_edges += 1;
+-                        self.flow_loops.push((
+-                            flow,
+-                            walk.reference.clone(),
+-                            walk.declared,
+-                            initial,
+-                            entry,
+-                            self.stack.len(),
+-                        ));
+-                        let mut restarted = None;
+-                        for &edge in &edges[1..] {
+-                            let cache = std::mem::take(&mut self.flow_type_cache);
+-                            let depth = std::mem::replace(
+-                                &mut self.flow_type_cache_depth,
+-                                self.stack.len(),
+-                            );
+-                            let t = self.flow_type(walk, edge).ty;
+-                            self.flow_type_cache = cache;
+-                            self.flow_type_cache_depth = depth;
+-                            // "Control flow analysis was restarted and completed by checkExpressionCached."
+-                            restarted = (self.flow_memo)
+-                                .cached_flow_loop_type(&key, &walk.reference)
+-                                .filter(|_| self.unmarked_refusals == refusals);
+-                            if restarted.is_some() {
+-                                break;
+-                            }
+-                            if t == walk.declared {
+-                                types.push(t);
+-                                break;
+-                            }
+-                            if !types.contains(&t) {
+-                                types.push(t);
+-                                let so_far = self.union_or_evolving_with(&types, false);
+-                                if let Some(shared) = self.flow_loops.last_mut() {
+-                                    shared.4 = so_far;
+-                                }
+-                            }
+-                        }
+-                        self.flow_loops.pop();
+-                        walk.back_edges -= 1;
+-                        if let Some(cached) = restarted {
+-                            incomplete = false;
+-                            break cached;
+-                        }
+-                    }
+-                    let result = FlowType::new(self.union_or_evolving(&types, walk), incomplete);
+-                    // A result that depends on a speculative evaluation, a provisional type or a
+-                    // walk that bailed out is not cached.
+-                    if !incomplete
+-                        && !walk.too_deep
+-                        && walk.steps < MAX_STEPS
+-                        && self.unmarked_refusals == refusals
+-                    {
+-                        self.flow_memo
+-                            .flow_loop_cache
+-                            .entry(key)
+-                            .or_default()
+-                            .push((walk.reference.clone(), result.ty));
+-                        self.flow_memo.flow_loop_cached_at = self.work;
+-                    }
+-                    break result.ty;
+-                }
+-            }
+-        };
+-        (walk.depth, walk.crossed) = (depth, crossed);
+-        if walk.too_deep {
+-            return FlowType::new(TypeId::ERROR, false);
+-        }
+-        if shared_flow.is_some() {
+-            walk.shared_flows
+-                .push(shared_flow, FlowType { ty, incomplete });
+-        }
+-        let reference = &walk.reference;
+-        while let Some((then, shared_flow)) = pending.pop() {
+-            // A condition is applied to the finalized array type; if it narrows nothing, the array
+-            // stays evolving. `getTypeAtFlowArrayMutation` does not finalize it.
+-            let seen = match then {
+-                Pending::Mutation(_) | Pending::Nothing => ty,
+-                _ => self.finalize_evolving_array(ty),
+-            };
+-            let narrowed = match then {
+-                // Applied to the finalized array type: the array stops evolving.
+-                Pending::NonNull => {
+-                    incomplete = false;
+-                    ty = seen;
+-                    self.non_nullable_type_if_needed(seen)
+-                }
+-                Pending::Nothing => seen,
+-                // Only `getTypeAtFlowCondition` returns `never` as it is.
+-                Pending::Cond(..) if ty.is_never() => seen,
+-                Pending::Cond(expr, sense) => self.narrow(reference, seen, expr, sense),
+-                Pending::Switch(stmt, from, to) => {
+-                    self.narrow_by_switch(reference, seen, stmt, from as usize, to as usize)
+-                }
+-                Pending::Assert(call) => self.narrow_by_assertion(reference, seen, call),
+-                Pending::Compound => self.base_of_literal(seen),
+-                Pending::Mutation(expr) => {
+-                    ty = self.after_array_mutation(file, ty, expr);
+-                    seen
+-                }
+-            };
+-            if narrowed != seen {
+-                ty = FlowType::new(narrowed, incomplete).ty;
+-            }
+-            if shared_flow.is_some() {
+-                walk.shared_flows
+-                    .push(shared_flow, FlowType { ty, incomplete });
+-            }
+-        }
+-        FlowType { ty, incomplete }
++        self.walk_flow(&TsFlowDomain { file: walk.reference.file }, walk, start)
+     }
+ 
+     /// `checkNonNullTypeWithReporter`: `ty` without `null` and `undefined`, where neither is
+@@ -8063,99 +7811,14 @@
+         reachable
+     }
+ 
+-    /// `isReachableFlowNodeWorker`
++    /// `isReachableFlowNodeWorker`, through the shared TS/native traversal.
+     fn is_reachable_worker(
+         &mut self,
+         file: FileId,
+-        mut flow: FlowId,
++        flow: FlowId,
+         reduced: &mut Vec<(FlowId, FlowId)>,
+     ) -> bool {
+-        let bound = self.bound(file);
+-        // TypeScript calls itself at a shared node and stores what it gets. A function with 30,000
+-        // statements has as many in a row, so here these invocations wait in a list, the outermost
+-        // first.
+-        let mut shared: SmallVec<[(FlowId, Memoizable); 2]> = SmallVec::new();
+-        let reachable = loop {
+-            if (file, flow) == (self.last_flow_node.0, self.last_flow_node.1) {
+-                break self.last_flow_node.2;
+-            }
+-            if bound.is_shared(flow) {
+-                if let Some(kept) = self.p.flow_node_reachable.get(&self.task, &(file, flow)) {
+-                    break kept;
+-                }
+-                shared.push((flow, self.begin_memoizable()));
+-            }
+-            match bound.flow[flow.idx()] {
+-                Flow::Unreachable => break false,
+-                Flow::Start { .. } | Flow::StartInvoked { .. } => break true,
+-                Flow::Assign { before, .. }
+-                | Flow::Cond { before, .. }
+-                | Flow::ArrayMutation { before, .. } => flow = before,
+-                Flow::Call { before, call } => {
+-                    let sig = if self.flow_memo.is_idle_call(file, flow) {
+-                        None
+-                    } else {
+-                        let (sig, is_cached) = self.effects_signature_and_is_cached(file, call);
+-                        if is_cached {
+-                            self.note_settled_call(file, flow, sig.is_none());
+-                        }
+-                        sig
+-                    };
+-                    if let Some(sig) = sig
+-                        && (self.asserts_false_expression(file, call, sig)
+-                            || self.sig_return(sig).is_never())
+-                    {
+-                        break false;
+-                    }
+-                    flow = before;
+-                }
+-                Flow::Switch {
+-                    before,
+-                    stmt,
+-                    from,
+-                    to,
+-                } => {
+-                    if from == to && self.is_exhaustive_switch(file, stmt) {
+-                        break false;
+-                    }
+-                    flow = before;
+-                }
+-                Flow::Reduce {
+-                    before,
+-                    label,
+-                    instead,
+-                } => {
+-                    if self.is_stack_low() {
+-                        break true;
+-                    }
+-                    // "Cache is unreliable once we start adjusting labels"
+-                    self.last_flow_node.1 = FlowId::NONE;
+-                    reduced.push((label, instead));
+-                    let reachable = self.is_reachable_worker(file, before, reduced);
+-                    reduced.pop();
+-                    break reachable;
+-                }
+-                Flow::Label { .. } => {
+-                    // One native frame per label. With `allowUnreachableCode: true` no earlier statement has filled the cache.
+-                    if self.is_stack_low() {
+-                        break true;
+-                    }
+-                    break branch_label_antecedents(bound, flow, reduced)
+-                        .iter()
+-                        .any(|&edge| self.is_reachable_worker(file, edge, reduced));
+-                }
+-                Flow::Loop { start, len } => match bound.edges(start, len).first() {
+-                    Some(&entry) => flow = entry,
+-                    None => break false,
+-                },
+-            }
+-        };
+-        while let Some((flow, begun)) = shared.pop() {
+-            if self.end_memoizable(begun).is_some() {
+-                (self.p.flow_node_reachable).rewrite(&self.task, (file, flow), reachable);
+-            }
+-        }
+-        reachable
++        self.walk_reachable(&TsFlowDomain { file }, flow, reduced)
+     }
+ 
+     /// `isPostSuperFlowNode`
+diff --git a/src/sema/check/flow_walk.rs b/src/sema/check/flow_walk.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/flow_walk.rs
+@@ -0,0 +1,507 @@
++//! Shared flow traversal extracted from flow.rs. Domain adapters retain syntax
++//! transfers; this module owns traversal, joins and incomplete loop handling.
++
++use super::flow::Memoizable;
++use super::*;
++use smallvec::{SmallVec, smallvec};
++use std::hash::Hash;
++
++pub(super) const MAX_STEPS: u32 = 2_000_000;
++/// `getTypeAtFlowNode`: the invocation that finds this many in progress bails out.
++pub(super) const MAX_FLOW_DEPTH: u32 = 2000;
++
++#[derive(Clone, Copy)]
++pub(super) struct FlowType {
++    pub ty: TypeId,
++    pub incomplete: bool,
++}
++
++impl FlowType {
++    pub fn new(ty: TypeId, incomplete: bool) -> Self {
++        Self {
++            ty: if incomplete && ty.is_never() {
++                TypeId::SILENT_NEVER
++            } else {
++                ty
++            },
++            incomplete,
++        }
++    }
++}
++
++pub(super) struct WalkState<K: Copy + Eq + Hash> {
++    shared: SmallVec<[(K, FlowType); 8]>,
++    many_shared: FxHashMap<K, FlowType>,
++    pub reduced: Vec<(K, K)>,
++    pub back_edges: u32,
++    pub steps: u32,
++    pub depth: u32,
++    pub too_deep: bool,
++}
++
++impl<K: Copy + Eq + Hash> Default for WalkState<K> {
++    fn default() -> Self {
++        Self {
++            shared: SmallVec::new(),
++            many_shared: FxHashMap::default(),
++            reduced: Vec::new(),
++            back_edges: 0,
++            steps: 0,
++            depth: 0,
++            too_deep: false,
++        }
++    }
++}
++
++impl<K: Copy + Eq + Hash> WalkState<K> {
++    fn shared(&self, key: K) -> Option<FlowType> {
++        self.shared
++            .iter()
++            .find(|entry| entry.0 == key)
++            .map(|entry| entry.1)
++            .or_else(|| self.many_shared.get(&key).copied())
++    }
++
++    fn remember(&mut self, key: K, ty: FlowType) {
++        if self.shared(key).is_some() {
++            return;
++        }
++        if self.shared.len() < self.shared.inline_size() {
++            self.shared.push((key, ty));
++        } else {
++            self.many_shared.insert(key, ty);
++        }
++    }
++}
++
++pub(super) enum FlowStep<K, P> {
++    Value(TypeId),
++    Initial,
++    Follow {
++        before: K,
++        transfer: Option<P>,
++        count_passed: bool,
++    },
++    Branch {
++        edges: Vec<K>,
++        bypass: Option<K>,
++    },
++    Loop {
++        edges: Vec<K>,
++    },
++    Reduce {
++        before: K,
++        label: K,
++        instead: K,
++    },
++}
++
++/// Syntax/operation and storage dispatch. Neither adapter contains traversal or
++/// loop solving: both invoke walk_flow below with the same pending-frame logic.
++pub(super) trait FlowDomain {
++    type Node: Copy + Eq + Hash;
++    type Transfer;
++    type Walk;
++
++    fn state(walk: &Self::Walk) -> &WalkState<Self::Node>;
++    fn state_mut(walk: &mut Self::Walk) -> &mut WalkState<Self::Node>;
++    fn declared(walk: &Self::Walk) -> TypeId;
++    fn crossed(walk: &Self::Walk) -> u32;
++    fn set_crossed(walk: &mut Self::Walk, crossed: u32);
++    fn initial(&self, checker: &mut Checker<'_, '_>, walk: &mut Self::Walk) -> TypeId;
++    fn starts_as_declared(&self, checker: &mut Checker<'_, '_>, walk: &mut Self::Walk) -> bool;
++    fn shared(&self, checker: &Checker<'_, '_>, node: Self::Node) -> bool;
++    fn step(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        walk: &mut Self::Walk,
++        node: Self::Node,
++    ) -> FlowStep<Self::Node, Self::Transfer>;
++    fn transfer(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        walk: &Self::Walk,
++        transfer: Self::Transfer,
++        previous: FlowType,
++    ) -> FlowType;
++    fn empty_transfer(&self) -> Self::Transfer;
++    fn bypass_live(&self, checker: &mut Checker<'_, '_>, node: Self::Node) -> bool;
++    /// Source binders may retain syntactic branches that the TS binder discards.
++    /// This hook only removes a proven unreachable edge; traversal and joins
++    /// remain in this worker, including back-edge memo isolation below.
++    fn edge_live(&self, _: &mut Checker<'_, '_>, _: Self::Node) -> bool {
++        true
++    }
++    fn has_key(&self, checker: &mut Checker<'_, '_>, walk: &mut Self::Walk) -> bool;
++    fn loop_cached(
++        &self,
++        checker: &Checker<'_, '_>,
++        walk: &Self::Walk,
++        node: Self::Node,
++        initial: TypeId,
++    ) -> Option<TypeId>;
++    fn loop_active(
++        &self,
++        checker: &Checker<'_, '_>,
++        walk: &Self::Walk,
++        node: Self::Node,
++        initial: TypeId,
++    ) -> Option<(TypeId, usize)>;
++    fn push_loop(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        walk: &Self::Walk,
++        node: Self::Node,
++        initial: TypeId,
++        ty: TypeId,
++    );
++    fn update_loop(&self, checker: &mut Checker<'_, '_>, ty: TypeId);
++    fn pop_loop(&self, checker: &mut Checker<'_, '_>);
++    fn save_loop(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        walk: &Self::Walk,
++        node: Self::Node,
++        initial: TypeId,
++        ty: TypeId,
++    );
++    fn disabled(&self, checker: &Checker<'_, '_>, walk: &Self::Walk) -> bool;
++    fn too_deep(&self, checker: &mut Checker<'_, '_>, walk: &Self::Walk, at: Self::Node);
++    fn step_limit(&self, checker: &mut Checker<'_, '_>, walk: &Self::Walk, at: Self::Node);
++    fn finish(&self, checker: &mut Checker<'_, '_>, walk: &Self::Walk, ty: TypeId) -> TypeId;
++    fn back_edge<R>(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        work: impl FnOnce(&mut Checker<'_, '_>) -> R,
++    ) -> R;
++}
++
++pub(super) enum ReachStep<K> {
++    Value(bool),
++    Follow(K),
++    Branch(Vec<K>),
++    Reduce { before: K, label: K, instead: K },
++}
++
++pub(super) trait ReachDomain {
++    type Node: Copy;
++    fn latest(&self, checker: &Checker<'_, '_>, node: Self::Node) -> Option<bool>;
++    fn reset_latest(&self, checker: &mut Checker<'_, '_>);
++    fn shared(&self, checker: &Checker<'_, '_>, node: Self::Node) -> bool;
++    fn cached(&self, checker: &Checker<'_, '_>, node: Self::Node) -> Option<bool>;
++    fn remember(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        node: Self::Node,
++        reachable: bool,
++        stored: Stored,
++    );
++    fn step(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        node: Self::Node,
++        reduced: &[(Self::Node, Self::Node)],
++    ) -> ReachStep<Self::Node>;
++}
++
++impl<'s, 'p> Checker<'s, 'p> {
++    pub(super) fn walk_flow_reference<D: FlowDomain>(
++        &mut self,
++        domain: &D,
++        walk: &mut D::Walk,
++        at: D::Node,
++    ) -> FlowType {
++        let declared = D::declared(walk);
++        if domain.disabled(self, walk) {
++            return FlowType::new(TypeId::ERROR, false);
++        }
++        self.flow_invocation_count += 1;
++        let outer = std::mem::replace(&mut self.walk_declared, declared);
++        let evolved = self.walk_flow(domain, walk, at);
++        self.walk_declared = outer;
++        let depth = self.flow_type_cache_depth;
++        if evolved.incomplete && depth != usize::MAX && self.is_flow_loop_visible(depth) {
++            self.taint_from(depth);
++        }
++        if D::state(walk).too_deep {
++            domain.too_deep(self, walk, at);
++            return FlowType::new(TypeId::ERROR, false);
++        }
++        if D::state(walk).steps >= MAX_STEPS {
++            domain.step_limit(self, walk, at);
++            return FlowType::new(declared, false);
++        }
++        FlowType::new(domain.finish(self, walk, evolved.ty), evolved.incomplete)
++    }
++
++    /// Extracted getTypeAtFlowNode: the pending stack, joins and single-pass loop
++    /// traversal are shared by the unchanged TS adapter and original-source graph.
++    pub(super) fn walk_flow<D: FlowDomain>(
++        &mut self,
++        domain: &D,
++        walk: &mut D::Walk,
++        start: D::Node,
++    ) -> FlowType {
++        if D::state(walk).too_deep {
++            return FlowType::new(TypeId::ERROR, false);
++        }
++        let mut pending: SmallVec<[(D::Transfer, Option<D::Node>); 8]> = SmallVec::new();
++        let mut passed = 0;
++        let mut flow = start;
++        let mut shared_flow = None;
++        let (depth, crossed) = (D::state(walk).depth, D::crossed(walk));
++        let mut incomplete = false;
++        let declared = D::declared(walk);
++        let mut ty = loop {
++            let state = D::state_mut(walk);
++            state.steps += 1;
++            if state.steps >= MAX_STEPS {
++                break declared;
++            }
++            state.depth = depth + 1 + pending.len() as u32 + passed;
++            if state.depth > MAX_FLOW_DEPTH {
++                state.too_deep = true;
++                break TypeId::ERROR;
++            }
++            if domain.shared(self, flow) {
++                if let Some(known) = D::state(walk).shared(flow) {
++                    incomplete = known.incomplete;
++                    shared_flow = None;
++                    break known.ty;
++                }
++                shared_flow = Some(flow);
++            }
++            match domain.step(self, walk, flow) {
++                FlowStep::Value(ty) => break ty,
++                FlowStep::Initial => break domain.initial(self, walk),
++                FlowStep::Follow {
++                    before,
++                    transfer,
++                    count_passed,
++                } => {
++                    if let Some(transfer) = transfer {
++                        pending.push((transfer, shared_flow.take()));
++                    } else if count_passed {
++                        if shared_flow.is_some() {
++                            pending.push((domain.empty_transfer(), shared_flow.take()));
++                        } else {
++                            passed += 1;
++                        }
++                    }
++                    flow = before;
++                }
++                FlowStep::Reduce {
++                    before,
++                    label,
++                    instead,
++                } => {
++                    D::state_mut(walk).reduced.push((label, instead));
++                    let result = self.walk_flow(domain, walk, before);
++                    D::state_mut(walk).reduced.pop();
++                    incomplete = result.incomplete;
++                    break result.ty;
++                }
++                FlowStep::Branch { edges, bypass } => {
++                    if let [only] = *edges
++                        && bypass.is_none()
++                    {
++                        if !domain.edge_live(self, only) {
++                            break TypeId::NEVER;
++                        }
++                        flow = only;
++                        continue;
++                    }
++                    let mut types: SmallVec<[TypeId; 4]> = SmallVec::new();
++                    let mut settled = false;
++                    for edge in edges {
++                        if !domain.edge_live(self, edge) {
++                            continue;
++                        }
++                        let result = self.walk_flow(domain, walk, edge);
++                        if result.ty == declared && domain.starts_as_declared(self, walk) {
++                            types.clear();
++                            types.push(result.ty);
++                            incomplete = false;
++                            settled = true;
++                            break;
++                        }
++                        if !types.contains(&result.ty) {
++                            types.push(result.ty);
++                        }
++                        incomplete |= result.incomplete;
++                    }
++                    if !settled && let Some(edge) = bypass {
++                        let result = self.walk_flow(domain, walk, edge);
++                        if !result.ty.is_never()
++                            && !types.contains(&result.ty)
++                            && domain.bypass_live(self, edge)
++                        {
++                            incomplete |= result.incomplete;
++                            if result.ty == declared && domain.starts_as_declared(self, walk) {
++                                types.clear();
++                                incomplete = false;
++                            }
++                            types.push(result.ty);
++                        }
++                    }
++                    let initial = if types.len() < 2 {
++                        TypeId::UNRESOLVED
++                    } else {
++                        domain.initial(self, walk)
++                    };
++                    break FlowType::new(self.flow_join(&types, initial), incomplete).ty;
++                }
++                FlowStep::Loop { edges } => {
++                    match *edges {
++                        [] => break self.convert_auto_to_any(declared),
++                        [only] => {
++                            flow = only;
++                            continue;
++                        }
++                        _ => {}
++                    }
++                    if !domain.has_key(self, walk) {
++                        break declared;
++                    }
++                    let initial = domain.initial(self, walk);
++                    if let Some(cached) = domain.loop_cached(self, walk, flow, initial) {
++                        break cached;
++                    }
++                    if let Some((so_far, depth)) = domain.loop_active(self, walk, flow, initial)
++                        && self.is_flow_loop_visible(depth)
++                    {
++                        self.taint_from(depth);
++                        incomplete = true;
++                        break FlowType::new(so_far, true).ty;
++                    }
++                    let entry = self.walk_flow(domain, walk, edges[0]);
++                    incomplete = entry.incomplete;
++                    let mut types: SmallVec<[TypeId; 4]> = smallvec![entry.ty];
++                    let refusals = self.unmarked_refusals;
++                    if entry.ty != declared {
++                        D::state_mut(walk).back_edges += 1;
++                        domain.push_loop(self, walk, flow, initial, entry.ty);
++                        let mut restarted = None;
++                        for &edge in &edges[1..] {
++                            let cache = std::mem::take(&mut self.flow_type_cache);
++                            let depth = std::mem::replace(
++                                &mut self.flow_type_cache_depth,
++                                self.stack.len(),
++                            );
++                            let result = domain.back_edge(self, |checker| {
++                                if domain.edge_live(checker, edge) {
++                                    checker.walk_flow(domain, walk, edge)
++                                } else {
++                                    FlowType::new(TypeId::NEVER, false)
++                                }
++                            }).ty;
++                            self.flow_type_cache = cache;
++                            self.flow_type_cache_depth = depth;
++                            restarted = domain
++                                .loop_cached(self, walk, flow, initial)
++                                .filter(|_| self.unmarked_refusals == refusals);
++                            if restarted.is_some() {
++                                break;
++                            }
++                            if result == declared {
++                                types.push(result);
++                                break;
++                            }
++                            if !types.contains(&result) {
++                                types.push(result);
++                                let so_far = self.union_or_evolving_with(&types, false);
++                                domain.update_loop(self, so_far);
++                            }
++                        }
++                        domain.pop_loop(self);
++                        D::state_mut(walk).back_edges -= 1;
++                        if let Some(cached) = restarted {
++                            incomplete = false;
++                            break cached;
++                        }
++                    }
++                    let result = FlowType::new(self.flow_join(&types, initial), incomplete);
++                    if !incomplete
++                        && !D::state(walk).too_deep
++                        && D::state(walk).steps < MAX_STEPS
++                        && self.unmarked_refusals == refusals
++                    {
++                        domain.save_loop(self, walk, flow, initial, result.ty);
++                    }
++                    break result.ty;
++                }
++            }
++        };
++        D::state_mut(walk).depth = depth;
++        D::set_crossed(walk, crossed);
++        if D::state(walk).too_deep {
++            return FlowType::new(TypeId::ERROR, false);
++        }
++        if let Some(shared) = shared_flow {
++            D::state_mut(walk).remember(shared, FlowType { ty, incomplete });
++        }
++        while let Some((transfer, shared)) = pending.pop() {
++            let result = domain.transfer(self, walk, transfer, FlowType { ty, incomplete });
++            ty = result.ty;
++            incomplete = result.incomplete;
++            if let Some(shared) = shared {
++                D::state_mut(walk).remember(shared, result);
++            }
++        }
++        FlowType { ty, incomplete }
++    }
++
++    /// Extracted isReachableFlowNodeWorker; the memoizable shared-node writes and
++    /// label/reduction recursion use the same implementation for both domains.
++    pub(super) fn walk_reachable<D: ReachDomain>(
++        &mut self,
++        domain: &D,
++        mut flow: D::Node,
++        reduced: &mut Vec<(D::Node, D::Node)>,
++    ) -> bool {
++        let mut shared: SmallVec<[(D::Node, Memoizable); 2]> = SmallVec::new();
++        let reachable = loop {
++            if let Some(latest) = domain.latest(self, flow) {
++                break latest;
++            }
++            if domain.shared(self, flow) {
++                if let Some(cached) = domain.cached(self, flow) {
++                    break cached;
++                }
++                shared.push((flow, self.begin_memoizable()));
++            }
++            match domain.step(self, flow, reduced) {
++                ReachStep::Value(reachable) => break reachable,
++                ReachStep::Follow(before) => flow = before,
++                ReachStep::Reduce {
++                    before,
++                    label,
++                    instead,
++                } => {
++                    if self.is_stack_low() {
++                        break true;
++                    }
++                    domain.reset_latest(self);
++                    reduced.push((label, instead));
++                    let reachable = self.walk_reachable(domain, before, reduced);
++                    reduced.pop();
++                    break reachable;
++                }
++                ReachStep::Branch(edges) => {
++                    if self.is_stack_low() {
++                        break true;
++                    }
++                    break edges
++                        .into_iter()
++                        .any(|edge| self.walk_reachable(domain, edge, reduced));
++                }
++            }
++        };
++        while let Some((flow, begun)) = shared.pop() {
++            if let Some(stored) = self.end_memoizable(begun) {
++                domain.remember(self, flow, reachable, stored);
++            }
++        }
++        reachable
++    }
++}
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/native_flow.rs
+@@ -0,0 +1,764 @@
++//! Original-source graph inputs for the shared TS/native flow traversal.
++//! Graph records supply semantic operations; they never supply branch joins or
++//! loop fixed points. All callbacks re-enter the requesting checker task.
++
++use super::flow_walk::{FlowDomain, FlowStep, FlowType, ReachDomain, ReachStep, WalkState};
++use super::*;
++use crate::types::TypeId;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub struct NativeGraphKey {
++    pub snapshot: u64,
++    pub region: u32,
++    /// Unique immutable contextual-body facet; zero for the ordinary source view.
++    pub context: u64,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub struct NativeFlowKey {
++    pub graph: NativeGraphKey,
++    pub node: u32,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub struct NativeReferenceKey {
++    pub graph: NativeGraphKey,
++    /// Canonical binding/path/address identity within this graph facet.
++    pub reference: u32,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub struct NativeValueKey {
++    pub snapshot: u64,
++    pub index: u32,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeWriteRelation {
++    Exact,
++    /// Replacing an ancestor invalidates the descendant reference facts.
++    Ancestor,
++    Unaffected,
++}
++
++#[derive(Clone, Debug)]
++pub enum NativePredicate {
++    Truthy {
++        subject: Option<NativeReferenceKey>,
++        value: NativeValueKey,
++        input: NativeFlowKey,
++    },
++    Equal {
++        subject: NativeReferenceKey,
++        other: NativeValueKey,
++        input: NativeFlowKey,
++        /// Whether the source operator tests equality, as opposed to inequality.
++        equals: bool,
++    },
++    Unsupported(&'static str),
++}
++
++#[derive(Clone, Debug)]
++pub enum NativeFlowNode {
++    Start,
++    Pass {
++        before: NativeFlowKey,
++    },
++    Write {
++        before: NativeFlowKey,
++        target: NativeReferenceKey,
++        value: NativeValueKey,
++        /// Frozen RHS evaluation context, prior to every store in its transaction.
++        input: NativeFlowKey,
++    },
++    Predicate {
++        before: NativeFlowKey,
++        predicate: NativePredicate,
++        sense: bool,
++    },
++    Merge {
++        edges: Vec<NativeFlowKey>,
++    },
++    /// Entry edge first, followed by back edges; the backend owns their traversal.
++    Loop {
++        edges: Vec<NativeFlowKey>,
++    },
++    Call {
++        before: NativeFlowKey,
++        value: NativeValueKey,
++        input: NativeFlowKey,
++    },
++    /// This is an unreachable continuation; return operands query their own input.
++    Return {
++        before: NativeFlowKey,
++    },
++    Unreachable,
++    Unsupported(&'static str),
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeCallEffects {
++    None,
++    Never,
++    Unsupported(&'static str),
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeFlowError {
++    InvalidGraph(NativeGraphKey),
++    InvalidNode(NativeFlowKey),
++    InvalidReference(NativeReferenceKey),
++    InvalidValue(NativeValueKey),
++    ForeignEdge {
++        from: NativeFlowKey,
++        to: NativeFlowKey,
++    },
++    Unsupported(&'static str),
++    TooDeep(NativeFlowKey),
++    StepLimit(NativeFlowKey),
++}
++
++#[derive(Clone, Copy, Debug)]
++pub struct NativeFlowResult {
++    pub ty: TypeId,
++    pub incomplete: bool,
++}
++
++pub trait NativeFlowProvider {
++    fn contains_graph(&self, graph: NativeGraphKey) -> bool;
++    fn contains_reference(&self, reference: NativeReferenceKey) -> bool;
++    fn node(&self, node: NativeFlowKey) -> Option<NativeFlowNode>;
++    fn is_shared(&self, node: NativeFlowKey) -> bool;
++    /// Matching uses frozen address identity, not the frontend's latest writes.
++    fn write_affects(
++        &self,
++        reference: NativeReferenceKey,
++        target: NativeReferenceKey,
++        at: NativeFlowKey,
++    ) -> NativeWriteRelation;
++    fn value_type(
++        &self,
++        value: NativeValueKey,
++        input: NativeFlowKey,
++        checker: &mut Checker<'_, '_>,
++    ) -> TypeId;
++    fn call_effects(
++        &self,
++        value: NativeValueKey,
++        input: NativeFlowKey,
++        checker: &mut Checker<'_, '_>,
++    ) -> NativeCallEffects;
++    fn flow_error(&self, at: NativeFlowKey, error: NativeFlowError);
++}
++
++type ValueContext = (NativeValueKey, NativeFlowKey);
++type LoopKey = (NativeFlowKey, NativeReferenceKey, TypeId, TypeId);
++
++pub(super) struct NativeLoopFrame {
++    key: LoopKey,
++    ty: TypeId,
++    pub depth: usize,
++}
++
++/// Checker/task-owned native tables. The graph key includes source snapshot and
++/// contextual body facet; value caches also include the frozen input flow.
++#[derive(Default)]
++pub(super) struct NativeFlowState {
++    loop_types: FxHashMap<LoopKey, TypeId>,
++    pub loops: Vec<NativeLoopFrame>,
++    value_types: FxHashMap<ValueContext, TypeId>,
++    call_effects: FxHashMap<ValueContext, NativeCallEffects>,
++    reachable: FxHashMap<NativeFlowKey, bool>,
++    latest_reachable: Option<(NativeFlowKey, bool)>,
++    disabled: FxHashMap<NativeGraphKey, ()>,
++}
++
++struct NativeWalk {
++    reference: NativeReferenceKey,
++    declared: TypeId,
++    initial: TypeId,
++    traversal: WalkState<NativeFlowKey>,
++}
++
++struct NativeDomain<'a> {
++    provider: &'a dyn NativeFlowProvider,
++    graph: NativeGraphKey,
++}
++
++enum NativeTransfer {
++    Predicate(NativePredicate, bool),
++    Nothing,
++}
++
++impl NativeDomain<'_> {
++    fn node(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey) -> Option<NativeFlowNode> {
++        if at.graph != self.graph || !self.provider.contains_graph(at.graph) {
++            self.provider
++                .flow_error(at, NativeFlowError::InvalidGraph(at.graph));
++            return None;
++        }
++        let node = self.provider.node(at);
++        if node.is_none() {
++            self.provider
++                .flow_error(at, NativeFlowError::InvalidNode(at));
++        }
++        let _ = checker;
++        node
++    }
++
++    fn edge(&self, from: NativeFlowKey, to: NativeFlowKey) -> bool {
++        if to.graph != self.graph {
++            self.provider
++                .flow_error(from, NativeFlowError::ForeignEdge { from, to });
++            false
++        } else {
++            true
++        }
++    }
++
++    fn predicate_valid(&self, at: NativeFlowKey, predicate: &NativePredicate) -> bool {
++        let (subject, input) = match predicate {
++            NativePredicate::Truthy { subject, input, .. } => (*subject, *input),
++            NativePredicate::Equal { subject, input, .. } => (Some(*subject), *input),
++            NativePredicate::Unsupported(_) => return true,
++        };
++        if !self.edge(at, input) {
++            return false;
++        }
++        if let Some(subject) = subject
++            && (subject.graph != self.graph || !self.provider.contains_reference(subject))
++        {
++            self.provider.flow_error(at, NativeFlowError::InvalidReference(subject));
++            return false;
++        }
++        true
++    }
++}
++
++impl FlowDomain for NativeDomain<'_> {
++    type Node = NativeFlowKey;
++    type Transfer = NativeTransfer;
++    type Walk = NativeWalk;
++    fn state(walk: &NativeWalk) -> &WalkState<NativeFlowKey> {
++        &walk.traversal
++    }
++    fn state_mut(walk: &mut NativeWalk) -> &mut WalkState<NativeFlowKey> {
++        &mut walk.traversal
++    }
++    fn declared(walk: &NativeWalk) -> TypeId {
++        walk.declared
++    }
++    fn crossed(_: &NativeWalk) -> u32 {
++        0
++    }
++    fn set_crossed(_: &mut NativeWalk, _: u32) {}
++    fn initial(&self, _: &mut Checker<'_, '_>, walk: &mut NativeWalk) -> TypeId {
++        walk.initial
++    }
++    fn starts_as_declared(&self, _: &mut Checker<'_, '_>, walk: &mut NativeWalk) -> bool {
++        walk.initial == walk.declared
++    }
++    fn shared(&self, _: &Checker<'_, '_>, at: NativeFlowKey) -> bool {
++        at.graph == self.graph && self.provider.is_shared(at)
++    }
++    fn step(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        walk: &mut NativeWalk,
++        at: NativeFlowKey,
++    ) -> FlowStep<NativeFlowKey, NativeTransfer> {
++        let Some(node) = self.node(checker, at) else {
++            return FlowStep::Value(TypeId::ERROR);
++        };
++        match node {
++            NativeFlowNode::Start => FlowStep::Initial,
++            NativeFlowNode::Unreachable | NativeFlowNode::Return { .. } => {
++                FlowStep::Value(checker.convert_auto_to_any(walk.declared))
++            }
++            NativeFlowNode::Unsupported(feature) => {
++                self.provider
++                    .flow_error(at, NativeFlowError::Unsupported(feature));
++                FlowStep::Value(TypeId::ERROR)
++            }
++            NativeFlowNode::Pass { before } => {
++                if !self.edge(at, before) {
++                    return FlowStep::Value(TypeId::ERROR);
++                }
++                FlowStep::Follow {
++                    before,
++                    transfer: None,
++                    count_passed: false,
++                }
++            }
++            NativeFlowNode::Write {
++                before,
++                target,
++                value,
++                input,
++            } => {
++                if !self.edge(at, before) || !self.edge(at, input) {
++                    return FlowStep::Value(TypeId::ERROR);
++                }
++                if target.graph != self.graph || !self.provider.contains_reference(target) {
++                    self.provider
++                        .flow_error(at, NativeFlowError::InvalidReference(target));
++                    return FlowStep::Value(TypeId::ERROR);
++                }
++                match self.provider.write_affects(walk.reference, target, at) {
++                    NativeWriteRelation::Exact => {
++                        let assigned = checker.native_flow_value(self.provider, value, input);
++                        FlowStep::Value(checker.assignment_reduced_type(walk.declared, assigned))
++                    }
++                    NativeWriteRelation::Ancestor => FlowStep::Value(walk.declared),
++                    NativeWriteRelation::Unaffected => FlowStep::Follow {
++                        before,
++                        transfer: None,
++                        count_passed: false,
++                    },
++                }
++            }
++            NativeFlowNode::Predicate {
++                before,
++                predicate,
++                sense,
++            } => {
++                if !self.edge(at, before) || !self.predicate_valid(at, &predicate) {
++                    return FlowStep::Value(TypeId::ERROR);
++                }
++                let applies = match &predicate {
++                    NativePredicate::Truthy { subject, .. } => *subject == Some(walk.reference),
++                    NativePredicate::Equal { subject, .. } => *subject == walk.reference,
++                    NativePredicate::Unsupported(feature) => {
++                        self.provider
++                            .flow_error(at, NativeFlowError::Unsupported(feature));
++                        return FlowStep::Value(TypeId::ERROR);
++                    }
++                };
++                FlowStep::Follow {
++                    before,
++                    transfer: applies.then_some(NativeTransfer::Predicate(predicate, sense)),
++                    count_passed: true,
++                }
++            }
++            NativeFlowNode::Merge { edges } | NativeFlowNode::Loop { edges } => {
++                if edges.iter().any(|&edge| !self.edge(at, edge)) {
++                    return FlowStep::Value(TypeId::ERROR);
++                }
++                if matches!(self.provider.node(at), Some(NativeFlowNode::Loop { .. })) {
++                    FlowStep::Loop { edges }
++                } else {
++                    FlowStep::Branch {
++                        edges,
++                        bypass: None,
++                    }
++                }
++            }
++            NativeFlowNode::Call {
++                before,
++                value,
++                input,
++            } => {
++                if !self.edge(at, before) || !self.edge(at, input) {
++                    return FlowStep::Value(TypeId::ERROR);
++                }
++                match checker.native_flow_call_effects(self.provider, value, input) {
++                    NativeCallEffects::Never => FlowStep::Value(TypeId::UNREACHABLE_NEVER),
++                    NativeCallEffects::None => FlowStep::Follow {
++                        before,
++                        transfer: None,
++                        count_passed: false,
++                    },
++                    NativeCallEffects::Unsupported(feature) => {
++                        self.provider
++                            .flow_error(at, NativeFlowError::Unsupported(feature));
++                        FlowStep::Value(TypeId::ERROR)
++                    }
++                }
++            }
++        }
++    }
++
++    fn transfer(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        walk: &NativeWalk,
++        transfer: NativeTransfer,
++        previous: FlowType,
++    ) -> FlowType {
++        let ty = match transfer {
++            NativeTransfer::Nothing => previous.ty,
++            NativeTransfer::Predicate(_, _) if previous.ty.is_never() => previous.ty,
++            NativeTransfer::Predicate(NativePredicate::Truthy { .. }, sense) => {
++                checker.lua_truthiness_type(previous.ty, sense)
++            }
++            NativeTransfer::Predicate(
++                NativePredicate::Equal {
++                    other,
++                    input,
++                    equals,
++                    ..
++                },
++                sense,
++            ) => {
++                let other = checker.native_flow_value(self.provider, other, input);
++                checker.native_equal_flow_type(previous.ty, other, equals == sense)
++            }
++            NativeTransfer::Predicate(NativePredicate::Unsupported(_), _) => TypeId::ERROR,
++        };
++        let _ = walk;
++        FlowType::new(ty, previous.incomplete)
++    }
++    fn empty_transfer(&self) -> NativeTransfer {
++        NativeTransfer::Nothing
++    }
++    fn bypass_live(&self, _: &mut Checker<'_, '_>, _: NativeFlowKey) -> bool {
++        true
++    }
++    fn edge_live(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey) -> bool {
++        let (reachable, stored) = checker.run_memoizable(|checker| {
++            checker.native_flow_reachable(self.provider, at)
++        });
++        // An incomplete loop type can currently make an edge appear impossible.
++        // Keep it until the same backend loop publication rules settle it.
++        reachable || stored.is_none()
++    }
++    fn has_key(&self, _: &mut Checker<'_, '_>, _: &mut NativeWalk) -> bool {
++        true
++    }
++    fn loop_cached(
++        &self,
++        checker: &Checker<'_, '_>,
++        walk: &NativeWalk,
++        node: NativeFlowKey,
++        initial: TypeId,
++    ) -> Option<TypeId> {
++        checker
++            .flow_memo
++            .native_state
++            .loop_types
++            .get(&(node, walk.reference, walk.declared, initial))
++            .copied()
++    }
++    fn loop_active(
++        &self,
++        checker: &Checker<'_, '_>,
++        walk: &NativeWalk,
++        node: NativeFlowKey,
++        initial: TypeId,
++    ) -> Option<(TypeId, usize)> {
++        let key = (node, walk.reference, walk.declared, initial);
++        checker
++            .flow_memo
++            .native_state
++            .loops
++            .iter()
++            .rfind(|frame| frame.key == key)
++            .map(|frame| (frame.ty, frame.depth))
++    }
++    fn push_loop(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        walk: &NativeWalk,
++        node: NativeFlowKey,
++        initial: TypeId,
++        ty: TypeId,
++    ) {
++        checker.flow_memo.native_state.loops.push(NativeLoopFrame {
++            key: (node, walk.reference, walk.declared, initial),
++            ty,
++            depth: checker.stack.len(),
++        });
++    }
++    fn update_loop(&self, checker: &mut Checker<'_, '_>, ty: TypeId) {
++        if let Some(frame) = checker.flow_memo.native_state.loops.last_mut() {
++            frame.ty = ty;
++        }
++    }
++    fn pop_loop(&self, checker: &mut Checker<'_, '_>) {
++        checker.flow_memo.native_state.loops.pop();
++    }
++    fn save_loop(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        walk: &NativeWalk,
++        node: NativeFlowKey,
++        initial: TypeId,
++        ty: TypeId,
++    ) {
++        checker
++            .flow_memo
++            .native_state
++            .loop_types
++            .insert((node, walk.reference, walk.declared, initial), ty);
++        checker.flow_memo.flow_loop_cached_at = checker.work;
++    }
++    fn disabled(&self, checker: &Checker<'_, '_>, _: &NativeWalk) -> bool {
++        checker
++            .flow_memo
++            .native_state
++            .disabled
++            .contains_key(&self.graph)
++    }
++    fn too_deep(&self, checker: &mut Checker<'_, '_>, _: &NativeWalk, at: NativeFlowKey) {
++        checker
++            .flow_memo
++            .native_state
++            .disabled
++            .insert(self.graph, ());
++        self.provider.flow_error(at, NativeFlowError::TooDeep(at));
++    }
++    fn step_limit(&self, _: &mut Checker<'_, '_>, _: &NativeWalk, at: NativeFlowKey) {
++        self.provider.flow_error(at, NativeFlowError::StepLimit(at));
++    }
++    fn finish(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, ty: TypeId) -> TypeId {
++        let ty = checker.finalize_evolving_array(ty);
++        if ty == TypeId::UNREACHABLE_NEVER {
++            walk.declared
++        } else {
++            ty
++        }
++    }
++    fn back_edge<R>(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        work: impl FnOnce(&mut Checker<'_, '_>) -> R,
++    ) -> R {
++        let cache = std::mem::take(&mut checker.flow_memo.native_state.value_types);
++        let calls = std::mem::take(&mut checker.flow_memo.native_state.call_effects);
++        let result = work(checker);
++        checker.flow_memo.native_state.value_types = cache;
++        checker.flow_memo.native_state.call_effects = calls;
++        result
++    }
++}
++
++impl ReachDomain for NativeDomain<'_> {
++    type Node = NativeFlowKey;
++    fn latest(&self, checker: &Checker<'_, '_>, at: NativeFlowKey) -> Option<bool> {
++        checker
++            .flow_memo
++            .native_state
++            .latest_reachable
++            .filter(|entry| entry.0 == at)
++            .map(|entry| entry.1)
++    }
++    fn reset_latest(&self, checker: &mut Checker<'_, '_>) {
++        checker.flow_memo.native_state.latest_reachable = None;
++    }
++    fn shared(&self, _: &Checker<'_, '_>, at: NativeFlowKey) -> bool {
++        at.graph == self.graph && self.provider.is_shared(at)
++    }
++    fn cached(&self, checker: &Checker<'_, '_>, at: NativeFlowKey) -> Option<bool> {
++        checker.flow_memo.native_state.reachable.get(&at).copied()
++    }
++    fn remember(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        at: NativeFlowKey,
++        reachable: bool,
++        _: Stored,
++    ) {
++        checker
++            .flow_memo
++            .native_state
++            .reachable
++            .insert(at, reachable);
++    }
++    fn step(
++        &self,
++        checker: &mut Checker<'_, '_>,
++        at: NativeFlowKey,
++        _: &[(NativeFlowKey, NativeFlowKey)],
++    ) -> ReachStep<NativeFlowKey> {
++        let Some(node) = self.node(checker, at) else {
++            return ReachStep::Value(false);
++        };
++        match node {
++            NativeFlowNode::Start => ReachStep::Value(true),
++            NativeFlowNode::Return { .. } | NativeFlowNode::Unreachable => ReachStep::Value(false),
++            NativeFlowNode::Unsupported(feature) => {
++                self.provider
++                    .flow_error(at, NativeFlowError::Unsupported(feature));
++                ReachStep::Value(false)
++            }
++            NativeFlowNode::Pass { before }
++            | NativeFlowNode::Write { before, .. } => {
++                if self.edge(at, before) {
++                    ReachStep::Follow(before)
++                } else {
++                    ReachStep::Value(false)
++                }
++            }
++            NativeFlowNode::Predicate { before, predicate, sense } => {
++                if !self.edge(at, before) || !self.predicate_valid(at, &predicate) {
++                    return ReachStep::Value(false);
++                }
++                match predicate {
++                    NativePredicate::Truthy { value, input, .. } => {
++                        let value = checker.native_flow_value(self.provider, value, input);
++                        if checker.lua_truthiness_type(value, sense).is_never() {
++                            ReachStep::Value(false)
++                        } else {
++                            ReachStep::Follow(before)
++                        }
++                    }
++                    NativePredicate::Equal { .. } => ReachStep::Follow(before),
++                    NativePredicate::Unsupported(feature) => {
++                        self.provider.flow_error(at, NativeFlowError::Unsupported(feature));
++                        ReachStep::Value(false)
++                    }
++                }
++            }
++            NativeFlowNode::Call {
++                before,
++                value,
++                input,
++            } => {
++                if !self.edge(at, before) || !self.edge(at, input) {
++                    return ReachStep::Value(false);
++                }
++                match checker.native_flow_call_effects(self.provider, value, input) {
++                    NativeCallEffects::None => ReachStep::Follow(before),
++                    NativeCallEffects::Never => ReachStep::Value(false),
++                    NativeCallEffects::Unsupported(feature) => {
++                        self.provider
++                            .flow_error(at, NativeFlowError::Unsupported(feature));
++                        ReachStep::Value(false)
++                    }
++                }
++            }
++            NativeFlowNode::Merge { edges } => {
++                if edges.iter().any(|&edge| !self.edge(at, edge)) {
++                    ReachStep::Value(false)
++                } else {
++                    ReachStep::Branch(edges)
++                }
++            }
++            NativeFlowNode::Loop { edges } => match edges.first() {
++                Some(&entry) if self.edge(at, entry) => ReachStep::Follow(entry),
++                _ => ReachStep::Value(false),
++            },
++        }
++    }
++}
++
++impl<'s, 'p> Checker<'s, 'p> {
++    /// Type at an original-source graph node through the same walker used by TS.
++    pub fn native_flow_type(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        at: NativeFlowKey,
++        reference: NativeReferenceKey,
++        declared: TypeId,
++        initial: TypeId,
++    ) -> NativeFlowResult {
++        let error = if !provider.contains_graph(at.graph) {
++            NativeFlowError::InvalidGraph(at.graph)
++        } else if reference.graph != at.graph || !provider.contains_reference(reference) {
++            NativeFlowError::InvalidReference(reference)
++        } else {
++            let domain = NativeDomain {
++                provider,
++                graph: at.graph,
++            };
++            let mut walk = NativeWalk {
++                reference,
++                declared,
++                initial,
++                traversal: WalkState::default(),
++            };
++            let result = self.walk_flow_reference(&domain, &mut walk, at);
++            if result.incomplete {
++                // A source callback can use flow without a TS Query frame.
++                // taint_from then has no frame to mark, but publication scopes
++                // still must observe the read of an unfinished loop value.
++                self.note_cycle();
++            }
++            return NativeFlowResult {
++                ty: result.ty,
++                incomplete: result.incomplete,
++            };
++        };
++        provider.flow_error(at, error);
++        NativeFlowResult {
++            ty: TypeId::ERROR,
++            incomplete: false,
++        }
++    }
++
++    pub fn native_flow_reachable(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        at: NativeFlowKey,
++    ) -> bool {
++        if !provider.contains_graph(at.graph) {
++            provider.flow_error(at, NativeFlowError::InvalidGraph(at.graph));
++            return false;
++        }
++        let domain = NativeDomain {
++            provider,
++            graph: at.graph,
++        };
++        let (reachable, stored) = self.run_memoizable(|checker| {
++            checker.walk_reachable(&domain, at, &mut Vec::new())
++        });
++        if stored.is_some() {
++            self.flow_memo.native_state.latest_reachable = Some((at, reachable));
++        }
++        reachable
++    }
++
++    fn native_flow_value(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        value: NativeValueKey,
++        input: NativeFlowKey,
++    ) -> TypeId {
++        if value.snapshot != input.graph.snapshot {
++            provider.flow_error(input, NativeFlowError::InvalidValue(value));
++            return TypeId::ERROR;
++        }
++        if !provider.contains_graph(input.graph) || provider.node(input).is_none() {
++            provider.flow_error(input, NativeFlowError::InvalidNode(input));
++            return TypeId::ERROR;
++        }
++        let key = (value, input);
++        if let Some(&cached) = self.flow_memo.native_state.value_types.get(&key) {
++            return cached;
++        }
++        let (ty, stored) =
++            self.run_memoizable(|checker| provider.value_type(value, input, checker));
++        if stored.is_some() && !self.is_stack_low() {
++            self.flow_memo.native_state.value_types.insert(key, ty);
++        }
++        ty
++    }
++
++    fn native_flow_call_effects(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        value: NativeValueKey,
++        input: NativeFlowKey,
++    ) -> NativeCallEffects {
++        let key = (value, input);
++        if value.snapshot != input.graph.snapshot
++            || !provider.contains_graph(input.graph)
++            || provider.node(input).is_none()
++        {
++            provider.flow_error(input, NativeFlowError::InvalidValue(value));
++            return NativeCallEffects::Unsupported("invalid frozen call context");
++        }
++        if let Some(&cached) = self.flow_memo.native_state.call_effects.get(&key) {
++            return cached;
++        }
++        let (effects, stored) =
++            self.run_memoizable(|checker| provider.call_effects(value, input, checker));
++        if stored.is_some() && !self.is_stack_low() {
++            self.flow_memo
++                .native_state
++                .call_effects
++                .insert(key, effects);
++        }
++        effects
++    }
++}
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -53,6 +53,8 @@
+ mod explain_relation;
+ mod expr;
+ mod flow;
++mod flow_walk;
++pub mod native_flow;
+ mod grammarchecks;
+ mod infer;
+ mod instantiate;

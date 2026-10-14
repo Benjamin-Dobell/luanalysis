@@ -53,6 +53,8 @@ pub mod explain;
 mod explain_relation;
 mod expr;
 mod flow;
+mod flow_walk;
+pub mod native_flow;
 mod grammarchecks;
 mod infer;
 mod instantiate;

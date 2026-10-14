@@ -72,6 +72,12 @@ SOURCE_ADAPTATIONS.extend({
     "check/instantiate.rs", "check/mod.rs", "check/print.rs", "check/relate.rs",
     "check/shape.rs", "check/symbols.rs",
 ])
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-flow.patch",
+    "reason": "Extract shared TS/native flow traversal and add original-source graph providers with native loop, narrowing and reachability workers.",
+    **({"added": True} if path in {"flow_walk.rs", "native_flow.rs"} else {}),
+} for path in ["flow.rs", "flow_walk.rs", "native_flow.rs", "mod.rs"])
 
 
 def git(source, *args):
@@ -88,9 +94,15 @@ def patched_sources(source):
     for adaptation in SOURCE_ADAPTATIONS:
         by_patch.setdefault(adaptation["patch"], set()).add(adaptation["path"])
     all_paths = set().union(*by_patch.values())
+    added_paths = {a["path"] for a in SOURCE_ADAPTATIONS if a.get("added")}
+    if added_paths and git(source, "ls-tree", "-r", "--name-only", REVISION,
+                           *sorted(added_paths)).strip():
+        raise SystemExit("an explicit source addition already exists in the pinned upstream tree")
     with tempfile.TemporaryDirectory(prefix="luanalysis-bun-extract-") as directory:
         temporary = Path(directory)
         for path in all_paths:
+            if path in added_paths:
+                continue
             target = temporary / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(git(source, "show", f"{REVISION}:{path}"))
@@ -151,6 +163,7 @@ def main():
     destination = ROOT / "vendor" / "bun"
     destination.mkdir(parents=True, exist_ok=True)
     hashes = {}
+    additions = {}
     tracked = git(source, "ls-tree", "-r", "--name-only", REVISION).decode().splitlines()
 
     def output(path, contents, upstream_path=None):
@@ -177,6 +190,16 @@ def main():
             continue
         raw = git(source, "show", f"{REVISION}:{path}")
         output(path, adapted_sources.get(path, raw), path)
+    for path, contents in sorted(adapted_sources.items()):
+        if path in tracked:
+            continue
+        introduction = next((a for a in SOURCE_ADAPTATIONS
+                             if a["path"] == path and a.get("added")), None)
+        if introduction is None:
+            raise SystemExit(f"adapted file has no upstream origin or explicit addition: {path}")
+        output(path, contents)
+        additions[path] = {"extracted_sha256": hashlib.sha256(contents).hexdigest(),
+                           "introduced_by_patch": introduction["patch"]}
     for path, manifest in closure.values():
         output(path + "/Cargo.toml", manifest.encode(), path + "/Cargo.toml")
     for original, target in [("LICENSE.md", "LICENSE.md"),
@@ -240,8 +263,10 @@ pub const ENABLE_TINYCC: bool = false;
                       "Replace Bun runtime workspace manifest with the library dependency closure."],
                   "source_adaptations": [{"path": adaptation["path"], "patch": adaptation["patch"],
                                           "reason": adaptation["reason"],
+                                          **({"added": True} if adaptation.get("added") else {}),
                                           "patch_sha256": hashlib.sha256((ROOT / adaptation["patch"]).read_bytes()).hexdigest()}
                                          for adaptation in SOURCE_ADAPTATIONS],
+                  "source_additions": dict(sorted(additions.items())),
                   "files": dict(sorted(hashes.items()))}
     output("provenance.json", (json.dumps(provenance, indent=2) + "\n").encode())
     print(f"{'Verified' if args.verify else 'Extracted'} {len(closure)} libraries; {len(hashes)} pinned files")
