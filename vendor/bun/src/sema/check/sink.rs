@@ -244,6 +244,8 @@ impl<'s> Sink<'s> {
 /// signature or mapper id can be task-local.
 fn is_task_independent(q: Query) -> bool {
     match q {
+        Query::NativeNamed(super::native_named::NativeTypeDeclarationQuery::ObjectMembers(_)) => false,
+        Query::NativeNamed(_) => true,
         Query::Symbol(_)
         | Query::Declared(_)
         | Query::Bases(_)

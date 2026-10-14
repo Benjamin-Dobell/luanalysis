@@ -21,6 +21,9 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[path = "native_named_provider.rs"]
+mod named_provider;
+
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -1173,26 +1176,23 @@ impl NativeRegistry {
         let function = self.function(key);
         for parameter in &function.annotations.generics {
             if let Some(constraint) = &parameter.constraint {
-                self.types
-                    .annotation_dependencies(Some(key), constraint, used);
+                self.function_annotation_parameter_dependencies(Some(key), constraint, used);
             }
         }
         for parameter in &function.annotations.params {
-            self.types
-                .annotation_dependencies(Some(key), &parameter.ty, used);
+            self.function_annotation_parameter_dependencies(Some(key), &parameter.ty, used);
         }
         if let Some(vararg) = &function.annotations.vararg {
-            self.types
-                .annotation_dependencies(Some(key), &vararg.ty, used);
+            self.function_annotation_parameter_dependencies(Some(key), &vararg.ty, used);
         }
         if let Some(annotation) = &function.annotations.type_annotation {
             for ty in &annotation.types {
-                self.types.annotation_dependencies(Some(key), ty, used);
+                self.function_annotation_parameter_dependencies(Some(key), ty, used);
             }
         }
         if let Some(annotation) = &function.annotations.returns {
             for ty in &annotation.types {
-                self.types.annotation_dependencies(Some(key), ty, used);
+                self.function_annotation_parameter_dependencies(Some(key), ty, used);
             }
         } else {
             let mut statements = Vec::new();
@@ -1225,7 +1225,7 @@ impl NativeRegistry {
                 annotation: Some(annotation),
                 owner,
                 ..
-            } => self.types.annotation_dependencies(
+            } => self.function_annotation_parameter_dependencies(
                 owner.map(|owner| self.key(owner)),
                 annotation,
                 used,
@@ -1266,11 +1266,10 @@ impl NativeRegistry {
                     .iter()
                     .find(|tag| tag.name.text == name.text)
                 {
-                    self.types
-                        .annotation_dependencies(Some(owner), &tag.ty, used);
+                    self.function_annotation_parameter_dependencies(Some(owner), &tag.ty, used);
                 } else if let Some(context) = &function.annotations.type_annotation {
                     for ty in &context.types {
-                        self.types.annotation_dependencies(Some(owner), ty, used);
+                        self.function_annotation_parameter_dependencies(Some(owner), ty, used);
                     }
                 }
             }
@@ -1626,6 +1625,39 @@ impl FlowValueQueries for NativeRegistry {
 }
 
 impl NativeTypeProvider for NativeRegistry {
+    fn contains_type_declaration(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> bool {
+        self.named_contains_declaration(key)
+    }
+    fn type_declaration_header(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> luanalysis_engine::TypeDeclarationHeader {
+        self.named_declaration_header(key)
+    }
+    fn contains_type_member(&self, key: luanalysis_engine::NativeTypeMemberKey) -> bool {
+        self.named_contains_member(key)
+    }
+    fn type_member_header(&self, key: luanalysis_engine::NativeTypeMemberKey) -> luanalysis_engine::TypeMemberHeader {
+        self.named_member_header(key)
+    }
+    fn type_declaration_members(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> Vec<luanalysis_engine::NativeTypeMemberKey> {
+        self.named_declaration_members(key)
+    }
+    fn type_alias_target(&self, key: luanalysis_engine::NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Type {
+        self.named_alias_target(key, queries)
+    }
+    fn type_member_type(&self, key: luanalysis_engine::NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Type {
+        self.named_member_type(key, queries)
+    }
+    fn type_indexer_key(&self, key: luanalysis_engine::NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Type {
+        self.named_indexer_type(key, queries)
+    }
+    fn type_declaration_bases(&self, key: luanalysis_engine::NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Vec<Type> {
+        self.named_bases(key, queries)
+    }
+    fn type_parameter_owner(&self, key: NativeTypeParameterKey) -> Option<luanalysis_engine::TypeDeclarationOwner> {
+        self.named_parameter_owner(key)
+    }
+    fn type_declaration_error(&self, error: luanalysis_engine::NamedTypeError) {
+        self.named_declaration_error(error)
+    }
     fn function_has_result_pack(&self, key: NativeFunctionKey) -> bool {
         self.contains_function(key)
     }

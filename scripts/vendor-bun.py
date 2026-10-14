@@ -132,6 +132,18 @@ SOURCE_ADAPTATIONS.extend({
 } for path in ["mod.rs", "native_flow.rs", "native_packs.rs", "native_iterators.rs"])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-named-types.patch",
+    "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+    **({"added": True} if path == "check/native_named.rs" else {}),
+} for path in [
+    "check/check_source_file.rs", "check/infer.rs", "check/instantiate.rs", "check/mod.rs",
+    "check/native_named.rs", "check/native_tables.rs", "check/print.rs", "check/relate.rs",
+    "check/shape.rs", "check/sink.rs", "types.rs",
+])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

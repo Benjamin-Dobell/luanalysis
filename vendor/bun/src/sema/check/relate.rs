@@ -339,6 +339,7 @@ pub(super) fn is_object_kind(data: &TypeData) -> bool {
         TypeData::Ref { .. }
             | TypeData::NativeArray { .. }
             | TypeData::NativeTable(_)
+            | TypeData::NativeObject(_)
             | TypeData::Tuple { .. }
             | TypeData::Anon { .. }
             | TypeData::Fns { .. }
@@ -683,6 +684,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `isEmptyResolvedType` of the resolved members of `ty`.
     fn is_empty_resolved_type(&mut self, ty: TypeId) -> bool {
+        let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
         if let TypeData::NativeTable(table) = self.data(ty) {
             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
         }
@@ -708,6 +710,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// once something else has resolved them (`ObjectFlagsMembersResolved`), or is instantiating
     /// them: until that is done there are none.
     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
+        let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
         if let TypeData::NativeTable(table) = self.data(ty) {
             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
         }
@@ -2748,6 +2751,7 @@ impl<'p, 's> Checker<'p, 's> {
                 && self.is_weak_type(target)
                 && {
                     let apparent = self.reduced_apparent_type_as_object(source);
+                    let apparent = self.native_object_resolved(apparent).unwrap_or(apparent);
                     match self.data(apparent) {
                         TypeData::NativeTable(table) => !table.fields.is_empty(),
                         _ => self.members(apparent)
@@ -3102,6 +3106,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `isWeakType`: properties, all of them optional, and nothing else.
     pub(super) fn is_weak_type(&mut self, t: TypeId) -> bool {
+        let t = match self.native_object_resolved(t) { Ok(ty) => ty, Err(_) => return false };
         match self.data(t) {
             TypeData::NativeTable(table) => !table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty()
                 && table.fields.iter().all(|field| field.optional),
@@ -3124,6 +3129,8 @@ impl<'p, 's> Checker<'p, 's> {
     /// `hasCommonProperties`
     pub(super) fn has_common_properties(&mut self, source: TypeId, target: TypeId) -> bool {
         let apparent = self.reduced_apparent_type_as_object(source);
+        let apparent = match self.native_object_resolved(apparent) { Ok(ty) => ty, Err(_) => return false };
+        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return false };
         if let TypeData::NativeTable(source) = self.data(apparent) {
             if let TypeData::NativeTable(target) = self.data(target) {
                 return source.fields.iter().any(|field| target.fields.iter().any(|other| other.key == field.key));
@@ -4199,6 +4206,12 @@ impl<'p, 's> Checker<'p, 's> {
     /// `data`: the `TypeData` of `t`.
     fn recursion_identity_as(&self, t: TypeId, data: &TypeData) -> RecursionId {
         match data {
+            TypeData::NativeObject(reference) => {
+                let declared = self.intern(TypeData::NativeObject(NativeObjectReference {
+                    declaration: reference.declaration, mapper: MapperId::IDENTITY,
+                }));
+                (8, declared.0, 0)
+            }
             // `t.AsTypeReference().node != nil`
             TypeData::Ref {
                 args: TypeArguments::Deferred(deferred),
@@ -5198,12 +5211,15 @@ impl<'p, 's> Checker<'p, 's> {
         &mut self,
         r: &mut Relater,
         source: TypeId,
-        sd: &'p TypeData<'p>,
+        _sd: &'p TypeData<'p>,
         target: TypeId,
-        td: &'p TypeData<'p>,
+        _td: &'p TypeData<'p>,
         state: u8,
         shared: &mut WorkerState,
     ) -> Ternary {
+        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
+        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
+        let (sd, td) = (self.data(source), self.data(target));
         let relation = r.relation;
         let target_is_mapped = is_mapped_kind(td);
         // `isPartialMappedType(target) && isEmptyObjectType(source)`

@@ -8,6 +8,8 @@
 mod native;
 mod native_flow;
 pub use native_flow::*;
+mod native_named;
+pub use native_named::*;
 mod native_iterators;
 mod native_packs;
 pub use native_packs::*;
@@ -256,12 +258,36 @@ pub enum Type {
     Function(FunctionType),
     NativeFunction(NativeFunctionKey),
     NativeTypeParameter(NativeTypeParameterKey),
+    /// Original declaration reference. Import resolves transparent aliases in
+    /// the native checker; lazy objects remain exact session capabilities.
+    NativeNamedReference { declaration: NativeTypeDeclarationKey, arguments: Vec<Type> },
     SessionType(SessionTypeRef),
 }
 
 /// Source recipes may use thread-local interior state; release its borrows
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
+    fn contains_type_declaration(&self, _: NativeTypeDeclarationKey) -> bool { false }
+    fn type_declaration_header(&self, _: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
+        panic!("native named declaration provider is not installed")
+    }
+    fn contains_type_member(&self, _: NativeTypeMemberKey) -> bool { false }
+    fn type_member_header(&self, _: NativeTypeMemberKey) -> TypeMemberHeader {
+        panic!("native named member provider is not installed")
+    }
+    fn type_declaration_members(&self, _: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> { Vec::new() }
+    fn type_alias_target(&self, _: NativeTypeDeclarationKey, _: &mut dyn TypeQueries) -> Type {
+        panic!("native named alias provider is not installed")
+    }
+    fn type_member_type(&self, _: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> Type {
+        panic!("native named member provider is not installed")
+    }
+    fn type_indexer_key(&self, _: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> Type {
+        panic!("native named indexer provider is not installed")
+    }
+    fn type_declaration_bases(&self, _: NativeTypeDeclarationKey, _: &mut dyn TypeQueries) -> Vec<Type> { Vec::new() }
+    fn type_parameter_owner(&self, _: NativeTypeParameterKey) -> Option<TypeDeclarationOwner> { None }
+    fn type_declaration_error(&self, _: NamedTypeError) {}
     fn check_expression_pack(
         &self,
         key: NativeExpressionKey,
@@ -772,6 +798,10 @@ pub trait TypeQueries {
     fn type_parameter_constraint(&mut self, key: NativeTypeParameterKey) -> Option<Type>;
     fn type_parameter_default(&mut self, key: NativeTypeParameterKey) -> Option<Type>;
     fn format(&mut self, ty: &Type) -> String;
+    fn named_type_reference(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Result<Type, NamedTypeError>;
+    fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
+    fn validate_named_declaration(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
+    fn validate_named_member(&mut self, member: NativeTypeMemberKey) -> Result<Type, NamedTypeError>;
 }
 
 #[derive(Default)]
@@ -809,6 +839,7 @@ impl Engine {
                 handles,
             };
             let mut checker = program.checker_with_native_provider(&adapter);
+            checker.set_native_type_declaration_provider(&adapter);
             checker.enable_native_arrays();
             work(
                 &provider,
@@ -1413,6 +1444,18 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn format(&mut self, ty: &Type) -> String {
         let ty = import_type(self.checker, self.handles, ty);
         String::from_utf8_lossy(&self.checker.type_to_string(ty)).into_owned()
+    }
+    fn named_type_reference(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Result<Type, NamedTypeError> {
+        native_named::resolve(self, declaration, arguments)
+    }
+    fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError> {
+        native_named::declared(self, declaration, false)
+    }
+    fn validate_named_declaration(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError> {
+        native_named::declared(self, declaration, true)
+    }
+    fn validate_named_member(&mut self, member: NativeTypeMemberKey) -> Result<Type, NamedTypeError> {
+        native_named::validate_member(self, member)
     }
 }
 
@@ -2210,6 +2253,11 @@ fn import_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: &Type) 
         Type::NativeTypeParameter(key) => checker
             .native_type_parameter(core_parameter_key(*key))
             .unwrap_or_else(|| std::panic::panic_any(InvalidNativeTypeParameterKey(*key))),
+        Type::NativeNamedReference { declaration, arguments } => {
+            let arguments: Vec<_> = arguments.iter().map(|ty| import_type(checker, handles, ty)).collect();
+            checker.native_type_reference(native_named::core_declaration(*declaration), &arguments)
+                .unwrap_or(TypeId::ERROR)
+        }
         Type::Union(types) => {
             let types: Vec<_> = types
                 .iter()
@@ -2285,6 +2333,7 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
         return Type::Boolean;
     }
     match checker.data(ty) {
+        TypeData::NativeObject(..) => handles.retain(ty),
         TypeData::NativeTable(_) => native_tables::export_table(checker, handles, ty)
             .map(Type::Table)
             .unwrap_or_else(|| handles.retain(ty)),
@@ -2468,6 +2517,9 @@ impl Host for TypeCoreHost {
         true
     }
 }
+
+#[cfg(test)]
+mod native_named_core_tests;
 
 #[cfg(test)]
 mod tests {

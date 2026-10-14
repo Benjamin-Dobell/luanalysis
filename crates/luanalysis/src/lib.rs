@@ -192,30 +192,11 @@ pub fn check(source: &str) -> CheckReport {
             pending_types: Vec::new(),
         };
     }
-    let pending_named: Vec<_> = file
-        .type_declarations
-        .iter()
-        .map(|declaration| Diagnostic {
-            code: "LUA2031",
-            span: declaration.name.span,
-            message: format!(
-                "Named type '{}' requires the native named-declaration integration.",
-                declaration.name.text
-            ),
-        })
-        .chain(file.type_extensions.iter().map(|extension| Diagnostic {
-            code: "LUA2031",
-            span: extension.owner.span,
-            message: format!(
-                "Type augmentation '{}' requires the native named-declaration integration.",
-                extension.owner.text
-            ),
-        }))
-        .collect();
     let bound = bind::bind(&file);
     Engine::new().with_native_provider(
         move || NativeRegistry::new(file, bound),
         |registry, engine| {
+            registry.check_named_declarations(engine);
             let mut report = {
                 let mut checker = Checker {
                     engine,
@@ -241,7 +222,6 @@ pub fn check(source: &str) -> CheckReport {
                 checker.report
             };
             registry.check_all_bodies(engine);
-            report.diagnostics.extend(pending_named);
             report.append(registry.take_report());
             report.render(engine);
             // Explicit display demands can complete a previously unqueried signature.
@@ -505,6 +485,7 @@ impl Checker<'_> {
     }
 
     fn annotation_node(&mut self, ty: &TypeExpr) -> Type {
+        if let Some(resolved)=self.native_anonymous_annotation(ty){return resolved;}
         match &ty.kind {
             TypeExprKind::Named(name) => match name.as_str() {
                 "any" => Type::Any,
@@ -516,15 +497,19 @@ impl Checker<'_> {
                 "string" => Type::String,
                 "void" => Type::Void,
                 _ => {
-                    if let Some(ty) = self
-                        .native
-                        .and_then(|native| match self.named_type_context {
-                            Some(context) => native.resolve_named_type_parameter(context, name),
-                            None => native.resolve_type_name(self.type_context, name),
-                        })
-                    {
-                        return ty;
+                    if let Some(native)=self.native {
+                        let context=self.named_type_context.map(native_named::NativeTypeContext::NamedType)
+                            .or_else(||self.type_context.map(native_named::NativeTypeContext::Function));
+                        match native.annotation_parameter_resolution(context,name) {
+                            native_types::TypeNameResolution::Parameter(key)=>return Type::NativeTypeParameter(key),
+                            native_types::TypeNameResolution::Ambiguous(_)=>{
+                                self.error("TS2300",ty.span,format!("Ambiguous generic parameter '{name}'."));
+                                return Type::Any;
+                            },
+                            native_types::TypeNameResolution::Missing=>{},
+                        }
                     }
+                    if let Some(resolved)=self.native_named_reference(name,&[],ty){return resolved;}
                     self.error(
                         "LUA2001",
                         ty.span,
@@ -554,9 +539,8 @@ impl Checker<'_> {
                 self.native_dictionary_annotation(args, ty.span)
             }
             TypeExprKind::Generic { base, args, .. } => {
-                for arg in args {
-                    self.annotation(arg);
-                }
+                let arguments:Vec<_>=args.iter().map(|arg|self.annotation(arg)).collect();
+                if let Some(resolved)=self.native_named_reference(&base.text,&arguments,ty){return resolved;}
                 self.error(
                     "LUA2025",
                     ty.span,
@@ -1021,6 +1005,7 @@ pub fn describe(ty: &Type) -> String {
         // their signatures here would create artificial return-demand cycles.
         Type::NativeFunction(_) => "function".into(),
         Type::NativeTypeParameter(_) => "type parameter".into(),
+        Type::NativeNamedReference { .. } => "named type".into(),
         Type::SessionType(_) => "contextual type".into(),
     }
 }

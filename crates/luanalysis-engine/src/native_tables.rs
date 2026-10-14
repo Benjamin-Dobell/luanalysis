@@ -405,7 +405,7 @@ fn export_access_key(
     }
 }
 
-fn export_error(
+pub(super) fn export_error(
     checker: &mut Checker<'_, '_>,
     handles: &TypeHandles,
     error: NativeTableError,

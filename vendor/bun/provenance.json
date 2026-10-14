@@ -605,6 +605,73 @@
       "reason": "Add correlated Lua generic-for hidden frames and nil-only iteration filtering through the shared call and flow workers; retain Any tail values during fixed assignment adjustment.",
       "added": true,
       "patch_sha256": "102eea860a0f2e39afa01c273143317ff5f48ea0802d3c6a5811e53c8859dc09"
+    },
+    {
+      "path": "src/sema/check/check_source_file.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "added": true,
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-named-types.patch",
+      "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
+      "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
     }
   ],
   "source_additions": {
@@ -620,12 +687,16 @@
       "extracted_sha256": "7d8e0e789444ba1cdaafd0e64e3dfef451d0b4107acb5ba99e0c0676ac90d371",
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
+    "src/sema/check/native_named.rs": {
+      "extracted_sha256": "dae5e82b77760237245a4923b415a55f33e04db43ea8b6197da8748e1bd4d3dc",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
+    },
     "src/sema/check/native_packs.rs": {
       "extracted_sha256": "e8f2c8178a0d4ae094142db014d6d19e39081bcac1db297d82f98d212cb6efc9",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "e5f3099ab3f9b1ddcdad6f7f7b4963014907988b56a08e47b98d0dbaf7efe4bd",
+      "extracted_sha256": "f406d58cfec53bae8181b88c71141c2b9723693cb81fed63a3bb4a2202c61e4c",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -1328,7 +1399,7 @@
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
       "sha256": "9329b7117eb9eb92b9b8ceadb1d29189b3e71ef8c8898a8e71e697d7d5951748",
-      "extracted_sha256": "9329b7117eb9eb92b9b8ceadb1d29189b3e71ef8c8898a8e71e697d7d5951748"
+      "extracted_sha256": "f0f4adacba236d9aee02e7b8a4b0ca039d1a0c5cf61849119d3b5f48a9f62eae"
     },
     "src/sema/check/context.rs": {
       "upstream": "src/sema/check/context.rs",
@@ -1548,12 +1619,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "f08b6ee0317f7fbe95040ebf22f4eca515eb4bfd72e4b434c260f8996ccc69d5"
+      "extracted_sha256": "98f039f3203fd19d9d1a987dc7e9220180a487a963b4c158c4b57015c8b9b5a2"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "57336e176ed1990cc5d20562a5ebafe57641915e683d5e82ac0e77c77c23b812"
+      "extracted_sha256": "9b2b0112d2a3a47b92686c7abd8b16453bde4b9f7eb3140e33646a5533c3220e"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -1583,7 +1654,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "b995b4c1c4e330ea4e69ed37ec029808ffc338f1ae09033a06c591a6b5f90138"
+      "extracted_sha256": "36a9243bdb51aa15b7f5f613045b3820e1ba9e467367370d79f4d80f2b738334"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -1593,7 +1664,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "adc7f51478f5b0d2c083ae00f1488dc0492948124f07feab1eeabd6edb735354"
+      "extracted_sha256": "7ecf7fd566caafa3fdfb6e27af66169bc67c0e083776e761711d712bd7a1a13e"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -1608,7 +1679,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "f1dff3a67a322674756a23e0f222c4b9f3786d36508b6966b9a53e58b84ee7d3"
+      "extracted_sha256": "9e6af526836d24ec91e13f8524510e13c078383fa176fceb132aea35013b2ee3"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -1663,12 +1734,12 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "f15ecc21501072e8de2f7f7839832c800ca680d40fc4f23acaa280a400d52fdd"
+      "extracted_sha256": "a95a21335f79824fd7e189235e8e37ec588d52db046179b08e49e3d46d09cbef"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133"
+      "extracted_sha256": "0a0313a73df21eada78cabc2018c8a8edc12f88e4e338f25771a4f035856233d"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",
@@ -1788,7 +1859,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "31df9c96d20f4c06241e35b78380a9f60fb028b5049081de62a852b9acc5f881"
+      "extracted_sha256": "5eb38609e8c7198d9475d93a7c55d09bda3bc1e243e88ac2cde934991a9706bb"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

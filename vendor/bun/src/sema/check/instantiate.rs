@@ -686,6 +686,11 @@ impl<'p, 's> Checker<'p, 's> {
             return self.instantiate_deferred_type_reference(ty, mapper, None);
         }
         match self.data(ty) {
+            TypeData::NativeObject(reference) => {
+                let declaration = reference.declaration;
+                let mapper = self.compose(reference.mapper, mapper);
+                self.intern(TypeData::NativeObject(NativeObjectReference { declaration, mapper }))
+            }
             TypeData::NativeTable(table) => {
                 let fields: Vec<NativeTableField> = table.fields.iter().map(|field| NativeTableField {
                     value: self.instantiate(field.value, mapper),

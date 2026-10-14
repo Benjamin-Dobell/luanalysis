@@ -540,6 +540,9 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub fn native_table_read(&mut self, table: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
+        if let TypeData::NativeObject(reference) = *self.data(table) {
+            return self.native_named_read(reference, key);
+        }
         if let Some(error) = self.native_table_description_error(table) { return Err(error) }
         let key = self.native_table_access(key)?;
         if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
@@ -634,6 +637,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub fn native_table_write(&mut self, table: TypeId, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
+        let table = self.native_object_resolved(table).map_err(|_| NativeTableError::NotTable { ty: table })?;
         if let Some(error) = self.native_table_description_error(table) { return Err(error) }
         let key = self.native_table_access(key)?;
         if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
@@ -858,6 +862,8 @@ impl<'p, 's> Checker<'p, 's> {
     /// Old/native class namespaces expose genuine byte-string names. They can participate in
     /// native table relations without manufacturing JS names for numeric or boolean Lua keys.
     pub(super) fn native_table_object_description(&mut self, ty: TypeId) -> Option<NativeTableData<'s>> {
+        let ty = self.native_object_resolved(ty).ok()?;
+        if let TypeData::NativeTable(table) = self.data(ty) { return Some((**table).clone_in(self.arena)) }
         if self.is_array_or_tuple(ty) { return None }
         let members = self.structured_members(ty)?;
         let mut fields = Vec::new();

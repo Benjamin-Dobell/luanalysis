@@ -1,0 +1,1022 @@
+diff --git a/src/sema/check/check_source_file.rs b/src/sema/check/check_source_file.rs
+--- a/src/sema/check/check_source_file.rs
++++ b/src/sema/check/check_source_file.rs
+@@ -197,6 +197,7 @@
+     /// diagnostics go to the barrier.
+     /// A checker for which this is not called is outside the plan: its writes are dropped with it.
+     pub fn begin_task(&mut self, step: u32, index: u32, is_read_later: bool) {
++        self.native_named_cache = super::native_named::NativeNamedCache::default();
+         self.task.begin(step, index, is_read_later);
+         self.order_dependent.clear();
+         self.order_dependent_filter = 0;
+@@ -204,6 +205,7 @@
+ 
+     /// Called on the thread of the task, after everything else this checker does.
+     pub fn end_task(&mut self) -> Finished<'s> {
++        self.native_named_cache = super::native_named::NativeNamedCache::default();
+         let diagnostics = self.take_diagnostics();
+         self.task.finish(self.p, diagnostics)
+     }
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -391,58 +391,15 @@
+             }
+         }
+         // `source.AsTypeReference().node != nil && target.AsTypeReference().node != nil`
++        let (original_source, original_target) = (source, target);
++        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return };
++        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return };
+         let are_both_deferred =
+             self.types().deferred(source).is_some() && self.types().deferred(target).is_some();
+         match (self.data(source), self.data(target)) {
+-            (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
+-                let mut sources = Vec::new();
+-                let mut targets = Vec::new();
+-                for field in &target.fields {
+-                    if let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) {
+-                        sources.push(if actual.optional { self.optional(actual.value) } else { actual.value });
+-                        targets.push(if field.optional { self.optional(field.value) } else { field.value });
+-                    }
+-                }
+-                for indexer in &target.indexers {
+-                    for actual in &source.indexers {
+-                        if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
+-                        sources.extend([actual.key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+-                        targets.extend([indexer.key, indexer.value]);
+-                    }
+-                    for actual in &source.fields {
+-                        let key = self.native_table_key_type(actual.key);
+-                        if !self.native_table_inference_key_matches(key, indexer.key) { continue }
+-                        sources.extend([key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+-                        targets.extend([indexer.key, indexer.value]);
+-                    }
+-                    for actual in &source.sequence_tails {
+-                        if !self.native_table_inference_key_matches(TypeId::NUMBER, indexer.key)
+-                            || !self.could_contain_type_variables(indexer.key) && !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
+-                        sources.extend([TypeId::NUMBER, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+-                        targets.extend([indexer.key, indexer.value]);
+-                    }
+-                }
+-                for tail in &target.sequence_tails {
+-                    for actual in &source.sequence_tails {
+-                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+-                        targets.push(tail.value);
+-                    }
+-                    for actual in &source.indexers {
+-                        if !self.native_sequence_type_overlaps(tail.start, actual.key) { continue }
+-                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+-                        targets.push(tail.value);
+-                    }
+-                    for actual in &source.fields {
+-                        if !matches!(actual.key, NativeTableKey::Integer(index) if index >= tail.start)
+-                            || target.fields.iter().any(|field| field.key == actual.key) { continue }
+-                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+-                        targets.push(tail.value);
+-                    }
+-                }
+-                self.infer_from_type_arguments(n, &sources, &targets, &[]);
+-            }
+-            (TypeData::NativeArray { element: s, .. }, TypeData::NativeArray { element: t, .. }) => {
+-                self.infer_from_type_arguments(n, &[*s], &[*t], &[]);
++            (TypeData::NativeTable(_), TypeData::NativeTable(_))
++            | (TypeData::NativeArray { .. }, TypeData::NativeArray { .. }) => {
++                self.invoke_once(n, original_source, original_target, Self::infer_native_object_types);
+             }
+             // Two deferred references go through `invokeOnce`; otherwise inference might not
+             // terminate.
+@@ -553,6 +510,66 @@
+                     self.invoke_once(n, source, target, Self::infer_from_object_types);
+                 }
+             }
++        }
++    }
++
++    /// Foreign structural objects use the same invokeOnce recursion and priority guard as TS
++    /// object inference. Keep the lazy declaration identity on its stack, not the expanded shape.
++    fn infer_native_object_types(&mut self, n: &mut Inference, source: TypeId, target: TypeId) {
++        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return };
++        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return };
++        match (self.data(source), self.data(target)) {
++            (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
++                let mut sources = Vec::new();
++                let mut targets = Vec::new();
++                for field in &target.fields {
++                    if let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) {
++                        sources.push(if actual.optional { self.optional(actual.value) } else { actual.value });
++                        targets.push(if field.optional { self.optional(field.value) } else { field.value });
++                    }
++                }
++                for indexer in &target.indexers {
++                    for actual in &source.indexers {
++                        if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
++                        sources.extend([actual.key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
++                        targets.extend([indexer.key, indexer.value]);
++                    }
++                    for actual in &source.fields {
++                        let key = self.native_table_key_type(actual.key);
++                        if !self.native_table_inference_key_matches(key, indexer.key) { continue }
++                        sources.extend([key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
++                        targets.extend([indexer.key, indexer.value]);
++                    }
++                    for actual in &source.sequence_tails {
++                        if !self.native_table_inference_key_matches(TypeId::NUMBER, indexer.key)
++                            || !self.could_contain_type_variables(indexer.key) && !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
++                        sources.extend([TypeId::NUMBER, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
++                        targets.extend([indexer.key, indexer.value]);
++                    }
++                }
++                for tail in &target.sequence_tails {
++                    for actual in &source.sequence_tails {
++                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
++                        targets.push(tail.value);
++                    }
++                    for actual in &source.indexers {
++                        if !self.native_sequence_type_overlaps(tail.start, actual.key) { continue }
++                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
++                        targets.push(tail.value);
++                    }
++                    for actual in &source.fields {
++                        if !matches!(actual.key, NativeTableKey::Integer(index) if index >= tail.start)
++                            || target.fields.iter().any(|field| field.key == actual.key) { continue }
++                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
++                        targets.push(tail.value);
++                    }
++                }
++                self.infer_from_type_arguments(n, &sources, &targets, &[]);
++            }
++            (TypeData::NativeArray { element: source, .. }, TypeData::NativeArray { element: target, .. }) => {
++                self.infer_from_type_arguments(n, &[*source], &[*target], &[]);
++            }
++            _ => {}
+         }
+     }
+ 
+@@ -3185,6 +3202,7 @@
+                 },
+                 TypeData::Template { types, .. } => left.extend_from_slice(types),
+                 TypeData::NativeArray { element, .. } => left.push(*element),
++                TypeData::NativeObject(reference) => left.extend(values(reference.mapper)),
+                 TypeData::NativeTable(table) => {
+                     left.extend(table.fields.iter().map(|field| field.value));
+                     for indexer in &table.indexers { left.extend([indexer.key, indexer.value]); }
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -686,6 +686,11 @@
+             return self.instantiate_deferred_type_reference(ty, mapper, None);
+         }
+         match self.data(ty) {
++            TypeData::NativeObject(reference) => {
++                let declaration = reference.declaration;
++                let mapper = self.compose(reference.mapper, mapper);
++                self.intern(TypeData::NativeObject(NativeObjectReference { declaration, mapper }))
++            }
+             TypeData::NativeTable(table) => {
+                 let fields: Vec<NativeTableField> = table.fields.iter().map(|field| NativeTableField {
+                     value: self.instantiate(field.value, mapper),
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -57,6 +57,7 @@
+ pub mod native_flow;
+ pub mod native_iterators;
+ pub mod native_packs;
++pub mod native_named;
+ mod grammarchecks;
+ mod infer;
+ mod instantiate;
+@@ -120,6 +121,7 @@
+ use std::sync::atomic::AtomicBool;
+ use symbols::{AliasTarget, ExcludedMeanings};
+ use task::{Open, OrderDependent, Stored, Task};
++use native_named::{NativeNamedCache, NativeTypeDeclarationProvider, NativeTypeDeclarationQuery};
+ 
+ pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
+ pub use native_packs::NativePackResult;
+@@ -728,6 +730,8 @@
+         Checker {
+             p: self,
+             native_function_provider: None,
++            native_type_declaration_provider: None,
++            native_named_cache: NativeNamedCache::default(),
+             native_arrays: false,
+             native_function_contexts: Vec::new(),
+             native_capture_contexts: Vec::new(),
+@@ -1003,6 +1007,7 @@
+ /// A query that may be circular.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ enum Query {
++    NativeNamed(NativeTypeDeclarationQuery),
+     Expr(FileId, ExprId),
+     Symbol(Sym),
+     Declared(Sym),
+@@ -1093,6 +1098,7 @@
+             Query::Bases(sym) => (sym.file, 12),
+             Query::BaseConstructor(sym) => (sym.file, 13),
+             Query::ReturnOfSignature(_)
++            | Query::NativeNamed(_)
+             | Query::Shape(_)
+             | Query::Properties(_)
+             | Query::Constraint(_)
+@@ -1233,6 +1239,8 @@
+ pub struct Checker<'p, 's> {
+     pub p: &'p Program<'s>,
+     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
++    native_type_declaration_provider: Option<&'p dyn NativeTypeDeclarationProvider>,
++    native_named_cache: NativeNamedCache,
+     native_arrays: bool,
+     native_function_contexts: Vec<NativeFunctionContext>,
+     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
+@@ -2717,6 +2725,8 @@
+     /// A circular one is an error there, and `any`; here any other circular query is unresolved.
+     fn is_resolution(&self, q: Query) -> bool {
+         match q {
++            Query::NativeNamed(NativeTypeDeclarationQuery::DeclaredHead(id)) => self.native_type_declaration_provider
++                .is_some_and(|p| p.contains_type_declaration(id) && p.type_declaration_header(self, id).kind == native_named::NativeTypeDeclarationKind::Alias),
+             Query::Return(..)
+             | Query::ReturnOfSignature(_)
+             | Query::MappedProp(..)
+@@ -4097,6 +4107,10 @@
+ 
+     /// Whether `ty` is a reference to `getGlobalType(name, arity)`.
+     fn is_reference_to_global(&self, ty: TypeId, name: Atom, arity: usize) -> bool {
++        if let TypeData::NativeObject(reference) = *self.data(ty) {
++            return arity == 1 && name == known::Array
++                && self.native_object_is_array(reference);
++        }
+         if let TypeData::NativeArray { readonly, .. } = self.data(ty) {
+             return arity == 1 && name == if *readonly { known::ReadonlyArray } else { known::Array };
+         }
+@@ -4116,6 +4130,12 @@
+ 
+     /// The element type of `T[]` or `readonly T[]`.
+     pub fn array_element(&mut self, ty: TypeId) -> Option<TypeId> {
++        if let TypeData::NativeObject(reference) = *self.data(ty) {
++            if !self.native_object_is_array(reference) { return None }
++            let resolved = self.native_object_resolved(ty).ok()?;
++            let TypeData::NativeTable(table) = self.data(resolved) else { return None };
++            return table.indexers.first().map(|indexer| indexer.value);
++        }
+         if let TypeData::NativeArray { element, .. } = self.data(ty) {
+             return Some(*element);
+         }
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/native_named.rs
+@@ -0,0 +1,493 @@
++//! Lazy named declaration queries for a foreign frontend's original identities.
++//!
++//! Aliases resolve to their actual primitive, union or object TypeId. Structural object heads
++//! carry a declaration and MapperId; they are published before any child annotation demand.
++//! The ordinary query enter/leave/provisional/Stored machinery detects unproductive alias cycles.
++//!
++//! Raw member annotations remain in declaration space and are substituted once for an object
++//! mapper. Literal member reads request only the selected field. Full structural demands build
++//! ordinary NativeTable descriptions, preserving Lua numeric, boolean and typed key domains.
++//! Source array heads also describe Lua numeric tables; intrinsic NativeArray remains available
++//! to the existing rest/tuple normalization workers. Generic applications use fill_type_args,
++//! mapper_from and type_alias_instantiation, including the ordinary instantiation cache.
++//!
++//! Source providers index names, scopes and recipes; they do not expand aliases or implement a
++//! relation solver. Native members use the common recursive relation and invokeOnce inference
++//! guards. Query::Shape and shape_memo own the string/index/signature view required by TS workers.
++//!
++//! Class/module heads, base inheritance and non-public member visibility are explicit unsupported
++//! errors until their origins are preserved throughout nested relation workers. They must never
++//! silently acquire structural semantics. Explicit-owner augmentations resolve aliases through
++//! the same declared-head query, retain ambiguity errors and skip unrelated canonical owners.
++
++use crate::atom::Atom;
++use crate::check::{Checker, Query};
++use crate::types::{MapperId, NativeFunctionId, NativeTableKey, NativeTypeParamId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
++use super::native_tables::{NativeTableAccessKey, NativeTableError};
++use super::task::Stored;
++use crate::util::FxHashMap;
++
++/// Original named declaration, or an anonymous object annotation head registered by the source.
++/// File-local syntax ids must be mapped explicitly into this provider-owned namespace.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeTypeDeclarationId {
++    pub snapshot: u64,
++    pub index: u32,
++}
++
++/// Original field/indexer declaration, including explicit-owner augmentations.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeTypeMemberId {
++    pub snapshot: u64,
++    pub index: u32,
++}
++
++/// Generic annotation scope. A named type does not borrow a fabricated function identity.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeTypeDeclarationOwner {
++    Function(NativeFunctionId),
++    NamedType(NativeTypeDeclarationId),
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeTypeDeclarationKind {
++    Alias,
++    Shape,
++    Class,
++    Module,
++}
++
++impl NativeTypeDeclarationKind {
++    pub fn is_object(self) -> bool {
++        !matches!(self, Self::Alias)
++    }
++
++    pub fn is_nominal(self) -> bool {
++        matches!(self, Self::Class)
++    }
++}
++
++/// Original object annotation form, available before resolving any child type. A malformed
++/// builtin table application must not become an empty object merely because it has no members.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeObjectDeclarationForm {
++    Record,
++    Array,
++    Table { type_argument_count: usize },
++}
++
++/// Metadata that may be requested without resolving aliases, member annotations or bases.
++#[derive(Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeTypeDeclarationHeader {
++    pub kind: NativeTypeDeclarationKind,
++    pub name: Atom,
++    pub object_form: Option<NativeObjectDeclarationForm>,
++    /// Actual existing native parameter ids, allocated across Function|NamedType owners.
++    pub parameters: Vec<NativeTypeParamId>,
++    pub outer_parameters: Vec<NativeTypeParamId>,
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeTypeMemberVisibility {
++    Public,
++    Protected,
++    Private,
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeTypeMemberKey {
++    Fixed(NativeTableKey),
++    /// A typed Lua key domain. It never denotes singleton runtime reference identity.
++    Indexer { sparse: bool },
++}
++
++/// Member origin is preserved independently of the object where an inherited member is read.
++#[derive(Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeTypeMemberOwner {
++    Declared(NativeTypeDeclarationId),
++    /// An explicit-owner augmentation supplies original name-binding candidates. Resolving aliases
++    /// and validating the resulting object owner belongs to the backend declaration query.
++    Reference { name: Atom, candidates: Vec<NativeTypeDeclarationId> },
++}
++
++#[derive(Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeTypeMemberHeader {
++    pub owner: NativeTypeMemberOwner,
++    pub key: NativeTypeMemberKey,
++    pub visibility: NativeTypeMemberVisibility,
++    pub optional: bool,
++    pub readonly: bool,
++}
++
++/// Integration keys for the actual Checker Query adapter. Mapping does not change the raw
++/// declaration recipe; instantiated object shapes remain keyed by their native object TypeId.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeTypeDeclarationQuery {
++    DeclaredHead(NativeTypeDeclarationId),
++    MemberType(NativeTypeMemberId),
++    IndexerKey(NativeTypeMemberId),
++    Bases(NativeTypeDeclarationId),
++    ObjectMembers(TypeId),
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Debug)]
++pub enum NativeNamedTypeError {
++    InvalidDeclaration(NativeTypeDeclarationId),
++    InvalidMember(NativeTypeMemberId),
++    InvalidTypeParameter(NativeTypeParamId),
++    UnknownOwner { member: NativeTypeMemberId, name: Atom },
++    AmbiguousOwner { member: NativeTypeMemberId, name: Atom },
++    TypeArgumentArity { declaration: NativeTypeDeclarationId, actual: usize, minimum: usize, maximum: usize },
++    TypeArgumentConstraint { declaration: NativeTypeDeclarationId, index: usize, actual: TypeId, expected: TypeId },
++    CircularAlias(NativeTypeDeclarationId),
++    CircularBase(NativeTypeDeclarationId),
++    TooDeep(NativeTypeDeclarationQuery),
++    UnsupportedKind { declaration: NativeTypeDeclarationId, kind: NativeTypeDeclarationKind },
++    UnsupportedBases(NativeTypeDeclarationId),
++    UnsupportedVisibility(NativeTypeMemberId),
++    UnsupportedOwnerInstantiation(NativeTypeMemberId),
++    Table { declaration: NativeTypeDeclarationId, error: NativeTableError },
++}
++
++/// Declaration provider contract for native named-type integration. Every returned type
++/// is in declaration space, including member/indexer/bases queries. The backend owns resolving,
++/// substitution, recursive publication, inference, relation checks and semantic diagnostics.
++pub trait NativeTypeDeclarationProvider {
++    fn contains_type_declaration(&self, declaration: NativeTypeDeclarationId) -> bool;
++    fn type_declaration_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeTypeDeclarationHeader;
++
++    fn contains_type_member(&self, declaration: NativeTypeMemberId) -> bool;
++    fn type_member_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeMemberId) -> NativeTypeMemberHeader;
++    /// Own declarations plus potential explicit-owner augmentations; the backend validates each
++    /// original owner candidate before publishing or inheriting its member origin.
++    fn type_declaration_members(&self, declaration: NativeTypeDeclarationId) -> Vec<NativeTypeMemberId>;
++
++    /// Alias target only. Record/class/module heads are created by the checker from their header
++    /// before it requests members, rather than supplied as an eagerly expanded source table.
++    fn type_alias_target(&self, checker: &mut Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> TypeId;
++    fn type_member_type(&self, checker: &mut Checker<'_, '_>, declaration: NativeTypeMemberId) -> TypeId;
++    fn type_indexer_key(&self, checker: &mut Checker<'_, '_>, declaration: NativeTypeMemberId) -> TypeId;
++
++    fn type_declaration_bases(&self, _: &mut Checker<'_, '_>, _: NativeTypeDeclarationId) -> Vec<TypeId> {
++        Vec::new()
++    }
++
++    /// Original scope metadata used by the same native parameter provider for constraints and
++    /// defaults. Scope/name binding stays in the source registry; there is no frontend solver.
++    fn type_parameter_owner(&self, declaration: NativeTypeParamId) -> Option<NativeTypeDeclarationOwner>;
++
++    fn circular_type_alias(&self, _: NativeTypeDeclarationId) {}
++    fn circular_type_base(&self, _: NativeTypeDeclarationId) {}
++    fn type_declaration_too_deep(&self, _: NativeTypeDeclarationQuery) {}
++    fn type_declaration_error(&self, _: &mut Checker<'_, '_>, _: NativeNamedTypeError) {}
++}
++
++/// Constructor metadata for the native object TypeData. The mapper must preserve
++/// identity pairs for all own/outer declaration parameters until actual substitutions are known.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeObjectReference {
++    pub declaration: NativeTypeDeclarationId,
++    pub mapper: MapperId,
++}
++
++
++/// These entries are checker-local because their provider belongs to that checker. Publication is
++/// still permitted only by the common query machinery's Stored token. No unfinished member result
++/// is silently retained as a completed declaration.
++#[derive(Default)]
++pub(super) struct NativeNamedCache {
++    heads: FxHashMap<NativeTypeDeclarationId, Result<TypeId, NativeNamedTypeError>>,
++    types: FxHashMap<NativeTypeDeclarationQuery, TypeId>,
++    objects: FxHashMap<TypeId, Result<TypeId, NativeNamedTypeError>>,
++}
++
++impl NativeNamedCache {
++    fn head(&mut self, key: NativeTypeDeclarationId, value: Result<TypeId, NativeNamedTypeError>, _: Stored) {
++        self.heads.insert(key, value);
++    }
++    fn ty(&mut self, key: NativeTypeDeclarationQuery, value: TypeId, _: Stored) {
++        self.types.insert(key, value);
++    }
++    fn object(&mut self, key: TypeId, value: Result<TypeId, NativeNamedTypeError>, _: Stored) {
++        self.objects.insert(key, value);
++    }
++}
++
++impl<'p, 's> Checker<'p, 's> {
++    pub fn set_native_type_declaration_provider(&mut self, provider: &'p dyn NativeTypeDeclarationProvider) {
++        // Changing provider after a demand would invalidate the meaning of every native identity.
++        assert!(self.native_type_declaration_provider.is_none(), "native declaration provider already installed");
++        self.native_type_declaration_provider = Some(provider);
++    }
++
++    fn native_named_provider(&self, declaration: NativeTypeDeclarationId) -> Result<&'p dyn NativeTypeDeclarationProvider, NativeNamedTypeError> {
++        self.native_type_declaration_provider.filter(|p| p.contains_type_declaration(declaration))
++            .ok_or(NativeNamedTypeError::InvalidDeclaration(declaration))
++    }
++
++    fn report_native_named(&mut self, error: NativeNamedTypeError) {
++        let Some(provider) = self.native_type_declaration_provider else { return };
++        match error {
++            NativeNamedTypeError::CircularAlias(id) => provider.circular_type_alias(id),
++            NativeNamedTypeError::CircularBase(id) => provider.circular_type_base(id),
++            NativeNamedTypeError::TooDeep(query) => provider.type_declaration_too_deep(query),
++            _ => {}
++        }
++        provider.type_declaration_error(self, error);
++    }
++
++    pub fn native_declared_head(&mut self, declaration: NativeTypeDeclarationId) -> Result<TypeId, NativeNamedTypeError> {
++        if let Some(&known) = self.native_named_cache.heads.get(&declaration) { return known }
++        let provider = self.native_named_provider(declaration).map_err(|error| { self.report_native_named(error); error })?;
++        let query = Query::NativeNamed(NativeTypeDeclarationQuery::DeclaredHead(declaration));
++        if let Some(raw) = self.provisional(query) { return Ok(TypeId(raw as u32)) }
++        if !self.enter(query) {
++            let error = if self.found_cycle { NativeNamedTypeError::CircularAlias(declaration) }
++                else { NativeNamedTypeError::TooDeep(NativeTypeDeclarationQuery::DeclaredHead(declaration)) };
++            if !self.found_cycle { self.report_native_named(error) }
++            return Err(error);
++        }
++        let header = provider.type_declaration_header(self, declaration);
++        let result = match header.kind {
++            NativeTypeDeclarationKind::Alias => Ok(provider.type_alias_target(self, declaration)),
++            NativeTypeDeclarationKind::Shape => {
++                if let Some(NativeObjectDeclarationForm::Table { type_argument_count }) = header.object_form
++                    && type_argument_count != 2 {
++                    Err(NativeNamedTypeError::TypeArgumentArity { declaration, actual: type_argument_count, minimum: 2, maximum: 2 })
++                } else {
++                let parameters: Result<Vec<_>, _> = header.outer_parameters.iter().chain(&header.parameters)
++                    .map(|&id| self.native_type_parameter(id).ok_or(NativeNamedTypeError::InvalidTypeParameter(id))).collect();
++                parameters.map(|parameters| {
++                    let mapper = self.mapper_from(&parameters, &parameters);
++                    self.intern(TypeData::NativeObject(NativeObjectReference { declaration, mapper }))
++                })
++                }
++            }
++            kind => Err(NativeNamedTypeError::UnsupportedKind { declaration, kind }),
++        };
++        let left = self.leave(query);
++        if self.left_a_cycle {
++            let error = NativeNamedTypeError::CircularAlias(declaration);
++            self.report_native_named(error);
++            self.native_named_cache.head(declaration, Err(error), self.cycle_result());
++            return Err(error);
++        }
++        match left {
++            Ok(stored) => self.native_named_cache.head(declaration, result, stored),
++            Err(open) => if let Ok(ty) = result { self.cache_provisionally(query, u64::from(ty.0), open) },
++        }
++        if let Err(error) = result { self.report_native_named(error) }
++        result
++    }
++
++    /// Own parameters receive arguments; outer parameters pass through unchanged. Default filling,
++    /// constraint substitution and alias instantiation are the same workers used for TS aliases.
++    pub fn native_type_reference(&mut self, declaration: NativeTypeDeclarationId, arguments: &[TypeId]) -> Result<TypeId, NativeNamedTypeError> {
++        let provider = self.native_named_provider(declaration).map_err(|error| { self.report_native_named(error); error })?;
++        let header = provider.type_declaration_header(self, declaration);
++        let parameters: Vec<_> = header.parameters.iter().map(|&id| self.native_type_parameter(id)
++            .ok_or(NativeNamedTypeError::InvalidTypeParameter(id))).collect::<Result<_, _>>()
++            .map_err(|error| { self.report_native_named(error); error })?;
++        let minimum = parameters.iter().rposition(|&param| self.default_of_type_param(param).is_none()).map_or(0, |i| i + 1);
++        if arguments.len() < minimum || arguments.len() > parameters.len() {
++            let error = NativeNamedTypeError::TypeArgumentArity { declaration, actual: arguments.len(), minimum, maximum: parameters.len() };
++            self.report_native_named(error);
++            return Err(error);
++        }
++        let filled = self.fill_type_args(&parameters, arguments);
++        let mapper = self.mapper_from(&parameters, &filled);
++        for (index, (&parameter, &actual)) in parameters.iter().zip(&filled).enumerate() {
++            // A declaration parameter is assumed to satisfy its own bound. Demanding that bound
++            // while resolving Node<T>'s F-bound Node<T> would otherwise manufacture a constraint
++            // cycle before the structural head can be used by the ordinary relation worker.
++            if actual == parameter { continue }
++            if let Some(constraint) = self.constraint_of_type_param(parameter) {
++                let expected = self.instantiate(constraint, mapper);
++                if !self.is_assignable(actual, expected) {
++                    let error = NativeNamedTypeError::TypeArgumentConstraint { declaration, index, actual, expected };
++                    self.report_native_named(error);
++                    return Err(error);
++                }
++            }
++        }
++        let declared = self.native_declared_head(declaration)?;
++        Ok(self.type_alias_instantiation(declared, mapper))
++    }
++
++    /// Validate a declaration template without requiring actual arguments for its own parameters.
++    /// Head and member demands still use their normal lazy queries, and recursive child references
++    /// obtain the published head rather than recursively expanding the declaration.
++    pub fn validate_native_type_declaration(&mut self, declaration: NativeTypeDeclarationId) -> Result<TypeId, NativeNamedTypeError> {
++        let head = self.native_declared_head(declaration)?;
++        let provider = self.native_named_provider(declaration)?;
++        for id in provider.type_declaration_header(self, declaration).parameters {
++            let parameter = self.native_type_parameter(id).ok_or(NativeNamedTypeError::InvalidTypeParameter(id))?;
++            self.constraint_of_type_param(parameter);
++            self.default_of_type_param(parameter);
++        }
++        self.native_object_resolved(head)?;
++        Ok(head)
++    }
++
++    fn native_named_member_demand(&mut self, member: NativeTypeMemberId, key: bool) -> Result<TypeId, NativeNamedTypeError> {
++        let provider = self.native_type_declaration_provider.filter(|p| p.contains_type_member(member))
++            .ok_or(NativeNamedTypeError::InvalidMember(member))?;
++        let native_query = if key { NativeTypeDeclarationQuery::IndexerKey(member) } else { NativeTypeDeclarationQuery::MemberType(member) };
++        if let Some(&known) = self.native_named_cache.types.get(&native_query) { return Ok(known) }
++        let query = Query::NativeNamed(native_query);
++        if let Some(raw) = self.provisional(query) { return Ok(TypeId(raw as u32)) }
++        if !self.enter(query) {
++            let error = NativeNamedTypeError::TooDeep(native_query);
++            self.report_native_named(error);
++            return Err(error);
++        }
++        let result = if key { provider.type_indexer_key(self, member) } else { provider.type_member_type(self, member) };
++        match self.leave(query) {
++            Ok(stored) => self.native_named_cache.ty(native_query, result, stored),
++            Err(open) => self.cache_provisionally(query, u64::from(result.0), open),
++        }
++        Ok(result)
++    }
++
++    fn native_named_member_origin(&mut self, member: NativeTypeMemberId) -> Result<(NativeObjectReference, NativeTypeMemberHeader), NativeNamedTypeError> {
++        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
++        if !provider.contains_type_member(member) { return Err(NativeNamedTypeError::InvalidMember(member)) }
++        let header = provider.type_member_header(self, member);
++        if header.visibility != NativeTypeMemberVisibility::Public { return Err(NativeNamedTypeError::UnsupportedVisibility(member)) }
++        let owner = match &header.owner {
++            NativeTypeMemberOwner::Declared(owner) => {
++                let head = self.native_declared_head(*owner)?;
++                match *self.data(head) {
++                    TypeData::NativeObject(reference) => reference,
++                    _ => return Err(NativeNamedTypeError::InvalidMember(member)),
++                }
++            },
++            NativeTypeMemberOwner::Reference { name, candidates } => match candidates.as_slice() {
++                [] => return Err(NativeNamedTypeError::UnknownOwner { member, name: *name }),
++                [owner] => {
++                    let target = self.native_declared_head(*owner)?;
++                    match self.data(target) {
++                        TypeData::NativeObject(reference) => {
++                            if self.types().mapping(reference.mapper).iter().any(|(from, to)| from != to) {
++                                return Err(NativeNamedTypeError::UnsupportedOwnerInstantiation(member));
++                            }
++                            *reference
++                        },
++                        _ => return Err(NativeNamedTypeError::UnknownOwner { member, name: *name }),
++                    }
++                }
++                _ => return Err(NativeNamedTypeError::AmbiguousOwner { member, name: *name }),
++            },
++        };
++        Ok((owner, header))
++    }
++
++    fn native_named_member_header(&mut self, declaration: NativeTypeDeclarationId, member: NativeTypeMemberId) -> Result<Option<NativeTypeMemberHeader>, NativeNamedTypeError> {
++        let (owner, header) = self.native_named_member_origin(member)?;
++        Ok((owner.declaration == declaration).then_some(header))
++    }
++
++    /// Validate a raw field or augmentation even if no object demand would otherwise reach it.
++    /// Alias owners resolve through the same declared-head query as ordinary references.
++    pub fn validate_native_type_member(&mut self, member: NativeTypeMemberId) -> Result<TypeId, NativeNamedTypeError> {
++        let result = (|| {
++            let (owner, header) = self.native_named_member_origin(member)?;
++            let raw = self.native_named_member_demand(member, false)?;
++            let value = self.instantiate(raw, owner.mapper);
++            if let NativeTypeMemberKey::Indexer { sparse } = header.key {
++                let raw_key = self.native_named_member_demand(member, true)?;
++                let key = self.instantiate(raw_key, owner.mapper);
++                self.native_table(&[], &[NativeTableIndexer { key, value, readonly: header.readonly, sparse }], NativeTableFlavor::Declared)
++                    .map_err(|error| NativeNamedTypeError::Table { declaration: owner.declaration, error })?;
++            }
++            Ok(value)
++        })();
++        if let Err(error) = result { self.report_native_named(error) }
++        result
++    }
++
++    pub(super) fn native_object_is_array(&self, reference: NativeObjectReference) -> bool {
++        self.native_named_provider(reference.declaration).is_ok_and(|p| p.type_declaration_header(self, reference.declaration).object_form == Some(NativeObjectDeclarationForm::Array))
++    }
++
++    /// Materialize a declaration-space description once per object mapper. Recursive member types
++    /// only request the already-published head, so productive recursion does not recurse into fields.
++    pub fn native_object_resolved(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
++        let TypeData::NativeObject(reference) = *self.data(ty) else { return Ok(ty) };
++        if let Some(&known) = self.native_named_cache.objects.get(&ty) { return known }
++        let native_query = NativeTypeDeclarationQuery::ObjectMembers(ty);
++        let query = Query::NativeNamed(native_query);
++        if !self.enter(query) {
++            let error = NativeNamedTypeError::TooDeep(native_query);
++            self.report_native_named(error);
++            return Err(error);
++        }
++        let result = self.native_object_resolved_uncached(reference);
++        match self.leave(query) {
++            Ok(stored) => self.native_named_cache.object(ty, result, stored),
++            Err(_) => {},
++        }
++        if let Err(error) = result { self.report_native_named(error) }
++        result
++    }
++
++    fn native_object_resolved_uncached(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {
++        let declaration = reference.declaration;
++        let provider = self.native_named_provider(declaration)?;
++        let header = provider.type_declaration_header(self, declaration);
++        if !provider.type_declaration_bases(self, declaration).is_empty() { return Err(NativeNamedTypeError::UnsupportedBases(declaration)) }
++        if let Some(NativeObjectDeclarationForm::Table { type_argument_count }) = header.object_form
++            && type_argument_count != 2 {
++            return Err(NativeNamedTypeError::TypeArgumentArity { declaration, actual: type_argument_count, minimum: 2, maximum: 2 });
++        }
++        let mut fields = Vec::new();
++        let mut indexers = Vec::new();
++        for member in provider.type_declaration_members(declaration) {
++            let Some(metadata) = self.native_named_member_header(declaration, member)? else { continue };
++            let raw = self.native_named_member_demand(member, false)?;
++            let value = self.instantiate(raw, reference.mapper);
++            match metadata.key {
++                NativeTypeMemberKey::Fixed(key) => fields.push(NativeTableField { key, value, optional: metadata.optional, readonly: metadata.readonly }),
++                NativeTypeMemberKey::Indexer { sparse } => {
++                    let raw_key = self.native_named_member_demand(member, true)?;
++                    let key = self.instantiate(raw_key, reference.mapper);
++                    indexers.push(NativeTableIndexer { key, value, readonly: metadata.readonly, sparse });
++                }
++            }
++        }
++        if header.object_form == Some(NativeObjectDeclarationForm::Array) {
++            if indexers.len() != 1 || indexers[0].key != TypeId::NUMBER || !fields.is_empty() {
++                return Err(NativeNamedTypeError::InvalidDeclaration(declaration));
++            }
++        }
++        self.native_table(&fields, &indexers, NativeTableFlavor::Declared)
++            .map_err(|error| NativeNamedTypeError::Table { declaration, error })
++    }
++
++    /// A literal field read demands just that field, preserving laziness across sibling members.
++    /// Indexers and full structural operations use the ordinary NativeTable description worker.
++    pub(super) fn native_named_read(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
++        if let NativeTableAccessKey::Literal(key) = key {
++            let key = key.normalize()?;
++            let provider = self.native_named_provider(reference.declaration).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
++            let mut found = None;
++            for member in provider.type_declaration_members(reference.declaration) {
++                let Some(metadata) = self.native_named_member_header(reference.declaration, member)
++                    .map_err(|error| { self.report_native_named(error); NativeTableError::NotTable { ty: TypeId::ERROR } })? else { continue };
++                if let NativeTypeMemberKey::Fixed(member_key) = metadata.key
++                    && member_key.normalize()? == key {
++                    if found.is_some() { return Err(NativeTableError::DuplicateDeclaredField { key }) }
++                    found = Some((member, metadata));
++                }
++            }
++            if let Some((member, metadata)) = found {
++                let raw = self.native_named_member_demand(member, false).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
++                let value = self.instantiate(raw, reference.mapper);
++                return Ok(if metadata.optional { self.optional(value) } else { value });
++            }
++        }
++        let object = self.intern(TypeData::NativeObject(reference));
++        let resolved = self.native_object_resolved(object).map_err(|_| NativeTableError::NotTable { ty: object })?;
++        self.native_table_read(resolved, key)
++    }
++}
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -540,6 +540,9 @@
+     }
+ 
+     pub fn native_table_read(&mut self, table: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
++        if let TypeData::NativeObject(reference) = *self.data(table) {
++            return self.native_named_read(reference, key);
++        }
+         if let Some(error) = self.native_table_description_error(table) { return Err(error) }
+         let key = self.native_table_access(key)?;
+         if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
+@@ -634,6 +637,7 @@
+     }
+ 
+     pub fn native_table_write(&mut self, table: TypeId, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
++        let table = self.native_object_resolved(table).map_err(|_| NativeTableError::NotTable { ty: table })?;
+         if let Some(error) = self.native_table_description_error(table) { return Err(error) }
+         let key = self.native_table_access(key)?;
+         if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
+@@ -858,6 +862,8 @@
+     /// Old/native class namespaces expose genuine byte-string names. They can participate in
+     /// native table relations without manufacturing JS names for numeric or boolean Lua keys.
+     pub(super) fn native_table_object_description(&mut self, ty: TypeId) -> Option<NativeTableData<'s>> {
++        let ty = self.native_object_resolved(ty).ok()?;
++        if let TypeData::NativeTable(table) = self.data(ty) { return Some((**table).clone_in(self.arena)) }
+         if self.is_array_or_tuple(ty) { return None }
+         let members = self.structured_members(ty)?;
+         let mut fields = Vec::new();
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1800,6 +1800,21 @@
+             .deferred(ty)
+             .map(|reference| Identity::Node(reference.file, reference.node));
+         match self.c.data(ty) {
++            TypeData::NativeObject(reference) => {
++                let reference = *reference;
++                let name = self.c.native_type_declaration_provider
++                    .filter(|p| p.contains_type_declaration(reference.declaration))
++                    .map(|p| p.type_declaration_header(self.c, reference.declaration).name)
++                    .unwrap_or(Atom::NONE);
++                let mut text = self.text(name);
++                let pairs = self.c.mapping_in_declaration_order(reference.mapper);
++                let arguments: Vec<_> = pairs.iter().map(|pair| pair.1).collect();
++                if !arguments.is_empty() {
++                    let arguments = self.map_to_type_nodes(&arguments, false);
++                    text.extend(type_arguments_text(arguments));
++                }
++                Node::simple(text)
++            }
+             TypeData::NativeTable(table) => {
+                 let mut members = Vec::new();
+                 for field in &table.fields {
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -339,6 +339,7 @@
+         TypeData::Ref { .. }
+             | TypeData::NativeArray { .. }
+             | TypeData::NativeTable(_)
++            | TypeData::NativeObject(_)
+             | TypeData::Tuple { .. }
+             | TypeData::Anon { .. }
+             | TypeData::Fns { .. }
+@@ -683,6 +684,7 @@
+ 
+     /// `isEmptyResolvedType` of the resolved members of `ty`.
+     fn is_empty_resolved_type(&mut self, ty: TypeId) -> bool {
++        let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
+         if let TypeData::NativeTable(table) = self.data(ty) {
+             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
+         }
+@@ -708,6 +710,7 @@
+     /// once something else has resolved them (`ObjectFlagsMembersResolved`), or is instantiating
+     /// them: until that is done there are none.
+     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
++        let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
+         if let TypeData::NativeTable(table) = self.data(ty) {
+             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
+         }
+@@ -2748,6 +2751,7 @@
+                 && self.is_weak_type(target)
+                 && {
+                     let apparent = self.reduced_apparent_type_as_object(source);
++                    let apparent = self.native_object_resolved(apparent).unwrap_or(apparent);
+                     match self.data(apparent) {
+                         TypeData::NativeTable(table) => !table.fields.is_empty(),
+                         _ => self.members(apparent)
+@@ -3102,6 +3106,7 @@
+ 
+     /// `isWeakType`: properties, all of them optional, and nothing else.
+     pub(super) fn is_weak_type(&mut self, t: TypeId) -> bool {
++        let t = match self.native_object_resolved(t) { Ok(ty) => ty, Err(_) => return false };
+         match self.data(t) {
+             TypeData::NativeTable(table) => !table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty()
+                 && table.fields.iter().all(|field| field.optional),
+@@ -3124,6 +3129,8 @@
+     /// `hasCommonProperties`
+     pub(super) fn has_common_properties(&mut self, source: TypeId, target: TypeId) -> bool {
+         let apparent = self.reduced_apparent_type_as_object(source);
++        let apparent = match self.native_object_resolved(apparent) { Ok(ty) => ty, Err(_) => return false };
++        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return false };
+         if let TypeData::NativeTable(source) = self.data(apparent) {
+             if let TypeData::NativeTable(target) = self.data(target) {
+                 return source.fields.iter().any(|field| target.fields.iter().any(|other| other.key == field.key));
+@@ -4199,6 +4206,12 @@
+     /// `data`: the `TypeData` of `t`.
+     fn recursion_identity_as(&self, t: TypeId, data: &TypeData) -> RecursionId {
+         match data {
++            TypeData::NativeObject(reference) => {
++                let declared = self.intern(TypeData::NativeObject(NativeObjectReference {
++                    declaration: reference.declaration, mapper: MapperId::IDENTITY,
++                }));
++                (8, declared.0, 0)
++            }
+             // `t.AsTypeReference().node != nil`
+             TypeData::Ref {
+                 args: TypeArguments::Deferred(deferred),
+@@ -5198,12 +5211,15 @@
+         &mut self,
+         r: &mut Relater,
+         source: TypeId,
+-        sd: &'p TypeData<'p>,
++        _sd: &'p TypeData<'p>,
+         target: TypeId,
+-        td: &'p TypeData<'p>,
++        _td: &'p TypeData<'p>,
+         state: u8,
+         shared: &mut WorkerState,
+     ) -> Ternary {
++        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
++        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
++        let (sd, td) = (self.data(source), self.data(target));
+         let relation = r.relation;
+         let target_is_mapped = is_mapped_kind(td);
+         // `isPartialMappedType(target) && isEmptyObjectType(source)`
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -492,6 +492,13 @@
+     fn resolved_type_arguments(&mut self, ty: TypeId) -> Option<&'p [TypeId]> {
+         let p = self.p;
+         match self.data(ty) {
++            TypeData::NativeObject(_) => {
++                let is_array = self.is_array(ty);
++                let resolved = self.native_object_resolved(ty).ok()?;
++                if !is_array { return None }
++                let TypeData::NativeTable(table) = self.data(resolved) else { return None };
++                table.indexers.first().map(|indexer| std::slice::from_ref(&indexer.value))
++            }
+             TypeData::NativeArray { element, .. } => Some(std::slice::from_ref(element)),
+             TypeData::Ref { args, .. } | TypeData::Tuple { elems: args, .. } => match args.actual()
+             {
+@@ -1382,6 +1389,13 @@
+                     self.shape_memo(ty, |c| c.build_reverse_mapped_shape(ty, source, mapped, of));
+                 Some((resolved, MapperId::IDENTITY))
+             }
++            TypeData::NativeObject(_) => {
++                let shape = self.shape_memo(ty, |c| {
++                    let resolved = match c.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return Shape::new_in(c.arena) };
++                    c.members(resolved).map(|m| m.whole_shape().clone_in(c.arena)).unwrap_or_else(|| Shape::new_in(c.arena))
++                });
++                Some((shape, MapperId::IDENTITY))
++            }
+             TypeData::NativeTable(table) => {
+                 let shape = self.shape_memo(ty, |c| {
+                     let mut shape = Shape::new_in(c.arena);
+@@ -7463,7 +7477,7 @@
+ 
+     /// The type of `ty.name`. `None`: there is no such property.
+     pub fn type_of_property(&mut self, ty: TypeId, name: Atom) -> Option<TypeId> {
+-        if matches!(self.data(ty), TypeData::NativeTable(_)) {
++        if matches!(self.data(ty), TypeData::NativeTable(_) | TypeData::NativeObject(_)) {
+             return self.native_table_read(ty, NativeTableAccessKey::Literal(NativeTableKey::String(name))).ok();
+         }
+         self.property_type(ty, ty, name, Access::Read)
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -244,6 +244,8 @@
+ /// signature or mapper id can be task-local.
+ fn is_task_independent(q: Query) -> bool {
+     match q {
++        Query::NativeNamed(super::native_named::NativeTypeDeclarationQuery::ObjectMembers(_)) => false,
++        Query::NativeNamed(_) => true,
+         Query::Symbol(_)
+         | Query::Declared(_)
+         | Query::Bases(_)
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -76,6 +76,7 @@
+     NativeTableAccessKey, NativeTableData, NativeTableField, NativeTableFlavor,
+     NativeTableIndexer, NativeTableKey, NativeTableSequenceTail,
+ };
++pub use crate::check::native_named::{NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
+ /// An interned list of `IndexComponent`s.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct ComponentsId(pub u32);
+@@ -478,6 +479,7 @@
+         readonly: bool,
+     },
+     NativeTable(ArenaBox<'s, NativeTableData<'s>>),
++    NativeObject(NativeObjectReference),
+     Anon {
+         origin: Origin,
+         mapper: MapperId,
+@@ -2362,6 +2364,8 @@
+                     .difference(ObjectFlags::PROPAGATING_FLAGS),
+             },
+             TypeData::NativeArray { element, .. } => self.object_flags(*element),
++            TypeData::NativeObject(reference) => self.mapper_record(reference.mapper).1
++                .difference(ObjectFlags::PROPAGATING_FLAGS),
+             TypeData::NativeTable(table) => {
+                 let flags = table.fields.iter().fold(ObjectFlags::empty(), |flags, field| flags | self.object_flags(field.value));
+                 let flags = table.indexers.iter().fold(flags, |flags, indexer| flags | self.object_flags(indexer.key) | self.object_flags(indexer.value));
+@@ -3304,6 +3308,8 @@
+     u64,
+     i64,
+     NativeFunctionId,
++    NativeTypeDeclarationId,
++    NativeTypeMemberId,
+     NativeTypeParamId,
+     NativeExpressionId,
+     NativeBindingId,
+@@ -3405,6 +3411,7 @@
+     TypeData::Tuple { elems, flags, readonly } => (elems, flags, readonly),
+     TypeData::NativeArray { element, readonly } => (element, readonly),
+     TypeData::NativeTable(table) => (table),
++    TypeData::NativeObject(reference) => (reference),
+     TypeData::Anon { origin, mapper } => (origin, mapper),
+     TypeData::Fns { decls, mapper } => (decls, mapper),
+     TypeData::Synth(a) => (a),
+@@ -3491,6 +3498,7 @@
+     SigData::WithNativeResultPack { sig, pack } => (sig, pack),
+ });
+ follow_struct!(NativeCapturedBinding { declaration, ty });
++follow_struct!(NativeObjectReference { declaration, mapper });
+ follow_struct!(NativeTableField { key, value, optional, readonly });
+ follow_struct!(NativeTableIndexer { key, value, readonly, sparse });
+ follow_struct!(NativeTableSequenceTail { start, value, readonly });
+@@ -3555,6 +3563,9 @@
+     TypeId,
+     SigId,
+     NativeFunctionId,
++    NativeTypeDeclarationId,
++    NativeTypeMemberId,
++    NativeObjectReference,
+     NativeTypeParamId,
+     NativeExpressionId,
+     NativeBindingId,
+@@ -3702,6 +3713,7 @@
+     Tuple { elems, flags, readonly },
+     NativeArray { element, readonly },
+     NativeTable(table),
++    NativeObject(reference),
+     Anon { origin, mapper },
+     Fns { decls, mapper },
+     Synth(a),

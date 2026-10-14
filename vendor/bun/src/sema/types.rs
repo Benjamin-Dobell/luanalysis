@@ -76,6 +76,7 @@ pub use crate::check::native_tables::{
     NativeTableAccessKey, NativeTableData, NativeTableField, NativeTableFlavor,
     NativeTableIndexer, NativeTableKey, NativeTableSequenceTail,
 };
+pub use crate::check::native_named::{NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
 /// An interned list of `IndexComponent`s.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ComponentsId(pub u32);
@@ -478,6 +479,7 @@ pub enum TypeData<'s> {
         readonly: bool,
     },
     NativeTable(ArenaBox<'s, NativeTableData<'s>>),
+    NativeObject(NativeObjectReference),
     Anon {
         origin: Origin,
         mapper: MapperId,
@@ -2362,6 +2364,8 @@ impl<'p, 's> Types<'p, 's> {
                     .difference(ObjectFlags::PROPAGATING_FLAGS),
             },
             TypeData::NativeArray { element, .. } => self.object_flags(*element),
+            TypeData::NativeObject(reference) => self.mapper_record(reference.mapper).1
+                .difference(ObjectFlags::PROPAGATING_FLAGS),
             TypeData::NativeTable(table) => {
                 let flags = table.fields.iter().fold(ObjectFlags::empty(), |flags, field| flags | self.object_flags(field.value));
                 let flags = table.indexers.iter().fold(flags, |flags, indexer| flags | self.object_flags(indexer.key) | self.object_flags(indexer.value));
@@ -3304,6 +3308,8 @@ has_no_references!(
     u64,
     i64,
     NativeFunctionId,
+    NativeTypeDeclarationId,
+    NativeTypeMemberId,
     NativeTypeParamId,
     NativeExpressionId,
     NativeBindingId,
@@ -3405,6 +3411,7 @@ follow_enum!(TypeData<'_> {
     TypeData::Tuple { elems, flags, readonly } => (elems, flags, readonly),
     TypeData::NativeArray { element, readonly } => (element, readonly),
     TypeData::NativeTable(table) => (table),
+    TypeData::NativeObject(reference) => (reference),
     TypeData::Anon { origin, mapper } => (origin, mapper),
     TypeData::Fns { decls, mapper } => (decls, mapper),
     TypeData::Synth(a) => (a),
@@ -3491,6 +3498,7 @@ follow_enum!(SigData<'_> {
     SigData::WithNativeResultPack { sig, pack } => (sig, pack),
 });
 follow_struct!(NativeCapturedBinding { declaration, ty });
+follow_struct!(NativeObjectReference { declaration, mapper });
 follow_struct!(NativeTableField { key, value, optional, readonly });
 follow_struct!(NativeTableIndexer { key, value, readonly, sparse });
 follow_struct!(NativeTableSequenceTail { start, value, readonly });
@@ -3555,6 +3563,9 @@ clone_in_is_copy!(
     TypeId,
     SigId,
     NativeFunctionId,
+    NativeTypeDeclarationId,
+    NativeTypeMemberId,
+    NativeObjectReference,
     NativeTypeParamId,
     NativeExpressionId,
     NativeBindingId,
@@ -3702,6 +3713,7 @@ clone_in_enum!(TypeData {
     Tuple { elems, flags, readonly },
     NativeArray { element, readonly },
     NativeTable(table),
+    NativeObject(reference),
     Anon { origin, mapper },
     Fns { decls, mapper },
     Synth(a),

@@ -197,6 +197,7 @@ impl<'s> Checker<'_, 's> {
     /// diagnostics go to the barrier.
     /// A checker for which this is not called is outside the plan: its writes are dropped with it.
     pub fn begin_task(&mut self, step: u32, index: u32, is_read_later: bool) {
+        self.native_named_cache = super::native_named::NativeNamedCache::default();
         self.task.begin(step, index, is_read_later);
         self.order_dependent.clear();
         self.order_dependent_filter = 0;
@@ -204,6 +205,7 @@ impl<'s> Checker<'_, 's> {
 
     /// Called on the thread of the task, after everything else this checker does.
     pub fn end_task(&mut self) -> Finished<'s> {
+        self.native_named_cache = super::native_named::NativeNamedCache::default();
         let diagnostics = self.take_diagnostics();
         self.task.finish(self.p, diagnostics)
     }

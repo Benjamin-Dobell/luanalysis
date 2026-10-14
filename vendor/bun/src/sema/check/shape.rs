@@ -492,6 +492,13 @@ impl<'p, 's> Checker<'p, 's> {
     fn resolved_type_arguments(&mut self, ty: TypeId) -> Option<&'p [TypeId]> {
         let p = self.p;
         match self.data(ty) {
+            TypeData::NativeObject(_) => {
+                let is_array = self.is_array(ty);
+                let resolved = self.native_object_resolved(ty).ok()?;
+                if !is_array { return None }
+                let TypeData::NativeTable(table) = self.data(resolved) else { return None };
+                table.indexers.first().map(|indexer| std::slice::from_ref(&indexer.value))
+            }
             TypeData::NativeArray { element, .. } => Some(std::slice::from_ref(element)),
             TypeData::Ref { args, .. } | TypeData::Tuple { elems: args, .. } => match args.actual()
             {
@@ -1381,6 +1388,13 @@ impl<'p, 's> Checker<'p, 's> {
                 let resolved =
                     self.shape_memo(ty, |c| c.build_reverse_mapped_shape(ty, source, mapped, of));
                 Some((resolved, MapperId::IDENTITY))
+            }
+            TypeData::NativeObject(_) => {
+                let shape = self.shape_memo(ty, |c| {
+                    let resolved = match c.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return Shape::new_in(c.arena) };
+                    c.members(resolved).map(|m| m.whole_shape().clone_in(c.arena)).unwrap_or_else(|| Shape::new_in(c.arena))
+                });
+                Some((shape, MapperId::IDENTITY))
             }
             TypeData::NativeTable(table) => {
                 let shape = self.shape_memo(ty, |c| {
@@ -7463,7 +7477,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// The type of `ty.name`. `None`: there is no such property.
     pub fn type_of_property(&mut self, ty: TypeId, name: Atom) -> Option<TypeId> {
-        if matches!(self.data(ty), TypeData::NativeTable(_)) {
+        if matches!(self.data(ty), TypeData::NativeTable(_) | TypeData::NativeObject(_)) {
             return self.native_table_read(ty, NativeTableAccessKey::Literal(NativeTableKey::String(name))).ok();
         }
         self.property_type(ty, ty, name, Access::Read)

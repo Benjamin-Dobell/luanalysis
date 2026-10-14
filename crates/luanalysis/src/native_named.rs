@@ -177,6 +177,7 @@ pub(super) struct RuntimeAttachment {
     pub kind: RuntimeAttachmentKind,
     pub declarations: Vec<NativeNamedKey>,
     pub augmentations: Vec<NativeAugmentationKey>,
+    pub has_explicit_type_annotation: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -790,6 +791,16 @@ fn runtime_attachment(
         kind,
         declarations: Vec::new(),
         augmentations: Vec::new(),
+        has_explicit_type_annotation: match &statement.kind {
+            StmtKind::Local { annotation, .. } | StmtKind::Assign { annotation, .. } => {
+                annotation.is_some()
+            }
+            StmtKind::LocalFunction { function, .. }
+            | StmtKind::FunctionDeclaration { function, .. } => {
+                function.annotations.type_annotation.is_some()
+            }
+            _ => false,
+        },
     })
 }
 

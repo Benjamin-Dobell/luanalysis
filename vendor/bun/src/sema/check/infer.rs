@@ -391,58 +391,15 @@ impl<'p, 's> Checker<'p, 's> {
             }
         }
         // `source.AsTypeReference().node != nil && target.AsTypeReference().node != nil`
+        let (original_source, original_target) = (source, target);
+        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return };
+        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return };
         let are_both_deferred =
             self.types().deferred(source).is_some() && self.types().deferred(target).is_some();
         match (self.data(source), self.data(target)) {
-            (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
-                let mut sources = Vec::new();
-                let mut targets = Vec::new();
-                for field in &target.fields {
-                    if let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) {
-                        sources.push(if actual.optional { self.optional(actual.value) } else { actual.value });
-                        targets.push(if field.optional { self.optional(field.value) } else { field.value });
-                    }
-                }
-                for indexer in &target.indexers {
-                    for actual in &source.indexers {
-                        if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
-                        sources.extend([actual.key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
-                        targets.extend([indexer.key, indexer.value]);
-                    }
-                    for actual in &source.fields {
-                        let key = self.native_table_key_type(actual.key);
-                        if !self.native_table_inference_key_matches(key, indexer.key) { continue }
-                        sources.extend([key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
-                        targets.extend([indexer.key, indexer.value]);
-                    }
-                    for actual in &source.sequence_tails {
-                        if !self.native_table_inference_key_matches(TypeId::NUMBER, indexer.key)
-                            || !self.could_contain_type_variables(indexer.key) && !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
-                        sources.extend([TypeId::NUMBER, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
-                        targets.extend([indexer.key, indexer.value]);
-                    }
-                }
-                for tail in &target.sequence_tails {
-                    for actual in &source.sequence_tails {
-                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
-                        targets.push(tail.value);
-                    }
-                    for actual in &source.indexers {
-                        if !self.native_sequence_type_overlaps(tail.start, actual.key) { continue }
-                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
-                        targets.push(tail.value);
-                    }
-                    for actual in &source.fields {
-                        if !matches!(actual.key, NativeTableKey::Integer(index) if index >= tail.start)
-                            || target.fields.iter().any(|field| field.key == actual.key) { continue }
-                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
-                        targets.push(tail.value);
-                    }
-                }
-                self.infer_from_type_arguments(n, &sources, &targets, &[]);
-            }
-            (TypeData::NativeArray { element: s, .. }, TypeData::NativeArray { element: t, .. }) => {
-                self.infer_from_type_arguments(n, &[*s], &[*t], &[]);
+            (TypeData::NativeTable(_), TypeData::NativeTable(_))
+            | (TypeData::NativeArray { .. }, TypeData::NativeArray { .. }) => {
+                self.invoke_once(n, original_source, original_target, Self::infer_native_object_types);
             }
             // Two deferred references go through `invokeOnce`; otherwise inference might not
             // terminate.
@@ -553,6 +510,66 @@ impl<'p, 's> Checker<'p, 's> {
                     self.invoke_once(n, source, target, Self::infer_from_object_types);
                 }
             }
+        }
+    }
+
+    /// Foreign structural objects use the same invokeOnce recursion and priority guard as TS
+    /// object inference. Keep the lazy declaration identity on its stack, not the expanded shape.
+    fn infer_native_object_types(&mut self, n: &mut Inference, source: TypeId, target: TypeId) {
+        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return };
+        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return };
+        match (self.data(source), self.data(target)) {
+            (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
+                let mut sources = Vec::new();
+                let mut targets = Vec::new();
+                for field in &target.fields {
+                    if let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) {
+                        sources.push(if actual.optional { self.optional(actual.value) } else { actual.value });
+                        targets.push(if field.optional { self.optional(field.value) } else { field.value });
+                    }
+                }
+                for indexer in &target.indexers {
+                    for actual in &source.indexers {
+                        if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
+                        sources.extend([actual.key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+                        targets.extend([indexer.key, indexer.value]);
+                    }
+                    for actual in &source.fields {
+                        let key = self.native_table_key_type(actual.key);
+                        if !self.native_table_inference_key_matches(key, indexer.key) { continue }
+                        sources.extend([key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+                        targets.extend([indexer.key, indexer.value]);
+                    }
+                    for actual in &source.sequence_tails {
+                        if !self.native_table_inference_key_matches(TypeId::NUMBER, indexer.key)
+                            || !self.could_contain_type_variables(indexer.key) && !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
+                        sources.extend([TypeId::NUMBER, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+                        targets.extend([indexer.key, indexer.value]);
+                    }
+                }
+                for tail in &target.sequence_tails {
+                    for actual in &source.sequence_tails {
+                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+                        targets.push(tail.value);
+                    }
+                    for actual in &source.indexers {
+                        if !self.native_sequence_type_overlaps(tail.start, actual.key) { continue }
+                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+                        targets.push(tail.value);
+                    }
+                    for actual in &source.fields {
+                        if !matches!(actual.key, NativeTableKey::Integer(index) if index >= tail.start)
+                            || target.fields.iter().any(|field| field.key == actual.key) { continue }
+                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+                        targets.push(tail.value);
+                    }
+                }
+                self.infer_from_type_arguments(n, &sources, &targets, &[]);
+            }
+            (TypeData::NativeArray { element: source, .. }, TypeData::NativeArray { element: target, .. }) => {
+                self.infer_from_type_arguments(n, &[*source], &[*target], &[]);
+            }
+            _ => {}
         }
     }
 
@@ -3185,6 +3202,7 @@ impl<'p, 's> Checker<'p, 's> {
                 },
                 TypeData::Template { types, .. } => left.extend_from_slice(types),
                 TypeData::NativeArray { element, .. } => left.push(*element),
+                TypeData::NativeObject(reference) => left.extend(values(reference.mapper)),
                 TypeData::NativeTable(table) => {
                     left.extend(table.fields.iter().map(|field| field.value));
                     for indexer in &table.indexers { left.extend([indexer.key, indexer.value]); }

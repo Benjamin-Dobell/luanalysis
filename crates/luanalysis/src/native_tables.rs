@@ -376,7 +376,7 @@ fn sequence_key(index: usize) -> TableKey {
     ))
 }
 
-fn literal_type_key(ty: &TypeExpr) -> Option<LuaKey> {
+pub(super) fn literal_type_key(ty: &TypeExpr) -> Option<LuaKey> {
     match &ty.kind {
         TypeExprKind::Literal(TypeLiteral::Number(spelling)) => numeric_key(spelling),
         TypeExprKind::Literal(TypeLiteral::String(bytes)) => Some(LuaKey::String(bytes.clone())),

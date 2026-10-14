@@ -1800,6 +1800,21 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             .deferred(ty)
             .map(|reference| Identity::Node(reference.file, reference.node));
         match self.c.data(ty) {
+            TypeData::NativeObject(reference) => {
+                let reference = *reference;
+                let name = self.c.native_type_declaration_provider
+                    .filter(|p| p.contains_type_declaration(reference.declaration))
+                    .map(|p| p.type_declaration_header(self.c, reference.declaration).name)
+                    .unwrap_or(Atom::NONE);
+                let mut text = self.text(name);
+                let pairs = self.c.mapping_in_declaration_order(reference.mapper);
+                let arguments: Vec<_> = pairs.iter().map(|pair| pair.1).collect();
+                if !arguments.is_empty() {
+                    let arguments = self.map_to_type_nodes(&arguments, false);
+                    text.extend(type_arguments_text(arguments));
+                }
+                Node::simple(text)
+            }
             TypeData::NativeTable(table) => {
                 let mut members = Vec::new();
                 for field in &table.fields {
