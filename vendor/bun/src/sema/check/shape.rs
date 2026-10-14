@@ -2529,7 +2529,7 @@ impl<'p, 's> Checker<'p, 's> {
     fn inherits_from_type_arguments(&mut self, sym: Sym) -> bool {
         for &base in self.base_types(sym).iter() {
             let is_keyed_by_arguments = match self.data(base) {
-                TypeData::TypeParam(..) => true,
+                TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } => true,
                 TypeData::Intersection(_) => self.has_type_variables(base),
                 TypeData::Tuple { flags, .. } => {
                     flags.iter().any(|it| it.contains(ElemFlags::VARIADIC))
@@ -6549,6 +6549,7 @@ impl<'p, 's> Checker<'p, 's> {
         // `getBaseConstraintOfType`: the kinds that have one.
         let may_have_one = match data {
             TypeData::TypeParam(..)
+            | TypeData::NativeTypeParam { .. }
             | TypeData::ThisParam(_)
             | TypeData::Marker(_)
             | TypeData::IndexedAccess { .. }
@@ -6649,6 +6650,12 @@ impl<'p, 's> Checker<'p, 's> {
             .iter()
             .position(|&t| t == ty);
         if self.left_a_cycle || marked.is_some() {
+            if let TypeData::NativeTypeParam { declaration, .. } = *self.data(ty)
+                && !self.circular_constraint_origins.iter().any(|it| it.0 == ty)
+            {
+                self.circular_constraint_origins.push((ty, None));
+                self.report_native_circular_constraint(declaration);
+            }
             if matches!(self.data(ty), TypeData::TypeParam(..))
                 && !(self.circular_constraint_origins.iter()).any(|it| it.0 == ty)
             {
@@ -6697,7 +6704,7 @@ impl<'p, 's> Checker<'p, 's> {
         match self.data(t) {
             // `isThisType`
             TypeData::ThisParam(_) => self.constraint_from_type_param(t),
-            TypeData::TypeParam(..) | TypeData::Marker(_) => {
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::Marker(_) => {
                 let constraint = self.constraint_from_type_param(t)?;
                 self.next_base_constraint(constraint)
             }
@@ -6776,7 +6783,7 @@ impl<'p, 's> Checker<'p, 's> {
                 for (&elem, flag) in elems.iter().zip(flags.iter()) {
                     let mut new_elem = elem;
                     if flag.contains(ElemFlags::VARIADIC)
-                        && matches!(self.data(elem), TypeData::TypeParam(..))
+                        && matches!(self.data(elem), TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. })
                         && let Some(constraint) = self.next_base_constraint(elem)
                         && constraint != elem
                         && self.every_type(constraint, |c, n| {
@@ -8500,6 +8507,7 @@ impl<'p, 's> Checker<'p, 's> {
         matches!(
             *self.data(param),
             TypeData::TypeParam(_, _, MapperId::IDENTITY)
+                | TypeData::NativeTypeParam { mapper: MapperId::IDENTITY, .. }
         )
     }
 

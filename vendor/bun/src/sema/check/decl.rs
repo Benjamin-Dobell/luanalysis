@@ -1744,6 +1744,78 @@ impl<'p, 's> Checker<'p, 's> {
         self.files().type_argument_arity(sym)
     }
 
+    fn native_type_parameter_provider_for(&self, declaration: NativeTypeParamId) -> &'p dyn NativeFunctionProvider {
+        let provider = self.native_function_provider.expect("native type parameter without a provider");
+        assert!(provider.contains_type_parameter(declaration), "foreign native type parameter identity");
+        provider
+    }
+
+    pub fn native_type_parameter(&self, declaration: NativeTypeParamId) -> Option<TypeId> {
+        if !self.native_function_provider?.contains_type_parameter(declaration) {
+            return None;
+        }
+        Some(self.cloned_native_type_param(declaration, MapperId::IDENTITY))
+    }
+
+    pub fn cloned_native_type_param(&self, declaration: NativeTypeParamId, mapper: MapperId) -> TypeId {
+        self.native_type_parameter_provider_for(declaration);
+        self.intern(TypeData::NativeTypeParam { declaration, mapper })
+    }
+
+    pub fn native_type_parameter_decl(&self, param: TypeId) -> Option<(NativeTypeParamId, MapperId)> {
+        match *self.data(param) {
+            TypeData::NativeTypeParam { declaration, mapper } => Some((declaration, mapper)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn native_type_parameter_name(&self, declaration: NativeTypeParamId) -> Atom {
+        self.native_type_parameter_provider_for(declaration).type_parameter_name(self, declaration)
+    }
+
+    pub(super) fn native_type_parameter_order(&self, declaration: NativeTypeParamId) -> u32 {
+        self.native_type_parameter_provider_for(declaration).type_parameter_order(declaration)
+    }
+
+    pub(super) fn native_type_parameter_has_constraint(&self, declaration: NativeTypeParamId) -> bool {
+        self.native_type_parameter_provider_for(declaration).has_type_parameter_constraint(declaration)
+    }
+
+    pub(super) fn native_type_parameter_siblings(&self, declaration: NativeTypeParamId) -> Vec<NativeTypeParamId> {
+        self.native_type_parameter_provider_for(declaration).type_parameter_siblings(declaration)
+    }
+
+    pub(super) fn report_native_circular_constraint(&self, declaration: NativeTypeParamId) {
+        self.native_type_parameter_provider_for(declaration).circular_type_parameter_constraint(declaration);
+    }
+
+    pub(super) fn native_clone_mapper(&self, declaration: NativeTypeParamId, around: MapperId) -> MapperId {
+        let mapping = self.types().mapping(around);
+        let is_new_name = |pair: &(TypeId, TypeId)| {
+            matches!(self.data(pair.0), TypeData::StringLit { .. } | TypeData::NumberLit { .. })
+        };
+        let before_renaming = if mapping.iter().any(is_new_name) {
+            let kept = mapping.iter().copied().filter(|pair| !is_new_name(pair)).collect();
+            self.types().mapper(kept)
+        } else {
+            around
+        };
+        let fresh: Vec<(TypeId, TypeId)> = self.native_type_parameter_siblings(declaration)
+            .into_iter()
+            .map(|id| {
+                let declared = self.cloned_native_type_param(id, MapperId::IDENTITY);
+                let keeps_name = before_renaming != around
+                    && self.new_type_param_name(self.native_type_parameter_name(id), around).is_none();
+                let mapper = if keeps_name { before_renaming } else { around };
+                (declared, self.cloned_native_type_param(id, mapper))
+            })
+            .collect();
+        let mut pairs = Vec::with_capacity(mapping.len() + fresh.len());
+        pairs.extend(mapping.iter().copied().filter(|pair| !fresh.iter().any(|p| p.0 == pair.0)));
+        pairs.extend(fresh);
+        self.types().mapper(pairs)
+    }
+
     pub(super) fn type_param_decl(&self, param: TypeId) -> Option<(FileId, &'p TypeParam)> {
         match *self.data(param) {
             TypeData::TypeParam(file, tp, _) => Some((file, &self.hir(file)[tp])),
@@ -1758,6 +1830,23 @@ impl<'p, 's> Checker<'p, 's> {
         }
         if let Some(kept) = self.p.type_param_constraints.get(&self.task, &param) {
             return kept;
+        }
+        if let TypeData::NativeTypeParam { declaration, .. } = *self.data(param) {
+            let (before, scope) = (self.non_cacheable_mark(), self.begin_scope());
+            let constraint = if self.native_type_parameter_has_constraint(declaration)
+                && self.has_non_circular_base_constraint(param)
+            {
+                self.constraint_from_type_param(param)
+            } else {
+                None
+            };
+            let ended = self.end_scope(scope);
+            if self.non_cacheable_mark() == before
+                && let Ok(stored) = ended
+            {
+                self.p.type_param_constraints.insert(&self.task, param, constraint, stored);
+            }
+            return constraint;
         }
         let TypeData::TypeParam(file, tp, around) = *self.data(param) else {
             // That of a `this` type or a marker type is assigned when the type is created.
@@ -1806,6 +1895,18 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn constraint_from_type_param(&mut self, param: TypeId) -> Option<TypeId> {
         if !self.unresolved_renamed_params.is_empty() {
             self.unresolved_renamed_params.remove(&param);
+        }
+        if let TypeData::NativeTypeParam { declaration, mapper } = *self.data(param) {
+            if let Some(Some(kept)) = self.p.type_param_constraints.get(&self.task, &param) {
+                return Some(kept);
+            }
+            if mapper != MapperId::IDENTITY {
+                let declared = self.cloned_native_type_param(declaration, MapperId::IDENTITY);
+                let constraint = self.constraint_of_type_param(declared)?;
+                let mapper = self.native_clone_mapper(declaration, mapper);
+                return Some(self.instantiate(constraint, mapper));
+            }
+            return self.native_type_parameter_provider_for(declaration).type_parameter_constraint(self, declaration);
         }
         let (file, tp, around) = match *self.data(param) {
             TypeData::TypeParam(file, tp, around) => (file, tp, around),
@@ -2124,6 +2225,10 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `hasTypeParameterDefault`: nothing is resolved, and a circular default counts.
     pub(super) fn has_type_parameter_default(&self, param: TypeId) -> bool {
+        if let TypeData::NativeTypeParam { declaration, .. } = *self.data(param) {
+            return self.native_type_parameter_provider_for(declaration).has_type_parameter_default(declaration)
+                && !self.is_renamed_type_param(param);
+        }
         let TypeData::TypeParam(file, tp, _) = *self.data(param) else {
             return false;
         };
@@ -2137,16 +2242,20 @@ impl<'p, 's> Checker<'p, 's> {
         if let Some(kept) = self.p.type_param_defaults.get(&self.task, &param) {
             return kept;
         }
-        let TypeData::TypeParam(file, tp, around) = *self.data(param) else {
+        if !matches!(self.data(param), TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }) {
             return None;
-        };
+        }
         let mut in_progress = self.defaults_in_progress.iter_mut();
         if let Some(resolving) = in_progress.find(|resolving| resolving.0 == param) {
             resolving.2 = true;
             return None;
         }
         let (before, scope) = (self.non_cacheable_mark(), self.begin_scope());
-        let default = self.resolve_default_of_type_param(param, file, tp, around);
+        let default = match *self.data(param) {
+            TypeData::TypeParam(file, tp, around) => self.resolve_default_of_type_param(param, file, tp, around),
+            TypeData::NativeTypeParam { declaration, mapper } => self.resolve_native_type_parameter_default(param, declaration, mapper),
+            _ => unreachable!(),
+        };
         let ended = self.end_scope(scope);
         if self.non_cacheable_mark() == before
             && let Ok(stored) = ended
@@ -2154,6 +2263,33 @@ impl<'p, 's> Checker<'p, 's> {
             self.p
                 .type_param_defaults
                 .insert(&self.task, param, default, stored);
+        }
+        default
+    }
+
+    fn resolve_native_type_parameter_default(
+        &mut self,
+        param: TypeId,
+        declaration: NativeTypeParamId,
+        mapper: MapperId,
+    ) -> Option<TypeId> {
+        if mapper != MapperId::IDENTITY {
+            let declared = self.cloned_native_type_param(declaration, MapperId::IDENTITY);
+            let default = self.default_of_type_param(declared)?;
+            let mapper = self.native_clone_mapper(declaration, mapper);
+            return Some(self.instantiate(default, mapper));
+        }
+        if !self.native_type_parameter_provider_for(declaration).has_type_parameter_default(declaration) {
+            return None;
+        }
+        self.defaults_in_progress.push((param, self.stack.len(), false));
+        let default = self.native_type_parameter_provider_for(declaration).type_parameter_default(self, declaration);
+        let resolving = self.defaults_in_progress.pop();
+        if resolving.is_some_and(|resolving| resolving.2) {
+            (self.p.type_param_defaults).insert(&self.task, param, None, Stored::new());
+            (self.p.circular_type_param_defaults).insert(&self.task, param, (), Stored::new());
+            self.native_type_parameter_provider_for(declaration).circular_type_parameter_default(declaration);
+            return None;
         }
         default
     }
@@ -2228,7 +2364,8 @@ impl<'p, 's> Checker<'p, 's> {
         let outer = self.mapper_around_sig(sig);
         for (ty, &param) in filled.iter_mut().zip(params).skip(args.len()) {
             // The default of a cloned type parameter is already instantiated with them.
-            if matches!(*self.data(param), TypeData::TypeParam(_, _, around) if around == MapperId::IDENTITY)
+            if matches!(*self.data(param), TypeData::TypeParam(_, _, MapperId::IDENTITY)
+                | TypeData::NativeTypeParam { mapper: MapperId::IDENTITY, .. })
             {
                 *ty = self.instantiate(*ty, outer);
             }
@@ -4383,7 +4520,14 @@ impl<'p, 's> Checker<'p, 's> {
                 let provider = self.native_provider_for(declaration);
                 provider.type_parameters(self, declaration)
                     .into_iter()
-                    .filter(|&param| self.types().map(mapper, param).is_none())
+                    .filter_map(|param| match self.types().map(mapper, param) {
+                        None => Some(param),
+                        Some(actual) => match (self.native_type_parameter_decl(param), self.native_type_parameter_decl(actual)) {
+                            (Some((declared, _)), Some((cloned, around)))
+                                if declared == cloned && around != MapperId::IDENTITY => Some(actual),
+                            _ => None,
+                        },
+                    })
                     .collect()
             }
             SigData::Decl { file, func, mapper } => {
@@ -4462,7 +4606,14 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let sig = self.types().intern_sig(SigData::Native {
             declaration,
-            mapper: MapperId::IDENTITY,
+            mapper: self.types().mapper(self.native_provider_for(declaration)
+                .outer_type_parameters(declaration)
+                .into_iter()
+                .map(|id| {
+                    let param = self.cloned_native_type_param(id, MapperId::IDENTITY);
+                    (param, param)
+                })
+                .collect()),
         });
         Some(self.type_of_signature(sig, false))
     }

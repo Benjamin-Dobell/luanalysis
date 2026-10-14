@@ -35,6 +35,11 @@ pub struct NativeFunctionId {
     pub index: u32,
 }
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeTypeParamId {
+    pub snapshot: u64,
+    pub index: u32,
+}
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MapperId(pub u32);
 /// An interned list of `IndexComponent`s.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -412,6 +417,10 @@ pub enum TypeData<'s> {
     /// default are the declared ones instantiated with the mapper. The mapper maps the type
     /// parameters enclosing the signature, and none of the signature's own.
     TypeParam(FileId, TypeParamId, MapperId),
+    NativeTypeParam {
+        declaration: NativeTypeParamId,
+        mapper: MapperId,
+    },
     /// The `this` type of a class or an interface.
     ThisParam(Sym),
     Marker(Marker),
@@ -1444,7 +1453,8 @@ impl TypeRecord<'_> {
             return InstantiationClass::Unchanged;
         }
         match self.created.0 {
-            TypeData::TypeParam(..) | TypeData::ThisParam(_) | TypeData::Marker(_) => {
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+            | TypeData::ThisParam(_) | TypeData::Marker(_) => {
                 InstantiationClass::TypeParameter
             }
             _ => InstantiationClass::Other,
@@ -2209,7 +2219,8 @@ impl<'p, 's> Types<'p, 's> {
                 ..
             } => tf::ENUM_LITERAL | tf::NUMBER_LITERAL,
             TypeData::Enum { .. } => tf::ENUM,
-            TypeData::TypeParam(..) | TypeData::ThisParam(_) | TypeData::Marker(_) => {
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+            | TypeData::ThisParam(_) | TypeData::Marker(_) => {
                 tf::TYPE_PARAMETER
             }
             TypeData::Keyof(_) => tf::INDEX,
@@ -2261,7 +2272,7 @@ impl<'p, 's> Types<'p, 's> {
             // A type parameter whose constraint depends on an unresolved type is flagged as such. A
             // marker in its mapper is not propagated: `reportUnreliableMapper` is applied to the
             // parameter, not to the contents of its mapper.
-            TypeData::TypeParam(_, _, around) => {
+            TypeData::TypeParam(_, _, around) | TypeData::NativeTypeParam { mapper: around, .. } => {
                 ObjectFlags::COULD_CONTAIN_TYPE_VARIABLES
                     | (self.mapper_record(*around).1 & ObjectFlags::HAS_UNRESOLVED)
             }
@@ -3223,6 +3234,7 @@ has_no_references!(
     u32,
     u64,
     NativeFunctionId,
+    NativeTypeParamId,
     usize,
     ExprId,
     FnId,
@@ -3305,6 +3317,7 @@ follow_enum!(TypeData<'_> {
     TypeData::EvolvingArray(a) => (a),
     TypeData::UniqueSymbol { symbol, name } => (symbol, name),
     TypeData::TypeParam(a, b, c) => (a, b, c),
+    TypeData::NativeTypeParam { declaration, mapper } => (declaration, mapper),
     TypeData::ThisParam(a) => (a),
     TypeData::Marker(a) => (a),
     TypeData::Union(a) => (a),
@@ -3445,6 +3458,7 @@ clone_in_is_copy!(
     TypeId,
     SigId,
     NativeFunctionId,
+    NativeTypeParamId,
     MapperId,
     FileId,
     Sym,
@@ -3572,6 +3586,7 @@ clone_in_enum!(TypeData {
     EvolvingArray(a),
     UniqueSymbol { symbol, name },
     TypeParam(a, b, c),
+    NativeTypeParam { declaration, mapper },
     ThisParam(a),
     Marker(a),
     Union(a),

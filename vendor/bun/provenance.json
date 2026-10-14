@@ -138,6 +138,72 @@
       "patch": "vendor/patches/bun-sema-native-signatures.patch",
       "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
       "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/check/mapped.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/check/unions.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+      "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+      "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
     }
   ],
   "files": {
@@ -834,7 +900,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "ddbd54f186f72f6067b52f47538b3ace1a0138fa5cbd1d57cc370e7e27d5d9da"
+      "extracted_sha256": "06393330a0bf0141104049d465159c2ba67c977f56c957345f45b468470251f7"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -849,7 +915,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "cccd8d7f219b546cf7d97932d8c74b138466c5ddff706a6dff735013bdb8b06c"
+      "extracted_sha256": "fb3063d07fe52eafcd3bcbed8b6b3e3b22e06d8956c69fe8e7afe5c7b0f19ff0"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -1059,12 +1125,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "e2a5ac112a5bbb3d2c9330386c0b8884fed1b07863eb9d17889cfda9faff4793"
+      "extracted_sha256": "a241afa7e7296c0b95132e036e900df387bc95ee725037cc28e40c1b1a53f4dc"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "6e73843e78b5e876df3b2806f8fee9ae7d643686f9a43ab31d99369bb2fa369b"
+      "extracted_sha256": "e53e9d87f1cc1cc79559c9520605d21725016b054ff56b9eb86de563589c70d9"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -1089,12 +1155,12 @@
     "src/sema/check/mapped.rs": {
       "upstream": "src/sema/check/mapped.rs",
       "sha256": "4dd9deabe9cc5c9e6fd585457addae05eab3311270100ef682f9bbfece820361",
-      "extracted_sha256": "4dd9deabe9cc5c9e6fd585457addae05eab3311270100ef682f9bbfece820361"
+      "extracted_sha256": "e9e44cb05ffb3e6f607710902a92e07c92c835835fd4f8adefbd4886675dc946"
     },
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "f8889e00d4b680317025904756190e98e1f4e7362725d260bc6b229f04d2bf3c"
+      "extracted_sha256": "bb22a0c5dfe6861d5b005fdce25ed89a18d03c844d92471691b374ea55849de1"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -1104,7 +1170,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "a0615c394052dd3f3409d92b8315b8aa91abeb307b9d05c3280df40d53e4649b"
+      "extracted_sha256": "9e38618ead6f4e0f53dc9c8c8eac18f3aa2b59c7028cd54aba23d9abb8175106"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -1119,7 +1185,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "f1246bf7f7008767855dcab7f720c51ae94d3886befdb89ebbc530492e951755"
+      "extracted_sha256": "ed18312e6a9baabbe54c5db52aed75b134af4daa1b7ef9fe6e2a7f2c6c036adc"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -1174,7 +1240,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "70a8a2cb2cf4346427a399db5a10d437d9c67c924377f1ab9d29842ea7610ebe"
+      "extracted_sha256": "e72f011290f8eefa673b8d6ad74853327abe08be8076e09b09d19cdb601909fc"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -1209,7 +1275,7 @@
     "src/sema/check/unions.rs": {
       "upstream": "src/sema/check/unions.rs",
       "sha256": "80987181d7283550317b7096535b41e417eab932147592c0524e02c698f40776",
-      "extracted_sha256": "80987181d7283550317b7096535b41e417eab932147592c0524e02c698f40776"
+      "extracted_sha256": "624658daf7c5f32bd913ae43f2309ebd7887aafa569c9661044405ea4835327e"
     },
     "src/sema/components.rs": {
       "upstream": "src/sema/components.rs",
@@ -1299,7 +1365,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "c16a2d9ddc64e70832321c5c21ed5e7de2ddf6ec6f10f789bed0dbe67c4ac15e"
+      "extracted_sha256": "65eeb0d7be384a6d7d127fcfa2cbfd831c4aad24d6bdd1c45dadb3167eee6f5c"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

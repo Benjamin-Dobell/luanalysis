@@ -349,7 +349,8 @@ pub(super) fn is_object_kind(data: &TypeData) -> bool {
 fn is_type_param_kind(data: &TypeData) -> bool {
     matches!(
         data,
-        TypeData::TypeParam(..) | TypeData::ThisParam(_) | TypeData::Marker(_)
+        TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+        | TypeData::ThisParam(_) | TypeData::Marker(_)
     )
 }
 
@@ -364,6 +365,7 @@ fn is_instantiable_kind(data: &TypeData) -> bool {
     matches!(
         data,
         TypeData::TypeParam(..)
+            | TypeData::NativeTypeParam { .. }
             | TypeData::ThisParam(_)
             | TypeData::Marker(_)
             | TypeData::IndexedAccess { .. }
@@ -521,7 +523,8 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn is_type_param(&self, ty: TypeId) -> bool {
         matches!(
             self.data(ty),
-            TypeData::TypeParam(..) | TypeData::ThisParam(_) | TypeData::Marker(_)
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+            | TypeData::ThisParam(_) | TypeData::Marker(_)
         )
     }
 
@@ -1649,7 +1652,8 @@ impl<'p, 's> Checker<'p, 's> {
     /// `getConstraintOfType`
     pub(super) fn constraint_of(&mut self, t: TypeId) -> Option<TypeId> {
         match *self.data(t) {
-            TypeData::TypeParam(..) | TypeData::ThisParam(_) | TypeData::Marker(_) => {
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+            | TypeData::ThisParam(_) | TypeData::Marker(_) => {
                 self.constraint_of_type_param(t)
             }
             // `getConstraintOfIndexedAccess`: an indexed access whose base constraint is circular has no constraint.
@@ -3539,7 +3543,7 @@ impl<'p, 's> Checker<'p, 's> {
         args.iter().any(|&arg| {
             matches!(
                 self.data(arg),
-                TypeData::TypeParam(..) | TypeData::ThisParam(_)
+                TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::ThisParam(_)
             ) || self.is_type_reference_with_generic_arguments(arg)
         })
     }
@@ -3581,7 +3585,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         for &arg in self.type_arguments(reference) {
             let is_this = matches!(self.data(arg), TypeData::ThisParam(_));
-            if is_this || matches!(self.data(arg), TypeData::TypeParam(..)) {
+            if is_this || matches!(self.data(arg), TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }) {
                 // The constraint of a `this` type is the class or interface it belongs to.
                 let is_unconstrained =
                     ignore_constraints || !is_this && self.constraint_of_type_param(arg).is_none();
@@ -4085,6 +4089,7 @@ impl<'p, 's> Checker<'p, 's> {
             | TypeData::Anon { .. }
             | TypeData::Fns { .. }
             | TypeData::TypeParam(..)
+            | TypeData::NativeTypeParam { .. }
             | TypeData::ThisParam(_) => true,
             TypeData::Synth(shape) => Self::shape_has_symbol(shape),
             _ => false,
@@ -4206,6 +4211,13 @@ impl<'p, 's> Checker<'p, 's> {
             TypeData::Fns { decls, .. } => (4, decls[0].0.0, decls[0].1.0),
             // All clones of a type parameter have its symbol.
             TypeData::TypeParam(file, tp, _) => (3, file.0, tp.0),
+            TypeData::NativeTypeParam { declaration, .. } => {
+                let declared = self.intern(TypeData::NativeTypeParam {
+                    declaration: *declaration,
+                    mapper: MapperId::IDENTITY,
+                });
+                (7, declared.0, 0)
+            }
             TypeData::Tuple {
                 flags, readonly, ..
             } => {
@@ -4660,7 +4672,8 @@ impl<'p, 's> Checker<'p, 's> {
 
         // ── by kind of target ──
         match *td {
-            TypeData::TypeParam(..) | TypeData::ThisParam(_) | TypeData::Marker(_) => {
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+            | TypeData::ThisParam(_) | TypeData::Marker(_) => {
                 // `{ [P in Q]: X }` is related to `T` if `keyof T` is related to `Q` and `X` is
                 // related to `T[Q]`.
                 if is_mapped_kind(sd) && self.mapped_name_type(source).is_none() {
@@ -4951,6 +4964,7 @@ impl<'p, 's> Checker<'p, 's> {
         // ── by kind of source ──
         match *sd {
             TypeData::TypeParam(..)
+            | TypeData::NativeTypeParam { .. }
             | TypeData::ThisParam(_)
             | TypeData::Marker(_)
             | TypeData::IndexedAccess { .. } => {
@@ -6542,6 +6556,10 @@ impl<'p, 's> Checker<'p, 's> {
                         let declared = c.type_param(file, tp);
                         pairs.iter().position(|pair| *pair == (declared, param))
                     }
+                    TypeData::NativeTypeParam { declaration, mapper } if mapper != MapperId::IDENTITY => {
+                        let declared = c.cloned_native_type_param(declaration, MapperId::IDENTITY);
+                        pairs.iter().position(|pair| *pair == (declared, param))
+                    }
                     _ => None,
                 };
                 match declared {
@@ -6618,6 +6636,15 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let mut type_arguments: SmallVec<[TypeId; 8]> = SmallVec::from_slice(&params);
         for argument in &mut type_arguments {
+            if let TypeData::NativeTypeParam { declaration, mapper } = *self.data(*argument)
+                && mapper != MapperId::IDENTITY
+            {
+                let declared = self.cloned_native_type_param(declaration, MapperId::IDENTITY);
+                if self.constraint_of_type_param(declared).is_none() {
+                    *argument = declared;
+                }
+                continue;
+            }
             if let TypeData::TypeParam(file, tp, around) = *self.data(*argument)
                 && around != MapperId::IDENTITY
             {

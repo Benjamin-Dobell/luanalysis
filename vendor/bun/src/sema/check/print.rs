@@ -1823,7 +1823,9 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 let elems = self.c.type_arguments(ty);
                 self.tuple_to_node(elems, flags, *readonly)
             }
-            TypeData::TypeParam(..) => self.type_parameter_to_node(ty),
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } => {
+                self.type_parameter_to_node(ty)
+            }
             TypeData::Marker(Marker::Restrictive(of)) => self.type_to_node(*of),
             TypeData::Marker(marker) => Node::simple(self.name_of_marker(*marker)),
             TypeData::Union(_) => self.union_to_node(ty),

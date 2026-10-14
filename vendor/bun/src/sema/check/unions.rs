@@ -1683,6 +1683,9 @@ impl<'p, 's> Checker<'p, 's> {
                 files.symbol(sym).name
             }
             (None, &TypeData::TypeParam(file, tp, _)) => self.hir(file)[tp].name,
+            (None, &TypeData::NativeTypeParam { declaration, .. }) => {
+                self.native_type_parameter_name(declaration)
+            }
             (None, &TypeData::StringMapping { kind, .. }) => {
                 return Some(super::print::string_mapping_name(kind));
             }
@@ -2172,6 +2175,12 @@ impl<'p, 's> Checker<'p, 's> {
             (TypeData::TypeParam(_, _, x), TypeData::TypeParam(_, _, y)) => {
                 self.compare_targets_of_type_mappers(*x, *y)
             }
+            (
+                TypeData::NativeTypeParam { declaration: x, mapper: m },
+                TypeData::NativeTypeParam { declaration: y, mapper: n },
+            ) => (x.snapshot, self.native_type_parameter_order(*x), x.index)
+                .cmp(&(y.snapshot, self.native_type_parameter_order(*y), y.index))
+                .then_with(|| self.compare_targets_of_type_mappers(*m, *n)),
             // `ObjectFlagsObjectTypeKindMask`, then `compareTypeMappers`: a type without a mapper
             // comes last.
             (x, y) => {

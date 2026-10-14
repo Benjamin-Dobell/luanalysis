@@ -48,6 +48,15 @@ SOURCE_ADAPTATIONS.extend({
     "check/infer.rs", "check/instantiate.rs", "check/mod.rs", "check/print.rs",
     "check/relate.rs", "check/shape.rs", "check/symbols.rs", "types.rs",
 ])
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
+    "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
+} for path in [
+    "check/call.rs", "check/decl.rs", "check/infer.rs", "check/instantiate.rs",
+    "check/mapped.rs", "check/mod.rs", "check/print.rs", "check/relate.rs",
+    "check/shape.rs", "check/unions.rs", "types.rs",
+])
 
 
 def git(source, *args):

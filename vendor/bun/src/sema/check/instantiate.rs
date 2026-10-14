@@ -131,8 +131,14 @@ impl<'p, 's> Checker<'p, 's> {
         mapper: MapperId,
     ) -> std::borrow::Cow<'p, [(TypeId, TypeId)]> {
         let declaration = |param: TypeId| match *self.data(param) {
-            TypeData::TypeParam(file, tp, _) => (0u8, file.0, tp.0),
-            _ => (1, 0, 0),
+            TypeData::TypeParam(file, tp, _) => (0u8, u64::from(file.0), tp.0, 0),
+            TypeData::NativeTypeParam { declaration, .. } => (
+                1,
+                declaration.snapshot,
+                self.native_type_parameter_order(declaration),
+                declaration.index,
+            ),
+            _ => (2, 0, 0, 0),
         };
         let stored = self.types().mapping(mapper);
         if stored.is_sorted_by(|x, y| declaration(x.0) < declaration(y.0)) {
@@ -298,7 +304,8 @@ impl<'p, 's> Checker<'p, 's> {
         let around = self.kept_a_renamed_param.replace(false);
         let result = self.instantiate_type_parameters(t, |c, param| match c.data(param) {
             // `tp.constraint == nil && getConstraintDeclaration(tp) == nil`
-            TypeData::TypeParam(..) if c.unresolved_renamed_params.contains(&param) => {
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+                if c.unresolved_renamed_params.contains(&param) => {
                 c.kept_a_renamed_param.set(true);
                 param
             }
@@ -313,6 +320,8 @@ impl<'p, 's> Checker<'p, 's> {
             {
                 param
             }
+            TypeData::NativeTypeParam { declaration, mapper: MapperId::IDENTITY }
+                if !c.native_type_parameter_has_constraint(*declaration) => param,
             _ => c.intern(TypeData::Marker(Marker::Restrictive(param))),
         });
         // Only `getConstraintOfDistributiveConditionalType` asks.
@@ -940,6 +949,7 @@ impl<'p, 's> Checker<'p, 's> {
             // `isGenericMappedType`.
             let waits = match self.data(elem) {
                 TypeData::TypeParam(..)
+                | TypeData::NativeTypeParam { .. }
                 | TypeData::ThisParam(_)
                 | TypeData::Marker(_)
                 | TypeData::IndexedAccess { .. }
@@ -1080,7 +1090,7 @@ impl<'p, 's> Checker<'p, 's> {
         let data = match self.types().sig(sig) {
             SigData::Native { declaration, mapper: own } => SigData::Native {
                 declaration: *declaration,
-                mapper: self.compose(*own, mapper),
+                mapper: self.native_sig_mapper(*declaration, *own, mapper),
             },
             SigData::Decl {
                 file,
@@ -1134,6 +1144,12 @@ impl<'p, 's> Checker<'p, 's> {
                     {
                         let around = self.map_mapper(around, mapper);
                         new = self.cloned_type_param(file, tp, around);
+                    }
+                    if let TypeData::NativeTypeParam { declaration, mapper: around } = *self.data(param)
+                        && around != MapperId::IDENTITY
+                    {
+                        let around = self.map_mapper(around, mapper);
+                        new = self.cloned_native_type_param(declaration, around);
                     }
                     if new != param {
                         fresh.push((param, new));
@@ -1293,6 +1309,72 @@ impl<'p, 's> Checker<'p, 's> {
                             actual = self.instantiate(actual, second);
                         }
                         pairs.push((declared, actual));
+                    }
+                }
+            }
+        }
+        self.types().mapper_of(&pairs)
+    }
+
+    /// The native declaration form of `sig_mapper`, with provider-owned type parameters.
+    fn native_sig_mapper(
+        &mut self,
+        declaration: NativeFunctionId,
+        own: MapperId,
+        second: MapperId,
+    ) -> MapperId {
+        let declared = self.types().intern_sig(SigData::Native {
+            declaration,
+            mapper: MapperId::IDENTITY,
+        });
+        let type_params = self.sig_type_params(declared).into_vec();
+        let is_own = |c: &Self, param: TypeId| {
+            c.native_type_parameter_decl(param).is_some_and(|(id, mapper)| {
+                mapper == MapperId::IDENTITY
+                    && type_params.iter().any(|&own| {
+                        c.native_type_parameter_decl(own).is_some_and(|(of, _)| of == id)
+                    })
+            })
+        };
+        let mapping = self.mapping_in_declaration_order(own);
+        let mut pairs: smallvec::SmallVec<[(TypeId, TypeId); 8]> =
+            smallvec::SmallVec::with_capacity(mapping.len() + type_params.len());
+        for &(param, value) in mapping.iter() {
+            if !is_own(self, param) {
+                pairs.push((param, self.instantiate(value, second)));
+            }
+        }
+        let outer = self.types().mapper_of(&pairs);
+        let previous_outer = self.types().mapper(
+            self.types().mapping(own).iter().copied()
+                .filter(|pair| !is_own(self, pair.0)).collect(),
+        );
+        for &param in &type_params {
+            let Some((id, _)) = self.native_type_parameter_decl(param) else {
+                continue;
+            };
+            let open = match self.types().map(own, param) {
+                None => Some(param),
+                Some(value) => self.native_type_parameter_decl(value)
+                    .filter(|&(of, around)| of == id && around != MapperId::IDENTITY && around == previous_outer)
+                    .map(|_| value),
+            };
+            match open {
+                Some(open) => match self.types().map(second, open) {
+                    Some(actual) => pairs.push((param, actual)),
+                    None => {
+                        let fresh = self.cloned_native_type_param(id, outer);
+                        if fresh != param {
+                            pairs.push((param, fresh));
+                        }
+                    }
+                },
+                None => {
+                    if let Some(mut actual) = self.types().map(own, param) {
+                        if self.has_type_variables(actual) {
+                            actual = self.instantiate(actual, second);
+                        }
+                        pairs.push((param, actual));
                     }
                 }
             }

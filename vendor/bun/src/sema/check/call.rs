@@ -2763,6 +2763,7 @@ impl<'p, 's> Checker<'p, 's> {
     ) -> TypeId {
         match *self.data(param) {
             TypeData::TypeParam(_, _, around) if around != MapperId::IDENTITY => ty,
+            TypeData::NativeTypeParam { mapper, .. } if mapper != MapperId::IDENTITY => ty,
             _ => self.instantiate(ty, outer),
         }
     }
@@ -2825,19 +2826,26 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `getDefaultFromTypeParameter(param) != nil`
     pub(super) fn has_default(&mut self, param: TypeId) -> bool {
-        if let TypeData::TypeParam(file, tp, around) = *self.data(param)
-            && around != MapperId::IDENTITY
-        {
+        let declared = match *self.data(param) {
+            TypeData::TypeParam(file, tp, around) if around != MapperId::IDENTITY => {
+                Some(self.type_param(file, tp))
+            }
+            TypeData::NativeTypeParam { declaration, mapper }
+                if mapper != MapperId::IDENTITY => self.native_type_parameter(declaration),
+            _ => None,
+        };
+        if let Some(declared) = declared {
             // A clone has one if the declared type parameter does. No instantiation is requested
             // for one that references no type parameter or is itself a type parameter.
-            let declared = self.type_param(file, tp);
             match self.default_of_type_param(declared) {
                 None => return false,
                 Some(default)
                     if !self.has_type_variables(default)
                         || matches!(
                             self.data(default),
-                            TypeData::TypeParam(..) | TypeData::ThisParam(_)
+                            TypeData::TypeParam(..)
+                                | TypeData::NativeTypeParam { .. }
+                                | TypeData::ThisParam(_)
                         ) =>
                 {
                     return true;
@@ -3121,10 +3129,13 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// The name of the type parameter `param`: the name `unique_type_params` gave it, or else the declared name.
     pub fn type_param_name(&self, param: TypeId) -> Option<Atom> {
-        let TypeData::TypeParam(file, tp, around) = *self.data(param) else {
-            return None;
+        let (declared, around) = match *self.data(param) {
+            TypeData::TypeParam(file, tp, around) => (self.hir(file)[tp].name, around),
+            TypeData::NativeTypeParam { declaration, mapper } => {
+                (self.native_type_parameter_name(declaration), mapper)
+            }
+            _ => return None,
         };
-        let declared = self.hir(file)[tp].name;
         Some(
             self.new_type_param_name(declared, around)
                 .unwrap_or(declared),
@@ -3148,8 +3159,14 @@ impl<'p, 's> Checker<'p, 's> {
     /// (`newSymbol(SymbolFlagsTypeParameter, name)`), and so none of the modifiers of the type
     /// parameter it is a clone of.
     pub(super) fn is_renamed_type_param(&self, param: TypeId) -> bool {
-        matches!(*self.data(param), TypeData::TypeParam(file, tp, around)
-            if self.new_type_param_name(self.hir(file)[tp].name, around).is_some())
+        let (declared, around) = match *self.data(param) {
+            TypeData::TypeParam(file, tp, around) => (self.hir(file)[tp].name, around),
+            TypeData::NativeTypeParam { declaration, mapper } => {
+                (self.native_type_parameter_name(declaration), mapper)
+            }
+            _ => return false,
+        };
+        self.new_type_param_name(declared, around).is_some()
     }
 
     /// `newTypeParameter(newSymbol(SymbolFlagsTypeParameter, name))`. Type parameters without a
@@ -3162,16 +3179,27 @@ impl<'p, 's> Checker<'p, 's> {
         name: Atom,
         serial: usize,
     ) -> Option<TypeId> {
-        let TypeData::TypeParam(file, tp, around) = *self.data(param) else {
-            return None;
+        let (declared, around) = match *self.data(param) {
+            TypeData::TypeParam(file, tp, around) => (self.hir(file)[tp].name, around),
+            TypeData::NativeTypeParam { declaration, mapper } => {
+                (self.native_type_parameter_name(declaration), mapper)
+            }
+            _ => return None,
         };
-        let declared = self.string_literal(self.hir(file)[tp].name, true);
+        let declared = self.string_literal(declared, true);
         let mut pairs = self.types().mapping(around).to_vec();
         pairs.retain(|pair| pair.0 != declared);
         pairs.push((declared, self.string_literal(name, false)));
         let serial = self.number_literal(serial as f64, true);
         pairs.push((serial, serial));
-        Some(self.cloned_type_param(file, tp, self.types().mapper(pairs)))
+        let mapper = self.types().mapper(pairs);
+        match *self.data(param) {
+            TypeData::TypeParam(file, tp, _) => Some(self.cloned_type_param(file, tp, mapper)),
+            TypeData::NativeTypeParam { declaration, .. } => {
+                Some(self.cloned_native_type_param(declaration, mapper))
+            }
+            _ => None,
+        }
     }
 
     /// `getUniqueTypeParameters`: `own`, with a renamed clone for each type parameter whose name occurs in `inferred` or earlier in
@@ -3222,10 +3250,15 @@ impl<'p, 's> Checker<'p, 's> {
                 index += 1;
             };
             names.push(unique);
-            let (_, declaration) = self.type_param_decl(param)?;
+            let declared_name = match *self.data(param) {
+                TypeData::NativeTypeParam { declaration, .. } => {
+                    self.native_type_parameter_name(declaration)
+                }
+                _ => self.type_param_decl(param)?.1.name,
+            };
             renames.push((
                 position,
-                self.string_literal(declaration.name, true),
+                self.string_literal(declared_name, true),
                 self.string_literal(unique, false),
             ));
         }
@@ -3234,26 +3267,42 @@ impl<'p, 's> Checker<'p, 's> {
         }
         // The entries are keyed by declared name, so only siblings share them. The type parameters of a signature are those of a
         // function, or of the class or interface that a construct signature belongs to: `clone_mapper` knows their siblings.
-        let mut sibling_sets: Vec<(FileId, ScopeId, MapperId)> = Vec::with_capacity(own.len());
+        #[derive(PartialEq, Eq)]
+        enum SiblingScope {
+            Ts(FileId, ScopeId),
+            Native(NativeTypeParamId),
+        }
+        let mut sibling_sets: Vec<(SiblingScope, MapperId)> = Vec::with_capacity(own.len());
         for &param in own {
-            let TypeData::TypeParam(file, tp, around) = *self.data(param) else {
-                return None;
+            let (scope, around) = match *self.data(param) {
+                TypeData::NativeTypeParam { declaration, mapper } => {
+                    let siblings = self.native_type_parameter_siblings(declaration);
+                    let first = siblings.into_iter()
+                        .min_by_key(|id| (id.snapshot, id.index)).unwrap_or(declaration);
+                    (SiblingScope::Native(first), mapper)
+                }
+                TypeData::TypeParam(file, tp, around) => {
+                    let scope = self.bound(file).type_param_scope[tp.idx()];
+                    if scope.is_none()
+                        || !matches!(
+                            self.bound(file).scopes[scope.idx()].kind,
+                            ScopeKind::Fn(_) | ScopeKind::Class(_) | ScopeKind::Interface(_)
+                        )
+                    {
+                        return None;
+                    }
+                    (SiblingScope::Ts(file, scope), around)
+                }
+                _ => return None,
             };
-            let scope = self.bound(file).type_param_scope[tp.idx()];
-            if scope.is_none()
-                || !matches!(
-                    self.bound(file).scopes[scope.idx()].kind,
-                    ScopeKind::Fn(_) | ScopeKind::Class(_) | ScopeKind::Interface(_)
-                )
-            {
-                return None;
-            }
-            sibling_sets.push((file, scope, around));
+            sibling_sets.push((scope, around));
         }
         let mut unique = Vec::with_capacity(own.len());
         for (i, &param) in own.iter().enumerate() {
-            let TypeData::TypeParam(file, tp, around) = *self.data(param) else {
-                return None;
+            let around = match *self.data(param) {
+                TypeData::TypeParam(_, _, around) => around,
+                TypeData::NativeTypeParam { mapper, .. } => mapper,
+                _ => return None,
             };
             let renames_of_siblings: SmallVec<[(TypeId, TypeId); 4]> = renames
                 .iter()
@@ -3273,7 +3322,14 @@ impl<'p, 's> Checker<'p, 's> {
             if !pairs.iter().any(|pair| pair.0 == serial) {
                 pairs.push((serial, serial));
             }
-            unique.push(self.cloned_type_param(file, tp, self.types().mapper(pairs)));
+            let mapper = self.types().mapper(pairs);
+            unique.push(match *self.data(param) {
+                TypeData::TypeParam(file, tp, _) => self.cloned_type_param(file, tp, mapper),
+                TypeData::NativeTypeParam { declaration, .. } => {
+                    self.cloned_native_type_param(declaration, mapper)
+                }
+                _ => return None,
+            });
         }
         Some(unique)
     }

@@ -130,6 +130,17 @@ pub trait NativeFunctionProvider {
     fn return_type(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> TypeId;
     fn circular_return_type(&self, declaration: NativeFunctionId);
     fn return_type_too_deep(&self, declaration: NativeFunctionId);
+    fn contains_type_parameter(&self, _: NativeTypeParamId) -> bool { false }
+    fn type_parameter_name(&self, _: &Checker<'_, '_>, _: NativeTypeParamId) -> Atom { Atom::NONE }
+    fn has_type_parameter_constraint(&self, _: NativeTypeParamId) -> bool { false }
+    fn type_parameter_constraint(&self, _: &mut Checker<'_, '_>, _: NativeTypeParamId) -> Option<TypeId> { None }
+    fn has_type_parameter_default(&self, _: NativeTypeParamId) -> bool { false }
+    fn type_parameter_default(&self, _: &mut Checker<'_, '_>, _: NativeTypeParamId) -> Option<TypeId> { None }
+    fn type_parameter_order(&self, declaration: NativeTypeParamId) -> u32 { declaration.index }
+    fn type_parameter_siblings(&self, declaration: NativeTypeParamId) -> Vec<NativeTypeParamId> { vec![declaration] }
+    fn circular_type_parameter_constraint(&self, _: NativeTypeParamId) {}
+    fn circular_type_parameter_default(&self, _: NativeTypeParamId) {}
+    fn outer_type_parameters(&self, _: NativeFunctionId) -> Vec<NativeTypeParamId> { Vec::new() }
 }
 pub use shape::Members;
 pub use spans::compute_ecma_line_starts;

@@ -13,8 +13,8 @@ use bun_sema::program::Files;
 use bun_sema::resolve::{Host, Options, ParseOptions, ScriptKind};
 use bun_sema::session::Session;
 use bun_sema::types::{
-    Intrinsic, Literalness, MapperId, NativeFunctionId, Prop, PropFlags, PropSource, Shape,
-    SigData, SigParam, TypeData, TypeId,
+    Intrinsic, Literalness, MapperId, NativeFunctionId, NativeTypeParamId, Prop, PropFlags,
+    PropSource, Shape, SigData, SigParam, TypeData, TypeId,
 };
 use std::borrow::Cow;
 
@@ -29,6 +29,22 @@ pub struct NativeFunctionKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidNativeFunctionKey(pub NativeFunctionKey);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedNativeFunctionContext(pub NativeFunctionKey);
+
+/// A source type parameter, in a namespace separate from function declarations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeTypeParameterKey {
+    pub snapshot: u64,
+    pub index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidNativeTypeParameterKey(pub NativeTypeParameterKey);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnsupportedNativeTypeParameterContext(pub NativeTypeParameterKey);
 
 /// Resolved type descriptions; every comparison creates real checker-owned IDs.
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +67,7 @@ pub enum Type {
     FreshShape(Vec<Property>),
     Function(FunctionType),
     NativeFunction(NativeFunctionKey),
+    NativeTypeParameter(NativeTypeParameterKey),
 }
 
 /// Source recipes may use thread-local interior state; release its borrows
@@ -74,6 +91,50 @@ pub trait NativeTypeProvider {
     ) -> Type;
     fn return_cycle(&self, key: NativeFunctionKey);
     fn return_type_too_deep(&self, key: NativeFunctionKey);
+    fn function_type_parameters(
+        &self,
+        _: NativeFunctionKey,
+        _: &mut dyn TypeQueries,
+    ) -> Vec<NativeTypeParameterKey> {
+        Vec::new()
+    }
+    fn function_outer_type_parameters(&self, _: NativeFunctionKey) -> Vec<NativeTypeParameterKey> {
+        Vec::new()
+    }
+    fn contains_type_parameter(&self, _: NativeTypeParameterKey) -> bool {
+        false
+    }
+    fn type_parameter_name(&self, _: NativeTypeParameterKey) -> String {
+        String::new()
+    }
+    fn has_type_parameter_constraint(&self, _: NativeTypeParameterKey) -> bool {
+        false
+    }
+    fn type_parameter_constraint(
+        &self,
+        _: NativeTypeParameterKey,
+        _: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        None
+    }
+    fn has_type_parameter_default(&self, _: NativeTypeParameterKey) -> bool {
+        false
+    }
+    fn type_parameter_default(
+        &self,
+        _: NativeTypeParameterKey,
+        _: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        None
+    }
+    fn type_parameter_order(&self, key: NativeTypeParameterKey) -> u32 {
+        key.index
+    }
+    fn type_parameter_siblings(&self, key: NativeTypeParameterKey) -> Vec<NativeTypeParameterKey> {
+        vec![key]
+    }
+    fn circular_type_parameter_constraint(&self, _: NativeTypeParameterKey) {}
+    fn circular_type_parameter_default(&self, _: NativeTypeParameterKey) {}
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,6 +208,7 @@ pub trait TypeQueries {
     fn is_assignable(&mut self, source: &Type, target: &Type) -> bool;
     fn compare(&mut self, source: &Type, target: &Type) -> Relation;
     fn widen(&mut self, ty: &Type) -> Type;
+    fn union_reduced(&mut self, types: &[Type]) -> Type;
     fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type>;
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type;
     fn call(&mut self, callee: &Type, arguments: &[Type]) -> CallResult;
@@ -158,6 +220,12 @@ pub trait TypeQueries {
         context: Option<&Type>,
     ) -> Type;
     fn native_function_signature(&mut self, key: NativeFunctionKey) -> FunctionType;
+    fn native_function_type_parameters(
+        &mut self,
+        key: NativeFunctionKey,
+    ) -> Vec<NativeTypeParameterKey>;
+    fn type_parameter_constraint(&mut self, key: NativeTypeParameterKey) -> Option<Type>;
+    fn type_parameter_default(&mut self, key: NativeTypeParameterKey) -> Option<Type>;
     fn format(&mut self, ty: &Type) -> String;
 }
 
@@ -238,6 +306,36 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn native_function_type_parameters(
+        &mut self,
+        key: NativeFunctionKey,
+    ) -> Vec<NativeTypeParameterKey> {
+        let ty = import_type(self.checker, &Type::NativeFunction(key));
+        let signatures = self.checker.signatures(ty, false);
+        let params = self.checker.sig_type_params(signatures[0]).into_vec();
+        params
+            .into_iter()
+            .map(|ty| match export_type(self.checker, ty) {
+                Type::NativeTypeParameter(key) => key,
+                _ => panic!("native generic declaration has a nonparameter type"),
+            })
+            .collect()
+    }
+
+    fn type_parameter_constraint(&mut self, key: NativeTypeParameterKey) -> Option<Type> {
+        let ty = import_type(self.checker, &Type::NativeTypeParameter(key));
+        self.checker
+            .constraint_of_type_param(ty)
+            .map(|ty| export_type(self.checker, ty))
+    }
+
+    fn type_parameter_default(&mut self, key: NativeTypeParameterKey) -> Option<Type> {
+        let ty = import_type(self.checker, &Type::NativeTypeParameter(key));
+        self.checker
+            .default_of_type_param(ty)
+            .map(|ty| export_type(self.checker, ty))
+    }
+
     fn aggregate_returns(
         &mut self,
         returned: &[Type],
@@ -286,7 +384,16 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
 
     fn widen(&mut self, ty: &Type) -> Type {
         let ty = import_type(self.checker, ty);
-        let ty = self.checker.widen_literal(ty);
+        let ty = self.checker.widened(ty);
+        export_type(self.checker, ty)
+    }
+
+    fn union_reduced(&mut self, types: &[Type]) -> Type {
+        let types: Vec<_> = types
+            .iter()
+            .map(|ty| import_type(self.checker, ty))
+            .collect();
+        let ty = self.checker.union_reduced(&types);
         export_type(self.checker, ty)
     }
 
@@ -445,11 +552,103 @@ fn source_key(key: NativeFunctionId) -> NativeFunctionKey {
     }
 }
 
+fn core_parameter_key(key: NativeTypeParameterKey) -> NativeTypeParamId {
+    NativeTypeParamId {
+        snapshot: key.snapshot,
+        index: key.index,
+    }
+}
+
+fn source_parameter_key(key: NativeTypeParamId) -> NativeTypeParameterKey {
+    NativeTypeParameterKey {
+        snapshot: key.snapshot,
+        index: key.index,
+    }
+}
+
 struct ProviderAdapter<'a, P> {
     provider: &'a P,
 }
 
 impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
+    fn outer_type_parameters(&self, key: NativeFunctionId) -> Vec<NativeTypeParamId> {
+        self.provider
+            .function_outer_type_parameters(source_key(key))
+            .into_iter()
+            .map(core_parameter_key)
+            .collect()
+    }
+    fn type_parameters(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Vec<TypeId> {
+        let keys = self
+            .provider
+            .function_type_parameters(source_key(key), &mut SessionQueries { checker });
+        keys.into_iter()
+            .map(|key| import_type(checker, &Type::NativeTypeParameter(key)))
+            .collect()
+    }
+
+    fn contains_type_parameter(&self, key: NativeTypeParamId) -> bool {
+        self.provider
+            .contains_type_parameter(source_parameter_key(key))
+    }
+    fn type_parameter_name(
+        &self,
+        checker: &Checker<'_, '_>,
+        key: NativeTypeParamId,
+    ) -> bun_sema::atom::Atom {
+        checker.atoms().intern(
+            self.provider
+                .type_parameter_name(source_parameter_key(key))
+                .as_bytes(),
+        )
+    }
+    fn has_type_parameter_constraint(&self, key: NativeTypeParamId) -> bool {
+        self.provider
+            .has_type_parameter_constraint(source_parameter_key(key))
+    }
+    fn type_parameter_constraint(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeTypeParamId,
+    ) -> Option<TypeId> {
+        let ty = self
+            .provider
+            .type_parameter_constraint(source_parameter_key(key), &mut SessionQueries { checker });
+        ty.map(|ty| import_type(checker, &ty))
+    }
+    fn has_type_parameter_default(&self, key: NativeTypeParamId) -> bool {
+        self.provider
+            .has_type_parameter_default(source_parameter_key(key))
+    }
+    fn type_parameter_default(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeTypeParamId,
+    ) -> Option<TypeId> {
+        let ty = self
+            .provider
+            .type_parameter_default(source_parameter_key(key), &mut SessionQueries { checker });
+        ty.map(|ty| import_type(checker, &ty))
+    }
+    fn type_parameter_order(&self, key: NativeTypeParamId) -> u32 {
+        self.provider
+            .type_parameter_order(source_parameter_key(key))
+    }
+    fn type_parameter_siblings(&self, key: NativeTypeParamId) -> Vec<NativeTypeParamId> {
+        self.provider
+            .type_parameter_siblings(source_parameter_key(key))
+            .into_iter()
+            .map(core_parameter_key)
+            .collect()
+    }
+    fn circular_type_parameter_constraint(&self, key: NativeTypeParamId) {
+        self.provider
+            .circular_type_parameter_constraint(source_parameter_key(key));
+    }
+    fn circular_type_parameter_default(&self, key: NativeTypeParamId) {
+        self.provider
+            .circular_type_parameter_default(source_parameter_key(key));
+    }
     fn contains_function(&self, key: NativeFunctionId) -> bool {
         self.provider.contains_function(source_key(key))
     }
@@ -519,6 +718,9 @@ fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
         Type::NativeFunction(key) => checker
             .native_function_type(core_key(*key))
             .unwrap_or_else(|| std::panic::panic_any(InvalidNativeFunctionKey(*key))),
+        Type::NativeTypeParameter(key) => checker
+            .native_type_parameter(core_parameter_key(*key))
+            .unwrap_or_else(|| std::panic::panic_any(InvalidNativeTypeParameterKey(*key))),
         Type::Union(types) => {
             let types: Vec<_> = types.iter().map(|ty| import_type(checker, ty)).collect();
             checker.union(&types)
@@ -588,6 +790,16 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
         return Type::Boolean;
     }
     match checker.data(ty) {
+        TypeData::NativeTypeParam {
+            declaration,
+            mapper,
+        } => {
+            let key = source_parameter_key(*declaration);
+            if *mapper != MapperId::IDENTITY {
+                std::panic::panic_any(UnsupportedNativeTypeParameterContext(key));
+            }
+            Type::NativeTypeParameter(key)
+        }
         TypeData::Intrinsic(kind) => match kind {
             Intrinsic::Any | Intrinsic::Error | Intrinsic::Unresolved => Type::Any,
             Intrinsic::Unknown => Type::Unknown,
@@ -624,21 +836,28 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
         }
         TypeData::Synth(shape) if shape.call.len() == 1 && shape.props.is_empty() => {
             let sig = shape.call[0];
-            if let Some((key, _)) = checker.sig_native_decl(sig) {
-                Type::NativeFunction(source_key(key))
+            if let Some((key, mapper)) = checker.sig_native_decl(sig) {
+                let key = source_key(key);
+                if checker
+                    .types()
+                    .mapping(mapper)
+                    .iter()
+                    .any(|(source, target)| source != target)
+                {
+                    std::panic::panic_any(UnsupportedNativeFunctionContext(key));
+                }
+                Type::NativeFunction(key)
             } else {
                 Type::Function(export_signature(checker, sig))
             }
         }
         TypeData::Synth(shape) => {
+            let fresh = shape.literal.is_of_expression() && !shape.is_regular;
             let properties: Vec<_> = shape
                 .props
                 .iter()
                 .map(|property| {
-                    let ty = match property.source {
-                        PropSource::Type(ty) => ty,
-                        _ => panic!("unsupported lazy exported property"),
-                    };
+                    let ty = checker.type_of_prop(property, shape.mapper);
                     (
                         String::from_utf8_lossy(checker.atoms().bytes(property.name)).into_owned(),
                         ty,
@@ -647,17 +866,20 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
                     )
                 })
                 .collect();
-            Type::Shape(
-                properties
-                    .into_iter()
-                    .map(|(name, ty, optional, readonly)| Property {
-                        name,
-                        ty: export_type(checker, ty),
-                        optional,
-                        readonly,
-                    })
-                    .collect(),
-            )
+            let properties = properties
+                .into_iter()
+                .map(|(name, ty, optional, readonly)| Property {
+                    name,
+                    ty: export_type(checker, ty),
+                    optional,
+                    readonly,
+                })
+                .collect();
+            if fresh {
+                Type::FreshShape(properties)
+            } else {
+                Type::Shape(properties)
+            }
         }
         other => panic!("unsupported exported type: {other:?}"),
     }
@@ -744,6 +966,361 @@ mod tests {
         depths: std::cell::Cell<usize>,
         thread: std::thread::ThreadId,
         _local: std::rc::Rc<()>,
+    }
+
+    struct GenericProvider {
+        constraint_cycles: std::cell::Cell<usize>,
+        default_cycles: std::cell::Cell<usize>,
+        with_outer: bool,
+    }
+
+    impl GenericProvider {
+        fn new() -> Self {
+            Self {
+                constraint_cycles: std::cell::Cell::new(0),
+                default_cycles: std::cell::Cell::new(0),
+                with_outer: false,
+            }
+        }
+        fn parameter(index: u32) -> NativeTypeParameterKey {
+            NativeTypeParameterKey {
+                snapshot: 81,
+                index,
+            }
+        }
+        fn function() -> NativeFunctionKey {
+            NativeFunctionKey {
+                snapshot: 81,
+                index: 0,
+            }
+        }
+    }
+
+    impl NativeTypeProvider for GenericProvider {
+        fn contains_function(&self, key: NativeFunctionKey) -> bool {
+            key == Self::function()
+        }
+        fn function_parameters(
+            &self,
+            _: NativeFunctionKey,
+            _: &mut dyn TypeQueries,
+        ) -> Vec<Parameter> {
+            vec![Parameter {
+                name: "value".into(),
+                ty: Type::NativeTypeParameter(Self::parameter(0)),
+                optional: false,
+            }]
+        }
+        fn function_declared_return(
+            &self,
+            _: NativeFunctionKey,
+            _: &mut dyn TypeQueries,
+        ) -> Option<Type> {
+            Some(Type::NativeTypeParameter(Self::parameter(0)))
+        }
+        fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type {
+            panic!("generic fixture return is declared");
+        }
+        fn return_cycle(&self, _: NativeFunctionKey) {
+            panic!("declared generic return must not infer a cycle");
+        }
+        fn return_type_too_deep(&self, _: NativeFunctionKey) {
+            panic!("small generic fixture exceeds query depth");
+        }
+        fn function_type_parameters(
+            &self,
+            _: NativeFunctionKey,
+            _: &mut dyn TypeQueries,
+        ) -> Vec<NativeTypeParameterKey> {
+            vec![Self::parameter(0), Self::parameter(1)]
+        }
+        fn function_outer_type_parameters(
+            &self,
+            _: NativeFunctionKey,
+        ) -> Vec<NativeTypeParameterKey> {
+            if self.with_outer {
+                vec![Self::parameter(4)]
+            } else {
+                Vec::new()
+            }
+        }
+        fn contains_type_parameter(&self, key: NativeTypeParameterKey) -> bool {
+            key.snapshot == 81 && key.index < if self.with_outer { 5 } else { 4 }
+        }
+        fn type_parameter_name(&self, key: NativeTypeParameterKey) -> String {
+            ["T", "U", "C", "D", "X"][key.index as usize].into()
+        }
+        fn has_type_parameter_constraint(&self, key: NativeTypeParameterKey) -> bool {
+            key.index < 3
+        }
+        fn type_parameter_constraint(
+            &self,
+            key: NativeTypeParameterKey,
+            _: &mut dyn TypeQueries,
+        ) -> Option<Type> {
+            match key.index {
+                0 if self.with_outer => Some(Type::NativeTypeParameter(Self::parameter(4))),
+                0 => Some(Type::Number),
+                1 => Some(Type::NativeTypeParameter(Self::parameter(0))),
+                2 => Some(Type::NativeTypeParameter(key)),
+                _ => None,
+            }
+        }
+        fn has_type_parameter_default(&self, key: NativeTypeParameterKey) -> bool {
+            matches!(key.index, 0 | 1 | 3)
+        }
+        fn type_parameter_default(
+            &self,
+            key: NativeTypeParameterKey,
+            queries: &mut dyn TypeQueries,
+        ) -> Option<Type> {
+            match key.index {
+                0 if self.with_outer => Some(Type::NativeTypeParameter(Self::parameter(4))),
+                0 => Some(Type::Number),
+                1 => Some(Type::NativeTypeParameter(Self::parameter(0))),
+                3 => queries.type_parameter_default(key),
+                _ => None,
+            }
+        }
+        fn type_parameter_siblings(
+            &self,
+            key: NativeTypeParameterKey,
+        ) -> Vec<NativeTypeParameterKey> {
+            if key.index < 2 {
+                vec![Self::parameter(0), Self::parameter(1)]
+            } else {
+                vec![key]
+            }
+        }
+        fn circular_type_parameter_constraint(&self, _: NativeTypeParameterKey) {
+            self.constraint_cycles.set(self.constraint_cycles.get() + 1);
+        }
+        fn circular_type_parameter_default(&self, _: NativeTypeParameterKey) {
+            self.default_cycles.set(self.default_cycles.get() + 1);
+        }
+    }
+
+    #[test]
+    fn native_generic_parameters_use_native_constraints_defaults_and_relations() {
+        Engine::new().with_native_provider(GenericProvider::new, |_, queries| {
+            let t = Type::NativeTypeParameter(GenericProvider::parameter(0));
+            let u = Type::NativeTypeParameter(GenericProvider::parameter(1));
+            assert_eq!(
+                queries.type_parameter_constraint(GenericProvider::parameter(0)),
+                Some(Type::Number)
+            );
+            assert_eq!(
+                queries.type_parameter_default(GenericProvider::parameter(0)),
+                Some(Type::Number)
+            );
+            assert_eq!(
+                queries.type_parameter_constraint(GenericProvider::parameter(1)),
+                Some(t.clone())
+            );
+            assert_eq!(
+                queries.type_parameter_default(GenericProvider::parameter(1)),
+                Some(t.clone())
+            );
+            assert!(queries.is_assignable(&t, &Type::Number));
+            assert!(!queries.is_assignable(&Type::Number, &t));
+            assert!(queries.is_assignable(&u, &t));
+            assert!(queries.is_assignable(&u, &Type::Number));
+            assert_eq!(queries.format(&t), "T");
+            assert_eq!(
+                queries.native_function_type_parameters(GenericProvider::function()),
+                vec![GenericProvider::parameter(0), GenericProvider::parameter(1)]
+            );
+            let signature = queries.native_function_signature(GenericProvider::function());
+            assert_eq!(signature.params[0].ty, t);
+            assert_eq!(signature.returns.as_ref(), &t);
+            assert_eq!(
+                queries
+                    .call(
+                        &Type::NativeFunction(GenericProvider::function()),
+                        &[Type::Number]
+                    )
+                    .errors,
+                vec![CallError::UnsupportedGeneric]
+            );
+        });
+    }
+
+    #[test]
+    fn native_generic_parameter_cycles_invoke_source_callbacks() {
+        Engine::new().with_native_provider(GenericProvider::new, |provider, queries| {
+            assert_eq!(
+                queries.type_parameter_constraint(GenericProvider::parameter(2)),
+                None
+            );
+            assert!(provider.constraint_cycles.get() > 0);
+            assert_eq!(
+                queries.type_parameter_default(GenericProvider::parameter(3)),
+                None
+            );
+            assert!(provider.default_cycles.get() > 0);
+        });
+    }
+
+    #[test]
+    fn native_parameter_clone_keeps_sibling_mapper_and_rejects_context_loss() {
+        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_program(|program| {
+                let provider = GenericProvider {
+                    with_outer: true,
+                    ..GenericProvider::new()
+                };
+                let adapter = ProviderAdapter {
+                    provider: &provider,
+                };
+                let mut checker = program.checker_with_native_provider(&adapter);
+                let t = checker
+                    .native_type_parameter(core_parameter_key(GenericProvider::parameter(0)))
+                    .unwrap();
+                let outer = checker
+                    .native_type_parameter(core_parameter_key(GenericProvider::parameter(4)))
+                    .unwrap();
+                let around = checker.mapper_from(&[outer], &[TypeId::STRING]);
+                let cloned = checker.cloned_native_type_param(
+                    core_parameter_key(GenericProvider::parameter(1)),
+                    around,
+                );
+                for referenced in [
+                    checker.constraint_of_type_param(cloned).unwrap(),
+                    checker.default_of_type_param(cloned).unwrap(),
+                ] {
+                    assert_eq!(
+                        checker.native_type_parameter_decl(referenced),
+                        Some((core_parameter_key(GenericProvider::parameter(0)), around))
+                    );
+                    assert_ne!(referenced, t);
+                    assert_eq!(
+                        checker.constraint_of_type_param(referenced),
+                        Some(TypeId::STRING)
+                    );
+                    assert_eq!(
+                        checker.default_of_type_param(referenced),
+                        Some(TypeId::STRING)
+                    );
+                }
+                export_type(&mut checker, cloned);
+            });
+        }))
+        .expect_err("mapped parameter context cannot be discarded");
+        assert_eq!(
+            *error
+                .downcast::<UnsupportedNativeTypeParameterContext>()
+                .unwrap(),
+            UnsupportedNativeTypeParameterContext(GenericProvider::parameter(1))
+        );
+    }
+
+    #[test]
+    fn native_type_parameters_reject_foreign_source_membership() {
+        for key in [
+            NativeTypeParameterKey {
+                snapshot: 82,
+                index: 0,
+            },
+            GenericProvider::parameter(4),
+        ] {
+            let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Engine::new().with_native_provider(GenericProvider::new, |_, queries| {
+                    queries.widen(&Type::NativeTypeParameter(key));
+                });
+            }))
+            .expect_err("unregistered source parameter must be rejected");
+            assert_eq!(
+                *error.downcast::<InvalidNativeTypeParameterKey>().unwrap(),
+                InvalidNativeTypeParameterKey(key)
+            );
+        }
+    }
+
+    #[test]
+    fn native_reduced_unions_remove_redundant_structural_members() {
+        Engine::new().with_session(|queries| {
+            assert_eq!(
+                queries.union_reduced(&[Type::NumberLiteral(42.0), Type::Number]),
+                Type::Number
+            );
+            let base = Type::Shape(vec![Property::new("value", Type::Number)]);
+            let derived = Type::Shape(vec![
+                Property::new("value", Type::Number),
+                Property::new("extra", Type::String),
+            ]);
+            let reduced = queries.union_reduced(&[base.clone(), derived]);
+            assert!(queries.is_assignable(&base, &reduced));
+            assert_eq!(queries.property_type(&reduced, "extra"), None);
+        });
+    }
+
+    #[test]
+    fn native_shape_freshness_survives_union_queries_and_widens_at_storage() {
+        Engine::new().with_session(|queries| {
+            let target = Type::Shape(vec![Property::new("x", Type::Number)]);
+            let literal = Type::FreshShape(vec![
+                Property::new("x", Type::Number),
+                Property::new("extra", Type::Boolean),
+            ]);
+            let propagated = queries.union_reduced(std::slice::from_ref(&literal));
+            assert_eq!(propagated, literal);
+            assert!(!queries.is_assignable(&propagated, &target));
+            let stored = queries.widen(&propagated);
+            assert!(matches!(stored, Type::Shape(_)));
+            assert!(queries.is_assignable(&stored, &target));
+            let returned = queries.aggregate_returns(&[literal.clone()], false, None);
+            assert!(matches!(returned, Type::Shape(_)));
+            assert!(queries.is_assignable(&returned, &target));
+            let nested = Type::FreshShape(vec![Property::new("inner", literal)]);
+            let stored_nested = queries.widen(&nested);
+            let inner = queries.property_type(&stored_nested, "inner").unwrap();
+            assert!(matches!(inner, Type::Shape(_)));
+            assert!(queries.is_assignable(&inner, &target));
+        });
+    }
+
+    #[test]
+    fn native_function_identity_pairs_preserve_refs_and_substitution_rejects_context_loss() {
+        Engine::new().with_native_provider(
+            || GenericProvider {
+                with_outer: true,
+                ..GenericProvider::new()
+            },
+            |_, queries| {
+                let function = Type::NativeFunction(GenericProvider::function());
+                assert_eq!(queries.widen(&function), function);
+            },
+        );
+        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_program(|program| {
+                let provider = GenericProvider {
+                    with_outer: true,
+                    ..GenericProvider::new()
+                };
+                let adapter = ProviderAdapter {
+                    provider: &provider,
+                };
+                let mut checker = program.checker_with_native_provider(&adapter);
+                let function = import_type(
+                    &mut checker,
+                    &Type::NativeFunction(GenericProvider::function()),
+                );
+                let outer = checker
+                    .native_type_parameter(core_parameter_key(GenericProvider::parameter(4)))
+                    .unwrap();
+                let mapper = checker.mapper_from(&[outer], &[TypeId::STRING]);
+                let instantiated = checker.instantiate(function, mapper);
+                assert_ne!(instantiated, function);
+                export_type(&mut checker, instantiated);
+            });
+        }))
+        .expect_err("instantiated source function context must not be discarded");
+        assert_eq!(
+            *error
+                .downcast::<UnsupportedNativeFunctionContext>()
+                .unwrap(),
+            UnsupportedNativeFunctionContext(GenericProvider::function())
+        );
     }
 
     impl SourceProvider {

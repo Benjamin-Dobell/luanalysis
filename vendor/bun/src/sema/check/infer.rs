@@ -553,7 +553,10 @@ impl<'p, 's> Checker<'p, 's> {
             if priority & PRIORITY_RETURN == 0
                 && matches!(
                     self.data(target),
-                    TypeData::TypeParam(..) | TypeData::ThisParam(_) | TypeData::Marker(_)
+                    TypeData::TypeParam(..)
+                        | TypeData::NativeTypeParam { .. }
+                        | TypeData::ThisParam(_)
+                        | TypeData::Marker(_)
                 )
                 && n.candidates[index].top_level
                 && !self.is_type_parameter_at_top_level(n.original_target, target, 0)
@@ -1960,7 +1963,7 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 true
             }
-            TypeData::TypeParam(..) => {
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } => {
                 // `{ [P in K]: X }`: `K` is the keys of the source.
                 let keys = match self.data(source) {
                     // `patternForType`, `IndexFlagsNoIndexSignatures`: the `...rest` of a pattern
@@ -2213,8 +2216,8 @@ impl<'p, 's> Checker<'p, 's> {
         // Normalizing to that form creates fewer types.
         let (mut mapped, mut of) = (mapped, of);
         if let TypeData::IndexedAccess { obj, index, .. } = *self.data(of)
-            && matches!(self.data(obj), TypeData::TypeParam(..))
-            && matches!(self.data(index), TypeData::TypeParam(..))
+            && matches!(self.data(obj), TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. })
+            && matches!(self.data(index), TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. })
         {
             // `replaceIndexedAccess`: `[T][0]` is `T`.
             let zero = self.number_literal(0.0, false);
@@ -2458,7 +2461,11 @@ impl<'p, 's> Checker<'p, 's> {
     /// constraint and default are already instantiated with the outer mapper of the signature; for
     /// any other type parameter that remains to be done.
     fn is_cloned_type_param(&self, param: TypeId) -> bool {
-        matches!(*self.data(param), TypeData::TypeParam(_, _, around) if around != MapperId::IDENTITY)
+        match *self.data(param) {
+            TypeData::TypeParam(_, _, around) => around != MapperId::IDENTITY,
+            TypeData::NativeTypeParam { mapper, .. } => mapper != MapperId::IDENTITY,
+            _ => false,
+        }
     }
 
     // ───────────────────────────── conclusions ─────────────────────────────
@@ -2834,7 +2841,7 @@ impl<'p, 's> Checker<'p, 's> {
         compare: &mut dyn FnMut(&mut Self, TypeId, TypeId) -> bool,
     ) -> bool {
         if n.around_source == MapperId::IDENTITY
-            || !matches!(self.data(ty), TypeData::TypeParam(..))
+            || !matches!(self.data(ty), TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. })
             || self.is_cloned_type_param(ty)
         {
             return false;
@@ -3098,6 +3105,7 @@ impl<'p, 's> Checker<'p, 's> {
                 },
                 TypeData::Template { types, .. } => left.extend_from_slice(types),
                 TypeData::Anon { mapper, .. }
+                | TypeData::NativeTypeParam { mapper, .. }
                 | TypeData::Fns { mapper, .. }
                 | TypeData::Cond { mapper, .. } => left.extend(values(*mapper)),
                 TypeData::Synth(shape) => {

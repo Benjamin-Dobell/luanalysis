@@ -1786,7 +1786,7 @@ impl<'p, 's> Checker<'p, 's> {
         let is_circular = self.flags(check_declared) & tf::TYPE_PARAMETER != 0
             && matches!(
                 self.data(checked),
-                TypeData::TypeParam(..) | TypeData::ThisParam(_)
+                TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::ThisParam(_)
             )
             && !self.has_non_circular_base_constraint(checked);
         let constraint = if is_circular {
@@ -1925,7 +1925,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let declared = self.type_from_node(file, constraint);
         match *self.data(declared) {
-            TypeData::TypeParam(..) => match self.constraint_of_type_param(declared) {
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } => match self.constraint_of_type_param(declared) {
                 Some(c) => match *self.data(c) {
                     TypeData::Keyof(t) => Some((t, false)),
                     _ => None,
