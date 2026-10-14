@@ -714,6 +714,7 @@ impl Checker<'_> {
     }
 
     fn local(&mut self, names: &[Name], values: &[Expr], annotation: Option<&TypeAnnotation>) {
+        let has_initializer = !values.is_empty();
         let mut annotations: Vec<_> = annotation.map_or_else(Vec::new, |annotation| {
             annotation
                 .types
@@ -762,7 +763,11 @@ impl Checker<'_> {
             } else {
                 annotations.get(index).cloned().unwrap_or_else(|| widened.clone())
             };
-            self.compatible(&value, &constraint, origin);
+            // A written contract without an RHS is a declaration. An explicit
+            // initializer, including a short list padded with nil, is checked.
+            if has_initializer || annotations.get(index).is_none() {
+                self.compatible(&value, &constraint, origin);
+            }
             let narrowed = self.engine.assignment_value(&constraint, &value);
             let id = self
                 .bound

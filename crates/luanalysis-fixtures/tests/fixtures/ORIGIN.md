@@ -5,8 +5,8 @@ Repository: https://github.com/Benjamin-Dobell/IntelliJ-Luanalysis
 Revision: `d796bb67d5135d152b9f627b69e57377c83d1a66`.
 Original repository license: Apache 2.0, reproduced in `LICENSE.txt`.
 
-`local_def_assignment.lua` is copied byte-for-byte from
-`src/test/resources/inspections/local_def_assignment.lua`. Marker removal is
+`local_def_assignment.lua` and `lambda_params.lua` are copied byte-for-byte from
+their respective `src/test/resources/inspections/` paths. Marker removal is
 performed by the tested importer; the expected range is in the cleaned Lua.
 
 The three other files are reduced/adapted positive cases, not whole legacy
