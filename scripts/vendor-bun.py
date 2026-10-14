@@ -92,6 +92,11 @@ SOURCE_ADAPTATIONS.extend({
     "patch": "vendor/patches/bun-sema-runtime-predicates.patch",
     "reason": "Add original-source primitive runtime predicates using the native typeof narrowing worker and shared flow/reachability traversal.",
 } for path in ["flow.rs", "native_flow.rs"])
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_flow.rs",
+    "patch": "vendor/patches/bun-sema-numeric-for.patch",
+    "reason": "Add original-source numeric iteration facts and reachability with exact Lua numeric-entry evaluation within the shared flow worker.",
+})
 
 
 def git(source, *args):

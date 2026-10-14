@@ -387,22 +387,29 @@ impl Checker<'_> {
                     self.expression(condition);
                 }
                 StmtKind::NumericFor {
+                    name,
                     start,
                     limit,
                     step,
                     body,
                     ..
                 } => {
-                    self.error(
-                        "LUA2023",
-                        statement.span,
-                        "numeric iteration requires the native Lua iterator integration",
-                    );
-                    self.expression(start);
-                    self.expression(limit);
+                    self.numeric_for_header(start);
+                    self.numeric_for_header(limit);
                     if let Some(step) = step {
-                        self.expression(step);
+                        let step_type = self.numeric_for_header(step);
+                        if flow::numeric_literal(step).is_some_and(|value| match value {
+                            flow::NumericLiteral::Integer(value) => value == 0,
+                            flow::NumericLiteral::Float(value) => value == 0.0,
+                        }) || matches!(self.engine.inspect_type(&step_type), Type::NumberLiteral(value) if value == 0.0) {
+                            self.error("LUA2030", step.span, "numeric for step must be nonzero");
+                        }
                     }
+                    let binding = self
+                        .bound
+                        .binding_at(name.span.start)
+                        .expect("bound Lua numeric loop variable");
+                    self.record_binding(name, binding, &Type::Number);
                     self.statements(body);
                 }
                 StmtKind::GenericFor { values, body, .. } => {
@@ -428,6 +435,12 @@ impl Checker<'_> {
             span,
             message: message.into(),
         });
+    }
+
+    fn numeric_for_header(&mut self, expression: &Expr) -> Type {
+        let ty = self.expression(expression);
+        self.compatible(&ty, &Type::Number, expression.span);
+        ty
     }
 
     fn annotation(&mut self, ty: &TypeExpr) -> Type {

@@ -4,6 +4,7 @@
 use crate::bind::{BindingId, BoundFile, ScopeId};
 use luanalysis_syntax::{
     BinaryOperator, Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind,
+    UnaryOperator,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -87,8 +88,47 @@ pub enum ValueDemand {
 #[derive(Clone, Debug)]
 pub enum Predicate {
     Expression(SourceExpressionId),
-    NumericIteration,
+    NumericIteration {
+        start: EvaluationId,
+        limit: EvaluationId,
+        step: Option<EvaluationId>,
+        stage: NumericIterationStage,
+    },
     GenericIteration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NumericIterationStage {
+    First,
+    Next,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NumericLiteral {
+    Integer(i64),
+    Float(f64),
+}
+
+/// Original lexical literal data only. Comparison/iteration decisions belong
+/// to the native worker; large Lua integers must not round through f64 first.
+pub fn numeric_literal(expression: &Expr) -> Option<NumericLiteral> {
+    match &expression.kind {
+        ExprKind::Number(spelling) => {
+            if let Some(hex) = spelling.strip_prefix("0x").or_else(|| spelling.strip_prefix("0X"))
+                && !hex.contains(['.', 'p', 'P'])
+            {
+                return u64::from_str_radix(hex, 16).ok().map(|value| NumericLiteral::Integer(value as i64));
+            }
+            spelling.parse::<i64>().ok().map(NumericLiteral::Integer)
+                .or_else(|| crate::number(spelling).map(NumericLiteral::Float))
+        }
+        ExprKind::Parenthesized(value) => numeric_literal(value),
+        ExprKind::Unary { op: UnaryOperator::Negate, value, .. } => numeric_literal(value).map(|value| match value {
+            NumericLiteral::Integer(value) => NumericLiteral::Integer(value.wrapping_neg()),
+            NumericLiteral::Float(value) => NumericLiteral::Float(-value),
+        }),
+        _ => None,
+    }
 }
 #[derive(Clone, Debug)]
 pub enum NodeKind {
@@ -864,20 +904,10 @@ impl Builder<'_> {
                 body,
                 ..
             } => {
-                self.feature(PendingFeature::NumericIteration, span);
-                self.evaluate(context, start);
-                self.evaluate(context, limit);
-                if let Some(step) = step {
-                    self.evaluate(context, step);
-                }
-                self.iteration(
-                    context,
-                    Predicate::NumericIteration,
-                    &[name.clone()],
-                    body,
-                    span,
-                    true,
-                );
+                let start = self.evaluate(context, start);
+                let limit = self.evaluate(context, limit);
+                let step = step.as_ref().map(|step| self.evaluate(context, step));
+                self.numeric_iteration(context, name, start, limit, step, body, span);
             }
             StmtKind::GenericFor {
                 names,
@@ -901,6 +931,55 @@ impl Builder<'_> {
             }
         }
     }
+    fn numeric_iteration(
+        &mut self,
+        context: &mut Context,
+        name: &Name,
+        start: EvaluationId,
+        limit: EvaluationId,
+        step: Option<EvaluationId>,
+        body: &[Stmt],
+        span: Span,
+    ) {
+        let incoming_live = context.live;
+        let before = context.current;
+        let predicate = |stage| Predicate::NumericIteration { start, limit, step, stage };
+        let first_exit = self.node(context, NodeKind::Predicate {
+            predicate: predicate(NumericIterationStage::First), sense: false,
+        }, vec![before], span);
+        self.node(context, NodeKind::Predicate {
+            predicate: predicate(NumericIterationStage::First), sense: true,
+        }, vec![before], span);
+        let header = self.append(context, NodeKind::Loop, span);
+        let transaction = self.transaction();
+        let epoch = context.current;
+        let address = self.name_address(name, transaction, epoch);
+        // This write resets the visible control variable on every body entry.
+        // Lua's hidden counter is distinct from body writes to that variable.
+        self.append(context, NodeKind::Write {
+            address, value: ValueDemand::NumericIteration, store_order: 0, declaration: true,
+        }, name.span);
+        context.breaks.push(Vec::new());
+        self.statements(context, body);
+        let back = context.current;
+        let mut exits = context.breaks.pop().unwrap();
+        if incoming_live {
+            exits.push(first_exit);
+        }
+        if context.live {
+            let next_exit = self.node(context, NodeKind::Predicate {
+                predicate: predicate(NumericIterationStage::Next), sense: false,
+            }, vec![back], span);
+            let next_body = self.node(context, NodeKind::Predicate {
+                predicate: predicate(NumericIterationStage::Next), sense: true,
+            }, vec![back], span);
+            self.program.graphs[context.graph as usize].nodes[header.index as usize].antecedents.push(next_body);
+            exits.push(next_exit);
+        }
+        context.live = !exits.is_empty();
+        self.node(context, if context.live { NodeKind::Merge } else { NodeKind::Unreachable }, exits, span);
+    }
+
     fn iteration(
         &mut self,
         context: &mut Context,

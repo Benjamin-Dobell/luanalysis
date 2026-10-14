@@ -416,6 +416,12 @@
       "patch": "vendor/patches/bun-sema-runtime-predicates.patch",
       "reason": "Add original-source primitive runtime predicates using the native typeof narrowing worker and shared flow/reachability traversal.",
       "patch_sha256": "7e02bce5546f7518ff0b7451d339321457951f0fa550581bcca6ea0d31d047e8"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-numeric-for.patch",
+      "reason": "Add original-source numeric iteration facts and reachability with exact Lua numeric-entry evaluation within the shared flow worker.",
+      "patch_sha256": "48809e2e47bf06dd3a73ab5a33eb1768b7fc28c7a0426b0c85da72f97e86682f"
     }
   ],
   "source_additions": {
@@ -424,7 +430,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "7f0722d4d9e561e7e66a489032a320774bfee03f221ffe11d0af5b007dd211d1",
+      "extracted_sha256": "e234382d31247da4b55e1cbcdb13ee7a5c0161cffc5a05c7d047856725da3168",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     }
   },

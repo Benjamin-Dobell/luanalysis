@@ -7,8 +7,8 @@ use super::{bind::BindingId, flow};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NativeCallEffects, NativeFlowError,
     NativeFlowKey, NativeFlowNode, NativeFlowProvider, NativeFunctionKey, NativeGraphKey,
-    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation,
-    Type, TypeQueries,
+    NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePredicate,
+    NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation, Type, TypeQueries,
 };
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, File, Span};
 use std::cell::RefCell;
@@ -448,6 +448,23 @@ impl NativeFlowSources {
         })
     }
 
+    fn numeric_input(
+        &self,
+        evaluation: flow::EvaluationId,
+        context: u64,
+    ) -> NativeNumericInput {
+        let evaluation = self.program.evaluation(evaluation);
+        let expression = &self.program.expression(evaluation.expression).expression;
+        NativeNumericInput {
+            value: self.evaluation_value(evaluation.id),
+            input: self.flow_key(evaluation.input, context),
+            literal: flow::numeric_literal(expression).map(|literal| match literal {
+                flow::NumericLiteral::Integer(value) => NativeNumericConstant::Integer(value),
+                flow::NumericLiteral::Float(value) => NativeNumericConstant::Float(value),
+            }),
+        }
+    }
+
     pub(super) fn node(&self, key: NativeFlowKey) -> Option<NativeFlowNode> {
         let node = self.source_node(key)?;
         let edge = |source| self.flow_key(source, key.graph.context);
@@ -489,6 +506,28 @@ impl NativeFlowSources {
             } => NativeFlowNode::Predicate {
                 before: before()?,
                 predicate: self.predicate(key, *expression, node.antecedents[0]),
+                sense: *sense,
+            },
+            flow::NodeKind::Predicate {
+                predicate:
+                    flow::Predicate::NumericIteration {
+                        start,
+                        limit,
+                        step,
+                        stage,
+                    },
+                sense,
+            } => NativeFlowNode::Predicate {
+                before: before()?,
+                predicate: NativePredicate::NumericIteration {
+                    start: self.numeric_input(*start, key.graph.context),
+                    limit: self.numeric_input(*limit, key.graph.context),
+                    step: step.map(|step| self.numeric_input(step, key.graph.context)),
+                    stage: match stage {
+                        flow::NumericIterationStage::First => NativeNumericIterationStage::First,
+                        flow::NumericIterationStage::Next => NativeNumericIterationStage::Next,
+                    },
+                },
                 sense: *sense,
             },
             flow::NodeKind::Predicate { .. } => NativeFlowNode::Unsupported(

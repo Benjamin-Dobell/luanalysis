@@ -1,0 +1,212 @@
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -49,6 +49,27 @@
+     String,
+ }
+ 
++/// Lua lexical number facts preserve integer precision separately from the
++/// checker's structural Number type. They are not loop state or joined types.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub enum NativeNumericConstant {
++    Integer(i64),
++    Float(f64),
++}
++
++#[derive(Clone, Copy, Debug)]
++pub struct NativeNumericInput {
++    pub value: NativeValueKey,
++    pub input: NativeFlowKey,
++    pub literal: Option<NativeNumericConstant>,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeNumericIterationStage {
++    First,
++    Next,
++}
++
+ #[derive(Clone, Debug)]
+ pub enum NativePredicate {
+     Truthy {
+@@ -69,6 +90,12 @@
+         input: NativeFlowKey,
+         kind: NativeRuntimeType,
+         equals: bool,
++    },
++    NumericIteration {
++        start: NativeNumericInput,
++        limit: NativeNumericInput,
++        step: Option<NativeNumericInput>,
++        stage: NativeNumericIterationStage,
+     },
+     Unsupported(&'static str),
+ }
+@@ -205,6 +232,50 @@
+     Nothing,
+ }
+ 
++enum NumericEntry {
++    Impossible,
++    Known(bool),
++    Unknown,
++}
++
++fn numeric_first_entry(
++    start: Option<NativeNumericConstant>,
++    limit: Option<NativeNumericConstant>,
++    step: Option<NativeNumericConstant>,
++) -> NumericEntry {
++    let (Some(start), Some(limit), Some(step)) = (start, limit, step) else {
++        return NumericEntry::Unknown;
++    };
++    let positive = match step {
++        NativeNumericConstant::Integer(0) => return NumericEntry::Impossible,
++        NativeNumericConstant::Integer(step) => step > 0,
++        NativeNumericConstant::Float(step) if step == 0.0 => return NumericEntry::Impossible,
++        NativeNumericConstant::Float(step) if step.is_nan() => return NumericEntry::Unknown,
++        NativeNumericConstant::Float(step) => step > 0.0,
++    };
++    if let (NativeNumericConstant::Integer(start), NativeNumericConstant::Integer(_)) = (start, step) {
++        return match limit {
++            NativeNumericConstant::Integer(limit) => NumericEntry::Known(if positive { start <= limit } else { start >= limit }),
++            NativeNumericConstant::Float(limit) if start.unsigned_abs() < 9_007_199_254_740_992 && !limit.is_nan() => {
++                NumericEntry::Known(if positive { (start as f64) <= limit } else { (start as f64) >= limit })
++            }
++            _ => NumericEntry::Unknown,
++        };
++    }
++    // Lua selects its float loop when initial value or step is a float.
++    // Convert integer controls there, preserving Lua's own rounding semantics.
++    let number = |value| match value {
++        NativeNumericConstant::Integer(value) => value as f64,
++        NativeNumericConstant::Float(value) => value,
++    };
++    let (start, limit) = (number(start), number(limit));
++    if start.is_nan() || limit.is_nan() {
++        NumericEntry::Unknown
++    } else {
++        NumericEntry::Known(if positive { start <= limit } else { start >= limit })
++    }
++}
++
+ impl NativeDomain<'_> {
+     fn node(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey) -> Option<NativeFlowNode> {
+         if at.graph != self.graph || !self.provider.contains_graph(at.graph) {
+@@ -236,6 +307,18 @@
+             NativePredicate::Truthy { subject, input, .. } => (*subject, *input),
+             NativePredicate::Equal { subject, input, .. } => (Some(*subject), *input),
+             NativePredicate::RuntimeType { subject, input, .. } => (Some(*subject), *input),
++            NativePredicate::NumericIteration { start, limit, step, .. } => {
++                return [Some(*start), Some(*limit), *step].into_iter().flatten().all(|header| {
++                    if !self.edge(at, header.input) {
++                        return false;
++                    }
++                    if header.value.snapshot != header.input.graph.snapshot {
++                        self.provider.flow_error(at, NativeFlowError::InvalidValue(header.value));
++                        return false;
++                    }
++                    true
++                });
++            }
+             NativePredicate::Unsupported(_) => return true,
+         };
+         if !self.edge(at, input) {
+@@ -345,6 +428,7 @@
+                     NativePredicate::Truthy { subject, .. } => *subject == Some(walk.reference),
+                     NativePredicate::Equal { subject, .. } => *subject == walk.reference,
+                     NativePredicate::RuntimeType { subject, .. } => *subject == walk.reference,
++                    NativePredicate::NumericIteration { .. } => false,
+                     NativePredicate::Unsupported(feature) => {
+                         self.provider
+                             .flow_error(at, NativeFlowError::Unsupported(feature));
+@@ -423,6 +507,7 @@
+             NativeTransfer::Predicate(NativePredicate::RuntimeType { kind, equals, .. }, sense) => {
+                 checker.native_runtime_type(previous.ty, &kind, equals == sense)
+             }
++            NativeTransfer::Predicate(NativePredicate::NumericIteration { .. }, _) => previous.ty,
+             NativeTransfer::Predicate(NativePredicate::Unsupported(_), _) => TypeId::ERROR,
+         };
+         let _ = walk;
+@@ -631,6 +716,14 @@
+                             ReachStep::Follow(before)
+                         }
+                     }
++                    NativePredicate::NumericIteration { start, limit, step, stage } => {
++                        let entry = checker.native_numeric_entry(self.provider, start, limit, step, stage);
++                        match entry {
++                            NumericEntry::Impossible => ReachStep::Value(false),
++                            NumericEntry::Known(enters) if enters != sense => ReachStep::Value(false),
++                            NumericEntry::Known(_) | NumericEntry::Unknown => ReachStep::Follow(before),
++                        }
++                    }
+                     NativePredicate::Unsupported(feature) => {
+                         self.provider.flow_error(at, NativeFlowError::Unsupported(feature));
+                         ReachStep::Value(false)
+@@ -671,6 +764,66 @@
+ }
+ 
+ impl<'s, 'p> Checker<'s, 'p> {
++    fn native_numeric_constant(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        header: NativeNumericInput,
++    ) -> Option<NativeNumericConstant> {
++        let ty = self.native_flow_value(provider, header.value, header.input);
++        if header.literal.is_some() {
++            return header.literal;
++        }
++        let TypeData::NumberLit { bits, .. } = *self.data(ty) else {
++            return None;
++        };
++        let number = f64::from_bits(bits);
++        // Without a Lua lexical integer/float fact, large integer literals
++        // could have lost precision in the shared Number representation.
++        (number.is_finite() && number.abs() < 9_007_199_254_740_992.0)
++            .then_some(NativeNumericConstant::Float(number))
++    }
++
++    fn native_numeric_entry(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        start: NativeNumericInput,
++        limit: NativeNumericInput,
++        step: Option<NativeNumericInput>,
++        stage: NativeNumericIterationStage,
++    ) -> NumericEntry {
++        let known_kinds = start.literal.is_some() && limit.literal.is_some()
++            && step.is_none_or(|step| step.literal.is_some());
++        let step = step.map_or(Some(NativeNumericConstant::Integer(1)), |step| {
++            self.native_numeric_constant(provider, step)
++        });
++        if matches!(step, Some(NativeNumericConstant::Integer(0)))
++            || matches!(step, Some(NativeNumericConstant::Float(value)) if value == 0.0)
++        {
++            // Lua raises before either continuation; the source header check
++            // reports the original zero-step diagnostic independently.
++            return NumericEntry::Impossible;
++        }
++        if stage == NativeNumericIterationStage::Next {
++            // A body continuation can iterate or terminate. Its predecessor
++            // exists only when the body completes; a guaranteed first return
++            // has no such exit. Do not turn a finite literal range into while
++            // (true), unroll it, or solve a second loop in this adapter.
++            return NumericEntry::Unknown;
++        }
++        let start = self.native_numeric_constant(provider, start);
++        let limit = self.native_numeric_constant(provider, limit);
++        if !known_kinds && [start, limit, step].into_iter().flatten().any(|value| match value {
++            NativeNumericConstant::Integer(value) => value.unsigned_abs() >= 9_007_199_254_740_992,
++            NativeNumericConstant::Float(value) => value.abs() >= 9_007_199_254_740_992.0,
++        }) {
++            // Structural numeric literal types do not distinguish Lua's
++            // integer and float values. At this scale their conversion can
++            // change the first-entry comparison; retain both paths.
++            return NumericEntry::Unknown;
++        }
++        numeric_first_entry(start, limit, step)
++    }
++
+     fn native_runtime_type(&mut self, ty: TypeId, kind: &NativeRuntimeType, sense: bool) -> TypeId {
+         let name = match kind {
+             NativeRuntimeType::Nil => known::undefined,

@@ -269,7 +269,7 @@ fn returns_keep_original_unicode_spans_and_exclude_structurally_dead_sites() {
 }
 
 #[test]
-fn for_headers_record_binding_ids_and_explicit_unimplemented_runtime_recipes() {
+fn for_headers_record_binding_ids_frozen_numeric_recipes_and_pending_generic_iteration() {
     let program = graph("for i=1,3 do break end\nfor key,value in items() do break end");
     let nodes = &program.graphs[0].nodes;
     assert_eq!(
@@ -292,11 +292,41 @@ fn for_headers_record_binding_ids_and_explicit_unimplemented_runtime_recipes() {
         .collect();
     assert_eq!(names.len(), 3);
     assert!(names.iter().all(|r| matches!(r, ReferenceRoot::Binding(_))));
+    let numeric: Vec<_> = nodes
+        .iter()
+        .filter_map(|node| match &node.kind {
+            NodeKind::Predicate {
+                predicate:
+                    Predicate::NumericIteration {
+                        start,
+                        limit,
+                        step,
+                        stage,
+                    },
+                sense,
+            } => Some((*start, *limit, *step, *stage, *sense)),
+            _ => None,
+        })
+        .collect();
+    // The numeric body breaks, so it has first-entry gates and no next-body
+    // continuation. Header recipes precede variable activation and are reused.
+    assert_eq!(numeric.len(), 2);
     assert!(
-        program
+        numeric
+            .iter()
+            .all(|entry| entry.3 == flow::NumericIterationStage::First)
+    );
+    assert_ne!(numeric[0].4, numeric[1].4);
+    assert_eq!(
+        (numeric[0].0, numeric[0].1, numeric[0].2),
+        (numeric[1].0, numeric[1].1, numeric[1].2)
+    );
+    assert_eq!(numeric[0].2, None);
+    assert!(
+        !program
             .pending
             .iter()
-            .any(|f| f.kind == PendingFeature::NumericIteration)
+            .any(|feature| feature.kind == PendingFeature::NumericIteration)
     );
     assert!(
         program

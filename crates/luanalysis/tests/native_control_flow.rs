@@ -243,11 +243,10 @@ fn simultaneous_owner_replacement_in_a_branch_keeps_old_field_addresses() {
 }
 
 #[test]
-fn iterator_predicates_are_explicitly_unsupported_in_this_named_reference_slice() {
-    for source in [
-        "for index=1,2 do local copy=index end",
-        "local function iterator() return 1 end\nfor value in iterator do local copy=value end",
-    ] {
+fn generic_iterator_predicates_are_explicitly_unsupported_in_this_named_reference_slice() {
+    for source in
+        ["local function iterator() return 1 end\nfor value in iterator do local copy=value end"]
+    {
         let report = check(source);
         assert!(
             report.diagnostics.iter().any(|diagnostic| matches!(
