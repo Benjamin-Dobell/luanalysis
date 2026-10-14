@@ -329,6 +329,18 @@ impl Checker<'_> {
         span: Span,
         discard: bool,
     ) -> Type {
+        self.method_call_expression_with_expected(receiver, name, args, span, discard, None)
+    }
+
+    pub(super) fn method_call_expression_with_expected(
+        &mut self,
+        receiver: &Expr,
+        name: &Name,
+        args: &[Expr],
+        span: Span,
+        discard: bool,
+        expected: Option<&Type>,
+    ) -> Type {
         let receiver_type = self.expression(receiver);
         let callee = if matches!(receiver_type, Type::Any) {
             Type::Any
@@ -360,7 +372,9 @@ impl Checker<'_> {
             arguments.push(self.expression(arg));
             origins.push(arg.span);
         }
-        self.call_types(&callee, &arguments, &origins, name.span, span, discard)
+        self.call_types_with_expected(
+            &callee, &arguments, &origins, name.span, span, discard, expected,
+        )
     }
 }
 

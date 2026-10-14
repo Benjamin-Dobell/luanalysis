@@ -100,6 +100,6 @@ fn run() -> i32 {
 
 fn help() {
     println!(
-        "luanalysis check [--dump-types] <file.lua>...\n\nNative Lua/Luanalysis checking slice backed by the Bun Rust type core.\nFunctions, calls, control flow and project loading are not implemented yet."
+        "luanalysis check [--dump-types] <file.lua>...\n\nStandalone Lua/Luanalysis type checking.\nReports diagnostics at original Lua source locations."
     );
 }

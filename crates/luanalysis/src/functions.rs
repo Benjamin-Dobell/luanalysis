@@ -1,5 +1,6 @@
-//! Annotated native functions and scalar calls. Lazy return inference and Lua
-//! result packs deliberately remain separate integration gates.
+//! Native function annotations and scalar call integration. Signature identity
+//! and lazy return inference belong to the native declaration provider; Lua
+//! result packs remain a separate integration gate.
 
 use super::{Binding, Checker, describe};
 use luanalysis_engine::{CallError, FunctionType, Parameter, Type};
@@ -296,8 +297,12 @@ impl Checker<'_> {
             );
         }
         let mut value = Type::Nil;
+        let expected = self.return_type.clone();
         for (index, expr) in values.iter().enumerate() {
-            let ty = self.expression(expr);
+            let ty = self.expression_with_expected(
+                expr,
+                (index == 0).then_some(expected.as_ref()).flatten(),
+            );
             if index == 0 {
                 value = ty;
             }
@@ -319,13 +324,32 @@ impl Checker<'_> {
         span: Span,
         discard: bool,
     ) -> Type {
+        self.call_expression_with_expected(callee, args, span, discard, None)
+    }
+
+    pub(super) fn call_expression_with_expected(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        span: Span,
+        discard: bool,
+        expected: Option<&Type>,
+    ) -> Type {
         let callee_type = self.expression(callee);
         let arguments: Vec<_> = args.iter().map(|arg| self.expression(arg)).collect();
         let spans: Vec<_> = args.iter().map(|arg| arg.span).collect();
-        self.call_types(&callee_type, &arguments, &spans, callee.span, span, discard)
+        self.call_types_with_expected(
+            &callee_type,
+            &arguments,
+            &spans,
+            callee.span,
+            span,
+            discard,
+            expected,
+        )
     }
 
-    pub(super) fn call_types(
+    pub(super) fn call_types_with_expected(
         &mut self,
         callee_type: &Type,
         arguments: &[Type],
@@ -333,8 +357,11 @@ impl Checker<'_> {
         callee_span: Span,
         span: Span,
         discard: bool,
+        expected: Option<&Type>,
     ) -> Type {
-        let result = self.engine.call(callee_type, arguments);
+        let result = self
+            .engine
+            .call_with_type_arguments(callee_type, arguments, &[], expected);
         for error in result.errors {
             match error {
                 CallError::NotCallable => self.error("TS2349", callee_span, format!("Type '{}' has no call signatures.", describe(callee_type))),
@@ -348,6 +375,13 @@ impl Checker<'_> {
                 }
                 CallError::Argument { index, source, target } => {
                     self.error("TS2345", argument_spans.get(index).copied().unwrap_or(span), format!("Argument of type '{}' is not assignable to parameter of type '{}'.", describe(&source), describe(&target)));
+                }
+                CallError::TypeArgumentArity { actual, minimum, maximum } => {
+                    let expected = if maximum == minimum { minimum.to_string() } else { format!("{minimum}-{maximum}") };
+                    self.error("TS2558", callee_span, format!("Expected {expected} type arguments, but got {actual}."));
+                }
+                CallError::TypeArgument { source, target, .. } => {
+                    self.error("TS2344", callee_span, format!("Type '{}' does not satisfy the constraint '{}'.", describe(&source), describe(&target)));
                 }
                 unsupported => self.error("LUA2018", callee_span, format!("native call form {unsupported:?} requires a later call-checking integration")),
             }

@@ -4,11 +4,14 @@
 //! create independent Lua body checkers with the native query capability that
 //! requested the body. They never retain a mutable report borrow across a query.
 
+use super::native_types::{NativeTypes, TypeParameterRecipe, TypeScopeRecipe};
 use super::{Binding, CheckReport, Checker, Diagnostic, Reference, bind};
 use bind::{BindingId, BoundFile};
-use luanalysis_engine::{NativeFunctionKey, NativeTypeProvider, Parameter, Type, TypeQueries};
+use luanalysis_engine::{
+    NativeFunctionKey, NativeTypeParameterKey, NativeTypeProvider, Parameter, Type, TypeQueries,
+};
 use luanalysis_syntax::{
-    Expr, ExprKind, File, Function, Name, Stmt, StmtKind, TypeAnnotation, TypeExpr,
+    Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TypeAnnotation, TypeExpr,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -28,6 +31,8 @@ enum DeclarationSource {
         function: u32,
         index: usize,
     },
+    NumericLoop,
+    GenericLoop,
 }
 
 pub(super) struct NativeRegistry {
@@ -38,6 +43,7 @@ pub(super) struct NativeRegistry {
     function_names: Vec<Option<Name>>,
     function_spans: HashMap<(usize, usize), u32>,
     declarations: HashMap<BindingId, DeclarationSource>,
+    types: NativeTypes,
     completed_bindings: RefCell<HashMap<BindingId, Binding>>,
     /// Only completion of body diagnostics is cached here. Return-type cache,
     /// query recursion and cycle decisions belong entirely to the native core.
@@ -64,6 +70,11 @@ impl NativeRegistry {
             declarations,
             ..
         } = index;
+        let types = NativeTypes::new(snapshot, type_scope_recipes(snapshot, &functions, &bound));
+        let mut report = CheckReport::default();
+        report
+            .diagnostics
+            .extend(types.diagnostics().iter().cloned());
         Self {
             snapshot,
             file,
@@ -72,9 +83,10 @@ impl NativeRegistry {
             function_names,
             function_spans,
             declarations,
+            types,
             completed_bindings: RefCell::new(HashMap::new()),
             checked_bodies: RefCell::new(HashSet::new()),
-            report: RefCell::new(CheckReport::default()),
+            report: RefCell::new(report),
         }
     }
 
@@ -119,6 +131,7 @@ impl NativeRegistry {
             report: CheckReport::default(),
             return_type: None,
             return_values: Vec::new(),
+            type_context: None,
         }
     }
 
@@ -138,12 +151,21 @@ impl NativeRegistry {
             .insert(binding, captured);
     }
 
+    pub(super) fn resolve_type_name(
+        &self,
+        context: Option<NativeFunctionKey>,
+        name: &str,
+    ) -> Option<Type> {
+        self.types.resolve_name(context, name)
+    }
+
     fn metadata(
         &self,
         key: NativeFunctionKey,
         queries: &mut dyn TypeQueries,
     ) -> (Vec<Parameter>, Option<Type>) {
         let mut checker = self.checker(queries);
+        checker.type_context = Some(key);
         let parts = checker.signature_parts(self.function(key));
         self.merge_report(checker.report);
         parts
@@ -168,6 +190,7 @@ impl NativeRegistry {
                 owner,
                 endpoint,
             } => {
+                checker.type_context = owner.map(|owner| self.key(owner));
                 if let Some(annotation) = annotation {
                     // The declaration already supplies the captured type.
                     // Its file/body check still validates the initializer.
@@ -186,6 +209,14 @@ impl NativeRegistry {
                     let statements = owner.map_or(self.file.statements.as_slice(), |owner| {
                         self.functions[owner as usize].body.as_slice()
                     });
+                    if let Some(span) = control_span(statements) {
+                        self.unsupported_flow(span);
+                        return Some(Binding {
+                            constraint: Type::Unknown,
+                            value: Type::Unknown,
+                            evolves_from_nil: false,
+                        });
+                    }
                     self.run_prefix(
                         &mut checker,
                         statements,
@@ -209,6 +240,7 @@ impl NativeRegistry {
                 }
             }
             DeclarationSource::Function(index) => {
+                checker.type_context = Some(self.key(index));
                 let function = &self.functions[index as usize];
                 let constraint = function
                     .annotations
@@ -232,6 +264,8 @@ impl NativeRegistry {
                 };
                 (ty, false)
             }
+            DeclarationSource::NumericLoop => (Type::Number, false),
+            DeclarationSource::GenericLoop => (Type::Unknown, false),
         };
         self.merge_report(checker.report);
         Some(Binding {
@@ -434,6 +468,14 @@ impl NativeRegistry {
                     }
                 }
                 StmtKind::Return(_) | StmtKind::Call(_) => {}
+                StmtKind::If { .. }
+                | StmtKind::While { .. }
+                | StmtKind::Repeat { .. }
+                | StmtKind::NumericFor { .. }
+                | StmtKind::GenericFor { .. }
+                | StmtKind::Break => {
+                    self.unsupported_flow(statement.span);
+                }
                 StmtKind::Block { .. } => {
                     unreachable!("blocks are flattened without changing bound identities")
                 }
@@ -509,6 +551,10 @@ impl NativeRegistry {
 
     fn inferred_return(&self, key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Type {
         let function = self.function(key);
+        if let Some(span) = control_span(&function.body) {
+            self.unsupported_flow(span);
+            return Type::Unknown;
+        }
         let (parameters, context) = self.metadata(key, queries);
         let mut flattened = Vec::new();
         flatten_statements(&function.body, &mut flattened);
@@ -519,6 +565,7 @@ impl NativeRegistry {
                     self.expression_dependencies(value, &mut dependencies);
                 }
                 let mut checker = self.checker(queries);
+                checker.type_context = Some(key);
                 self.seed_parameters(&mut checker, function, &parameters);
                 self.run_prefix(
                     &mut checker,
@@ -547,6 +594,7 @@ impl NativeRegistry {
                     _ => continue,
                 }
                 let mut checker = self.checker(queries);
+                checker.type_context = Some(key);
                 self.seed_parameters(&mut checker, function, &parameters);
                 self.run_prefix(
                     &mut checker,
@@ -588,6 +636,7 @@ impl NativeRegistry {
         let function = self.function(key);
         let (parameters, declared_return) = self.metadata(key, queries);
         let mut checker = self.checker(queries);
+        checker.type_context = Some(key);
         checker.return_type = declared_return.clone();
         self.seed_parameters(&mut checker, function, &parameters);
         let terminated = checker.statements(&function.body);
@@ -627,6 +676,9 @@ impl NativeRegistry {
     pub(super) fn check_all_bodies(&self, queries: &mut dyn TypeQueries) {
         for index in 0..self.functions.len() {
             let key = self.key(index as u32);
+            for parameter in self.types.own_parameters(key) {
+                queries.type_parameter_constraint(parameter);
+            }
             // Enter the native QueryReturn guard/cache for inferred returns.
             // An annotated return needs no body query; validate it below.
             queries.native_function_signature(key);
@@ -634,6 +686,185 @@ impl NativeRegistry {
             if !checked {
                 self.check_body(key, queries);
             }
+        }
+    }
+
+    fn unsupported_flow(&self, span: Span) {
+        self.report.borrow_mut().diagnostics.push(Diagnostic {
+            code: "LUA2020",
+            span,
+            message: "Lua control-flow type checking requires the native flow integration"
+                .to_owned(),
+        });
+    }
+
+    fn function_type_dependencies(
+        &self,
+        key: NativeFunctionKey,
+        used: &mut HashSet<NativeTypeParameterKey>,
+        functions: &mut HashSet<NativeFunctionKey>,
+        bindings: &mut HashSet<BindingId>,
+    ) {
+        if !functions.insert(key) {
+            return;
+        }
+        let function = self.function(key);
+        for parameter in &function.annotations.generics {
+            if let Some(constraint) = &parameter.constraint {
+                self.types
+                    .annotation_dependencies(Some(key), constraint, used);
+            }
+        }
+        for parameter in &function.annotations.params {
+            self.types
+                .annotation_dependencies(Some(key), &parameter.ty, used);
+        }
+        if let Some(annotation) = &function.annotations.type_annotation {
+            for ty in &annotation.types {
+                self.types.annotation_dependencies(Some(key), ty, used);
+            }
+        }
+        if let Some(annotation) = &function.annotations.returns {
+            for ty in &annotation.types {
+                self.types.annotation_dependencies(Some(key), ty, used);
+            }
+        } else {
+            let mut statements = Vec::new();
+            source_statements(&function.body, &mut statements);
+            for statement in statements {
+                if let StmtKind::Return(values) = &statement.kind {
+                    for value in values {
+                        self.value_type_dependencies(value, used, functions, bindings);
+                    }
+                }
+            }
+        }
+    }
+
+    fn binding_type_dependencies(
+        &self,
+        binding: BindingId,
+        used: &mut HashSet<NativeTypeParameterKey>,
+        functions: &mut HashSet<NativeFunctionKey>,
+        bindings: &mut HashSet<BindingId>,
+    ) {
+        if !bindings.insert(binding) {
+            return;
+        }
+        let Some(source) = self.declarations.get(&binding) else {
+            return;
+        };
+        match source {
+            DeclarationSource::Local {
+                annotation: Some(annotation),
+                owner,
+                ..
+            } => self.types.annotation_dependencies(
+                owner.map(|owner| self.key(owner)),
+                annotation,
+                used,
+            ),
+            DeclarationSource::Local {
+                annotation: None,
+                owner,
+                ..
+            } => {
+                let body = owner.map_or(self.file.statements.as_slice(), |owner| {
+                    self.functions[owner as usize].body.as_slice()
+                });
+                let mut statements = Vec::new();
+                source_statements(body, &mut statements);
+                for statement in statements {
+                    if let StmtKind::Local { names, values, .. } = &statement.kind {
+                        if let Some(index) = names.iter().position(|name| {
+                            self.bound.binding_at(name.span.start) == Some(binding)
+                        }) {
+                            if let Some(value) = values.get(index) {
+                                self.value_type_dependencies(value, used, functions, bindings);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            DeclarationSource::Function(index) => {
+                self.function_type_dependencies(self.key(*index), used, functions, bindings)
+            }
+            DeclarationSource::Parameter { function, index } => {
+                let owner = self.key(*function);
+                let function = self.function(owner);
+                let name = &function.params[*index];
+                if let Some(tag) = function
+                    .annotations
+                    .params
+                    .iter()
+                    .find(|tag| tag.name.text == name.text)
+                {
+                    self.types
+                        .annotation_dependencies(Some(owner), &tag.ty, used);
+                } else if let Some(context) = &function.annotations.type_annotation {
+                    for ty in &context.types {
+                        self.types.annotation_dependencies(Some(owner), ty, used);
+                    }
+                }
+            }
+            DeclarationSource::NumericLoop | DeclarationSource::GenericLoop => {}
+        }
+    }
+
+    fn value_type_dependencies(
+        &self,
+        expression: &Expr,
+        used: &mut HashSet<NativeTypeParameterKey>,
+        functions: &mut HashSet<NativeFunctionKey>,
+        bindings: &mut HashSet<BindingId>,
+    ) {
+        match &expression.kind {
+            ExprKind::Name(name) => {
+                if let Some(binding) = self.bound.binding_at(name.span.start) {
+                    self.binding_type_dependencies(binding, used, functions, bindings);
+                }
+            }
+            ExprKind::Function(function) => {
+                self.function_type_dependencies(self.key_for(function), used, functions, bindings)
+            }
+            ExprKind::Parenthesized(inner) | ExprKind::Unary { value: inner, .. } => {
+                self.value_type_dependencies(inner, used, functions, bindings)
+            }
+            ExprKind::Field { base, .. } => {
+                self.value_type_dependencies(base, used, functions, bindings)
+            }
+            ExprKind::Index { base, index }
+            | ExprKind::Binary {
+                left: base,
+                right: index,
+                ..
+            } => {
+                self.value_type_dependencies(base, used, functions, bindings);
+                self.value_type_dependencies(index, used, functions, bindings);
+            }
+            ExprKind::Table(fields) => {
+                for field in fields {
+                    self.value_type_dependencies(&field.value, used, functions, bindings);
+                }
+            }
+            ExprKind::Call { callee, args } => {
+                self.value_type_dependencies(callee, used, functions, bindings);
+                for argument in args {
+                    self.value_type_dependencies(argument, used, functions, bindings);
+                }
+            }
+            ExprKind::MethodCall { receiver, args, .. } => {
+                self.value_type_dependencies(receiver, used, functions, bindings);
+                for argument in args {
+                    self.value_type_dependencies(argument, used, functions, bindings);
+                }
+            }
+            ExprKind::Nil
+            | ExprKind::Boolean(_)
+            | ExprKind::Number(_)
+            | ExprKind::String(_)
+            | ExprKind::Error => {}
         }
     }
 
@@ -700,6 +931,70 @@ impl NativeTypeProvider for NativeRegistry {
     fn return_type_too_deep(&self, key: NativeFunctionKey) {
         self.cycle_diagnostic(key, true);
     }
+
+    fn function_type_parameters(
+        &self,
+        key: NativeFunctionKey,
+        _: &mut dyn TypeQueries,
+    ) -> Vec<NativeTypeParameterKey> {
+        self.function(key);
+        self.types.own_parameters(key)
+    }
+
+    fn function_outer_type_parameters(
+        &self,
+        key: NativeFunctionKey,
+    ) -> Vec<NativeTypeParameterKey> {
+        let mut used = HashSet::new();
+        self.function_type_dependencies(key, &mut used, &mut HashSet::new(), &mut HashSet::new());
+        self.types.outer_parameters(key, &used)
+    }
+
+    fn contains_type_parameter(&self, key: NativeTypeParameterKey) -> bool {
+        self.types.contains(key)
+    }
+
+    fn type_parameter_name(&self, key: NativeTypeParameterKey) -> String {
+        self.types.parameter(key).name.text.clone()
+    }
+
+    fn has_type_parameter_constraint(&self, key: NativeTypeParameterKey) -> bool {
+        self.types.parameter(key).constraint.is_some()
+    }
+
+    fn type_parameter_constraint(
+        &self,
+        key: NativeTypeParameterKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        let source = self.types.parameter(key);
+        let recipe = source.constraint.as_ref()?;
+        let mut checker = self.checker(queries);
+        checker.type_context = Some(source.owner);
+        let constraint = checker.annotation(recipe);
+        self.merge_report(checker.report);
+        Some(constraint)
+    }
+
+    fn type_parameter_order(&self, key: NativeTypeParameterKey) -> u32 {
+        self.types.parameter(key).order
+    }
+
+    fn type_parameter_siblings(&self, key: NativeTypeParameterKey) -> Vec<NativeTypeParameterKey> {
+        self.types.siblings(key)
+    }
+
+    fn circular_type_parameter_constraint(&self, key: NativeTypeParameterKey) {
+        let source = self.types.parameter(key);
+        self.report.borrow_mut().diagnostics.push(Diagnostic {
+            code: "TS2313",
+            span: source.name.span,
+            message: format!(
+                "Type parameter '{}' has a circular constraint.",
+                source.name.text
+            ),
+        });
+    }
 }
 
 enum PrefixStatement<'a> {
@@ -716,6 +1011,104 @@ fn flatten_statements<'a>(statements: &'a [Stmt], flattened: &mut Vec<&'a Stmt>)
             flattened.push(statement);
         }
     }
+}
+
+fn control_span(statements: &[Stmt]) -> Option<Span> {
+    statements
+        .iter()
+        .find_map(|statement| match &statement.kind {
+            StmtKind::Block { body, .. } => control_span(body),
+            StmtKind::If { .. }
+            | StmtKind::While { .. }
+            | StmtKind::Repeat { .. }
+            | StmtKind::NumericFor { .. }
+            | StmtKind::GenericFor { .. }
+            | StmtKind::Break => Some(statement.span),
+            _ => None,
+        })
+}
+
+fn source_statements<'a>(statements: &'a [Stmt], all: &mut Vec<&'a Stmt>) {
+    for statement in statements {
+        all.push(statement);
+        match &statement.kind {
+            StmtKind::Block { body, .. }
+            | StmtKind::While { body, .. }
+            | StmtKind::Repeat { body, .. }
+            | StmtKind::NumericFor { body, .. }
+            | StmtKind::GenericFor { body, .. } => source_statements(body, all),
+            StmtKind::If {
+                branches,
+                else_branch,
+            } => {
+                for branch in branches {
+                    source_statements(&branch.body, all);
+                }
+                if let Some(branch) = else_branch {
+                    source_statements(&branch.body, all);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn type_scope_recipes(
+    snapshot: u64,
+    functions: &[Function],
+    bound: &BoundFile,
+) -> Vec<TypeScopeRecipe> {
+    let scope_by_span: HashMap<_, _> = bound
+        .scopes
+        .iter()
+        .filter(|scope| scope.kind == bind::ScopeKind::Function)
+        .map(|scope| ((scope.span.start, scope.span.end), scope.id))
+        .collect();
+    let function_by_scope: HashMap<_, _> = functions
+        .iter()
+        .enumerate()
+        .map(|(index, function)| {
+            (
+                scope_by_span[&(function.span.start, function.span.end)],
+                NativeFunctionKey {
+                    snapshot,
+                    index: index as u32,
+                },
+            )
+        })
+        .collect();
+    functions
+        .iter()
+        .enumerate()
+        .map(|(index, function)| {
+            let scope = scope_by_span[&(function.span.start, function.span.end)];
+            let mut enclosing = bound.scope(scope).parent;
+            let mut parent = None;
+            while let Some(scope) = enclosing {
+                if let Some(owner) = function_by_scope.get(&scope) {
+                    parent = Some(*owner);
+                    break;
+                }
+                enclosing = bound.scope(scope).parent;
+            }
+            TypeScopeRecipe {
+                owner: NativeFunctionKey {
+                    snapshot,
+                    index: index as u32,
+                },
+                parent,
+                parameters: function
+                    .annotations
+                    .generics
+                    .iter()
+                    .map(|parameter| TypeParameterRecipe {
+                        name: parameter.name.clone(),
+                        constraint: parameter.constraint.clone(),
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
 }
 
 struct RegistryIndex<'a> {
@@ -782,6 +1175,68 @@ impl RegistryIndex<'_> {
                     }
                 }
                 StmtKind::Call(expression) => self.expression(expression, None),
+                StmtKind::If {
+                    branches,
+                    else_branch,
+                } => {
+                    for branch in branches {
+                        self.expression(&branch.condition, None);
+                        self.statements(&branch.body, owner);
+                    }
+                    if let Some(branch) = else_branch {
+                        self.statements(&branch.body, owner);
+                    }
+                }
+                StmtKind::While {
+                    condition, body, ..
+                }
+                | StmtKind::Repeat {
+                    condition, body, ..
+                } => {
+                    self.expression(condition, None);
+                    self.statements(body, owner);
+                }
+                StmtKind::NumericFor {
+                    name,
+                    start,
+                    limit,
+                    step,
+                    body,
+                    ..
+                } => {
+                    self.expression(start, None);
+                    self.expression(limit, None);
+                    if let Some(step) = step {
+                        self.expression(step, None);
+                    }
+                    let binding = self
+                        .bound
+                        .binding_at(name.span.start)
+                        .expect("bound numeric loop variable");
+                    self.declarations
+                        .insert(binding, DeclarationSource::NumericLoop);
+                    self.statements(body, owner);
+                }
+                StmtKind::GenericFor {
+                    names,
+                    values,
+                    body,
+                    ..
+                } => {
+                    for value in values {
+                        self.expression(value, None);
+                    }
+                    for name in names {
+                        let binding = self
+                            .bound
+                            .binding_at(name.span.start)
+                            .expect("bound generic loop variable");
+                        self.declarations
+                            .insert(binding, DeclarationSource::GenericLoop);
+                    }
+                    self.statements(body, owner);
+                }
+                StmtKind::Break => {}
             }
         }
     }
@@ -853,5 +1308,39 @@ impl RegistryIndex<'_> {
         }
         self.statements(&function.body, Some(index));
         index
+    }
+}
+
+#[cfg(test)]
+mod generic_scope_tests {
+    use super::*;
+    use luanalysis_engine::Engine;
+
+    #[test]
+    fn ambient_type_visibility_does_not_create_unneeded_closure_mapper_parameters() {
+        let source = "---@generic T\n---@param value T\nlocal function outer(value)\nlocal function constant() return 1 end\nlocal function captured() return value end\nreturn constant\nend";
+        let file = luanalysis_syntax::parse(source);
+        assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
+        let bound = bind::bind(&file);
+        Engine::new().with_native_provider(
+            move || NativeRegistry::new(file, bound),
+            |provider, queries| {
+                let outer = provider.key(0);
+                let constant = provider.key(1);
+                let captured = provider.key(2);
+                let own = provider.function_type_parameters(outer, queries);
+                assert_eq!(own.len(), 1);
+                assert!(provider.function_outer_type_parameters(constant).is_empty());
+                assert_eq!(provider.function_outer_type_parameters(captured), own);
+                assert_eq!(
+                    queries.native_function_signature(constant).returns.as_ref(),
+                    &Type::Number
+                );
+                assert_eq!(
+                    queries.native_function_signature(captured).returns.as_ref(),
+                    &Type::NativeTypeParameter(own[0])
+                );
+            },
+        );
     }
 }

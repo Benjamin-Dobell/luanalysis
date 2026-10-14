@@ -2,11 +2,14 @@
 //!
 //! Lua syntax and straight-line bindings are owned here. Type construction,
 //! literal widening, member lookup, freshness and assignability use the pinned
-//! Bun core. Generic inference, branch flow and project services come later.
+//! Bun core. Native generic calls share its inference worker. Branch flow,
+//! contextual expression demands and project services are integration gates.
 
 pub mod bind;
+pub mod flow;
 mod functions;
 mod native_functions;
+mod native_types;
 mod operators;
 
 use bind::{BindingId, BoundFile};
@@ -141,6 +144,7 @@ struct Checker<'a> {
     engine: &'a mut dyn TypeQueries,
     bound: &'a BoundFile,
     native: Option<&'a NativeRegistry>,
+    type_context: Option<NativeFunctionKey>,
     locals: HashMap<BindingId, Binding>,
     assigned_fields: HashMap<Reference, Type>,
     report: CheckReport,
@@ -178,6 +182,7 @@ pub fn check(source: &str) -> CheckReport {
                     engine,
                     bound: registry.bound(),
                     native: Some(registry),
+                    type_context: None,
                     locals: HashMap::new(),
                     assigned_fields: HashMap::new(),
                     report: CheckReport::default(),
@@ -292,6 +297,18 @@ impl Checker<'_> {
                         return true;
                     }
                 }
+                StmtKind::If { .. }
+                | StmtKind::While { .. }
+                | StmtKind::Repeat { .. }
+                | StmtKind::NumericFor { .. }
+                | StmtKind::GenericFor { .. }
+                | StmtKind::Break => {
+                    self.error(
+                        "LUA2020",
+                        statement.span,
+                        "Lua control-flow type checking requires the native flow integration",
+                    );
+                }
             }
         }
         false
@@ -317,6 +334,12 @@ impl Checker<'_> {
                 "string" => Type::String,
                 "void" => Type::Void,
                 _ => {
+                    if let Some(ty) = self
+                        .native
+                        .and_then(|native| native.resolve_type_name(self.type_context, name))
+                    {
+                        return ty;
+                    }
                     self.error(
                         "LUA2001",
                         ty.span,
@@ -341,6 +364,10 @@ impl Checker<'_> {
     }
 
     fn expression(&mut self, expr: &Expr) -> Type {
+        self.expression_with_expected(expr, None)
+    }
+
+    fn expression_with_expected(&mut self, expr: &Expr, expected: Option<&Type>) -> Type {
         let ty = match &expr.kind {
             ExprKind::Nil => Type::Nil,
             ExprKind::Boolean(value) => Type::BooleanLiteral(*value),
@@ -367,7 +394,7 @@ impl Checker<'_> {
                     Type::Any
                 }
             },
-            ExprKind::Parenthesized(value) => self.expression(value),
+            ExprKind::Parenthesized(value) => self.expression_with_expected(value, expected),
             ExprKind::Table(fields) => {
                 let mut properties: Vec<Property> = Vec::new();
                 let mut duplicate = false;
@@ -411,7 +438,9 @@ impl Checker<'_> {
                 }
             }
             ExprKind::Function(function) => self.function_expression(function),
-            ExprKind::Call { callee, args } => self.call_expression(callee, args, expr.span, false),
+            ExprKind::Call { callee, args } => {
+                self.call_expression_with_expected(callee, args, expr.span, false, expected)
+            }
             ExprKind::Unary { op, op_span, value } => self.unary_expression(*op, *op_span, value),
             ExprKind::Binary {
                 op,
@@ -424,7 +453,9 @@ impl Checker<'_> {
                 receiver,
                 name,
                 args,
-            } => self.method_call_expression(receiver, name, args, expr.span, false),
+            } => self.method_call_expression_with_expected(
+                receiver, name, args, expr.span, false, expected,
+            ),
             ExprKind::Error => Type::Any,
         };
         self.record_expression_type(expr.span, &ty);
@@ -448,11 +479,6 @@ impl Checker<'_> {
     }
 
     fn local(&mut self, names: &[Name], values: &[Expr], annotation: Option<&TypeAnnotation>) {
-        // Resolve every initializer before introducing any name in this list.
-        let values: Vec<_> = values
-            .iter()
-            .map(|value| (self.expression(value), value.span))
-            .collect();
         let annotations: Vec<_> = annotation.map_or_else(Vec::new, |annotation| {
             annotation
                 .types
@@ -460,6 +486,18 @@ impl Checker<'_> {
                 .map(|ty| self.annotation(ty))
                 .collect()
         });
+        // Type annotations provide call context without introducing the new
+        // bindings. Every initializer still sees the preceding lexical scope.
+        let values: Vec<_> = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    self.expression_with_expected(value, annotations.get(index)),
+                    value.span,
+                )
+            })
+            .collect();
         if annotations.len() > names.len() {
             self.error(
                 "LUA2003",
@@ -502,9 +540,32 @@ impl Checker<'_> {
                 "@type casts on assignments are not implemented yet",
             );
         }
+        // A local destination's declaration can contextualize a generic call
+        // without evaluating or storing any assignment destination early.
+        let expected: Vec<_> = targets
+            .iter()
+            .map(|target| match &target.kind {
+                ExprKind::Name(name) => self
+                    .bound
+                    .binding_at(name.span.start)
+                    .and_then(|id| self.resolve_local(id))
+                    .filter(|binding| !binding.evolves_from_nil)
+                    .map(|binding| binding.constraint.clone()),
+                _ => None,
+            })
+            .collect();
         let values: Vec<_> = values
             .iter()
-            .map(|value| (self.expression(value), value.span))
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    self.expression_with_expected(
+                        value,
+                        expected.get(index).and_then(Option::as_ref),
+                    ),
+                    value.span,
+                )
+            })
             .collect();
         // Validate all destinations against the state before committing writes.
         let mut writes = Vec::new();
@@ -745,24 +806,38 @@ pub fn describe(ty: &Type) -> String {
         // their signatures here would create artificial return-demand cycles.
         Type::NativeFunction(_) => "function".into(),
         Type::NativeTypeParameter(_) => "type parameter".into(),
+        Type::SessionType(_) => "contextual type".into(),
     }
 }
 
-fn describe_native(
-    ty: &Type,
-    engine: &mut dyn TypeQueries,
-    stack: &mut Vec<NativeFunctionKey>,
-) -> String {
+fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type>) -> String {
     match ty {
+        Type::SessionType(_) => {
+            if stack.contains(ty) {
+                return "<recursive type>".into();
+            }
+            if stack.len() >= 64 {
+                return "...".into();
+            }
+            stack.push(ty.clone());
+            let inspected = engine.inspect_type(ty);
+            let text = if &inspected == ty {
+                engine.format(ty)
+            } else {
+                describe_native(&inspected, engine, stack)
+            };
+            stack.pop();
+            text
+        }
         Type::NativeTypeParameter(_) => engine.format(ty),
         Type::NativeFunction(key) => {
-            if stack.contains(key) {
+            if stack.contains(ty) {
                 return "<recursive function>".into();
             }
             if stack.len() >= 64 {
                 return "...".into();
             }
-            stack.push(*key);
+            stack.push(ty.clone());
             let signature = engine.native_function_signature(*key);
             let text = describe_native(&Type::Function(signature), engine, stack);
             stack.pop();
