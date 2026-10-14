@@ -236,12 +236,83 @@ pub struct FileId {
     pub project: u64,
     pub index: u32,
 }
+
+/// Checking provenance is independent of module search paths and file names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SourceRole {
+    Implementation,
+    Declaration,
+}
+impl std::fmt::Display for SourceRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Implementation => "implementation",
+            Self::Declaration => "declaration",
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectInput {
+    pub path: PathBuf,
+    pub role: SourceRole,
+}
+impl ProjectInput {
+    pub fn new(path: impl Into<PathBuf>, role: SourceRole) -> Self {
+        Self {
+            path: path.into(),
+            role,
+        }
+    }
+}
+
+/// Explicit libraries are loaded eagerly without becoming runtime entrypoints.
+/// Discovery and environment/profile selection belong to the caller.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProjectLoadPlan {
+    pub entries: Vec<PathBuf>,
+    pub libraries: Vec<ProjectInput>,
+}
+impl ProjectLoadPlan {
+    pub fn new(entries: impl IntoIterator<Item = PathBuf>) -> Self {
+        Self {
+            entries: entries.into_iter().collect(),
+            libraries: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SourceFile {
     pub id: FileId,
     pub path: PathBuf,
     pub source: String,
+    pub role: SourceRole,
 }
+
+/// Both requests identify the same canonical file but disagree on how it is
+/// checked. The first explicit role is retained; the conflicting request fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceRoleConflict {
+    pub file: FileId,
+    pub path: PathBuf,
+    pub requested_path: PathBuf,
+    pub existing_role: SourceRole,
+    pub requested_role: SourceRole,
+}
+impl std::fmt::Display for SourceRoleConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "source role conflict for {}: loaded as {}, requested {} via {}",
+            self.path.display(),
+            self.existing_role,
+            self.requested_role,
+            self.requested_path.display(),
+        )
+    }
+}
+impl std::error::Error for SourceRoleConflict {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequireRequest {
     pub module: String,
@@ -278,8 +349,11 @@ pub struct Project {
     pub id: u64,
     pub files: Vec<SourceFile>,
     pub entries: Vec<FileId>,
+    pub libraries: Vec<FileId>,
     pub dependencies: Vec<Dependency>,
     pub entry_errors: Vec<PathFailure>,
+    pub library_errors: Vec<PathFailure>,
+    pub role_conflicts: Vec<SourceRoleConflict>,
     /// A static cycle is recorded, not assumed to be a type error.
     pub cycles: Vec<DependencyCycle>,
     by_path: HashMap<PathBuf, FileId>,
@@ -291,6 +365,17 @@ impl Project {
     pub fn load(
         resolver: &Resolver,
         entries: impl IntoIterator<Item = PathBuf>,
+        requires: impl FnMut(&SourceFile) -> Vec<RequireRequest>,
+    ) -> Self {
+        Self::load_plan(resolver, ProjectLoadPlan::new(entries), requires)
+    }
+
+    /// Registers explicit library roles before loading implementation entries
+    /// and their dependency closure. The callback is never invoked for a
+    /// declaration source, even when a require resolves to that canonical file.
+    pub fn load_plan(
+        resolver: &Resolver,
+        plan: ProjectLoadPlan,
         mut requires: impl FnMut(&SourceFile) -> Vec<RequireRequest>,
     ) -> Self {
         let id = NEXT_PROJECT.fetch_add(1, Ordering::Relaxed);
@@ -299,14 +384,31 @@ impl Project {
             id,
             files: Vec::new(),
             entries: Vec::new(),
+            libraries: Vec::new(),
             dependencies: Vec::new(),
             entry_errors: Vec::new(),
+            library_errors: Vec::new(),
+            role_conflicts: Vec::new(),
             cycles: Vec::new(),
             by_path: HashMap::new(),
         };
         let mut pending = VecDeque::new();
-        for path in entries {
-            match project.register(&path) {
+        for input in plan.libraries {
+            match project.register(&input.path, Some(input.role)) {
+                Ok((file, new)) => {
+                    if !project.libraries.contains(&file) {
+                        project.libraries.push(file);
+                    }
+                    if new && input.role == SourceRole::Implementation {
+                        pending.push_back(file);
+                    }
+                }
+                Err(RegisterError::Path(error)) => project.library_errors.push(error),
+                Err(RegisterError::Role(error)) => project.role_conflicts.push(error),
+            }
+        }
+        for path in plan.entries {
+            match project.register(&path, Some(SourceRole::Implementation)) {
                 Ok((file, new)) => {
                     if !project.entries.contains(&file) {
                         project.entries.push(file);
@@ -315,7 +417,8 @@ impl Project {
                         pending.push_back(file);
                     }
                 }
-                Err(error) => project.entry_errors.push(error),
+                Err(RegisterError::Path(error)) => project.entry_errors.push(error),
+                Err(RegisterError::Role(error)) => project.role_conflicts.push(error),
             }
         }
         while let Some(file) = pending.pop_front() {
@@ -330,14 +433,20 @@ impl Project {
                 } else {
                     match resolver.resolve(&request.module) {
                         Err(error) => DependencyOutcome::Unresolved(error),
-                        Ok(module) => match project.register(&module.path) {
+                        Ok(module) => match project.register(&module.path, None) {
                             Ok((target, new)) => {
-                                if new {
+                                if new
+                                    && project.files[target.index as usize].role
+                                        == SourceRole::Implementation
+                                {
                                     pending.push_back(target);
                                 }
                                 DependencyOutcome::Resolved(target)
                             }
-                            Err(error) => DependencyOutcome::Unreadable(error),
+                            Err(RegisterError::Path(error)) => DependencyOutcome::Unreadable(error),
+                            Err(RegisterError::Role(_)) => {
+                                unreachable!("an implicit dependency preserves an explicit role")
+                            }
                         },
                     }
                 };
@@ -364,15 +473,31 @@ impl Project {
         let canonical = fs::canonicalize(path).ok()?;
         self.by_path.get(&canonical).and_then(|id| self.file(*id))
     }
-    fn register(&mut self, path: &Path) -> Result<(FileId, bool), PathFailure> {
-        let alias = std::path::absolute(path).map_err(|error| PathFailure::new(path, error))?;
-        let canonical = fs::canonicalize(&alias).map_err(|error| PathFailure::new(path, error))?;
+    fn register(
+        &mut self,
+        path: &Path,
+        role: Option<SourceRole>,
+    ) -> Result<(FileId, bool), RegisterError> {
+        let alias = std::path::absolute(path)
+            .map_err(|error| RegisterError::Path(PathFailure::new(path, error)))?;
+        let canonical = fs::canonicalize(&alias)
+            .map_err(|error| RegisterError::Path(PathFailure::new(path, error)))?;
         if let Some(id) = self.by_path.get(&canonical).copied() {
+            let existing_role = self.files[id.index as usize].role;
+            if let Some(requested_role) = role.filter(|role| *role != existing_role) {
+                return Err(RegisterError::Role(SourceRoleConflict {
+                    file: id,
+                    path: canonical,
+                    requested_path: path.to_path_buf(),
+                    existing_role,
+                    requested_role,
+                }));
+            }
             self.by_path.insert(alias, id);
             return Ok((id, false));
         }
         let source = fs::read_to_string(&canonical)
-            .map_err(|error| PathFailure::new(canonical.clone(), error))?;
+            .map_err(|error| RegisterError::Path(PathFailure::new(canonical.clone(), error)))?;
         let id = FileId {
             project: self.id,
             index: u32::try_from(self.files.len()).expect("file index fits u32"),
@@ -381,6 +506,7 @@ impl Project {
             id,
             path: canonical.clone(),
             source,
+            role: role.unwrap_or(SourceRole::Implementation),
         });
         self.by_path.insert(canonical, id);
         self.by_path.insert(alias, id);
@@ -442,4 +568,9 @@ impl Project {
         }
         cycles
     }
+}
+
+enum RegisterError {
+    Path(PathFailure),
+    Role(SourceRoleConflict),
 }
