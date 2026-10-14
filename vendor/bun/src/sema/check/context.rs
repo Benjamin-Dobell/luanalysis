@@ -2571,11 +2571,20 @@ impl<'p, 's> Checker<'p, 's> {
                 });
                 self.is_resolving(Query::ReturnOfSignature(declared))
             }
-            SigData::NativeContextual { declaration, context, .. } => {
+            SigData::NativeContextual { declaration, context, ref environment, .. } => {
                 let declared = self.types().intern_sig(SigData::NativeContextual {
                     declaration,
                     mapper: MapperId::IDENTITY,
                     context,
+                    environment: self.list(environment),
+                });
+                self.is_resolving(Query::ReturnOfSignature(declared))
+            }
+            SigData::NativeCaptured { declaration, ref environment, .. } => {
+                let declared = self.types().intern_sig(SigData::NativeCaptured {
+                    declaration,
+                    mapper: MapperId::IDENTITY,
+                    environment: self.list(environment),
                 });
                 self.is_resolving(Query::ReturnOfSignature(declared))
             }
@@ -2592,7 +2601,7 @@ impl<'p, 's> Checker<'p, 's> {
             SigData::Decl { mapper, .. } if self.is_instantiating(mapper) => {
                 self.is_resolving(Query::ReturnOfSignature(sig))
             }
-            SigData::Native { .. } | SigData::NativeContextual { .. } => self.is_resolving(Query::ReturnOfSignature(sig)),
+            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } => self.is_resolving(Query::ReturnOfSignature(sig)),
             SigData::Synth { ref of, .. } => {
                 of.iter().any(|&s| self.is_resolving_return_type(s))
                     || self.is_resolving(Query::ReturnOfSignature(sig))

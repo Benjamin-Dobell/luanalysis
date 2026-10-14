@@ -121,6 +121,13 @@ use task::{Open, OrderDependent, Stored, Task};
 
 pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
 
+/// Written types need the signature substitution; checked values already used its scoped facts.
+#[derive(Copy, Clone)]
+pub enum NativeTypeResult {
+    Declaration(TypeId),
+    Checked(TypeId),
+}
+
 /// Language-specific declaration demands executed in the same checker and query scope.
 /// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
 pub trait NativeFunctionProvider {
@@ -153,11 +160,26 @@ pub trait NativeFunctionProvider {
     fn check_expression(&self, _: &mut Checker<'_, '_>, _: NativeExpressionId, _: Option<TypeId>, _: CheckMode) -> TypeId {
         panic!("native expression provider is not installed")
     }
+    /// Written recipes are declaration-space; contextual indices already use expected-type space.
     fn parameters_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> Vec<SigParam> {
         self.parameters(checker, declaration)
     }
     fn return_type_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> TypeId {
         self.return_type(checker, declaration)
+    }
+    fn return_type_result_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, context: NativeFunctionContext) -> NativeTypeResult {
+        NativeTypeResult::Declaration(self.return_type_in_context(checker, declaration, context))
+    }
+    fn contains_binding(&self, _: NativeBindingId) -> bool { false }
+    /// Parameter recipes are in declaration space; body bindings read mapped signature parameters.
+    fn parameters_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeCapturedFunctionContext) -> Vec<SigParam> {
+        self.parameters(checker, declaration)
+    }
+    fn return_type_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeCapturedFunctionContext) -> TypeId {
+        self.return_type(checker, declaration)
+    }
+    fn return_type_result_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, context: NativeCapturedFunctionContext) -> NativeTypeResult {
+        NativeTypeResult::Declaration(self.return_type_in_capture(checker, declaration, context))
     }
 }
 pub use shape::Members;
@@ -680,6 +702,7 @@ impl<'s> Program<'s> {
             p: self,
             native_function_provider: None,
             native_function_contexts: Vec::new(),
+            native_capture_contexts: Vec::new(),
             arena,
             task: Task::new_in(arena),
             left_frame: None,
@@ -1183,6 +1206,7 @@ pub struct Checker<'p, 's> {
     pub p: &'p Program<'s>,
     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
     native_function_contexts: Vec<NativeFunctionContext>,
+    native_capture_contexts: Vec<NativeCapturedFunctionContext>,
     /// The arena of the thread that runs the task: for the records that the task creates, which may be
     /// published. Everything else that a task allocates is on the regular heap.
     pub arena: &'s Arena,

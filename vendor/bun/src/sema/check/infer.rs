@@ -2900,6 +2900,26 @@ impl<'p, 's> Checker<'p, 's> {
             return self.mapper_of_context_not_mentioned_in(ty);
         }
         let mentioned = self.params_mentioned_in(ty, &n.params);
+        self.fixing_mapper_for_selected_parameters(n, ty, &mentioned)
+    }
+
+    /// Immutable captured values expose their dependency types, including native environments.
+    /// The conservative expression walk would fix unrelated parameters for a captured function.
+    pub(super) fn fixing_mapper_for_captured_type(&mut self, n: &mut Inference, ty: TypeId) -> MapperId {
+        if !self.may_mention_type_parameter(ty) {
+            return self.mapper_of_context_not_mentioned_in(ty);
+        }
+        let mut mentioned: SmallVec<[bool; 4]> = smallvec![false; n.params.len()];
+        self.any_type_in(ty, true, |part| {
+            if let Some(index) = n.params.iter().position(|&param| param == part) {
+                mentioned[index] = true;
+            }
+            false
+        });
+        self.fixing_mapper_for_selected_parameters(n, ty, &mentioned)
+    }
+
+    fn fixing_mapper_for_selected_parameters(&mut self, n: &mut Inference, ty: TypeId, mentioned: &[bool]) -> MapperId {
         let mut pairs = Vec::new();
         for i in 0..n.params.len() {
             if !mentioned[i] {
@@ -3136,9 +3156,14 @@ impl<'p, 's> Checker<'p, 's> {
             }
             while let Some(sig) = signatures.pop() {
                 match self.types().sig(sig) {
-                    SigData::NativeContextual { mapper, context, .. } => {
+                    SigData::NativeContextual { mapper, context, environment, .. } => {
                         left.extend(values(*mapper));
+                        left.extend(environment.iter().map(|binding| binding.ty));
                         signatures.push(context.expected);
+                    }
+                    SigData::NativeCaptured { mapper, environment, .. } => {
+                        left.extend(values(*mapper));
+                        left.extend(environment.iter().map(|binding| binding.ty));
                     }
                     SigData::Native { mapper, .. }
                     | SigData::Decl { mapper, .. }

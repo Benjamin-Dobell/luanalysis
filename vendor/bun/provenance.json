@@ -332,6 +332,78 @@
       "patch": "vendor/patches/bun-sema-native-flow.patch",
       "reason": "Extract shared TS/native flow traversal and add original-source graph providers with native loop, narrowing and reachability workers.",
       "patch_sha256": "73804b0c565fae6b5033a06f48e190355dc4250246ce6f11af3a9ce3caabd11d"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/context.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/explain_relation.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
+    },
+    {
+      "path": "src/sema/check/symbols.rs",
+      "patch": "vendor/patches/bun-sema-captured-environments.patch",
+      "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+      "patch_sha256": "a9c577f7550c4868e232392f064a9dd7ec436b047e3d99b8502eae3114a7174f"
     }
   ],
   "source_additions": {
@@ -1038,7 +1110,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "f9c61ee4e2fb7eb9a523b34735b5d10de634338735cf19159877290c8592fdc7"
+      "extracted_sha256": "a040a76b00d7b179e54fb91a2533a4f2ceacf9dab80c703b743ea42f6385ad97"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -1048,12 +1120,12 @@
     "src/sema/check/context.rs": {
       "upstream": "src/sema/check/context.rs",
       "sha256": "38ce21bc5a1016ca18ed46af9e6cc93927640ed24b869c5c8ee91147f6505601",
-      "extracted_sha256": "4fed62bc01374271f1a60bea41b28f2121b7e48edf3dd98a4247b335aaf951b0"
+      "extracted_sha256": "663b49fcfeec2e64a17cfcfec348124e697746e1896b215a7ccf9f7c0b9102c8"
     },
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "6cd3b6ab1f27844fd275d583a41ee40ea1b3c61cb6c41912ebc811c2f3e63fa2"
+      "extracted_sha256": "6209199c4a9aefff85e8ceceebc3fd728c971b012e55dcc70ca0ee2b40b0fbba"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -1243,7 +1315,7 @@
     "src/sema/check/explain_relation.rs": {
       "upstream": "src/sema/check/explain_relation.rs",
       "sha256": "3cd5cea2059c6d9748f4fb35f723fdec0d85d2e2177e3a9c17f11bc0f80da601",
-      "extracted_sha256": "47d61f43b653268fcbe723d9faed3d3df9e2d27160f8d154c21b24539fca2a59"
+      "extracted_sha256": "133062f1676b36948471cc84dfa44622b21971a07a7c5378c7ef537a4c42dcf9"
     },
     "src/sema/check/expr.rs": {
       "upstream": "src/sema/check/expr.rs",
@@ -1263,12 +1335,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "4c22fc893b4a8e6cbe4cc2b4a8baaeb9ead505178d407db141bff5dfcba90e1d"
+      "extracted_sha256": "2ba07066fc057fc0f7d74588039f1e7c120017ba7dd47ef6cbea4485bffc3171"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "917b340f338bcda0f0113578bae19c03ca26c13f34fdb88a7494d40b490d601a"
+      "extracted_sha256": "d144057100653c8e3eaba8814104139e8c90185a5035497a8476ea962131c852"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -1298,7 +1370,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "0e0d7f0ba835f05761f91ff9b265e3be8b35a5cf4a0a55c290e043452c0758ba"
+      "extracted_sha256": "ec75888f08802808ebd680fcabdfd48e8ec732466b339a33a76dff3fb17c1c83"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -1308,7 +1380,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "0692aa83515d14976591f3027b82c23de4d49df40ac7318a8c22ec361d979b38"
+      "extracted_sha256": "0d494c8e267834f0aacb43e7544b0908a03eb00ab5095b2c2db3a7c728c53d1f"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -1323,7 +1395,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "d8687441e92b21fe96c47ecb73f4e045573f048671e03e92cda0c6c54291cbad"
+      "extracted_sha256": "e5aa637a3d6160f73219d8ecfcd1df4e430c5a7abc47cd27559931e76c25fb21"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -1378,7 +1450,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "24af419e20899ec2e07291aff679795c5fc3861b31dd7d9f1d52caffb5002e15"
+      "extracted_sha256": "62e019f075b1e44aa1f800bdcb0eeff96e75425b35ecac95ead0e31c7abe4dc0"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -1398,7 +1470,7 @@
     "src/sema/check/symbols.rs": {
       "upstream": "src/sema/check/symbols.rs",
       "sha256": "ef1c369442929fa1f57e979c571a01d2d7aebbadba0d1f3f8d7e750ca080936b",
-      "extracted_sha256": "c9f629c7b1ba1ef677c650eea2ab82fa66f1d96977c7fb25ebb930dcbdd0be12"
+      "extracted_sha256": "b386208ec2e5e59f1197736009f90ce8a7d9d8ca2afb460bd079363b6caaa2d1"
     },
     "src/sema/check/task.rs": {
       "upstream": "src/sema/check/task.rs",
@@ -1503,7 +1575,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "f967fa8d1c17c28c356869c73912fce3dc4ea89870835db6bb4b687f6649c4b3"
+      "extracted_sha256": "c500e470f457c4eb714ba288fb1fbde938b64bc4f09516907f93f3eaef497f0d"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

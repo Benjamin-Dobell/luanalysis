@@ -1092,11 +1092,22 @@ impl<'p, 's> Checker<'p, 's> {
                 declaration: *declaration,
                 mapper: self.native_sig_mapper(*declaration, *own, mapper),
             },
-            SigData::NativeContextual { declaration, mapper: own, context } => {
+            SigData::NativeContextual { declaration, mapper: own, context, environment } => {
                 SigData::NativeContextual {
                     declaration: *declaration,
                     mapper: self.native_sig_mapper(*declaration, *own, mapper),
-                    context: *context,
+                    context: NativeFunctionContext {
+                        expected: self.instantiate_sig(context.expected, mapper),
+                        ..*context
+                    },
+                    environment: self.list(environment),
+                }
+            }
+            SigData::NativeCaptured { declaration, mapper: own, environment } => {
+                SigData::NativeCaptured {
+                    declaration: *declaration,
+                    mapper: self.native_sig_mapper(*declaration, *own, mapper),
+                    environment: self.list(environment),
                 }
             }
             SigData::Decl {

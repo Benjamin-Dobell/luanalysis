@@ -6256,7 +6256,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// `SignatureFlagsAbstract`
     pub(super) fn is_abstract_signature(&self, sig: SigId) -> bool {
         match *self.types().sig(sig) {
-            SigData::Native { .. } | SigData::NativeContextual { .. } => false,
+            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } => false,
             // `getDefaultConstructSignatures`, `getSignatureFromDeclaration`: of several class
             // declarations with one name the first is used.
             SigData::Construct { class, .. } | SigData::DefaultConstruct { class, .. } => self
@@ -6574,10 +6574,16 @@ impl<'p, 's> Checker<'p, 's> {
                 declaration,
                 mapper: extended(self, mapper),
             },
-            SigData::NativeContextual { declaration, mapper, context } => SigData::NativeContextual {
+            SigData::NativeContextual { declaration, mapper, context, ref environment } => SigData::NativeContextual {
                 declaration,
                 mapper: extended(self, mapper),
                 context,
+                environment: self.list(environment),
+            },
+            SigData::NativeCaptured { declaration, mapper, ref environment } => SigData::NativeCaptured {
+                declaration,
+                mapper: extended(self, mapper),
+                environment: self.list(environment),
             },
             SigData::Decl { file, func, mapper } => SigData::Decl {
                 file,
@@ -6698,11 +6704,28 @@ impl<'p, 's> Checker<'p, 's> {
                 let outer = self.types().mapper(outer);
                 Some(self.instantiate_sig(declared, outer))
             }
-            SigData::NativeContextual { declaration, mapper, context } => {
+            SigData::NativeContextual { declaration, mapper, context, ref environment } => {
                 let declared = self.types().intern_sig(SigData::NativeContextual {
                     declaration,
                     mapper: MapperId::IDENTITY,
                     context,
+                    environment: self.list(environment),
+                });
+                let own = self.sig_type_params(declared);
+                if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {
+                    return (declared != sig).then_some(declared);
+                }
+                let outer = self.types().mapping(mapper).iter().copied()
+                    .filter(|pair| !own.contains(&pair.0))
+                    .collect();
+                let outer = self.types().mapper(outer);
+                Some(self.instantiate_sig(declared, outer))
+            }
+            SigData::NativeCaptured { declaration, mapper, ref environment } => {
+                let declared = self.types().intern_sig(SigData::NativeCaptured {
+                    declaration,
+                    mapper: MapperId::IDENTITY,
+                    environment: self.list(environment),
                 });
                 let own = self.sig_type_params(declared);
                 if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {

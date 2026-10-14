@@ -8486,6 +8486,7 @@ impl<'p, 's> Checker<'p, 's> {
             SigData::Decl { mapper, .. }
             | SigData::Native { mapper, .. }
             | SigData::NativeContextual { mapper, .. }
+            | SigData::NativeCaptured { mapper, .. }
             | SigData::Construct { mapper, .. }
             | SigData::DefaultConstruct { mapper, .. } => mapper,
             SigData::WithReturn { sig: inner, .. } => self.mapper_around_sig(inner),

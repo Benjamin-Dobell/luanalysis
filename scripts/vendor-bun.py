@@ -78,6 +78,15 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Extract shared TS/native flow traversal and add original-source graph providers with native loop, narrowing and reachability workers.",
     **({"added": True} if path in {"flow_walk.rs", "native_flow.rs"} else {}),
 } for path in ["flow.rs", "flow_walk.rs", "native_flow.rs", "mod.rs"])
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-captured-environments.patch",
+    "reason": "Add immutable native binding environments, explicit declaration/checked type origins, and scoped capture/context instantiation using shared signature caches and mappers.",
+} for path in [
+    "types.rs", "check/call.rs", "check/context.rs", "check/decl.rs",
+    "check/explain_relation.rs", "check/infer.rs", "check/instantiate.rs", "check/mod.rs",
+    "check/print.rs", "check/relate.rs", "check/shape.rs", "check/symbols.rs",
+])
 
 
 def git(source, *args):

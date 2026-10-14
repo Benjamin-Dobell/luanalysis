@@ -45,6 +45,20 @@ pub struct NativeExpressionId {
     pub index: u32,
 }
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeBindingId {
+    pub snapshot: u64,
+    pub index: u32,
+}
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeCapturedBinding {
+    pub declaration: NativeBindingId,
+    pub ty: TypeId,
+}
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeCapturedFunctionContext {
+    pub signature: SigId,
+}
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeFunctionContext {
     pub expression: NativeExpressionId,
     pub expected: SigId,
@@ -875,11 +889,17 @@ pub enum SigData<'s> {
         declaration: NativeFunctionId,
         mapper: MapperId,
     },
+    NativeCaptured {
+        declaration: NativeFunctionId,
+        mapper: MapperId,
+        environment: List<'s, NativeCapturedBinding>,
+    },
     /// A native declaration checked under one contextual demand, with caches of its own.
     NativeContextual {
         declaration: NativeFunctionId,
         mapper: MapperId,
         context: NativeFunctionContext,
+        environment: List<'s, NativeCapturedBinding>,
     },
     /// As declared, with `mapper` applied.
     Decl {
@@ -2446,8 +2466,11 @@ impl<'p, 's> Types<'p, 's> {
 
     pub fn sig_flags(&self, sig: SigId) -> ObjectFlags {
         match self.sig(sig) {
-            SigData::NativeContextual { mapper, context, .. } => {
-                self.mapper_record(*mapper).1 | self.sig_flags(context.expected)
+            SigData::NativeContextual { mapper, context, environment, .. } => {
+                environment.iter().fold(self.mapper_record(*mapper).1 | self.sig_flags(context.expected), |flags, binding| flags | self.object_flags(binding.ty))
+            }
+            SigData::NativeCaptured { mapper, environment, .. } => {
+                environment.iter().fold(self.mapper_record(*mapper).1, |flags, binding| flags | self.object_flags(binding.ty))
             }
             SigData::Native { mapper, .. }
             | SigData::Decl { mapper, .. }
@@ -3257,6 +3280,7 @@ has_no_references!(
     NativeFunctionId,
     NativeTypeParamId,
     NativeExpressionId,
+    NativeBindingId,
     crate::check::CheckMode,
     usize,
     ExprId,
@@ -3423,13 +3447,16 @@ follow_struct!(SigParam {
 });
 follow_enum!(SigData<'_> {
     SigData::Native { declaration, mapper } => (declaration, mapper),
-    SigData::NativeContextual { declaration, mapper, context } => (declaration, mapper, context),
+    SigData::NativeContextual { declaration, mapper, context, environment } => (declaration, mapper, context, environment),
+    SigData::NativeCaptured { declaration, mapper, environment } => (declaration, mapper, environment),
     SigData::Decl { file, func, mapper } => (file, func, mapper),
     SigData::DefaultConstruct { class, base, mapper } => (class, base, mapper),
     SigData::Construct { class, file, func, mapper } => (class, file, func, mapper),
     SigData::Synth { type_params, params, ret, this, of, is_union } => (type_params, params, ret, this, of, is_union),
     SigData::WithReturn { sig, ret } => (sig, ret),
 });
+follow_struct!(NativeCapturedBinding { declaration, ty });
+follow_struct!(NativeCapturedFunctionContext { signature });
 follow_struct!(NativeFunctionContext {
     expression,
     expected,
@@ -3490,6 +3517,9 @@ clone_in_is_copy!(
     NativeFunctionId,
     NativeTypeParamId,
     NativeExpressionId,
+    NativeBindingId,
+    NativeCapturedBinding,
+    NativeCapturedFunctionContext,
     NativeFunctionContext,
     MapperId,
     FileId,
@@ -3677,7 +3707,8 @@ clone_in_struct!(Shape {
 });
 clone_in_enum!(SigData {
     Native { declaration, mapper },
-    NativeContextual { declaration, mapper, context },
+    NativeContextual { declaration, mapper, context, environment },
+    NativeCaptured { declaration, mapper, environment },
     Decl { file, func, mapper },
     DefaultConstruct { class, base, mapper },
     Construct { class, file, func, mapper },

@@ -4516,6 +4516,7 @@ impl<'p, 's> Checker<'p, 's> {
     fn sig_type_params_of_declaration(&mut self, sig: SigId) -> Vec<TypeId> {
         match self.types().sig(sig) {
             SigData::Native { declaration, mapper }
+            | SigData::NativeCaptured { declaration, mapper, .. }
             | SigData::NativeContextual { declaration, mapper, .. } => {
                 let (declaration, mapper) = (*declaration, *mapper);
                 let provider = self.native_provider_for(declaration);
@@ -4589,6 +4590,7 @@ impl<'p, 's> Checker<'p, 's> {
     pub fn sig_native_decl(&self, sig: SigId) -> Option<(NativeFunctionId, MapperId)> {
         match *self.types().sig(sig) {
             SigData::Native { declaration, mapper }
+            | SigData::NativeCaptured { declaration, mapper, .. }
             | SigData::NativeContextual { declaration, mapper, .. } => Some((declaration, mapper)),
             SigData::WithReturn { sig: inner, .. } => self.sig_native_decl(inner),
             _ => None,
@@ -4873,6 +4875,7 @@ impl<'p, 's> Checker<'p, 's> {
     fn sig_params_not_recent(&mut self, sig: SigId) -> List<'p, SigParam> {
         let (file, func, mapper) = match self.types().sig(sig) {
             SigData::Native { declaration, mapper }
+            | SigData::NativeCaptured { declaration, mapper, .. }
             | SigData::NativeContextual { declaration, mapper, .. } => {
                 let (declaration, mapper) = (*declaration, *mapper);
                 if let Some(kept) = self.p.sig_params.get_ref(&self.task, &sig) {
@@ -4880,14 +4883,28 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 let scope = self.begin_scope();
                 let provider = self.native_provider_for(declaration);
-                let params = match self.sig_native_context(sig) {
-                    Some(context) => self.with_native_function_context(context, |c| provider.parameters_in_context(c, declaration, context)),
-                    None => provider.parameters(self, declaration),
+                let contextual = match self.types().sig(sig) {
+                    SigData::NativeContextual { .. } => provider.contextual_parameter_indices(declaration),
+                    _ => Vec::new(),
+                };
+                let params = match self.types().sig(sig) {
+                    SigData::NativeContextual { context, .. } => {
+                        let context = *context;
+                        self.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
+                            c.with_native_function_context(context, |c| provider.parameters_in_context(c, declaration, context))
+                        })
+                    }
+                    SigData::NativeCaptured { .. } => {
+                        let context = NativeCapturedFunctionContext { signature: sig };
+                        self.with_native_captured_function(context, |c| provider.parameters_in_capture(c, declaration, context))
+                    }
+                    _ => provider.parameters(self, declaration),
                 };
                 let params: Vec<SigParam> = params
                     .into_iter()
-                    .map(|param| SigParam {
-                        ty: self.instantiate(param.ty, mapper),
+                    .enumerate()
+                    .map(|(index, param)| SigParam {
+                        ty: if contextual.contains(&index) { param.ty } else { self.instantiate(param.ty, mapper) },
                         ..param
                     })
                     .collect();
@@ -5040,6 +5057,13 @@ impl<'p, 's> Checker<'p, 's> {
         out
     }
 
+    fn resolve_native_type_result(&mut self, result: super::NativeTypeResult, mapper: MapperId) -> TypeId {
+        match result {
+            super::NativeTypeResult::Declaration(ty) => self.instantiate(ty, mapper),
+            super::NativeTypeResult::Checked(ty) => ty,
+        }
+    }
+
     pub fn sig_return(&mut self, sig: SigId) -> TypeId {
         match *self.types().sig(sig) {
             SigData::Native { declaration, mapper } => self.resolve_return_type(sig, |c| {
@@ -5047,11 +5071,21 @@ impl<'p, 's> Checker<'p, 's> {
                 let declared = provider.return_type(c, declaration);
                 c.instantiate(declared, mapper)
             }),
-            SigData::NativeContextual { declaration, mapper, context } => {
+            SigData::NativeContextual { declaration, mapper, context, .. } => {
                 self.resolve_return_type(sig, |c| {
                     let provider = c.native_provider_for(declaration);
-                    let declared = c.with_native_function_context(context, |c| provider.return_type_in_context(c, declaration, context));
-                    c.instantiate(declared, mapper)
+                    let result = c.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
+                        c.with_native_function_context(context, |c| provider.return_type_result_in_context(c, declaration, context))
+                    });
+                    c.resolve_native_type_result(result, mapper)
+                })
+            }
+            SigData::NativeCaptured { declaration, mapper, .. } => {
+                self.resolve_return_type(sig, |c| {
+                    let provider = c.native_provider_for(declaration);
+                    let context = NativeCapturedFunctionContext { signature: sig };
+                    let result = c.with_native_captured_function(context, |c| provider.return_type_result_in_capture(c, declaration, context));
+                    c.resolve_native_type_result(result, mapper)
                 })
             }
             // `case sig.composite != nil`

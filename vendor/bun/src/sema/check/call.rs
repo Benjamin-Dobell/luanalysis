@@ -210,6 +210,113 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_function_contexts.last().copied()
     }
 
+    pub fn with_native_contextual_function_context<R>(
+        &mut self,
+        context: NativeFunctionContext,
+        work: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_native_function_context(context, work)
+    }
+
+    pub fn current_native_captured_function(&self) -> Option<NativeCapturedFunctionContext> {
+        self.native_capture_contexts.last().copied()
+    }
+
+    pub fn with_native_capture_context<R>(
+        &mut self,
+        context: NativeCapturedFunctionContext,
+        work: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_native_captured_function(context, work)
+    }
+
+    pub(super) fn with_native_captured_function<R>(
+        &mut self,
+        context: NativeCapturedFunctionContext,
+        work: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.native_capture_contexts.push(context);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
+        self.native_capture_contexts.pop();
+        result.unwrap_or_else(|error| std::panic::resume_unwind(error))
+    }
+
+    pub fn contains_native_binding(&self, binding: NativeBindingId) -> bool {
+        self.native_function_provider.is_some_and(|provider| provider.contains_binding(binding))
+    }
+
+    pub fn captured_binding_type(&mut self, context: NativeCapturedFunctionContext, binding: NativeBindingId) -> Option<TypeId> {
+        let (mapper, environment) = match self.types().sig(context.signature) {
+            SigData::NativeCaptured { mapper, environment, .. }
+            | SigData::NativeContextual { mapper, environment, .. } => (*mapper, &environment[..]),
+            _ => return None,
+        };
+        let ty = environment.iter().find(|entry| entry.declaration == binding)?.ty;
+        Some(self.instantiate(ty, mapper))
+    }
+
+    pub fn native_capture_parameter_type(&mut self, context: NativeCapturedFunctionContext, index: usize) -> Option<TypeId> {
+        let params = self.sig_params(context.signature);
+        self.param_type_at(&params, index)
+    }
+
+    /// The active lexical function value, retaining its environment and contextual facet.
+    pub fn native_captured_function_value(&self, context: NativeCapturedFunctionContext) -> TypeId {
+        self.type_of_signature(context.signature, false)
+    }
+
+    /// Apply a signature substitution once to a written source type used inside its body.
+    pub fn instantiate_in_native_capture(&mut self, context: NativeCapturedFunctionContext, ty: TypeId) -> TypeId {
+        let mapper = match self.types().sig(context.signature) {
+            SigData::NativeCaptured { mapper, .. }
+            | SigData::NativeContextual { mapper, .. } => *mapper,
+            _ => return ty,
+        };
+        self.instantiate(ty, mapper)
+    }
+
+    pub fn native_captured_function(&mut self, declaration: NativeFunctionId, environment: &[NativeCapturedBinding]) -> Option<TypeId> {
+        if !self.native_function_provider?.contains_function(declaration)
+            || !environment.iter().all(|entry| self.contains_native_binding(entry.declaration))
+        {
+            return None;
+        }
+        // Freeze only captured values, rather than their enclosing expected return signature.
+        let level = self.current_native_function_context()
+            .and_then(|context| self.get_native_inference_context(context.expression));
+        let environment: Vec<NativeCapturedBinding> = environment.iter().map(|entry| {
+            let ty = level.and_then(|level| self.with_inference_context(level, |c, n| {
+                let mapper = c.fixing_mapper_for_captured_type(n, entry.ty);
+                c.instantiate(entry.ty, mapper)
+            })).unwrap_or(entry.ty);
+            NativeCapturedBinding { ty, ..*entry }
+        }).collect();
+        // Retain declared annotation dependencies and free parameters of captured values for
+        // later signature instantiation, even when the provider has no written parameter type.
+        let mut outer: Vec<(TypeId, TypeId)> = self.native_function_provider?
+            .outer_type_parameters(declaration)
+            .into_iter()
+            .map(|id| {
+                let param = self.cloned_native_type_param(id, MapperId::IDENTITY);
+                (param, param)
+            })
+            .collect();
+        for entry in &environment {
+            self.any_type_in(entry.ty, true, |ty| {
+                if self.flags(ty) & tf::TYPE_PARAMETER != 0 && !outer.iter().any(|pair| pair.0 == ty) {
+                    outer.push((ty, ty));
+                }
+                false
+            });
+        }
+        let sig = self.types().intern_sig(SigData::NativeCaptured {
+            declaration,
+            mapper: self.types().mapper(outer),
+            environment: self.list(&environment),
+        });
+        Some(self.type_of_signature(sig, false))
+    }
+
     pub(super) fn with_native_function_context<R>(
         &mut self,
         context: NativeFunctionContext,
@@ -231,6 +338,24 @@ impl<'p, 's> Checker<'p, 's> {
         expected: TypeId,
         mode: CheckMode,
     ) -> Option<TypeId> {
+        let function = self.native_function_type(declaration)?;
+        self.native_contextual_function_value(function, expression, expected, mode)
+    }
+
+    pub fn native_contextual_function_value(
+        &mut self,
+        function: TypeId,
+        expression: NativeExpressionId,
+        expected: TypeId,
+        mode: CheckMode,
+    ) -> Option<TypeId> {
+        let signature = self.single_call_signature(function)?;
+        let (declaration, mapper) = self.sig_native_decl(signature)?;
+        let environment = match self.types().sig(signature) {
+            SigData::NativeCaptured { environment, .. }
+            | SigData::NativeContextual { environment, .. } => self.list(environment),
+            _ => ArenaBox::empty(),
+        };
         if !self.contains_native_expression(expression)
             || !self.native_function_provider?.contains_function(declaration)
         {
@@ -258,8 +383,9 @@ impl<'p, 's> Checker<'p, 's> {
         };
         let sig = self.types().intern_sig(SigData::NativeContextual {
             declaration,
-            mapper: MapperId::IDENTITY,
+            mapper,
             context,
+            environment,
         });
         Some(self.type_of_signature(sig, false))
     }
