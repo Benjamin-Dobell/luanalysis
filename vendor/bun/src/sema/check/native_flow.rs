@@ -188,6 +188,28 @@ pub enum NativeFlowError {
 pub struct NativeFlowResult {
     pub ty: TypeId,
     pub incomplete: bool,
+    /// A completed read still had an automatic declaration constraint. The
+    /// returned type is Any recovery; the source owns its diagnostic locations.
+    pub unresolved_auto: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NativeVariableWrite {
+    pub owner: NativeGraphKey,
+    pub statement_end: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct NativeVariableDeclaration {
+    pub owner: NativeGraphKey,
+    pub reference: NativeReferenceKey,
+    pub writes: Vec<NativeVariableWrite>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct NativeFunctionCreation {
+    pub input: NativeFlowKey,
+    pub position: usize,
 }
 
 /// Original immutable sibling projections of one physical Lua result list.
@@ -209,6 +231,11 @@ pub struct NativeIteratorProjection {
 }
 
 pub trait NativeFlowProvider {
+    fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
+    fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
+    fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
+        (reference.graph == graph).then_some(reference)
+    }
     fn iterator_error(&self, _: NativeFlowKey, _: NativeIteratorStage, _: TypeId, _: ResolvedTypeCallError, _: &mut Checker<'_, '_>) {}
     fn iterator_projection(&self, _: NativeReferenceKey) -> Option<NativeIteratorProjection> { None }
     fn pack_projection(&self, _: NativeReferenceKey) -> Option<NativePackProjection> { None }
@@ -263,6 +290,7 @@ pub(super) struct NativeFlowState {
     reachable: FxHashMap<NativeFlowKey, bool>,
     latest_reachable: Option<(NativeFlowKey, bool)>,
     disabled: FxHashMap<NativeGraphKey, ()>,
+    capture_graphs: Vec<NativeGraphKey>,
 }
 
 struct NativeWalk {
@@ -346,6 +374,44 @@ fn numeric_first_entry(
 }
 
 impl NativeDomain<'_> {
+    fn auto_at_start(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey) -> Option<FlowType> {
+        if walk.declared != TypeId::AUTO { return None; }
+        let declaration = self.provider.reference_declaration(walk.reference)?;
+        let same_owner = |graph: NativeGraphKey| graph.snapshot == declaration.owner.snapshot && graph.region == declaration.owner.region;
+        if same_owner(at.graph) { return None; }
+        if !self.provider.contains_graph(declaration.owner) || declaration.reference.graph != declaration.owner || !self.provider.contains_reference(declaration.reference) {
+            self.provider.flow_error(at, NativeFlowError::InvalidReference(declaration.reference));
+            return Some(FlowType::new(TypeId::ERROR, false));
+        }
+        let Some(creation) = self.provider.graph_creation(at.graph) else { return Some(FlowType::new(TypeId::AUTO, false)) };
+        if declaration.writes.iter().any(|write| !same_owner(write.owner)) {
+            return Some(FlowType::new(TypeId::AUTO, false));
+        }
+        let last = declaration.writes.iter().map(|write| write.statement_end).max().unwrap_or(0);
+        if !Checker::is_past_last_assignment_position(last, creation.position) {
+            return Some(FlowType::new(TypeId::AUTO, false));
+        }
+        if creation.input.graph.snapshot != at.graph.snapshot || !self.provider.contains_graph(creation.input.graph) {
+            self.provider.flow_error(at, NativeFlowError::InvalidGraph(creation.input.graph));
+            return Some(FlowType::new(TypeId::ERROR, false));
+        }
+        let Some(reference) = self.provider.reference_in_graph(walk.reference, creation.input.graph) else {
+            self.provider.flow_error(at, NativeFlowError::InvalidReference(walk.reference));
+            return Some(FlowType::new(TypeId::ERROR, false));
+        };
+        let graphs = &mut checker.flow_memo.native_state.capture_graphs;
+        if graphs.contains(&at.graph) || graphs.len() >= super::flow_walk::MAX_FLOW_DEPTH as usize {
+            self.provider.flow_error(at, NativeFlowError::TooDeep(at));
+            return Some(FlowType::new(TypeId::ERROR, false));
+        }
+        let depth = graphs.len();
+        graphs.push(at.graph);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| checker.native_flow_capture_type(self.provider, creation.input, reference, walk.declared, walk.initial)));
+        checker.flow_memo.native_state.capture_graphs.truncate(depth);
+        let result = match result { Ok(result) => result, Err(panic) => std::panic::resume_unwind(panic) };
+        Some(FlowType::new(result.ty, result.incomplete))
+    }
+
     fn node(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey) -> Option<NativeFlowNode> {
         if at.graph != self.graph || !self.provider.contains_graph(at.graph) {
             self.provider
@@ -442,7 +508,10 @@ impl FlowDomain for NativeDomain<'_> {
             return FlowStep::Value(TypeId::ERROR);
         };
         match node {
-            NativeFlowNode::Start => FlowStep::Initial,
+            NativeFlowNode::Start => match self.auto_at_start(checker, walk, at) {
+                Some(result) => FlowStep::Complete(result),
+                None => FlowStep::Initial,
+            },
             NativeFlowNode::Unreachable | NativeFlowNode::Return { .. } => {
                 FlowStep::Value(checker.convert_auto_to_any(walk.declared))
             }
@@ -478,7 +547,7 @@ impl FlowDomain for NativeDomain<'_> {
                 match self.provider.write_affects(walk.reference, target, at) {
                     NativeWriteRelation::Exact => {
                         let assigned = checker.native_flow_value(self.provider, value, input);
-                        FlowStep::Value(checker.assignment_reduced_type(walk.declared, assigned))
+                        FlowStep::Value(checker.resolved_assignment_type(walk.declared, assigned))
                     }
                     NativeWriteRelation::Ancestor => FlowStep::Value(walk.declared),
                     NativeWriteRelation::Unaffected => FlowStep::Follow {
@@ -964,15 +1033,15 @@ impl<'s, 'p> Checker<'s, 'p> {
     pub fn native_flow_pack_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativePackProjection, ordinary: TypeId) -> NativeFlowResult {
         if projection.input.graph != at.graph {
             provider.flow_error(at, NativeFlowError::ForeignEdge { from: at, to: projection.input });
-            return NativeFlowResult { ty: TypeId::ERROR, incomplete: false };
+            return NativeFlowResult { ty: TypeId::ERROR, incomplete: false, unresolved_auto: false };
         }
         if projection.group.graph != at.graph || !provider.contains_reference(projection.group) {
             provider.flow_error(at, NativeFlowError::InvalidReference(projection.group));
-            return NativeFlowResult { ty: TypeId::ERROR, incomplete: false };
+            return NativeFlowResult { ty: TypeId::ERROR, incomplete: false, unresolved_auto: false };
         }
         let initial = self.native_flow_pack_value(provider, projection.value, projection.input);
         if !self.is_union(initial.ty) {
-            return NativeFlowResult { ty: ordinary, incomplete: false };
+            return NativeFlowResult { ty: ordinary, incomplete: false, unresolved_auto: false };
         }
         let result = self.native_flow_type(provider, at, projection.group, initial.ty, initial.ty);
         let ty = if result.ty == initial.ty {
@@ -985,7 +1054,7 @@ impl<'s, 'p> Checker<'s, 'p> {
                 if checker.are_comparable(part, projected) { part } else { TypeId::NEVER }
             })
         };
-        NativeFlowResult { ty, incomplete: result.incomplete }
+        NativeFlowResult { ty, incomplete: result.incomplete, unresolved_auto: false }
     }
 
     fn native_flow_pack_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeResultPack {
@@ -1078,6 +1147,24 @@ impl<'s, 'p> Checker<'s, 'p> {
         declared: TypeId,
         initial: TypeId,
     ) -> NativeFlowResult {
+        let mut result = self.native_flow_capture_type(provider, at, reference, declared, initial);
+        if result.ty == TypeId::AUTO {
+            result.unresolved_auto = !result.incomplete;
+            result.ty = TypeId::ANY;
+        }
+        result
+    }
+
+    /// The same traversal used for an immutable capture environment. Incomplete
+    /// automatic values remain Auto rather than freezing a provisional loop value.
+    pub fn native_flow_capture_type(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        at: NativeFlowKey,
+        reference: NativeReferenceKey,
+        declared: TypeId,
+        initial: TypeId,
+    ) -> NativeFlowResult {
         let error = if !provider.contains_graph(at.graph) {
             NativeFlowError::InvalidGraph(at.graph)
         } else if reference.graph != at.graph || !provider.contains_reference(reference) {
@@ -1101,14 +1188,16 @@ impl<'s, 'p> Checker<'s, 'p> {
                 self.note_cycle();
             }
             return NativeFlowResult {
-                ty: result.ty,
+                ty: if result.incomplete && declared == TypeId::AUTO { TypeId::AUTO } else { result.ty },
                 incomplete: result.incomplete,
+                unresolved_auto: false,
             };
         };
         provider.flow_error(at, error);
         NativeFlowResult {
             ty: TypeId::ERROR,
             incomplete: false,
+            unresolved_auto: false,
         }
     }
 

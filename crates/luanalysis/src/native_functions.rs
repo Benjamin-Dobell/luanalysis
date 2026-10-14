@@ -33,6 +33,7 @@ enum DeclarationSource {
     Local {
         annotation: Option<TypeExpr>,
         owner: Option<u32>,
+        automatic: bool,
     },
     Function(u32),
     Parameter {
@@ -403,6 +404,7 @@ impl NativeRegistry {
             return NativeFlowResult {
                 ty: initial.clone(),
                 incomplete: false,
+                unresolved_auto: false,
             };
         };
         let ordinary = queries.flow_type(
@@ -418,10 +420,12 @@ impl NativeRegistry {
         if let Some(projection) = self.flow.pack_projection(reference) {
             let mut narrowed = queries.flow_pack_projection(&FlowAdapter { sources: &self.flow, values: self }, at, projection, &ordinary.ty);
             narrowed.incomplete |= ordinary.incomplete;
+            narrowed.unresolved_auto |= ordinary.unresolved_auto;
             narrowed
         } else if let Some(projection) = self.flow.iterator_projection(reference) {
             let mut narrowed = queries.flow_iterator_projection(&FlowAdapter { sources: &self.flow, values: self }, at, projection, &ordinary.ty);
             narrowed.incomplete |= ordinary.incomplete;
+            narrowed.unresolved_auto |= ordinary.unresolved_auto;
             narrowed
         } else {
             ordinary
@@ -530,10 +534,12 @@ impl NativeRegistry {
         let value_key = self.flow.write_value(write)?;
         let recipe = self.flow.value(value_key)?;
         let value = self.flow_value_type(&self.flow, recipe, at, queries);
-        let constraint = queries.widen(&value);
+        let evolves_from_nil = matches!(self.declarations.get(&binding), Some(DeclarationSource::Local { automatic: true, .. }));
+        let constraint = if evolves_from_nil { queries.auto_variable_constraint() } else { queries.widen(&value) };
         Some(Binding {
+            initial: if evolves_from_nil { Type::Nil } else { constraint.clone() },
             value: constraint.clone(),
-            evolves_from_nil: matches!(constraint, Type::Nil | Type::Undefined),
+            evolves_from_nil,
             constraint,
         })
     }
@@ -555,6 +561,29 @@ impl NativeRegistry {
         self.completed_bindings
             .borrow_mut()
             .insert(binding, captured);
+    }
+
+    pub(super) fn binding_is_automatic(&self, binding: BindingId) -> bool {
+        matches!(self.declarations.get(&binding), Some(DeclarationSource::Local { automatic: true, .. }))
+    }
+
+    pub(super) fn automatic_capture_type(
+        &self,
+        function: NativeFunctionKey,
+        binding: BindingId,
+        declared: &Type,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        let contextual = queries.current_contextual_function();
+        let captured = queries.current_captured_function();
+        let base = self.flow.graph_for_function(function, None).unwrap();
+        let graph = self.flow.graph_with_contexts(base.region, contextual.as_ref(), captured.as_ref());
+        let reference = self.flow.reference_key(graph, &super::flow::Reference {
+            root: super::flow::ReferenceRoot::Binding(binding),
+            path: Vec::new(),
+        }).expect("a lexical capture has an original function reference");
+        let at = self.flow.flow_key(self.flow.program.graphs[graph.region as usize].entry, graph.context);
+        queries.flow_capture_type(&FlowAdapter { sources: &self.flow, values: self }, at, reference, declared, &Type::Nil).ty
     }
 
     pub(super) fn resolve_type_name(
@@ -624,6 +653,7 @@ impl NativeRegistry {
                 if queries.native_function_key(&value) == Some(key) {
                     return Some(Binding {
                         constraint: value.clone(),
+                        initial: value.clone(),
                         value,
                         evolves_from_nil: false,
                     });
@@ -644,7 +674,7 @@ impl NativeRegistry {
         let mut checker = self.checker(queries);
         checker.captured_function = checker.engine.current_captured_function();
         let (constraint, evolves_from_nil) = match source {
-            DeclarationSource::Local { annotation, owner } => {
+            DeclarationSource::Local { annotation, owner, .. } => {
                 checker.type_context = owner.map(|owner| self.key(owner));
                 if let Some(annotation) = annotation {
                     // The declaration already supplies the captured type.
@@ -706,6 +736,7 @@ impl NativeRegistry {
         };
         self.merge_report(checker.report);
         Some(Binding {
+            initial: constraint.clone(),
             value: constraint.clone(),
             constraint,
             evolves_from_nil,
@@ -751,6 +782,7 @@ impl NativeRegistry {
                 };
                 Some(Binding {
                     constraint: ty.clone(),
+                    initial: ty.clone(),
                     value: ty,
                     evolves_from_nil: false,
                 })
@@ -758,6 +790,7 @@ impl NativeRegistry {
             DeclarationSource::Local {
                 annotation,
                 owner: Some(function),
+                ..
             } if Some(self.key(function)) == owner => {
                 let key = self.key(function);
                 let mut checker = self.checker(queries);
@@ -769,6 +802,7 @@ impl NativeRegistry {
                     let constraint = checker.annotation(&annotation);
                     self.contextual_report(context, checker.report);
                     return Some(Binding {
+                        initial: constraint.clone(),
                         value: constraint.clone(),
                         constraint,
                         evolves_from_nil: false,
@@ -809,6 +843,7 @@ impl NativeRegistry {
                 binding,
                 Binding {
                     constraint: ty.clone(),
+                    initial: ty.clone(),
                     value: ty.clone(),
                     evolves_from_nil: false,
                 },
@@ -2075,6 +2110,8 @@ impl RegistryIndex<'_> {
                                     .and_then(|annotation| annotation.types.get(index))
                                     .cloned(),
                                 owner,
+                                automatic: annotation.as_ref().and_then(|annotation| annotation.types.get(index)).is_none()
+                                    && super::automatic_nil_initializer(values, index),
                             },
                         );
                     }

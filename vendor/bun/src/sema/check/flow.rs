@@ -6111,6 +6111,24 @@ impl<'p, 's> Checker<'p, 's> {
         ty == TypeId::AUTO || ty == self.auto_array_type
     }
 
+    /// The declaration constraint of an original-source automatic local. Its
+    /// initial value and individual flow values are supplied separately.
+    pub fn native_auto_variable_constraint(&self) -> TypeId { TypeId::AUTO }
+
+    pub fn native_is_auto_variable_constraint(&self, ty: TypeId) -> bool { ty == TypeId::AUTO }
+
+    /// Resolved part of getTypeAtFlowAssignment, shared with the TS adapter.
+    /// Empty-array syntax remains an operation of the TS adapter.
+    pub fn resolved_assignment_type(&mut self, declared: TypeId, assigned: TypeId) -> TypeId {
+        if self.is_automatic_type(declared) {
+            let assigned = self.widen_literal(assigned);
+            if self.is_assignable(assigned, declared) { assigned }
+            else { self.array_of(TypeId::ANY) }
+        } else {
+            self.assignment_reduced_type(declared, assigned)
+        }
+    }
+
     /// `convertAutoToAny`
     pub(super) fn convert_auto_to_any(&mut self, ty: TypeId) -> TypeId {
         if ty == TypeId::AUTO {
@@ -6405,7 +6423,11 @@ impl<'p, 's> Checker<'p, 's> {
         }
         self.ensure_assignments_marked(file, symbol);
         let last = self.last_assignment_pos(file, symbol);
-        last == 0 || last < self.end_of_token_before(file, self.hir(file)[e].pos)
+        Self::is_past_last_assignment_position(last as usize, self.end_of_token_before(file, self.hir(file)[e].pos) as usize)
+    }
+
+    pub(super) fn is_past_last_assignment_position(last: usize, position: usize) -> bool {
+        last == 0 || last < position
     }
 
     /// `extendAssignmentPosition`. Only a statement moves the position, and the first statement
@@ -6871,12 +6893,7 @@ impl<'p, 's> Checker<'p, 's> {
                 return AtAssignment::Type(self.evolving_array(TypeId::NEVER));
             }
             let assigned = self.initial_or_assigned_type(walk, target);
-            let assigned = self.widen_literal(assigned);
-            return AtAssignment::Type(if self.is_assignable(assigned, declared) {
-                assigned
-            } else {
-                self.array_of(TypeId::ANY)
-            });
+            return AtAssignment::Type(self.resolved_assignment_type(declared, assigned));
         }
         let declared = match target {
             FlowTarget::Expr(e) if self.is_in_compound_like_assignment(file, e) => {

@@ -55,6 +55,7 @@ impl SessionQueries<'_, '_, '_> {
         NativeFlowResult {
             ty: self.handles.retain(result.ty),
             incomplete: result.incomplete,
+            unresolved_auto: result.unresolved_auto,
         }
     }
 
@@ -76,6 +77,7 @@ impl SessionQueries<'_, '_, '_> {
         NativeFlowResult {
             ty: self.handles.retain(result.ty),
             incomplete: result.incomplete,
+            unresolved_auto: result.unresolved_auto,
         }
     }
 }

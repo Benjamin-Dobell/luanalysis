@@ -86,6 +86,8 @@ pub struct CapturedAddress {
     pub transaction: AssignmentId,
     pub epoch: FlowId,
     pub span: Span,
+    /// Original enclosing statement extent, used by the backend capture policy.
+    pub statement_end: usize,
 }
 #[derive(Clone, Debug)]
 pub enum ValueDemand {
@@ -217,12 +219,18 @@ pub struct Node {
 pub struct FunctionGraph {
     pub index: u32,
     pub function_span: Option<Span>,
+    pub creation: Option<FunctionCreation>,
     pub entry: FlowId,
     pub exit: FlowId,
     pub nodes: Vec<Node>,
     pub returns: Vec<FlowId>,
     pub breaks: Vec<FlowId>,
     pub shared: Vec<bool>,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct FunctionCreation {
+    pub input: FlowId,
+    pub position: usize,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PendingFeature {
@@ -324,6 +332,7 @@ pub fn build(file: &File, bound: &BoundFile) -> ProgramFlow {
         current: builder.program.graphs[graph as usize].entry,
         breaks: Vec::new(),
         live: true,
+        enclosing_statements: Vec::new(),
     };
     builder.statements(&mut context, &file.statements);
     builder.program.graphs[graph as usize].exit = context.current;
@@ -343,6 +352,7 @@ struct Context {
     current: FlowId,
     breaks: Vec<Vec<FlowId>>,
     live: bool,
+    enclosing_statements: Vec<Span>,
 }
 struct Builder<'a> {
     program: ProgramFlow,
@@ -367,6 +377,7 @@ impl Builder<'_> {
         self.program.graphs.push(FunctionGraph {
             index: graph,
             function_span,
+            creation: None,
             entry,
             exit: entry,
             nodes: vec![Node {
@@ -427,18 +438,23 @@ impl Builder<'_> {
         self.expression_ids.insert(key, id);
         id
     }
-    fn function(&mut self, function: &Function) -> u32 {
+    fn function(&mut self, function: &Function, input: FlowId) -> u32 {
         let key = (function.span.start, function.span.end);
         if let Some(graph) = self.program.functions.get(&key) {
             return *graph;
         }
         let graph = self.new_graph(Some(function.span), function.body_span);
+        self.program.graphs[graph as usize].creation = Some(FunctionCreation {
+            input,
+            position: function.span.start,
+        });
         self.program.functions.insert(key, graph);
         let mut context = Context {
             graph,
             current: self.program.graphs[graph as usize].entry,
             breaks: Vec::new(),
             live: true,
+            enclosing_statements: Vec::new(),
         };
         self.statements(&mut context, &function.body);
         self.program.graphs[graph as usize].exit = context.current;
@@ -537,7 +553,7 @@ impl Builder<'_> {
                 }
             }
             ExprKind::Function(function) => {
-                let graph = self.function(function);
+                let graph = self.function(function, context.current);
                 self.append(
                     context,
                     NodeKind::CreateFunction { expression, graph },
@@ -628,6 +644,7 @@ impl Builder<'_> {
         target: &Expr,
         transaction: AssignmentId,
         epoch: FlowId,
+        statement_end: usize,
     ) -> CapturedAddress {
         let reference = self.reference(target);
         let (receiver, key) = match &target.kind {
@@ -643,6 +660,7 @@ impl Builder<'_> {
             }
             _ => (None, None),
         };
+        let statement_end = self.extended_statement_end(context, &reference, statement_end);
         CapturedAddress {
             reference,
             receiver,
@@ -650,6 +668,7 @@ impl Builder<'_> {
             transaction,
             epoch,
             span: target.span,
+            statement_end,
         }
     }
     fn transaction(&mut self) -> AssignmentId {
@@ -662,24 +681,42 @@ impl Builder<'_> {
     }
     fn name_address(
         &self,
+        context: &Context,
         name: &Name,
         transaction: AssignmentId,
         epoch: FlowId,
+        statement_end: usize,
     ) -> CapturedAddress {
+        let reference = Reference {
+            root: self.bound.binding_at(name.span.start).map_or_else(
+                || ReferenceRoot::Global(name.text.clone()),
+                ReferenceRoot::Binding,
+            ),
+            path: Vec::new(),
+        };
         CapturedAddress {
-            reference: Reference {
-                root: self.bound.binding_at(name.span.start).map_or_else(
-                    || ReferenceRoot::Global(name.text.clone()),
-                    ReferenceRoot::Binding,
-                ),
-                path: Vec::new(),
-            },
+            statement_end: self.extended_statement_end(context, &reference, statement_end),
+            reference,
             receiver: None,
             key: None,
             transaction,
             epoch,
             span: name.span,
         }
+    }
+    fn extended_statement_end(
+        &self,
+        context: &Context,
+        reference: &Reference,
+        statement_end: usize,
+    ) -> usize {
+        let ReferenceRoot::Binding(binding) = reference.root else {
+            return statement_end;
+        };
+        let declaration = self.bound.declaration(binding).span.start;
+        context.enclosing_statements.iter()
+            .filter(|span| span.start > declaration)
+            .fold(statement_end, |end, span| end.max(span.end))
     }
     fn expanded_arguments(&mut self, values: &[Expr]) {
         if let Some(last) = values.last() {
@@ -724,6 +761,13 @@ impl Builder<'_> {
     }
     fn statement(&mut self, context: &mut Context, statement: &Stmt) {
         let span = statement.span;
+        let compound = matches!(statement.kind,
+            StmtKind::Block { .. } | StmtKind::If { .. } | StmtKind::While { .. }
+            | StmtKind::Repeat { .. } | StmtKind::NumericFor { .. } | StmtKind::GenericFor { .. }
+        );
+        if compound {
+            context.enclosing_statements.push(span);
+        }
         match &statement.kind {
             StmtKind::Local { names, values, .. } => {
                 let transaction = self.transaction();
@@ -733,7 +777,7 @@ impl Builder<'_> {
                     .map(|value| self.evaluate(context, value))
                     .collect();
                 for (index, name) in names.iter().enumerate() {
-                    let address = self.name_address(name, transaction, epoch);
+                    let address = self.name_address(context, name, transaction, epoch, span.end);
                     let value = self.adjusted_value(&values, index);
                     self.append(
                         context,
@@ -754,7 +798,7 @@ impl Builder<'_> {
                 let epoch = context.current;
                 let addresses: Vec<_> = targets
                     .iter()
-                    .map(|target| self.address(context, target, transaction, epoch))
+                    .map(|target| self.address(context, target, transaction, epoch, span.end))
                     .collect();
                 let values: Vec<_> = values
                     .iter()
@@ -775,10 +819,10 @@ impl Builder<'_> {
                 }
             }
             StmtKind::LocalFunction { name, function } => {
-                let graph = self.function(function);
+                let graph = self.function(function, context.current);
                 let transaction = self.transaction();
                 let epoch = context.current;
-                let address = self.name_address(name, transaction, epoch);
+                let address = self.name_address(context, name, transaction, epoch, span.end);
                 self.append(
                     context,
                     NodeKind::Write {
@@ -795,8 +839,8 @@ impl Builder<'_> {
             } => {
                 let transaction = self.transaction();
                 let epoch = context.current;
-                let address = self.address(context, target, transaction, epoch);
-                let graph = self.function(function);
+                let address = self.address(context, target, transaction, epoch, span.end);
+                let graph = self.function(function, context.current);
                 self.append(
                     context,
                     NodeKind::Write {
@@ -1017,6 +1061,9 @@ impl Builder<'_> {
                 self.generic_iteration(context, iterator, names, body, span);
             }
         }
+        if compound {
+            context.enclosing_statements.pop();
+        }
     }
     fn numeric_iteration(
         &mut self,
@@ -1057,7 +1104,7 @@ impl Builder<'_> {
         let header = self.append(context, NodeKind::Loop, span);
         let transaction = self.transaction();
         let epoch = context.current;
-        let address = self.name_address(name, transaction, epoch);
+        let address = self.name_address(context, name, transaction, epoch, span.end);
         // This write resets the visible control variable on every body entry.
         // Lua's hidden counter is distinct from body writes to that variable.
         self.append(
@@ -1156,7 +1203,7 @@ impl Builder<'_> {
         let transaction = self.transaction();
         let epoch = context.current;
         for (index, name) in names.iter().enumerate() {
-            let address = self.name_address(name, transaction, epoch);
+            let address = self.name_address(context, name, transaction, epoch, span.end);
             let value = ValueDemand::IteratorResult { iterator, index };
             self.append(
                 context,

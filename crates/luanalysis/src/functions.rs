@@ -408,6 +408,7 @@ impl Checker<'_> {
             binding,
             Binding {
                 constraint: constraint.clone(),
+                initial: constraint.clone(),
                 value,
                 evolves_from_nil: false,
             },
@@ -478,6 +479,7 @@ impl Checker<'_> {
                 binding,
                 Binding {
                     constraint: ty.clone(),
+                    initial: ty.clone(),
                     value: ty.clone(),
                     evolves_from_nil: false,
                 },

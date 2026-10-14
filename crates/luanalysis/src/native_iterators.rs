@@ -91,6 +91,7 @@ impl NativeRegistry {
         Some((
             Binding {
                 value: constraint.clone(),
+                initial: constraint.clone(),
                 constraint,
                 evolves_from_nil: false,
             },

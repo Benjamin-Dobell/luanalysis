@@ -289,22 +289,14 @@ record[key]=2\nreturn record[key]\nend\n\
 }
 
 #[test]
-fn evolving_nil_initialization_reports_its_explicit_native_flow_gate() {
+fn evolving_nil_initialization_uses_the_native_flow_worker() {
     for declaration in ["local value", "local value=nil"] {
         let source = format!(
             "---@param flag boolean\nlocal function initialize(flag)\n{declaration}\nif flag then value=42 end\nreturn value\nend\ninitialize(true)"
         );
-        let report = check(&source);
-        assert_eq!(
-            report.diagnostics.len(),
-            1,
-            "{source}\n{:#?}",
-            report.diagnostics
-        );
-        let diagnostic = &report.diagnostics[0];
-        assert_eq!(diagnostic.code, "LUA2005", "{diagnostic:#?}");
-        assert!(diagnostic.message.contains("nil-initialized"));
-        assert_eq!(&source[diagnostic.span.start..diagnostic.span.end], "42");
+        let report = clean(&source);
+        let ty = report.type_at(source.find("return value").unwrap() + "return ".len()).unwrap();
+        assert!(ty.contains("number") && ty.contains("nil"), "{ty}");
     }
 }
 

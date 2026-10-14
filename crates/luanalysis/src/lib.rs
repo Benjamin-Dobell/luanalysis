@@ -128,8 +128,22 @@ impl CheckReport {
 #[derive(Clone)]
 struct Binding {
     constraint: Type,
+    /// Immutable graph-entry type; assignments only replace `value`.
+    initial: Type,
     value: Type,
     evolves_from_nil: bool,
+}
+
+fn automatic_nil_initializer(values: &[Expr], index: usize) -> bool {
+    let Some(mut value) = values.get(index) else {
+        return !values.last().is_some_and(|value| {
+            matches!(value.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Vararg)
+        });
+    };
+    while let ExprKind::Parenthesized(inner) = &value.kind {
+        value = inner;
+    }
+    matches!(value.kind, ExprKind::Nil)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -266,12 +280,14 @@ impl Checker<'_> {
                     self.engine
                         .captured_binding(&context, native.source_binding_key(binding))
                 }) {
+                    let evolves_from_nil = self.engine.is_auto_variable_constraint(&ty);
                     self.locals.insert(
                         binding,
                         Binding {
                             constraint: ty.clone(),
+                            initial: if evolves_from_nil { Type::Nil } else { ty.clone() },
                             value: ty,
-                            evolves_from_nil: false,
+                            evolves_from_nil,
                         },
                     );
                 }
@@ -597,10 +613,19 @@ impl Checker<'_> {
                             expr,
                             at,
                             &binding.constraint,
-                            &binding.constraint,
+                            &binding.initial,
                             self.engine,
                         );
                         self.incomplete_flow |= result.incomplete;
+                        if result.unresolved_auto && !result.incomplete
+                            && native_expressions::publishes(self.check_mode)
+                        {
+                            let declaration = self.bound.declaration(self.bound.binding_at(name.span.start).unwrap());
+                            let declaration_span = declaration.span;
+                            let declaration_name = declaration.name.clone();
+                            self.error("TS7034", declaration_span, format!("Variable '{declaration_name}' implicitly has type 'any' in some locations where its type cannot be determined."));
+                            self.error("TS7005", expr.span, format!("Variable '{declaration_name}' implicitly has an 'any' type."));
+                        }
                         result.ty
                     } else {
                         binding.value
@@ -697,6 +722,9 @@ impl Checker<'_> {
             native_packs::AnnotationPack::annotation(annotation)
                 .lower(&mut |ty| self.annotation(ty))
         });
+        let automatic: Vec<_> = names.iter().enumerate()
+            .map(|(index, _)| annotations.get(index).is_none() && automatic_nil_initializer(values, index))
+            .collect();
         let values = self.adjusted_list_values(
             values,
             names.len(),
@@ -713,24 +741,26 @@ impl Checker<'_> {
         for (index, name) in names.iter().enumerate() {
             let (value, origin) = values.get(index).cloned().unwrap_or((Type::Nil, name.span));
             let widened = self.engine.widen(&value);
-            let constraint = annotations
-                .get(index)
-                .cloned()
-                .unwrap_or_else(|| widened.clone());
+            let evolves_from_nil = automatic[index];
+            let constraint = if evolves_from_nil {
+                self.engine.auto_variable_constraint()
+            } else {
+                annotations.get(index).cloned().unwrap_or_else(|| widened.clone())
+            };
             self.compatible(&value, &constraint, origin);
             let narrowed = self.engine.assignment_value(&constraint, &value);
             let id = self
                 .bound
                 .binding_at(name.span.start)
                 .expect("bound Lua declaration");
-            let displayed = constraint.clone();
+            let displayed = if evolves_from_nil { Type::Nil } else { constraint.clone() };
             self.locals.insert(
                 id,
                 Binding {
+                    initial: if evolves_from_nil { Type::Nil } else { constraint.clone() },
                     constraint,
                     value: narrowed,
-                    evolves_from_nil: annotations.get(index).is_none()
-                        && matches!(widened, Type::Nil | Type::Undefined),
+                    evolves_from_nil,
                 },
             );
             self.record_binding(name, id, &displayed);
@@ -802,9 +832,7 @@ impl Checker<'_> {
                         continue;
                     };
                     let constraint = binding.constraint.clone();
-                    if binding.evolves_from_nil && !matches!(value, Type::Nil | Type::Undefined) {
-                        self.error("LUA2005", origin, "inference for a nil-initialized local requires the pending flow integration");
-                    } else if self.compatible(&value, &constraint, origin) {
+                    if self.compatible(&value, &constraint, origin) {
                         writes.push(Write::Local(
                             id,
                             self.engine.assignment_value(&constraint, &value),

@@ -1,0 +1,283 @@
+diff --git a/src/sema/check/flow.rs b/src/sema/check/flow.rs
+--- a/src/sema/check/flow.rs
++++ b/src/sema/check/flow.rs
+@@ -6111,6 +6111,24 @@
+         ty == TypeId::AUTO || ty == self.auto_array_type
+     }
+ 
++    /// The declaration constraint of an original-source automatic local. Its
++    /// initial value and individual flow values are supplied separately.
++    pub fn native_auto_variable_constraint(&self) -> TypeId { TypeId::AUTO }
++
++    pub fn native_is_auto_variable_constraint(&self, ty: TypeId) -> bool { ty == TypeId::AUTO }
++
++    /// Resolved part of getTypeAtFlowAssignment, shared with the TS adapter.
++    /// Empty-array syntax remains an operation of the TS adapter.
++    pub fn resolved_assignment_type(&mut self, declared: TypeId, assigned: TypeId) -> TypeId {
++        if self.is_automatic_type(declared) {
++            let assigned = self.widen_literal(assigned);
++            if self.is_assignable(assigned, declared) { assigned }
++            else { self.array_of(TypeId::ANY) }
++        } else {
++            self.assignment_reduced_type(declared, assigned)
++        }
++    }
++
+     /// `convertAutoToAny`
+     pub(super) fn convert_auto_to_any(&mut self, ty: TypeId) -> TypeId {
+         if ty == TypeId::AUTO {
+@@ -6405,7 +6423,11 @@
+         }
+         self.ensure_assignments_marked(file, symbol);
+         let last = self.last_assignment_pos(file, symbol);
+-        last == 0 || last < self.end_of_token_before(file, self.hir(file)[e].pos)
++        Self::is_past_last_assignment_position(last as usize, self.end_of_token_before(file, self.hir(file)[e].pos) as usize)
++    }
++
++    pub(super) fn is_past_last_assignment_position(last: usize, position: usize) -> bool {
++        last == 0 || last < position
+     }
+ 
+     /// `extendAssignmentPosition`. Only a statement moves the position, and the first statement
+@@ -6871,12 +6893,7 @@
+                 return AtAssignment::Type(self.evolving_array(TypeId::NEVER));
+             }
+             let assigned = self.initial_or_assigned_type(walk, target);
+-            let assigned = self.widen_literal(assigned);
+-            return AtAssignment::Type(if self.is_assignable(assigned, declared) {
+-                assigned
+-            } else {
+-                self.array_of(TypeId::ANY)
+-            });
++            return AtAssignment::Type(self.resolved_assignment_type(declared, assigned));
+         }
+         let declared = match target {
+             FlowTarget::Expr(e) if self.is_in_compound_like_assignment(file, e) => {
+diff --git a/src/sema/check/flow_walk.rs b/src/sema/check/flow_walk.rs
+--- a/src/sema/check/flow_walk.rs
++++ b/src/sema/check/flow_walk.rs
+@@ -76,6 +76,7 @@
+ 
+ pub(super) enum FlowStep<K, P> {
+     Value(TypeId),
++    Complete(FlowType),
+     Initial,
+     Follow {
+         before: K,
+@@ -273,6 +274,7 @@
+             }
+             match domain.step(self, walk, flow) {
+                 FlowStep::Value(ty) => break ty,
++                FlowStep::Complete(result) => { incomplete = result.incomplete; break result.ty; }
+                 FlowStep::Initial => break domain.initial(self, walk),
+                 FlowStep::Follow {
+                     before,
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -188,6 +188,28 @@
+ pub struct NativeFlowResult {
+     pub ty: TypeId,
+     pub incomplete: bool,
++    /// A completed read still had an automatic declaration constraint. The
++    /// returned type is Any recovery; the source owns its diagnostic locations.
++    pub unresolved_auto: bool,
++}
++
++#[derive(Clone, Copy, Debug)]
++pub struct NativeVariableWrite {
++    pub owner: NativeGraphKey,
++    pub statement_end: usize,
++}
++
++#[derive(Clone, Debug)]
++pub struct NativeVariableDeclaration {
++    pub owner: NativeGraphKey,
++    pub reference: NativeReferenceKey,
++    pub writes: Vec<NativeVariableWrite>,
++}
++
++#[derive(Clone, Copy, Debug)]
++pub struct NativeFunctionCreation {
++    pub input: NativeFlowKey,
++    pub position: usize,
+ }
+ 
+ /// Original immutable sibling projections of one physical Lua result list.
+@@ -209,6 +231,11 @@
+ }
+ 
+ pub trait NativeFlowProvider {
++    fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
++    fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
++    fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
++        (reference.graph == graph).then_some(reference)
++    }
+     fn iterator_error(&self, _: NativeFlowKey, _: NativeIteratorStage, _: TypeId, _: ResolvedTypeCallError, _: &mut Checker<'_, '_>) {}
+     fn iterator_projection(&self, _: NativeReferenceKey) -> Option<NativeIteratorProjection> { None }
+     fn pack_projection(&self, _: NativeReferenceKey) -> Option<NativePackProjection> { None }
+@@ -263,6 +290,7 @@
+     reachable: FxHashMap<NativeFlowKey, bool>,
+     latest_reachable: Option<(NativeFlowKey, bool)>,
+     disabled: FxHashMap<NativeGraphKey, ()>,
++    capture_graphs: Vec<NativeGraphKey>,
+ }
+ 
+ struct NativeWalk {
+@@ -346,6 +374,44 @@
+ }
+ 
+ impl NativeDomain<'_> {
++    fn auto_at_start(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey) -> Option<FlowType> {
++        if walk.declared != TypeId::AUTO { return None; }
++        let declaration = self.provider.reference_declaration(walk.reference)?;
++        let same_owner = |graph: NativeGraphKey| graph.snapshot == declaration.owner.snapshot && graph.region == declaration.owner.region;
++        if same_owner(at.graph) { return None; }
++        if !self.provider.contains_graph(declaration.owner) || declaration.reference.graph != declaration.owner || !self.provider.contains_reference(declaration.reference) {
++            self.provider.flow_error(at, NativeFlowError::InvalidReference(declaration.reference));
++            return Some(FlowType::new(TypeId::ERROR, false));
++        }
++        let Some(creation) = self.provider.graph_creation(at.graph) else { return Some(FlowType::new(TypeId::AUTO, false)) };
++        if declaration.writes.iter().any(|write| !same_owner(write.owner)) {
++            return Some(FlowType::new(TypeId::AUTO, false));
++        }
++        let last = declaration.writes.iter().map(|write| write.statement_end).max().unwrap_or(0);
++        if !Checker::is_past_last_assignment_position(last, creation.position) {
++            return Some(FlowType::new(TypeId::AUTO, false));
++        }
++        if creation.input.graph.snapshot != at.graph.snapshot || !self.provider.contains_graph(creation.input.graph) {
++            self.provider.flow_error(at, NativeFlowError::InvalidGraph(creation.input.graph));
++            return Some(FlowType::new(TypeId::ERROR, false));
++        }
++        let Some(reference) = self.provider.reference_in_graph(walk.reference, creation.input.graph) else {
++            self.provider.flow_error(at, NativeFlowError::InvalidReference(walk.reference));
++            return Some(FlowType::new(TypeId::ERROR, false));
++        };
++        let graphs = &mut checker.flow_memo.native_state.capture_graphs;
++        if graphs.contains(&at.graph) || graphs.len() >= super::flow_walk::MAX_FLOW_DEPTH as usize {
++            self.provider.flow_error(at, NativeFlowError::TooDeep(at));
++            return Some(FlowType::new(TypeId::ERROR, false));
++        }
++        let depth = graphs.len();
++        graphs.push(at.graph);
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| checker.native_flow_capture_type(self.provider, creation.input, reference, walk.declared, walk.initial)));
++        checker.flow_memo.native_state.capture_graphs.truncate(depth);
++        let result = match result { Ok(result) => result, Err(panic) => std::panic::resume_unwind(panic) };
++        Some(FlowType::new(result.ty, result.incomplete))
++    }
++
+     fn node(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey) -> Option<NativeFlowNode> {
+         if at.graph != self.graph || !self.provider.contains_graph(at.graph) {
+             self.provider
+@@ -442,7 +508,10 @@
+             return FlowStep::Value(TypeId::ERROR);
+         };
+         match node {
+-            NativeFlowNode::Start => FlowStep::Initial,
++            NativeFlowNode::Start => match self.auto_at_start(checker, walk, at) {
++                Some(result) => FlowStep::Complete(result),
++                None => FlowStep::Initial,
++            },
+             NativeFlowNode::Unreachable | NativeFlowNode::Return { .. } => {
+                 FlowStep::Value(checker.convert_auto_to_any(walk.declared))
+             }
+@@ -478,7 +547,7 @@
+                 match self.provider.write_affects(walk.reference, target, at) {
+                     NativeWriteRelation::Exact => {
+                         let assigned = checker.native_flow_value(self.provider, value, input);
+-                        FlowStep::Value(checker.assignment_reduced_type(walk.declared, assigned))
++                        FlowStep::Value(checker.resolved_assignment_type(walk.declared, assigned))
+                     }
+                     NativeWriteRelation::Ancestor => FlowStep::Value(walk.declared),
+                     NativeWriteRelation::Unaffected => FlowStep::Follow {
+@@ -964,15 +1033,15 @@
+     pub fn native_flow_pack_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativePackProjection, ordinary: TypeId) -> NativeFlowResult {
+         if projection.input.graph != at.graph {
+             provider.flow_error(at, NativeFlowError::ForeignEdge { from: at, to: projection.input });
+-            return NativeFlowResult { ty: TypeId::ERROR, incomplete: false };
++            return NativeFlowResult { ty: TypeId::ERROR, incomplete: false, unresolved_auto: false };
+         }
+         if projection.group.graph != at.graph || !provider.contains_reference(projection.group) {
+             provider.flow_error(at, NativeFlowError::InvalidReference(projection.group));
+-            return NativeFlowResult { ty: TypeId::ERROR, incomplete: false };
++            return NativeFlowResult { ty: TypeId::ERROR, incomplete: false, unresolved_auto: false };
+         }
+         let initial = self.native_flow_pack_value(provider, projection.value, projection.input);
+         if !self.is_union(initial.ty) {
+-            return NativeFlowResult { ty: ordinary, incomplete: false };
++            return NativeFlowResult { ty: ordinary, incomplete: false, unresolved_auto: false };
+         }
+         let result = self.native_flow_type(provider, at, projection.group, initial.ty, initial.ty);
+         let ty = if result.ty == initial.ty {
+@@ -985,7 +1054,7 @@
+                 if checker.are_comparable(part, projected) { part } else { TypeId::NEVER }
+             })
+         };
+-        NativeFlowResult { ty, incomplete: result.incomplete }
++        NativeFlowResult { ty, incomplete: result.incomplete, unresolved_auto: false }
+     }
+ 
+     fn native_flow_pack_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeResultPack {
+@@ -1071,6 +1140,24 @@
+     }
+     /// Type at an original-source graph node through the same walker used by TS.
+     pub fn native_flow_type(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        at: NativeFlowKey,
++        reference: NativeReferenceKey,
++        declared: TypeId,
++        initial: TypeId,
++    ) -> NativeFlowResult {
++        let mut result = self.native_flow_capture_type(provider, at, reference, declared, initial);
++        if result.ty == TypeId::AUTO {
++            result.unresolved_auto = !result.incomplete;
++            result.ty = TypeId::ANY;
++        }
++        result
++    }
++
++    /// The same traversal used for an immutable capture environment. Incomplete
++    /// automatic values remain Auto rather than freezing a provisional loop value.
++    pub fn native_flow_capture_type(
+         &mut self,
+         provider: &dyn NativeFlowProvider,
+         at: NativeFlowKey,
+@@ -1101,14 +1188,16 @@
+                 self.note_cycle();
+             }
+             return NativeFlowResult {
+-                ty: result.ty,
++                ty: if result.incomplete && declared == TypeId::AUTO { TypeId::AUTO } else { result.ty },
+                 incomplete: result.incomplete,
++                unresolved_auto: false,
+             };
+         };
+         provider.flow_error(at, error);
+         NativeFlowResult {
+             ty: TypeId::ERROR,
+             incomplete: false,
++            unresolved_auto: false,
+         }
+     }
+ 
+diff --git a/src/sema/check/native_iterators.rs b/src/sema/check/native_iterators.rs
+--- a/src/sema/check/native_iterators.rs
++++ b/src/sema/check/native_iterators.rs
+@@ -112,7 +112,7 @@
+     ) -> NativeFlowResult {
+         let frame = self.native_flow_type(provider, at, frame, TypeId::UNKNOWN, TypeId::NEVER);
+         let ty = self.native_pack_slot(NativeResultPack { ty: frame.ty }, index.saturating_add(2));
+-        NativeFlowResult { ty, incomplete: frame.incomplete }
++        NativeFlowResult { ty, incomplete: frame.incomplete, unresolved_auto: false }
+     }
+ 
+     pub fn native_flow_iterator_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativeIteratorProjection, ordinary: TypeId) -> NativeFlowResult {
+@@ -121,6 +121,6 @@
+         let ty = self.map_type(ordinary, |checker, part| {
+             if checker.are_comparable(part, projected) { part } else { TypeId::NEVER }
+         });
+-        NativeFlowResult { ty, incomplete: frame.incomplete }
++        NativeFlowResult { ty, incomplete: frame.incomplete, unresolved_auto: false }
+     }
+ }

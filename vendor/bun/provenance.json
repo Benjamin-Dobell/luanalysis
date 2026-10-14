@@ -696,19 +696,43 @@
       "patch": "vendor/patches/bun-sema-scalar-return-contracts.patch",
       "reason": "Separate pure written scalar return contracts from physical result-count queries, preserve correlated annotated count recovery and actual body cardinality, and check guaranteed argument prefixes before unknown Any tails through the shared call workers.",
       "patch_sha256": "a7032aa68f9dd3429e8513dc47d7734143c01b53ebb68ea8c3aa79b500437910"
+    },
+    {
+      "path": "src/sema/check/flow.rs",
+      "patch": "vendor/patches/bun-sema-automatic-variables.patch",
+      "reason": "Share native automatic assignment transfer with TS flow and resolve original-source automatic captures through the shared walker using lexical creation/write metadata, retaining opaque unresolved constraints until actual reads.",
+      "patch_sha256": "840677191010153bb6dcd71cdd2ec22ccafeaf2cc9bdf6d1f822e8770b2e8568"
+    },
+    {
+      "path": "src/sema/check/flow_walk.rs",
+      "patch": "vendor/patches/bun-sema-automatic-variables.patch",
+      "reason": "Share native automatic assignment transfer with TS flow and resolve original-source automatic captures through the shared walker using lexical creation/write metadata, retaining opaque unresolved constraints until actual reads.",
+      "patch_sha256": "840677191010153bb6dcd71cdd2ec22ccafeaf2cc9bdf6d1f822e8770b2e8568"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-automatic-variables.patch",
+      "reason": "Share native automatic assignment transfer with TS flow and resolve original-source automatic captures through the shared walker using lexical creation/write metadata, retaining opaque unresolved constraints until actual reads.",
+      "patch_sha256": "840677191010153bb6dcd71cdd2ec22ccafeaf2cc9bdf6d1f822e8770b2e8568"
+    },
+    {
+      "path": "src/sema/check/native_iterators.rs",
+      "patch": "vendor/patches/bun-sema-automatic-variables.patch",
+      "reason": "Share native automatic assignment transfer with TS flow and resolve original-source automatic captures through the shared walker using lexical creation/write metadata, retaining opaque unresolved constraints until actual reads.",
+      "patch_sha256": "840677191010153bb6dcd71cdd2ec22ccafeaf2cc9bdf6d1f822e8770b2e8568"
     }
   ],
   "source_additions": {
     "src/sema/check/flow_walk.rs": {
-      "extracted_sha256": "e6e19f756448f41aa78852bcd3bc49e665e3c3ccd4466ede5d0f81d05c9e447e",
+      "extracted_sha256": "04c423a44320448d9cbf075c8978e96abe61b2ee37567e7b5baef738938fc54c",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "d077410d87da22cf976fbea7b0a4ef0941ca92d140008280ebb66461151567a9",
+      "extracted_sha256": "bac3705bf81a34c0a897920cb3f8df2867f0c3f6058b741750bd846edd4c4031",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_iterators.rs": {
-      "extracted_sha256": "7d8e0e789444ba1cdaafd0e64e3dfef451d0b4107acb5ba99e0c0676ac90d371",
+      "extracted_sha256": "02a1b75dc6fdf5747c6da51f7bcba961fd18db028921ce81f184d67488703d52",
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
@@ -1633,7 +1657,7 @@
     "src/sema/check/flow.rs": {
       "upstream": "src/sema/check/flow.rs",
       "sha256": "eca4c6e84d836502b89074917574c1f0623497ab0b0f11b06b729296b4d2c467",
-      "extracted_sha256": "510400364372fbd7d7e00690afde2cc58559a7ba76360201b4fa034c78df2623"
+      "extracted_sha256": "feb09d25c866213106eb01829c664d158ac378a1dc83046db2184900b2663ee5"
     },
     "src/sema/check/grammarchecks.rs": {
       "upstream": "src/sema/check/grammarchecks.rs",

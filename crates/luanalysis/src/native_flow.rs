@@ -10,6 +10,7 @@ use luanalysis_engine::{
     NativeIteratorProjection, NativeIteratorStage, NativeNumericConstant, NativeNumericInput,
     NativeNumericIterationStage, NativePackProjection, NativePredicate, NativeReferenceKey,
     NativeRuntimeType, NativeValueKey, NativeWriteRelation, Type, TypeQueries, ValuePack,
+    NativeFunctionCreation, NativeVariableDeclaration, NativeVariableWrite,
 };
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, File, Span};
 use std::cell::RefCell;
@@ -48,6 +49,7 @@ pub(super) struct NativeFlowSources {
     iterator_values: HashMap<flow::IteratorId, u32>,
     write_values: HashMap<flow::FlowId, u32>,
     declaration_writes: HashMap<BindingId, flow::FlowId>,
+    binding_owners: HashMap<BindingId, u32>,
     expression_evaluations: HashMap<(u32, usize, usize), flow::EvaluationId>,
     runtime_type_calls: HashSet<flow::SourceExpressionId>,
     pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
@@ -72,6 +74,7 @@ impl NativeFlowSources {
             iterator_values: HashMap::new(),
             write_values: HashMap::new(),
             declaration_writes: HashMap::new(),
+            binding_owners: HashMap::new(),
             expression_evaluations: HashMap::new(),
             runtime_type_calls: HashSet::new(),
             pack_projections: HashMap::new(),
@@ -255,7 +258,60 @@ impl NativeFlowSources {
         result
             .iterator_projections
             .retain(|_, (iterator, _)| !mutable_iterators.contains(iterator));
+        for declaration in &bound.declarations {
+            let mut scope = bound.scope(declaration.scope);
+            let owner = loop {
+                if scope.kind == super::bind::ScopeKind::Function {
+                    break result.program.functions[&(scope.span.start, scope.span.end)];
+                }
+                let Some(parent) = scope.parent else { break 0; };
+                scope = bound.scope(parent);
+            };
+            result.binding_owners.insert(declaration.id, owner);
+            intern_reference(
+                &mut result.references[owner as usize],
+                &mut result.reference_indices[owner as usize],
+                &flow::Reference { root: flow::ReferenceRoot::Binding(declaration.id), path: Vec::new() },
+            );
+        }
+        for scope in bound.scopes.iter().filter(|scope| scope.kind == super::bind::ScopeKind::Function) {
+            let graph = result.program.functions[&(scope.span.start, scope.span.end)] as usize;
+            for &binding in &scope.captures {
+                intern_reference(&mut result.references[graph], &mut result.reference_indices[graph], &flow::Reference {
+                    root: flow::ReferenceRoot::Binding(binding),
+                    path: Vec::new(),
+                });
+            }
+        }
         result
+    }
+
+    pub(super) fn reference_declaration(&self, reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> {
+        let source = self.source_reference(reference)?;
+        if !source.path.is_empty() { return None; }
+        let flow::ReferenceRoot::Binding(binding) = source.root else { return None; };
+        let owner = self.graph(*self.binding_owners.get(&binding)?, reference.graph.context);
+        let writes = self.program.graphs.iter().flat_map(|graph| graph.nodes.iter()).filter_map(|node| {
+            let flow::NodeKind::Write { address, .. } = &node.kind else { return None; };
+            (address.reference.root == source.root && address.reference.path.is_empty()).then_some(NativeVariableWrite {
+                owner: self.graph(node.id.graph, reference.graph.context),
+                statement_end: address.statement_end,
+            })
+        }).collect();
+        Some(NativeVariableDeclaration {
+            owner,
+            reference: self.reference_key(owner, source)?,
+            writes,
+        })
+    }
+
+    pub(super) fn graph_creation(&self, graph: NativeGraphKey) -> Option<NativeFunctionCreation> {
+        if !self.contains_graph(graph) { return None; }
+        let creation = self.program.graphs[graph.region as usize].creation?;
+        Some(NativeFunctionCreation {
+            input: self.flow_key(creation.input, graph.context),
+            position: creation.position,
+        })
     }
 
     pub(super) fn pack_projection(
@@ -883,6 +939,15 @@ pub(super) struct FlowAdapter<'a> {
 }
 
 impl NativeFlowProvider for FlowAdapter<'_> {
+    fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
+        self.sources.reference_key(graph, self.sources.source_reference(reference)?)
+    }
+    fn reference_declaration(&self, reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> {
+        self.sources.reference_declaration(reference)
+    }
+    fn graph_creation(&self, graph: NativeGraphKey) -> Option<NativeFunctionCreation> {
+        self.sources.graph_creation(graph)
+    }
     fn iterator_error(
         &self,
         at: NativeFlowKey,

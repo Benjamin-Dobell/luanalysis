@@ -8,17 +8,24 @@ pub use core::{
     NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeGraphKey,
     NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePackProjection,
     NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation, NativeIteratorProjection, NativeIteratorStage,
+    NativeVariableDeclaration, NativeVariableWrite, NativeFunctionCreation,
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeFlowResult {
     pub ty: Type,
     pub incomplete: bool,
+    pub unresolved_auto: bool,
 }
 
 /// Immutable graph recipes and source-value demands. No graph join, loop
 /// iteration, or narrowing algorithm is performed by this interface.
 pub trait NativeFlowProvider {
+    fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
+    fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
+    fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
+        (reference.graph == graph).then_some(reference)
+    }
     fn iterator_error(&self, _: NativeFlowKey, _: NativeIteratorStage, _: &Type, _: super::CallError, _: &mut dyn TypeQueries) {}
     fn iterator_projection(&self, _: NativeReferenceKey) -> Option<NativeIteratorProjection> { None }
     fn pack_projection(&self, _: NativeReferenceKey) -> Option<NativePackProjection> {
@@ -63,6 +70,9 @@ pub(super) struct FlowProviderAdapter<'a> {
 }
 
 impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
+    fn reference_declaration(&self, reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> { self.provider.reference_declaration(reference) }
+    fn graph_creation(&self, graph: NativeGraphKey) -> Option<NativeFunctionCreation> { self.provider.graph_creation(graph) }
+    fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> { self.provider.reference_in_graph(reference, graph) }
     fn iterator_projection(&self, reference: NativeReferenceKey) -> Option<NativeIteratorProjection> { self.provider.iterator_projection(reference) }
     fn iterator_error(&self, at: NativeFlowKey, stage: NativeIteratorStage, callee: bun_sema::types::TypeId, error: bun_sema::check::ResolvedTypeCallError, checker: &mut Checker<'_, '_>) {
         let mut queries = SessionQueries { checker, handles: self.handles };
@@ -164,6 +174,7 @@ impl SessionQueries<'_, '_, '_> {
         NativeFlowResult {
             ty: self.handles.retain(result.ty),
             incomplete: result.incomplete,
+            unresolved_auto: result.unresolved_auto,
         }
     }
 }

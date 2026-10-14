@@ -78,13 +78,6 @@ fn unsupported_features_cannot_silently_pass() {
     ] {
         assert!(!check(source).diagnostics.is_empty(), "{source}");
     }
-    let evolving = check("local value\nvalue = 42");
-    assert!(
-        evolving
-            .diagnostics
-            .iter()
-            .any(|error| error.code == "LUA2005")
-    );
 }
 
 #[test]

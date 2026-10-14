@@ -76,6 +76,7 @@ impl<K: Copy + Eq + Hash> WalkState<K> {
 
 pub(super) enum FlowStep<K, P> {
     Value(TypeId),
+    Complete(FlowType),
     Initial,
     Follow {
         before: K,
@@ -273,6 +274,7 @@ impl<'s, 'p> Checker<'s, 'p> {
             }
             match domain.step(self, walk, flow) {
                 FlowStep::Value(ty) => break ty,
+                FlowStep::Complete(result) => { incomplete = result.incomplete; break result.ty; }
                 FlowStep::Initial => break domain.initial(self, walk),
                 FlowStep::Follow {
                     before,

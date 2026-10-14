@@ -8,6 +8,8 @@
 mod native;
 mod native_flow;
 pub use native_flow::*;
+#[cfg(test)]
+mod native_auto_tests;
 mod native_named;
 pub use native_named::*;
 mod native_iterators;
@@ -764,6 +766,14 @@ pub trait TypeQueries {
         declared: &Type,
         initial: &Type,
     ) -> NativeFlowResult;
+    fn flow_capture_type(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        at: NativeFlowKey,
+        reference: NativeReferenceKey,
+        declared: &Type,
+        initial: &Type,
+    ) -> NativeFlowResult;
     fn flow_reachable(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey) -> bool;
     fn flow_iterator_pack(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey) -> ValuePack;
     fn iterator_result(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey, index: usize) -> Type;
@@ -797,6 +807,10 @@ pub trait TypeQueries {
     fn union_reduced(&mut self, types: &[Type]) -> Type;
     fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type>;
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type;
+    /// Session-owned automatic declaration sentinel. Keep a separate original
+    /// initial value when querying flow; this capability is not ordinary Any.
+    fn auto_variable_constraint(&mut self) -> Type;
+    fn is_auto_variable_constraint(&mut self, ty: &Type) -> bool;
     fn call(&mut self, callee: &Type, arguments: &[Type]) -> CallResult;
     fn call_with_type_arguments(
         &mut self,
@@ -892,8 +906,8 @@ impl Engine {
         self.with_session(|queries| queries.property_type(ty, name))
     }
 
-    /// The native checker's assignment transfer for an explicitly declared
-    /// location. Its flow caller retains nonunions and reduces union members.
+    /// The native checker's assignment transfer for a declared location,
+    /// including literal widening of automatic declarations.
     pub fn assignment_value(&self, declared: &Type, assigned: &Type) -> Type {
         self.with_session(|queries| queries.assignment_value(declared, assigned))
     }
@@ -1242,6 +1256,25 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         NativeFlowResult {
             ty: export_type(self.checker, self.handles, result.ty),
             incomplete: result.incomplete,
+            unresolved_auto: result.unresolved_auto,
+        }
+    }
+    fn flow_capture_type(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        at: NativeFlowKey,
+        reference: NativeReferenceKey,
+        declared: &Type,
+        initial: &Type,
+    ) -> NativeFlowResult {
+        let declared = import_type(self.checker, self.handles, declared);
+        let initial = import_type(self.checker, self.handles, initial);
+        let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
+        let result = self.checker.native_flow_capture_type(&adapter, at, reference, declared, initial);
+        NativeFlowResult {
+            ty: export_type(self.checker, self.handles, result.ty),
+            incomplete: result.incomplete,
+            unresolved_auto: result.unresolved_auto,
         }
     }
     fn flow_reachable(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey) -> bool {
@@ -1446,12 +1479,21 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type {
         let declared = import_type(self.checker, self.handles, declared);
         let assigned = import_type(self.checker, self.handles, assigned);
-        let value = if self.checker.is_union(declared) {
-            self.checker.assignment_reduced_type(declared, assigned)
+        let value = if self.checker.native_is_auto_variable_constraint(declared) || self.checker.is_union(declared) {
+            self.checker.resolved_assignment_type(declared, assigned)
         } else {
             declared
         };
         export_type(self.checker, self.handles, value)
+    }
+
+    fn auto_variable_constraint(&mut self) -> Type {
+        self.handles.retain(self.checker.native_auto_variable_constraint())
+    }
+
+    fn is_auto_variable_constraint(&mut self, ty: &Type) -> bool {
+        let ty = import_type(self.checker, self.handles, ty);
+        self.checker.native_is_auto_variable_constraint(ty)
     }
 
     fn call(&mut self, callee: &Type, arguments: &[Type]) -> CallResult {

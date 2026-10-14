@@ -482,9 +482,6 @@ impl NativeRegistry {
         let key = self.key_for(function);
         let contextual = queries.current_contextual_function();
         let captured = queries.current_captured_function();
-        if contextual.is_none() && captured.is_none() {
-            return Type::NativeFunction(key);
-        }
         let bindings = self
             .bound()
             .scopes
@@ -495,6 +492,9 @@ impl NativeRegistry {
             .map(|scope| scope.captures.clone())
             .unwrap_or_default();
         if bindings.is_empty() {
+            return Type::NativeFunction(key);
+        }
+        if contextual.is_none() && captured.is_none() && !bindings.iter().any(|binding| self.binding_is_automatic(*binding)) {
             return Type::NativeFunction(key);
         }
         let mut environment = Vec::with_capacity(bindings.len());
@@ -519,6 +519,11 @@ impl NativeRegistry {
                         .expect("a lexical capture has a declaration constraint")
                         .constraint
                 }
+            };
+            let value = if queries.is_auto_variable_constraint(&value) {
+                self.automatic_capture_type(key, binding, &value, queries)
+            } else {
+                value
             };
             environment.push((source, value));
         }

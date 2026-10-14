@@ -151,6 +151,13 @@ SOURCE_ADAPTATIONS.extend({
 } for path in ["decl.rs", "infer.rs", "mod.rs", "native_packs.rs"])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-automatic-variables.patch",
+    "reason": "Share native automatic assignment transfer with TS flow and resolve original-source automatic captures through the shared walker using lexical creation/write metadata, retaining opaque unresolved constraints until actual reads.",
+} for path in ["flow.rs", "flow_walk.rs", "native_flow.rs", "native_iterators.rs"])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 
