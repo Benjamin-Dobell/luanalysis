@@ -50,8 +50,26 @@ impl<'p, 's> Checker<'p, 's> {
         type_args: &[TypeId],
         expected: Option<NativeResultPack>,
     ) -> NativeResultPackCall {
+        let args = self.native_call_arguments(call, args);
+        let resolved = self.resolve_native_arguments_with_result_pack(callee, &args, type_args, None, expected);
+        self.result_pack_of_native_call(resolved)
+    }
+
+    pub fn call_native_arguments_scalar(
+        &mut self,
+        callee: TypeId,
+        call: Option<crate::types::NativeExpressionId>,
+        args: &[NativeCallArgument],
+        type_args: &[TypeId],
+        expected: Option<TypeId>,
+    ) -> ResolvedTypeCall {
+        let args = self.native_call_arguments(call, args);
+        self.resolve_native_arguments_with_result_pack(callee, &args, type_args, expected, None)
+    }
+
+    fn native_call_arguments(&self, call: Option<crate::types::NativeExpressionId>, args: &[NativeCallArgument]) -> Vec<Arg> {
         assert!(call.is_none_or(|call| self.contains_native_expression(call)));
-        let args: Vec<Arg> = args.iter().enumerate().map(|(index, &arg)| match arg {
+        args.iter().enumerate().map(|(index, &arg)| match arg {
             NativeCallArgument::Resolved(ty) => Arg::Resolved(ty),
             NativeCallArgument::Expression(expression) => {
                 assert!(self.contains_native_expression(expression));
@@ -66,9 +84,7 @@ impl<'p, 's> Checker<'p, 's> {
                 assert!(self.contains_native_expression(expression));
                 Arg::NativePack(expression)
             }
-        }).collect();
-        let resolved = self.resolve_native_arguments_with_result_pack(callee, &args, type_args, None, expected);
-        self.result_pack_of_native_call(resolved)
+        }).collect()
     }
 
     pub fn call_resolved_result_pack(
@@ -249,7 +265,11 @@ impl<'p, 's> Checker<'p, 's> {
                 Arg::NativePack(expression) => self.check_native_argument_pack(expression, None, None, CheckMode::empty()),
                 _ => unreachable!("TS spread in native call arity"),
             };
-            if self.is_any(pack.ty) { return true }
+            if self.is_any(pack.ty) {
+                let prefix = args.len() - 1;
+                let (_, maximum) = self.native_pack_count_bounds(expected);
+                return maximum.is_none_or(|maximum| prefix <= maximum);
+            }
             let Some(rows) = self.native_pack_alternatives(pack) else { return true };
             rows
         } else { vec![NativePackAlternative { fixed: Vec::new(), tail: None }] };
@@ -424,6 +444,68 @@ impl<'p, 's> Checker<'p, 's> {
         if self.is_any(pack.ty) || !self.native_pack_allows_implicit_return(pack) { return pack }
         let empty = self.native_result_pack(&[NativePackAlternative { fixed: Vec::new(), tail: None }]);
         self.native_join_packs(&[pack, empty])
+    }
+
+    /// In a written Lua scalar return contract, void is absence, whereas nil is one value.
+    /// This normalization happens before generic substitution and never rewrites actual values.
+    pub fn native_declared_result_pack(&mut self, pack: NativeResultPack) -> NativeResultPack {
+        let Some(alternatives) = self.native_pack_alternatives(pack) else { return pack };
+        let mut rows = Vec::new();
+        for alternative in alternatives {
+            if alternative.fixed.len() == 1 && alternative.tail.is_none() {
+                let slot = alternative.fixed[0];
+                let parts = self.parts(slot.ty);
+                if parts.contains(&TypeId::VOID) {
+                    let values: Vec<TypeId> = parts.iter().copied().filter(|&part| part != TypeId::VOID).collect();
+                    rows.push(NativePackAlternative { fixed: Vec::new(), tail: None });
+                    if !values.is_empty() {
+                        let ty = self.union(&values);
+                        rows.push(NativePackAlternative { fixed: vec![NativePackSlot { ty, ..slot }], tail: None });
+                    }
+                    continue;
+                }
+            }
+            rows.push(alternative);
+        }
+        self.native_result_pack(&rows)
+    }
+
+    /// Keep the declared value types while refining only physical rows established by the body.
+    /// Invalid or still-symbolic body rows retain the contract for diagnostic recovery.
+    pub fn native_return_pack_with_cardinality(&mut self, declared: NativeResultPack, actual: NativeResultPack) -> NativeResultPack {
+        let declared = self.native_declared_result_pack(declared);
+        let allowed = self.native_pack_with_implicit_empty(declared);
+        let Some(actual_rows) = self.native_pack_alternatives(actual) else { return allowed };
+        let Some(expected_rows) = self.native_pack_alternatives(allowed) else { return allowed };
+        let mut rows = Vec::new();
+        for actual in actual_rows {
+            let actual_count = self.native_pack_row_count_type(&actual);
+            let mut matched = false;
+            for expected in &expected_rows {
+                let expected_count = self.native_pack_row_count_type(expected);
+                if !self.native_pack_assignable(actual_count, expected_count) { continue }
+                let mut fixed = Vec::with_capacity(actual.fixed.len());
+                for (index, actual_slot) in actual.fixed.iter().enumerate() {
+                    let ty = match expected.fixed.get(index) {
+                        Some(slot) if slot.optional => self.optional(slot.ty),
+                        Some(slot) => slot.ty,
+                        None => expected.tail.expect("count-compatible return pack lacks a value slot"),
+                    };
+                    fixed.push(NativePackSlot { ty, optional: actual_slot.optional });
+                }
+                rows.push(NativePackAlternative { fixed, tail: actual.tail.and(expected.tail) });
+                matched = true;
+            }
+            if !matched { return allowed }
+        }
+        self.native_result_pack(&rows)
+    }
+
+    fn native_pack_row_count_type(&mut self, row: &NativePackAlternative) -> NativeResultPack {
+        self.native_result_pack(&[NativePackAlternative {
+            fixed: row.fixed.iter().map(|slot| NativePackSlot { ty: TypeId::ANY, optional: slot.optional }).collect(),
+            tail: row.tail.map(|_| TypeId::ANY),
+        }])
     }
 
     /// Context for the final expression after already checked scalar prefix values.

@@ -2582,7 +2582,7 @@ impl<'p, 's> Checker<'p, 's> {
                 .is_some_and(|ty| self.is_type_parameter_at_top_level(ty, param, 0));
         }
         if self.sig_has_native_result_pack(sig) {
-            let pack = self.sig_result_pack(sig);
+            let pack = self.sig_declared_result_pack_contract(sig).unwrap_or_else(|| self.sig_result_pack(sig));
             if let Some(alternatives) = self.native_pack_alternatives(pack) {
                 return alternatives.iter().any(|alternative| {
                     alternative.fixed.iter().map(|slot| slot.ty).chain(alternative.tail)

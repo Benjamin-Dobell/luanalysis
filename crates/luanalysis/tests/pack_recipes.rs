@@ -4,9 +4,7 @@ mod native_packs;
 use luanalysis::{bind, flow};
 use luanalysis_engine::{NativeExpressionKey, Type, ValuePack};
 use luanalysis_syntax::{StmtKind, TypeExprKind, TypeLiteral, parse};
-use native_packs::{
-    Adjustment, AnnotationPack, InitializerContext, ListContext, NativePacks, only_empty_results,
-};
+use native_packs::{Adjustment, AnnotationPack, InitializerContext, ListContext, NativePacks};
 use std::collections::HashMap;
 
 #[test]
@@ -157,24 +155,6 @@ fn correlated_annotation_recipes_keep_canonical_whole_rows_and_tail_indices() {
         &source[recipe.types[3].span.start..recipe.types[3].span.end],
         "string"
     );
-}
-
-#[test]
-fn empty_function_cardinality_excludes_nested_returns_and_preserves_explicit_nil() {
-    let source = "---@return nil\nlocal function empty() local function inner() return 1 end return end\nlocal function one() return nil end\nlocal function forward() return empty() end\n";
-    let file = parse(source);
-    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
-    let results: Vec<_> = file
-        .statements
-        .iter()
-        .map(|statement| {
-            let StmtKind::LocalFunction { function, .. } = &statement.kind else {
-                panic!()
-            };
-            only_empty_results(function)
-        })
-        .collect();
-    assert_eq!(results, [true, false, false]);
 }
 
 #[test]

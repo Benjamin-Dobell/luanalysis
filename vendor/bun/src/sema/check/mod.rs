@@ -143,6 +143,21 @@ pub trait NativeFunctionProvider {
     }
     fn return_type(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> TypeId;
     fn has_result_pack(&self, _: NativeFunctionId) -> bool { false }
+    /// Annotation-only scalar metadata. This must not inspect the body or its result count.
+    fn declared_scalar_return_type(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Option<TypeId> { None }
+    fn declared_scalar_return_type_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> Option<NativeTypeResult> {
+        self.declared_scalar_return_type(checker, declaration).map(NativeTypeResult::Declaration)
+    }
+    fn declared_scalar_return_type_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeCapturedFunctionContext) -> Option<NativeTypeResult> {
+        self.declared_scalar_return_type(checker, declaration).map(NativeTypeResult::Declaration)
+    }
+    fn declared_result_pack_contract(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Option<NativePackResult> { None }
+    fn declared_result_pack_contract_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> Option<NativePackResult> {
+        self.declared_result_pack_contract(checker, declaration)
+    }
+    fn declared_result_pack_contract_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeCapturedFunctionContext) -> Option<NativePackResult> {
+        self.declared_result_pack_contract(checker, declaration)
+    }
     fn return_pack_result(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> NativePackResult {
         let ty = self.return_type(checker, declaration);
         NativePackResult::Declaration(checker.native_scalar_pack(ty))

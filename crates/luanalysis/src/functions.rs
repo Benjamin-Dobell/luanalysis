@@ -241,6 +241,8 @@ impl Checker<'_> {
         let returns =
             AnnotationPack::new(&function.returns, function.packs.as_deref(), function.span)
                 .lower(&mut |ty| self.annotation(ty));
+        let returns = self.engine.declared_result_pack(&returns);
+        let returns = self.engine.pack_with_implicit_empty(&returns);
         let rest = function
             .vararg
             .as_ref()
@@ -548,9 +550,16 @@ impl Checker<'_> {
         _discard: bool,
         expected: Option<&Type>,
     ) -> Type {
-        let expected_pack = expected.map(|ty| ValuePack::single(ty.clone()));
-        let pack = self.call_expression_pack(callee, args, span, expected_pack.as_ref());
-        self.engine.pack_slot(&pack, 0)
+        let callee_type = self.expression(callee);
+        let arguments = self.call_arguments(args);
+        let call = self
+            .native
+            .map(|native| native.expression_key_for_span(span));
+        let result =
+            self.engine
+                .call_native_arguments_scalar(&callee_type, call, &arguments, &[], expected);
+        let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
+        self.call_result(result, &callee_type, &origins, callee.span, span)
     }
 
     pub(super) fn call_result(

@@ -144,6 +144,13 @@ SOURCE_ADAPTATIONS.extend({
 ])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-scalar-return-contracts.patch",
+    "reason": "Separate pure written scalar return contracts from physical result-count queries, preserve correlated annotated count recovery and actual body cardinality, and check guaranteed argument prefixes before unknown Any tails through the shared call workers.",
+} for path in ["decl.rs", "infer.rs", "mod.rs", "native_packs.rs"])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

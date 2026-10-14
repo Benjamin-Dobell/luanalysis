@@ -7,7 +7,7 @@
 use super::native_expressions::NativeExpressions;
 use super::native_flow::{FlowAdapter, FlowValueQueries, NativeFlowSources, ValueRecipe};
 use super::native_named::{NativeNamed, NativeTypeContext};
-use super::native_packs::{AnnotationPack, InitializerContext, NativePacks, only_empty_results};
+use super::native_packs::{AnnotationPack, InitializerContext, NativePacks};
 use super::native_types::{NativeTypes, TypeNameResolution, TypeParameterRecipe, TypeScopeRecipe};
 use super::{Binding, CheckReport, Checker, Diagnostic, bind};
 use bind::{BindingId, BoundFile};
@@ -213,16 +213,13 @@ impl NativeRegistry {
         &self,
         key: NativeFunctionKey,
         queries: &mut dyn TypeQueries,
+        contextual: Option<ContextualFunctionContext>,
+        captured: Option<CapturedFunctionContext>,
     ) -> Option<ValuePack> {
-        let pack = self.declared_pack_contract(key, queries)?;
-        // Written scalar nil/void/any contracts may allow a function to end.
-        // Their permission cannot fabricate a value in its runtime pack.
-        if only_empty_results(self.function(key)) {
-            if queries.pack_allows_implicit_return(&pack) {
-                return Some(ValuePack::empty());
-            }
-        }
-        Some(pack)
+        let raw = self.declared_pack_contract(key, queries)?;
+        let declared = queries.declared_result_pack(&raw);
+        let actual = self.inferred_return_pack_with_context(key, queries, contextual, captured);
+        Some(queries.return_pack_with_cardinality(&declared, &actual))
     }
 
     pub(super) fn source_rest_pack(
@@ -1032,10 +1029,12 @@ impl NativeRegistry {
         checker.return_pack = self
             .declared_pack_contract(key, checker.engine)
             .map(|mut pack| {
+                pack = checker.engine.declared_result_pack(&pack);
+                pack = checker.engine.pack_with_implicit_empty(&pack);
                 if let Some(captured) = captured {
                     pack = checker.engine.instantiate_pack_in_capture(&captured, &pack);
                 }
-                checker.engine.pack_with_implicit_empty(&pack)
+                pack
             });
         checker.flow_at = Some(self.flow_entry(Some(key), contextual.as_ref()));
         let at = checker.flow_at.unwrap();
@@ -1685,28 +1684,52 @@ impl NativeTypeProvider for NativeRegistry {
     ) -> ValuePack {
         self.inferred_return_pack_with_context(key, queries, None, Some(*context))
     }
-    fn function_declared_return_pack(
+    fn function_declared_scalar_contract(
         &self,
         key: NativeFunctionKey,
         queries: &mut dyn TypeQueries,
     ) -> Option<ValuePack> {
-        self.source_declared_return_pack(key, queries)
+        self.declared_pack_contract(key, queries)
     }
-    fn function_declared_return_pack_in_context(
+    fn function_declared_scalar_contract_in_context(
         &self,
         key: NativeFunctionKey,
         _: &ContextualFunctionContext,
         queries: &mut dyn TypeQueries,
     ) -> Option<ValuePack> {
-        self.source_declared_return_pack(key, queries)
+        self.declared_pack_contract(key, queries)
     }
-    fn function_declared_return_pack_in_capture(
+    fn function_declared_scalar_contract_in_capture(
         &self,
         key: NativeFunctionKey,
         _: &CapturedFunctionContext,
         queries: &mut dyn TypeQueries,
     ) -> Option<ValuePack> {
-        self.source_declared_return_pack(key, queries)
+        self.declared_pack_contract(key, queries)
+    }
+    fn function_declared_return_pack(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.source_declared_return_pack(key, queries, None, None)
+    }
+    fn function_declared_return_pack_in_context(
+        &self,
+        key: NativeFunctionKey,
+        context: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        let captured = queries.current_captured_function();
+        self.source_declared_return_pack(key, queries, Some(*context), captured)
+    }
+    fn function_declared_return_pack_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        context: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.source_declared_return_pack(key, queries, None, Some(*context))
     }
     fn function_rest_pack(
         &self,

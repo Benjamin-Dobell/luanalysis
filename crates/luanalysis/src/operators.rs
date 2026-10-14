@@ -294,9 +294,14 @@ impl Checker<'_> {
         _discard: bool,
         expected: Option<&Type>,
     ) -> Type {
-        let expected_pack = expected.map(|ty| ValuePack::single(ty.clone()));
-        let pack = self.method_call_pack(receiver, name, args, span, expected_pack.as_ref());
-        self.engine.pack_slot(&pack, 0)
+        let (callee, arguments, origins) = self.method_call_arguments(receiver, name, args);
+        let call = self
+            .native
+            .map(|native| native.expression_key_for_span(span));
+        let result =
+            self.engine
+                .call_native_arguments_scalar(&callee, call, &arguments, &[], expected);
+        self.call_result(result, &callee, &origins, name.span, span)
     }
 
     pub(super) fn method_call_pack(
@@ -307,6 +312,22 @@ impl Checker<'_> {
         span: Span,
         expected: Option<&ValuePack>,
     ) -> ValuePack {
+        let (callee, arguments, origins) = self.method_call_arguments(receiver, name, args);
+        let call = self
+            .native
+            .map(|native| native.expression_key_for_span(span));
+        let result = self
+            .engine
+            .call_native_arguments(&callee, call, &arguments, &[], expected);
+        self.pack_call_result(result, &callee, &origins, name.span, span)
+    }
+
+    fn method_call_arguments(
+        &mut self,
+        receiver: &Expr,
+        name: &Name,
+        args: &[Expr],
+    ) -> (Type, Vec<PackArgument>, Vec<Span>) {
         let receiver_type = self.expression(receiver);
         let callee = if matches!(receiver_type, Type::Any) {
             Type::Any
@@ -337,15 +358,9 @@ impl Checker<'_> {
         };
         let mut arguments = vec![receiver_argument];
         arguments.extend(self.call_arguments(args));
-        let call = self
-            .native
-            .map(|native| native.expression_key_for_span(span));
-        let result = self
-            .engine
-            .call_native_arguments(&callee, call, &arguments, &[], expected);
         let mut origins = vec![receiver.span];
         origins.extend(args.iter().map(|argument| argument.span));
-        self.pack_call_result(result, &callee, &origins, name.span, span)
+        (callee, arguments, origins)
     }
 }
 

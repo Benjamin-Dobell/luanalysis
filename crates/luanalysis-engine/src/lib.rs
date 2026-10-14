@@ -15,6 +15,8 @@ mod native_packs;
 pub use native_packs::*;
 #[cfg(test)]
 mod native_pack_signature_tests;
+#[cfg(test)]
+mod native_scalar_contract_tests;
 mod native_tables;
 pub use native_tables::*;
 
@@ -267,6 +269,17 @@ pub enum Type {
 /// Source recipes may use thread-local interior state; release its borrows
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
+    /// Raw written return annotation only. This hook must not inspect the body
+    /// or demand its result count. Zero results project to Lua nil in scalar use.
+    /// Context/capture variants also return declaration-space annotations; the
+    /// native signature applies its mapper exactly once after normalization.
+    fn function_declared_scalar_contract(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<ValuePack> { None }
+    fn function_declared_scalar_contract_in_context(&self, key: NativeFunctionKey, _: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack> {
+        self.function_declared_scalar_contract(key, queries)
+    }
+    fn function_declared_scalar_contract_in_capture(&self, key: NativeFunctionKey, _: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack> {
+        self.function_declared_scalar_contract(key, queries)
+    }
     fn contains_type_declaration(&self, _: NativeTypeDeclarationKey) -> bool { false }
     fn type_declaration_header(&self, _: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
         panic!("native named declaration provider is not installed")
@@ -606,6 +619,17 @@ pub enum CallError {
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
     fn pack_function(&mut self, function: &PackFunctionType) -> Type;
+    fn declared_result_pack(&mut self, pack: &ValuePack) -> ValuePack;
+    fn return_pack_with_cardinality(&mut self, declared: &ValuePack, actual: &ValuePack) -> ValuePack;
+    fn function_declared_scalar_return(&mut self, function: &Type) -> Option<Type>;
+    fn call_native_arguments_scalar(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected_return: Option<&Type>,
+    ) -> CallResult;
     fn call_native_arguments(
         &mut self,
         callee: &Type,
@@ -907,6 +931,25 @@ struct SessionQueries<'a, 'p, 's> {
 impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn pack_function(&mut self, function: &PackFunctionType) -> Type {
         self.pack_function_native(function)
+    }
+    fn declared_result_pack(&mut self, pack: &ValuePack) -> ValuePack {
+        self.declared_result_pack_native(pack)
+    }
+    fn return_pack_with_cardinality(&mut self, declared: &ValuePack, actual: &ValuePack) -> ValuePack {
+        self.return_pack_with_cardinality_native(declared, actual)
+    }
+    fn function_declared_scalar_return(&mut self, function: &Type) -> Option<Type> {
+        self.function_declared_scalar_return_native(function)
+    }
+    fn call_native_arguments_scalar(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected_return: Option<&Type>,
+    ) -> CallResult {
+        self.call_native_arguments_scalar_owned(callee, call, arguments, type_arguments, expected_return)
     }
     fn call_native_arguments(
         &mut self,
@@ -1686,6 +1729,37 @@ struct ProviderAdapter<'a, P> {
 }
 
 impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
+    fn declared_result_pack_contract(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Option<NativePackResult> {
+        let pack = self.provider.function_declared_scalar_contract(source_key(key), &mut SessionQueries { checker, handles: self.handles })?;
+        Some(NativePackResult::Declaration(native_packs::import_declared_pack(checker, self.handles, &pack)))
+    }
+    fn declared_result_pack_contract_in_context(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId, context: NativeFunctionContext) -> Option<NativePackResult> {
+        let context = self.handles.retain_context(context);
+        let pack = self.provider.function_declared_scalar_contract_in_context(source_key(key), &context, &mut SessionQueries { checker, handles: self.handles })?;
+        Some(NativePackResult::Declaration(native_packs::import_declared_pack(checker, self.handles, &pack)))
+    }
+    fn declared_result_pack_contract_in_capture(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId, context: NativeCapturedFunctionContext) -> Option<NativePackResult> {
+        let context = self.handles.retain_capture(context);
+        let pack = self.provider.function_declared_scalar_contract_in_capture(source_key(key), &context, &mut SessionQueries { checker, handles: self.handles })?;
+        Some(NativePackResult::Declaration(native_packs::import_declared_pack(checker, self.handles, &pack)))
+    }
+    fn declared_scalar_return_type(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Option<TypeId> {
+        let pack = self.provider.function_declared_scalar_contract(source_key(key), &mut SessionQueries { checker, handles: self.handles })?;
+        let pack = native_packs::import_declared_pack(checker, self.handles, &pack);
+        Some(checker.native_pack_slot(pack, 0))
+    }
+    fn declared_scalar_return_type_in_context(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId, context: NativeFunctionContext) -> Option<NativeTypeResult> {
+        let context = self.handles.retain_context(context);
+        let pack = self.provider.function_declared_scalar_contract_in_context(source_key(key), &context, &mut SessionQueries { checker, handles: self.handles })?;
+        let pack = native_packs::import_declared_pack(checker, self.handles, &pack);
+        Some(NativeTypeResult::Declaration(checker.native_pack_slot(pack, 0)))
+    }
+    fn declared_scalar_return_type_in_capture(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId, context: NativeCapturedFunctionContext) -> Option<NativeTypeResult> {
+        let context = self.handles.retain_capture(context);
+        let pack = self.provider.function_declared_scalar_contract_in_capture(source_key(key), &context, &mut SessionQueries { checker, handles: self.handles })?;
+        let pack = native_packs::import_declared_pack(checker, self.handles, &pack);
+        Some(NativeTypeResult::Declaration(checker.native_pack_slot(pack, 0)))
+    }
     fn has_result_pack(&self, key: NativeFunctionId) -> bool {
         self.provider.function_has_result_pack(source_key(key))
     }

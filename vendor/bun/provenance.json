@@ -672,6 +672,30 @@
       "patch": "vendor/patches/bun-sema-native-named-types.patch",
       "reason": "Add original-source lazy aliases and structural object heads with native declaration query guards, generic instantiation, member relations and inference; preserve explicit unsupported nominal and owner-context boundaries.",
       "patch_sha256": "0072e32e51dfd143a65ee1c0fb5db7b320497e3c0d507760a900e5f9865f6fa9"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-scalar-return-contracts.patch",
+      "reason": "Separate pure written scalar return contracts from physical result-count queries, preserve correlated annotated count recovery and actual body cardinality, and check guaranteed argument prefixes before unknown Any tails through the shared call workers.",
+      "patch_sha256": "a7032aa68f9dd3429e8513dc47d7734143c01b53ebb68ea8c3aa79b500437910"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-scalar-return-contracts.patch",
+      "reason": "Separate pure written scalar return contracts from physical result-count queries, preserve correlated annotated count recovery and actual body cardinality, and check guaranteed argument prefixes before unknown Any tails through the shared call workers.",
+      "patch_sha256": "a7032aa68f9dd3429e8513dc47d7734143c01b53ebb68ea8c3aa79b500437910"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-scalar-return-contracts.patch",
+      "reason": "Separate pure written scalar return contracts from physical result-count queries, preserve correlated annotated count recovery and actual body cardinality, and check guaranteed argument prefixes before unknown Any tails through the shared call workers.",
+      "patch_sha256": "a7032aa68f9dd3429e8513dc47d7734143c01b53ebb68ea8c3aa79b500437910"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-scalar-return-contracts.patch",
+      "reason": "Separate pure written scalar return contracts from physical result-count queries, preserve correlated annotated count recovery and actual body cardinality, and check guaranteed argument prefixes before unknown Any tails through the shared call workers.",
+      "patch_sha256": "a7032aa68f9dd3429e8513dc47d7734143c01b53ebb68ea8c3aa79b500437910"
     }
   ],
   "source_additions": {
@@ -692,7 +716,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "e8f2c8178a0d4ae094142db014d6d19e39081bcac1db297d82f98d212cb6efc9",
+      "extracted_sha256": "0871075a57eea2a85b30a371ed674540cd28ba4c35421dd18309ab20769d9cc5",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_tables.rs": {
@@ -1409,7 +1433,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "40dbd3317d2e325d6ac7a8063cab3227f517d0f3e0537961a13c72b915e1ca03"
+      "extracted_sha256": "70871a795103d49b4ac1e7e97b7449e47a2b14ac7f74b0f3576c389ee72d6306"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -1619,7 +1643,7 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "98f039f3203fd19d9d1a987dc7e9220180a487a963b4c158c4b57015c8b9b5a2"
+      "extracted_sha256": "c6735335381224351ac0896abb5e5b0c621795d0d02c2677625748878277dd88"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
@@ -1654,7 +1678,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "36a9243bdb51aa15b7f5f613045b3820e1ba9e467367370d79f4d80f2b738334"
+      "extracted_sha256": "521354e6e2dbdddbd458eeccd5a476a7d0f07bac4efe01e3da23488071f856a9"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",

@@ -5081,10 +5081,69 @@ impl<'p, 's> Checker<'p, 's> {
         {
             return ret;
         }
+        if self.sig_has_native_result_pack(sig)
+            && let Some(declared) = self.sig_declared_scalar_return(sig)
+        {
+            return declared;
+        }
         let returned = self.signature_return_type(sig);
         if self.sig_has_native_result_pack(sig) {
             self.native_pack_slot(NativeResultPack { ty: returned }, 0)
         } else { returned }
+    }
+
+    pub fn sig_declared_scalar_return(&mut self, sig: SigId) -> Option<TypeId> {
+        match *self.types().sig(sig) {
+            SigData::Native { declaration, mapper } => {
+                let provider = self.native_provider_for(declaration);
+                let declared = provider.declared_scalar_return_type(self, declaration)?;
+                Some(self.instantiate(declared, mapper))
+            }
+            SigData::NativeCaptured { declaration, mapper, .. } => {
+                let provider = self.native_provider_for(declaration);
+                let context = NativeCapturedFunctionContext { signature: sig };
+                let declared = self.with_native_captured_function(context, |c| provider.declared_scalar_return_type_in_capture(c, declaration, context))?;
+                Some(self.resolve_native_type_result(declared, mapper))
+            }
+            SigData::NativeContextual { declaration, mapper, context, .. } => {
+                let provider = self.native_provider_for(declaration);
+                let declared = self.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
+                    c.with_native_function_context(context, |c| provider.declared_scalar_return_type_in_context(c, declaration, context))
+                })?;
+                Some(self.resolve_native_type_result(declared, mapper))
+            }
+            SigData::WithReturn { sig: inner, ret } if ret == TypeId::UNRESOLVED => self.sig_declared_scalar_return(inner),
+            SigData::WithReturn { ret, .. } => Some(ret),
+            _ => None,
+        }
+    }
+
+    pub fn sig_declared_result_pack_contract(&mut self, sig: SigId) -> Option<NativeResultPack> {
+        let (result, mapper) = match *self.types().sig(sig) {
+            SigData::Native { declaration, mapper } => {
+                (self.native_provider_for(declaration).declared_result_pack_contract(self, declaration)?, mapper)
+            }
+            SigData::NativeCaptured { declaration, mapper, .. } => {
+                let provider = self.native_provider_for(declaration);
+                let context = NativeCapturedFunctionContext { signature: sig };
+                (self.with_native_captured_function(context, |c| provider.declared_result_pack_contract_in_capture(c, declaration, context))?, mapper)
+            }
+            SigData::NativeContextual { declaration, mapper, context, .. } => {
+                let provider = self.native_provider_for(declaration);
+                (self.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
+                    c.with_native_function_context(context, |c| provider.declared_result_pack_contract_in_context(c, declaration, context))
+                })?, mapper)
+            }
+            SigData::WithReturn { sig: inner, .. } => return self.sig_declared_result_pack_contract(inner),
+            _ => return None,
+        };
+        Some(match result {
+            super::NativePackResult::Declaration(pack) => {
+                let pack = self.native_declared_result_pack(pack);
+                self.instantiate_native_pack(pack, mapper)
+            }
+            super::NativePackResult::Checked(pack) => pack,
+        })
     }
 
     pub(super) fn signature_return_type(&mut self, sig: SigId) -> TypeId {
@@ -5259,6 +5318,11 @@ impl<'p, 's> Checker<'p, 's> {
             return TypeId(raw as u32);
         }
         if !self.enter(Query::ReturnOfSignature(sig)) {
+            if self.found_cycle && self.sig_has_native_result_pack(sig)
+                && let Some(contract) = self.sig_declared_result_pack_contract(sig)
+            {
+                return self.native_pack_with_implicit_empty(contract).ty;
+            }
             if !self.found_cycle
                 && let Some((declaration, _)) = self.sig_native_decl(sig)
             {
@@ -5274,6 +5338,12 @@ impl<'p, 's> Checker<'p, 's> {
         let left = self.leave(Query::ReturnOfSignature(sig));
         if self.left_a_cycle {
             let stored = self.cycle_result();
+            if self.sig_has_native_result_pack(sig)
+                && let Some(contract) = self.sig_declared_result_pack_contract(sig)
+            {
+                let contract = self.native_pack_with_implicit_empty(contract);
+                return (self.p.resolved_return_types).insert(&self.task, sig, contract.ty, stored);
+            }
             if let Some((file, func, _)) = self.sig_decl(self.types().sig_origin(sig)) {
                 self.report_circular_return_type(Some(Query::ReturnOfSignature(sig)), file, func);
             } else if let Some((declaration, _)) = self.sig_native_decl(self.types().sig_origin(sig)) {

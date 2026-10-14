@@ -523,36 +523,3 @@ pub(super) fn adjustment(expression: &Expr, final_position: bool) -> Adjustment 
         Adjustment::Scalar
     }
 }
-
-/// A nullable scalar annotation does not create a runtime result. This source
-/// fact only recognizes functions with no value-bearing return; native flow
-/// reachability separately determines whether the function can complete.
-pub(super) fn only_empty_results(function: &Function) -> bool {
-    no_value_returns(&function.body)
-}
-
-fn no_value_returns(statements: &[Stmt]) -> bool {
-    statements.iter().all(|statement| match &statement.kind {
-        StmtKind::Return(values) => values.is_empty(),
-        StmtKind::Block { body, .. }
-        | StmtKind::While { body, .. }
-        | StmtKind::Repeat { body, .. }
-        | StmtKind::NumericFor { body, .. }
-        | StmtKind::GenericFor { body, .. } => no_value_returns(body),
-        StmtKind::If {
-            branches,
-            else_branch,
-        } => {
-            branches.iter().all(|branch| no_value_returns(&branch.body))
-                && else_branch
-                    .as_ref()
-                    .is_none_or(|branch| no_value_returns(&branch.body))
-        }
-        StmtKind::Local { .. }
-        | StmtKind::Assign { .. }
-        | StmtKind::Call(_)
-        | StmtKind::LocalFunction { .. }
-        | StmtKind::FunctionDeclaration { .. }
-        | StmtKind::Break => true,
-    })
-}

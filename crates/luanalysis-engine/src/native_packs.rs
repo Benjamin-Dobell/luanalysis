@@ -175,19 +175,49 @@ pub(super) fn import_pack(
     }
 }
 
+pub(super) fn import_declared_pack(
+    checker: &mut Checker<'_, '_>,
+    handles: &TypeHandles,
+    pack: &ValuePack,
+) -> NativeResultPack {
+    let pack = import_pack(checker, handles, pack);
+    checker.native_declared_result_pack(pack)
+}
+
 impl SessionQueries<'_, '_, '_> {
-    pub(super) fn call_native_arguments_owned(
+    pub(super) fn declared_result_pack_native(&mut self, pack: &ValuePack) -> ValuePack {
+        let pack = import_declared_pack(self.checker, self.handles, pack);
+        self.handles.retain_pack(self.checker, pack)
+    }
+    pub(super) fn return_pack_with_cardinality_native(
         &mut self,
-        callee: &Type,
-        call: Option<NativeExpressionKey>,
-        arguments: &[PackArgument],
-        type_arguments: &[Type],
-        expected: Option<&ValuePack>,
-    ) -> PackCallResult {
-        if let Some(call) = call {
-            self.validate_expression(call);
+        declared: &ValuePack,
+        actual: &ValuePack,
+    ) -> ValuePack {
+        let declared = import_pack(self.checker, self.handles, declared);
+        let actual = import_pack(self.checker, self.handles, actual);
+        let pack = self
+            .checker
+            .native_return_pack_with_cardinality(declared, actual);
+        self.handles.retain_pack(self.checker, pack)
+    }
+    pub(super) fn function_declared_scalar_return_native(
+        &mut self,
+        function: &Type,
+    ) -> Option<Type> {
+        let function = import_type(self.checker, self.handles, function);
+        let signatures = self.checker.signatures(function, false);
+        if signatures.len() != 1 {
+            return None;
         }
-        let callee = import_type(self.checker, self.handles, callee);
+        self.checker
+            .sig_declared_scalar_return(signatures[0])
+            .map(|ty| export_type(self.checker, self.handles, ty))
+    }
+    fn import_arguments(
+        &mut self,
+        arguments: &[PackArgument],
+    ) -> Vec<bun_sema::check::native_packs::NativeCallArgument> {
         let mut native = Vec::with_capacity(arguments.len());
         for argument in arguments {
             use bun_sema::check::native_packs::NativeCallArgument as Arg;
@@ -208,6 +238,48 @@ impl SessionQueries<'_, '_, '_> {
                 }
             });
         }
+        native
+    }
+    pub(super) fn call_native_arguments_scalar_owned(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected_return: Option<&Type>,
+    ) -> super::CallResult {
+        if let Some(call) = call {
+            self.validate_expression(call);
+        }
+        let callee = import_type(self.checker, self.handles, callee);
+        let native = self.import_arguments(arguments);
+        let type_arguments: Vec<_> = type_arguments
+            .iter()
+            .map(|ty| import_type(self.checker, self.handles, ty))
+            .collect();
+        let expected = expected_return.map(|ty| import_type(self.checker, self.handles, ty));
+        let result = self.checker.call_native_arguments_scalar(
+            callee,
+            call.map(core_expression_key),
+            &native,
+            &type_arguments,
+            expected,
+        );
+        self.export_call_result(result)
+    }
+    pub(super) fn call_native_arguments_owned(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected: Option<&ValuePack>,
+    ) -> PackCallResult {
+        if let Some(call) = call {
+            self.validate_expression(call);
+        }
+        let callee = import_type(self.checker, self.handles, callee);
+        let native = self.import_arguments(arguments);
         let type_arguments: Vec<_> = type_arguments
             .iter()
             .map(|ty| import_type(self.checker, self.handles, ty))

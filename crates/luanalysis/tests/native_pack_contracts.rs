@@ -115,7 +115,6 @@ local function make(input) return input end\n\
 }
 
 #[test]
-#[ignore = "pending native guaranteed-prefix arity before an Any result pack"]
 fn an_unknown_final_pack_cannot_erase_a_guaranteed_argument_prefix() {
     let source = "---@param callback any\nlocal function run(callback)\n\
 local function zero() end\nzero(1,callback())\nend";

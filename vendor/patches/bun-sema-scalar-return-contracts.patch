@@ -1,0 +1,259 @@
+diff --git a/src/sema/check/decl.rs b/src/sema/check/decl.rs
+--- a/src/sema/check/decl.rs
++++ b/src/sema/check/decl.rs
+@@ -5081,10 +5081,69 @@
+         {
+             return ret;
+         }
++        if self.sig_has_native_result_pack(sig)
++            && let Some(declared) = self.sig_declared_scalar_return(sig)
++        {
++            return declared;
++        }
+         let returned = self.signature_return_type(sig);
+         if self.sig_has_native_result_pack(sig) {
+             self.native_pack_slot(NativeResultPack { ty: returned }, 0)
+         } else { returned }
++    }
++
++    pub fn sig_declared_scalar_return(&mut self, sig: SigId) -> Option<TypeId> {
++        match *self.types().sig(sig) {
++            SigData::Native { declaration, mapper } => {
++                let provider = self.native_provider_for(declaration);
++                let declared = provider.declared_scalar_return_type(self, declaration)?;
++                Some(self.instantiate(declared, mapper))
++            }
++            SigData::NativeCaptured { declaration, mapper, .. } => {
++                let provider = self.native_provider_for(declaration);
++                let context = NativeCapturedFunctionContext { signature: sig };
++                let declared = self.with_native_captured_function(context, |c| provider.declared_scalar_return_type_in_capture(c, declaration, context))?;
++                Some(self.resolve_native_type_result(declared, mapper))
++            }
++            SigData::NativeContextual { declaration, mapper, context, .. } => {
++                let provider = self.native_provider_for(declaration);
++                let declared = self.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
++                    c.with_native_function_context(context, |c| provider.declared_scalar_return_type_in_context(c, declaration, context))
++                })?;
++                Some(self.resolve_native_type_result(declared, mapper))
++            }
++            SigData::WithReturn { sig: inner, ret } if ret == TypeId::UNRESOLVED => self.sig_declared_scalar_return(inner),
++            SigData::WithReturn { ret, .. } => Some(ret),
++            _ => None,
++        }
++    }
++
++    pub fn sig_declared_result_pack_contract(&mut self, sig: SigId) -> Option<NativeResultPack> {
++        let (result, mapper) = match *self.types().sig(sig) {
++            SigData::Native { declaration, mapper } => {
++                (self.native_provider_for(declaration).declared_result_pack_contract(self, declaration)?, mapper)
++            }
++            SigData::NativeCaptured { declaration, mapper, .. } => {
++                let provider = self.native_provider_for(declaration);
++                let context = NativeCapturedFunctionContext { signature: sig };
++                (self.with_native_captured_function(context, |c| provider.declared_result_pack_contract_in_capture(c, declaration, context))?, mapper)
++            }
++            SigData::NativeContextual { declaration, mapper, context, .. } => {
++                let provider = self.native_provider_for(declaration);
++                (self.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
++                    c.with_native_function_context(context, |c| provider.declared_result_pack_contract_in_context(c, declaration, context))
++                })?, mapper)
++            }
++            SigData::WithReturn { sig: inner, .. } => return self.sig_declared_result_pack_contract(inner),
++            _ => return None,
++        };
++        Some(match result {
++            super::NativePackResult::Declaration(pack) => {
++                let pack = self.native_declared_result_pack(pack);
++                self.instantiate_native_pack(pack, mapper)
++            }
++            super::NativePackResult::Checked(pack) => pack,
++        })
+     }
+ 
+     pub(super) fn signature_return_type(&mut self, sig: SigId) -> TypeId {
+@@ -5259,6 +5318,11 @@
+             return TypeId(raw as u32);
+         }
+         if !self.enter(Query::ReturnOfSignature(sig)) {
++            if self.found_cycle && self.sig_has_native_result_pack(sig)
++                && let Some(contract) = self.sig_declared_result_pack_contract(sig)
++            {
++                return self.native_pack_with_implicit_empty(contract).ty;
++            }
+             if !self.found_cycle
+                 && let Some((declaration, _)) = self.sig_native_decl(sig)
+             {
+@@ -5274,6 +5338,12 @@
+         let left = self.leave(Query::ReturnOfSignature(sig));
+         if self.left_a_cycle {
+             let stored = self.cycle_result();
++            if self.sig_has_native_result_pack(sig)
++                && let Some(contract) = self.sig_declared_result_pack_contract(sig)
++            {
++                let contract = self.native_pack_with_implicit_empty(contract);
++                return (self.p.resolved_return_types).insert(&self.task, sig, contract.ty, stored);
++            }
+             if let Some((file, func, _)) = self.sig_decl(self.types().sig_origin(sig)) {
+                 self.report_circular_return_type(Some(Query::ReturnOfSignature(sig)), file, func);
+             } else if let Some((declaration, _)) = self.sig_native_decl(self.types().sig_origin(sig)) {
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -2582,7 +2582,7 @@
+                 .is_some_and(|ty| self.is_type_parameter_at_top_level(ty, param, 0));
+         }
+         if self.sig_has_native_result_pack(sig) {
+-            let pack = self.sig_result_pack(sig);
++            let pack = self.sig_declared_result_pack_contract(sig).unwrap_or_else(|| self.sig_result_pack(sig));
+             if let Some(alternatives) = self.native_pack_alternatives(pack) {
+                 return alternatives.iter().any(|alternative| {
+                     alternative.fixed.iter().map(|slot| slot.ty).chain(alternative.tail)
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -143,6 +143,21 @@
+     }
+     fn return_type(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> TypeId;
+     fn has_result_pack(&self, _: NativeFunctionId) -> bool { false }
++    /// Annotation-only scalar metadata. This must not inspect the body or its result count.
++    fn declared_scalar_return_type(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Option<TypeId> { None }
++    fn declared_scalar_return_type_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> Option<NativeTypeResult> {
++        self.declared_scalar_return_type(checker, declaration).map(NativeTypeResult::Declaration)
++    }
++    fn declared_scalar_return_type_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeCapturedFunctionContext) -> Option<NativeTypeResult> {
++        self.declared_scalar_return_type(checker, declaration).map(NativeTypeResult::Declaration)
++    }
++    fn declared_result_pack_contract(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Option<NativePackResult> { None }
++    fn declared_result_pack_contract_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> Option<NativePackResult> {
++        self.declared_result_pack_contract(checker, declaration)
++    }
++    fn declared_result_pack_contract_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeCapturedFunctionContext) -> Option<NativePackResult> {
++        self.declared_result_pack_contract(checker, declaration)
++    }
+     fn return_pack_result(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> NativePackResult {
+         let ty = self.return_type(checker, declaration);
+         NativePackResult::Declaration(checker.native_scalar_pack(ty))
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+--- a/src/sema/check/native_packs.rs
++++ b/src/sema/check/native_packs.rs
+@@ -50,8 +50,26 @@
+         type_args: &[TypeId],
+         expected: Option<NativeResultPack>,
+     ) -> NativeResultPackCall {
++        let args = self.native_call_arguments(call, args);
++        let resolved = self.resolve_native_arguments_with_result_pack(callee, &args, type_args, None, expected);
++        self.result_pack_of_native_call(resolved)
++    }
++
++    pub fn call_native_arguments_scalar(
++        &mut self,
++        callee: TypeId,
++        call: Option<crate::types::NativeExpressionId>,
++        args: &[NativeCallArgument],
++        type_args: &[TypeId],
++        expected: Option<TypeId>,
++    ) -> ResolvedTypeCall {
++        let args = self.native_call_arguments(call, args);
++        self.resolve_native_arguments_with_result_pack(callee, &args, type_args, expected, None)
++    }
++
++    fn native_call_arguments(&self, call: Option<crate::types::NativeExpressionId>, args: &[NativeCallArgument]) -> Vec<Arg> {
+         assert!(call.is_none_or(|call| self.contains_native_expression(call)));
+-        let args: Vec<Arg> = args.iter().enumerate().map(|(index, &arg)| match arg {
++        args.iter().enumerate().map(|(index, &arg)| match arg {
+             NativeCallArgument::Resolved(ty) => Arg::Resolved(ty),
+             NativeCallArgument::Expression(expression) => {
+                 assert!(self.contains_native_expression(expression));
+@@ -66,9 +84,7 @@
+                 assert!(self.contains_native_expression(expression));
+                 Arg::NativePack(expression)
+             }
+-        }).collect();
+-        let resolved = self.resolve_native_arguments_with_result_pack(callee, &args, type_args, None, expected);
+-        self.result_pack_of_native_call(resolved)
++        }).collect()
+     }
+ 
+     pub fn call_resolved_result_pack(
+@@ -249,7 +265,11 @@
+                 Arg::NativePack(expression) => self.check_native_argument_pack(expression, None, None, CheckMode::empty()),
+                 _ => unreachable!("TS spread in native call arity"),
+             };
+-            if self.is_any(pack.ty) { return true }
++            if self.is_any(pack.ty) {
++                let prefix = args.len() - 1;
++                let (_, maximum) = self.native_pack_count_bounds(expected);
++                return maximum.is_none_or(|maximum| prefix <= maximum);
++            }
+             let Some(rows) = self.native_pack_alternatives(pack) else { return true };
+             rows
+         } else { vec![NativePackAlternative { fixed: Vec::new(), tail: None }] };
+@@ -426,6 +446,68 @@
+         self.native_join_packs(&[pack, empty])
+     }
+ 
++    /// In a written Lua scalar return contract, void is absence, whereas nil is one value.
++    /// This normalization happens before generic substitution and never rewrites actual values.
++    pub fn native_declared_result_pack(&mut self, pack: NativeResultPack) -> NativeResultPack {
++        let Some(alternatives) = self.native_pack_alternatives(pack) else { return pack };
++        let mut rows = Vec::new();
++        for alternative in alternatives {
++            if alternative.fixed.len() == 1 && alternative.tail.is_none() {
++                let slot = alternative.fixed[0];
++                let parts = self.parts(slot.ty);
++                if parts.contains(&TypeId::VOID) {
++                    let values: Vec<TypeId> = parts.iter().copied().filter(|&part| part != TypeId::VOID).collect();
++                    rows.push(NativePackAlternative { fixed: Vec::new(), tail: None });
++                    if !values.is_empty() {
++                        let ty = self.union(&values);
++                        rows.push(NativePackAlternative { fixed: vec![NativePackSlot { ty, ..slot }], tail: None });
++                    }
++                    continue;
++                }
++            }
++            rows.push(alternative);
++        }
++        self.native_result_pack(&rows)
++    }
++
++    /// Keep the declared value types while refining only physical rows established by the body.
++    /// Invalid or still-symbolic body rows retain the contract for diagnostic recovery.
++    pub fn native_return_pack_with_cardinality(&mut self, declared: NativeResultPack, actual: NativeResultPack) -> NativeResultPack {
++        let declared = self.native_declared_result_pack(declared);
++        let allowed = self.native_pack_with_implicit_empty(declared);
++        let Some(actual_rows) = self.native_pack_alternatives(actual) else { return allowed };
++        let Some(expected_rows) = self.native_pack_alternatives(allowed) else { return allowed };
++        let mut rows = Vec::new();
++        for actual in actual_rows {
++            let actual_count = self.native_pack_row_count_type(&actual);
++            let mut matched = false;
++            for expected in &expected_rows {
++                let expected_count = self.native_pack_row_count_type(expected);
++                if !self.native_pack_assignable(actual_count, expected_count) { continue }
++                let mut fixed = Vec::with_capacity(actual.fixed.len());
++                for (index, actual_slot) in actual.fixed.iter().enumerate() {
++                    let ty = match expected.fixed.get(index) {
++                        Some(slot) if slot.optional => self.optional(slot.ty),
++                        Some(slot) => slot.ty,
++                        None => expected.tail.expect("count-compatible return pack lacks a value slot"),
++                    };
++                    fixed.push(NativePackSlot { ty, optional: actual_slot.optional });
++                }
++                rows.push(NativePackAlternative { fixed, tail: actual.tail.and(expected.tail) });
++                matched = true;
++            }
++            if !matched { return allowed }
++        }
++        self.native_result_pack(&rows)
++    }
++
++    fn native_pack_row_count_type(&mut self, row: &NativePackAlternative) -> NativeResultPack {
++        self.native_result_pack(&[NativePackAlternative {
++            fixed: row.fixed.iter().map(|slot| NativePackSlot { ty: TypeId::ANY, optional: slot.optional }).collect(),
++            tail: row.tail.map(|_| TypeId::ANY),
++        }])
++    }
++
+     /// Context for the final expression after already checked scalar prefix values.
+     pub fn native_pack_contextual_tail(&mut self, expected: NativeResultPack, prefix: &[TypeId]) -> Option<NativeResultPack> {
+         let parts = self.parts(expected.ty).to_vec();
