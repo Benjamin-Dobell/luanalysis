@@ -4,6 +4,7 @@ members = [
     "crates/luanalysis",
     "crates/luanalysis-syntax",
     "crates/luanalysis-engine",
+    "crates/luanalysis-fixtures",
 ]
 exclude = ["vendor/bun"]
 
