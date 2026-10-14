@@ -16,6 +16,7 @@ impl Checker<'_> {
         expression: &Expr,
         expected: Option<&ValuePack>,
     ) -> ValuePack {
+        if let Some(pack) = self.asserted_expression_pack(expression) { return pack; }
         let previous = self.flow_at;
         if let (Some(native), Some(at)) = (self.native, previous) {
             self.flow_at = Some(native.flow_input_for_expression(expression, at));

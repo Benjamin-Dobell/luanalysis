@@ -54,6 +54,9 @@ pub struct Comment {
 #[derive(Clone, Debug, PartialEq)]
 pub struct File {
     pub statements: Vec<Stmt>,
+    /// Inline documentation describes an original expression without changing
+    /// Lua syntax, lvalue identity or multiple-result adjustment.
+    pub expression_assertions: Vec<ExpressionAssertion>,
     /// Documentation declarations are independent from runtime statements and
     /// remain available when standalone, at EOF, or grouped with other tags.
     pub type_declarations: Vec<NamedTypeDeclaration>,
@@ -61,6 +64,20 @@ pub struct File {
     pub type_extensions: Vec<TypeExtension>,
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpressionAssertionKind {
+    Type,
+    Not,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExpressionAssertion {
+    pub kind: ExpressionAssertionKind,
+    pub annotation: TypeAnnotation,
+    pub expression: Span,
     pub span: Span,
 }
 
@@ -83,7 +100,9 @@ pub struct NamedTypeDeclaration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum NamedTypeDeclarationKind {
-    Alias { target: TypeExpr },
+    Alias {
+        target: TypeExpr,
+    },
     Record {
         flavor: NamedRecordKind,
         base: Option<TypeExpr>,
@@ -362,7 +381,9 @@ pub enum TableFieldKind {
     /// The original key expression; numeric/string normalization is semantic.
     Keyed(Box<Expr>),
     /// One-based ordinal among only the constructor's sequence fields.
-    Sequence { index: usize },
+    Sequence {
+        index: usize,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -459,9 +480,13 @@ pub enum TypeFieldKey {
     /// Original literal or index-domain type, including numeric/byte-string keys.
     Indexed(Box<TypeExpr>),
     /// One-based ordinal among bare tuple-like record type fields.
-    Sequence { index: usize },
+    Sequence {
+        index: usize,
+    },
 }
 
+#[cfg(test)]
+mod assertion_tests;
 #[cfg(test)]
 mod tests;
 

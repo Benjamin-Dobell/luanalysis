@@ -6,6 +6,7 @@
 #![feature(linkage)]
 
 mod native;
+mod native_assertions;
 mod native_flow;
 pub use native_flow::*;
 #[cfg(test)]
@@ -620,6 +621,9 @@ pub enum CallError {
 /// Queries available during one native checker session. All inputs and outputs
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
+    fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool;
+    fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type;
+    fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack;
     fn pack_function(&mut self, function: &PackFunctionType) -> Type;
     fn declared_result_pack(&mut self, pack: &ValuePack) -> ValuePack;
     fn return_pack_with_cardinality(&mut self, declared: &ValuePack, actual: &ValuePack) -> ValuePack;
@@ -944,6 +948,9 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool { self.assertion_overlap_native(source, target) }
+    fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type { self.exclude_type_native(source, excluded) }
+    fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack { self.exclude_pack_native(source, fixed, tail) }
     fn pack_function(&mut self, function: &PackFunctionType) -> Type {
         self.pack_function_native(function)
     }

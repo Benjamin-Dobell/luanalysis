@@ -168,6 +168,14 @@ SOURCE_ADAPTATIONS.extend({
 ])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-inline-assertions.patch",
+    "reason": "Add original-source inline assertion overlap and exclusion operations using native comparability, non-nullability, assignability and whole correlated pack storage.",
+    **({"added": True} if path == "native_assertions.rs" else {}),
+} for path in ["mod.rs", "native_assertions.rs"])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

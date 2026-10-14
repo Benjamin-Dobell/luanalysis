@@ -762,12 +762,29 @@
       "patch": "vendor/patches/bun-sema-nominal-class-origins.patch",
       "reason": "Retain original nominal class declarations through native table descriptions, mapping, lookup, inference and structural relation demands while preserving structural shape semantics and explicit unsupported inheritance and visibility boundaries.",
       "patch_sha256": "636aff438fe3e36e6ba4afe3b3b27f77985af50ec0035a642e1fae726f4a6b5b"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-inline-assertions.patch",
+      "reason": "Add original-source inline assertion overlap and exclusion operations using native comparability, non-nullability, assignability and whole correlated pack storage.",
+      "patch_sha256": "fb35a7ba15de22491fdec247f87207d99621e96725121b21ed284127dc417b99"
+    },
+    {
+      "path": "src/sema/check/native_assertions.rs",
+      "patch": "vendor/patches/bun-sema-inline-assertions.patch",
+      "reason": "Add original-source inline assertion overlap and exclusion operations using native comparability, non-nullability, assignability and whole correlated pack storage.",
+      "added": true,
+      "patch_sha256": "fb35a7ba15de22491fdec247f87207d99621e96725121b21ed284127dc417b99"
     }
   ],
   "source_additions": {
     "src/sema/check/flow_walk.rs": {
       "extracted_sha256": "04c423a44320448d9cbf075c8978e96abe61b2ee37567e7b5baef738938fc54c",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
+    },
+    "src/sema/check/native_assertions.rs": {
+      "extracted_sha256": "11861085142542f1964d9cec8283910132fea857038e1451644b5cfa95c8bb08",
+      "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
       "extracted_sha256": "bac3705bf81a34c0a897920cb3f8df2867f0c3f6058b741750bd846edd4c4031",
@@ -1744,7 +1761,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "521354e6e2dbdddbd458eeccd5a476a7d0f07bac4efe01e3da23488071f856a9"
+      "extracted_sha256": "9d786117d7e8c68d50442ff6b45b35e41a07befbcacbdeb95c0b4998252ba22c"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",

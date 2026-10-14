@@ -146,6 +146,10 @@ impl NativeRegistry {
         &self.expressions
     }
 
+    pub(super) fn expression_assertions(&self, expression: Span) -> Vec<luanalysis_syntax::ExpressionAssertion> {
+        self.file.expression_assertions.iter().filter(|assertion| assertion.expression == expression).cloned().collect()
+    }
+
     pub(super) fn packs(&self) -> &NativePacks {
         &self.packs
     }
@@ -346,6 +350,7 @@ impl NativeRegistry {
 
     pub(super) fn checker<'a>(&'a self, engine: &'a mut dyn TypeQueries) -> Checker<'a> {
         Checker {
+            active_assertions: HashSet::new(),
             engine,
             bound: &self.bound,
             native: Some(self),
@@ -1342,6 +1347,12 @@ impl NativeRegistry {
         functions: &mut HashSet<NativeFunctionKey>,
         bindings: &mut HashSet<BindingId>,
     ) {
+        let owner = self.expressions.get(self.expression_key(expression)).owner;
+        for assertion in self.expression_assertions(expression.span) {
+            for ty in &assertion.annotation.types {
+                self.function_annotation_parameter_dependencies(owner, ty, used);
+            }
+        }
         match &expression.kind {
             ExprKind::Name(name) => {
                 if let Some(binding) = self.bound.binding_at(name.span.start) {

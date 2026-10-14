@@ -1,15 +1,16 @@
 use crate::{
-    Comment, Diagnostic, FunctionAnnotations, FunctionType, FunctionTypeParam, GenericParameter,
-    Name, ParamAnnotation, Span, Token, TokenKind, TypeAnnotation, TypeExpr, TypeExprKind,
-    TypeField, TypeFieldKey, TypeLiteral, TypePack, TypePacks, VarargAnnotation, VariadicTypeIndex, lex,
-    FieldDeclaration, FieldVisibility, FieldVisibilityAnnotation, NamedRecordKind,
-    NamedTypeDeclarationKind,
+    Comment, Diagnostic, FieldDeclaration, FieldVisibility, FieldVisibilityAnnotation,
+    FunctionAnnotations, FunctionType, FunctionTypeParam, GenericParameter, Name, NamedRecordKind,
+    NamedTypeDeclarationKind, ParamAnnotation, Span, Token, TokenKind, TypeAnnotation, TypeExpr,
+    TypeExprKind, TypeField, TypeFieldKey, TypeLiteral, TypePack, TypePacks, VarargAnnotation,
+    VariadicTypeIndex, lex,
 };
 
 #[derive(Default)]
 pub(crate) struct ParsedDocumentation {
     pub functions: FunctionAnnotations,
     pub declarations: Vec<DeclarationItem>,
+    pub exclusions: Vec<TypeAnnotation>,
 }
 
 pub(crate) enum DeclarationItem {
@@ -62,12 +63,23 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                 .unwrap_or(tag.len());
             let tag_name = &tag[..tag_len];
-            if !matches!(tag_name, "type" | "param" | "return" | "generic" | "vararg" | "alias" | "shape" | "class" | "module" | "field") {
+            if !matches!(
+                tag_name,
+                "type"
+                    | "not"
+                    | "param"
+                    | "return"
+                    | "generic"
+                    | "vararg"
+                    | "alias"
+                    | "shape"
+                    | "class"
+                    | "module"
+                    | "field"
+            ) {
                 diagnostics.push(Diagnostic {
                     span: Span::new(tag_offset, tag_offset + 1 + tag_len),
-                    message: format!(
-                        "unsupported Luanalysis annotation @{tag_name}"
-                    ),
+                    message: format!("unsupported Luanalysis annotation @{tag_name}"),
                 });
             } else {
                 let raw_types = &tag[tag_len..];
@@ -89,9 +101,19 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         // tokens, while the shared Lua lexer recognizes `>>`.
                         if matches!(&token.kind, TokenKind::Symbol(symbol) if symbol == ">>") {
                             let middle = token.span.start + 1;
-                            vec![Token { kind: TokenKind::Symbol(">".to_owned()), span: Span::new(token.span.start, middle) },
-                                Token { kind: TokenKind::Symbol(">".to_owned()), span: Span::new(middle, token.span.end) }]
-                        } else { vec![token] }
+                            vec![
+                                Token {
+                                    kind: TokenKind::Symbol(">".to_owned()),
+                                    span: Span::new(token.span.start, middle),
+                                },
+                                Token {
+                                    kind: TokenKind::Symbol(">".to_owned()),
+                                    span: Span::new(middle, token.span.end),
+                                },
+                            ]
+                        } else {
+                            vec![token]
+                        }
                     })
                     .collect();
                 diagnostics.extend(lexed.diagnostics.into_iter().map(|mut diagnostic| {
@@ -113,7 +135,9 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         if let Some(name) = parser.declaration_name("named type") {
                             let generics = parser.declaration_parameters();
                             let kind = if tag_name == "alias" {
-                                NamedTypeDeclarationKind::Alias { target: parser.union() }
+                                NamedTypeDeclarationKind::Alias {
+                                    target: parser.union(),
+                                }
                             } else {
                                 let base = parser.take(":").map(|_| parser.primary());
                                 NamedTypeDeclarationKind::Record {
@@ -128,7 +152,10 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                                 }
                             };
                             result.declarations.push(DeclarationItem::Named {
-                                name, generics, kind, span: annotation_span,
+                                name,
+                                generics,
+                                kind,
+                                span: annotation_span,
                             });
                             parser.documentation_tail();
                         }
@@ -177,6 +204,14 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                             packs,
                         });
                     }
+                    "not" => {
+                        let (types, packs) = parser.annotation_type_list();
+                        result.exclusions.push(TypeAnnotation {
+                            span: annotation_span,
+                            types,
+                            packs,
+                        });
+                    }
                     _ => unreachable!(),
                 }
                 if !parser.eof() {
@@ -199,22 +234,34 @@ fn type_depth(root: &TypeExpr) -> usize {
     while let Some((ty, current)) = pending.pop() {
         depth = depth.max(current);
         match &ty.kind {
-            TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. } => pending.push((element, current + 1)),
+            TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. } => {
+                pending.push((element, current + 1))
+            }
             TypeExprKind::Union(types) | TypeExprKind::Generic { args: types, .. } => {
                 pending.extend(types.iter().map(|ty| (ty, current + 1)));
             }
             TypeExprKind::Record(fields) => {
                 for field in fields {
-                    if let TypeFieldKey::Indexed(key) = &field.key { pending.push((key, current + 1)); }
+                    if let TypeFieldKey::Indexed(key) = &field.key {
+                        pending.push((key, current + 1));
+                    }
                     pending.push((&field.ty, current + 1));
                 }
             }
             TypeExprKind::Function(function) => {
-                pending.extend(function.params.iter().filter_map(|param| param.ty.as_ref()).map(|ty| (ty, current + 1)));
-                if let Some(vararg) = &function.vararg { pending.push((&vararg.ty, current + 1)); }
+                pending.extend(
+                    function
+                        .params
+                        .iter()
+                        .filter_map(|param| param.ty.as_ref())
+                        .map(|ty| (ty, current + 1)),
+                );
+                if let Some(vararg) = &function.vararg {
+                    pending.push((&vararg.ty, current + 1));
+                }
                 pending.extend(function.returns.iter().map(|ty| (ty, current + 1)));
             }
-            TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::Error => {},
+            TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::Error => {}
         }
     }
     depth
@@ -372,8 +419,14 @@ impl TypeParser {
             } else {
                 None
             };
-            let span = constraint.as_ref().map_or(name.span, |ty| name.span.join(ty.span));
-            parameters.push(GenericParameter { name, constraint, span });
+            let span = constraint
+                .as_ref()
+                .map_or(name.span, |ty| name.span.join(ty.span));
+            parameters.push(GenericParameter {
+                name,
+                constraint,
+                span,
+            });
             if self.take(",").is_none() {
                 break;
             }
@@ -390,7 +443,9 @@ impl TypeParser {
 
     fn field_declaration(&mut self, span: Span) -> Option<FieldDeclaration> {
         let visibility = match &self.current().kind {
-            TokenKind::Identifier(word) if matches!(word.as_str(), "public" | "protected" | "private") => {
+            TokenKind::Identifier(word)
+                if matches!(word.as_str(), "public" | "protected" | "private") =>
+            {
                 let kind = match word.as_str() {
                     "public" => FieldVisibility::Public,
                     "protected" => FieldVisibility::Protected,
@@ -407,7 +462,9 @@ impl TypeParser {
             let owner = self.declaration_name("field owner");
             self.expect(">");
             owner
-        } else { None };
+        } else {
+            None
+        };
         let key = if self.take("[").is_some() {
             let ty = self.union();
             self.expect("]");
@@ -416,14 +473,25 @@ impl TypeParser {
             TypeFieldKey::Named(self.declaration_name("field")?)
         };
         let ty = self.union();
-        Some(FieldDeclaration { key, ty, visibility, explicit_owner, span })
+        Some(FieldDeclaration {
+            key,
+            ty,
+            visibility,
+            explicit_owner,
+            span,
+        })
     }
 
     fn documentation_tail(&mut self) {
         // doc.bnf permits comment_string after named declarations/fields.
         // Punctuation that would continue a malformed type remains an error.
-        if matches!(self.current().kind, TokenKind::Identifier(_) | TokenKind::Keyword(_) | TokenKind::String(_)) {
-            while !self.eof() { self.pos += 1; }
+        if matches!(
+            self.current().kind,
+            TokenKind::Identifier(_) | TokenKind::Keyword(_) | TokenKind::String(_)
+        ) {
+            while !self.eof() {
+                self.pos += 1;
+            }
         }
     }
 
@@ -804,7 +872,10 @@ impl TypeParser {
         };
         if self.symbol("<") {
             if let TypeExprKind::Named(text) = &ty.kind {
-                let base = Name { text: text.clone(), span: ty.span };
+                let base = Name {
+                    text: text.clone(),
+                    span: ty.span,
+                };
                 let args_start = self.expect("<");
                 let mut args = Vec::new();
                 if self.symbol(">") {
@@ -814,9 +885,14 @@ impl TypeParser {
                         self.comma_ends_type += 1;
                         args.push(self.union());
                         self.comma_ends_type -= 1;
-                        if self.take(",").is_none() { break; }
+                        if self.take(",").is_none() {
+                            break;
+                        }
                         if self.symbol(">") {
-                            self.error("generic type argument list cannot have a trailing comma".to_owned());
+                            self.error(
+                                "generic type argument list cannot have a trailing comma"
+                                    .to_owned(),
+                            );
                             break;
                         }
                     }
@@ -825,10 +901,23 @@ impl TypeParser {
                 let args_span = args_start.join(end);
                 let span = base.span.join(end);
                 if args.iter().map(type_depth).max().unwrap_or(0) >= 128 {
-                    self.diagnostics.push(Diagnostic { span: args_span, message: "generic type nesting exceeds 128".to_owned() });
-                    ty = TypeExpr { kind: TypeExprKind::Error, span };
+                    self.diagnostics.push(Diagnostic {
+                        span: args_span,
+                        message: "generic type nesting exceeds 128".to_owned(),
+                    });
+                    ty = TypeExpr {
+                        kind: TypeExprKind::Error,
+                        span,
+                    };
                 } else {
-                    ty = TypeExpr { kind: TypeExprKind::Generic { base, args, args_span }, span };
+                    ty = TypeExpr {
+                        kind: TypeExprKind::Generic {
+                            base,
+                            args,
+                            args_span,
+                        },
+                        span,
+                    };
                 }
             }
         }
@@ -846,13 +935,25 @@ impl TypeParser {
             let span = ty.span.join(end);
             if exceeded || depth >= 128 {
                 if !exceeded {
-                    self.diagnostics.push(Diagnostic { span: suffix_span, message: "array type nesting exceeds 128".to_owned() });
+                    self.diagnostics.push(Diagnostic {
+                        span: suffix_span,
+                        message: "array type nesting exceeds 128".to_owned(),
+                    });
                 }
-                ty = TypeExpr { kind: TypeExprKind::Error, span };
+                ty = TypeExpr {
+                    kind: TypeExprKind::Error,
+                    span,
+                };
                 depth = 1;
                 exceeded = true;
             } else {
-                ty = TypeExpr { kind: TypeExprKind::Array { element: Box::new(ty), suffix_span }, span };
+                ty = TypeExpr {
+                    kind: TypeExprKind::Array {
+                        element: Box::new(ty),
+                        suffix_span,
+                    },
+                    span,
+                };
                 depth += 1;
             }
         }
@@ -994,31 +1095,52 @@ impl TypeParser {
                 let mut key = self.union();
                 self.comma_ends_type -= 1;
                 if type_depth(&key) >= 128 {
-                    self.diagnostics.push(Diagnostic { span: key.span, message: "record key type nesting exceeds 128".to_owned() });
-                    key = TypeExpr { kind: TypeExprKind::Error, span: key.span };
+                    self.diagnostics.push(Diagnostic {
+                        span: key.span,
+                        message: "record key type nesting exceeds 128".to_owned(),
+                    });
+                    key = TypeExpr {
+                        kind: TypeExprKind::Error,
+                        span: key.span,
+                    };
                 }
                 self.expect("]");
                 self.expect(":");
                 TypeFieldKey::Indexed(Box::new(key))
-            } else if let TokenKind::Identifier(text) | TokenKind::Keyword(text) = self.current().kind.clone() {
+            } else if let TokenKind::Identifier(text) | TokenKind::Keyword(text) =
+                self.current().kind.clone()
+            {
                 if self.symbol_at(self.pos + 1, ":") {
                     self.pos += 1;
                     self.expect(":");
-                    TypeFieldKey::Named(Name { text, span: field_start })
+                    TypeFieldKey::Named(Name {
+                        text,
+                        span: field_start,
+                    })
                 } else {
                     sequence_index += 1;
-                    TypeFieldKey::Sequence { index: sequence_index }
+                    TypeFieldKey::Sequence {
+                        index: sequence_index,
+                    }
                 }
             } else {
                 sequence_index += 1;
-                TypeFieldKey::Sequence { index: sequence_index }
+                TypeFieldKey::Sequence {
+                    index: sequence_index,
+                }
             };
             self.comma_ends_type += 1;
             let mut ty = self.union();
             self.comma_ends_type -= 1;
             if type_depth(&ty) >= 128 {
-                self.diagnostics.push(Diagnostic { span: ty.span, message: "record value type nesting exceeds 128".to_owned() });
-                ty = TypeExpr { kind: TypeExprKind::Error, span: ty.span };
+                self.diagnostics.push(Diagnostic {
+                    span: ty.span,
+                    message: "record value type nesting exceeds 128".to_owned(),
+                });
+                ty = TypeExpr {
+                    kind: TypeExprKind::Error,
+                    span: ty.span,
+                };
             }
             let span = field_start.join(ty.span);
             fields.push(TypeField { key, ty, span });

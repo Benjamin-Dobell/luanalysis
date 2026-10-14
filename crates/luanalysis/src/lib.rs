@@ -12,6 +12,7 @@ pub mod project_check;
 mod functions;
 mod native_expressions;
 mod native_flow;
+mod native_assertions;
 mod native_iterators;
 mod native_functions;
 mod native_named;
@@ -29,7 +30,7 @@ use luanalysis_syntax::{
     Expr, ExprKind, Name, Span, Stmt, StmtKind, TypeAnnotation, TypeExpr, TypeExprKind, TypeLiteral,
 };
 use native_functions::NativeRegistry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -175,6 +176,7 @@ struct Checker<'a> {
     captured_function: Option<CapturedFunctionContext>,
     incomplete_flow: bool,
     annotation_depth: usize,
+    active_assertions: HashSet<(usize,usize)>,
     check_mode: NativeCheckMode,
     flow_at: Option<NativeFlowKey>,
     locals: HashMap<BindingId, Binding>,
@@ -214,6 +216,7 @@ pub fn check(source: &str) -> CheckReport {
             registry.check_named_declarations(engine);
             let mut report = {
                 let mut checker = Checker {
+                    active_assertions: HashSet::new(),
                     engine,
                     bound: registry.bound(),
                     native: Some(registry),
@@ -581,7 +584,7 @@ impl Checker<'_> {
         if let (Some(native), Some(at)) = (self.native, previous) {
             self.flow_at = Some(native.flow_input_for_expression(expr, at));
         }
-        let ty = self.expression_at_current_flow(expr, expected);
+        let ty = if let Some(ty) = self.asserted_expression_type(expr) { ty } else { self.expression_at_current_flow(expr, expected) };
         self.flow_at = previous;
         ty
     }
