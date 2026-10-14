@@ -523,7 +523,9 @@ impl<'p, 's> Checker<'p, 's> {
                 | SigData::DefaultConstruct {
                     base: Some(inner), ..
                 } => inner,
-                SigData::DefaultConstruct { base: None, .. } | SigData::Synth { .. } => break None,
+                SigData::Native { .. }
+                | SigData::DefaultConstruct { base: None, .. }
+                | SigData::Synth { .. } => break None,
             };
         };
         self.parameter_name_at(declaration, params, pos)

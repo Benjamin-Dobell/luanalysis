@@ -1001,6 +1001,9 @@ impl<'p, 's> Checker<'p, 's> {
     /// for `sig`, which has the symbol of `sig.declaration`: whether that is a function, a method
     /// or a type literal. A call or construct signature, a constructor and an accessor are not.
     pub(super) fn has_instantiable_symbol(&self, sig: SigId) -> bool {
+        if self.sig_native_decl(self.types().sig_origin(sig)).is_some() {
+            return true;
+        }
         let declared = self.sig_decl(self.types().sig_origin(sig));
         declared.is_some_and(|(file, func, _)| {
             matches!(
@@ -1075,6 +1078,10 @@ impl<'p, 's> Checker<'p, 's> {
             return sig;
         }
         let data = match self.types().sig(sig) {
+            SigData::Native { declaration, mapper: own } => SigData::Native {
+                declaration: *declaration,
+                mapper: self.compose(*own, mapper),
+            },
             SigData::Decl {
                 file,
                 func,

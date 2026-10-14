@@ -6242,6 +6242,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// `SignatureFlagsAbstract`
     pub(super) fn is_abstract_signature(&self, sig: SigId) -> bool {
         match *self.types().sig(sig) {
+            SigData::Native { .. } => false,
             // `getDefaultConstructSignatures`, `getSignatureFromDeclaration`: of several class
             // declarations with one name the first is used.
             SigData::Construct { class, .. } | SigData::DefaultConstruct { class, .. } => self
@@ -6551,6 +6552,10 @@ impl<'p, 's> Checker<'p, 's> {
             c.types().mapper(pairs)
         };
         let data = match *self.types().sig(sig) {
+            SigData::Native { declaration, mapper } => SigData::Native {
+                declaration,
+                mapper: extended(self, mapper),
+            },
             SigData::Decl { file, func, mapper } => SigData::Decl {
                 file,
                 func,
@@ -6646,6 +6651,21 @@ impl<'p, 's> Checker<'p, 's> {
     /// `getSignatureInstantiation` apply them to a signature that has its outer mapping already.
     fn sig_target(&mut self, sig: SigId) -> Option<SigId> {
         match *self.types().sig(sig) {
+            SigData::Native { declaration, mapper } => {
+                let declared = self.types().intern_sig(SigData::Native {
+                    declaration,
+                    mapper: MapperId::IDENTITY,
+                });
+                let own = self.sig_type_params(declared);
+                if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {
+                    return (declared != sig).then_some(declared);
+                }
+                let outer = self.types().mapping(mapper).iter().copied()
+                    .filter(|pair| !own.contains(&pair.0))
+                    .collect();
+                let outer = self.types().mapper(outer);
+                Some(self.instantiate_sig(declared, outer))
+            }
             // `cloneSignature` preserves the target.
             SigData::WithReturn { sig: inner, .. } => self.sig_target(inner),
             SigData::Synth { ref of, .. } => match of[..] {

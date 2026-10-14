@@ -2535,6 +2535,7 @@ impl<'p, 's> Checker<'p, 's> {
                 let q = Query::ReturnAtFirstLook(file, func);
                 self.may_be_in_flight(q) && self.stack.contains(&q)
             }
+            SigData::Native { .. } => false,
             SigData::Synth { ref of, .. } => of.iter().any(|&s| self.is_at_first_look(s)),
             _ => false,
         }
@@ -2545,6 +2546,13 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn is_resolving_return_type_of_declaration(&self, sig: SigId) -> bool {
         match *self.types().sig(sig) {
             SigData::Decl { file, func, .. } => self.is_resolving(Query::Return(file, func)),
+            SigData::Native { declaration, .. } => {
+                let declared = self.types().intern_sig(SigData::Native {
+                    declaration,
+                    mapper: MapperId::IDENTITY,
+                });
+                self.is_resolving(Query::ReturnOfSignature(declared))
+            }
             SigData::Synth { ref of, .. } => of
                 .iter()
                 .any(|&s| self.is_resolving_return_type_of_declaration(s)),
@@ -2558,6 +2566,7 @@ impl<'p, 's> Checker<'p, 's> {
             SigData::Decl { mapper, .. } if self.is_instantiating(mapper) => {
                 self.is_resolving(Query::ReturnOfSignature(sig))
             }
+            SigData::Native { .. } => self.is_resolving(Query::ReturnOfSignature(sig)),
             SigData::Synth { ref of, .. } => {
                 of.iter().any(|&s| self.is_resolving_return_type(s))
                     || self.is_resolving(Query::ReturnOfSignature(sig))

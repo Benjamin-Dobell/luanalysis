@@ -3838,6 +3838,11 @@ impl<'p, 's> Checker<'p, 's> {
                     return resolved;
                 }
             }
+            SigData::Native { .. } => {
+                if let Some(resolved) = self.p.resolved_return_types.get(&self.task, &sig) {
+                    return resolved;
+                }
+            }
             // `signature.composite != nil`
             SigData::Synth {
                 ret: TypeId::UNRESOLVED,
@@ -4477,12 +4482,7 @@ impl<'p, 's> Checker<'p, 's> {
                         self.declared_or_contextual_return_type(file, func, ContextFlags::empty())
                     };
                     let expected = expected.map(|t| self.unwrap_return_type(file, func, t));
-                    let returned =
-                        if expected.is_some_and(|t| self.some_type(t, |_, m| m.is_undefined())) {
-                            TypeId::UNDEFINED
-                        } else {
-                            TypeId::VOID
-                        };
+                    let returned = self.empty_return_type(expected);
                     if returns_promise {
                         let error_node = self.place_of_signature_declaration(file, func);
                         return self.create_promise_return_type(error_node, false, returned);
@@ -4501,7 +4501,7 @@ impl<'p, 's> Checker<'p, 's> {
                 WideningKind::FunctionReturn,
             );
             // `getWidenedLiteralLikeTypeForContextualReturnTypeIfNeeded`
-            if self.is_unit(ret) {
+            let contextual = if self.is_unit(ret) {
                 let mut contextual = if self.is_own_contextual_signature(file, func) {
                     Some(ret)
                 } else {
@@ -4511,9 +4511,11 @@ impl<'p, 's> Checker<'p, 's> {
                     // `GetPromisedTypeOfPromise`
                     contextual = contextual.and_then(|t| self.thenable_value(t));
                 }
-                ret = self.widen_literal_for_context(ret, contextual);
-            }
-            ret = self.get_widened_type(ret);
+                contextual
+            } else {
+                None
+            };
+            ret = self.widen_aggregated_return_type(ret, contextual);
             if is_async {
                 return self.promise_of(ret);
             }
@@ -4658,6 +4660,58 @@ impl<'p, 's> Checker<'p, 's> {
         Some(self.instantiate_contextual_type(returned, file, owner, ContextFlags::empty()))
     }
 
+    /// Scalar return inference after a frontend has checked its returned expressions and
+    /// determined whether the function can return without a value.
+    pub fn aggregate_return_types(
+        &mut self,
+        types: &[TypeId],
+        has_fallthrough: bool,
+        context: Option<TypeId>,
+    ) -> TypeId {
+        let mut aggregated: SmallVec<[TypeId; 4]> = SmallVec::new();
+        for &ty in types {
+            if !aggregated.contains(&ty) {
+                aggregated.push(ty);
+            }
+        }
+        self.add_implicit_return_undefined(&mut aggregated, has_fallthrough);
+        let ret = if aggregated.is_empty() {
+            self.empty_return_type(context)
+        } else {
+            self.union_reduced(&aggregated)
+        };
+        self.widen_aggregated_return_type(ret, context)
+    }
+
+    fn empty_return_type(&self, context: Option<TypeId>) -> TypeId {
+        if context.is_some_and(|t| self.some_type(t, |_, m| m.is_undefined())) {
+            TypeId::UNDEFINED
+        } else {
+            TypeId::VOID
+        }
+    }
+
+    fn add_implicit_return_undefined(
+        &self,
+        types: &mut SmallVec<[TypeId; 4]>,
+        has_fallthrough: bool,
+    ) {
+        if self.p.files.options.strict_null_checks
+            && !types.is_empty()
+            && has_fallthrough
+            && !types.contains(&TypeId::UNDEFINED)
+        {
+            types.push(TypeId::UNDEFINED);
+        }
+    }
+
+    fn widen_aggregated_return_type(&mut self, mut ret: TypeId, context: Option<TypeId>) -> TypeId {
+        if self.is_unit(ret) {
+            ret = self.widen_literal_for_context(ret, context);
+        }
+        self.get_widened_type(ret)
+    }
+
     /// `checkAndAggregateReturnExpressionTypes`: the types of the returned expressions, and whether
     /// the function never returns.
     fn check_and_aggregate_return_expression_types(
@@ -4715,13 +4769,10 @@ impl<'p, 's> Checker<'p, 's> {
         {
             return (aggregated_types, true);
         }
-        if self.p.files.options.strict_null_checks
-            && !aggregated_types.is_empty()
-            && has_return_with_no_expression
-            && !aggregated_types.contains(&TypeId::UNDEFINED)
-        {
-            aggregated_types.push(TypeId::UNDEFINED);
-        }
+        self.add_implicit_return_undefined(
+            &mut aggregated_types,
+            has_return_with_no_expression,
+        );
         (aggregated_types, false)
     }
 

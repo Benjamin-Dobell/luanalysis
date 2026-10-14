@@ -28,6 +28,12 @@ pub type List<'s, T> = ArenaBox<'s, [T]>;
 pub struct TypeId(pub u32);
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SigId(pub u32);
+/// A function in a foreign frontend's source snapshot, independent of TS HIR ids.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeFunctionId {
+    pub snapshot: u64,
+    pub index: u32,
+}
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MapperId(pub u32);
 /// An interned list of `IndexComponent`s.
@@ -843,6 +849,11 @@ impl SigParam {
 
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub enum SigData<'s> {
+    /// A declaration resolved on demand by the checker's native function provider.
+    Native {
+        declaration: NativeFunctionId,
+        mapper: MapperId,
+    },
     /// As declared, with `mapper` applied.
     Decl {
         file: FileId,
@@ -2406,7 +2417,8 @@ impl<'p, 's> Types<'p, 's> {
 
     pub fn sig_flags(&self, sig: SigId) -> ObjectFlags {
         match self.sig(sig) {
-            SigData::Decl { mapper, .. }
+            SigData::Native { mapper, .. }
+            | SigData::Decl { mapper, .. }
             | SigData::DefaultConstruct { mapper, .. }
             | SigData::Construct { mapper, .. } => self.mapper_record(*mapper).1,
             SigData::Synth {
@@ -3210,6 +3222,7 @@ has_no_references!(
     u8,
     u32,
     u64,
+    NativeFunctionId,
     usize,
     ExprId,
     FnId,
@@ -3373,6 +3386,7 @@ follow_struct!(SigParam {
     declaration
 });
 follow_enum!(SigData<'_> {
+    SigData::Native { declaration, mapper } => (declaration, mapper),
     SigData::Decl { file, func, mapper } => (file, func, mapper),
     SigData::DefaultConstruct { class, base, mapper } => (class, base, mapper),
     SigData::Construct { class, file, func, mapper } => (class, file, func, mapper),
@@ -3430,6 +3444,7 @@ clone_in_is_copy!(
     Atom,
     TypeId,
     SigId,
+    NativeFunctionId,
     MapperId,
     FileId,
     Sym,
@@ -3614,6 +3629,7 @@ clone_in_struct!(Shape {
     mapper
 });
 clone_in_enum!(SigData {
+    Native { declaration, mapper },
     Decl { file, func, mapper },
     DefaultConstruct { class, base, mapper },
     Construct { class, file, func, mapper },

@@ -3128,7 +3128,9 @@ impl<'p, 's> Checker<'p, 's> {
             }
             while let Some(sig) = signatures.pop() {
                 match self.types().sig(sig) {
-                    SigData::Decl { mapper, .. } | SigData::Construct { mapper, .. } => {
+                    SigData::Native { mapper, .. }
+                    | SigData::Decl { mapper, .. }
+                    | SigData::Construct { mapper, .. } => {
                         left.extend(values(*mapper))
                     }
                     SigData::DefaultConstruct { base, mapper, .. } => {

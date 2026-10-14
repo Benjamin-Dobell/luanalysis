@@ -118,6 +118,19 @@ use symbols::{AliasTarget, ExcludedMeanings};
 use task::{Open, OrderDependent, Stored, Task};
 
 pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
+
+/// Language-specific declaration demands executed in the same checker and query scope.
+/// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
+pub trait NativeFunctionProvider {
+    fn contains_function(&self, declaration: NativeFunctionId) -> bool;
+    fn parameters(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> Vec<SigParam>;
+    fn type_parameters(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Vec<TypeId> {
+        Vec::new()
+    }
+    fn return_type(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> TypeId;
+    fn circular_return_type(&self, declaration: NativeFunctionId);
+    fn return_type_too_deep(&self, declaration: NativeFunctionId);
+}
 pub use shape::Members;
 pub use spans::compute_ecma_line_starts;
 
@@ -622,11 +635,21 @@ impl<'s> Program<'s> {
         first.into_iter().chain(strict.iter().copied()).chain(last)
     }
 
+    pub fn checker_with_native_provider<'p>(
+        &'p self,
+        provider: &'p dyn NativeFunctionProvider,
+    ) -> Checker<'p, 's> {
+        let mut checker = self.checker();
+        checker.native_function_provider = Some(provider);
+        checker
+    }
+
     pub fn checker(&self) -> Checker<'_, 's> {
         let arena = self.session.arena();
 
         Checker {
             p: self,
+            native_function_provider: None,
             arena,
             task: Task::new_in(arena),
             left_frame: None,
@@ -1123,6 +1146,7 @@ pub enum Requested {
 
 pub struct Checker<'p, 's> {
     pub p: &'p Program<'s>,
+    native_function_provider: Option<&'p dyn NativeFunctionProvider>,
     /// The arena of the thread that runs the task: for the records that the task creates, which may be
     /// published. Everything else that a task allocates is on the regular heap.
     pub arena: &'s Arena,

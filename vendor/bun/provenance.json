@@ -66,6 +66,78 @@
       "patch": "vendor/patches/bun-sema-return-policy.patch",
       "reason": "Expose the native empty-function return policy and share its unchanged predicate with existing TS checks.",
       "patch_sha256": "e72ace9bd214d9d462f81fa48807dd5c449031bce926ab029b70592f0db4700e"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/context.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/explain_relation.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/check/symbols.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-signatures.patch",
+      "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+      "patch_sha256": "b498fa2599fced53148b455d19f7c4b298a59f27f8d553bef9b40692a1bf9971"
     }
   ],
   "files": {
@@ -762,7 +834,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "e3635b391beefff9b5e23aa76a0cab613731f048c28dae5a4cfd50a0d79e573f"
+      "extracted_sha256": "ddbd54f186f72f6067b52f47538b3ace1a0138fa5cbd1d57cc370e7e27d5d9da"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -772,12 +844,12 @@
     "src/sema/check/context.rs": {
       "upstream": "src/sema/check/context.rs",
       "sha256": "38ce21bc5a1016ca18ed46af9e6cc93927640ed24b869c5c8ee91147f6505601",
-      "extracted_sha256": "38ce21bc5a1016ca18ed46af9e6cc93927640ed24b869c5c8ee91147f6505601"
+      "extracted_sha256": "a4284ce176615c36b7cdd0de40f0b9722bbb8e3298a98ccc2541434d9fdc8b64"
     },
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9"
+      "extracted_sha256": "cccd8d7f219b546cf7d97932d8c74b138466c5ddff706a6dff735013bdb8b06c"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -967,7 +1039,7 @@
     "src/sema/check/explain_relation.rs": {
       "upstream": "src/sema/check/explain_relation.rs",
       "sha256": "3cd5cea2059c6d9748f4fb35f723fdec0d85d2e2177e3a9c17f11bc0f80da601",
-      "extracted_sha256": "3cd5cea2059c6d9748f4fb35f723fdec0d85d2e2177e3a9c17f11bc0f80da601"
+      "extracted_sha256": "fda7ae1c15ba0b637abd18b3bcdb10a93929176015c015b71677385b7cca382d"
     },
     "src/sema/check/expr.rs": {
       "upstream": "src/sema/check/expr.rs",
@@ -987,12 +1059,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461"
+      "extracted_sha256": "e2a5ac112a5bbb3d2c9330386c0b8884fed1b07863eb9d17889cfda9faff4793"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e"
+      "extracted_sha256": "6e73843e78b5e876df3b2806f8fee9ae7d643686f9a43ab31d99369bb2fa369b"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -1022,7 +1094,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "ccd83d751b92ff43fa2419a32cc51ac62cfdc6f5c7a143dde68ce73f564f8790"
+      "extracted_sha256": "f8889e00d4b680317025904756190e98e1f4e7362725d260bc6b229f04d2bf3c"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -1032,7 +1104,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267"
+      "extracted_sha256": "a0615c394052dd3f3409d92b8315b8aa91abeb307b9d05c3280df40d53e4649b"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -1047,7 +1119,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18"
+      "extracted_sha256": "f1246bf7f7008767855dcab7f720c51ae94d3886befdb89ebbc530492e951755"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -1102,7 +1174,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3"
+      "extracted_sha256": "70a8a2cb2cf4346427a399db5a10d437d9c67c924377f1ab9d29842ea7610ebe"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -1122,7 +1194,7 @@
     "src/sema/check/symbols.rs": {
       "upstream": "src/sema/check/symbols.rs",
       "sha256": "ef1c369442929fa1f57e979c571a01d2d7aebbadba0d1f3f8d7e750ca080936b",
-      "extracted_sha256": "ef1c369442929fa1f57e979c571a01d2d7aebbadba0d1f3f8d7e750ca080936b"
+      "extracted_sha256": "8fc5707b2c6fa7e667bdc9c77206e2e8b1613e13af618a83abfffaac2455fddb"
     },
     "src/sema/check/task.rs": {
       "upstream": "src/sema/check/task.rs",
@@ -1227,7 +1299,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8"
+      "extracted_sha256": "c16a2d9ddc64e70832321c5c21ed5e7de2ddf6ec6f10f789bed0dbe67c4ac15e"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

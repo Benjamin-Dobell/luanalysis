@@ -39,6 +39,15 @@ SOURCE_ADAPTATIONS = [{
     "patch": "vendor/patches/bun-sema-return-policy.patch",
     "reason": "Expose the native empty-function return policy and share its unchanged predicate with existing TS checks.",
 }]
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-signatures.patch",
+    "reason": "Add source-identified lazy native signatures, provider dispatch and shared return query/aggregation support.",
+} for path in [
+    "check/call.rs", "check/context.rs", "check/decl.rs", "check/explain_relation.rs",
+    "check/infer.rs", "check/instantiate.rs", "check/mod.rs", "check/print.rs",
+    "check/relate.rs", "check/shape.rs", "check/symbols.rs", "types.rs",
+])
 
 
 def git(source, *args):

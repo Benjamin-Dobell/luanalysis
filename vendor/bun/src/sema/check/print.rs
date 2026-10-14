@@ -5441,6 +5441,26 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 let inner = *inner;
                 return self.signature_parameters(inner);
             }
+            SigData::Native { .. } => {
+                let params = self.c.sig_params(signature);
+                let mut list = Vec::with_capacity(params.len());
+                for (i, parameter) in params.iter().enumerate() {
+                    let name = if parameter.name.is_some() {
+                        self.text(parameter.name)
+                    } else {
+                        cat!(b"arg", itoa(&mut ItoaBuf::new(), i))
+                    };
+                    list.push(Parameter {
+                        name_length: name.len(),
+                        name,
+                        ty: parameter.ty,
+                        optional: parameter.optional,
+                        rest: parameter.rest,
+                        declaration: None,
+                    });
+                }
+                return list;
+            }
             SigData::Synth { params, .. } => {
                 let mut list = Vec::with_capacity(params.len());
                 for (i, parameter) in params.iter().enumerate() {

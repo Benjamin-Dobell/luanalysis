@@ -211,7 +211,6 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let sig = candidates[0];
         let params = self.sig_params(sig);
-        let ret = self.sig_return(sig);
         let error = if self.sig_this_type(sig).is_some_and(|ty| ty != TypeId::VOID) {
             Some(ResolvedTypeCallError::UnsupportedThis)
         } else if self.non_array_rest_type(&params).is_some() {
@@ -223,7 +222,7 @@ impl<'p, 's> Checker<'p, 's> {
         };
         if let Some(error) = error {
             return ResolvedTypeCall {
-                ret,
+                ret: self.sig_return(sig),
                 errors: vec![error],
             };
         }
@@ -238,7 +237,7 @@ impl<'p, 's> Checker<'p, 's> {
             let max = (!self.has_effective_rest_parameter(&params))
                 .then(|| self.parameter_count(&params));
             return ResolvedTypeCall {
-                ret,
+                ret: self.sig_return(sig),
                 errors: vec![ResolvedTypeCallError::Arity {
                     actual: args.len(),
                     min,
@@ -261,7 +260,7 @@ impl<'p, 's> Checker<'p, 's> {
                 break;
             }
         }
-        ResolvedTypeCall { ret, errors }
+        ResolvedTypeCall { ret: self.sig_return(sig), errors }
     }
 
     /// `isContextSensitive`. For `JsxAttributes`: `is_jsx_attributes_context_sensitive`.

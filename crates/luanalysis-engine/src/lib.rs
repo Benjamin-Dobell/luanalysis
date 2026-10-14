@@ -7,18 +7,28 @@
 
 mod native;
 
-use bun_sema::check::{Checker, Program, ResolvedTypeCallError};
+use bun_sema::check::{Checker, NativeFunctionProvider, Program, ResolvedTypeCallError};
 use bun_sema::hir;
 use bun_sema::program::Files;
 use bun_sema::resolve::{Host, Options, ParseOptions, ScriptKind};
 use bun_sema::session::Session;
 use bun_sema::types::{
-    Intrinsic, Literalness, MapperId, Prop, PropFlags, PropSource, Shape, SigData, SigParam,
-    TypeData, TypeId,
+    Intrinsic, Literalness, MapperId, NativeFunctionId, Prop, PropFlags, PropSource, Shape,
+    SigData, SigParam, TypeData, TypeId,
 };
 use std::borrow::Cow;
 
 pub const BUN_REVISION: &str = "408c9374b266b45fe6b8260e09be73aa82a957cd";
+
+/// An original-source function identity, independent of backend type numbering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeFunctionKey {
+    pub snapshot: u64,
+    pub index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidNativeFunctionKey(pub NativeFunctionKey);
 
 /// Resolved type descriptions; every comparison creates real checker-owned IDs.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +50,30 @@ pub enum Type {
     Shape(Vec<Property>),
     FreshShape(Vec<Property>),
     Function(FunctionType),
+    NativeFunction(NativeFunctionKey),
+}
+
+/// Source recipes may use thread-local interior state; release its borrows
+/// before reentering the query capability supplied to a callback.
+pub trait NativeTypeProvider {
+    fn contains_function(&self, key: NativeFunctionKey) -> bool;
+    fn function_parameters(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Vec<Parameter>;
+    fn function_declared_return(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type>;
+    fn function_inferred_return(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Type;
+    fn return_cycle(&self, key: NativeFunctionKey);
+    fn return_type_too_deep(&self, key: NativeFunctionKey);
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,6 +151,13 @@ pub trait TypeQueries {
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type;
     fn call(&mut self, callee: &Type, arguments: &[Type]) -> CallResult;
     fn allows_implicit_return(&mut self, returned: &Type) -> bool;
+    fn aggregate_returns(
+        &mut self,
+        returned: &[Type],
+        has_fallthrough: bool,
+        context: Option<&Type>,
+    ) -> Type;
+    fn native_function_signature(&mut self, key: NativeFunctionKey) -> FunctionType;
     fn format(&mut self, ty: &Type) -> String;
 }
 
@@ -132,6 +173,28 @@ impl Engine {
     /// Returning owned results ends the batch and frees its native state.
     pub fn with_session<R: Send>(&self, work: impl FnOnce(&mut dyn TypeQueries) -> R + Send) -> R {
         with_checker(|checker| work(&mut SessionQueries { checker }))
+    }
+
+    /// The provider is constructed inside the worker and need not be Send or
+    /// Sync. Reentrant callbacks receive the same native checker capability.
+    pub fn with_native_provider<P: NativeTypeProvider, R: Send>(
+        &self,
+        factory: impl FnOnce() -> P + Send,
+        work: impl FnOnce(&P, &mut dyn TypeQueries) -> R + Send,
+    ) -> R {
+        with_program(|program| {
+            let provider = factory();
+            let adapter = ProviderAdapter {
+                provider: &provider,
+            };
+            let mut checker = program.checker_with_native_provider(&adapter);
+            work(
+                &provider,
+                &mut SessionQueries {
+                    checker: &mut checker,
+                },
+            )
+        })
     }
 
     pub fn is_assignable(&self, source: &Type, target: &Type) -> bool {
@@ -175,6 +238,29 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn aggregate_returns(
+        &mut self,
+        returned: &[Type],
+        has_fallthrough: bool,
+        context: Option<&Type>,
+    ) -> Type {
+        let returned: Vec<_> = returned
+            .iter()
+            .map(|ty| import_type(self.checker, ty))
+            .collect();
+        let context = context.map(|ty| import_type(self.checker, ty));
+        let ty = self
+            .checker
+            .aggregate_return_types(&returned, has_fallthrough, context);
+        export_type(self.checker, ty)
+    }
+
+    fn native_function_signature(&mut self, key: NativeFunctionKey) -> FunctionType {
+        let ty = import_type(self.checker, &Type::NativeFunction(key));
+        let signatures = self.checker.signatures(ty, false);
+        export_signature(self.checker, signatures[0])
+    }
+
     fn allows_implicit_return(&mut self, returned: &Type) -> bool {
         let returned = import_type(self.checker, returned);
         self.checker
@@ -187,12 +273,14 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
 
     fn compare(&mut self, source: &Type, target: &Type) -> Relation {
-        let source = import_type(self.checker, source);
-        let target = import_type(self.checker, target);
+        let source_input = source;
+        let target_input = target;
+        let source = import_type(self.checker, source_input);
+        let target = import_type(self.checker, target_input);
         Relation {
             assignable: self.checker.is_assignable(source, target),
-            source: String::from_utf8_lossy(&self.checker.type_to_string(source)).into_owned(),
-            target: String::from_utf8_lossy(&self.checker.type_to_string(target)).into_owned(),
+            source: relation_text(self.checker, source_input, source),
+            target: relation_text(self.checker, target_input, target),
         }
     }
 
@@ -266,9 +354,46 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
 }
 
+fn contains_native_function(ty: &Type) -> bool {
+    match ty {
+        Type::NativeFunction(_) => true,
+        Type::Union(types) | Type::Intersection(types) => {
+            types.iter().any(contains_native_function)
+        }
+        Type::Shape(properties) | Type::FreshShape(properties) => properties
+            .iter()
+            .any(|property| contains_native_function(&property.ty)),
+        Type::Function(function) => {
+            contains_native_function(&function.returns)
+                || function
+                    .params
+                    .iter()
+                    .any(|parameter| contains_native_function(&parameter.ty))
+        }
+        _ => false,
+    }
+}
+
+fn relation_text(checker: &mut Checker<'_, '_>, source: &Type, ty: TypeId) -> String {
+    if contains_native_function(source) {
+        // Rendering a deferred function resolves its return. Diagnostics must
+        // not add a query while an unrelated source body is still being checked.
+        "source function value".into()
+    } else {
+        String::from_utf8_lossy(&checker.type_to_string(ty)).into_owned()
+    }
+}
+
 // The native checker measures its remaining stack; use the same stack as its
 // upstream standalone worker rather than guessing the caller's thread stack.
 fn with_checker<R: Send>(work: impl FnOnce(&mut Checker<'_, '_>) -> R + Send) -> R {
+    with_program(|program| {
+        let mut checker = program.checker();
+        work(&mut checker)
+    })
+}
+
+fn with_program<R: Send>(work: impl FnOnce(&mut Program<'_>) -> R + Send) -> R {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("luanalysis-type-core".into())
@@ -295,10 +420,8 @@ fn with_checker<R: Send>(work: impl FnOnce(&mut Checker<'_, '_>) -> R + Send) ->
                     &|_| {},
                 ));
                 let mut program = Program::new(&session, files);
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut checker = program.checker();
-                    work(&mut checker)
-                }));
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&mut program)));
                 program.release();
                 result.unwrap_or_else(|error| std::panic::resume_unwind(error))
             })
@@ -306,6 +429,75 @@ fn with_checker<R: Send>(work: impl FnOnce(&mut Checker<'_, '_>) -> R + Send) ->
             .join()
             .unwrap_or_else(|error| std::panic::resume_unwind(error))
     })
+}
+
+fn core_key(key: NativeFunctionKey) -> NativeFunctionId {
+    NativeFunctionId {
+        snapshot: key.snapshot,
+        index: key.index,
+    }
+}
+
+fn source_key(key: NativeFunctionId) -> NativeFunctionKey {
+    NativeFunctionKey {
+        snapshot: key.snapshot,
+        index: key.index,
+    }
+}
+
+struct ProviderAdapter<'a, P> {
+    provider: &'a P,
+}
+
+impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
+    fn contains_function(&self, key: NativeFunctionId) -> bool {
+        self.provider.contains_function(source_key(key))
+    }
+
+    fn parameters(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Vec<SigParam> {
+        let parameters = self
+            .provider
+            .function_parameters(source_key(key), &mut SessionQueries { checker });
+        parameters
+            .into_iter()
+            .map(|parameter| {
+                let mut ty = import_type(checker, &parameter.ty);
+                if parameter.optional {
+                    ty = checker.optional(ty);
+                }
+                SigParam {
+                    name: checker.atoms().intern(parameter.name.as_bytes()),
+                    ty,
+                    optional: parameter.optional,
+                    rest: false,
+                    is_required_rest: false,
+                    declaration: None,
+                }
+            })
+            .collect()
+    }
+
+    fn return_type(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> TypeId {
+        let key = source_key(key);
+        let declared = self
+            .provider
+            .function_declared_return(key, &mut SessionQueries { checker });
+        let returned = match declared {
+            Some(ty) => ty,
+            None => self
+                .provider
+                .function_inferred_return(key, &mut SessionQueries { checker }),
+        };
+        import_type(checker, &returned)
+    }
+
+    fn circular_return_type(&self, key: NativeFunctionId) {
+        self.provider.return_cycle(source_key(key));
+    }
+
+    fn return_type_too_deep(&self, key: NativeFunctionId) {
+        self.provider.return_type_too_deep(source_key(key));
+    }
 }
 
 fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
@@ -324,6 +516,9 @@ fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
         Type::BooleanLiteral(value) => checker.bool_literal(*value, true),
         Type::NumberLiteral(value) => checker.number_literal(*value, true),
         Type::StringLiteral(value) => checker.string_literal(checker.atoms().intern(value), true),
+        Type::NativeFunction(key) => checker
+            .native_function_type(core_key(*key))
+            .unwrap_or_else(|| std::panic::panic_any(InvalidNativeFunctionKey(*key))),
         Type::Union(types) => {
             let types: Vec<_> = types.iter().map(|ty| import_type(checker, ty)).collect();
             checker.union(&types)
@@ -394,7 +589,7 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
     }
     match checker.data(ty) {
         TypeData::Intrinsic(kind) => match kind {
-            Intrinsic::Any | Intrinsic::Error => Type::Any,
+            Intrinsic::Any | Intrinsic::Error | Intrinsic::Unresolved => Type::Any,
             Intrinsic::Unknown => Type::Unknown,
             Intrinsic::Never => Type::Never,
             Intrinsic::Null | Intrinsic::NullWidening => Type::Nil,
@@ -429,20 +624,11 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
         }
         TypeData::Synth(shape) if shape.call.len() == 1 && shape.props.is_empty() => {
             let sig = shape.call[0];
-            let params = checker.sig_params(sig).into_vec();
-            let returns = checker.sig_return(sig);
-            Type::Function(FunctionType {
-                params: params
-                    .into_iter()
-                    .map(|param| Parameter {
-                        name: String::from_utf8_lossy(checker.atoms().bytes(param.name))
-                            .into_owned(),
-                        ty: export_type(checker, param.ty),
-                        optional: param.optional,
-                    })
-                    .collect(),
-                returns: Box::new(export_type(checker, returns)),
-            })
+            if let Some((key, _)) = checker.sig_native_decl(sig) {
+                Type::NativeFunction(source_key(key))
+            } else {
+                Type::Function(export_signature(checker, sig))
+            }
         }
         TypeData::Synth(shape) => {
             let properties: Vec<_> = shape
@@ -474,6 +660,22 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
             )
         }
         other => panic!("unsupported exported type: {other:?}"),
+    }
+}
+
+fn export_signature(checker: &mut Checker<'_, '_>, sig: bun_sema::types::SigId) -> FunctionType {
+    let params = checker.sig_params(sig).into_vec();
+    let returns = checker.sig_return(sig);
+    FunctionType {
+        params: params
+            .into_iter()
+            .map(|param| Parameter {
+                name: String::from_utf8_lossy(checker.atoms().bytes(param.name)).into_owned(),
+                ty: export_type(checker, param.ty),
+                optional: param.optional,
+            })
+            .collect(),
+        returns: Box::new(export_type(checker, returns)),
     }
 }
 
@@ -534,6 +736,268 @@ impl Host for TypeCoreHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SourceProvider {
+        calls: [std::cell::Cell<usize>; 5],
+        parameters: [std::cell::Cell<usize>; 5],
+        cycles: std::cell::Cell<usize>,
+        depths: std::cell::Cell<usize>,
+        thread: std::thread::ThreadId,
+        _local: std::rc::Rc<()>,
+    }
+
+    impl SourceProvider {
+        fn new() -> Self {
+            Self {
+                calls: std::array::from_fn(|_| std::cell::Cell::new(0)),
+                parameters: std::array::from_fn(|_| std::cell::Cell::new(0)),
+                cycles: std::cell::Cell::new(0),
+                depths: std::cell::Cell::new(0),
+                thread: std::thread::current().id(),
+                _local: std::rc::Rc::new(()),
+            }
+        }
+        fn key(index: u32) -> NativeFunctionKey {
+            NativeFunctionKey {
+                snapshot: 71,
+                index,
+            }
+        }
+    }
+
+    impl NativeTypeProvider for SourceProvider {
+        fn contains_function(&self, key: NativeFunctionKey) -> bool {
+            key.snapshot == 71 && key.index < 5
+        }
+        fn function_parameters(
+            &self,
+            key: NativeFunctionKey,
+            _: &mut dyn TypeQueries,
+        ) -> Vec<Parameter> {
+            let count = &self.parameters[key.index as usize];
+            count.set(count.get() + 1);
+            Vec::new()
+        }
+        fn function_declared_return(
+            &self,
+            key: NativeFunctionKey,
+            _: &mut dyn TypeQueries,
+        ) -> Option<Type> {
+            (key.index == 3).then_some(Type::Number)
+        }
+        fn function_inferred_return(
+            &self,
+            key: NativeFunctionKey,
+            queries: &mut dyn TypeQueries,
+        ) -> Type {
+            assert_eq!(self.thread, std::thread::current().id());
+            let count = &self.calls[key.index as usize];
+            count.set(count.get() + 1);
+            match key.index {
+                0 => queries.aggregate_returns(&[Type::NumberLiteral(42.0)], false, None),
+                1 => Type::NativeFunction(Self::key(0)),
+                2 => queries.call(&Type::NativeFunction(key), &[]).return_type,
+                4 => Type::NativeFunction(key),
+                _ => panic!("an explicit annotation must avoid return-body inference"),
+            }
+        }
+        fn return_cycle(&self, _: NativeFunctionKey) {
+            self.cycles.set(self.cycles.get() + 1);
+        }
+        fn return_type_too_deep(&self, _: NativeFunctionKey) {
+            self.depths.set(self.depths.get() + 1);
+        }
+    }
+
+    #[test]
+    fn native_provider_preserves_lazy_identity_and_cached_returns() {
+        Engine::new().with_native_provider(SourceProvider::new, |provider, queries| {
+            let outer = queries.call(&Type::NativeFunction(SourceProvider::key(1)), &[]);
+            assert!(outer.errors.is_empty());
+            assert_eq!(
+                outer.return_type,
+                Type::NativeFunction(SourceProvider::key(0))
+            );
+            assert_eq!(provider.calls[0].get(), 0);
+            let record = Type::Shape(vec![Property::new("callback", outer.return_type.clone())]);
+            assert_eq!(
+                queries.property_type(&record, "callback"),
+                Some(outer.return_type.clone())
+            );
+            assert_eq!(provider.calls[0].get(), 0);
+            for _ in 0..2 {
+                let result = queries.call(&outer.return_type, &[]);
+                assert!(result.errors.is_empty());
+                assert_eq!(result.return_type, Type::Number);
+            }
+            assert_eq!(provider.calls[0].get(), 1);
+            assert_eq!(provider.parameters[0].get(), 1);
+            assert_eq!(provider.calls[1].get(), 1);
+            assert_eq!(
+                queries
+                    .native_function_signature(SourceProvider::key(0))
+                    .returns
+                    .as_ref(),
+                &Type::Number
+            );
+            assert_eq!(
+                queries
+                    .call(&Type::NativeFunction(SourceProvider::key(3)), &[])
+                    .return_type,
+                Type::Number
+            );
+            assert_eq!(provider.calls[3].get(), 0);
+        });
+    }
+
+    #[test]
+    fn native_provider_cycles_reenter_the_same_checker() {
+        Engine::new().with_native_provider(SourceProvider::new, |provider, queries| {
+            let recursive = Type::NativeFunction(SourceProvider::key(2));
+            let result = queries.call(&recursive, &[]);
+            assert_eq!(result.return_type, Type::Any);
+            assert!(provider.cycles.get() > 0);
+            let before = provider.calls[2].get();
+            assert_eq!(queries.call(&recursive, &[]).return_type, Type::Any);
+            assert_eq!(provider.calls[2].get(), before);
+            assert_eq!(
+                queries
+                    .call(&Type::NativeFunction(SourceProvider::key(0)), &[])
+                    .return_type,
+                Type::Number
+            );
+        });
+    }
+
+    #[test]
+    fn native_provider_rejects_foreign_snapshot_and_missing_function_keys() {
+        for key in [
+            NativeFunctionKey {
+                snapshot: 72,
+                index: 0,
+            },
+            SourceProvider::key(5),
+        ] {
+            let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Engine::new().with_native_provider(SourceProvider::new, |_, queries| {
+                    queries.call(&Type::NativeFunction(key), &[]);
+                });
+            }))
+            .expect_err("foreign source identity must be rejected");
+            assert_eq!(
+                *failure.downcast::<InvalidNativeFunctionKey>().unwrap(),
+                InvalidNativeFunctionKey(key)
+            );
+        }
+    }
+
+    #[test]
+    fn native_self_reference_is_not_expanded_by_decorative_queries() {
+        Engine::new().with_native_provider(SourceProvider::new, |provider, queries| {
+            let function = Type::NativeFunction(SourceProvider::key(4));
+            assert!(queries.compare(&function, &function).assignable);
+            assert_eq!(queries.widen(&function), function);
+            assert_eq!(queries.assignment_value(&function, &function), function);
+            assert_eq!(provider.calls[4].get(), 0);
+            assert_eq!(queries.call(&function, &[]).return_type, function);
+            assert_eq!(provider.calls[4].get(), 1);
+            assert_eq!(provider.cycles.get(), 0);
+        });
+    }
+
+    #[test]
+    fn native_return_depth_refusal_reports_before_recovery() {
+        with_program(|program| {
+            let provider = SourceProvider::new();
+            let adapter = ProviderAdapter {
+                provider: &provider,
+            };
+            let mut checker = program.checker_with_native_provider(&adapter);
+            let ty = checker
+                .native_function_type(core_key(SourceProvider::key(0)))
+                .unwrap();
+            let sig = checker.signatures(ty, false)[0];
+            checker.sig_params(sig);
+            checker.set_stack_limit(1);
+            let returned = checker.sig_return(sig);
+            checker.set_stack_limit(6 << 20);
+            assert_eq!(provider.depths.get(), 1);
+            assert_eq!(provider.calls[0].get(), 0);
+            assert_eq!(export_type(&mut checker, returned), Type::Any);
+        });
+    }
+
+    #[test]
+    fn native_source_snapshots_do_not_alias_equal_function_indices() {
+        struct TwoSnapshots;
+        impl NativeTypeProvider for TwoSnapshots {
+            fn contains_function(&self, key: NativeFunctionKey) -> bool {
+                key.index == 0 && matches!(key.snapshot, 71 | 72)
+            }
+            fn function_parameters(
+                &self,
+                _: NativeFunctionKey,
+                _: &mut dyn TypeQueries,
+            ) -> Vec<Parameter> {
+                Vec::new()
+            }
+            fn function_declared_return(
+                &self,
+                key: NativeFunctionKey,
+                _: &mut dyn TypeQueries,
+            ) -> Option<Type> {
+                Some(if key.snapshot == 71 {
+                    Type::Number
+                } else {
+                    Type::String
+                })
+            }
+            fn function_inferred_return(
+                &self,
+                _: NativeFunctionKey,
+                _: &mut dyn TypeQueries,
+            ) -> Type {
+                panic!("annotated returns must remain authoritative");
+            }
+            fn return_cycle(&self, _: NativeFunctionKey) {
+                panic!("nonrecursive declarations must not cycle");
+            }
+            fn return_type_too_deep(&self, _: NativeFunctionKey) {
+                panic!("small declarations exceed query depth");
+            }
+        }
+        Engine::new().with_native_provider(
+            || TwoSnapshots,
+            |_, queries| {
+                for _ in 0..2 {
+                    assert_eq!(
+                        queries
+                            .call(
+                                &Type::NativeFunction(NativeFunctionKey {
+                                    snapshot: 71,
+                                    index: 0
+                                }),
+                                &[]
+                            )
+                            .return_type,
+                        Type::Number
+                    );
+                    assert_eq!(
+                        queries
+                            .call(
+                                &Type::NativeFunction(NativeFunctionKey {
+                                    snapshot: 72,
+                                    index: 0
+                                }),
+                                &[]
+                            )
+                            .return_type,
+                        Type::String
+                    );
+                }
+            },
+        );
+    }
 
     #[test]
     fn native_primitive_union_and_literal_relations() {
