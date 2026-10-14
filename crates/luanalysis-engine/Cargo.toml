@@ -1,0 +1,15 @@
+[package]
+name = "luanalysis-engine"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+bun_sema = { path = "../../vendor/bun/src/sema" }
+bun_threading = { path = "../../vendor/bun/src/threading" }
+bun_core = { path = "../../vendor/bun/src/bun_core" }
+libc = "0.2"
+bstr = { version = "1", default-features = false, features = ["alloc"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(bun_sema_mimalloc)'] }

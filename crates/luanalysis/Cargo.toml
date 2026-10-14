@@ -1,0 +1,12 @@
+[package]
+name = "luanalysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+luanalysis-syntax.workspace = true
+luanalysis-engine.workspace = true
+
+[lints]
+workspace = true
