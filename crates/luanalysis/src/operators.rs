@@ -304,9 +304,15 @@ impl Checker<'_> {
             return Type::Any;
         }
         if let Some(ty) = self.engine.property_type(&receiver, key) {
-            self.reference(expression)
-                .and_then(|reference| self.assigned_fields.get(&reference).cloned())
-                .unwrap_or(ty)
+            if let (Some(native), Some(at)) = (self.native, self.flow_at) {
+                let result = native.flow_reference_type(expression, at, &ty, &ty, self.engine);
+                self.incomplete_flow |= result.incomplete;
+                result.ty
+            } else {
+                self.reference(expression)
+                    .and_then(|reference| self.assigned_fields.get(&reference).cloned())
+                    .unwrap_or(ty)
+            }
         } else {
             self.error(
                 "TS2339",
@@ -364,6 +370,24 @@ impl Checker<'_> {
             Type::Any
         };
         self.record_expression_type(name.span, &callee);
+        if let Some(native) = self.native {
+            let mut keys = Vec::with_capacity(args.len() + 1);
+            let mut origins = Vec::with_capacity(args.len() + 1);
+            keys.push(native.expression_key(receiver));
+            origins.push(receiver.span);
+            for argument in args {
+                keys.push(native.expression_key(argument));
+                origins.push(argument.span);
+            }
+            let result = self.engine.call_expression_native(
+                &callee,
+                native.expression_key_for_span(span),
+                &keys,
+                &[],
+                expected,
+            );
+            return self.call_result(result, &callee, &origins, name.span, span, discard);
+        }
         let mut arguments = Vec::with_capacity(args.len() + 1);
         let mut origins = Vec::with_capacity(args.len() + 1);
         arguments.push(receiver_type);

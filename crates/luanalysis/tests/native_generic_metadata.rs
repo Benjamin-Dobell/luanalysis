@@ -239,3 +239,13 @@ fn generic_returned_closures_preserve_native_mapper_context_and_lua_presentation
         "number"
     );
 }
+
+#[test]
+fn annotated_initializer_context_is_preserved_during_lazy_flow_demands() {
+    let source = "---@type any\nlocal payload=42\n---@generic T\n---@return T\nlocal function make() return payload end\nlocal function read()\n---@type number\nlocal value=make()\nreturn value\nend\nlocal inferred=read()\n---@type number\nlocal accepted=inferred\n---@type string\nlocal rejected=inferred";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "inferred");
+    assert_eq!(report.bindings.iter().find(|binding| binding.name == "inferred").unwrap().ty, "number");
+}

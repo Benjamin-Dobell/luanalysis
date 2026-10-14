@@ -4,15 +4,17 @@
 //! create independent Lua body checkers with the native query capability that
 //! requested the body. They never retain a mutable report borrow across a query.
 
+use super::native_expressions::NativeExpressions;
+use super::native_flow::{FlowAdapter, FlowValueQueries, NativeFlowSources, ValueRecipe};
 use super::native_types::{NativeTypes, TypeParameterRecipe, TypeScopeRecipe};
-use super::{Binding, CheckReport, Checker, Diagnostic, Reference, bind};
+use super::{Binding, CheckReport, Checker, Diagnostic, bind};
 use bind::{BindingId, BoundFile};
 use luanalysis_engine::{
-    NativeFunctionKey, NativeTypeParameterKey, NativeTypeProvider, Parameter, Type, TypeQueries,
+    CapturedFunctionContext, ContextualFunctionContext, NativeBindingKey, NativeCallEffects,
+    NativeExpressionKey, NativeFlowError, NativeFlowKey, NativeFlowResult, NativeFunctionKey,
+    NativeTypeParameterKey, NativeTypeProvider, Parameter, Type, TypeQueries,
 };
-use luanalysis_syntax::{
-    Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TypeAnnotation, TypeExpr,
-};
+use luanalysis_syntax::{Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TypeExpr};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,7 +26,6 @@ enum DeclarationSource {
     Local {
         annotation: Option<TypeExpr>,
         owner: Option<u32>,
-        endpoint: usize,
     },
     Function(u32),
     Parameter {
@@ -44,10 +45,14 @@ pub(super) struct NativeRegistry {
     function_spans: HashMap<(usize, usize), u32>,
     declarations: HashMap<BindingId, DeclarationSource>,
     types: NativeTypes,
+    expressions: NativeExpressions,
+    flow: NativeFlowSources,
     completed_bindings: RefCell<HashMap<BindingId, Binding>>,
     /// Only completion of body diagnostics is cached here. Return-type cache,
     /// query recursion and cycle decisions belong entirely to the native core.
     checked_bodies: RefCell<HashSet<NativeFunctionKey>>,
+    checked_contextual_bodies: RefCell<HashSet<(NativeFunctionKey, ContextualFunctionContext)>>,
+    checked_captured_bodies: RefCell<HashSet<(NativeFunctionKey, CapturedFunctionContext)>>,
     report: RefCell<CheckReport>,
 }
 
@@ -71,6 +76,8 @@ impl NativeRegistry {
             ..
         } = index;
         let types = NativeTypes::new(snapshot, type_scope_recipes(snapshot, &functions, &bound));
+        let expressions = NativeExpressions::new(snapshot, &file, &function_spans);
+        let flow = NativeFlowSources::new(&file, &bound, snapshot, &function_spans);
         let mut report = CheckReport::default();
         report
             .diagnostics
@@ -84,8 +91,12 @@ impl NativeRegistry {
             function_spans,
             declarations,
             types,
+            expressions,
+            flow,
             completed_bindings: RefCell::new(HashMap::new()),
             checked_bodies: RefCell::new(HashSet::new()),
+            checked_contextual_bodies: RefCell::new(HashSet::new()),
+            checked_captured_bodies: RefCell::new(HashSet::new()),
             report: RefCell::new(report),
         }
     }
@@ -96,6 +107,54 @@ impl NativeRegistry {
 
     pub(super) fn statements(&self) -> &[Stmt] {
         &self.file.statements
+    }
+
+    pub(super) fn expressions(&self) -> &NativeExpressions {
+        &self.expressions
+    }
+
+    pub(super) fn checker_for_expression<'a>(
+        &'a self,
+        key: NativeExpressionKey,
+        mode: luanalysis_engine::NativeCheckMode,
+        queries: &'a mut dyn TypeQueries,
+    ) -> Checker<'a> {
+        let record = self.expressions.get(key);
+        let contextual = queries
+            .current_contextual_function()
+            .filter(|context| self.expressions.function_for(context.expression) == record.owner);
+        let mut checker = self.checker(queries);
+        checker.check_mode = mode;
+        checker.type_context = record.owner;
+        checker.contextual_function = contextual;
+        let captured = checker.engine.current_captured_function();
+        checker.captured_function = captured;
+        if let Some(owner) = record.owner {
+            let (parameters, _) = if let Some(context) = contextual {
+                self.metadata_in_context(owner, &context, checker.engine)
+            } else if let Some(captured) = captured {
+                self.metadata_in_capture(owner, &captured, checker.engine)
+            } else {
+                self.metadata(owner, checker.engine)
+            };
+            self.seed_parameters(&mut checker, self.function(owner), &parameters);
+        }
+        let graph = record.owner.map_or_else(
+            || self.flow.graph_for_region(0, contextual.as_ref()),
+            |owner| {
+                self.flow
+                    .graph_for_function(owner, contextual.as_ref())
+                    .unwrap()
+            },
+        );
+        let graph =
+            self.flow
+                .graph_with_contexts(graph.region, contextual.as_ref(), captured.as_ref());
+        checker.flow_at = self
+            .flow
+            .evaluation_for_expression(&record.expression, graph)
+            .map(|evaluation| self.flow.flow_key(evaluation.input, graph.context));
+        checker
     }
 
     pub(super) fn key_for(&self, function: &Function) -> NativeFunctionKey {
@@ -113,7 +172,7 @@ impl NativeRegistry {
         }
     }
 
-    fn function(&self, key: NativeFunctionKey) -> &Function {
+    pub(super) fn function(&self, key: NativeFunctionKey) -> &Function {
         assert!(
             self.contains_function(key),
             "foreign or missing native Lua function identity"
@@ -121,7 +180,7 @@ impl NativeRegistry {
         &self.functions[key.index as usize]
     }
 
-    fn checker<'a>(&'a self, engine: &'a mut dyn TypeQueries) -> Checker<'a> {
+    pub(super) fn checker<'a>(&'a self, engine: &'a mut dyn TypeQueries) -> Checker<'a> {
         Checker {
             engine,
             bound: &self.bound,
@@ -132,10 +191,178 @@ impl NativeRegistry {
             return_type: None,
             return_values: Vec::new(),
             type_context: None,
+            contextual_function: None,
+            captured_function: None,
+            check_mode: luanalysis_engine::NativeCheckMode::empty(),
+            flow_at: None,
+            incomplete_flow: false,
+            annotation_depth: 0,
         }
     }
 
-    fn merge_report(&self, report: CheckReport) {
+    pub(super) fn flow_input_for_expression(
+        &self,
+        expression: &Expr,
+        at: NativeFlowKey,
+    ) -> NativeFlowKey {
+        self.flow
+            .evaluation_for_expression(expression, at.graph)
+            .map_or(at, |evaluation| {
+                self.flow.flow_key(evaluation.input, at.graph.context)
+            })
+    }
+
+    pub(super) fn flow_entry(
+        &self,
+        function: Option<NativeFunctionKey>,
+        contextual: Option<&ContextualFunctionContext>,
+    ) -> NativeFlowKey {
+        let graph = function.map_or_else(
+            || self.flow.graph_for_region(0, contextual),
+            |function| self.flow.graph_for_function(function, contextual).unwrap(),
+        );
+        self.flow.flow_key(
+            self.flow.program.graphs[graph.region as usize].entry,
+            graph.context,
+        )
+    }
+
+    pub(super) fn flow_reference_type(
+        &self,
+        expression: &Expr,
+        at: NativeFlowKey,
+        declared: &Type,
+        initial: &Type,
+        queries: &mut dyn TypeQueries,
+    ) -> NativeFlowResult {
+        let Some(reference) = self.flow.expression_reference(expression, at.graph) else {
+            return NativeFlowResult {
+                ty: initial.clone(),
+                incomplete: false,
+            };
+        };
+        queries.flow_type(
+            &FlowAdapter {
+                sources: &self.flow,
+                values: self,
+            },
+            at,
+            reference,
+            declared,
+            initial,
+        )
+    }
+
+    fn checker_at_flow<'a>(
+        &'a self,
+        at: NativeFlowKey,
+        queries: &'a mut dyn TypeQueries,
+    ) -> Checker<'a> {
+        let contextual = self.flow.contextual(at.graph);
+        let captured = self.flow.captured(at.graph);
+        let owner = self.flow.function_for_graph(at.graph);
+        let mut checker = self.checker(queries);
+        checker.check_mode = checker
+            .engine
+            .current_contextual_function()
+            .map_or_else(luanalysis_engine::NativeCheckMode::empty, |context| {
+                context.mode
+            });
+        checker.type_context = owner;
+        checker.contextual_function = contextual;
+        checker.captured_function = captured;
+        checker.flow_at = Some(at);
+        if let Some(context) = contextual {
+            checker.check_mode = context.mode;
+        }
+        if let Some(owner) = owner {
+            let (parameters, _) = if let Some(context) = contextual {
+                self.metadata_in_context(owner, &context, checker.engine)
+            } else if let Some(captured) = captured {
+                self.metadata_in_capture(owner, &captured, checker.engine)
+            } else {
+                self.metadata(owner, checker.engine)
+            };
+            self.seed_parameters(&mut checker, self.function(owner), &parameters);
+        }
+        checker
+    }
+
+    fn merge_flow_report(
+        &self,
+        at: NativeFlowKey,
+        mode: luanalysis_engine::NativeCheckMode,
+        report: CheckReport,
+    ) {
+        if !super::native_expressions::publishes(mode) {
+            return;
+        }
+        if let Some(context) = self.flow.contextual(at.graph) {
+            self.contextual_report(&context, report);
+        } else {
+            self.merge_report(report);
+        }
+    }
+
+    fn with_flow_context<R>(
+        &self,
+        at: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+        work: &mut dyn FnMut(&mut dyn TypeQueries) -> R,
+    ) -> R {
+        let contextual = self.flow.contextual(at.graph);
+        let captured = self.flow.captured(at.graph);
+        let mut result = None;
+        let mut contextual_work = |queries: &mut dyn TypeQueries| {
+            if let Some(contextual) = contextual {
+                queries.with_contextual_function(&contextual, &mut |queries| {
+                    result = Some(work(queries));
+                });
+            } else {
+                result = Some(work(queries));
+            }
+        };
+        if let Some(captured) = captured {
+            queries.with_captured_function(&captured, &mut contextual_work);
+        } else {
+            contextual_work(queries);
+        }
+        result.expect("the native flow capability scope executes its callback")
+    }
+
+    fn flow_declaration_binding(
+        &self,
+        binding: BindingId,
+        contextual: Option<&ContextualFunctionContext>,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Binding> {
+        let write = self.flow.declaration_write(binding)?;
+        let super::flow::NodeKind::Write { address, value, .. } = &write.kind else {
+            unreachable!();
+        };
+        let captured = queries.current_captured_function();
+        let graph = self
+            .flow
+            .graph_with_contexts(write.id.graph, contextual, captured.as_ref());
+        let input = match value {
+            super::flow::ValueDemand::Evaluation(evaluation) => {
+                self.flow.program.evaluation(*evaluation).input
+            }
+            _ => address.epoch,
+        };
+        let at = self.flow.flow_key(input, graph.context);
+        let value_key = self.flow.write_value(write)?;
+        let recipe = self.flow.value(value_key)?;
+        let value = self.flow_value_type(&self.flow, recipe, at, queries);
+        let constraint = queries.widen(&value);
+        Some(Binding {
+            value: constraint.clone(),
+            evolves_from_nil: matches!(constraint, Type::Nil | Type::Undefined),
+            constraint,
+        })
+    }
+
+    pub(super) fn merge_report(&self, report: CheckReport) {
         self.report.borrow_mut().append(report);
     }
 
@@ -159,7 +386,7 @@ impl NativeRegistry {
         self.types.resolve_name(context, name)
     }
 
-    fn metadata(
+    pub(super) fn metadata(
         &self,
         key: NativeFunctionKey,
         queries: &mut dyn TypeQueries,
@@ -171,68 +398,71 @@ impl NativeRegistry {
         parts
     }
 
-    /// Resolves a captured declaration's *constraint*, rather than importing
-    /// the transient narrowing present when a closure happened to be created.
-    /// Binding identities already encode Lua activation and lexical capture.
+    /// An ambient enclosing capture cannot supply this function's formals.
+    fn body_parameter_type(
+        &self,
+        function: NativeFunctionKey,
+        index: usize,
+        captured: Option<CapturedFunctionContext>,
+        contextual: Option<ContextualFunctionContext>,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        let own_capture = captured.filter(|capture| {
+            let value = queries.captured_function_value(capture);
+            queries.native_function_key(&value) == Some(function)
+        });
+        own_capture
+            .and_then(|capture| queries.captured_parameter_type(&capture, index))
+            .or_else(|| {
+                contextual.and_then(|context| queries.contextual_parameter_type(&context, index))
+            })
+    }
+
+    /// Resolves a captured declaration's constraint, rather than importing
+    /// transient narrowing from the time the closure happened to be created.
     pub(super) fn resolve_binding(
         &self,
         binding: BindingId,
         queries: &mut dyn TypeQueries,
     ) -> Option<Binding> {
-        if let Some(value) = self.completed_bindings.borrow().get(&binding).cloned() {
-            return Some(value);
+        if let Some(key) = self.binding_function_key(binding) {
+            if let Some(context) = queries.current_captured_function() {
+                let value = queries.captured_function_value(&context);
+                if queries.native_function_key(&value) == Some(key) {
+                    return Some(Binding {
+                        constraint: value.clone(),
+                        value,
+                        evolves_from_nil: false,
+                    });
+                }
+            }
+        }
+        let function_in_facet = matches!(
+            self.declarations.get(&binding),
+            Some(DeclarationSource::Function(_))
+        ) && (queries.current_contextual_function().is_some()
+            || queries.current_captured_function().is_some());
+        if !function_in_facet {
+            if let Some(value) = self.completed_bindings.borrow().get(&binding).cloned() {
+                return Some(value);
+            }
         }
         let source = self.declarations.get(&binding)?.clone();
         let mut checker = self.checker(queries);
+        checker.captured_function = checker.engine.current_captured_function();
         let (constraint, evolves_from_nil) = match source {
-            DeclarationSource::Local {
-                annotation,
-                owner,
-                endpoint,
-            } => {
+            DeclarationSource::Local { annotation, owner } => {
                 checker.type_context = owner.map(|owner| self.key(owner));
                 if let Some(annotation) = annotation {
                     // The declaration already supplies the captured type.
                     // Its file/body check still validates the initializer.
                     (checker.annotation(&annotation), false)
                 } else {
-                    // Resolve the initializer at its original lexical/flow
-                    // point, rather than replaying it against broad captures.
-                    if let Some(owner) = owner {
-                        let (parameters, _) = self.metadata(self.key(owner), checker.engine);
-                        self.seed_parameters(
-                            &mut checker,
-                            &self.functions[owner as usize],
-                            &parameters,
-                        );
-                    }
-                    let statements = owner.map_or(self.file.statements.as_slice(), |owner| {
-                        self.functions[owner as usize].body.as_slice()
-                    });
-                    if let Some(span) = control_span(statements) {
-                        self.unsupported_flow(span);
-                        return Some(Binding {
-                            constraint: Type::Unknown,
-                            value: Type::Unknown,
-                            evolves_from_nil: false,
-                        });
-                    }
-                    self.run_prefix(
-                        &mut checker,
-                        statements,
-                        endpoint,
-                        vec![Reference {
-                            binding,
-                            path: Vec::new(),
-                        }],
-                    );
-                    let resolved = checker
-                        .locals
-                        .get(&binding)
-                        .cloned()
-                        .expect("the declaration's causal prefix includes its initializer");
-                    self.merge_report(checker.report);
-                    self.publish_binding(binding, &resolved);
+                    let resolved = self.flow_declaration_binding(binding, None, checker.engine)?;
+                    // A demand can run inside an active native loop query.
+                    // Only completed declaration checking publishes immutable
+                    // constraints; callback demands never publish provisional
+                    // native flow values into a second cache.
                     return Some(Binding {
                         value: resolved.constraint.clone(),
                         ..resolved
@@ -242,14 +472,17 @@ impl NativeRegistry {
             DeclarationSource::Function(index) => {
                 checker.type_context = Some(self.key(index));
                 let function = &self.functions[index as usize];
-                let constraint = function
+                let annotation = function
                     .annotations
                     .type_annotation
                     .as_ref()
-                    .and_then(|annotation| annotation.types.first())
-                    .map_or(Type::NativeFunction(self.key(index)), |ty| {
-                        checker.annotation(ty)
-                    });
+                    .and_then(|annotation| annotation.types.first());
+                let constraint = match annotation {
+                    Some(ty) => checker.annotation(ty),
+                    None => {
+                        self.source_function_value(function, checker.check_mode, checker.engine)
+                    }
+                };
                 (constraint, false)
             }
             DeclarationSource::Parameter { function, index } => {
@@ -257,10 +490,19 @@ impl NativeRegistry {
                 let parameter = parameters
                     .get(index)
                     .expect("a bound Lua parameter has metadata");
+                let parameter_type = self
+                    .body_parameter_type(
+                        self.key(function),
+                        index,
+                        checker.captured_function,
+                        None,
+                        checker.engine,
+                    )
+                    .unwrap_or_else(|| parameter.ty.clone());
                 let ty = if parameter.optional {
-                    Type::Union(vec![parameter.ty.clone(), Type::Nil])
+                    Type::Union(vec![parameter_type, Type::Nil])
                 } else {
-                    parameter.ty.clone()
+                    parameter_type
                 };
                 (ty, false)
             }
@@ -275,21 +517,98 @@ impl NativeRegistry {
         })
     }
 
-    fn seed_parameters(
+    pub(super) fn binding_function_key(&self, binding: BindingId) -> Option<NativeFunctionKey> {
+        match self.declarations.get(&binding) {
+            Some(DeclarationSource::Function(index)) => Some(self.key(*index)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn resolve_binding_in_context(
+        &self,
+        binding: BindingId,
+        context: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Binding> {
+        let owner = self.expressions.function_for(context.expression);
+        let source = self.declarations.get(&binding)?.clone();
+        match source {
+            DeclarationSource::Parameter { function, index }
+                if Some(self.key(function)) == owner =>
+            {
+                let (parameters, _) =
+                    self.metadata_in_context(self.key(function), context, queries);
+                let parameter = parameters.get(index)?;
+                let captured = queries.current_captured_function();
+                let parameter_type = self
+                    .body_parameter_type(
+                        self.key(function),
+                        index,
+                        captured,
+                        Some(*context),
+                        queries,
+                    )
+                    .unwrap_or_else(|| parameter.ty.clone());
+                let ty = if parameter.optional {
+                    Type::Union(vec![parameter_type, Type::Nil])
+                } else {
+                    parameter_type
+                };
+                Some(Binding {
+                    constraint: ty.clone(),
+                    value: ty,
+                    evolves_from_nil: false,
+                })
+            }
+            DeclarationSource::Local {
+                annotation,
+                owner: Some(function),
+            } if Some(self.key(function)) == owner => {
+                let key = self.key(function);
+                let mut checker = self.checker(queries);
+                checker.type_context = Some(key);
+                checker.contextual_function = Some(*context);
+                checker.captured_function = checker.engine.current_captured_function();
+                checker.check_mode = context.mode;
+                if let Some(annotation) = annotation {
+                    let constraint = checker.annotation(&annotation);
+                    self.contextual_report(context, checker.report);
+                    return Some(Binding {
+                        value: constraint.clone(),
+                        constraint,
+                        evolves_from_nil: false,
+                    });
+                }
+                self.flow_declaration_binding(binding, Some(context), checker.engine)
+            }
+            _ => self.resolve_binding(binding, queries),
+        }
+    }
+
+    pub(super) fn seed_parameters(
         &self,
         checker: &mut Checker<'_>,
         function: &Function,
         parameters: &[Parameter],
     ) {
-        for (name, parameter) in function.params.iter().zip(parameters) {
+        for (index, (name, parameter)) in function.params.iter().zip(parameters).enumerate() {
             let binding = self
                 .bound
                 .binding_at(name.span.start)
                 .expect("bound Lua function parameter");
+            let parameter_type = self
+                .body_parameter_type(
+                    self.key_for(function),
+                    index,
+                    checker.captured_function,
+                    checker.contextual_function,
+                    checker.engine,
+                )
+                .unwrap_or_else(|| parameter.ty.clone());
             let ty = if parameter.optional {
-                Type::Union(vec![parameter.ty.clone(), Type::Nil])
+                Type::Union(vec![parameter_type, Type::Nil])
             } else {
-                parameter.ty.clone()
+                parameter_type
             };
             checker.locals.insert(
                 binding,
@@ -303,343 +622,179 @@ impl NativeRegistry {
         }
     }
 
-    fn source_reference(&self, expression: &Expr) -> Option<Reference> {
-        match &expression.kind {
-            ExprKind::Name(name) => {
-                self.bound
-                    .binding_at(name.span.start)
-                    .map(|binding| Reference {
-                        binding,
-                        path: Vec::new(),
-                    })
-            }
-            ExprKind::Parenthesized(inner) => self.source_reference(inner),
-            ExprKind::Field { base, name } => {
-                let mut reference = self.source_reference(base)?;
-                reference.path.push(name.text.clone());
-                Some(reference)
-            }
-            ExprKind::Index { base, index } => {
-                let ExprKind::String(key) = &index.kind else {
-                    return None;
-                };
-                let mut reference = self.source_reference(base)?;
-                reference
-                    .path
-                    .push(std::str::from_utf8(key).ok()?.to_owned());
-                Some(reference)
-            }
-            _ => None,
-        }
-    }
-
-    fn expression_dependencies(&self, expression: &Expr, dependencies: &mut HashSet<Reference>) {
-        if let Some(reference) = self.source_reference(expression) {
-            dependencies.insert(reference);
-            return;
-        }
-        match &expression.kind {
-            ExprKind::Parenthesized(inner) => self.expression_dependencies(inner, dependencies),
-            ExprKind::Field { base, .. } => self.expression_dependencies(base, dependencies),
-            ExprKind::Index { base, index } => {
-                self.expression_dependencies(base, dependencies);
-                self.expression_dependencies(index, dependencies);
-            }
-            ExprKind::Unary { value, .. } => self.expression_dependencies(value, dependencies),
-            ExprKind::Binary { left, right, .. } => {
-                self.expression_dependencies(left, dependencies);
-                self.expression_dependencies(right, dependencies);
-            }
-            ExprKind::Table(fields) => {
-                for field in fields {
-                    self.expression_dependencies(&field.value, dependencies);
-                }
-            }
-            ExprKind::Call { callee, args } => {
-                self.expression_dependencies(callee, dependencies);
-                for argument in args {
-                    self.expression_dependencies(argument, dependencies);
-                }
-            }
-            ExprKind::MethodCall { receiver, args, .. } => {
-                self.expression_dependencies(receiver, dependencies);
-                for argument in args {
-                    self.expression_dependencies(argument, dependencies);
-                }
-            }
-            // A returned closure is a lazy native source identity. Its capture
-            // declarations are demanded at their original source points when
-            // the inner signature's own return query needs them.
-            ExprKind::Function(_)
-            | ExprKind::Nil
-            | ExprKind::Boolean(_)
-            | ExprKind::Number(_)
-            | ExprKind::String(_)
-            | ExprKind::Name(_)
-            | ExprKind::Error => {}
-        }
-    }
-
-    /// Check only declaration/assignment facts causally required by a type
-    /// demand. Omitted calls and initializers still get full diagnostics after
-    /// the native return cache has resolved, so they cannot create artificial
-    /// return cycles merely because they execute before a literal return.
-    fn run_prefix(
-        &self,
-        checker: &mut Checker<'_>,
-        statements: &[Stmt],
-        endpoint: usize,
-        dependencies: Vec<Reference>,
-    ) {
-        let mut flattened = Vec::new();
-        flatten_statements(statements, &mut flattened);
-        let mut dependencies: HashSet<_> = dependencies.into_iter().collect();
-        let mut selected = Vec::new();
-        for statement in flattened
-            .into_iter()
-            .rev()
-            .filter(|statement| statement.span.end <= endpoint)
-        {
-            match &statement.kind {
-                StmtKind::Local { names, values, .. } => {
-                    let indices: Vec<_> = names
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, name)| {
-                            let binding = self.bound.binding_at(name.span.start)?;
-                            dependencies
-                                .iter()
-                                .any(|dependency| dependency.binding == binding)
-                                .then_some(index)
-                        })
-                        .collect();
-                    for &index in &indices {
-                        if let Some(value) = values.get(index) {
-                            self.expression_dependencies(value, &mut dependencies);
-                        }
-                    }
-                    if !indices.is_empty() {
-                        selected.push(PrefixStatement::Local(statement, indices));
-                    }
-                }
-                StmtKind::Assign {
-                    targets, values, ..
-                } => {
-                    let indices: Vec<_> = targets
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, target)| {
-                            let reference = self.source_reference(target)?;
-                            dependencies
-                                .iter()
-                                .any(|dependency| {
-                                    dependency.binding == reference.binding
-                                        && dependency.path.starts_with(&reference.path)
-                                })
-                                .then_some(index)
-                        })
-                        .collect();
-                    for &index in &indices {
-                        if let Some(value) = values.get(index) {
-                            self.expression_dependencies(value, &mut dependencies);
-                        }
-                        if let ExprKind::Field { base, .. } = &targets[index].kind {
-                            self.expression_dependencies(base, &mut dependencies);
-                        }
-                        if let ExprKind::Index { base, index } = &targets[index].kind {
-                            self.expression_dependencies(base, &mut dependencies);
-                            self.expression_dependencies(index, &mut dependencies);
-                        }
-                    }
-                    if !indices.is_empty() {
-                        selected.push(PrefixStatement::Assign(statement, indices));
-                    }
-                }
-                StmtKind::LocalFunction { name, .. } => {
-                    let binding = self
-                        .bound
-                        .binding_at(name.span.start)
-                        .expect("bound local function");
-                    if dependencies
-                        .iter()
-                        .any(|dependency| dependency.binding == binding)
-                    {
-                        selected.push(PrefixStatement::Function(statement));
-                    }
-                }
-                StmtKind::Return(_) | StmtKind::Call(_) => {}
-                StmtKind::If { .. }
-                | StmtKind::While { .. }
-                | StmtKind::Repeat { .. }
-                | StmtKind::NumericFor { .. }
-                | StmtKind::GenericFor { .. }
-                | StmtKind::Break => {
-                    self.unsupported_flow(statement.span);
-                }
-                StmtKind::Block { .. } => {
-                    unreachable!("blocks are flattened without changing bound identities")
-                }
-            }
-        }
-        for statement in selected.into_iter().rev() {
-            match statement {
-                PrefixStatement::Local(statement, indices) => {
-                    let StmtKind::Local {
-                        names,
-                        values,
-                        annotation,
-                    } = &statement.kind
-                    else {
-                        unreachable!()
-                    };
-                    let selected_names: Vec<_> =
-                        indices.iter().map(|&index| names[index].clone()).collect();
-                    let selected_values: Vec<_> = indices
-                        .iter()
-                        .map(|&index| {
-                            values.get(index).cloned().unwrap_or(Expr {
-                                kind: ExprKind::Nil,
-                                span: names[index].span,
-                            })
-                        })
-                        .collect();
-                    let selected_annotation =
-                        annotation.as_ref().map(|annotation| TypeAnnotation {
-                            types: indices
-                                .iter()
-                                .filter_map(|&index| annotation.types.get(index).cloned())
-                                .collect(),
-                            span: annotation.span,
-                        });
-                    checker.local(
-                        &selected_names,
-                        &selected_values,
-                        selected_annotation.as_ref(),
-                    );
-                }
-                PrefixStatement::Assign(statement, indices) => {
-                    let StmtKind::Assign {
-                        targets, values, ..
-                    } = &statement.kind
-                    else {
-                        unreachable!()
-                    };
-                    let selected_targets: Vec<_> = indices
-                        .iter()
-                        .map(|&index| targets[index].clone())
-                        .collect();
-                    let selected_values: Vec<_> = indices
-                        .iter()
-                        .map(|&index| {
-                            values.get(index).cloned().unwrap_or(Expr {
-                                kind: ExprKind::Nil,
-                                span: targets[index].span,
-                            })
-                        })
-                        .collect();
-                    checker.assign(&selected_targets, &selected_values, None);
-                }
-                PrefixStatement::Function(statement) => {
-                    let StmtKind::LocalFunction { name, function } = &statement.kind else {
-                        unreachable!()
-                    };
-                    checker.local_function(name, function);
-                }
-            }
-        }
-    }
-
     fn inferred_return(&self, key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Type {
-        let function = self.function(key);
-        if let Some(span) = control_span(&function.body) {
-            self.unsupported_flow(span);
-            return Type::Unknown;
+        self.inferred_return_with_context(key, queries, None, None)
+    }
+
+    pub(super) fn inferred_return_in_context(
+        &self,
+        key: NativeFunctionKey,
+        context: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        let captured = queries.current_captured_function();
+        self.inferred_return_with_context(key, queries, Some(*context), captured)
+    }
+
+    pub(super) fn source_inferred_return_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        context: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        self.inferred_return_with_context(key, queries, None, Some(*context))
+    }
+
+    fn inferred_return_with_context(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+        contextual: Option<ContextualFunctionContext>,
+        captured: Option<CapturedFunctionContext>,
+    ) -> Type {
+        let graph = self
+            .flow
+            .graph_for_function(key, contextual.as_ref())
+            .expect("every original Lua function has a detached source graph");
+        let graph =
+            self.flow
+                .graph_with_contexts(graph.region, contextual.as_ref(), captured.as_ref());
+        let source = &self.flow.program.graphs[graph.region as usize];
+        let (_, mut context) = if let Some(contextual) = contextual {
+            self.metadata_in_context(key, &contextual, queries)
+        } else if let Some(captured) = captured {
+            self.metadata_in_capture(key, &captured, queries)
+        } else {
+            self.metadata(key, queries)
+        };
+        if let (Some(captured), Some(expected)) = (captured, context.as_ref()) {
+            context = Some(queries.instantiate_in_capture(&captured, expected));
         }
-        let (parameters, context) = self.metadata(key, queries);
-        let mut flattened = Vec::new();
-        flatten_statements(&function.body, &mut flattened);
-        for statement in flattened {
-            if let StmtKind::Return(values) = &statement.kind {
-                let mut dependencies = HashSet::new();
-                for value in values {
-                    self.expression_dependencies(value, &mut dependencies);
-                }
-                let mut checker = self.checker(queries);
-                checker.type_context = Some(key);
-                self.seed_parameters(&mut checker, function, &parameters);
-                self.run_prefix(
-                    &mut checker,
-                    &function.body,
-                    statement.span.start,
-                    dependencies.into_iter().collect(),
-                );
-                checker.return_statement(values, statement.span);
-                let returned = checker.engine.aggregate_returns(
-                    &checker.return_values,
-                    false,
-                    context.as_ref(),
-                );
-                self.merge_report(checker.report);
-                return returned;
-            }
-            if let StmtKind::Call(expression) = &statement.kind {
-                let mut dependencies = HashSet::new();
-                match &expression.kind {
-                    ExprKind::Call { callee, .. } => {
-                        self.expression_dependencies(callee, &mut dependencies)
-                    }
-                    ExprKind::MethodCall { receiver, .. } => {
-                        self.expression_dependencies(receiver, &mut dependencies)
-                    }
-                    _ => continue,
-                }
-                let mut checker = self.checker(queries);
-                checker.type_context = Some(key);
-                self.seed_parameters(&mut checker, function, &parameters);
-                self.run_prefix(
-                    &mut checker,
-                    &function.body,
-                    statement.span.start,
-                    dependencies.into_iter().collect(),
-                );
-                let callee_type = match &expression.kind {
-                    ExprKind::Call { callee, .. } => checker.expression(callee),
-                    ExprKind::MethodCall { receiver, name, .. } => {
-                        let receiver_type = checker.expression(receiver);
-                        checker
-                            .engine
-                            .property_type(&receiver_type, &name.text)
-                            .unwrap_or(Type::Any)
-                    }
-                    _ => unreachable!(),
-                };
-                let declared_return = match callee_type {
-                    Type::Function(signature) => Some(*signature.returns),
-                    Type::NativeFunction(callee_key) => self.metadata(callee_key, checker.engine).1,
-                    _ => None,
-                };
-                if let Some(Type::Never) = declared_return {
-                    let returned =
-                        checker
-                            .engine
-                            .aggregate_returns(&[Type::Never], false, context.as_ref());
-                    self.merge_report(checker.report);
-                    return returned;
-                }
-                self.merge_report(checker.report);
+        if context.is_none() {
+            if let Some(contextual) = contextual {
+                context = Some(queries.contextual_return_type(&contextual));
             }
         }
-        queries.aggregate_returns(&[], true, context.as_ref())
+        let adapter = FlowAdapter {
+            sources: &self.flow,
+            values: self,
+        };
+        let mut returned = Vec::new();
+        for return_id in &source.returns {
+            let statement = self.flow.program.node(*return_id);
+            let predecessor = statement.antecedents[0];
+            let at = self.flow.flow_key(predecessor, graph.context);
+            if !queries.flow_reachable(&adapter, at) {
+                continue;
+            }
+            let super::flow::NodeKind::Return { values } = &statement.kind else {
+                unreachable!();
+            };
+            let mut checker = self.checker_at_flow(at, queries);
+            checker.return_type = context.clone();
+            let expressions: Vec<_> = values
+                .iter()
+                .map(|value| {
+                    let evaluation = self.flow.program.evaluation(*value);
+                    self.flow
+                        .program
+                        .expression(evaluation.expression)
+                        .expression
+                        .clone()
+                })
+                .collect();
+            checker.return_statement(&expressions, statement.span);
+            returned.extend(checker.return_values.drain(..));
+            self.merge_flow_report(at, checker.check_mode, checker.report);
+        }
+        let has_fallthrough =
+            queries.flow_reachable(&adapter, self.flow.flow_key(source.exit, graph.context));
+        if returned.is_empty() && !has_fallthrough {
+            returned.push(Type::Never);
+        }
+        queries.aggregate_returns(&returned, has_fallthrough, context.as_ref())
     }
 
     fn check_body(&self, key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Type {
+        self.check_body_with_context(key, queries, None, None)
+    }
+
+    pub(super) fn check_body_in_context(
+        &self,
+        key: NativeFunctionKey,
+        context: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        let mut result = None;
+        queries.with_contextual_function(context, &mut |queries| {
+            let captured = queries.current_captured_function();
+            result = Some(self.check_body_with_context(key, queries, Some(*context), captured));
+        });
+        result.expect("the native contextual body frame executes its callback")
+    }
+
+    pub(super) fn check_body_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        context: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        let mut result = None;
+        queries.with_captured_function(context, &mut |queries| {
+            result = Some(self.check_body_with_context(key, queries, None, Some(*context)));
+        });
+        result.expect("the native captured body frame executes its callback")
+    }
+
+    fn check_body_with_context(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+        contextual: Option<ContextualFunctionContext>,
+        captured: Option<CapturedFunctionContext>,
+    ) -> Type {
         let function = self.function(key);
-        let (parameters, declared_return) = self.metadata(key, queries);
+        let (parameters, mut declared_return) = if let Some(context) = contextual {
+            self.metadata_in_context(key, &context, queries)
+        } else if let Some(captured) = captured {
+            self.metadata_in_capture(key, &captured, queries)
+        } else {
+            self.metadata(key, queries)
+        };
+        if let (Some(captured), Some(expected)) = (captured, declared_return.as_ref()) {
+            declared_return = Some(queries.instantiate_in_capture(&captured, expected));
+        }
         let mut checker = self.checker(queries);
         checker.type_context = Some(key);
+        checker.contextual_function = contextual;
+        checker.captured_function = captured;
+        if let Some(context) = contextual {
+            checker.check_mode = context.mode;
+        }
         checker.return_type = declared_return.clone();
+        checker.flow_at = Some(self.flow_entry(Some(key), contextual.as_ref()));
+        let at = checker.flow_at.unwrap();
+        checker.flow_at = Some(NativeFlowKey {
+            graph: self.flow.graph_with_contexts(
+                at.graph.region,
+                contextual.as_ref(),
+                captured.as_ref(),
+            ),
+            node: at.node,
+        });
         self.seed_parameters(&mut checker, function, &parameters);
-        let terminated = checker.statements(&function.body);
+        checker.statements(&function.body);
+        let graph = checker.flow_at.unwrap().graph;
+        let terminated = !checker.engine.flow_reachable(
+            &FlowAdapter {
+                sources: &self.flow,
+                values: self,
+            },
+            self.flow.flow_key(
+                self.flow.program.graphs[graph.region as usize].exit,
+                graph.context,
+            ),
+        );
         if let Some(expected) = &declared_return {
             if !terminated && !checker.engine.allows_implicit_return(expected) {
                 let origin = function
@@ -666,8 +821,21 @@ impl NativeRegistry {
             !terminated,
             declared_return.as_ref(),
         );
-        self.merge_report(checker.report);
-        self.checked_bodies.borrow_mut().insert(key);
+        if let Some(context) = contextual {
+            self.contextual_report(&context, checker.report);
+            self.checked_contextual_bodies
+                .borrow_mut()
+                .insert((key, context));
+        } else {
+            self.merge_report(checker.report);
+            if let Some(captured) = captured {
+                self.checked_captured_bodies
+                    .borrow_mut()
+                    .insert((key, captured));
+            } else {
+                self.checked_bodies.borrow_mut().insert(key);
+            }
+        }
         result
     }
 
@@ -679,6 +847,45 @@ impl NativeRegistry {
             for parameter in self.types.own_parameters(key) {
                 queries.type_parameter_constraint(parameter);
             }
+            let facets = self.expressions.final_facets(key);
+            if !facets.is_empty() {
+                // The selected session capability owns this callback's
+                // parameter/return caches. Demanding its base signature would
+                // invent an unrelated untyped declaration and bogus TS7006.
+                for facet in facets {
+                    queries.format(&facet);
+                }
+                for context in self.expressions.final_contexts(key) {
+                    let checked = self
+                        .checked_contextual_bodies
+                        .borrow()
+                        .contains(&(key, context));
+                    if !checked {
+                        if let Some(captured) = self.expressions.capture_for_context(key, &context)
+                        {
+                            queries.with_captured_function(&captured, &mut |queries| {
+                                self.check_body_in_context(key, &context, queries);
+                            });
+                        } else {
+                            self.check_body_in_context(key, &context, queries);
+                        }
+                    }
+                }
+                let contextual_captures = self.expressions.contextual_captures(key);
+                for context in self.expressions.final_captures(key) {
+                    if contextual_captures.contains(&context) {
+                        continue;
+                    }
+                    let checked = self
+                        .checked_captured_bodies
+                        .borrow()
+                        .contains(&(key, context));
+                    if !checked {
+                        self.check_body_in_capture(key, &context, queries);
+                    }
+                }
+                continue;
+            }
             // Enter the native QueryReturn guard/cache for inferred returns.
             // An annotated return needs no body query; validate it below.
             queries.native_function_signature(key);
@@ -687,15 +894,6 @@ impl NativeRegistry {
                 self.check_body(key, queries);
             }
         }
-    }
-
-    fn unsupported_flow(&self, span: Span) {
-        self.report.borrow_mut().diagnostics.push(Diagnostic {
-            code: "LUA2020",
-            span,
-            message: "Lua control-flow type checking requires the native flow integration"
-                .to_owned(),
-        });
     }
 
     fn function_type_dependencies(
@@ -864,6 +1062,7 @@ impl NativeRegistry {
             | ExprKind::Boolean(_)
             | ExprKind::Number(_)
             | ExprKind::String(_)
+            | ExprKind::Vararg
             | ExprKind::Error => {}
         }
     }
@@ -895,7 +1094,239 @@ impl NativeRegistry {
     }
 }
 
+impl NativeRegistry {
+    fn flow_value_type_in_context(
+        &self,
+        sources: &NativeFlowSources,
+        value: &ValueRecipe,
+        input: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        match value {
+            ValueRecipe::Nil => Type::Nil,
+            ValueRecipe::Function(region) => {
+                let key = sources
+                    .function_for_graph(sources.graph(*region, 0))
+                    .expect("an original function graph has a source declaration");
+                let mode = sources
+                    .contextual(input.graph)
+                    .map_or_else(luanalysis_engine::NativeCheckMode::empty, |context| {
+                        context.mode
+                    });
+                self.source_function_value(self.function(key), mode, queries)
+            }
+            ValueRecipe::NumericIteration => Type::Number,
+            ValueRecipe::IteratorResult(index) => {
+                self.report_flow_error(
+                    sources
+                        .source_node(input)
+                        .map_or(Span::default(), |node| node.span),
+                    NativeFlowError::Unsupported(
+                        "Lua iterator results require native iteration effects",
+                    ),
+                );
+                let _ = index;
+                Type::Unknown
+            }
+            ValueRecipe::Evaluation(evaluation) => {
+                let evaluation = sources.program.evaluation(*evaluation);
+                let expression = &sources.program.expression(evaluation.expression).expression;
+                let mut checker = self.checker_at_flow(input, queries);
+                let result = checker.expression(expression);
+                if !checker.incomplete_flow {
+                    self.merge_flow_report(input, checker.check_mode, checker.report);
+                }
+                result
+            }
+        }
+    }
+
+    fn flow_call_effects_in_context(
+        &self,
+        sources: &NativeFlowSources,
+        value: &ValueRecipe,
+        input: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+    ) -> NativeCallEffects {
+        let ValueRecipe::Evaluation(evaluation) = value else {
+            return NativeCallEffects::None;
+        };
+        let evaluation = sources.program.evaluation(*evaluation);
+        let expression = &sources.program.expression(evaluation.expression).expression;
+        let mut checker = self.checker_at_flow(input, queries);
+        let callee = match &expression.kind {
+            ExprKind::Call { callee, .. } => checker.expression(callee),
+            ExprKind::MethodCall { receiver, name, .. } => {
+                let receiver = checker.expression(receiver);
+                checker
+                    .engine
+                    .property_type(&receiver, &name.text)
+                    .unwrap_or(Type::Unknown)
+            }
+            _ => return NativeCallEffects::None,
+        };
+        // Reachability must not demand the inferred result of an unused call:
+        // that result can recursively depend on the current function. An
+        // explicit nonreturning contract is sufficient for this flow effect.
+        let declared_return = match &callee {
+            Type::Function(signature) => Some((*signature.returns).clone()),
+            _ => checker.engine.native_function_key(&callee).and_then(|key| {
+                let function = self.function(key);
+                let mut declaration = self.checker(checker.engine);
+                declaration.type_context = Some(key);
+                let result = if let Some(annotation) = &function.annotations.returns {
+                    match annotation.types.as_slice() {
+                        [ty] if annotation.packs.is_none() => Some(declaration.annotation(ty)),
+                        _ => None,
+                    }
+                } else {
+                    function
+                        .annotations
+                        .type_annotation
+                        .as_ref()
+                        .and_then(|annotation| annotation.types.first())
+                        .and_then(|ty| match declaration.annotation(ty) {
+                            Type::Function(signature) => Some(*signature.returns),
+                            _ => None,
+                        })
+                };
+                let result =
+                    result.and_then(|ty| declaration.engine.instantiate_in_function(&callee, &ty));
+                self.merge_report(declaration.report);
+                result
+            }),
+        };
+        if !checker.incomplete_flow {
+            self.merge_flow_report(input, checker.check_mode, checker.report);
+        }
+        if matches!(declared_return, Some(Type::Never)) {
+            NativeCallEffects::Never
+        } else {
+            NativeCallEffects::None
+        }
+    }
+}
+
+impl FlowValueQueries for NativeRegistry {
+    fn flow_value_type(
+        &self,
+        sources: &NativeFlowSources,
+        value: &ValueRecipe,
+        input: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        self.with_flow_context(input, queries, &mut |queries| {
+            self.flow_value_type_in_context(sources, value, input, queries)
+        })
+    }
+    fn flow_call_effects(
+        &self,
+        sources: &NativeFlowSources,
+        value: &ValueRecipe,
+        input: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+    ) -> NativeCallEffects {
+        self.with_flow_context(input, queries, &mut |queries| {
+            self.flow_call_effects_in_context(sources, value, input, queries)
+        })
+    }
+    fn report_flow_error(&self, span: Span, error: NativeFlowError) {
+        let (code, message) = match error {
+            NativeFlowError::Unsupported(reason) => ("LUA2020", reason.to_owned()),
+            NativeFlowError::TooDeep(_) | NativeFlowError::StepLimit(_) => (
+                "LUA2019",
+                "native Lua flow query exceeded its supported complexity".to_owned(),
+            ),
+            _ => panic!("invalid original Lua flow provider identity: {error:?}"),
+        };
+        self.report.borrow_mut().diagnostics.push(Diagnostic {
+            code,
+            span,
+            message,
+        });
+    }
+}
+
 impl NativeTypeProvider for NativeRegistry {
+    fn contains_binding(&self, key: NativeBindingKey) -> bool {
+        key.snapshot == self.snapshot && (key.index as usize) < self.bound.declarations.len()
+    }
+    fn function_parameters_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        context: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Vec<Parameter> {
+        self.source_parameters_in_capture(key, context, queries)
+    }
+    fn function_declared_return_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        context: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        self.source_declared_return_in_capture(key, context, queries)
+    }
+    fn function_inferred_return_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        context: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        self.source_inferred_return_in_capture(key, context, queries)
+    }
+    fn contains_expression(&self, key: NativeExpressionKey) -> bool {
+        self.expressions.contains(key)
+    }
+    fn is_context_sensitive(&self, key: NativeExpressionKey) -> bool {
+        self.expressions.context_sensitive(key)
+    }
+    fn has_context_sensitive_parameters(&self, key: NativeExpressionKey) -> bool {
+        self.expressions.has_context_sensitive_parameters(key)
+    }
+    fn is_expression_descendant(
+        &self,
+        expression: NativeExpressionKey,
+        ancestor: NativeExpressionKey,
+    ) -> bool {
+        self.expressions.descendant(expression, ancestor)
+    }
+    fn check_expression(
+        &self,
+        key: NativeExpressionKey,
+        expected: Option<&Type>,
+        mode: luanalysis_engine::NativeCheckMode,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        self.source_check_expression(key, expected, mode, queries)
+    }
+    fn contextual_parameter_indices(&self, key: NativeFunctionKey) -> Vec<usize> {
+        NativeExpressions::contextual_indices(self.function(key))
+    }
+    fn function_parameters_in_context(
+        &self,
+        key: NativeFunctionKey,
+        context: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Vec<Parameter> {
+        self.source_parameters_in_context(key, context, queries)
+    }
+    fn function_declared_return_in_context(
+        &self,
+        key: NativeFunctionKey,
+        context: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        self.source_declared_return_in_context(key, context, queries)
+    }
+    fn function_inferred_return_in_context(
+        &self,
+        key: NativeFunctionKey,
+        context: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        self.inferred_return_in_context(key, context, queries)
+    }
     fn contains_function(&self, key: NativeFunctionKey) -> bool {
         key.snapshot == self.snapshot && (key.index as usize) < self.functions.len()
     }
@@ -995,37 +1426,6 @@ impl NativeTypeProvider for NativeRegistry {
             ),
         });
     }
-}
-
-enum PrefixStatement<'a> {
-    Local(&'a Stmt, Vec<usize>),
-    Assign(&'a Stmt, Vec<usize>),
-    Function(&'a Stmt),
-}
-
-fn flatten_statements<'a>(statements: &'a [Stmt], flattened: &mut Vec<&'a Stmt>) {
-    for statement in statements {
-        if let StmtKind::Block { body, .. } = &statement.kind {
-            flatten_statements(body, flattened);
-        } else {
-            flattened.push(statement);
-        }
-    }
-}
-
-fn control_span(statements: &[Stmt]) -> Option<Span> {
-    statements
-        .iter()
-        .find_map(|statement| match &statement.kind {
-            StmtKind::Block { body, .. } => control_span(body),
-            StmtKind::If { .. }
-            | StmtKind::While { .. }
-            | StmtKind::Repeat { .. }
-            | StmtKind::NumericFor { .. }
-            | StmtKind::GenericFor { .. }
-            | StmtKind::Break => Some(statement.span),
-            _ => None,
-        })
 }
 
 fn source_statements<'a>(statements: &'a [Stmt], all: &mut Vec<&'a Stmt>) {
@@ -1141,7 +1541,6 @@ impl RegistryIndex<'_> {
                                     .and_then(|annotation| annotation.types.get(index))
                                     .cloned(),
                                 owner,
-                                endpoint: statement.span.end,
                             },
                         );
                     }
@@ -1168,6 +1567,16 @@ impl RegistryIndex<'_> {
                         .expect("bound local function");
                     self.declarations
                         .insert(binding, DeclarationSource::Function(index));
+                }
+                StmtKind::FunctionDeclaration {
+                    target, function, ..
+                } => {
+                    self.expression(target, None);
+                    let name = match &target.kind {
+                        ExprKind::Name(name) | ExprKind::Field { name, .. } => Some(name),
+                        _ => None,
+                    };
+                    self.function(function, name);
                 }
                 StmtKind::Return(values) => {
                     for value in values {
@@ -1279,6 +1688,7 @@ impl RegistryIndex<'_> {
             | ExprKind::Number(_)
             | ExprKind::String(_)
             | ExprKind::Name(_)
+            | ExprKind::Vararg
             | ExprKind::Error => {}
         }
     }

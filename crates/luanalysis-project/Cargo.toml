@@ -1,0 +1,11 @@
+[package]
+name = "luanalysis-project"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Original-source Lua project discovery and module resolution"
+
+[dependencies]
+
+[lints]
+workspace = true

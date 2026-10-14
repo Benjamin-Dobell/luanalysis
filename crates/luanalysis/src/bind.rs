@@ -274,6 +274,12 @@ impl Binder {
                     self.declare(name, DeclarationKind::LocalFunction, name.span.end);
                     self.function(function);
                 }
+                StmtKind::FunctionDeclaration {
+                    target, function, ..
+                } => {
+                    self.target(target);
+                    self.function(function);
+                }
                 StmtKind::Return(values) => {
                     for value in values {
                         self.expression(value);
@@ -404,6 +410,7 @@ impl Binder {
             | ExprKind::Boolean(_)
             | ExprKind::Number(_)
             | ExprKind::String(_)
+            | ExprKind::Vararg
             | ExprKind::Error => {}
         }
     }

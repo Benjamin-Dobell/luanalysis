@@ -438,6 +438,7 @@ impl Builder<'_> {
                     expr.span,
                 );
             }
+            ExprKind::Vararg => self.feature(PendingFeature::ResultPacks, expr.span),
             ExprKind::Nil
             | ExprKind::Boolean(_)
             | ExprKind::Number(_)
@@ -492,7 +493,11 @@ impl Builder<'_> {
             }
             ExprKind::Index { base, index } => {
                 let mut reference = self.reference(base);
-                let key = match &index.kind {
+                let mut literal = index.as_ref();
+                while let ExprKind::Parenthesized(inner) = &literal.kind {
+                    literal = inner;
+                }
+                let key = match &literal.kind {
                     ExprKind::String(bytes) => Key::String(bytes.clone()),
                     ExprKind::Number(spelling) => {
                         numeric_key(spelling).unwrap_or_else(|| Key::Dynamic(self.expr_id(index)))
@@ -656,6 +661,24 @@ impl Builder<'_> {
                         declaration: true,
                     },
                     name.span,
+                );
+            }
+            StmtKind::FunctionDeclaration {
+                target, function, ..
+            } => {
+                let transaction = self.transaction();
+                let epoch = context.current;
+                let address = self.address(context, target, transaction, epoch);
+                let graph = self.function(function);
+                self.append(
+                    context,
+                    NodeKind::Write {
+                        address,
+                        value: ValueDemand::Function(graph),
+                        store_order: 0,
+                        declaration: false,
+                    },
+                    target.span,
                 );
             }
             StmtKind::Block { body, .. } => self.statements(context, body),

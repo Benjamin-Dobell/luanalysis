@@ -1,20 +1,26 @@
 //! Parser-independent access to the pinned Bun TypeScript relation engine.
 //!
-//! This facade owns resolved types. It does not yet supply Lua lazy expression
-//! queries, contextual inference, or control-flow analysis to the checker.
+//! Owned type descriptions and original-source providers retain the checker's
+//! lazy signatures, contextual inference, and flow-query ownership.
 
 #![feature(linkage)]
 
 mod native;
+mod native_flow;
+pub use native_flow::*;
 
-use bun_sema::check::{Checker, NativeFunctionProvider, Program, ResolvedTypeCallError};
+pub use bun_sema::check::CheckMode as NativeCheckMode;
+use bun_sema::check::{
+    Checker, NativeFunctionProvider, NativeTypeResult, Program, ResolvedTypeCallError,
+};
 use bun_sema::hir;
 use bun_sema::program::Files;
 use bun_sema::resolve::{Host, Options, ParseOptions, ScriptKind};
 use bun_sema::session::Session;
 use bun_sema::types::{
-    Intrinsic, Literalness, MapperId, NativeFunctionId, NativeTypeParamId, Prop, PropFlags,
-    PropSource, Shape, SigData, SigParam, TypeData, TypeId,
+    Intrinsic, Literalness, MapperId, NativeBindingId, NativeCapturedBinding,
+    NativeCapturedFunctionContext, NativeExpressionId, NativeFunctionContext, NativeFunctionId,
+    NativeTypeParamId, Prop, PropFlags, PropSource, Shape, SigData, SigParam, TypeData, TypeId,
 };
 use std::borrow::Cow;
 
@@ -39,6 +45,49 @@ pub struct NativeTypeParameterKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidNativeTypeParameterKey(pub NativeTypeParameterKey);
+
+/// An expression in the original source snapshot, never a synthetic TS node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeExpressionKey {
+    pub snapshot: u64,
+    pub node: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidNativeExpressionKey(pub NativeExpressionKey);
+
+/// A lexical binding identity in the original source snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeBindingKey {
+    pub snapshot: u64,
+    pub index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidNativeBindingKey(pub NativeBindingKey);
+
+/// An immutable lexical type environment retained in one native session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CapturedFunctionContext {
+    epoch: u64,
+    slot: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidCapturedFunctionContext(pub CapturedFunctionContext);
+
+/// A contextual signature demand in this checker session. Only source identity
+/// and checking mode are public; its expected signature and mapper stay private.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ContextualFunctionContext {
+    pub expression: NativeExpressionKey,
+    pub mode: NativeCheckMode,
+    epoch: u64,
+    slot: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidContextualFunctionContext(pub ContextualFunctionContext);
 
 /// A capability for an exact type in one checker session. Its ordinal is not a
 /// backend type ID, and callers cannot construct or change its owner epoch.
@@ -66,6 +115,10 @@ struct TypeHandles {
 struct TypeHandleState {
     types: Vec<TypeId>,
     slots: std::collections::HashMap<TypeId, u32>,
+    contexts: Vec<NativeFunctionContext>,
+    context_slots: std::collections::HashMap<NativeFunctionContext, u32>,
+    captures: Vec<NativeCapturedFunctionContext>,
+    capture_slots: std::collections::HashMap<NativeCapturedFunctionContext, u32>,
 }
 
 impl TypeHandles {
@@ -104,6 +157,69 @@ impl TypeHandles {
             .copied();
         ty.unwrap_or_else(|| std::panic::panic_any(InvalidSessionType(reference)))
     }
+    fn retain_context(&self, context: NativeFunctionContext) -> ContextualFunctionContext {
+        let mut state = self.state.borrow_mut();
+        let slot = match state.context_slots.get(&context).copied() {
+            Some(slot) => slot,
+            None => {
+                let slot = u32::try_from(state.contexts.len()).expect("context handle capacity");
+                state.contexts.push(context);
+                state.context_slots.insert(context, slot);
+                slot
+            }
+        };
+        ContextualFunctionContext {
+            expression: source_expression_key(context.expression),
+            mode: context.mode,
+            epoch: self.epoch,
+            slot,
+        }
+    }
+    fn resolve_context(&self, context: &ContextualFunctionContext) -> NativeFunctionContext {
+        if context.epoch != self.epoch {
+            std::panic::panic_any(InvalidContextualFunctionContext(*context));
+        }
+        self.state
+            .borrow()
+            .contexts
+            .get(context.slot as usize)
+            .copied()
+            .filter(|native| {
+                source_expression_key(native.expression) == context.expression
+                    && native.mode == context.mode
+            })
+            .unwrap_or_else(|| std::panic::panic_any(InvalidContextualFunctionContext(*context)))
+    }
+}
+
+impl TypeHandles {
+    fn retain_capture(&self, context: NativeCapturedFunctionContext) -> CapturedFunctionContext {
+        let mut state = self.state.borrow_mut();
+        let slot = match state.capture_slots.get(&context).copied() {
+            Some(slot) => slot,
+            None => {
+                let slot = u32::try_from(state.captures.len()).expect("capture handle capacity");
+                state.captures.push(context);
+                state.capture_slots.insert(context, slot);
+                slot
+            }
+        };
+        CapturedFunctionContext {
+            epoch: self.epoch,
+            slot,
+        }
+    }
+    fn resolve_capture(&self, context: &CapturedFunctionContext) -> NativeCapturedFunctionContext {
+        if context.epoch != self.epoch {
+            std::panic::panic_any(InvalidCapturedFunctionContext(*context));
+        }
+        self.state
+            .borrow()
+            .captures
+            .get(context.slot as usize)
+            .copied()
+            .unwrap_or_else(|| std::panic::panic_any(InvalidCapturedFunctionContext(*context)))
+    }
 }
 
 /// Resolved type descriptions; every comparison creates real checker-owned IDs.
@@ -134,6 +250,85 @@ pub enum Type {
 /// Source recipes may use thread-local interior state; release its borrows
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
+    fn contains_binding(&self, _: NativeBindingKey) -> bool {
+        false
+    }
+    fn function_parameters_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        _: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Vec<Parameter> {
+        self.function_parameters(key, queries)
+    }
+    fn function_declared_return_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        _: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        self.function_declared_return(key, queries)
+    }
+    fn function_inferred_return_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        _: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        self.function_inferred_return(key, queries)
+    }
+    fn contains_expression(&self, _: NativeExpressionKey) -> bool {
+        false
+    }
+    fn is_context_sensitive(&self, _: NativeExpressionKey) -> bool {
+        false
+    }
+    fn has_context_sensitive_parameters(&self, _: NativeExpressionKey) -> bool {
+        false
+    }
+    fn is_expression_descendant(
+        &self,
+        expression: NativeExpressionKey,
+        ancestor: NativeExpressionKey,
+    ) -> bool {
+        expression == ancestor
+    }
+    fn check_expression(
+        &self,
+        _: NativeExpressionKey,
+        _: Option<&Type>,
+        _: NativeCheckMode,
+        _: &mut dyn TypeQueries,
+    ) -> Type {
+        panic!("native expression provider is not installed")
+    }
+    fn contextual_parameter_indices(&self, _: NativeFunctionKey) -> Vec<usize> {
+        Vec::new()
+    }
+    fn function_parameters_in_context(
+        &self,
+        key: NativeFunctionKey,
+        _: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Vec<Parameter> {
+        self.function_parameters(key, queries)
+    }
+    fn function_declared_return_in_context(
+        &self,
+        key: NativeFunctionKey,
+        _: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        self.function_declared_return(key, queries)
+    }
+    fn function_inferred_return_in_context(
+        &self,
+        key: NativeFunctionKey,
+        _: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        self.function_inferred_return(key, queries)
+    }
     fn contains_function(&self, key: NativeFunctionKey) -> bool;
     fn function_parameters(
         &self,
@@ -279,6 +474,75 @@ pub enum CallError {
 /// Queries available during one native checker session. All inputs and outputs
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
+    fn captured_function_value(&mut self, context: &CapturedFunctionContext) -> Type;
+    fn native_function_key(&mut self, function: &Type) -> Option<NativeFunctionKey>;
+    fn instantiate_in_function(&mut self, function: &Type, declaration_type: &Type)
+    -> Option<Type>;
+    fn captured_parameter_type(
+        &mut self,
+        context: &CapturedFunctionContext,
+        index: usize,
+    ) -> Option<Type>;
+    fn instantiate_in_capture(&mut self, context: &CapturedFunctionContext, ty: &Type) -> Type;
+    fn captured_function(
+        &mut self,
+        function: NativeFunctionKey,
+        bindings: &[(NativeBindingKey, Type)],
+    ) -> Type;
+    fn captured_binding(
+        &mut self,
+        context: &CapturedFunctionContext,
+        binding: NativeBindingKey,
+    ) -> Option<Type>;
+    fn current_captured_function(&mut self) -> Option<CapturedFunctionContext>;
+    fn with_captured_function(
+        &mut self,
+        context: &CapturedFunctionContext,
+        work: &mut dyn FnMut(&mut dyn TypeQueries),
+    );
+    fn contextual_function_value(
+        &mut self,
+        function: &Type,
+        expression: NativeExpressionKey,
+        expected: &Type,
+        mode: NativeCheckMode,
+    ) -> Type;
+    fn current_contextual_function(&mut self) -> Option<ContextualFunctionContext>;
+    fn with_contextual_function(
+        &mut self,
+        context: &ContextualFunctionContext,
+        work: &mut dyn FnMut(&mut dyn TypeQueries),
+    );
+    fn flow_type(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        at: NativeFlowKey,
+        reference: NativeReferenceKey,
+        declared: &Type,
+        initial: &Type,
+    ) -> NativeFlowResult;
+    fn flow_reachable(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey) -> bool;
+    fn contextual_function(
+        &mut self,
+        function: NativeFunctionKey,
+        expression: NativeExpressionKey,
+        expected: &Type,
+        mode: NativeCheckMode,
+    ) -> Type;
+    fn contextual_parameter_type(
+        &mut self,
+        context: &ContextualFunctionContext,
+        index: usize,
+    ) -> Option<Type>;
+    fn contextual_return_type(&mut self, context: &ContextualFunctionContext) -> Type;
+    fn call_expression_native(
+        &mut self,
+        callee: &Type,
+        call: NativeExpressionKey,
+        arguments: &[NativeExpressionKey],
+        type_arguments: &[Type],
+        expected_return: Option<&Type>,
+    ) -> CallResult;
     fn is_assignable(&mut self, source: &Type, target: &Type) -> bool;
     fn compare(&mut self, source: &Type, target: &Type) -> Relation;
     fn widen(&mut self, ty: &Type) -> Type;
@@ -410,6 +674,231 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn captured_function_value(&mut self, context: &CapturedFunctionContext) -> Type {
+        let context = self.handles.resolve_capture(context);
+        let ty = self.checker.native_captured_function_value(context);
+        self.handles.retain(ty)
+    }
+    fn native_function_key(&mut self, function: &Type) -> Option<NativeFunctionKey> {
+        let function = import_type(self.checker, self.handles, function);
+        let signatures = self.checker.signatures(function, false);
+        if signatures.len() != 1 {
+            return None;
+        }
+        self.checker
+            .sig_native_decl(signatures[0])
+            .map(|(key, _)| source_key(key))
+    }
+    fn instantiate_in_function(
+        &mut self,
+        function: &Type,
+        declaration_type: &Type,
+    ) -> Option<Type> {
+        let function = import_type(self.checker, self.handles, function);
+        let signatures = self.checker.signatures(function, false);
+        if signatures.len() != 1 {
+            return None;
+        }
+        let (_, mapper) = self.checker.sig_native_decl(signatures[0])?;
+        let ty = import_type(self.checker, self.handles, declaration_type);
+        let ty = self.checker.instantiate(ty, mapper);
+        Some(export_type(self.checker, self.handles, ty))
+    }
+    fn captured_parameter_type(
+        &mut self,
+        context: &CapturedFunctionContext,
+        index: usize,
+    ) -> Option<Type> {
+        let context = self.handles.resolve_capture(context);
+        self.checker
+            .native_capture_parameter_type(context, index)
+            .map(|ty| export_type(self.checker, self.handles, ty))
+    }
+    fn instantiate_in_capture(&mut self, context: &CapturedFunctionContext, ty: &Type) -> Type {
+        let context = self.handles.resolve_capture(context);
+        let ty = import_type(self.checker, self.handles, ty);
+        let ty = self.checker.instantiate_in_native_capture(context, ty);
+        export_type(self.checker, self.handles, ty)
+    }
+    fn captured_function(
+        &mut self,
+        function: NativeFunctionKey,
+        bindings: &[(NativeBindingKey, Type)],
+    ) -> Type {
+        import_type(self.checker, self.handles, &Type::NativeFunction(function));
+        let mut environment = Vec::new();
+        for (binding, ty) in bindings {
+            self.validate_binding(*binding);
+            environment.push(NativeCapturedBinding {
+                declaration: core_binding_key(*binding),
+                ty: import_type(self.checker, self.handles, ty),
+            });
+        }
+        let ty = self
+            .checker
+            .native_captured_function(core_key(function), &environment)
+            .unwrap_or_else(|| std::panic::panic_any(InvalidNativeFunctionKey(function)));
+        self.handles.retain(ty)
+    }
+    fn captured_binding(
+        &mut self,
+        context: &CapturedFunctionContext,
+        binding: NativeBindingKey,
+    ) -> Option<Type> {
+        let context = self.handles.resolve_capture(context);
+        self.validate_binding(binding);
+        self.checker
+            .captured_binding_type(context, core_binding_key(binding))
+            .map(|ty| export_type(self.checker, self.handles, ty))
+    }
+    fn current_captured_function(&mut self) -> Option<CapturedFunctionContext> {
+        self.checker
+            .current_native_captured_function()
+            .map(|context| self.handles.retain_capture(context))
+    }
+    fn with_captured_function(
+        &mut self,
+        context: &CapturedFunctionContext,
+        work: &mut dyn FnMut(&mut dyn TypeQueries),
+    ) {
+        let context = self.handles.resolve_capture(context);
+        let handles = self.handles;
+        self.checker
+            .with_native_capture_context(context, |checker| {
+                work(&mut SessionQueries { checker, handles })
+            });
+    }
+    fn contextual_function_value(
+        &mut self,
+        function: &Type,
+        expression: NativeExpressionKey,
+        expected: &Type,
+        mode: NativeCheckMode,
+    ) -> Type {
+        self.validate_expression(expression);
+        let function = import_type(self.checker, self.handles, function);
+        let expected = import_type(self.checker, self.handles, expected);
+        let ty = self
+            .checker
+            .native_contextual_function_value(
+                function,
+                core_expression_key(expression),
+                expected,
+                mode,
+            )
+            .unwrap_or(function);
+        self.handles.retain(ty)
+    }
+    fn with_contextual_function(
+        &mut self,
+        context: &ContextualFunctionContext,
+        work: &mut dyn FnMut(&mut dyn TypeQueries),
+    ) {
+        let context = self.handles.resolve_context(context);
+        let handles = self.handles;
+        self.checker
+            .with_native_contextual_function_context(context, |checker| {
+                work(&mut SessionQueries { checker, handles })
+            });
+    }
+    fn current_contextual_function(&mut self) -> Option<ContextualFunctionContext> {
+        self.checker
+            .current_native_function_context()
+            .map(|context| self.handles.retain_context(context))
+    }
+    fn flow_type(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        at: NativeFlowKey,
+        reference: NativeReferenceKey,
+        declared: &Type,
+        initial: &Type,
+    ) -> NativeFlowResult {
+        let declared = import_type(self.checker, self.handles, declared);
+        let initial = import_type(self.checker, self.handles, initial);
+        let adapter = native_flow::FlowProviderAdapter {
+            provider,
+            handles: self.handles,
+        };
+        let result = self
+            .checker
+            .native_flow_type(&adapter, at, reference, declared, initial);
+        NativeFlowResult {
+            ty: export_type(self.checker, self.handles, result.ty),
+            incomplete: result.incomplete,
+        }
+    }
+    fn flow_reachable(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey) -> bool {
+        let adapter = native_flow::FlowProviderAdapter {
+            provider,
+            handles: self.handles,
+        };
+        self.checker.native_flow_reachable(&adapter, at)
+    }
+    fn contextual_function(
+        &mut self,
+        function: NativeFunctionKey,
+        expression: NativeExpressionKey,
+        expected: &Type,
+        mode: NativeCheckMode,
+    ) -> Type {
+        let ordinary = import_type(self.checker, self.handles, &Type::NativeFunction(function));
+        self.validate_expression(expression);
+        let expected = import_type(self.checker, self.handles, expected);
+        let ty = self
+            .checker
+            .native_contextual_function(
+                core_key(function),
+                core_expression_key(expression),
+                expected,
+                mode,
+            )
+            .unwrap_or(ordinary);
+        self.handles.retain(ty)
+    }
+    fn contextual_parameter_type(
+        &mut self,
+        context: &ContextualFunctionContext,
+        index: usize,
+    ) -> Option<Type> {
+        let native = self.handles.resolve_context(context);
+        self.checker
+            .contextual_parameter_type(native, index)
+            .map(|ty| export_type(self.checker, self.handles, ty))
+    }
+    fn contextual_return_type(&mut self, context: &ContextualFunctionContext) -> Type {
+        let native = self.handles.resolve_context(context);
+        let ty = self.checker.native_contextual_return_type(native);
+        export_type(self.checker, self.handles, ty)
+    }
+    fn call_expression_native(
+        &mut self,
+        callee: &Type,
+        call: NativeExpressionKey,
+        arguments: &[NativeExpressionKey],
+        type_arguments: &[Type],
+        expected_return: Option<&Type>,
+    ) -> CallResult {
+        self.validate_expression(call);
+        for argument in arguments {
+            self.validate_expression(*argument);
+        }
+        let callee = import_type(self.checker, self.handles, callee);
+        let arguments: Vec<_> = arguments.iter().copied().map(core_expression_key).collect();
+        let type_arguments: Vec<_> = type_arguments
+            .iter()
+            .map(|ty| import_type(self.checker, self.handles, ty))
+            .collect();
+        let expected_return = expected_return.map(|ty| import_type(self.checker, self.handles, ty));
+        let result = self.checker.call_expression_native(
+            callee,
+            core_expression_key(call),
+            &arguments,
+            &type_arguments,
+            expected_return,
+        );
+        self.export_call_result(result)
+    }
     fn inspect_type(&mut self, ty: &Type) -> Type {
         let id = import_type(self.checker, self.handles, ty);
         let signatures = self.checker.signatures(id, false);
@@ -561,6 +1050,30 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             &type_arguments,
             expected_return,
         );
+        self.export_call_result(result)
+    }
+
+    fn format(&mut self, ty: &Type) -> String {
+        let ty = import_type(self.checker, self.handles, ty);
+        String::from_utf8_lossy(&self.checker.type_to_string(ty)).into_owned()
+    }
+}
+
+impl SessionQueries<'_, '_, '_> {
+    fn validate_binding(&self, key: NativeBindingKey) {
+        if !self.checker.contains_native_binding(core_binding_key(key)) {
+            std::panic::panic_any(InvalidNativeBindingKey(key));
+        }
+    }
+    fn validate_expression(&self, key: NativeExpressionKey) {
+        if !self
+            .checker
+            .contains_native_expression(core_expression_key(key))
+        {
+            std::panic::panic_any(InvalidNativeExpressionKey(key));
+        }
+    }
+    fn export_call_result(&mut self, result: bun_sema::check::ResolvedTypeCall) -> CallResult {
         let return_type = export_type(self.checker, self.handles, result.ret);
         let errors = result
             .errors
@@ -610,11 +1123,6 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             return_type,
             errors,
         }
-    }
-
-    fn format(&mut self, ty: &Type) -> String {
-        let ty = import_type(self.checker, self.handles, ty);
-        String::from_utf8_lossy(&self.checker.type_to_string(ty)).into_owned()
     }
 }
 
@@ -726,12 +1234,244 @@ fn source_parameter_key(key: NativeTypeParamId) -> NativeTypeParameterKey {
     }
 }
 
+fn core_expression_key(key: NativeExpressionKey) -> NativeExpressionId {
+    NativeExpressionId {
+        snapshot: key.snapshot,
+        index: key.node,
+    }
+}
+
+fn source_expression_key(key: NativeExpressionId) -> NativeExpressionKey {
+    NativeExpressionKey {
+        snapshot: key.snapshot,
+        node: key.index,
+    }
+}
+
+fn core_binding_key(key: NativeBindingKey) -> NativeBindingId {
+    NativeBindingId {
+        snapshot: key.snapshot,
+        index: key.index,
+    }
+}
+fn source_binding_key(key: NativeBindingId) -> NativeBindingKey {
+    NativeBindingKey {
+        snapshot: key.snapshot,
+        index: key.index,
+    }
+}
+
 struct ProviderAdapter<'a, P> {
     provider: &'a P,
     handles: &'a TypeHandles,
 }
 
 impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
+    fn return_type_result_in_capture(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeFunctionId,
+        context: NativeCapturedFunctionContext,
+    ) -> NativeTypeResult {
+        let context = self.handles.retain_capture(context);
+        let key = source_key(key);
+        let declared = self.provider.function_declared_return_in_capture(
+            key,
+            &context,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        match declared {
+            Some(ty) => NativeTypeResult::Declaration(import_type(checker, self.handles, &ty)),
+            None => {
+                let ty = self.provider.function_inferred_return_in_capture(
+                    key,
+                    &context,
+                    &mut SessionQueries {
+                        checker,
+                        handles: self.handles,
+                    },
+                );
+                NativeTypeResult::Checked(import_type(checker, self.handles, &ty))
+            }
+        }
+    }
+    fn return_type_result_in_context(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeFunctionId,
+        context: NativeFunctionContext,
+    ) -> NativeTypeResult {
+        let context = self.handles.retain_context(context);
+        let key = source_key(key);
+        let declared = self.provider.function_declared_return_in_context(
+            key,
+            &context,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        match declared {
+            Some(ty) => NativeTypeResult::Declaration(import_type(checker, self.handles, &ty)),
+            None => {
+                let ty = self.provider.function_inferred_return_in_context(
+                    key,
+                    &context,
+                    &mut SessionQueries {
+                        checker,
+                        handles: self.handles,
+                    },
+                );
+                NativeTypeResult::Checked(import_type(checker, self.handles, &ty))
+            }
+        }
+    }
+    fn contains_binding(&self, key: NativeBindingId) -> bool {
+        self.provider.contains_binding(source_binding_key(key))
+    }
+    fn parameters_in_capture(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeFunctionId,
+        context: NativeCapturedFunctionContext,
+    ) -> Vec<SigParam> {
+        let context = self.handles.retain_capture(context);
+        let parameters = self.provider.function_parameters_in_capture(
+            source_key(key),
+            &context,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        import_parameters(checker, self.handles, parameters)
+    }
+    fn return_type_in_capture(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeFunctionId,
+        context: NativeCapturedFunctionContext,
+    ) -> TypeId {
+        let context = self.handles.retain_capture(context);
+        let key = source_key(key);
+        let declared = self.provider.function_declared_return_in_capture(
+            key,
+            &context,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        let returned = match declared {
+            Some(ty) => ty,
+            None => self.provider.function_inferred_return_in_capture(
+                key,
+                &context,
+                &mut SessionQueries {
+                    checker,
+                    handles: self.handles,
+                },
+            ),
+        };
+        import_type(checker, self.handles, &returned)
+    }
+    fn contains_expression(&self, key: NativeExpressionId) -> bool {
+        self.provider
+            .contains_expression(source_expression_key(key))
+    }
+    fn is_context_sensitive(&self, key: NativeExpressionId) -> bool {
+        self.provider
+            .is_context_sensitive(source_expression_key(key))
+    }
+    fn has_context_sensitive_parameters(&self, key: NativeExpressionId) -> bool {
+        self.provider
+            .has_context_sensitive_parameters(source_expression_key(key))
+    }
+    fn contextual_parameter_indices(&self, key: NativeFunctionId) -> Vec<usize> {
+        self.provider.contextual_parameter_indices(source_key(key))
+    }
+    fn is_expression_descendant(
+        &self,
+        expression: NativeExpressionId,
+        ancestor: NativeExpressionId,
+    ) -> bool {
+        self.provider.is_expression_descendant(
+            source_expression_key(expression),
+            source_expression_key(ancestor),
+        )
+    }
+    fn check_expression(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeExpressionId,
+        expected: Option<TypeId>,
+        mode: NativeCheckMode,
+    ) -> TypeId {
+        let key = source_expression_key(key);
+        if !self.provider.contains_expression(key) {
+            std::panic::panic_any(InvalidNativeExpressionKey(key));
+        }
+        let expected = expected.map(|ty| self.handles.retain(ty));
+        let ty = self.provider.check_expression(
+            key,
+            expected.as_ref(),
+            mode,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        import_type(checker, self.handles, &ty)
+    }
+    fn parameters_in_context(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeFunctionId,
+        context: NativeFunctionContext,
+    ) -> Vec<SigParam> {
+        let context = self.handles.retain_context(context);
+        let parameters = self.provider.function_parameters_in_context(
+            source_key(key),
+            &context,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        import_parameters(checker, self.handles, parameters)
+    }
+    fn return_type_in_context(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeFunctionId,
+        context: NativeFunctionContext,
+    ) -> TypeId {
+        let context = self.handles.retain_context(context);
+        let key = source_key(key);
+        let declared = self.provider.function_declared_return_in_context(
+            key,
+            &context,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        let returned = match declared {
+            Some(ty) => ty,
+            None => self.provider.function_inferred_return_in_context(
+                key,
+                &context,
+                &mut SessionQueries {
+                    checker,
+                    handles: self.handles,
+                },
+            ),
+        };
+        import_type(checker, self.handles, &returned)
+    }
     fn outer_type_parameters(&self, key: NativeFunctionId) -> Vec<NativeTypeParamId> {
         self.provider
             .function_outer_type_parameters(source_key(key))
@@ -834,23 +1574,7 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
                 handles: self.handles,
             },
         );
-        parameters
-            .into_iter()
-            .map(|parameter| {
-                let mut ty = import_type(checker, self.handles, &parameter.ty);
-                if parameter.optional {
-                    ty = checker.optional(ty);
-                }
-                SigParam {
-                    name: checker.atoms().intern(parameter.name.as_bytes()),
-                    ty,
-                    optional: parameter.optional,
-                    rest: false,
-                    is_required_rest: false,
-                    declaration: None,
-                }
-            })
-            .collect()
+        import_parameters(checker, self.handles, parameters)
     }
 
     fn return_type(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> TypeId {
@@ -882,6 +1606,30 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     fn return_type_too_deep(&self, key: NativeFunctionId) {
         self.provider.return_type_too_deep(source_key(key));
     }
+}
+
+fn import_parameters(
+    checker: &mut Checker<'_, '_>,
+    handles: &TypeHandles,
+    parameters: Vec<Parameter>,
+) -> Vec<SigParam> {
+    parameters
+        .into_iter()
+        .map(|parameter| {
+            let mut ty = import_type(checker, handles, &parameter.ty);
+            if parameter.optional {
+                ty = checker.optional(ty);
+            }
+            SigParam {
+                name: checker.atoms().intern(parameter.name.as_bytes()),
+                ty,
+                optional: parameter.optional,
+                rest: false,
+                is_required_rest: false,
+                declaration: None,
+            }
+        })
+        .collect()
 }
 
 fn import_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: &Type) -> TypeId {
@@ -996,12 +1744,15 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
             Intrinsic::Any | Intrinsic::Error | Intrinsic::Unresolved => Type::Any,
             Intrinsic::Unknown => Type::Unknown,
             Intrinsic::Never => Type::Never,
+            // Flow uses these sentinels to retain provisional/unreachable
+            // semantics. Reimporting a plain Never would erase that distinction.
+            Intrinsic::SilentNever | Intrinsic::UnreachableNever => handles.retain(ty),
             Intrinsic::Null | Intrinsic::NullWidening => Type::Nil,
             Intrinsic::Undefined | Intrinsic::UndefinedWidening | Intrinsic::Missing => Type::Nil,
             Intrinsic::Void => Type::Void,
             Intrinsic::String => Type::String,
             Intrinsic::Number => Type::Number,
-            other => panic!("unsupported exported intrinsic: {other:?}"),
+            _ => handles.retain(ty),
         },
         TypeData::BoolLit { value, .. } => Type::BooleanLiteral(*value),
         TypeData::NumberLit { bits, .. } => Type::NumberLiteral(f64::from_bits(*bits)),
@@ -1028,6 +1779,14 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
         }
         TypeData::Synth(shape) if shape.call.len() == 1 && shape.props.is_empty() => {
             let sig = shape.call[0];
+            if checker.sig_native_context(sig).is_some()
+                || matches!(
+                    checker.types().sig(checker.types().sig_origin(sig)),
+                    SigData::NativeCaptured { .. }
+                )
+            {
+                return handles.retain(ty);
+            }
             if let Some((key, mapper)) = checker.sig_native_decl(sig) {
                 let key = source_key(key);
                 if checker
@@ -1154,6 +1913,750 @@ impl Host for TypeCoreHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct ContextualProvider {
+        parameters: std::cell::RefCell<Vec<(ContextualFunctionContext, Type)>>,
+        base_parameters: std::cell::Cell<usize>,
+        callback_modes: std::cell::RefCell<Vec<NativeCheckMode>>,
+        captures: std::cell::RefCell<Vec<CapturedFunctionContext>>,
+    }
+    impl ContextualProvider {
+        fn expression(node: u32) -> NativeExpressionKey {
+            NativeExpressionKey { snapshot: 92, node }
+        }
+        fn function(index: u32) -> NativeFunctionKey {
+            NativeFunctionKey {
+                snapshot: 92,
+                index,
+            }
+        }
+        fn binding() -> NativeBindingKey {
+            NativeBindingKey {
+                snapshot: 92,
+                index: 0,
+            }
+        }
+    }
+    impl NativeTypeProvider for ContextualProvider {
+        fn contains_function(&self, key: NativeFunctionKey) -> bool {
+            if key.snapshot == 91 {
+                StaticGenericProvider.contains_function(key)
+            } else {
+                key.snapshot == 92 && key.index < 8
+            }
+        }
+        fn function_parameters(
+            &self,
+            key: NativeFunctionKey,
+            queries: &mut dyn TypeQueries,
+        ) -> Vec<Parameter> {
+            if key.snapshot == 91 {
+                return StaticGenericProvider.function_parameters(key, queries);
+            }
+            self.base_parameters.set(self.base_parameters.get() + 1);
+            if matches!(key.index, 1 | 4) {
+                Vec::new()
+            } else {
+                vec![StaticGenericProvider::argument("value", Type::Any)]
+            }
+        }
+        fn function_declared_return(
+            &self,
+            key: NativeFunctionKey,
+            queries: &mut dyn TypeQueries,
+        ) -> Option<Type> {
+            if key.snapshot == 91 {
+                StaticGenericProvider.function_declared_return(key, queries)
+            } else {
+                None
+            }
+        }
+        fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type {
+            Type::Any
+        }
+        fn return_cycle(&self, _: NativeFunctionKey) {
+            panic!("contextual fixture cannot cycle");
+        }
+        fn return_type_too_deep(&self, _: NativeFunctionKey) {
+            panic!("contextual fixture exceeds depth");
+        }
+        fn function_type_parameters(
+            &self,
+            key: NativeFunctionKey,
+            queries: &mut dyn TypeQueries,
+        ) -> Vec<NativeTypeParameterKey> {
+            if key.snapshot == 91 {
+                StaticGenericProvider.function_type_parameters(key, queries)
+            } else {
+                Vec::new()
+            }
+        }
+        fn function_outer_type_parameters(
+            &self,
+            key: NativeFunctionKey,
+        ) -> Vec<NativeTypeParameterKey> {
+            if key.snapshot == 91 {
+                StaticGenericProvider.function_outer_type_parameters(key)
+            } else {
+                Vec::new()
+            }
+        }
+        fn contains_type_parameter(&self, key: NativeTypeParameterKey) -> bool {
+            StaticGenericProvider.contains_type_parameter(key)
+        }
+        fn type_parameter_name(&self, key: NativeTypeParameterKey) -> String {
+            StaticGenericProvider.type_parameter_name(key)
+        }
+        fn type_parameter_siblings(
+            &self,
+            key: NativeTypeParameterKey,
+        ) -> Vec<NativeTypeParameterKey> {
+            StaticGenericProvider.type_parameter_siblings(key)
+        }
+        fn contains_expression(&self, key: NativeExpressionKey) -> bool {
+            key.snapshot == 92 && key.node < 14
+        }
+        fn is_context_sensitive(&self, key: NativeExpressionKey) -> bool {
+            matches!(key.node, 2 | 4 | 5 | 7 | 11 | 13)
+        }
+        fn has_context_sensitive_parameters(&self, key: NativeExpressionKey) -> bool {
+            matches!(key.node, 2 | 5 | 7 | 11 | 13)
+        }
+        fn contextual_parameter_indices(&self, key: NativeFunctionKey) -> Vec<usize> {
+            if key.snapshot == 92 && !matches!(key.index, 1 | 4) {
+                vec![0]
+            } else {
+                Vec::new()
+            }
+        }
+        fn check_expression(
+            &self,
+            key: NativeExpressionKey,
+            expected: Option<&Type>,
+            mode: NativeCheckMode,
+            queries: &mut dyn TypeQueries,
+        ) -> Type {
+            match key.node {
+                1 => Type::Number,
+                3 => Type::String,
+                12 => StaticGenericProvider::variable(0),
+                10 => {
+                    let context = queries
+                        .current_contextual_function()
+                        .expect("nested call captures an active contextual body");
+                    queries
+                        .contextual_parameter_type(&context, 0)
+                        .expect("enclosing parameter")
+                }
+                2 | 4 | 5 | 7 | 11 | 13 => {
+                    self.callback_modes.borrow_mut().push(mode);
+                    let function = Self::function(match key.node {
+                        2 => 0,
+                        4 => 1,
+                        5 => 2,
+                        11 => 6,
+                        13 => 7,
+                        _ => 3,
+                    });
+                    match expected {
+                        Some(expected) => {
+                            queries.contextual_function(function, key, expected, mode)
+                        }
+                        None => Type::NativeFunction(function),
+                    }
+                }
+                _ => panic!("call sites are not checked as argument expressions"),
+            }
+        }
+        fn function_parameters_in_context(
+            &self,
+            key: NativeFunctionKey,
+            context: &ContextualFunctionContext,
+            queries: &mut dyn TypeQueries,
+        ) -> Vec<Parameter> {
+            if matches!(key.index, 1 | 4) {
+                return Vec::new();
+            }
+            let parameter = queries
+                .contextual_parameter_type(context, 0)
+                .expect("one contextual parameter");
+            self.parameters
+                .borrow_mut()
+                .push((*context, parameter.clone()));
+            assert!(queries.is_assignable(&parameter, &Type::Unknown));
+            vec![StaticGenericProvider::argument("value", parameter)]
+        }
+        fn function_inferred_return_in_context(
+            &self,
+            key: NativeFunctionKey,
+            context: &ContextualFunctionContext,
+            queries: &mut dyn TypeQueries,
+        ) -> Type {
+            assert_eq!(queries.current_contextual_function(), Some(*context));
+            match key.index {
+                1 => queries.aggregate_returns(&[Type::Number], false, None),
+                2 => Type::Void,
+                3 => {
+                    let result = queries.call_expression_native(
+                        &Type::NativeFunction(StaticGenericProvider::function(4)),
+                        Self::expression(8),
+                        &[Self::expression(10), Self::expression(2)],
+                        &[],
+                        None,
+                    );
+                    assert!(result.errors.is_empty(), "{result:?}");
+                    result.return_type
+                }
+                4 => {
+                    let captured = queries
+                        .current_captured_function()
+                        .expect("combined facet retains capture frame");
+                    queries
+                        .captured_binding(&captured, Self::binding())
+                        .unwrap()
+                }
+                5 => {
+                    let captured = queries
+                        .current_captured_function()
+                        .expect("combined facet retains capture frame");
+                    let binding = queries
+                        .captured_binding(&captured, Self::binding())
+                        .unwrap();
+                    let argument = queries.contextual_parameter_type(context, 0).unwrap();
+                    Type::Shape(vec![
+                        Property::new("captured", binding),
+                        Property::new("argument", argument),
+                    ])
+                }
+                6 => {
+                    let binding = queries.contextual_parameter_type(context, 0).unwrap();
+                    let closure =
+                        queries.captured_function(Self::function(4), &[(Self::binding(), binding)]);
+                    queries.aggregate_returns(&[closure], false, None)
+                }
+                7 => {
+                    let binding = queries.contextual_parameter_type(context, 0).unwrap();
+                    let first =
+                        queries.captured_function(Self::function(4), &[(Self::binding(), binding)]);
+                    queries.captured_function(Self::function(4), &[(Self::binding(), first)])
+                }
+                _ => {
+                    let returned = queries.contextual_parameter_type(context, 0).unwrap();
+                    let expected = queries.contextual_return_type(context);
+                    queries.aggregate_returns(&[returned], false, Some(&expected))
+                }
+            }
+        }
+        fn contains_binding(&self, key: NativeBindingKey) -> bool {
+            key.snapshot == 92 && key.index < 2
+        }
+        fn function_parameters_in_capture(
+            &self,
+            key: NativeFunctionKey,
+            _: &CapturedFunctionContext,
+            queries: &mut dyn TypeQueries,
+        ) -> Vec<Parameter> {
+            if key.snapshot == 91 {
+                return StaticGenericProvider.function_parameters(key, queries);
+            }
+            if key.index == 4 {
+                Vec::new()
+            } else {
+                vec![StaticGenericProvider::argument("value", Type::Any)]
+            }
+        }
+        fn function_inferred_return_in_capture(
+            &self,
+            key: NativeFunctionKey,
+            context: &CapturedFunctionContext,
+            queries: &mut dyn TypeQueries,
+        ) -> Type {
+            assert_eq!(queries.current_captured_function(), Some(*context));
+            let function = queries.captured_function_value(context);
+            assert_eq!(queries.native_function_key(&function), Some(key));
+            self.captures.borrow_mut().push(*context);
+            queries.captured_binding(context, Self::binding()).unwrap()
+        }
+    }
+
+    #[test]
+    fn native_captured_closures_keep_distinct_environments_and_compose_with_contexts() {
+        Engine::new().with_native_provider(ContextualProvider::default, |provider, queries| {
+            let map = Type::NativeFunction(StaticGenericProvider::function(4));
+            let mut closures = Vec::new();
+            for (node, expected) in [(1, Type::Number), (3, Type::String), (1, Type::Number)] {
+                let result = queries.call_expression_native(
+                    &map,
+                    ContextualProvider::expression(0),
+                    &[
+                        ContextualProvider::expression(node),
+                        ContextualProvider::expression(11),
+                    ],
+                    &[],
+                    None,
+                );
+                assert!(result.errors.is_empty(), "{result:?}");
+                assert!(matches!(result.return_type, Type::SessionType(_)));
+                let returned = queries.call(&result.return_type, &[]);
+                assert!(returned.errors.is_empty(), "{returned:?}");
+                assert_eq!(returned.return_type, expected);
+                closures.push(result.return_type);
+            }
+            assert_ne!(closures[0], closures[1]);
+            assert_eq!(closures[0], closures[2]);
+            assert_eq!(
+                provider.captures.borrow().len(),
+                2,
+                "native captured returns are cached by environment"
+            );
+            let captured = queries.captured_function(
+                ContextualProvider::function(5),
+                &[(ContextualProvider::binding(), Type::String)],
+            );
+            let expected = StaticGenericProvider::callback(Some(Type::Number), Type::Any);
+            let combined = queries.contextual_function_value(
+                &captured,
+                ContextualProvider::expression(2),
+                &expected,
+                NativeCheckMode::empty(),
+            );
+            let signature = queries.function_signature(&combined).unwrap();
+            assert_eq!(signature.params[0].ty, Type::Number);
+            let returned = &*signature.returns;
+            assert_eq!(
+                queries.property_type(returned, "argument"),
+                Some(Type::Number)
+            );
+            assert_eq!(
+                queries.property_type(returned, "captured"),
+                Some(Type::String)
+            );
+            assert_eq!(queries.current_captured_function(), None);
+            assert_eq!(queries.current_contextual_function(), None);
+            assert_eq!(provider.base_parameters.get(), 0);
+        });
+    }
+
+    #[test]
+    fn native_captured_environment_substitution_uses_the_signature_mapper() {
+        with_program(|program, handles| {
+            let provider = ContextualProvider::default();
+            let adapter = ProviderAdapter {
+                provider: &provider,
+                handles,
+            };
+            let mut checker = program.checker_with_native_provider(&adapter);
+            let captured = SessionQueries {
+                checker: &mut checker,
+                handles,
+            }
+            .captured_function(
+                ContextualProvider::function(4),
+                &[(
+                    ContextualProvider::binding(),
+                    StaticGenericProvider::variable(3),
+                )],
+            );
+            let raw = import_type(&mut checker, handles, &captured);
+            let parameter = import_type(&mut checker, handles, &StaticGenericProvider::variable(3));
+            let mapper = checker.types().mapper(vec![(parameter, TypeId::STRING)]);
+            let mapped = checker.instantiate(raw, mapper);
+            let mapped = export_type(&mut checker, handles, mapped);
+            assert!(matches!(mapped, Type::SessionType(_)));
+            let returned = SessionQueries {
+                checker: &mut checker,
+                handles,
+            }
+            .call(&mapped, &[]);
+            assert!(returned.errors.is_empty(), "{returned:?}");
+            assert_eq!(returned.return_type, Type::String);
+            let annotation_only = SessionQueries {
+                checker: &mut checker,
+                handles,
+            }
+            .captured_function(StaticGenericProvider::function(3), &[]);
+            let raw = import_type(&mut checker, handles, &annotation_only);
+            let outer = import_type(&mut checker, handles, &StaticGenericProvider::variable(1));
+            let mapper = checker.types().mapper(vec![(outer, TypeId::STRING)]);
+            let mapped = checker.instantiate(raw, mapper);
+            let mapped = export_type(&mut checker, handles, mapped);
+            let signature = SessionQueries {
+                checker: &mut checker,
+                handles,
+            }
+            .function_signature(&mapped)
+            .unwrap();
+            assert_eq!(signature.params[0].ty, Type::String);
+            assert_eq!(*signature.returns, Type::String);
+        });
+    }
+
+    #[test]
+    fn native_captured_outer_parameter_dependencies_do_not_fix_unrelated_return_inference() {
+        Engine::new().with_native_provider(ContextualProvider::default, |_, queries| {
+            let result = queries.call_expression_native(
+                &Type::NativeFunction(StaticGenericProvider::function(4)),
+                ContextualProvider::expression(0),
+                &[
+                    ContextualProvider::expression(12),
+                    ContextualProvider::expression(13),
+                ],
+                &[],
+                None,
+            );
+            assert!(result.errors.is_empty(), "{result:?}");
+            let first = queries.call(&result.return_type, &[]);
+            assert!(first.errors.is_empty(), "outer closure: {first:?}");
+            let inner = queries.call(&first.return_type, &[]);
+            assert!(inner.errors.is_empty(), "inner closure: {inner:?}");
+            assert_eq!(inner.return_type, StaticGenericProvider::variable(0));
+        });
+    }
+
+    #[test]
+    fn native_captured_body_values_apply_simultaneous_substitution_once() {
+        with_program(|program, handles| {
+            let provider = ContextualProvider::default();
+            let adapter = ProviderAdapter {
+                provider: &provider,
+                handles,
+            };
+            let mut checker = program.checker_with_native_provider(&adapter);
+            let captured = SessionQueries {
+                checker: &mut checker,
+                handles,
+            }
+            .captured_function(
+                ContextualProvider::function(4),
+                &[
+                    (
+                        ContextualProvider::binding(),
+                        StaticGenericProvider::variable(3),
+                    ),
+                    (
+                        NativeBindingKey {
+                            snapshot: 92,
+                            index: 1,
+                        },
+                        StaticGenericProvider::variable(4),
+                    ),
+                ],
+            );
+            let raw = import_type(&mut checker, handles, &captured);
+            let t = import_type(&mut checker, handles, &StaticGenericProvider::variable(3));
+            let u = import_type(&mut checker, handles, &StaticGenericProvider::variable(4));
+            let mapper = checker.types().mapper(vec![(t, u), (u, TypeId::NUMBER)]);
+            let mapped = checker.instantiate(raw, mapper);
+            let mapped = export_type(&mut checker, handles, mapped);
+            let returned = SessionQueries {
+                checker: &mut checker,
+                handles,
+            }
+            .call(&mapped, &[]);
+            assert!(returned.errors.is_empty(), "{returned:?}");
+            assert_eq!(returned.return_type, StaticGenericProvider::variable(4));
+        });
+    }
+
+    #[test]
+    fn native_contextual_captured_parameters_keep_callsite_space_during_mapping_and_cloning() {
+        with_program(|program, handles| {
+            let provider = ContextualProvider::default();
+            let adapter = ProviderAdapter {
+                provider: &provider,
+                handles,
+            };
+            let mut checker = program.checker_with_native_provider(&adapter);
+            let captured = SessionQueries {
+                checker: &mut checker,
+                handles,
+            }
+            .captured_function(
+                ContextualProvider::function(5),
+                &[
+                    (
+                        ContextualProvider::binding(),
+                        StaticGenericProvider::variable(3),
+                    ),
+                    (
+                        NativeBindingKey {
+                            snapshot: 92,
+                            index: 1,
+                        },
+                        StaticGenericProvider::variable(4),
+                    ),
+                ],
+            );
+            let raw = import_type(&mut checker, handles, &captured);
+            let t = import_type(&mut checker, handles, &StaticGenericProvider::variable(3));
+            let u = import_type(&mut checker, handles, &StaticGenericProvider::variable(4));
+            let mapper = checker.types().mapper(vec![(t, u), (u, TypeId::NUMBER)]);
+            let source = checker.instantiate(raw, mapper);
+            let source = export_type(&mut checker, handles, source);
+            let expected = StaticGenericProvider::callback(
+                Some(StaticGenericProvider::variable(4)),
+                Type::Any,
+            );
+            let contextual = SessionQueries {
+                checker: &mut checker,
+                handles,
+            }
+            .contextual_function_value(
+                &source,
+                ContextualProvider::expression(2),
+                &expected,
+                NativeCheckMode::empty(),
+            );
+            let signature = SessionQueries {
+                checker: &mut checker,
+                handles,
+            }
+            .function_signature(&contextual)
+            .unwrap();
+            assert_eq!(signature.params[0].ty, StaticGenericProvider::variable(4));
+            let raw = import_type(&mut checker, handles, &contextual);
+            let ambient = checker.types().mapper(vec![(u, TypeId::STRING)]);
+            let clone = checker.instantiate(raw, ambient);
+            let clone = export_type(&mut checker, handles, clone);
+            let mut queries = SessionQueries {
+                checker: &mut checker,
+                handles,
+            };
+            let signature = queries.function_signature(&clone).unwrap();
+            assert_eq!(signature.params[0].ty, Type::String);
+            assert_eq!(
+                queries.property_type(&signature.returns, "argument"),
+                Some(Type::String)
+            );
+            assert_eq!(
+                queries.property_type(&signature.returns, "captured"),
+                Some(Type::String)
+            );
+        });
+    }
+
+    #[test]
+    fn native_provider_scopes_restore_frames_and_validate_capture_capabilities() {
+        let capture =
+            Engine::new().with_native_provider(ContextualProvider::default, |provider, queries| {
+                let map = Type::NativeFunction(StaticGenericProvider::function(4));
+                let returned = queries.call_expression_native(
+                    &map,
+                    ContextualProvider::expression(0),
+                    &[
+                        ContextualProvider::expression(1),
+                        ContextualProvider::expression(11),
+                    ],
+                    &[],
+                    None,
+                );
+                assert!(returned.errors.is_empty());
+                assert!(queries.call(&returned.return_type, &[]).errors.is_empty());
+                let context = provider.parameters.borrow().last().unwrap().0;
+                let capture = provider.captures.borrow()[0];
+                let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    queries.with_contextual_function(&context, &mut |queries| {
+                        assert_eq!(queries.current_contextual_function(), Some(context));
+                        queries.with_captured_function(&capture, &mut |queries| {
+                            assert_eq!(queries.current_captured_function(), Some(capture));
+                            std::panic::panic_any(String::from("scoped callback payload"));
+                        });
+                    })
+                }))
+                .unwrap_err();
+                assert_eq!(
+                    panic.downcast_ref::<String>().map(String::as_str),
+                    Some("scoped callback payload")
+                );
+                assert_eq!(queries.current_captured_function(), None);
+                assert_eq!(queries.current_contextual_function(), None);
+                queries.with_contextual_function(&context, &mut |queries| {
+                    let nested = queries.call_expression_native(
+                        &map,
+                        ContextualProvider::expression(8),
+                        &[
+                            ContextualProvider::expression(10),
+                            ContextualProvider::expression(2),
+                        ],
+                        &[],
+                        None,
+                    );
+                    assert!(nested.errors.is_empty(), "{nested:?}");
+                    assert_eq!(nested.return_type, Type::Number);
+                });
+                assert_eq!(
+                    queries.captured_binding(&capture, ContextualProvider::binding()),
+                    Some(Type::Number)
+                );
+                capture
+            });
+        let panic = std::panic::catch_unwind(|| {
+            Engine::new().with_session(|queries| {
+                queries.captured_binding(&capture, ContextualProvider::binding())
+            })
+        })
+        .unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<InvalidCapturedFunctionContext>(),
+            Some(&InvalidCapturedFunctionContext(capture))
+        );
+        let foreign = NativeBindingKey {
+            snapshot: 999,
+            index: 0,
+        };
+        let panic = std::panic::catch_unwind(|| {
+            Engine::new().with_native_provider(ContextualProvider::default, |_, queries| {
+                queries
+                    .captured_function(ContextualProvider::function(4), &[(foreign, Type::Number)])
+            })
+        })
+        .unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<InvalidNativeBindingKey>(),
+            Some(&InvalidNativeBindingKey(foreign))
+        );
+        assert!(Engine::new().is_assignable(&Type::Number, &Type::Number));
+    }
+
+    #[test]
+    fn native_contextual_callbacks_fix_parameters_and_keep_distinct_contexts() {
+        Engine::new().with_native_provider(ContextualProvider::default, |provider, queries| {
+            let map = Type::NativeFunction(StaticGenericProvider::function(4));
+            for (argument, expected) in [(1, Type::Number), (3, Type::String), (1, Type::Number)] {
+                let result = queries.call_expression_native(
+                    &map,
+                    ContextualProvider::expression(0),
+                    &[
+                        ContextualProvider::expression(argument),
+                        ContextualProvider::expression(2),
+                    ],
+                    &[],
+                    None,
+                );
+                assert!(result.errors.is_empty(), "{result:?}");
+                assert_eq!(result.return_type, expected);
+                assert_eq!(queries.current_contextual_function(), None);
+            }
+            assert_eq!(provider.base_parameters.get(), 0);
+            let parameters = provider.parameters.borrow();
+            assert!(parameters.iter().any(|(_, ty)| *ty == Type::Number));
+            assert!(parameters.iter().any(|(_, ty)| *ty == Type::String));
+            assert!(parameters.windows(2).any(|pair| pair[0].0 != pair[1].0));
+            assert!(
+                provider
+                    .callback_modes
+                    .borrow()
+                    .iter()
+                    .all(|mode| !mode.contains(NativeCheckMode::SKIP_CONTEXT_SENSITIVE))
+            );
+        });
+    }
+
+    #[test]
+    fn native_contextual_producer_consumer_and_nested_inference_share_one_checker() {
+        Engine::new().with_native_provider(ContextualProvider::default, |provider, queries| {
+            let consume = queries.call_expression_native(
+                &Type::NativeFunction(StaticGenericProvider::function(5)),
+                ContextualProvider::expression(6),
+                &[
+                    ContextualProvider::expression(4),
+                    ContextualProvider::expression(5),
+                ],
+                &[],
+                None,
+            );
+            assert!(consume.errors.is_empty(), "{consume:?}");
+            assert_eq!(consume.return_type, Type::Number);
+            let nested = queries.call_expression_native(
+                &Type::NativeFunction(StaticGenericProvider::function(4)),
+                ContextualProvider::expression(9),
+                &[
+                    ContextualProvider::expression(3),
+                    ContextualProvider::expression(7),
+                ],
+                &[],
+                None,
+            );
+            assert!(nested.errors.is_empty(), "{nested:?}");
+            assert_eq!(nested.return_type, Type::String);
+            assert_eq!(provider.base_parameters.get(), 0);
+        });
+    }
+
+    #[test]
+    fn native_contextual_capabilities_reject_another_session() {
+        let context =
+            Engine::new().with_native_provider(ContextualProvider::default, |provider, queries| {
+                let result = queries.call_expression_native(
+                    &Type::NativeFunction(StaticGenericProvider::function(4)),
+                    ContextualProvider::expression(0),
+                    &[
+                        ContextualProvider::expression(1),
+                        ContextualProvider::expression(2),
+                    ],
+                    &[],
+                    None,
+                );
+                assert!(result.errors.is_empty());
+                provider.parameters.borrow()[0].0
+            });
+        let panic = std::panic::catch_unwind(|| {
+            Engine::new().with_session(|queries| queries.contextual_parameter_type(&context, 0))
+        })
+        .unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<InvalidContextualFunctionContext>(),
+            Some(&InvalidContextualFunctionContext(context))
+        );
+        assert!(Engine::new().is_assignable(&Type::Number, &Type::Number));
+    }
+
+    #[test]
+    fn native_expression_keys_validate_snapshots_and_noncallable_contexts_remain_errors() {
+        let invalid = NativeExpressionKey {
+            snapshot: 999,
+            node: 0,
+        };
+        let panic = std::panic::catch_unwind(|| {
+            Engine::new().with_native_provider(ContextualProvider::default, |_, queries| {
+                queries.call_expression_native(
+                    &Type::NativeFunction(StaticGenericProvider::function(4)),
+                    invalid,
+                    &[
+                        ContextualProvider::expression(1),
+                        ContextualProvider::expression(2),
+                    ],
+                    &[],
+                    None,
+                )
+            })
+        })
+        .unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<InvalidNativeExpressionKey>(),
+            Some(&InvalidNativeExpressionKey(invalid))
+        );
+        Engine::new().with_native_provider(ContextualProvider::default, |_, queries| {
+            let result = queries.call_expression_native(
+                &Type::Function(FunctionType {
+                    params: vec![StaticGenericProvider::argument("number", Type::Number)],
+                    returns: Box::new(Type::Void),
+                }),
+                ContextualProvider::expression(0),
+                &[ContextualProvider::expression(2)],
+                &[],
+                None,
+            );
+            assert!(
+                matches!(
+                    result.errors.as_slice(),
+                    [CallError::Argument { index: 0, .. }]
+                ),
+                "{result:?}"
+            );
+        });
+    }
 
     struct StaticGenericProvider;
     impl StaticGenericProvider {
@@ -1834,6 +3337,55 @@ mod tests {
         fn return_type_too_deep(&self, _: NativeFunctionKey) {
             self.depths.set(self.depths.get() + 1);
         }
+    }
+
+    #[test]
+    fn native_function_identity_and_declared_type_views_do_not_demand_inferred_returns() {
+        Engine::new().with_native_provider(SourceProvider::new, |provider, queries| {
+            let recursive = Type::NativeFunction(SourceProvider::key(2));
+            assert_eq!(
+                queries.native_function_key(&recursive),
+                Some(SourceProvider::key(2))
+            );
+            assert_eq!(
+                queries.instantiate_in_function(&recursive, &Type::Never),
+                Some(Type::Never)
+            );
+            assert_eq!(provider.calls[2].get(), 0);
+            assert_eq!(provider.parameters[2].get(), 0);
+            assert_eq!(provider.cycles.get(), 0);
+        });
+        with_program(|program, handles| {
+            let provider = ContextualProvider::default();
+            let adapter = ProviderAdapter {
+                provider: &provider,
+                handles,
+            };
+            let mut checker = program.checker_with_native_provider(&adapter);
+            let captured = SessionQueries {
+                checker: &mut checker,
+                handles,
+            }
+            .captured_function(StaticGenericProvider::function(3), &[]);
+            let raw = import_type(&mut checker, handles, &captured);
+            let t = import_type(&mut checker, handles, &StaticGenericProvider::variable(1));
+            let mapper = checker.types().mapper(vec![(t, TypeId::NEVER)]);
+            let mapped = checker.instantiate(raw, mapper);
+            let mapped = export_type(&mut checker, handles, mapped);
+            let mut queries = SessionQueries {
+                checker: &mut checker,
+                handles,
+            };
+            assert_eq!(
+                queries.native_function_key(&mapped),
+                Some(StaticGenericProvider::function(3))
+            );
+            assert_eq!(
+                queries.instantiate_in_function(&mapped, &StaticGenericProvider::variable(1)),
+                Some(Type::Never)
+            );
+            assert!(provider.captures.borrow().is_empty());
+        });
     }
 
     #[test]

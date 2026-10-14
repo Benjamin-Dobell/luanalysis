@@ -181,7 +181,7 @@ fn unsupported_lua_and_annotation_forms_are_reported_and_recover() {
     for unsupported in [
         "local x = {1, 2}",
         "local x = {[1] = 'one'}",
-        "local function f(...) end",
+        "local function f(..., value) end",
         "---@type number[]",
         "---@type fun<T>(x: T): T",
         "---@class MyClass",
@@ -450,13 +450,154 @@ fn return_accepts_one_terminal_semicolon_and_diagnoses_additional_ones() {
 #[test]
 fn missing_end_bad_parameters_and_annotations_are_diagnosed() {
     for source in [
-        "do local x = 1", "local function f(x,) return x end", "local function f(...) end",
+        "do local x = 1", "local function f(x,) return x end", "local function f(..., value) end",
         "---@param x number\nlocal x = 1", "---@param x number\n---@param x string\nlocal function f(x) end",
         "local function f() return 1 local x = 2 end", "local x = f(1,)",
-        "---@generic T = number\nlocal function f(x) return x end", "function global() end",
+        "---@generic T = number\nlocal function f(x) return x end", "function global[index]() end",
     ] {
         let file = parse(source);
         assert!(!file.diagnostics.is_empty(), "invalid or unsupported input escaped diagnosis: {source}");
+    }
+}
+
+#[test]
+fn named_global_member_and_colon_definitions_retain_original_targets() {
+    let source = "---@param value number\n---@return number\nfunction identity(value) return value end\nfunction namespace.nested.member(value) return value end\nfunction namespace.nested:method(value) return self end\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    assert_eq!(file.statements.len(), 3);
+    let StmtKind::FunctionDeclaration { target, function, method_span } = &file.statements[0].kind else { panic!("expected global definition") };
+    assert!(matches!(target.kind, ExprKind::Name(_)));
+    assert_eq!(&source[target.span.start..target.span.end], "identity");
+    assert!(method_span.is_none());
+    assert_eq!(function.annotations.params[0].name.text, "value");
+    assert!(function.annotations.returns.is_some());
+    assert_eq!(function.params.len(), 1);
+    assert_eq!(source.as_bytes()[function.body_span.start - 1], b')');
+    let StmtKind::FunctionDeclaration { target, function, method_span } = &file.statements[1].kind else { panic!("expected member definition") };
+    assert_eq!(&source[target.span.start..target.span.end], "namespace.nested.member");
+    assert!(matches!(target.kind, ExprKind::Field { .. }));
+    assert!(method_span.is_none());
+    assert!(source[function.span.start..function.span.end].starts_with("function namespace.nested.member"));
+    let StmtKind::FunctionDeclaration { target, function, method_span } = &file.statements[2].kind else { panic!("expected method definition") };
+    assert_eq!(&source[target.span.start..target.span.end], "namespace.nested:method");
+    let colon = method_span.unwrap();
+    assert_eq!(&source[colon.start..colon.end], ":");
+    let ExprKind::Field { base, name } = &target.kind else { panic!("expected method field target") };
+    assert_eq!(&source[base.span.start..base.span.end], "namespace.nested");
+    assert_eq!(name.text, "method");
+    assert_eq!(function.params.iter().map(|name| name.text.as_str()).collect::<Vec<_>>(), ["value"]);
+}
+
+#[test]
+fn actual_ge_tts_captured_self_definitions_parse_in_constructor_scope() {
+    // Reduced from ge_tts Instance.ttslua:124 and Vector2.ttslua:83; named return
+    // shapes and constructor dependencies are removed, native bodies retained.
+    let source = "local function constructor()\nlocal instanceGuid = 'instance'\nlocal self = {x = 1, y = 2}\n---@return string\nfunction self.getInstanceGuid() return instanceGuid end\n---@return {x: number, y: number}\nfunction self.toData() return {x = self.x, y = self.y} end\nreturn self\nend\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let StmtKind::LocalFunction { function, .. } = &file.statements[0].kind else { panic!("expected constructor") };
+    assert_eq!(function.body.len(), 5);
+    let StmtKind::FunctionDeclaration { target, function: member, .. } = &function.body[2].kind else { panic!("expected captured member") };
+    assert_eq!(&source[target.span.start..target.span.end], "self.getInstanceGuid");
+    assert!(member.params.is_empty());
+    let StmtKind::Return(values) = &member.body[0].kind else { panic!("expected return") };
+    assert!(matches!(&values[0].kind, ExprKind::Name(name) if name.text == "instanceGuid"));
+    assert!(matches!(function.body[3].kind, StmtKind::FunctionDeclaration { .. }));
+}
+
+#[test]
+fn named_definition_utf8_crlf_and_generic_annotation_spans_are_native() {
+    let source = "---@generic T\r\n---@param value T\r\n---@return T\r\nfunction 日本語:戻る(value) return value end\r\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let StmtKind::FunctionDeclaration { target, function, method_span } = &file.statements[0].kind else { panic!("expected definition") };
+    assert_eq!(&source[target.span.start..target.span.end], "日本語:戻る");
+    assert_eq!(&source[method_span.unwrap().start..method_span.unwrap().end], ":");
+    assert_eq!(function.annotations.generics.len(), 1);
+    assert_eq!(&source[function.annotations.generics[0].name.span.start..function.annotations.generics[0].name.span.end], "T");
+    assert_eq!(&source[function.params[0].span.start..function.params[0].span.end], "value");
+}
+
+#[test]
+fn malformed_named_definition_headers_are_diagnosed_without_losing_next_statement() {
+    for invalid in ["function () end", "function module:method.field() end", "function module:method:again() end", "function module[index]() end"] {
+        let file = parse(&format!("{invalid}\nlocal recovery = 7\n"));
+        assert!(!file.diagnostics.is_empty(), "{invalid}");
+        assert!(file.statements.iter().any(|stmt| matches!(&stmt.kind, StmtKind::Local { names, .. } if names.iter().any(|name| name.text == "recovery"))), "{invalid}: {:?}", file.diagnostics);
+    }
+}
+
+#[test]
+fn long_named_definition_targets_do_not_construct_unbounded_trees() {
+    let source = format!("function namespace{}() end\nlocal recovery = 7\n", ".member".repeat(8192));
+    let file = parse(&source);
+    assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("function name nesting exceeds")));
+    assert!(matches!(file.statements[0].kind, StmtKind::FunctionDeclaration { .. }));
+    assert_eq!(locals(&file, 1).0[0].text, "recovery");
+    drop(file.clone());
+    drop(file);
+}
+
+#[test]
+fn runtime_vararg_headers_and_expression_lists_retain_exact_ellipses() {
+    let source = "local function forward(head, ...) return head, ... end\nlocal result = forward(1, 2, 3)\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let StmtKind::LocalFunction { function, .. } = &file.statements[0].kind else { panic!("expected variadic function") };
+    assert_eq!(function.params.iter().map(|name| name.text.as_str()).collect::<Vec<_>>(), ["head"]);
+    let header = function.vararg.unwrap();
+    assert_eq!(&source[header.start..header.end], "...");
+    let StmtKind::Return(values) = &function.body[0].kind else { panic!("expected result list") };
+    assert_eq!(values.len(), 2);
+    assert_eq!(values[1].kind, ExprKind::Vararg);
+    assert_eq!(&source[values[1].span.start..values[1].span.end], "...");
+    assert!(header.end < function.body_span.start);
+    assert!(function.body_span.start < values[1].span.start);
+}
+
+#[test]
+fn parentheses_scalarization_and_final_vararg_expansion_remain_distinct() {
+    let source = "local function forward(...) return target((...), ...) end\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let StmtKind::LocalFunction { function, .. } = &file.statements[0].kind else { panic!("expected function") };
+    let StmtKind::Return(values) = &function.body[0].kind else { panic!("expected return") };
+    let ExprKind::Call { args, .. } = &values[0].kind else { panic!("expected forwarding call") };
+    let ExprKind::Parenthesized(first) = &args[0].kind else { panic!("expected scalarized vararg") };
+    assert_eq!(first.kind, ExprKind::Vararg);
+    assert_eq!(args[1].kind, ExprKind::Vararg);
+    assert_eq!(&source[args[0].span.start..args[0].span.end], "(...)");
+    assert_eq!(&source[args[1].span.start..args[1].span.end], "...");
+}
+
+#[test]
+fn vararg_scope_is_reset_by_each_function_and_restored_after_it() {
+    let source = "local function outer(...)\nlocal inner = function() return ... end\nreturn ...\nend\nreturn ...\n";
+    let file = parse(source);
+    assert_eq!(file.diagnostics.len(), 1, "{:?}", file.diagnostics);
+    let diagnostic = &file.diagnostics[0];
+    assert!(diagnostic.message.contains("outside a variadic"));
+    assert_eq!(&source[diagnostic.span.start..diagnostic.span.end], "...");
+    assert_eq!(diagnostic.span.start, source.find("return ...").unwrap() + "return ".len());
+    // A Lua chunk is itself variadic; it has no fabricated header token.
+    assert!(parse("return ...").diagnostics.is_empty());
+    assert!(parse("local function f(...) do return ... end end").diagnostics.is_empty());
+    assert!(!parse("local function f() return ... end").diagnostics.is_empty());
+}
+
+#[test]
+fn runtime_ellipsis_is_the_final_parameter_and_has_crlf_byte_spans() {
+    let source = "function 日本語:forward(value, ...)\r\nreturn ...\r\nend\r\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let StmtKind::FunctionDeclaration { function, .. } = &file.statements[0].kind else { panic!("expected definition") };
+    let span = function.vararg.unwrap();
+    assert_eq!(&source[span.start..span.end], "...");
+    assert_eq!(span.start, source.find("...").unwrap());
+    for invalid in ["local function f(..., value) end", "local function f(value, ...,) end", "local function f(..., ...) end"] {
+        let file = parse(invalid);
+        assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("final parameter")), "{invalid}: {:?}", file.diagnostics);
     }
 }
 

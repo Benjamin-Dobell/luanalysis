@@ -367,6 +367,7 @@ name = "luanalysis"
 version = "0.1.0"
 dependencies = [
  "luanalysis-engine",
+ "luanalysis-project",
  "luanalysis-syntax",
 ]
 
@@ -387,6 +388,10 @@ version = "0.1.0"
 dependencies = [
  "luanalysis",
 ]
+
+[[package]]
+name = "luanalysis-project"
+version = "0.1.0"
 
 [[package]]
 name = "luanalysis-syntax"

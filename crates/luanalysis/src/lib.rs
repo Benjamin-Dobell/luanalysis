@@ -8,14 +8,19 @@
 pub mod bind;
 pub mod flow;
 mod functions;
+mod native_expressions;
+mod native_flow;
 mod native_functions;
 mod native_types;
 mod operators;
 
 use bind::{BindingId, BoundFile};
-use luanalysis_engine::{Engine, NativeFunctionKey, Property, Type, TypeQueries};
+use luanalysis_engine::{
+    CapturedFunctionContext, ContextualFunctionContext, Engine, NativeCheckMode, NativeFlowKey,
+    NativeFunctionKey, Property, Type, TypeQueries,
+};
 use luanalysis_syntax::{
-    Expr, ExprKind, Name, Span, Stmt, StmtKind, TypeAnnotation, TypeExpr, TypeExprKind,
+    Expr, ExprKind, Name, Span, Stmt, StmtKind, TypeAnnotation, TypeExpr, TypeExprKind, TypeLiteral,
 };
 use native_functions::NativeRegistry;
 use std::collections::HashMap;
@@ -145,6 +150,12 @@ struct Checker<'a> {
     bound: &'a BoundFile,
     native: Option<&'a NativeRegistry>,
     type_context: Option<NativeFunctionKey>,
+    contextual_function: Option<ContextualFunctionContext>,
+    captured_function: Option<CapturedFunctionContext>,
+    incomplete_flow: bool,
+    annotation_depth: usize,
+    check_mode: NativeCheckMode,
+    flow_at: Option<NativeFlowKey>,
     locals: HashMap<BindingId, Binding>,
     assigned_fields: HashMap<Reference, Type>,
     report: CheckReport,
@@ -183,6 +194,12 @@ pub fn check(source: &str) -> CheckReport {
                     bound: registry.bound(),
                     native: Some(registry),
                     type_context: None,
+                    contextual_function: None,
+                    captured_function: None,
+                    incomplete_flow: false,
+                    annotation_depth: 0,
+                    check_mode: NativeCheckMode::empty(),
+                    flow_at: Some(registry.flow_entry(None, None)),
                     locals: HashMap::new(),
                     assigned_fields: HashMap::new(),
                     report: CheckReport::default(),
@@ -220,9 +237,44 @@ pub fn check(source: &str) -> CheckReport {
 
 impl Checker<'_> {
     fn resolve_local(&mut self, binding: BindingId) -> Option<&Binding> {
+        if let Some(native) = self.native {
+            if let Some(context) = self
+                .captured_function
+                .or_else(|| self.engine.current_captured_function())
+            {
+                let self_value = native
+                    .binding_function_key(binding)
+                    .filter(|key| Some(*key) == self.type_context)
+                    .and_then(|key| {
+                        let value = self.engine.captured_function_value(&context);
+                        (self.engine.native_function_key(&value) == Some(key)).then_some(value)
+                    });
+                if let Some(ty) = self_value.or_else(|| {
+                    self.engine
+                        .captured_binding(&context, native.source_binding_key(binding))
+                }) {
+                    self.locals.insert(
+                        binding,
+                        Binding {
+                            constraint: ty.clone(),
+                            value: ty,
+                            evolves_from_nil: false,
+                        },
+                    );
+                }
+            }
+        }
         if !self.locals.contains_key(&binding) {
             if let Some(native) = self.native {
-                if let Some(value) = native.resolve_binding(binding, self.engine) {
+                let context = self
+                    .contextual_function
+                    .or_else(|| self.engine.current_contextual_function());
+                let value = if let Some(context) = context {
+                    native.resolve_binding_in_context(binding, &context, self.engine)
+                } else {
+                    native.resolve_binding(binding, self.engine)
+                };
+                if let Some(value) = value {
                     self.locals.insert(binding, value);
                 }
             }
@@ -231,7 +283,12 @@ impl Checker<'_> {
     }
 
     fn record_binding(&mut self, name: &Name, binding: BindingId, ty: &Type) {
-        if let Some(native) = self.native {
+        if let Some(native) = self.native.filter(|_| {
+            self.contextual_function.is_none()
+                && self.captured_function.is_none()
+                && !self.incomplete_flow
+                && native_expressions::publishes(self.check_mode)
+        }) {
             if let Some(value) = self.locals.get(&binding) {
                 native.publish_binding(binding, value);
             }
@@ -277,6 +334,13 @@ impl Checker<'_> {
                     }
                 }
                 StmtKind::LocalFunction { name, function } => self.local_function(name, function),
+                StmtKind::FunctionDeclaration {
+                    target,
+                    function,
+                    method_span,
+                } => {
+                    self.named_function(target, function, *method_span);
+                }
                 StmtKind::Return(values) => {
                     self.return_statement(values, statement.span);
                     return true;
@@ -297,18 +361,61 @@ impl Checker<'_> {
                         return true;
                     }
                 }
-                StmtKind::If { .. }
-                | StmtKind::While { .. }
-                | StmtKind::Repeat { .. }
-                | StmtKind::NumericFor { .. }
-                | StmtKind::GenericFor { .. }
-                | StmtKind::Break => {
-                    self.error(
-                        "LUA2020",
-                        statement.span,
-                        "Lua control-flow type checking requires the native flow integration",
-                    );
+                StmtKind::If {
+                    branches,
+                    else_branch,
+                } => {
+                    for branch in branches {
+                        self.expression(&branch.condition);
+                        self.statements(&branch.body);
+                    }
+                    if let Some(branch) = else_branch {
+                        self.statements(&branch.body);
+                    }
                 }
+                StmtKind::While {
+                    condition, body, ..
+                } => {
+                    self.expression(condition);
+                    self.statements(body);
+                }
+                StmtKind::Repeat {
+                    body, condition, ..
+                } => {
+                    self.statements(body);
+                    self.expression(condition);
+                }
+                StmtKind::NumericFor {
+                    start,
+                    limit,
+                    step,
+                    body,
+                    ..
+                } => {
+                    self.error(
+                        "LUA2023",
+                        statement.span,
+                        "numeric iteration requires the native Lua iterator integration",
+                    );
+                    self.expression(start);
+                    self.expression(limit);
+                    if let Some(step) = step {
+                        self.expression(step);
+                    }
+                    self.statements(body);
+                }
+                StmtKind::GenericFor { values, body, .. } => {
+                    self.error(
+                        "LUA2023",
+                        statement.span,
+                        "generic iteration requires the native Lua iterator integration",
+                    );
+                    for value in values {
+                        self.expression(value);
+                    }
+                    self.statements(body);
+                }
+                StmtKind::Break => {}
             }
         }
         false
@@ -323,6 +430,19 @@ impl Checker<'_> {
     }
 
     fn annotation(&mut self, ty: &TypeExpr) -> Type {
+        let depth = self.annotation_depth;
+        self.annotation_depth = depth + 1;
+        let resolved = self.annotation_node(ty);
+        self.annotation_depth = depth;
+        if depth == 0 {
+            if let Some(context) = self.captured_function {
+                return self.engine.instantiate_in_capture(&context, &resolved);
+            }
+        }
+        resolved
+    }
+
+    fn annotation_node(&mut self, ty: &TypeExpr) -> Type {
         match &ty.kind {
             TypeExprKind::Named(name) => match name.as_str() {
                 "any" => Type::Any,
@@ -351,6 +471,16 @@ impl Checker<'_> {
             TypeExprKind::Union(types) => {
                 Type::Union(types.iter().map(|ty| self.annotation(ty)).collect())
             }
+            TypeExprKind::Literal(literal) => match literal {
+                TypeLiteral::Boolean(value) => Type::BooleanLiteral(*value),
+                TypeLiteral::String(value) => Type::StringLiteral(value.clone()),
+                TypeLiteral::Number(spelling) => number(spelling)
+                    .map(Type::NumberLiteral)
+                    .unwrap_or_else(|| {
+                        self.error("LUA2002", ty.span, "invalid numeric literal type");
+                        Type::Unknown
+                    }),
+            },
             TypeExprKind::Record(fields) => Type::Shape(
                 fields
                     .iter()
@@ -368,6 +498,16 @@ impl Checker<'_> {
     }
 
     fn expression_with_expected(&mut self, expr: &Expr, expected: Option<&Type>) -> Type {
+        let previous = self.flow_at;
+        if let (Some(native), Some(at)) = (self.native, previous) {
+            self.flow_at = Some(native.flow_input_for_expression(expr, at));
+        }
+        let ty = self.expression_at_current_flow(expr, expected);
+        self.flow_at = previous;
+        ty
+    }
+
+    fn expression_at_current_flow(&mut self, expr: &Expr, expected: Option<&Type>) -> Type {
         let ty = match &expr.kind {
             ExprKind::Nil => Type::Nil,
             ExprKind::Boolean(value) => Type::BooleanLiteral(*value),
@@ -379,12 +519,34 @@ impl Checker<'_> {
                 }
             },
             ExprKind::String(value) => Type::StringLiteral(value.clone()),
+            ExprKind::Vararg => {
+                self.error(
+                    "LUA2016",
+                    expr.span,
+                    "vararg values require the native Lua result-pack integration",
+                );
+                Type::Unknown
+            }
             ExprKind::Name(name) => match self
                 .bound
                 .binding_at(name.span.start)
-                .and_then(|id| self.resolve_local(id))
+                .and_then(|id| self.resolve_local(id).cloned())
             {
-                Some(binding) => binding.value.clone(),
+                Some(binding) => {
+                    if let (Some(native), Some(at)) = (self.native, self.flow_at) {
+                        let result = native.flow_reference_type(
+                            expr,
+                            at,
+                            &binding.constraint,
+                            &binding.constraint,
+                            self.engine,
+                        );
+                        self.incomplete_flow |= result.incomplete;
+                        result.ty
+                    } else {
+                        binding.value
+                    }
+                }
                 None => {
                     self.error(
                         "TS2304",
@@ -399,7 +561,9 @@ impl Checker<'_> {
                 let mut properties: Vec<Property> = Vec::new();
                 let mut duplicate = false;
                 for field in fields {
-                    let value = self.expression(&field.value);
+                    let field_context = expected
+                        .and_then(|expected| self.engine.property_type(expected, &field.name.text));
+                    let value = self.expression_with_expected(&field.value, field_context.as_ref());
                     let property =
                         Property::new(field.name.text.clone(), self.engine.widen(&value));
                     if properties.iter().any(|item| item.name == property.name) {
@@ -421,9 +585,15 @@ impl Checker<'_> {
                     return Type::Any;
                 }
                 if let Some(ty) = self.engine.property_type(&receiver, &name.text) {
-                    self.reference(expr)
-                        .and_then(|reference| self.assigned_fields.get(&reference).cloned())
-                        .unwrap_or(ty)
+                    if let (Some(native), Some(at)) = (self.native, self.flow_at) {
+                        let result = native.flow_reference_type(expr, at, &ty, &ty, self.engine);
+                        self.incomplete_flow |= result.incomplete;
+                        result.ty
+                    } else {
+                        self.reference(expr)
+                            .and_then(|reference| self.assigned_fields.get(&reference).cloned())
+                            .unwrap_or(ty)
+                    }
                 } else {
                     self.error(
                         "TS2339",
@@ -437,7 +607,18 @@ impl Checker<'_> {
                     Type::Any
                 }
             }
-            ExprKind::Function(function) => self.function_expression(function),
+            ExprKind::Function(function) => {
+                if let (Some(native), Some(expected)) = (self.native, expected) {
+                    native.source_check_expression(
+                        native.expression_key(expr),
+                        Some(expected),
+                        self.check_mode,
+                        self.engine,
+                    )
+                } else {
+                    self.function_expression(function)
+                }
+            }
             ExprKind::Call { callee, args } => {
                 self.call_expression_with_expected(callee, args, expr.span, false, expected)
             }
@@ -479,6 +660,9 @@ impl Checker<'_> {
     }
 
     fn local(&mut self, names: &[Name], values: &[Expr], annotation: Option<&TypeAnnotation>) {
+        if let Some(annotation) = annotation.filter(|annotation| annotation.packs.is_some()) {
+            self.error("LUA2016", annotation.span, "variadic and alternative type packs require the native Lua result-pack integration");
+        }
         let annotations: Vec<_> = annotation.map_or_else(Vec::new, |annotation| {
             annotation
                 .types
@@ -567,6 +751,10 @@ impl Checker<'_> {
                 )
             })
             .collect();
+        self.assign_values(targets, values);
+    }
+
+    fn assign_values(&mut self, targets: &[Expr], values: Vec<(Type, Span)>) {
         // Validate all destinations against the state before committing writes.
         let mut writes = Vec::new();
         for (index, target) in targets.iter().enumerate() {

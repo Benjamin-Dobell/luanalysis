@@ -1,3 +1,5 @@
+use luanalysis_project::{ProjectConfig, Resolver};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -56,6 +58,42 @@ fn run() -> i32 {
     }
     let mut errors = 0;
     let mut io_errors = false;
+    let mut expanded = Vec::new();
+    let mut seen = HashSet::new();
+    for path in files {
+        if path.is_dir() {
+            let mut config = ProjectConfig::new([path.clone()]);
+            config.discovery_extensions.push("ttslua".into());
+            let resolver = match Resolver::new(config) {
+                Ok(resolver) => resolver,
+                Err(error) => {
+                    eprintln!("{}: error[LUA0001]: {error}", path.display());
+                    io_errors = true;
+                    continue;
+                }
+            };
+            let discovered = resolver.discover();
+            for error in discovered.errors {
+                eprintln!(
+                    "{}: error[LUA0001]: {}",
+                    error.path.display(),
+                    error.message
+                );
+                io_errors = true;
+            }
+            for file in discovered.files {
+                if seen.insert(file.clone()) {
+                    expanded.push(file);
+                }
+            }
+        } else {
+            let identity = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if seen.insert(identity) {
+                expanded.push(path);
+            }
+        }
+    }
+    let files = expanded;
     for path in &files {
         let source = match fs::read_to_string(path) {
             Ok(source) => source,
@@ -100,6 +138,6 @@ fn run() -> i32 {
 
 fn help() {
     println!(
-        "luanalysis check [--dump-types] <file.lua>...\n\nStandalone Lua/Luanalysis type checking.\nReports diagnostics at original Lua source locations."
+        "luanalysis check [--dump-types] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking.\nDirectories discover .lua and .ttslua files recursively.\nReports diagnostics at original Lua source locations."
     );
 }

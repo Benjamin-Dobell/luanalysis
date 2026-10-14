@@ -100,7 +100,7 @@ fn optional_parameters_and_native_call_arity_are_checked() {
         ["TS2554"]
     );
     let body_read = source.find("return value").unwrap() + "return ".len();
-    assert_eq!(report.type_at(body_read), Some("number | nil"));
+    assert_eq!(report.type_at(body_read), Some("nil | number"));
     let missing = "---@param value number\n---@return number\nlocal function required(value) return value end\nrequired()";
     assert_eq!(check(missing).diagnostics[0].code, "TS2554");
 }

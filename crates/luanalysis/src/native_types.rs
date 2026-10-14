@@ -167,7 +167,7 @@ impl NativeTypes {
                     self.annotation_dependencies(context, returned, used);
                 }
             }
-            TypeExprKind::Error => {}
+            TypeExprKind::Literal(_) | TypeExprKind::Error => {}
         }
     }
 

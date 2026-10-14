@@ -3,8 +3,8 @@
 //! result packs remain a separate integration gate.
 
 use super::{Binding, Checker, describe};
-use luanalysis_engine::{CallError, FunctionType, Parameter, Type};
-use luanalysis_syntax::{Expr, Function, Name, Span};
+use luanalysis_engine::{CallError, CallResult, FunctionType, Parameter, Type};
+use luanalysis_syntax::{Expr, ExprKind, Function, Name, Span};
 use std::collections::HashSet;
 
 impl Checker<'_> {
@@ -12,6 +12,9 @@ impl Checker<'_> {
         &mut self,
         function: &luanalysis_syntax::FunctionType,
     ) -> Type {
+        if function.vararg.is_some() || function.packs.is_some() {
+            self.error("LUA2016", function.span, "variadic signatures and alternative return packs require the native Lua result-pack integration");
+        }
         let mut optional_seen = false;
         let params = function
             .params
@@ -85,6 +88,28 @@ impl Checker<'_> {
         &mut self,
         function: &Function,
     ) -> (Vec<Parameter>, Option<Type>) {
+        if let Some(span) = function.vararg {
+            self.error(
+                "LUA2016",
+                span,
+                "variadic signatures require the native Lua result-pack integration",
+            );
+        }
+        if let Some(vararg) = &function.annotations.vararg {
+            self.error(
+                "LUA2016",
+                vararg.span,
+                "vararg annotations require the native Lua result-pack integration",
+            );
+        }
+        if let Some(annotation) = function
+            .annotations
+            .returns
+            .as_ref()
+            .filter(|annotation| annotation.packs.is_some())
+        {
+            self.error("LUA2016", annotation.span, "variadic and alternative return packs require the native Lua result-pack integration");
+        }
         let context = function
             .annotations
             .type_annotation
@@ -146,6 +171,11 @@ impl Checker<'_> {
                 .and_then(|context| context.params.get(index))
             {
                 (expected.ty.clone(), expected.optional)
+            } else if let Some(ty) = self
+                .contextual_function
+                .and_then(|context| self.engine.contextual_parameter_type(&context, index))
+            {
+                (ty, false)
             } else {
                 self.error(
                     "TS7006",
@@ -194,7 +224,7 @@ impl Checker<'_> {
             .is_none()
             .then(|| self.function_signature(function));
         let ty = if let Some(native) = self.native {
-            Type::NativeFunction(native.key_for(function))
+            native.source_function_value(function, self.check_mode, self.engine)
         } else {
             Type::Function(legacy_signature.as_ref().unwrap().clone())
         };
@@ -227,11 +257,39 @@ impl Checker<'_> {
 
     pub(super) fn function_expression(&mut self, function: &Function) -> Type {
         if let Some(native) = self.native {
-            return Type::NativeFunction(native.key_for(function));
+            return native.source_function_value(function, self.check_mode, self.engine);
         }
         let signature = self.function_signature(function);
         self.function_body(function, &signature);
         Type::Function(signature)
+    }
+
+    pub(super) fn named_function(
+        &mut self,
+        target: &Expr,
+        function: &Function,
+        method_span: Option<Span>,
+    ) {
+        if let Some(span) = method_span {
+            self.error(
+                "LUA2021",
+                span,
+                "method definitions require the implicit receiver integration",
+            );
+            return;
+        }
+        if let ExprKind::Name(name) = &target.kind {
+            if self.bound.binding_at(name.span.start).is_none() {
+                self.error(
+                    "LUA2021",
+                    name.span,
+                    "global function definitions require the global declaration integration",
+                );
+                return;
+            }
+        }
+        let ty = self.function_expression(function);
+        self.assign_values(std::slice::from_ref(target), vec![(ty, function.span)]);
     }
 
     fn function_body(&mut self, function: &Function, signature: &FunctionType) {
@@ -336,6 +394,21 @@ impl Checker<'_> {
         expected: Option<&Type>,
     ) -> Type {
         let callee_type = self.expression(callee);
+        if let Some(native) = self.native {
+            let keys: Vec<_> = args
+                .iter()
+                .map(|argument| native.expression_key(argument))
+                .collect();
+            let spans: Vec<_> = args.iter().map(|argument| argument.span).collect();
+            let result = self.engine.call_expression_native(
+                &callee_type,
+                native.expression_key_for_span(span),
+                &keys,
+                &[],
+                expected,
+            );
+            return self.call_result(result, &callee_type, &spans, callee.span, span, discard);
+        }
         let arguments: Vec<_> = args.iter().map(|arg| self.expression(arg)).collect();
         let spans: Vec<_> = args.iter().map(|arg| arg.span).collect();
         self.call_types_with_expected(
@@ -362,6 +435,25 @@ impl Checker<'_> {
         let result = self
             .engine
             .call_with_type_arguments(callee_type, arguments, &[], expected);
+        self.call_result(
+            result,
+            callee_type,
+            argument_spans,
+            callee_span,
+            span,
+            discard,
+        )
+    }
+
+    pub(super) fn call_result(
+        &mut self,
+        result: CallResult,
+        callee_type: &Type,
+        argument_spans: &[Span],
+        callee_span: Span,
+        span: Span,
+        discard: bool,
+    ) -> Type {
         for error in result.errors {
             match error {
                 CallError::NotCallable => self.error("TS2349", callee_span, format!("Type '{}' has no call signatures.", describe(callee_type))),

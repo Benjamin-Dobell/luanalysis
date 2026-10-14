@@ -1,7 +1,7 @@
 use crate::{
     Comment, Diagnostic, FunctionAnnotations, FunctionType, FunctionTypeParam, GenericParameter,
     Name, ParamAnnotation, Span, Token, TokenKind, TypeAnnotation, TypeExpr, TypeExprKind,
-    TypeField, lex,
+    TypeField, TypeLiteral, TypePack, TypePacks, VarargAnnotation, VariadicTypeIndex, lex,
 };
 
 /// Parse only documentation tags. Ordinary prose remains a retained comment.
@@ -44,19 +44,20 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
                 .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                 .unwrap_or(tag.len());
             let tag_name = &tag[..tag_len];
-            if !matches!(tag_name, "type" | "param" | "return" | "generic") {
+            if !matches!(tag_name, "type" | "param" | "return" | "generic" | "vararg") {
                 diagnostics.push(Diagnostic {
                     span: Span::new(tag_offset, tag_offset + 1 + tag_len),
                     message: format!(
-                        "unsupported Luanalysis annotation @{tag_name}; this slice supports @type, @param, @return, and @generic"
+                        "unsupported Luanalysis annotation @{tag_name}; this slice supports @type, @param, @return, @generic, and @vararg"
                     ),
                 });
             } else {
                 let raw_types = &tag[tag_len..];
                 let types = raw_types.trim_start_matches([' ', '\t']);
                 let types = types.trim_end_matches(['\r', '\n']);
-                // `@` explicitly begins annotation documentation in doc.flex.
-                let types = types.split_once('@').map_or(types, |(ty, _)| ty).trim_end();
+                // `@` begins trailing documentation in doc.flex's type state,
+                // but an @ inside a quoted literal belongs to that literal.
+                let types = annotation_type_text(types);
                 let types_offset = tag_offset + 1 + tag_len + raw_types.len()
                     - raw_types.trim_start_matches([' ', '\t']).len();
                 let lexed = lex(types);
@@ -99,16 +100,27 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
                             });
                         }
                     }
+                    "vararg" => {
+                        group.vararg = Some(Box::new(VarargAnnotation {
+                            ty: parser.union(),
+                            span: annotation_span,
+                            ellipsis_span: None,
+                        }));
+                    }
                     "return" => {
+                        let (types, packs) = parser.return_packs();
                         group.returns = Some(TypeAnnotation {
                             span: annotation_span,
-                            types: parser.return_list(),
+                            types,
+                            packs,
                         });
                     }
                     "type" => {
+                        let (types, packs) = parser.annotation_type_list();
                         group.type_annotation = Some(TypeAnnotation {
                             span: annotation_span,
-                            types: parser.list(),
+                            types,
+                            packs,
                         });
                     }
                     _ => unreachable!(),
@@ -125,6 +137,21 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
         line_offset += line.len();
     }
     (result, diagnostics)
+}
+
+fn annotation_type_text(text: &str) -> &str {
+    if !text.contains('@') {
+        return text.trim_end();
+    }
+    let end = lex(text)
+        .tokens
+        .iter()
+        .find_map(|token| {
+            matches!(&token.kind, TokenKind::Symbol(symbol) if symbol == "@")
+                .then_some(token.span.start)
+        })
+        .unwrap_or(text.len());
+    text[..end].trim_end()
 }
 
 pub(crate) fn merge_annotations(
@@ -160,6 +187,16 @@ pub(crate) fn merge_annotations(
             target.params.push(param);
         }
     }
+    if let Some(vararg) = incoming.vararg {
+        if target.vararg.is_some() {
+            diagnostics.push(Diagnostic {
+                span: vararg.span,
+                message: "multiple @vararg annotations for one function".to_owned(),
+            });
+        } else {
+            target.vararg = Some(vararg);
+        }
+    }
     if let Some(returns) = incoming.returns {
         if target.returns.is_some() {
             diagnostics.push(Diagnostic {
@@ -188,6 +225,7 @@ pub(crate) fn annotation_spans(group: &FunctionAnnotations) -> Vec<Span> {
         .iter()
         .map(|generic| generic.span)
         .chain(group.params.iter().map(|param| param.span))
+        .chain(group.vararg.iter().map(|vararg| vararg.span))
         .chain(group.returns.iter().map(|returns| returns.span))
         .chain(
             group
@@ -208,6 +246,17 @@ struct TypeParser {
     comma_ends_type: usize,
 }
 
+struct ParsedReturnPack {
+    types: Vec<TypeExpr>,
+    ellipsis_span: Option<Span>,
+    span: Span,
+}
+
+enum ReturnUnit {
+    Scalar(TypeExpr),
+    Pack(ParsedReturnPack),
+}
+
 impl TypeParser {
     fn current(&self) -> &Token {
         &self.tokens[self.pos]
@@ -217,6 +266,11 @@ impl TypeParser {
     }
     fn symbol(&self, value: &str) -> bool {
         matches!(&self.current().kind, TokenKind::Symbol(symbol) if symbol == value)
+    }
+    fn symbol_at(&self, pos: usize, value: &str) -> bool {
+        self.tokens.get(pos).is_some_and(
+            |token| matches!(&token.kind, TokenKind::Symbol(symbol) if symbol == value),
+        )
     }
     fn take(&mut self, value: &str) -> Option<Span> {
         if self.symbol(value) {
@@ -245,6 +299,28 @@ impl TypeParser {
             types.push(self.union());
         }
         types
+    }
+    fn annotation_type_list(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
+        // Unlike function returns, @type has only one type list in doc.bnf.
+        // Its optional ellipsis repeats the final listed type.
+        let start = self.current().span;
+        let types = self.list();
+        let packs = self.take("...").map(|ellipsis_span| {
+            let type_index = types.len() - 1;
+            let span = start.join(ellipsis_span);
+            Box::new(TypePacks {
+                alternatives: vec![TypePack {
+                    fixed: 0..type_index,
+                    variadic: Some(VariadicTypeIndex {
+                        type_index,
+                        ellipsis_span,
+                    }),
+                    span,
+                }],
+                span,
+            })
+        });
+        (types, packs)
     }
     fn name(&mut self) -> Option<Name> {
         if let TokenKind::Identifier(text) = self.current().kind.clone() {
@@ -304,15 +380,147 @@ impl TypeParser {
         }
         parameters
     }
-    fn return_list(&mut self) -> Vec<TypeExpr> {
-        if self.take("(").is_some() {
-            let types = self.list();
-            self.expect(")");
-            types
-        } else if self.comma_ends_type > 0 {
-            vec![self.union()]
+    fn return_packs(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
+        let mut types = Vec::new();
+        let mut alternatives = Vec::new();
+        let mut pending = None;
+        loop {
+            let (mut pack, next) = if let Some(pack) = pending.take() {
+                (pack, None)
+            } else {
+                self.return_pack()
+            };
+            let first = types.len();
+            types.append(&mut pack.types);
+            let variadic = pack.ellipsis_span.map(|ellipsis_span| VariadicTypeIndex {
+                type_index: types.len() - 1,
+                ellipsis_span,
+            });
+            let fixed_end = variadic
+                .as_ref()
+                .map_or(types.len(), |tail| tail.type_index);
+            alternatives.push(TypePack {
+                fixed: first..fixed_end,
+                variadic,
+                span: pack.span,
+            });
+            if let Some(next) = next {
+                pending = Some(next);
+                continue;
+            }
+            if self.take("|").is_none() {
+                break;
+            }
+        }
+        let has_tail = alternatives.iter().any(|pack| pack.variadic.is_some());
+        if alternatives.len() == 1 && !has_tail {
+            return (types, None);
+        }
+        let span = alternatives
+            .first()
+            .unwrap()
+            .span
+            .join(alternatives.last().unwrap().span);
+        (types, Some(Box::new(TypePacks { alternatives, span })))
+    }
+    fn return_pack(&mut self) -> (ParsedReturnPack, Option<ParsedReturnPack>) {
+        let first = match self.return_unit() {
+            ReturnUnit::Pack(pack) => return (pack, None),
+            ReturnUnit::Scalar(ty) => ty,
+        };
+        let start = first.span;
+        let (first, mut pending) = self.return_scalar_union(first);
+        let mut types = vec![first];
+        if pending.is_none() && self.comma_ends_type == 0 {
+            while self.take(",").is_some() {
+                let first = match self.return_unit() {
+                    ReturnUnit::Scalar(ty) => ty,
+                    ReturnUnit::Pack(pack) => {
+                        self.diagnostics.push(Diagnostic {
+                            span: pack.span,
+                            message: "a return pack cannot appear as a scalar result slot"
+                                .to_owned(),
+                        });
+                        TypeExpr {
+                            kind: TypeExprKind::Error,
+                            span: pack.span,
+                        }
+                    }
+                };
+                let (ty, next) = self.return_scalar_union(first);
+                types.push(ty);
+                pending = next;
+                if pending.is_some() {
+                    break;
+                }
+            }
+        }
+        let ellipsis_span = if pending.is_none() {
+            self.take("...")
         } else {
-            self.list()
+            None
+        };
+        let end = ellipsis_span.unwrap_or_else(|| types.last().unwrap().span);
+        (
+            ParsedReturnPack {
+                types,
+                ellipsis_span,
+                span: start.join(end),
+            },
+            pending,
+        )
+    }
+    fn return_scalar_union(&mut self, first: TypeExpr) -> (TypeExpr, Option<ParsedReturnPack>) {
+        let mut types = vec![first];
+        let mut pending = None;
+        while self.take("|").is_some() {
+            match self.return_unit() {
+                ReturnUnit::Scalar(ty) => types.push(ty),
+                ReturnUnit::Pack(pack) => {
+                    pending = Some(pack);
+                    break;
+                }
+            }
+        }
+        let ty = if types.len() == 1 {
+            types.pop().unwrap()
+        } else {
+            let span = types.first().unwrap().span.join(types.last().unwrap().span);
+            TypeExpr {
+                kind: TypeExprKind::Union(types),
+                span,
+            }
+        };
+        (ty, pending)
+    }
+    fn return_unit(&mut self) -> ReturnUnit {
+        if !self.symbol("(") || self.depth >= 128 {
+            return ReturnUnit::Scalar(self.primary());
+        }
+        let start = self.take("(").unwrap();
+        let surrounding_comma_mode = self.comma_ends_type;
+        // Parse the contents before deciding whether parentheses enclose a
+        // scalar type or a result pack. Commas in a callback's own return list
+        // must remain owned by that callback, even at this group's depth.
+        self.comma_ends_type = 0;
+        self.depth += 1;
+        let mut types = self.list();
+        let ellipsis_span = self.take("...");
+        let end = self.expect(")");
+        self.depth -= 1;
+        self.comma_ends_type = surrounding_comma_mode;
+        let span = start.join(end);
+        if types.len() == 1 && ellipsis_span.is_none() {
+            ReturnUnit::Scalar(TypeExpr {
+                kind: TypeExprKind::Parenthesized(Box::new(types.pop().unwrap())),
+                span,
+            })
+        } else {
+            ReturnUnit::Pack(ParsedReturnPack {
+                types,
+                ellipsis_span,
+                span,
+            })
         }
     }
     fn union(&mut self) -> TypeExpr {
@@ -355,11 +563,49 @@ impl TypeParser {
                     span: start,
                 }
             }
-            TokenKind::Keyword(name) if name == "nil" => {
+            TokenKind::Keyword(name) if name == "true" || name == "false" => {
+                self.pos += 1;
+                TypeExpr {
+                    kind: TypeExprKind::Literal(TypeLiteral::Boolean(name == "true")),
+                    span: start,
+                }
+            }
+            TokenKind::Keyword(name) => {
                 self.pos += 1;
                 TypeExpr {
                     kind: TypeExprKind::Named(name),
                     span: start,
+                }
+            }
+            TokenKind::Number(value) => {
+                self.pos += 1;
+                TypeExpr {
+                    kind: TypeExprKind::Literal(TypeLiteral::Number(value)),
+                    span: start,
+                }
+            }
+            TokenKind::String(value) => {
+                self.pos += 1;
+                TypeExpr {
+                    kind: TypeExprKind::Literal(TypeLiteral::String(value)),
+                    span: start,
+                }
+            }
+            TokenKind::Symbol(symbol) if symbol == "-" => {
+                self.pos += 1;
+                if let TokenKind::Number(value) = self.current().kind.clone() {
+                    let end = self.current().span;
+                    self.pos += 1;
+                    TypeExpr {
+                        kind: TypeExprKind::Literal(TypeLiteral::Number(format!("-{value}"))),
+                        span: start.join(end),
+                    }
+                } else {
+                    self.error("expected a numeric literal type after '-'".to_owned());
+                    TypeExpr {
+                        kind: TypeExprKind::Error,
+                        span: start,
+                    }
                 }
             }
             TokenKind::Symbol(symbol) if symbol == "(" => {
@@ -393,6 +639,7 @@ impl TypeParser {
         let start = self.current().span;
         self.pos += 1;
         let mut params = Vec::new();
+        let mut vararg = None;
         if self.symbol("<") {
             self.error(
                 "generic function types are unsupported until generic inference is implemented"
@@ -405,10 +652,38 @@ impl TypeParser {
         if self.take("(").is_some() {
             while !self.eof() && !self.symbol(")") {
                 let param_start = self.current().span;
+                let ellipsis = self.symbol("...");
+                let word = matches!(&self.current().kind, TokenKind::Identifier(name) if name == "vararg")
+                    && !self.symbol_at(self.pos + 1, ":")
+                    && !self.symbol_at(self.pos + 1, "?");
+                if ellipsis || word {
+                    self.pos += 1;
+                    if ellipsis {
+                        self.expect(":");
+                    }
+                    self.comma_ends_type += 1;
+                    let ty = self.union();
+                    self.comma_ends_type -= 1;
+                    let span = param_start.join(ty.span);
+                    vararg = Some(Box::new(VarargAnnotation {
+                        ty,
+                        span,
+                        ellipsis_span: ellipsis.then_some(param_start),
+                    }));
+                    if self.take(",").is_some() {
+                        self.error("variadic function type parameter must be last".to_owned());
+                        self.recover_function_params();
+                    } else if !self.symbol(")") {
+                        self.error(
+                            "expected ')' after variadic function type parameter".to_owned(),
+                        );
+                        self.recover_function_params();
+                    }
+                    break;
+                }
                 let Some(name) = self.name() else {
                     self.error(
-                        "variadic and unnamed function parameters are unsupported in this slice"
-                            .to_owned(),
+                        "unnamed function parameters are unsupported in this slice".to_owned(),
                     );
                     while !self.eof() && !self.symbol(",") && !self.symbol(")") {
                         self.pos += 1;
@@ -449,10 +724,10 @@ impl TypeParser {
             }
             self.expect(")");
         }
-        let returns = if self.take(":").is_some() {
-            self.return_list()
+        let (returns, packs) = if self.take(":").is_some() {
+            self.return_packs()
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
         let end = if self.pos > 0 {
             self.tokens[self.pos - 1].span
@@ -463,10 +738,26 @@ impl TypeParser {
         TypeExpr {
             kind: TypeExprKind::Function(FunctionType {
                 params,
+                vararg,
                 returns,
+                packs,
                 span,
             }),
             span,
+        }
+    }
+    fn recover_function_params(&mut self) {
+        let mut nesting = 0;
+        while !self.eof() {
+            if self.symbol(")") {
+                if nesting == 0 {
+                    break;
+                }
+                nesting -= 1;
+            } else if self.symbol("(") {
+                nesting += 1;
+            }
+            self.pos += 1;
         }
     }
     fn record(&mut self) -> TypeExpr {

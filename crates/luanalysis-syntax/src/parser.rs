@@ -29,6 +29,7 @@ pub fn parse(source: &str) -> File {
         depth: 0,
         block_depth: 0,
         loop_depth: 0,
+        vararg_allowed: true,
     };
     let statements = parser.statements(&[]);
     File {
@@ -48,6 +49,7 @@ struct Parser<'a> {
     depth: usize,
     block_depth: usize,
     loop_depth: usize,
+    vararg_allowed: bool,
 }
 
 impl Parser<'_> {
@@ -202,6 +204,9 @@ impl Parser<'_> {
     fn statement(&mut self) -> Option<Stmt> {
         let start = self.current().span;
         let mut annotations = std::mem::take(&mut self.pending_annotations);
+        if self.keyword("function") {
+            return self.function_declaration(start, annotations);
+        }
         if matches!(&self.current().kind, TokenKind::Keyword(word)
             if matches!(word.as_str(), "if" | "while" | "repeat" | "for" | "break")) {
             self.unattached_annotations(&annotations);
@@ -249,7 +254,7 @@ impl Parser<'_> {
                 let Some(name) = self.name() else { self.recover_statement(); return None; };
                 let (function, _) = self.function_body(function_start, annotations);
                 let span = start.join(function.span);
-                return Some(Stmt { kind: StmtKind::LocalFunction { name, function }, span });
+                return Some(Stmt { kind: StmtKind::LocalFunction { name, function: Box::new(function) }, span });
             }
             let Some(first) = self.name() else {
                 self.recover_statement();
@@ -293,7 +298,7 @@ impl Parser<'_> {
         if matches!(&self.current().kind, TokenKind::Keyword(_)) {
             self.unattached_annotations(&annotations);
             self.error(
-                "unsupported Lua statement; branches, loops, and global function declarations are not implemented",
+                "unexpected or unsupported Lua statement",
             );
             self.recover_statement();
             return None;
@@ -367,16 +372,27 @@ impl Parser<'_> {
             self.recover_block();
             let end = self.tokens[self.pos.saturating_sub(1)].span;
             return (Function {
-                params: Vec::new(), body: Vec::new(), annotations,
+                params: Vec::new(), vararg: None, body: Vec::new(), annotations,
                 span: start.join(end), body_span: Span::new(end.end, end.end),
             }, 2);
         }
         self.expect("(");
         let mut params = Vec::new();
+        let mut vararg = None;
         self.inner_trivia();
         while !self.eof() && !self.symbol(")") {
+            if self.symbol("...") {
+                vararg = Some(self.current().span);
+                self.pos += 1;
+                self.inner_trivia();
+                if !self.symbol(")") {
+                    self.error("Lua vararg parameter '...' must be the final parameter");
+                    while !self.eof() && !self.symbol(")") { self.pos += 1; }
+                }
+                break;
+            }
             let Some(name) = self.name() else {
-                self.error("variadic and malformed function parameter lists are unsupported in this slice");
+                self.error("malformed Lua function parameter list");
                 while !self.eof() && !self.symbol(")") { self.pos += 1; }
                 break;
             };
@@ -396,9 +412,12 @@ impl Parser<'_> {
         let close_params = self.expect(")");
         self.block_depth += 1;
         let enclosing_loop_depth = self.loop_depth;
+        let enclosing_vararg = self.vararg_allowed;
         self.loop_depth = 0;
+        self.vararg_allowed = vararg.is_some();
         let mut body = self.statements(&["end"]);
         self.loop_depth = enclosing_loop_depth;
+        self.vararg_allowed = enclosing_vararg;
         self.block_depth -= 1;
         let body_end = self.current().span.start;
         let end = self.expect_end();
@@ -409,9 +428,50 @@ impl Parser<'_> {
             built_depth = 2;
         }
         (Function {
-            params, body, annotations, span: start.join(end),
+            params, vararg, body, annotations, span: start.join(end),
             body_span: Span::new(close_params.end, body_end.max(close_params.end)),
         }, built_depth)
+    }
+    fn function_declaration(&mut self, start: Span, annotations: FunctionAnnotations) -> Option<Stmt> {
+        self.pos += 1;
+        let Some(root) = self.name() else {
+            self.recover_statement();
+            return None;
+        };
+        let mut target = Expr { span: root.span, kind: ExprKind::Name(root) };
+        let mut depth = 1;
+        let mut exceeded = false;
+        let mut method_span = None;
+        while self.significant_symbol(".") || self.significant_symbol(":") {
+            self.inner_trivia();
+            let separator = self.current().span;
+            let method = self.symbol(":");
+            self.pos += 1;
+            let Some(name) = self.name() else { self.recover_statement(); return None; };
+            let span = target.span.join(name.span);
+            if exceeded || depth >= 128 {
+                if !exceeded {
+                    self.diagnostics.push(Diagnostic { span: separator.join(name.span), message: "function name nesting exceeds 128".to_owned() });
+                }
+                target = Expr { kind: ExprKind::Error, span };
+                depth = 1;
+                exceeded = true;
+            } else {
+                target = Expr { kind: ExprKind::Field { base: Box::new(target), name }, span };
+                depth += 1;
+            }
+            if method {
+                method_span = Some(separator);
+                if self.significant_symbol(".") || self.significant_symbol(":") {
+                    self.error("Lua function names allow a single ':' member only at the end");
+                    while !self.eof() && !self.significant_symbol("(") && !matches!(self.current().kind, TokenKind::Newline) { self.pos += 1; }
+                }
+                break;
+            }
+        }
+        let (function, _) = self.function_body(start, annotations);
+        let span = start.join(function.span);
+        Some(Stmt { kind: StmtKind::FunctionDeclaration { target: Box::new(target), function: Box::new(function), method_span }, span })
     }
     fn expr_list(&mut self) -> Vec<Expr> {
         let mut values = vec![self.expr()];
@@ -545,7 +605,14 @@ impl Parser<'_> {
                 let (function, function_depth) = self.function_body(start, FunctionAnnotations::default());
                 built_depth = function_depth;
                 let span = function.span;
-                Expr { kind: ExprKind::Function(function), span }
+                Expr { kind: ExprKind::Function(Box::new(function)), span }
+            }
+            TokenKind::Symbol(symbol) if symbol == "..." => {
+                self.pos += 1;
+                if !self.vararg_allowed {
+                    self.diagnostics.push(Diagnostic { span: start, message: "'...' is outside a variadic Lua function".to_owned() });
+                }
+                Expr { kind: ExprKind::Vararg, span: start }
             }
             TokenKind::Symbol(symbol) if symbol == "(" => {
                 self.pos += 1;
@@ -928,6 +995,10 @@ fn statements_depth(body: &[Stmt]) -> usize {
                     pending.extend(body.iter().map(|stmt| (Node::Statement(stmt), depth + 1)));
                 }
                 StmtKind::LocalFunction { function, .. } => {
+                    pending.extend(function.body.iter().map(|stmt| (Node::Statement(stmt), depth + 2)));
+                }
+                StmtKind::FunctionDeclaration { target, function, .. } => {
+                    pending.push((Node::Expression(target), depth + 1));
                     pending.extend(function.body.iter().map(|stmt| (Node::Statement(stmt), depth + 2)));
                 }
                 StmtKind::Call(expr) => pending.push((Node::Expression(expr), depth + 1)),

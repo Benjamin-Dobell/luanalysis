@@ -91,7 +91,14 @@ pub enum StmtKind {
     /// The name is in scope inside its own function body, unlike `local f = ...`.
     LocalFunction {
         name: Name,
-        function: Function,
+        function: Box<Function>,
+    },
+    /// A Lua named definition assigns its name/field target. Colon definitions
+    /// additionally bind an implicit receiver; explicit params stay source-only.
+    FunctionDeclaration {
+        target: Box<Expr>,
+        function: Box<Function>,
+        method_span: Option<Span>,
     },
     /// Retained as a list so multiple return packs can be implemented later.
     Return(Vec<Expr>),
@@ -180,7 +187,9 @@ pub enum ExprKind {
         left: Box<Expr>,
         right: Box<Expr>,
     },
-    Function(Function),
+    Function(Box<Function>),
+    /// An original `...` expression; arity/expansion belongs to the pack adapter.
+    Vararg,
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
@@ -229,6 +238,8 @@ pub enum BinaryOperator {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Function {
     pub params: Vec<Name>,
+    /// The exact source `...` token in the runtime parameter list, if present.
+    pub vararg: Option<Span>,
     pub body: Vec<Stmt>,
     pub annotations: FunctionAnnotations,
     pub span: Span,
@@ -240,8 +251,17 @@ pub struct Function {
 pub struct FunctionAnnotations {
     pub generics: Vec<GenericParameter>,
     pub params: Vec<ParamAnnotation>,
+    pub vararg: Option<Box<VarargAnnotation>>,
     pub returns: Option<TypeAnnotation>,
     pub type_annotation: Option<TypeAnnotation>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VarargAnnotation {
+    pub ty: TypeExpr,
+    pub span: Span,
+    /// Present for function-type `...: T`, absent for `@vararg` / `vararg T`.
+    pub ellipsis_span: Option<Span>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -270,6 +290,9 @@ pub struct TableField {
 pub struct TypeAnnotation {
     /// A `@type A, B` annotation corresponds to successive declared variables.
     pub types: Vec<TypeExpr>,
+    /// Advanced alternative/variadic packs refer to this annotation's `types`.
+    /// Ordinary scalar unions and simple fixed lists retain `None`.
+    pub packs: Option<Box<TypePacks>>,
     pub span: Span,
 }
 
@@ -282,6 +305,7 @@ pub struct TypeExpr {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TypeExprKind {
     Named(String),
+    Literal(TypeLiteral),
     Union(Vec<TypeExpr>),
     Record(Vec<TypeField>),
     Parenthesized(Box<TypeExpr>),
@@ -292,8 +316,38 @@ pub enum TypeExprKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FunctionType {
     pub params: Vec<FunctionTypeParam>,
+    pub vararg: Option<Box<VarargAnnotation>>,
     pub returns: Vec<TypeExpr>,
+    /// Pack indices refer to `returns`, without duplicating type nodes.
+    pub packs: Option<Box<TypePacks>>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeLiteral {
+    Number(String),
+    String(Vec<u8>),
+    Boolean(bool),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypePacks {
+    pub alternatives: Vec<TypePack>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypePack {
+    /// Fixed slot indices in the containing canonical `types`/`returns` vector.
+    pub fixed: std::ops::Range<usize>,
+    pub variadic: Option<VariadicTypeIndex>,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VariadicTypeIndex {
+    pub type_index: usize,
+    pub ellipsis_span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -316,3 +370,6 @@ mod tests;
 
 #[cfg(test)]
 mod generic_tests;
+
+#[cfg(test)]
+mod pack_tests;

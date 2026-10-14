@@ -5,6 +5,7 @@ members = [
     "crates/luanalysis-syntax",
     "crates/luanalysis-engine",
     "crates/luanalysis-fixtures",
+    "crates/luanalysis-project",
 ]
 exclude = ["vendor/bun"]
 
@@ -16,6 +17,7 @@ license = "MIT"
 [workspace.dependencies]
 luanalysis-syntax = { path = "crates/luanalysis-syntax" }
 luanalysis-engine = { path = "crates/luanalysis-engine" }
+luanalysis-project = { path = "crates/luanalysis-project" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
