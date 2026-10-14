@@ -589,8 +589,7 @@ impl Checker<'_, '_> {
         self.push_contextual_type(file, e, Some(contextual_type), false);
         let ty = if is_checked_once {
             self.inference_contexts.push(InferenceContextInfo {
-                file,
-                node: e,
+                origin: ExpressionOrigin::Ts(file, e),
                 context: None,
             });
             let outer = self.suspend_recheck();

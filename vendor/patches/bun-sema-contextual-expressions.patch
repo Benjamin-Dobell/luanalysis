@@ -1,0 +1,794 @@
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -38,6 +38,18 @@
+ pub struct NativeTypeParamId {
+     pub snapshot: u64,
+     pub index: u32,
++}
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeExpressionId {
++    pub snapshot: u64,
++    pub index: u32,
++}
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeFunctionContext {
++    pub expression: NativeExpressionId,
++    pub expected: SigId,
++    pub instance: u64,
++    pub mode: crate::check::CheckMode,
+ }
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct MapperId(pub u32);
+@@ -863,6 +875,12 @@
+         declaration: NativeFunctionId,
+         mapper: MapperId,
+     },
++    /// A native declaration checked under one contextual demand, with caches of its own.
++    NativeContextual {
++        declaration: NativeFunctionId,
++        mapper: MapperId,
++        context: NativeFunctionContext,
++    },
+     /// As declared, with `mapper` applied.
+     Decl {
+         file: FileId,
+@@ -2428,6 +2446,9 @@
+ 
+     pub fn sig_flags(&self, sig: SigId) -> ObjectFlags {
+         match self.sig(sig) {
++            SigData::NativeContextual { mapper, context, .. } => {
++                self.mapper_record(*mapper).1 | self.sig_flags(context.expected)
++            }
+             SigData::Native { mapper, .. }
+             | SigData::Decl { mapper, .. }
+             | SigData::DefaultConstruct { mapper, .. }
+@@ -3235,6 +3256,8 @@
+     u64,
+     NativeFunctionId,
+     NativeTypeParamId,
++    NativeExpressionId,
++    crate::check::CheckMode,
+     usize,
+     ExprId,
+     FnId,
+@@ -3400,11 +3423,18 @@
+ });
+ follow_enum!(SigData<'_> {
+     SigData::Native { declaration, mapper } => (declaration, mapper),
++    SigData::NativeContextual { declaration, mapper, context } => (declaration, mapper, context),
+     SigData::Decl { file, func, mapper } => (file, func, mapper),
+     SigData::DefaultConstruct { class, base, mapper } => (class, base, mapper),
+     SigData::Construct { class, file, func, mapper } => (class, file, func, mapper),
+     SigData::Synth { type_params, params, ret, this, of, is_union } => (type_params, params, ret, this, of, is_union),
+     SigData::WithReturn { sig, ret } => (sig, ret),
++});
++follow_struct!(NativeFunctionContext {
++    expression,
++    expected,
++    instance,
++    mode
+ });
+ follow_struct!(Provenance<'_> {
+     alias,
+@@ -3459,6 +3489,8 @@
+     SigId,
+     NativeFunctionId,
+     NativeTypeParamId,
++    NativeExpressionId,
++    NativeFunctionContext,
+     MapperId,
+     FileId,
+     Sym,
+@@ -3645,6 +3677,7 @@
+ });
+ clone_in_enum!(SigData {
+     Native { declaration, mapper },
++    NativeContextual { declaration, mapper, context },
+     Decl { file, func, mapper },
+     DefaultConstruct { class, base, mapper },
+     Construct { class, file, func, mapper },
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -62,6 +62,7 @@
+ pub(super) enum Arg {
+     /// An already checked value with no TS syntax node.
+     Resolved(TypeId),
++    Native(NativeExpressionId),
+     Expr(ExprId),
+     /// `createSyntheticExpression`: a type, and its label (`tupleNameSource`) or `NONE`. The last
+     /// field is the node it is positioned at: the argument whose tuple it is an element of, the
+@@ -82,7 +83,7 @@
+     /// The node at which an error about it is reported.
+     pub(super) fn node(self) -> ExprId {
+         match self {
+-            Arg::Resolved(_) => panic!("resolved argument has no TS syntax node"),
++            Arg::Resolved(_) | Arg::Native(_) => panic!("native argument has no TS syntax node"),
+             Arg::Expr(e)
+             | Arg::Type(_, _, e)
+             | Arg::Spread(_, _, _, e)
+@@ -205,6 +206,93 @@
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
++    pub fn current_native_function_context(&self) -> Option<NativeFunctionContext> {
++        self.native_function_contexts.last().copied()
++    }
++
++    pub(super) fn with_native_function_context<R>(
++        &mut self,
++        context: NativeFunctionContext,
++        work: impl FnOnce(&mut Self) -> R,
++    ) -> R {
++        self.native_function_contexts.push(context);
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
++        self.native_function_contexts.pop();
++        result.unwrap_or_else(|error| std::panic::resume_unwind(error))
++    }
++    pub fn contains_native_expression(&self, expression: NativeExpressionId) -> bool {
++        self.native_function_provider.is_some_and(|provider| provider.contains_expression(expression))
++    }
++
++    pub fn native_contextual_function(
++        &mut self,
++        declaration: NativeFunctionId,
++        expression: NativeExpressionId,
++        expected: TypeId,
++        mode: CheckMode,
++    ) -> Option<TypeId> {
++        if !self.contains_native_expression(expression)
++            || !self.native_function_provider?.contains_function(declaration)
++        {
++            return None;
++        }
++        let expected = self.non_nullable(expected);
++        let expected = self.single_call_signature(expected)?;
++        let provider = self.native_function_provider?;
++        let params = self.sig_params(expected);
++        let read: Vec<TypeId> = provider.contextual_parameter_indices(declaration)
++            .into_iter()
++            .filter_map(|index| self.param_type_at(&params, index))
++            .collect();
++        let assigned = self.get_native_inference_context(expression)
++            .and_then(|level| self.with_inference_context(level, |c, n| {
++                c.instantiate_signature_in_inference_context(n, expected, &read, mode.contains(CheckMode::INFERENTIAL))
++            }))
++            .unwrap_or(expected);
++        static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
++        let context = NativeFunctionContext {
++            expression,
++            expected: assigned,
++            instance: NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
++            mode,
++        };
++        let sig = self.types().intern_sig(SigData::NativeContextual {
++            declaration,
++            mapper: MapperId::IDENTITY,
++            context,
++        });
++        Some(self.type_of_signature(sig, false))
++    }
++
++    pub fn contextual_parameter_type(&mut self, context: NativeFunctionContext, index: usize) -> Option<TypeId> {
++        let params = self.sig_params(context.expected);
++        self.param_type_at(&params, index)
++    }
++
++    pub fn native_contextual_return_type(&mut self, context: NativeFunctionContext) -> TypeId {
++        let returned = self.sig_return(context.expected);
++        self.get_native_inference_context(context.expression)
++            .and_then(|level| self.with_inference_context(level, |c, n| {
++                let mapper = c.non_fixing_mapper(n, returned);
++                c.instantiate(returned, mapper)
++            }))
++            .unwrap_or(returned)
++    }
++
++    pub fn call_expression_native(
++        &mut self,
++        callee: TypeId,
++        call: NativeExpressionId,
++        arguments: &[NativeExpressionId],
++        type_args: &[TypeId],
++        expected_return: Option<TypeId>,
++    ) -> ResolvedTypeCall {
++        assert!(self.contains_native_expression(call));
++        assert!(arguments.iter().all(|&arg| self.contains_native_expression(arg)));
++        let args: Args = arguments.iter().copied().map(Arg::Native).collect();
++        self.resolve_native_arguments(callee, &args, type_args, expected_return)
++    }
++
+     /// Check already-resolved argument values through the native call scheduler.
+     pub fn call_resolved_types(&mut self, callee: TypeId, args: &[TypeId]) -> ResolvedTypeCall {
+         self.call_resolved_types_with_type_arguments(callee, args, &[], None)
+@@ -217,7 +305,23 @@
+         type_args: &[TypeId],
+         expected_return: Option<TypeId>,
+     ) -> ResolvedTypeCall {
++        let arguments: Args = args.iter().copied().map(Arg::Resolved).collect();
++        self.resolve_native_arguments(callee, &arguments, type_args, expected_return)
++    }
++
++    fn resolve_native_arguments(
++        &mut self,
++        callee: TypeId,
++        args: &[Arg],
++        type_args: &[TypeId],
++        expected_return: Option<TypeId>,
++    ) -> ResolvedTypeCall {
+         if self.is_any(callee) {
++            for &arg in args {
++                if let Arg::Native(expression) = arg {
++                    self.check_native_argument(expression, None, None, CheckMode::empty());
++                }
++            }
+             return ResolvedTypeCall {
+                 ret: TypeId::ANY,
+                 errors: Vec::new(),
+@@ -239,6 +343,7 @@
+             };
+         }
+         for (index, &arg) in args.iter().enumerate() {
++            let Arg::Resolved(arg) = arg else { continue };
+             let sigs = self.signatures(arg, false);
+             if sigs.iter().any(|&sig| !self.sig_type_params(sig).is_empty()) {
+                 return ResolvedTypeCall {
+@@ -264,14 +369,21 @@
+                 errors: vec![error],
+             };
+         }
+-        let arguments: Args = args.iter().copied().map(Arg::Resolved).collect();
++        let is_single_non_generic = self.sig_type_params(sig).is_empty();
++        let has_context_sensitive = args.iter().any(|arg| match arg {
++            Arg::Native(expression) => self.native_function_provider
++                .is_some_and(|provider| provider.is_context_sensitive(*expression)),
++            _ => false,
++        });
+         let mut state = CallState {
+             site: CallSite::Native { expected_return, this_type: None },
+             type_args,
+-            args: &arguments,
++            args,
+             candidates: SmallVec::from_slice(&candidates),
+-            arg_check_mode: CheckMode::empty(),
+-            is_single_non_generic_candidate: self.sig_type_params(sig).is_empty(),
++            arg_check_mode: if has_context_sensitive && !is_single_non_generic {
++                CheckMode::SKIP_CONTEXT_SENSITIVE
++            } else { CheckMode::empty() },
++            is_single_non_generic_candidate: is_single_non_generic,
+             checks_arguments_once: false,
+             candidates_for_argument_error: Sigs::new(),
+             candidate_for_argument_arity_error: None,
+@@ -306,7 +418,7 @@
+                             .then(|| self.parameter_count(&params)),
+                     });
+                 } else if let Some((index, source, target)) = self.resolved_signature_argument_error(
+-                    selected, &arguments, Relation::Assignable, CheckMode::empty(),
++                    selected, args, Relation::Assignable, CheckMode::empty(),
+                 ) {
+                     errors.push(ResolvedTypeCallError::Argument { index, source, target });
+                 }
+@@ -823,6 +935,7 @@
+             Some(&(Arg::Resolved(ty) | Arg::Type(ty, ..) | Arg::Spread(ty, ..) | Arg::SpreadElement(ty, ..))) => {
+                 Some(ty)
+             }
++            Some(&Arg::Native(_)) => unreachable!("native argument in a TS immediate invocation"),
+             None if own.default.is_some() => None,
+             None => Some(self.undefined_widening()),
+         }
+@@ -1703,6 +1816,9 @@
+             {
+                 let arg_type = match (s.site, arg) {
+                     (CallSite::Native { .. }, Arg::Resolved(ty)) => ty,
++                    (CallSite::Native { .. }, Arg::Native(expression)) => {
++                        self.check_native_argument(expression, Some(param_type), Some(context), check_mode)
++                    }
+                     (CallSite::Ts { file, .. }, _) => self.check_argument(file, arg, param_type, Some(context), check_mode),
+                     _ => unreachable!("native argument demand is not implemented"),
+                 };
+@@ -1852,6 +1968,7 @@
+     ) -> TypeId {
+         let (ty, node) = match arg {
+             Arg::Resolved(ty) => return ty,
++            Arg::Native(expression) => return self.check_native_argument(expression, Some(contextual_type), inference_context, check_mode),
+             Arg::Expr(e) => {
+                 let contextual_type = self.without_no_infer(contextual_type);
+                 return self.check_expression_with_contextual_type(
+@@ -2640,8 +2757,7 @@
+         let param = self.without_no_infer(param);
+         self.push_contextual_type(file, e, Some(param), false);
+         self.inference_contexts.push(InferenceContextInfo {
+-            file,
+-            node: e,
++            origin: ExpressionOrigin::Ts(file, e),
+             context: None,
+         });
+         let outer = self.suspend_recheck();
+@@ -3050,6 +3166,15 @@
+         inference_context: Option<&mut Inference>,
+         check_mode: CheckMode,
+     ) -> (CheckMode, OutsideInferenceContext) {
++        self.push_inference_context_for_origin(ExpressionOrigin::Ts(file, e), inference_context, check_mode)
++    }
++
++    fn push_inference_context_for_origin(
++        &mut self,
++        origin: ExpressionOrigin,
++        inference_context: Option<&mut Inference>,
++        check_mode: CheckMode,
++    ) -> (CheckMode, OutsideInferenceContext) {
+         let context = inference_context
+             .map(|inference| std::mem::replace(inference, Inference::for_params(&[], None)));
+         let mut check_mode = check_mode | CheckMode::CONTEXTUAL;
+@@ -3057,8 +3182,7 @@
+             check_mode |= CheckMode::INFERENTIAL;
+         }
+         self.inference_contexts.push(InferenceContextInfo {
+-            file,
+-            node: e,
++            origin,
+             context,
+         });
+         let outside = OutsideInferenceContext {
+@@ -3072,6 +3196,63 @@
+         (check_mode, outside)
+     }
+ 
++    pub(super) fn check_native_argument(
++        &mut self,
++        expression: NativeExpressionId,
++        expected: Option<TypeId>,
++        mut inference_context: Option<&mut Inference>,
++        mode: CheckMode,
++    ) -> TypeId {
++        let provider = self.native_function_provider.expect("native expression without a provider");
++        assert!(provider.contains_expression(expression), "foreign native expression identity");
++        if mode.contains(CheckMode::SKIP_CONTEXT_SENSITIVE)
++            && provider.has_context_sensitive_parameters(expression)
++        {
++            return self.any_function_type();
++        }
++        let expected = expected.map(|ty| self.without_no_infer(ty));
++        let (mode, outside) = self.push_inference_context_for_origin(
++            ExpressionOrigin::Native(expression), inference_context.as_deref_mut(), mode,
++        );
++        let mut ty = provider.check_expression(self, expression, expected, mode);
++        // Contextual declarations are checked while their actual native inference context is
++        // active. Their distinct signature identity retains these results for later relations.
++        if let Some(sig) = self.single_call_signature(ty)
++            && self.sig_native_context(sig).is_some()
++        {
++            self.sig_params(sig);
++            self.sig_return(sig);
++        }
++        self.restore_inference_recheck(outside);
++        if let Some(expected) = expected
++            && self.maybe_type_of_kind(ty, Self::is_literal)
++        {
++            let instantiated = self.instantiate_contextual_type_at_level(
++                expected, self.get_native_inference_context(expression), ContextFlags::empty(),
++            );
++            if self.is_literal_context(ty, instantiated) {
++                ty = self.regular(ty);
++            }
++        }
++        self.restore_lent_inference_context(inference_context);
++        ty
++    }
++
++    fn restore_inference_recheck(&mut self, outside: OutsideInferenceContext) {
++        self.end_recheck(outside.recheck);
++        self.rechecked_exprs = outside.rechecked_exprs;
++        self.rechecked_members = outside.rechecked_members;
++        self.mode_of_recheck = outside.mode_of_recheck;
++    }
++
++    fn restore_lent_inference_context(&mut self, inference_context: Option<&mut Inference>) {
++        let lent = self.inference_contexts.pop().and_then(|info| info.context);
++        if let (Some(inference), Some(mut lent)) = (inference_context, lent) {
++            lent.intra_expression_inference_sites.clear();
++            *inference = lent;
++        }
++    }
++
+     /// `popInferenceContext`: ends the check that `push_inference_context` began, which found `ty`,
+     /// and moves the context back into `inference_context`. Returns `ty`, without its freshness if
+     /// `contextual_type` is a context for literals.
+@@ -3084,10 +3265,7 @@
+         outside: OutsideInferenceContext,
+         ty: TypeId,
+     ) -> TypeId {
+-        self.end_recheck(outside.recheck);
+-        self.rechecked_exprs = outside.rechecked_exprs;
+-        self.rechecked_members = outside.rechecked_members;
+-        self.mode_of_recheck = outside.mode_of_recheck;
++        self.restore_inference_recheck(outside);
+         let is_literal_of_contextual_type = self.maybe_type_of_kind(ty, Self::is_literal) && {
+             let instantiated =
+                 self.instantiate_contextual_type(contextual_type, file, e, ContextFlags::empty());
+@@ -3098,11 +3276,7 @@
+         } else {
+             ty
+         };
+-        let lent = self.inference_contexts.pop().and_then(|info| info.context);
+-        if let (Some(inference), Some(mut lent)) = (inference_context, lent) {
+-            lent.intra_expression_inference_sites.clear();
+-            *inference = lent;
+-        }
++        self.restore_lent_inference_context(inference_context);
+         ty
+     }
+ 
+diff --git a/src/sema/check/context.rs b/src/sema/check/context.rs
+--- a/src/sema/check/context.rs
++++ b/src/sema/check/context.rs
+@@ -1343,13 +1343,22 @@
+         e: ExprId,
+         context_flags: ContextFlags,
+     ) -> TypeId {
++        self.instantiate_contextual_type_at_level(contextual_type, self.get_inference_context(file, e), context_flags)
++    }
++
++    pub(super) fn instantiate_contextual_type_at_level(
++        &mut self,
++        contextual_type: TypeId,
++        level: Option<usize>,
++        context_flags: ContextFlags,
++    ) -> TypeId {
+         if self.inference_contexts.is_empty()
+             || !self.maybe_type_of_kind(contextual_type, Self::is_instantiable)
+         {
+             return contextual_type;
+         }
+         let has_content = |c: &Self, ty: TypeId| !c.is_any(ty) && ty != TypeId::UNKNOWN;
+-        self.get_inference_context(file, e)
++        level
+             .and_then(|level| {
+                 self.with_inference_context(level, |c, n| {
+                     if context_flags.contains(ContextFlags::SIGNATURE)
+@@ -2345,7 +2354,16 @@
+     pub(super) fn get_inference_context(&self, file: FileId, e: ExprId) -> Option<usize> {
+         self.inference_contexts
+             .iter()
+-            .rposition(|info| info.file == file && self.is_node_descendant_of(file, e, info.node))
++            .rposition(|info| matches!(info.origin, ExpressionOrigin::Ts(of, node)
++                if of == file && self.is_node_descendant_of(file, e, node)))
++    }
++
++    pub(super) fn get_native_inference_context(&self, expression: NativeExpressionId) -> Option<usize> {
++        self.inference_contexts.iter().rposition(|info| match info.origin {
++            ExpressionOrigin::Native(ancestor) => self.native_function_provider
++                .is_some_and(|provider| provider.is_expression_descendant(expression, ancestor)),
++            ExpressionOrigin::Ts(..) => false,
++        })
+     }
+ 
+     /// `IsNodeDescendantOf`
+@@ -2553,6 +2571,14 @@
+                 });
+                 self.is_resolving(Query::ReturnOfSignature(declared))
+             }
++            SigData::NativeContextual { declaration, context, .. } => {
++                let declared = self.types().intern_sig(SigData::NativeContextual {
++                    declaration,
++                    mapper: MapperId::IDENTITY,
++                    context,
++                });
++                self.is_resolving(Query::ReturnOfSignature(declared))
++            }
+             SigData::Synth { ref of, .. } => of
+                 .iter()
+                 .any(|&s| self.is_resolving_return_type_of_declaration(s)),
+@@ -2566,7 +2592,7 @@
+             SigData::Decl { mapper, .. } if self.is_instantiating(mapper) => {
+                 self.is_resolving(Query::ReturnOfSignature(sig))
+             }
+-            SigData::Native { .. } => self.is_resolving(Query::ReturnOfSignature(sig)),
++            SigData::Native { .. } | SigData::NativeContextual { .. } => self.is_resolving(Query::ReturnOfSignature(sig)),
+             SigData::Synth { ref of, .. } => {
+                 of.iter().any(|&s| self.is_resolving_return_type(s))
+                     || self.is_resolving(Query::ReturnOfSignature(sig))
+diff --git a/src/sema/check/decl.rs b/src/sema/check/decl.rs
+--- a/src/sema/check/decl.rs
++++ b/src/sema/check/decl.rs
+@@ -4515,7 +4515,8 @@
+     #[inline(never)]
+     fn sig_type_params_of_declaration(&mut self, sig: SigId) -> Vec<TypeId> {
+         match self.types().sig(sig) {
+-            SigData::Native { declaration, mapper } => {
++            SigData::Native { declaration, mapper }
++            | SigData::NativeContextual { declaration, mapper, .. } => {
+                 let (declaration, mapper) = (*declaration, *mapper);
+                 let provider = self.native_provider_for(declaration);
+                 provider.type_parameters(self, declaration)
+@@ -4587,8 +4588,17 @@
+ 
+     pub fn sig_native_decl(&self, sig: SigId) -> Option<(NativeFunctionId, MapperId)> {
+         match *self.types().sig(sig) {
+-            SigData::Native { declaration, mapper } => Some((declaration, mapper)),
++            SigData::Native { declaration, mapper }
++            | SigData::NativeContextual { declaration, mapper, .. } => Some((declaration, mapper)),
+             SigData::WithReturn { sig: inner, .. } => self.sig_native_decl(inner),
++            _ => None,
++        }
++    }
++
++    pub fn sig_native_context(&self, sig: SigId) -> Option<NativeFunctionContext> {
++        match *self.types().sig(sig) {
++            SigData::NativeContextual { context, .. } => Some(context),
++            SigData::WithReturn { sig: inner, .. } => self.sig_native_context(inner),
+             _ => None,
+         }
+     }
+@@ -4862,14 +4872,19 @@
+     /// `sig_params` for a signature that was not queried recently.
+     fn sig_params_not_recent(&mut self, sig: SigId) -> List<'p, SigParam> {
+         let (file, func, mapper) = match self.types().sig(sig) {
+-            SigData::Native { declaration, mapper } => {
++            SigData::Native { declaration, mapper }
++            | SigData::NativeContextual { declaration, mapper, .. } => {
+                 let (declaration, mapper) = (*declaration, *mapper);
+                 if let Some(kept) = self.p.sig_params.get_ref(&self.task, &sig) {
+                     return self.cached_sig_params(sig, kept);
+                 }
+                 let scope = self.begin_scope();
+                 let provider = self.native_provider_for(declaration);
+-                let params: Vec<SigParam> = provider.parameters(self, declaration)
++                let params = match self.sig_native_context(sig) {
++                    Some(context) => self.with_native_function_context(context, |c| provider.parameters_in_context(c, declaration, context)),
++                    None => provider.parameters(self, declaration),
++                };
++                let params: Vec<SigParam> = params
+                     .into_iter()
+                     .map(|param| SigParam {
+                         ty: self.instantiate(param.ty, mapper),
+@@ -5032,6 +5047,13 @@
+                 let declared = provider.return_type(c, declaration);
+                 c.instantiate(declared, mapper)
+             }),
++            SigData::NativeContextual { declaration, mapper, context } => {
++                self.resolve_return_type(sig, |c| {
++                    let provider = c.native_provider_for(declaration);
++                    let declared = c.with_native_function_context(context, |c| provider.return_type_in_context(c, declaration, context));
++                    c.instantiate(declared, mapper)
++                })
++            }
+             // `case sig.composite != nil`
+             SigData::Synth {
+                 ret: TypeId::UNRESOLVED,
+diff --git a/src/sema/check/errors_call.rs b/src/sema/check/errors_call.rs
+--- a/src/sema/check/errors_call.rs
++++ b/src/sema/check/errors_call.rs
+@@ -991,8 +991,10 @@
+             let Some(expected) = self.param_type_at(&params, i) else {
+                 continue;
+             };
+-            let Arg::Resolved(actual) = arg else {
+-                panic!("native call applicability requires resolved arguments");
++            let actual = match arg {
++                Arg::Resolved(ty) => ty,
++                Arg::Native(expression) => self.check_native_argument(expression, Some(expected), None, check_mode),
++                _ => panic!("TS argument in native call applicability"),
+             };
+             let actual = if check_mode.contains(CheckMode::SKIP_CONTEXT_SENSITIVE) {
+                 self.regular_type_of_object_literal(actual)
+diff --git a/src/sema/check/errors_jsx.rs b/src/sema/check/errors_jsx.rs
+--- a/src/sema/check/errors_jsx.rs
++++ b/src/sema/check/errors_jsx.rs
+@@ -589,8 +589,7 @@
+         self.push_contextual_type(file, e, Some(contextual_type), false);
+         let ty = if is_checked_once {
+             self.inference_contexts.push(InferenceContextInfo {
+-                file,
+-                node: e,
++                origin: ExpressionOrigin::Ts(file, e),
+                 context: None,
+             });
+             let outer = self.suspend_recheck();
+diff --git a/src/sema/check/explain_relation.rs b/src/sema/check/explain_relation.rs
+--- a/src/sema/check/explain_relation.rs
++++ b/src/sema/check/explain_relation.rs
+@@ -524,6 +524,7 @@
+                     base: Some(inner), ..
+                 } => inner,
+                 SigData::Native { .. }
++                | SigData::NativeContextual { .. }
+                 | SigData::DefaultConstruct { base: None, .. }
+                 | SigData::Synth { .. } => break None,
+             };
+diff --git a/src/sema/check/expr.rs b/src/sema/check/expr.rs
+--- a/src/sema/check/expr.rs
++++ b/src/sema/check/expr.rs
+@@ -4282,7 +4282,7 @@
+     /// `instantiateSignature(sig, n.mapper)`, or with `n.nonFixingMapper` if `may_not_fix` and
+     /// `sig` ends in `...args: T`. The mapper is built for the parts of the instantiation that will
+     /// be `read`.
+-    fn instantiate_signature_in_inference_context(
++    pub(super) fn instantiate_signature_in_inference_context(
+         &mut self,
+         n: &mut Inference,
+         sig: SigId,
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -3136,6 +3136,10 @@
+             }
+             while let Some(sig) = signatures.pop() {
+                 match self.types().sig(sig) {
++                    SigData::NativeContextual { mapper, context, .. } => {
++                        left.extend(values(*mapper));
++                        signatures.push(context.expected);
++                    }
+                     SigData::Native { mapper, .. }
+                     | SigData::Decl { mapper, .. }
+                     | SigData::Construct { mapper, .. } => {
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -1092,6 +1092,13 @@
+                 declaration: *declaration,
+                 mapper: self.native_sig_mapper(*declaration, *own, mapper),
+             },
++            SigData::NativeContextual { declaration, mapper: own, context } => {
++                SigData::NativeContextual {
++                    declaration: *declaration,
++                    mapper: self.native_sig_mapper(*declaration, *own, mapper),
++                    context: *context,
++                }
++            }
+             SigData::Decl {
+                 file,
+                 func,
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -141,6 +141,22 @@
+     fn circular_type_parameter_constraint(&self, _: NativeTypeParamId) {}
+     fn circular_type_parameter_default(&self, _: NativeTypeParamId) {}
+     fn outer_type_parameters(&self, _: NativeFunctionId) -> Vec<NativeTypeParamId> { Vec::new() }
++    fn contains_expression(&self, _: NativeExpressionId) -> bool { false }
++    fn is_context_sensitive(&self, _: NativeExpressionId) -> bool { false }
++    fn has_context_sensitive_parameters(&self, _: NativeExpressionId) -> bool { false }
++    fn contextual_parameter_indices(&self, _: NativeFunctionId) -> Vec<usize> { Vec::new() }
++    fn is_expression_descendant(&self, expression: NativeExpressionId, ancestor: NativeExpressionId) -> bool {
++        expression == ancestor
++    }
++    fn check_expression(&self, _: &mut Checker<'_, '_>, _: NativeExpressionId, _: Option<TypeId>, _: CheckMode) -> TypeId {
++        panic!("native expression provider is not installed")
++    }
++    fn parameters_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> Vec<SigParam> {
++        self.parameters(checker, declaration)
++    }
++    fn return_type_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> TypeId {
++        self.return_type(checker, declaration)
++    }
+ }
+ pub use shape::Members;
+ pub use spans::compute_ecma_line_starts;
+@@ -661,6 +677,7 @@
+         Checker {
+             p: self,
+             native_function_provider: None,
++            native_function_contexts: Vec::new(),
+             arena,
+             task: Task::new_in(arena),
+             left_frame: None,
+@@ -1038,8 +1055,8 @@
+ 
+ bitflags::bitflags! {
+     /// `CheckMode`. `CheckModeNormal` is `empty()`.
+-    #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+-    struct CheckMode: u8 {
++    #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
++    pub struct CheckMode: u8 {
+         const CONTEXTUAL = 1 << 0;
+         const INFERENTIAL = 1 << 1;
+         const SKIP_CONTEXT_SENSITIVE = 1 << 2;
+@@ -1073,9 +1090,14 @@
+ }
+ 
+ /// `InferenceContextInfo`
++#[derive(Copy, Clone, PartialEq, Eq)]
++enum ExpressionOrigin {
++    Ts(FileId, ExprId),
++    Native(NativeExpressionId),
++}
++
+ struct InferenceContextInfo {
+-    file: FileId,
+-    node: ExprId,
++    origin: ExpressionOrigin,
+     /// `None`: `pushInferenceContext(node, nil)`.
+     context: Option<infer::Inference>,
+ }
+@@ -1158,6 +1180,7 @@
+ pub struct Checker<'p, 's> {
+     pub p: &'p Program<'s>,
+     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
++    native_function_contexts: Vec<NativeFunctionContext>,
+     /// The arena of the thread that runs the task: for the records that the task creates, which may be
+     /// published. Everything else that a task allocates is on the regular heap.
+     pub arena: &'s Arena,
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -5443,7 +5443,7 @@
+                 let inner = *inner;
+                 return self.signature_parameters(inner);
+             }
+-            SigData::Native { .. } => {
++            SigData::Native { .. } | SigData::NativeContextual { .. } => {
+                 let params = self.c.sig_params(signature);
+                 let mut list = Vec::with_capacity(params.len());
+                 for (i, parameter) in params.iter().enumerate() {
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -6256,7 +6256,7 @@
+     /// `SignatureFlagsAbstract`
+     pub(super) fn is_abstract_signature(&self, sig: SigId) -> bool {
+         match *self.types().sig(sig) {
+-            SigData::Native { .. } => false,
++            SigData::Native { .. } | SigData::NativeContextual { .. } => false,
+             // `getDefaultConstructSignatures`, `getSignatureFromDeclaration`: of several class
+             // declarations with one name the first is used.
+             SigData::Construct { class, .. } | SigData::DefaultConstruct { class, .. } => self
+@@ -6574,6 +6574,11 @@
+                 declaration,
+                 mapper: extended(self, mapper),
+             },
++            SigData::NativeContextual { declaration, mapper, context } => SigData::NativeContextual {
++                declaration,
++                mapper: extended(self, mapper),
++                context,
++            },
+             SigData::Decl { file, func, mapper } => SigData::Decl {
+                 file,
+                 func,
+@@ -6682,6 +6687,22 @@
+                 let declared = self.types().intern_sig(SigData::Native {
+                     declaration,
+                     mapper: MapperId::IDENTITY,
++                });
++                let own = self.sig_type_params(declared);
++                if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {
++                    return (declared != sig).then_some(declared);
++                }
++                let outer = self.types().mapping(mapper).iter().copied()
++                    .filter(|pair| !own.contains(&pair.0))
++                    .collect();
++                let outer = self.types().mapper(outer);
++                Some(self.instantiate_sig(declared, outer))
++            }
++            SigData::NativeContextual { declaration, mapper, context } => {
++                let declared = self.types().intern_sig(SigData::NativeContextual {
++                    declaration,
++                    mapper: MapperId::IDENTITY,
++                    context,
+                 });
+                 let own = self.sig_type_params(declared);
+                 if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -8485,6 +8485,7 @@
+         match *self.types().sig(sig) {
+             SigData::Decl { mapper, .. }
+             | SigData::Native { mapper, .. }
++            | SigData::NativeContextual { mapper, .. }
+             | SigData::Construct { mapper, .. }
+             | SigData::DefaultConstruct { mapper, .. } => mapper,
+             SigData::WithReturn { sig: inner, .. } => self.mapper_around_sig(inner),
+diff --git a/src/sema/check/symbols.rs b/src/sema/check/symbols.rs
+--- a/src/sema/check/symbols.rs
++++ b/src/sema/check/symbols.rs
+@@ -3838,7 +3838,7 @@
+                     return resolved;
+                 }
+             }
+-            SigData::Native { .. } => {
++            SigData::Native { .. } | SigData::NativeContextual { .. } => {
+                 if let Some(resolved) = self.p.resolved_return_types.get(&self.task, &sig) {
+                     return resolved;
+                 }

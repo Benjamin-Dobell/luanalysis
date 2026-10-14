@@ -62,6 +62,16 @@ SOURCE_ADAPTATIONS.extend({
     "patch": "vendor/patches/bun-sema-native-generic-calls.patch",
     "reason": "Route resolved native generic calls through shared overload selection, type argument inference, defaults, constraints and signature instantiation.",
 } for path in ["call.rs", "errors_call.rs"])
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+    "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+} for path in [
+    "types.rs", "check/call.rs", "check/context.rs", "check/decl.rs", "check/errors_call.rs",
+    "check/errors_jsx.rs", "check/explain_relation.rs", "check/expr.rs", "check/infer.rs",
+    "check/instantiate.rs", "check/mod.rs", "check/print.rs", "check/relate.rs",
+    "check/shape.rs", "check/symbols.rs",
+])
 
 
 def git(source, *args):

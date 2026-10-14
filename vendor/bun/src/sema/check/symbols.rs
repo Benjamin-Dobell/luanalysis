@@ -3838,7 +3838,7 @@ impl<'p, 's> Checker<'p, 's> {
                     return resolved;
                 }
             }
-            SigData::Native { .. } => {
+            SigData::Native { .. } | SigData::NativeContextual { .. } => {
                 if let Some(resolved) = self.p.resolved_return_types.get(&self.task, &sig) {
                     return resolved;
                 }

@@ -1343,13 +1343,22 @@ impl<'p, 's> Checker<'p, 's> {
         e: ExprId,
         context_flags: ContextFlags,
     ) -> TypeId {
+        self.instantiate_contextual_type_at_level(contextual_type, self.get_inference_context(file, e), context_flags)
+    }
+
+    pub(super) fn instantiate_contextual_type_at_level(
+        &mut self,
+        contextual_type: TypeId,
+        level: Option<usize>,
+        context_flags: ContextFlags,
+    ) -> TypeId {
         if self.inference_contexts.is_empty()
             || !self.maybe_type_of_kind(contextual_type, Self::is_instantiable)
         {
             return contextual_type;
         }
         let has_content = |c: &Self, ty: TypeId| !c.is_any(ty) && ty != TypeId::UNKNOWN;
-        self.get_inference_context(file, e)
+        level
             .and_then(|level| {
                 self.with_inference_context(level, |c, n| {
                     if context_flags.contains(ContextFlags::SIGNATURE)
@@ -2345,7 +2354,16 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn get_inference_context(&self, file: FileId, e: ExprId) -> Option<usize> {
         self.inference_contexts
             .iter()
-            .rposition(|info| info.file == file && self.is_node_descendant_of(file, e, info.node))
+            .rposition(|info| matches!(info.origin, ExpressionOrigin::Ts(of, node)
+                if of == file && self.is_node_descendant_of(file, e, node)))
+    }
+
+    pub(super) fn get_native_inference_context(&self, expression: NativeExpressionId) -> Option<usize> {
+        self.inference_contexts.iter().rposition(|info| match info.origin {
+            ExpressionOrigin::Native(ancestor) => self.native_function_provider
+                .is_some_and(|provider| provider.is_expression_descendant(expression, ancestor)),
+            ExpressionOrigin::Ts(..) => false,
+        })
     }
 
     /// `IsNodeDescendantOf`
@@ -2553,6 +2571,14 @@ impl<'p, 's> Checker<'p, 's> {
                 });
                 self.is_resolving(Query::ReturnOfSignature(declared))
             }
+            SigData::NativeContextual { declaration, context, .. } => {
+                let declared = self.types().intern_sig(SigData::NativeContextual {
+                    declaration,
+                    mapper: MapperId::IDENTITY,
+                    context,
+                });
+                self.is_resolving(Query::ReturnOfSignature(declared))
+            }
             SigData::Synth { ref of, .. } => of
                 .iter()
                 .any(|&s| self.is_resolving_return_type_of_declaration(s)),
@@ -2566,7 +2592,7 @@ impl<'p, 's> Checker<'p, 's> {
             SigData::Decl { mapper, .. } if self.is_instantiating(mapper) => {
                 self.is_resolving(Query::ReturnOfSignature(sig))
             }
-            SigData::Native { .. } => self.is_resolving(Query::ReturnOfSignature(sig)),
+            SigData::Native { .. } | SigData::NativeContextual { .. } => self.is_resolving(Query::ReturnOfSignature(sig)),
             SigData::Synth { ref of, .. } => {
                 of.iter().any(|&s| self.is_resolving_return_type(s))
                     || self.is_resolving(Query::ReturnOfSignature(sig))

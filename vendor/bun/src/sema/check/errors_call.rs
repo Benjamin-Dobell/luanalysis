@@ -991,8 +991,10 @@ impl Checker<'_, '_> {
             let Some(expected) = self.param_type_at(&params, i) else {
                 continue;
             };
-            let Arg::Resolved(actual) = arg else {
-                panic!("native call applicability requires resolved arguments");
+            let actual = match arg {
+                Arg::Resolved(ty) => ty,
+                Arg::Native(expression) => self.check_native_argument(expression, Some(expected), None, check_mode),
+                _ => panic!("TS argument in native call applicability"),
             };
             let actual = if check_mode.contains(CheckMode::SKIP_CONTEXT_SENSITIVE) {
                 self.regular_type_of_object_literal(actual)

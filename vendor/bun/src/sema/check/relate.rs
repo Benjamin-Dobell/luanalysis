@@ -6256,7 +6256,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// `SignatureFlagsAbstract`
     pub(super) fn is_abstract_signature(&self, sig: SigId) -> bool {
         match *self.types().sig(sig) {
-            SigData::Native { .. } => false,
+            SigData::Native { .. } | SigData::NativeContextual { .. } => false,
             // `getDefaultConstructSignatures`, `getSignatureFromDeclaration`: of several class
             // declarations with one name the first is used.
             SigData::Construct { class, .. } | SigData::DefaultConstruct { class, .. } => self
@@ -6574,6 +6574,11 @@ impl<'p, 's> Checker<'p, 's> {
                 declaration,
                 mapper: extended(self, mapper),
             },
+            SigData::NativeContextual { declaration, mapper, context } => SigData::NativeContextual {
+                declaration,
+                mapper: extended(self, mapper),
+                context,
+            },
             SigData::Decl { file, func, mapper } => SigData::Decl {
                 file,
                 func,
@@ -6682,6 +6687,22 @@ impl<'p, 's> Checker<'p, 's> {
                 let declared = self.types().intern_sig(SigData::Native {
                     declaration,
                     mapper: MapperId::IDENTITY,
+                });
+                let own = self.sig_type_params(declared);
+                if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {
+                    return (declared != sig).then_some(declared);
+                }
+                let outer = self.types().mapping(mapper).iter().copied()
+                    .filter(|pair| !own.contains(&pair.0))
+                    .collect();
+                let outer = self.types().mapper(outer);
+                Some(self.instantiate_sig(declared, outer))
+            }
+            SigData::NativeContextual { declaration, mapper, context } => {
+                let declared = self.types().intern_sig(SigData::NativeContextual {
+                    declaration,
+                    mapper: MapperId::IDENTITY,
+                    context,
                 });
                 let own = self.sig_type_params(declared);
                 if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {

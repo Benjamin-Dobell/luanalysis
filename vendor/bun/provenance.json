@@ -216,6 +216,96 @@
       "patch": "vendor/patches/bun-sema-native-generic-calls.patch",
       "reason": "Route resolved native generic calls through shared overload selection, type argument inference, defaults, constraints and signature instantiation.",
       "patch_sha256": "c63815011d1875e51aa207e8e7c56b7351cb2746efb1a6d802b4fdbfac42ebb7"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/context.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/errors_call.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/errors_jsx.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/explain_relation.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/expr.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
+    },
+    {
+      "path": "src/sema/check/symbols.rs",
+      "patch": "vendor/patches/bun-sema-contextual-expressions.patch",
+      "reason": "Add original-source expression dispatch and contextual signature facets using shared call inference and scoped provider contexts.",
+      "patch_sha256": "ebec3deb96360c2daf6d5ce4308ab44fe7b67baf393a43a85b1ee4fa43baf902"
     }
   ],
   "files": {
@@ -912,7 +1002,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "3d1f5a07f7d9afbf83c5f48f04a2f16e4e9e1ec7e5df5a68853af69ed0d3a13c"
+      "extracted_sha256": "f9c61ee4e2fb7eb9a523b34735b5d10de634338735cf19159877290c8592fdc7"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -922,12 +1012,12 @@
     "src/sema/check/context.rs": {
       "upstream": "src/sema/check/context.rs",
       "sha256": "38ce21bc5a1016ca18ed46af9e6cc93927640ed24b869c5c8ee91147f6505601",
-      "extracted_sha256": "a4284ce176615c36b7cdd0de40f0b9722bbb8e3298a98ccc2541434d9fdc8b64"
+      "extracted_sha256": "4fed62bc01374271f1a60bea41b28f2121b7e48edf3dd98a4247b335aaf951b0"
     },
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "fb3063d07fe52eafcd3bcbed8b6b3e3b22e06d8956c69fe8e7afe5c7b0f19ff0"
+      "extracted_sha256": "6cd3b6ab1f27844fd275d583a41ee40ea1b3c61cb6c41912ebc811c2f3e63fa2"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -962,7 +1052,7 @@
     "src/sema/check/errors_call.rs": {
       "upstream": "src/sema/check/errors_call.rs",
       "sha256": "d3afd92a719df2d061cc57fdbaaceab03111588613ea9748fe20a3a2cfab230f",
-      "extracted_sha256": "396bd027d30485e2b5c19347ab2c7b87a2e02d3b6db2b33ff59e33259f964bbb"
+      "extracted_sha256": "c9161274051001f2293eab89db458e166e595a274759164570357d494f203964"
     },
     "src/sema/check/errors_circular.rs": {
       "upstream": "src/sema/check/errors_circular.rs",
@@ -1052,7 +1142,7 @@
     "src/sema/check/errors_jsx.rs": {
       "upstream": "src/sema/check/errors_jsx.rs",
       "sha256": "5233c781207ee287850d77d62757720aca3193d76e5d126ce2a54e0850dabb73",
-      "extracted_sha256": "5233c781207ee287850d77d62757720aca3193d76e5d126ce2a54e0850dabb73"
+      "extracted_sha256": "2314392e94d677a41b22e9261eadf219b0b0be69deb5d26d4dee1ac1055e1c48"
     },
     "src/sema/check/errors_misc.rs": {
       "upstream": "src/sema/check/errors_misc.rs",
@@ -1117,12 +1207,12 @@
     "src/sema/check/explain_relation.rs": {
       "upstream": "src/sema/check/explain_relation.rs",
       "sha256": "3cd5cea2059c6d9748f4fb35f723fdec0d85d2e2177e3a9c17f11bc0f80da601",
-      "extracted_sha256": "fda7ae1c15ba0b637abd18b3bcdb10a93929176015c015b71677385b7cca382d"
+      "extracted_sha256": "47d61f43b653268fcbe723d9faed3d3df9e2d27160f8d154c21b24539fca2a59"
     },
     "src/sema/check/expr.rs": {
       "upstream": "src/sema/check/expr.rs",
       "sha256": "b7bd24b3e1af1beddbe9cf4f1b95f69b31b22340562cba93954c0ed3b6c8a70b",
-      "extracted_sha256": "b7bd24b3e1af1beddbe9cf4f1b95f69b31b22340562cba93954c0ed3b6c8a70b"
+      "extracted_sha256": "4beec1dab8e69697dffc490e6a995d15340133d5f09cd6f0349d2abc252ba760"
     },
     "src/sema/check/flow.rs": {
       "upstream": "src/sema/check/flow.rs",
@@ -1137,12 +1227,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "a241afa7e7296c0b95132e036e900df387bc95ee725037cc28e40c1b1a53f4dc"
+      "extracted_sha256": "4c22fc893b4a8e6cbe4cc2b4a8baaeb9ead505178d407db141bff5dfcba90e1d"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "e53e9d87f1cc1cc79559c9520605d21725016b054ff56b9eb86de563589c70d9"
+      "extracted_sha256": "917b340f338bcda0f0113578bae19c03ca26c13f34fdb88a7494d40b490d601a"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -1172,7 +1262,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "bb22a0c5dfe6861d5b005fdce25ed89a18d03c844d92471691b374ea55849de1"
+      "extracted_sha256": "7418fdbc2d1a3a4e75444aa7bd0015b2f1651f6da168e6e94dfc287be73cbefb"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -1182,7 +1272,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "9e38618ead6f4e0f53dc9c8c8eac18f3aa2b59c7028cd54aba23d9abb8175106"
+      "extracted_sha256": "0692aa83515d14976591f3027b82c23de4d49df40ac7318a8c22ec361d979b38"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -1197,7 +1287,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "ed18312e6a9baabbe54c5db52aed75b134af4daa1b7ef9fe6e2a7f2c6c036adc"
+      "extracted_sha256": "d8687441e92b21fe96c47ecb73f4e045573f048671e03e92cda0c6c54291cbad"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -1252,7 +1342,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "e72f011290f8eefa673b8d6ad74853327abe08be8076e09b09d19cdb601909fc"
+      "extracted_sha256": "24af419e20899ec2e07291aff679795c5fc3861b31dd7d9f1d52caffb5002e15"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -1272,7 +1362,7 @@
     "src/sema/check/symbols.rs": {
       "upstream": "src/sema/check/symbols.rs",
       "sha256": "ef1c369442929fa1f57e979c571a01d2d7aebbadba0d1f3f8d7e750ca080936b",
-      "extracted_sha256": "8fc5707b2c6fa7e667bdc9c77206e2e8b1613e13af618a83abfffaac2455fddb"
+      "extracted_sha256": "c9f629c7b1ba1ef677c650eea2ab82fa66f1d96977c7fb25ebb930dcbdd0be12"
     },
     "src/sema/check/task.rs": {
       "upstream": "src/sema/check/task.rs",
@@ -1377,7 +1467,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "65eeb0d7be384a6d7d127fcfa2cbfd831c4aad24d6bdd1c45dadb3167eee6f5c"
+      "extracted_sha256": "f967fa8d1c17c28c356869c73912fce3dc4ea89870835db6bb4b687f6649c4b3"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

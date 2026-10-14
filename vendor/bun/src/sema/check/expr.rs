@@ -4282,7 +4282,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// `instantiateSignature(sig, n.mapper)`, or with `n.nonFixingMapper` if `may_not_fix` and
     /// `sig` ends in `...args: T`. The mapper is built for the parts of the instantiation that will
     /// be `read`.
-    fn instantiate_signature_in_inference_context(
+    pub(super) fn instantiate_signature_in_inference_context(
         &mut self,
         n: &mut Inference,
         sig: SigId,

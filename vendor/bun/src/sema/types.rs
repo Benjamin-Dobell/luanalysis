@@ -40,6 +40,18 @@ pub struct NativeTypeParamId {
     pub index: u32,
 }
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeExpressionId {
+    pub snapshot: u64,
+    pub index: u32,
+}
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeFunctionContext {
+    pub expression: NativeExpressionId,
+    pub expected: SigId,
+    pub instance: u64,
+    pub mode: crate::check::CheckMode,
+}
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MapperId(pub u32);
 /// An interned list of `IndexComponent`s.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -862,6 +874,12 @@ pub enum SigData<'s> {
     Native {
         declaration: NativeFunctionId,
         mapper: MapperId,
+    },
+    /// A native declaration checked under one contextual demand, with caches of its own.
+    NativeContextual {
+        declaration: NativeFunctionId,
+        mapper: MapperId,
+        context: NativeFunctionContext,
     },
     /// As declared, with `mapper` applied.
     Decl {
@@ -2428,6 +2446,9 @@ impl<'p, 's> Types<'p, 's> {
 
     pub fn sig_flags(&self, sig: SigId) -> ObjectFlags {
         match self.sig(sig) {
+            SigData::NativeContextual { mapper, context, .. } => {
+                self.mapper_record(*mapper).1 | self.sig_flags(context.expected)
+            }
             SigData::Native { mapper, .. }
             | SigData::Decl { mapper, .. }
             | SigData::DefaultConstruct { mapper, .. }
@@ -3235,6 +3256,8 @@ has_no_references!(
     u64,
     NativeFunctionId,
     NativeTypeParamId,
+    NativeExpressionId,
+    crate::check::CheckMode,
     usize,
     ExprId,
     FnId,
@@ -3400,11 +3423,18 @@ follow_struct!(SigParam {
 });
 follow_enum!(SigData<'_> {
     SigData::Native { declaration, mapper } => (declaration, mapper),
+    SigData::NativeContextual { declaration, mapper, context } => (declaration, mapper, context),
     SigData::Decl { file, func, mapper } => (file, func, mapper),
     SigData::DefaultConstruct { class, base, mapper } => (class, base, mapper),
     SigData::Construct { class, file, func, mapper } => (class, file, func, mapper),
     SigData::Synth { type_params, params, ret, this, of, is_union } => (type_params, params, ret, this, of, is_union),
     SigData::WithReturn { sig, ret } => (sig, ret),
+});
+follow_struct!(NativeFunctionContext {
+    expression,
+    expected,
+    instance,
+    mode
 });
 follow_struct!(Provenance<'_> {
     alias,
@@ -3459,6 +3489,8 @@ clone_in_is_copy!(
     SigId,
     NativeFunctionId,
     NativeTypeParamId,
+    NativeExpressionId,
+    NativeFunctionContext,
     MapperId,
     FileId,
     Sym,
@@ -3645,6 +3677,7 @@ clone_in_struct!(Shape {
 });
 clone_in_enum!(SigData {
     Native { declaration, mapper },
+    NativeContextual { declaration, mapper, context },
     Decl { file, func, mapper },
     DefaultConstruct { class, base, mapper },
     Construct { class, file, func, mapper },

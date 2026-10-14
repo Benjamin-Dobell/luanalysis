@@ -1092,6 +1092,13 @@ impl<'p, 's> Checker<'p, 's> {
                 declaration: *declaration,
                 mapper: self.native_sig_mapper(*declaration, *own, mapper),
             },
+            SigData::NativeContextual { declaration, mapper: own, context } => {
+                SigData::NativeContextual {
+                    declaration: *declaration,
+                    mapper: self.native_sig_mapper(*declaration, *own, mapper),
+                    context: *context,
+                }
+            }
             SigData::Decl {
                 file,
                 func,

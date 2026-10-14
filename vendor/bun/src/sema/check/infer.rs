@@ -3136,6 +3136,10 @@ impl<'p, 's> Checker<'p, 's> {
             }
             while let Some(sig) = signatures.pop() {
                 match self.types().sig(sig) {
+                    SigData::NativeContextual { mapper, context, .. } => {
+                        left.extend(values(*mapper));
+                        signatures.push(context.expected);
+                    }
                     SigData::Native { mapper, .. }
                     | SigData::Decl { mapper, .. }
                     | SigData::Construct { mapper, .. } => {

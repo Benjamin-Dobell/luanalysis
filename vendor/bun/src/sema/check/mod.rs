@@ -141,6 +141,22 @@ pub trait NativeFunctionProvider {
     fn circular_type_parameter_constraint(&self, _: NativeTypeParamId) {}
     fn circular_type_parameter_default(&self, _: NativeTypeParamId) {}
     fn outer_type_parameters(&self, _: NativeFunctionId) -> Vec<NativeTypeParamId> { Vec::new() }
+    fn contains_expression(&self, _: NativeExpressionId) -> bool { false }
+    fn is_context_sensitive(&self, _: NativeExpressionId) -> bool { false }
+    fn has_context_sensitive_parameters(&self, _: NativeExpressionId) -> bool { false }
+    fn contextual_parameter_indices(&self, _: NativeFunctionId) -> Vec<usize> { Vec::new() }
+    fn is_expression_descendant(&self, expression: NativeExpressionId, ancestor: NativeExpressionId) -> bool {
+        expression == ancestor
+    }
+    fn check_expression(&self, _: &mut Checker<'_, '_>, _: NativeExpressionId, _: Option<TypeId>, _: CheckMode) -> TypeId {
+        panic!("native expression provider is not installed")
+    }
+    fn parameters_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> Vec<SigParam> {
+        self.parameters(checker, declaration)
+    }
+    fn return_type_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> TypeId {
+        self.return_type(checker, declaration)
+    }
 }
 pub use shape::Members;
 pub use spans::compute_ecma_line_starts;
@@ -661,6 +677,7 @@ impl<'s> Program<'s> {
         Checker {
             p: self,
             native_function_provider: None,
+            native_function_contexts: Vec::new(),
             arena,
             task: Task::new_in(arena),
             left_frame: None,
@@ -1038,8 +1055,8 @@ impl Query {
 
 bitflags::bitflags! {
     /// `CheckMode`. `CheckModeNormal` is `empty()`.
-    #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-    struct CheckMode: u8 {
+    #[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+    pub struct CheckMode: u8 {
         const CONTEXTUAL = 1 << 0;
         const INFERENTIAL = 1 << 1;
         const SKIP_CONTEXT_SENSITIVE = 1 << 2;
@@ -1073,9 +1090,14 @@ struct ContextualInfo {
 }
 
 /// `InferenceContextInfo`
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ExpressionOrigin {
+    Ts(FileId, ExprId),
+    Native(NativeExpressionId),
+}
+
 struct InferenceContextInfo {
-    file: FileId,
-    node: ExprId,
+    origin: ExpressionOrigin,
     /// `None`: `pushInferenceContext(node, nil)`.
     context: Option<infer::Inference>,
 }
@@ -1158,6 +1180,7 @@ pub enum Requested {
 pub struct Checker<'p, 's> {
     pub p: &'p Program<'s>,
     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
+    native_function_contexts: Vec<NativeFunctionContext>,
     /// The arena of the thread that runs the task: for the records that the task creates, which may be
     /// published. Everything else that a task allocates is on the regular heap.
     pub arena: &'s Arena,
