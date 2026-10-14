@@ -4,7 +4,7 @@
 //! literal widening, member lookup, freshness and assignability use the pinned
 //! Bun core. Generic inference, branch flow and project services come later.
 
-use luanalysis_engine::{Engine, Property, Type};
+use luanalysis_engine::{Engine, Property, Type, TypeQueries};
 use luanalysis_syntax::{
     Expr, ExprKind, Name, Span, StmtKind, TypeAnnotation, TypeExpr, TypeExprKind,
 };
@@ -56,8 +56,8 @@ enum Write {
     Field(Reference, Type),
 }
 
-struct Checker {
-    engine: Engine,
+struct Checker<'a> {
+    engine: &'a mut dyn TypeQueries,
     locals: HashMap<String, Binding>,
     assigned_fields: HashMap<Reference, Type>,
     report: CheckReport,
@@ -80,34 +80,36 @@ pub fn check(source: &str) -> CheckReport {
             bindings: Vec::new(),
         };
     }
-    let mut checker = Checker {
-        engine: Engine::new(),
-        locals: HashMap::new(),
-        assigned_fields: HashMap::new(),
-        report: CheckReport::default(),
-    };
-    for statement in &file.statements {
-        match &statement.kind {
-            StmtKind::Local {
-                names,
-                values,
-                annotation,
-            } => checker.local(names, values, annotation.as_ref()),
-            StmtKind::Assign {
-                targets,
-                values,
-                annotation,
-            } => checker.assign(targets, values, annotation.as_ref()),
+    Engine::new().with_session(|engine| {
+        let mut checker = Checker {
+            engine,
+            locals: HashMap::new(),
+            assigned_fields: HashMap::new(),
+            report: CheckReport::default(),
+        };
+        for statement in &file.statements {
+            match &statement.kind {
+                StmtKind::Local {
+                    names,
+                    values,
+                    annotation,
+                } => checker.local(names, values, annotation.as_ref()),
+                StmtKind::Assign {
+                    targets,
+                    values,
+                    annotation,
+                } => checker.assign(targets, values, annotation.as_ref()),
+            }
         }
-    }
-    checker
-        .report
-        .diagnostics
-        .sort_by_key(|error| (error.span.start, error.span.end));
-    checker.report
+        checker
+            .report
+            .diagnostics
+            .sort_by_key(|error| (error.span.start, error.span.end));
+        checker.report
+    })
 }
 
-impl Checker {
+impl Checker<'_> {
     fn error(&mut self, code: &'static str, span: Span, message: impl Into<String>) {
         self.report.diagnostics.push(Diagnostic {
             code,

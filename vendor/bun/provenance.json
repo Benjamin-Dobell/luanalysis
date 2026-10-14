@@ -1,6 +1,13 @@
 {
   "upstream": "https://github.com/oven-sh/bun",
   "revision": "408c9374b266b45fe6b8260e09be73aa82a957cd",
+  "typescript_reference": {
+    "checker_version": "7.0.2",
+    "checker_version_source": "src/sema/resolve.rs",
+    "typescript_go_revision": "2bd066d87f5bafd315be9f40889d0a60b9e58e0b",
+    "typescript_test_revision": "4d4f005c8541e0255a9d8791205fdce326e462bc",
+    "reference_metadata_source": "test/cli/check/typescript-go/version.json"
+  },
   "crates": [
     "bun_alloc",
     "bun_collections",

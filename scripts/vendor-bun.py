@@ -159,7 +159,21 @@ pub const ENABLE_TINYCC: bool = false;
     # A reference copy for the small standalone-symbol shim in our own crate.
     original_native = "src/sema/standalone/native.rs"
     output("standalone-native.rs", git(source, "show", f"{REVISION}:{original_native}"), original_native)
+    reference_metadata = "test/cli/check/typescript-go/version.json"
+    reference_revisions = json.loads(git(source, "show", f"{REVISION}:{reference_metadata}"))
+    checker_version_source = "src/sema/resolve.rs"
+    checker_source = git(source, "show", f"{REVISION}:{checker_version_source}").decode()
+    checker_version = re.search(r'pub const VERSION_C: &core::ffi::CStr = c"([^\"]+)";', checker_source)
+    if checker_version is None:
+        raise SystemExit("cannot identify the pinned checker's TypeScript version")
     provenance = {"upstream": "https://github.com/oven-sh/bun", "revision": REVISION,
+                  "typescript_reference": {
+                      "checker_version": checker_version[1],
+                      "checker_version_source": checker_version_source,
+                      "typescript_go_revision": reference_revisions["microsoft/typescript-go"],
+                      "typescript_test_revision": reference_revisions["microsoft/TypeScript"],
+                      "reference_metadata_source": reference_metadata,
+                  },
                   "crates": sorted(closure), "manifest_adaptations": [
                       "Remove development dependency tables and binary/test/bench targets.",
                       "Replace Bun runtime workspace manifest with the library dependency closure."],

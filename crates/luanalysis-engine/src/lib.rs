@@ -82,6 +82,17 @@ pub struct Relation {
     pub target: String,
 }
 
+/// Queries available during one native checker session. All inputs and outputs
+/// are owned descriptions; checker lifetimes and type IDs remain private.
+pub trait TypeQueries {
+    fn is_assignable(&mut self, source: &Type, target: &Type) -> bool;
+    fn compare(&mut self, source: &Type, target: &Type) -> Relation;
+    fn widen(&mut self, ty: &Type) -> Type;
+    fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type>;
+    fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type;
+    fn format(&mut self, ty: &Type) -> String;
+}
+
 #[derive(Default)]
 pub struct Engine;
 
@@ -90,61 +101,89 @@ impl Engine {
         Self
     }
 
+    /// Runs a complete check with one worker, arena, program, and checker task.
+    /// Returning owned results ends the batch and frees its native state.
+    pub fn with_session<R: Send>(&self, work: impl FnOnce(&mut dyn TypeQueries) -> R + Send) -> R {
+        with_checker(|checker| work(&mut SessionQueries { checker }))
+    }
+
     pub fn is_assignable(&self, source: &Type, target: &Type) -> bool {
-        self.compare(source, target).assignable
+        self.with_session(|queries| queries.is_assignable(source, target))
     }
 
     pub fn compare(&self, source: &Type, target: &Type) -> Relation {
-        with_checker(|checker| {
-            let source = import_type(checker, source);
-            let target = import_type(checker, target);
-            Relation {
-                assignable: checker.is_assignable(source, target),
-                source: String::from_utf8_lossy(&checker.type_to_string(source)).into_owned(),
-                target: String::from_utf8_lossy(&checker.type_to_string(target)).into_owned(),
-            }
-        })
+        self.with_session(|queries| queries.compare(source, target))
     }
 
     /// Applies TypeScript's literal widening to a mutable initialized location.
     pub fn widen(&self, ty: &Type) -> Type {
-        with_checker(|checker| {
-            let ty = import_type(checker, ty);
-            let ty = checker.widen_literal(ty);
-            export_type(checker, ty)
-        })
+        self.with_session(|queries| queries.widen(ty))
     }
 
     pub fn property_type(&self, ty: &Type, name: &str) -> Option<Type> {
-        with_checker(|checker| {
-            let ty = import_type(checker, ty);
-            let name = checker.atoms().intern(name.as_bytes());
-            checker
-                .type_of_property(ty, name)
-                .map(|ty| export_type(checker, ty))
-        })
+        self.with_session(|queries| queries.property_type(ty, name))
     }
 
     /// The native checker's assignment transfer for an explicitly declared
     /// location. Its flow caller retains nonunions and reduces union members.
     pub fn assignment_value(&self, declared: &Type, assigned: &Type) -> Type {
-        with_checker(|checker| {
-            let declared = import_type(checker, declared);
-            let assigned = import_type(checker, assigned);
-            let value = if checker.is_union(declared) {
-                checker.assignment_reduced_type(declared, assigned)
-            } else {
-                declared
-            };
-            export_type(checker, value)
-        })
+        self.with_session(|queries| queries.assignment_value(declared, assigned))
     }
 
     pub fn format(&self, ty: &Type) -> String {
-        with_checker(|checker| {
-            let ty = import_type(checker, ty);
-            String::from_utf8_lossy(&checker.type_to_string(ty)).into_owned()
-        })
+        self.with_session(|queries| queries.format(ty))
+    }
+}
+
+struct SessionQueries<'a, 'p, 's> {
+    checker: &'a mut Checker<'p, 's>,
+}
+
+impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn is_assignable(&mut self, source: &Type, target: &Type) -> bool {
+        let source = import_type(self.checker, source);
+        let target = import_type(self.checker, target);
+        self.checker.is_assignable(source, target)
+    }
+
+    fn compare(&mut self, source: &Type, target: &Type) -> Relation {
+        let source = import_type(self.checker, source);
+        let target = import_type(self.checker, target);
+        Relation {
+            assignable: self.checker.is_assignable(source, target),
+            source: String::from_utf8_lossy(&self.checker.type_to_string(source)).into_owned(),
+            target: String::from_utf8_lossy(&self.checker.type_to_string(target)).into_owned(),
+        }
+    }
+
+    fn widen(&mut self, ty: &Type) -> Type {
+        let ty = import_type(self.checker, ty);
+        let ty = self.checker.widen_literal(ty);
+        export_type(self.checker, ty)
+    }
+
+    fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type> {
+        let ty = import_type(self.checker, ty);
+        let name = self.checker.atoms().intern(name.as_bytes());
+        self.checker
+            .type_of_property(ty, name)
+            .map(|ty| export_type(self.checker, ty))
+    }
+
+    fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type {
+        let declared = import_type(self.checker, declared);
+        let assigned = import_type(self.checker, assigned);
+        let value = if self.checker.is_union(declared) {
+            self.checker.assignment_reduced_type(declared, assigned)
+        } else {
+            declared
+        };
+        export_type(self.checker, value)
+    }
+
+    fn format(&mut self, ty: &Type) -> String {
+        let ty = import_type(self.checker, ty);
+        String::from_utf8_lossy(&self.checker.type_to_string(ty)).into_owned()
     }
 }
 
@@ -177,12 +216,12 @@ fn with_checker<R: Send>(work: impl FnOnce(&mut Checker<'_, '_>) -> R + Send) ->
                     &|_| {},
                 ));
                 let mut program = Program::new(&session, files);
-                let result = {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut checker = program.checker();
                     work(&mut checker)
-                };
+                }));
                 program.release();
-                result
+                result.unwrap_or_else(|error| std::panic::resume_unwind(error))
             })
             .expect("create native type-core worker")
             .join()
@@ -519,5 +558,63 @@ mod tests {
             engine.assignment_value(&Type::Boolean, &Type::BooleanLiteral(false)),
             Type::BooleanLiteral(false)
         );
+    }
+
+    #[test]
+    fn batch_assignment_and_member_queries_return_owned_results() {
+        let engine = Engine::new();
+        let declared = Type::Union(vec![
+            Type::Shape(vec![Property::new("value", Type::Number)]),
+            Type::Nil,
+        ]);
+        let (current, property, failure, printed) = engine.with_session(|queries| {
+            let inferred = queries.widen(&Type::NumberLiteral(42.0));
+            let assigned = Type::Shape(vec![
+                Property::new("value", inferred),
+                Property::new("extra", Type::String),
+            ]);
+            assert!(queries.is_assignable(&assigned, &declared));
+            let current = queries.assignment_value(&declared, &assigned);
+            let property = queries.property_type(&current, "value").unwrap();
+            assert_eq!(queries.property_type(&current, "extra"), None);
+            let failure = queries.compare(&Type::String, &property);
+            let printed = queries.format(&current);
+            (current, property, failure, printed)
+        });
+        assert_eq!(property, Type::Number);
+        assert!(!failure.assignable);
+        assert_eq!(failure.source, "string");
+        assert_eq!(failure.target, "number");
+        assert!(printed.contains("value: number"));
+        assert_eq!(engine.property_type(&current, "value"), Some(Type::Number));
+    }
+
+    #[test]
+    fn batch_panic_preserves_payload_and_allows_subsequent_queries() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct CallbackFailure(String);
+
+        let engine = Engine::new();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine.with_session(|queries| {
+                let record = Type::Shape(vec![Property::new("value", Type::Number)]);
+                assert_eq!(queries.property_type(&record, "value"), Some(Type::Number));
+                std::panic::panic_any(CallbackFailure("Lua check interrupted".into()));
+            });
+        }))
+        .expect_err("callback panic must reach the caller");
+        assert_eq!(
+            *panic
+                .downcast::<CallbackFailure>()
+                .expect("original typed payload"),
+            CallbackFailure("Lua check interrupted".into())
+        );
+        let result = engine.with_session(|queries| {
+            let inferred = queries.widen(&Type::NumberLiteral(42.0));
+            queries.compare(&inferred, &Type::Number)
+        });
+        assert!(result.assignable);
+        assert_eq!(result.source, "number");
+        assert_eq!(result.target, "number");
     }
 }
