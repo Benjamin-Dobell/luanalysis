@@ -26,7 +26,7 @@ fn annotation_and_mismatched_lua_values_preserve_native_spans() {
     assert_eq!(
         fields
             .iter()
-            .map(|field| field.name.text.as_str())
+            .map(type_field_name)
             .collect::<Vec<_>>(),
         ["title", "count"]
     );
@@ -179,13 +179,12 @@ fn negative_and_lua_hexadecimal_numbers_keep_original_spelling() {
 #[test]
 fn unsupported_lua_and_annotation_forms_are_reported_and_recover() {
     for unsupported in [
-        "local x = {1, 2}",
-        "local x = {[1] = 'one'}",
+        "local x = {[1] 'one'}",
         "local function f(..., value) end",
-        "---@type number[]",
+        "---@type number[index]",
         "---@type fun<T>(x: T): T",
-        "---@class MyClass",
-        "---@type { [string]: number }",
+        "---@overload fun(value: number): number",
+        "---@type { [string] number }",
         "---@type number |",
     ] {
         let source = format!("{unsupported}\nlocal recovery = 7\n");
@@ -379,7 +378,75 @@ fn callback_function_types_respect_surrounding_parameter_and_record_commas() {
     assert_eq!(callback.returns.len(), 1);
     let TypeExprKind::Record(fields) = &locals(&file, 1).2.unwrap().types[0].kind else { panic!("expected record") };
     assert_eq!(fields.len(), 2);
-    assert_eq!(fields[1].name.text, "count");
+    assert_eq!(type_field_name(&fields[1]), "count");
+}
+
+fn type_field_name(field: &TypeField) -> &str {
+    match &field.key { TypeFieldKey::Named(name) => &name.text, other => panic!("expected named key: {other:?}") }
+}
+
+#[test]
+fn table_constructors_preserve_named_dynamic_literal_and_sequence_keys_in_source_order() {
+    let source = "local value = {x = first(), [key()] = second(), before(), [1.0] = numeric(), ['1'] = text(), after(), ...}\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let ExprKind::Table(fields) = &locals(&file, 0).1[0].kind else { panic!("expected constructor") };
+    assert_eq!(fields.len(), 7);
+    let TableFieldKind::Named(name) = &fields[0].kind else { panic!("expected named field") };
+    assert_eq!(name.text, "x");
+    let TableFieldKind::Keyed(key) = &fields[1].kind else { panic!("expected dynamic key") };
+    assert_eq!(&source[key.span.start..key.span.end], "key()");
+    assert_eq!(&source[fields[1].value.span.start..fields[1].value.span.end], "second()");
+    assert!(key.span.end < fields[1].value.span.start);
+    assert_eq!(fields[2].kind, TableFieldKind::Sequence { index: 1 });
+    let TableFieldKind::Keyed(number) = &fields[3].kind else { panic!("expected numeric key") };
+    assert_eq!(number.kind, ExprKind::Number("1.0".to_owned()));
+    let TableFieldKind::Keyed(string) = &fields[4].kind else { panic!("expected string key") };
+    assert_eq!(string.kind, ExprKind::String(b"1".to_vec()));
+    assert_ne!(number.kind, string.kind);
+    assert_eq!(fields[5].kind, TableFieldKind::Sequence { index: 2 });
+    assert_eq!(fields[6].kind, TableFieldKind::Sequence { index: 3 });
+    assert_eq!(fields[6].value.kind, ExprKind::Vararg);
+    assert!(fields.windows(2).all(|fields| fields[0].span.end < fields[1].span.start));
+}
+
+#[test]
+fn constructor_sequence_positions_do_not_coerce_or_discard_explicit_keys() {
+    let source = "local value = {[1] = 'first', 'sequence', x = 1, [0x1p+0] = 'same numeric spelling', x = 2, ['\\255'] = 3}\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let ExprKind::Table(fields) = &locals(&file, 0).1[0].kind else { panic!("expected constructor") };
+    assert_eq!(fields.len(), 6);
+    assert_eq!(fields[1].kind, TableFieldKind::Sequence { index: 1 });
+    assert!(matches!(&fields[2].kind, TableFieldKind::Named(name) if name.text == "x"));
+    assert!(matches!(&fields[4].kind, TableFieldKind::Named(name) if name.text == "x"));
+    assert!(matches!(&fields[3].kind, TableFieldKind::Keyed(key) if key.kind == ExprKind::Number("0x1p+0".to_owned())));
+    assert!(matches!(&fields[5].kind, TableFieldKind::Keyed(key) if key.kind == ExprKind::String(vec![255])));
+}
+
+#[test]
+fn constructors_accept_all_lua_field_separators_and_recover_malformed_keys() {
+    let file = parse("local value = {1; 2, [name] = 3; key = 4,}\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    for invalid in ["{[key] value}", "{[key = value}", "{one two}", "{[ ] = value}"] {
+        let file = parse(&format!("local value = {invalid}\nlocal recovery = 7\n"));
+        assert!(!file.diagnostics.is_empty(), "{invalid}");
+        assert!(file.statements.iter().any(|stmt| matches!(&stmt.kind, StmtKind::Local { names, .. } if names.iter().any(|name| name.text == "recovery"))), "{invalid}: {:?}", file.diagnostics);
+    }
+}
+
+#[test]
+fn constructor_dynamic_key_and_sequence_depth_are_bounded() {
+    for expression in [
+        format!("{{[root{}] = 1}}", ".field".repeat(8192)),
+        format!("{}1{}", "{".repeat(1024), "}".repeat(1024)),
+    ] {
+        let file = parse(&format!("local value = {expression}\nlocal recovery = 7\n"));
+        assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("nesting exceeds")));
+        assert!(file.statements.iter().any(|stmt| matches!(&stmt.kind, StmtKind::Local { names, .. } if names.iter().any(|name| name.text == "recovery"))));
+        drop(file.clone());
+        drop(file);
+    }
 }
 
 #[test]

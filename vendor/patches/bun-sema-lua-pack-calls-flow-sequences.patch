@@ -1,0 +1,1621 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -37,6 +37,13 @@
+         min: usize,
+         max: Option<usize>,
+     },
++    PackArity {
++        index: usize,
++        actual_min: usize,
++        actual_max: Option<usize>,
++        min: usize,
++        max: Option<usize>,
++    },
+     Argument {
+         index: usize,
+         source: TypeId,
+@@ -64,6 +71,8 @@
+     /// An already checked value with no TS syntax node.
+     Resolved(TypeId),
+     Native(NativeExpressionId),
++    ResolvedPack(NativeResultPack),
++    NativePack(NativeExpressionId),
+     Expr(ExprId),
+     /// `createSyntheticExpression`: a type, and its label (`tupleNameSource`) or `NONE`. The last
+     /// field is the node it is positioned at: the argument whose tuple it is an element of, the
+@@ -84,7 +93,7 @@
+     /// The node at which an error about it is reported.
+     pub(super) fn node(self) -> ExprId {
+         match self {
+-            Arg::Resolved(_) | Arg::Native(_) => panic!("native argument has no TS syntax node"),
++            Arg::Resolved(_) | Arg::Native(_) | Arg::ResolvedPack(_) | Arg::NativePack(_) => panic!("native argument has no TS syntax node"),
+             Arg::Expr(e)
+             | Arg::Type(_, _, e)
+             | Arg::Spread(_, _, _, e)
+@@ -94,7 +103,7 @@
+ 
+     /// `isSpreadArgument`
+     pub(super) fn is_spread(self) -> bool {
+-        matches!(self, Arg::Spread(..) | Arg::SpreadElement(..))
++        matches!(self, Arg::Spread(..) | Arg::SpreadElement(..) | Arg::ResolvedPack(_) | Arg::NativePack(_))
+     }
+ }
+ 
+@@ -460,8 +469,10 @@
+     ) -> ResolvedTypeCall {
+         if self.is_any(callee) {
+             for &arg in args {
+-                if let Arg::Native(expression) = arg {
+-                    self.check_native_argument(expression, None, None, CheckMode::empty());
++                match arg {
++                    Arg::Native(expression) => { self.check_native_argument(expression, None, None, CheckMode::empty()); }
++                    Arg::NativePack(expression) => { self.check_native_argument_pack(expression, None, None, CheckMode::empty()); }
++                    _ => {}
+                 }
+             }
+             return ResolvedTypeCall {
+@@ -498,13 +509,8 @@
+             }
+         }
+         let sig = candidates[0];
+-        let params = self.sig_params(sig);
+         let error = if self.sig_this_type(sig).is_some_and(|ty| ty != TypeId::VOID) {
+             Some(ResolvedTypeCallError::UnsupportedThis)
+-        } else if self.non_array_rest_type(&params).is_some() {
+-            // The native applicability worker compares this rest as a whole argument tuple.
+-            // Comparing positions separately would discard correlations between tuple members.
+-            Some(ResolvedTypeCallError::UnsupportedRest)
+         } else {
+             None
+         };
+@@ -517,7 +523,7 @@
+         }
+         let is_single_non_generic = self.sig_type_params(sig).is_empty();
+         let has_context_sensitive = args.iter().any(|arg| match arg {
+-            Arg::Native(expression) => self.native_function_provider
++            Arg::Native(expression) | Arg::NativePack(expression) => self.native_function_provider
+                 .is_some_and(|provider| provider.is_context_sensitive(*expression)),
+             _ => false,
+         });
+@@ -557,12 +563,25 @@
+             } else {
+                 let params = self.sig_params(selected);
+                 if !self.has_correct_arity(&state, &params) {
+-                    errors.push(ResolvedTypeCallError::Arity {
+-                        actual: args.len(),
+-                        min: self.min_argument_count(&params),
+-                        max: (!self.has_effective_rest_parameter(&params))
+-                            .then(|| self.parameter_count(&params)),
+-                    });
++                    let (min, max) = if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(&params).is_some() {
++                        let expected = NativeResultPack { ty: self.rest_type_at_position(&params, 0, false) };
++                        self.native_pack_count_bounds(expected)
++                    } else {
++                        (self.min_argument_count(&params), (!self.has_effective_rest_parameter(&params)).then(|| self.parameter_count(&params)))
++                    };
++                    if let Some(index) = args.iter().position(|arg| arg.is_spread()) {
++                        let actual = self.native_argument_sequence_type(args, index, TypeId::UNKNOWN, None, CheckMode::empty());
++                        let (actual_min, actual_max) = self.native_pack_count_bounds(NativeResultPack { ty: actual });
++                        errors.push(ResolvedTypeCallError::PackArity {
++                            index, actual_min: index + actual_min, actual_max: actual_max.and_then(|maximum| index.checked_add(maximum)),
++                            min, max,
++                        });
++                    } else {
++                        errors.push(ResolvedTypeCallError::Arity {
++                            actual: args.len(),
++                            min, max,
++                        });
++                    }
+                 } else if let Some((index, source, target)) = self.resolved_signature_argument_error(
+                     selected, args, Relation::Assignable, CheckMode::empty(),
+                 ) {
+@@ -1081,7 +1100,7 @@
+             Some(&(Arg::Resolved(ty) | Arg::Type(ty, ..) | Arg::Spread(ty, ..) | Arg::SpreadElement(ty, ..))) => {
+                 Some(ty)
+             }
+-            Some(&Arg::Native(_)) => unreachable!("native argument in a TS immediate invocation"),
++            Some(&(Arg::Native(_) | Arg::ResolvedPack(_) | Arg::NativePack(_))) => unreachable!("native argument in a TS immediate invocation"),
+             None if own.default.is_some() => None,
+             None => Some(self.undefined_widening()),
+         }
+@@ -1112,6 +1131,9 @@
+     ) -> bool {
+         let args = s.args;
+         if matches!(s.site, CallSite::Native { .. }) {
++            if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(params).is_some() {
++                return self.native_argument_pack_has_correct_arity(args, params);
++            }
+             return self.has_correct_arity_for_count(params, matches!(params, List::Own(_)), args.len(), None, false);
+         }
+         let (file, call, node, _) = s.ts_site();
+@@ -1942,6 +1964,9 @@
+         } else {
+             args.len()
+         };
++        let arg_count = if matches!(s.site, CallSite::Native { .. }) {
++            args.iter().position(|arg| arg.is_spread()).unwrap_or(arg_count).min(arg_count)
++        } else { arg_count };
+         if let Some(rest) = rest_type
+             && let Some(k) = context.params.iter().position(|&p| p == rest)
+             && !args[arg_count..].iter().any(|a| a.is_spread())
+@@ -1977,11 +2002,18 @@
+                 self.infer(context, arg_type, param_type, 0);
+             }
+         }
++        let rest_type = if matches!(s.site, CallSite::Native { .. })
++            && (rest_type.is_some() || args.iter().any(|arg| arg.is_spread()))
++        {
++            Some(self.rest_type_at_position(&params, arg_count, false))
++        } else { rest_type };
+         if let Some(rest) = rest_type
+             && self.could_contain_type_variables(rest)
+         {
+-            let (file, _, _, _) = s.ts_site();
+-            let spread_type = self.spread_argument_type(file, args, arg_count, rest, Some(context), check_mode);
++            let spread_type = match s.site {
++                CallSite::Ts { file, .. } => self.spread_argument_type(file, args, arg_count, rest, Some(context), check_mode),
++                CallSite::Native { .. } => self.native_argument_sequence_type(args, arg_count, rest, Some(context), check_mode),
++            };
+             self.infer(context, spread_type, rest, 0);
+         }
+         self.inference_mapper(context)
+@@ -2121,6 +2153,7 @@
+         let (ty, node) = match arg {
+             Arg::Resolved(ty) => return ty,
+             Arg::Native(expression) => return self.check_native_argument(expression, Some(contextual_type), inference_context, check_mode),
++            Arg::ResolvedPack(_) | Arg::NativePack(_) => panic!("native result pack requires a whole-pack argument demand"),
+             Arg::Expr(e) => {
+                 let contextual_type = self.without_no_infer(contextual_type);
+                 return self.check_expression_with_contextual_type(
+@@ -2992,6 +3025,31 @@
+         args: &[Arg],
+         index: usize,
+         rest: TypeId,
++        context: Option<&mut Inference>,
++        check_mode: CheckMode,
++    ) -> TypeId {
++        self.argument_sequence_type(Some(file), args, index, rest, context, check_mode)
++    }
++
++    pub(super) fn native_argument_sequence_type(
++        &mut self,
++        args: &[Arg],
++        index: usize,
++        rest: TypeId,
++        context: Option<&mut Inference>,
++        check_mode: CheckMode,
++    ) -> TypeId {
++        self.argument_sequence_type(None, args, index, rest, context, check_mode)
++    }
++
++    /// Shared tuple construction and literal policy of `getSpreadArgumentType`. The language
++    /// adapter supplies scalar or whole-pack demands; only TS spreads use JS iteration/HIR.
++    fn argument_sequence_type(
++        &mut self,
++        file: Option<FileId>,
++        args: &[Arg],
++        index: usize,
++        rest: TypeId,
+         mut context: Option<&mut Inference>,
+         check_mode: CheckMode,
+     ) -> TypeId {
+@@ -2999,11 +3057,15 @@
+         // "both the parameter and the argument are ...x forms"
+         if index + 1 >= args.len() {
+             let spread_type = match args.last() {
++                Some(&Arg::ResolvedPack(pack)) => return pack.ty,
++                Some(&Arg::NativePack(expression)) => return self.check_native_argument_pack(
++                    expression, (rest != TypeId::UNKNOWN).then_some(NativeResultPack { ty: rest }), context, check_mode,
++                ).ty,
+                 Some(&Arg::Spread(_, list, ..)) => Some(list),
+                 Some(&Arg::SpreadElement(_, _, operand, _)) => {
+                     let contextual_type = self.without_no_infer(rest);
+                     Some(self.check_expression_with_contextual_type(
+-                        file,
++                        file.expect("TS spread argument without a file"),
+                         operand,
+                         contextual_type,
+                         context.as_deref_mut(),
+@@ -3018,7 +3080,7 @@
+                 }
+                 let element = match args.last() {
+                     Some(&Arg::SpreadElement(_, _, operand, _)) => {
+-                        self.check_iterated_type_of_spread_element(file, spread_type, operand)
++                        self.check_iterated_type_of_spread_element(file.expect("TS spread argument without a file"), spread_type, operand)
+                     }
+                     _ => self.iterated_type_of_spread(spread_type),
+                 };
+@@ -3034,6 +3096,13 @@
+         let mut flags: SmallVec<[ElemFlags; 8]> = SmallVec::with_capacity(length);
+         for i in index..args.len() {
+             let (ty, flag) = match args[i] {
++                Arg::ResolvedPack(pack) => (pack.ty, ElemFlags::VARIADIC),
++                Arg::NativePack(expression) => {
++                    let expected = if rest == TypeId::UNKNOWN { None }
++                        else if self.is_tuple(rest) || self.is_union(rest) { self.native_pack_contextual_tail(NativeResultPack { ty: rest }, &elems) }
++                        else { Some(NativeResultPack { ty: rest }) };
++                    (self.check_native_argument_pack(expression, expected, context.as_deref_mut(), check_mode).ty, ElemFlags::VARIADIC)
++                }
+                 Arg::Spread(_, list, ..) | Arg::SpreadElement(_, list, ..)
+                     if self.is_array_like(list) =>
+                 {
+@@ -3041,7 +3110,7 @@
+                 }
+                 Arg::Spread(element, ..) => (element, ElemFlags::REST),
+                 Arg::SpreadElement(_, list, operand, _) => (
+-                    self.check_iterated_type_of_spread_element(file, list, operand),
++                    self.check_iterated_type_of_spread_element(file.expect("TS spread argument without a file"), list, operand),
+                     ElemFlags::REST,
+                 ),
+                 arg => {
+@@ -3051,13 +3120,11 @@
+                     } else {
+                         self.contextual_indexed_access(rest, i - index)
+                     };
+-                    let ty = self.check_argument(
+-                        file,
+-                        arg,
+-                        contextual,
+-                        context.as_deref_mut(),
+-                        check_mode,
+-                    );
++                    let ty = match arg {
++                        Arg::Resolved(ty) => ty,
++                        Arg::Native(expression) => self.check_native_argument(expression, Some(contextual), context.as_deref_mut(), check_mode),
++                        _ => self.check_argument(file.expect("TS argument without a file"), arg, contextual, context.as_deref_mut(), check_mode),
++                    };
+                     let has_primitive_contextual_type =
+                         is_const || self.may_be_primitive_or_key(contextual);
+                     (
+@@ -3388,6 +3455,36 @@
+         }
+         self.restore_lent_inference_context(inference_context);
+         ty
++    }
++
++    pub(super) fn check_native_argument_pack(
++        &mut self,
++        expression: NativeExpressionId,
++        expected: Option<NativeResultPack>,
++        mut inference_context: Option<&mut Inference>,
++        mode: CheckMode,
++    ) -> NativeResultPack {
++        let provider = self.native_function_provider.expect("native expression without a provider");
++        assert!(provider.contains_expression(expression), "foreign native expression identity");
++        let (mode, outside) = self.push_inference_context_for_origin(
++            ExpressionOrigin::Native(expression), inference_context.as_deref_mut(), mode,
++        );
++        let pack = provider.check_expression_pack(self, expression, expected, mode);
++        if let Some(alternatives) = self.native_pack_alternatives(pack) {
++            for alternative in alternatives {
++                for ty in alternative.fixed.iter().map(|slot| slot.ty).chain(alternative.tail) {
++                    if let Some(sig) = self.single_call_signature(ty)
++                        && self.sig_native_context(sig).is_some()
++                    {
++                        self.sig_params(sig);
++                        self.sig_return(sig);
++                    }
++                }
++            }
++        }
++        self.restore_inference_recheck(outside);
++        self.restore_lent_inference_context(inference_context);
++        pack
+     }
+ 
+     fn restore_inference_recheck(&mut self, outside: OutsideInferenceContext) {
+diff --git a/src/sema/check/errors_call.rs b/src/sema/check/errors_call.rs
+--- a/src/sema/check/errors_call.rs
++++ b/src/sema/check/errors_call.rs
+@@ -983,8 +983,12 @@
+         check_mode: CheckMode,
+     ) -> Option<(usize, TypeId, TypeId)> {
+         let mut params = self.sig_params(sig);
+-        assert!(self.non_array_rest_type(&params).is_none());
+-        for (i, &arg) in args.iter().enumerate() {
++        let rest = self.non_array_rest_type(&params);
++        let boundary = args.iter().position(|arg| arg.is_spread()).unwrap_or(args.len());
++        let boundary = if rest.is_some() {
++            boundary.min(self.parameter_count(&params).saturating_sub(1))
++        } else { boundary };
++        for (i, &arg) in args.iter().enumerate().take(boundary) {
+             if let List::Own(_) = params {
+                 params = self.sig_params_up_to(sig, i + 1);
+             }
+@@ -1004,6 +1008,14 @@
+             if !self.is_resolved_call_argument_applicable(actual, expected, relation) {
+                 self.note_parameter_types_resolved(sig, &params, i + 1);
+                 return Some((i, actual, expected));
++            }
++        }
++        if boundary < args.len() || rest.is_some() {
++            let expected = self.rest_type_at_position(&params, boundary, false);
++            let actual = self.native_argument_sequence_type(args, boundary, expected, None, check_mode);
++            if !self.is_resolved_call_argument_applicable(actual, expected, relation) {
++                self.note_parameter_types_resolved(sig, &params, boundary);
++                return Some((boundary, actual, expected));
+             }
+         }
+         self.note_parameter_types_resolved(sig, &params, args.len());
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -406,14 +406,37 @@
+                 for indexer in &target.indexers {
+                     for actual in &source.indexers {
+                         if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
+-                        sources.extend([actual.key, if source.fresh { self.without_undefined(actual.value) } else { actual.value }]);
++                        sources.extend([actual.key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+                         targets.extend([indexer.key, indexer.value]);
+                     }
+                     for actual in &source.fields {
+                         let key = self.native_table_key_type(actual.key);
+                         if !self.native_table_inference_key_matches(key, indexer.key) { continue }
+-                        sources.extend([key, if source.fresh { self.without_undefined(actual.value) } else { actual.value }]);
++                        sources.extend([key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+                         targets.extend([indexer.key, indexer.value]);
++                    }
++                    for actual in &source.sequence_tails {
++                        if !self.native_table_inference_key_matches(TypeId::NUMBER, indexer.key)
++                            || !self.could_contain_type_variables(indexer.key) && !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
++                        sources.extend([TypeId::NUMBER, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
++                        targets.extend([indexer.key, indexer.value]);
++                    }
++                }
++                for tail in &target.sequence_tails {
++                    for actual in &source.sequence_tails {
++                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
++                        targets.push(tail.value);
++                    }
++                    for actual in &source.indexers {
++                        if !self.native_sequence_type_overlaps(tail.start, actual.key) { continue }
++                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
++                        targets.push(tail.value);
++                    }
++                    for actual in &source.fields {
++                        if !matches!(actual.key, NativeTableKey::Integer(index) if index >= tail.start)
++                            || target.fields.iter().any(|field| field.key == actual.key) { continue }
++                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
++                        targets.push(tail.value);
+                     }
+                 }
+                 self.infer_from_type_arguments(n, &sources, &targets, &[]);
+@@ -3165,6 +3188,7 @@
+                 TypeData::NativeTable(table) => {
+                     left.extend(table.fields.iter().map(|field| field.value));
+                     for indexer in &table.indexers { left.extend([indexer.key, indexer.value]); }
++                    left.extend(table.sequence_tails.iter().map(|tail| tail.value));
+                 }
+                 TypeData::Anon { mapper, .. }
+                 | TypeData::NativeTypeParam { mapper, .. }
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -696,10 +696,15 @@
+                     value: self.instantiate(indexer.value, mapper),
+                     ..*indexer
+                 }).collect();
++                let sequence_tails: Vec<NativeTableSequenceTail> = table.sequence_tails.iter().map(|tail| NativeTableSequenceTail {
++                    value: self.instantiate(tail.value, mapper), ..*tail
++                }).collect();
+                 self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+                     fields: self.list(&fields),
+                     indexers: self.list(&indexers),
++                    sequence_tails: self.list(&sequence_tails),
+                     fresh: table.fresh,
++                    collision_candidates: table.collision_candidates,
+                 })))
+             }
+             TypeData::NativeArray { element, readonly } => {
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -167,6 +167,11 @@
+     }
+     fn check_expression(&self, _: &mut Checker<'_, '_>, _: NativeExpressionId, _: Option<TypeId>, _: CheckMode) -> TypeId {
+         panic!("native expression provider is not installed")
++    }
++    fn check_expression_pack(&self, checker: &mut Checker<'_, '_>, expression: NativeExpressionId, expected: Option<NativeResultPack>, mode: CheckMode) -> NativeResultPack {
++        let expected = expected.map(|pack| checker.native_pack_slot(pack, 0));
++        let ty = self.check_expression(checker, expression, expected, mode);
++        checker.native_scalar_pack(ty)
+     }
+     /// Written recipes are declaration-space; contextual indices already use expected-type space.
+     fn parameters_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> Vec<SigParam> {
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -72,6 +72,9 @@
+ 
+ #[derive(Clone, Debug)]
+ pub enum NativePredicate {
++    And(Box<NativePredicate>, Box<NativePredicate>),
++    Or(Box<NativePredicate>, Box<NativePredicate>),
++    Not(Box<NativePredicate>),
+     Truthy {
+         subject: Option<NativeReferenceKey>,
+         value: NativeValueKey,
+@@ -166,7 +169,23 @@
+     pub incomplete: bool,
+ }
+ 
++/// Original immutable sibling projections of one physical Lua result list.
++/// The provider establishes source identity/immutability; the checker narrows
++/// the complete result pack through the shared flow traversal.
++#[derive(Clone, Copy, Debug)]
++pub struct NativePackProjection {
++    pub group: NativeReferenceKey,
++    pub value: NativeValueKey,
++    pub input: NativeFlowKey,
++    pub index: usize,
++}
++
+ pub trait NativeFlowProvider {
++    fn pack_projection(&self, _: NativeReferenceKey) -> Option<NativePackProjection> { None }
++    fn value_pack(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> NativeResultPack {
++        let ty = self.value_type(value, input, checker);
++        checker.native_scalar_pack(ty)
++    }
+     fn contains_graph(&self, graph: NativeGraphKey) -> bool;
+     fn contains_reference(&self, reference: NativeReferenceKey) -> bool;
+     fn node(&self, node: NativeFlowKey) -> Option<NativeFlowNode>;
+@@ -209,6 +228,7 @@
+     loop_types: FxHashMap<LoopKey, TypeId>,
+     pub loops: Vec<NativeLoopFrame>,
+     value_types: FxHashMap<ValueContext, TypeId>,
++    pack_types: FxHashMap<ValueContext, NativeResultPack>,
+     call_effects: FxHashMap<ValueContext, NativeCallEffects>,
+     reachable: FxHashMap<NativeFlowKey, bool>,
+     latest_reachable: Option<(NativeFlowKey, bool)>,
+@@ -229,6 +249,7 @@
+ 
+ enum NativeTransfer {
+     Predicate(NativePredicate, bool),
++    PackPredicate { predicate: NativePredicate, sense: bool, group: NativeReferenceKey },
+     Nothing,
+ }
+ 
+@@ -236,6 +257,22 @@
+     Impossible,
+     Known(bool),
+     Unknown,
++}
++
++fn predicate_subject(predicate: &NativePredicate) -> Option<NativeReferenceKey> {
++    match predicate {
++        NativePredicate::Truthy { subject, .. } => *subject,
++        NativePredicate::Equal { subject, .. } | NativePredicate::RuntimeType { subject, .. } => Some(*subject),
++        _ => None,
++    }
++}
++
++fn predicate_mentions(provider: &dyn NativeFlowProvider, predicate: &NativePredicate, reference: NativeReferenceKey, pack: bool) -> bool {
++    match predicate {
++        NativePredicate::And(left, right) | NativePredicate::Or(left, right) => predicate_mentions(provider, left, reference, pack) || predicate_mentions(provider, right, reference, pack),
++        NativePredicate::Not(inner) => predicate_mentions(provider, inner, reference, pack),
++        _ => predicate_subject(predicate).is_some_and(|subject| if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) } else { subject == reference }),
++    }
+ }
+ 
+ fn numeric_first_entry(
+@@ -304,6 +341,8 @@
+ 
+     fn predicate_valid(&self, at: NativeFlowKey, predicate: &NativePredicate) -> bool {
+         let (subject, input) = match predicate {
++            NativePredicate::And(left, right) | NativePredicate::Or(left, right) => return self.predicate_valid(at, left) && self.predicate_valid(at, right),
++            NativePredicate::Not(inner) => return self.predicate_valid(at, inner),
+             NativePredicate::Truthy { subject, input, .. } => (*subject, *input),
+             NativePredicate::Equal { subject, input, .. } => (Some(*subject), *input),
+             NativePredicate::RuntimeType { subject, input, .. } => (Some(*subject), *input),
+@@ -319,7 +358,7 @@
+                     true
+                 });
+             }
+-            NativePredicate::Unsupported(_) => return true,
++            NativePredicate::Unsupported(feature) => { self.provider.flow_error(at, NativeFlowError::Unsupported(feature)); return false; },
+         };
+         if !self.edge(at, input) {
+             return false;
+@@ -424,20 +463,16 @@
+                 if !self.edge(at, before) || !self.predicate_valid(at, &predicate) {
+                     return FlowStep::Value(TypeId::ERROR);
+                 }
+-                let applies = match &predicate {
+-                    NativePredicate::Truthy { subject, .. } => *subject == Some(walk.reference),
+-                    NativePredicate::Equal { subject, .. } => *subject == walk.reference,
+-                    NativePredicate::RuntimeType { subject, .. } => *subject == walk.reference,
+-                    NativePredicate::NumericIteration { .. } => false,
+-                    NativePredicate::Unsupported(feature) => {
+-                        self.provider
+-                            .flow_error(at, NativeFlowError::Unsupported(feature));
+-                        return FlowStep::Value(TypeId::ERROR);
+-                    }
++                let applies = predicate_mentions(self.provider, &predicate, walk.reference, false);
++                let projection = predicate_mentions(self.provider, &predicate, walk.reference, true);
++                let transfer = if applies {
++                    Some(NativeTransfer::Predicate(predicate, sense))
++                } else {
++                    projection.then_some(NativeTransfer::PackPredicate { predicate, sense, group: walk.reference })
+                 };
+                 FlowStep::Follow {
+                     before,
+-                    transfer: applies.then_some(NativeTransfer::Predicate(predicate, sense)),
++                    transfer,
+                     count_passed: true,
+                 }
+             }
+@@ -487,6 +522,10 @@
+         previous: FlowType,
+     ) -> FlowType {
+         let ty = match transfer {
++            NativeTransfer::PackPredicate { predicate, sense, group } => {
++                checker.native_narrow_pack(self.provider, NativeResultPack { ty: previous.ty }, &predicate, sense, group).ty
++            }
++            NativeTransfer::Predicate(ref predicate @ (NativePredicate::And(..) | NativePredicate::Or(..) | NativePredicate::Not(..)), sense) => checker.native_narrow_predicate(self.provider, previous.ty, predicate, sense, walk.reference),
+             NativeTransfer::Nothing => previous.ty,
+             NativeTransfer::Predicate(_, _) if previous.ty.is_never() => previous.ty,
+             NativeTransfer::Predicate(NativePredicate::Truthy { .. }, sense) => {
+@@ -630,9 +669,11 @@
+     ) -> R {
+         let cache = std::mem::take(&mut checker.flow_memo.native_state.value_types);
+         let calls = std::mem::take(&mut checker.flow_memo.native_state.call_effects);
++        let packs = std::mem::take(&mut checker.flow_memo.native_state.pack_types);
+         let result = work(checker);
+         checker.flow_memo.native_state.value_types = cache;
+         checker.flow_memo.native_state.call_effects = calls;
++        checker.flow_memo.native_state.pack_types = packs;
+         result
+     }
+ }
+@@ -699,6 +740,9 @@
+                     return ReachStep::Value(false);
+                 }
+                 match predicate {
++                    predicate @ (NativePredicate::And(..) | NativePredicate::Or(..) | NativePredicate::Not(..)) => {
++                        if checker.native_predicate_possible(self.provider, &predicate, sense) { ReachStep::Follow(before) } else { ReachStep::Value(false) }
++                    }
+                     NativePredicate::Truthy { value, input, .. } => {
+                         let value = checker.native_flow_value(self.provider, value, input);
+                         if checker.lua_truthiness_type(value, sense).is_never() {
+@@ -764,6 +808,122 @@
+ }
+ 
+ impl<'s, 'p> Checker<'s, 'p> {
++    fn native_predicate_possible(&mut self, provider: &dyn NativeFlowProvider, predicate: &NativePredicate, sense: bool) -> bool {
++        match predicate {
++            NativePredicate::And(left, right) => if sense { self.native_predicate_possible(provider, left, true) && self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) || self.native_predicate_possible(provider, right, false) },
++            NativePredicate::Or(left, right) => if sense { self.native_predicate_possible(provider, left, true) || self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) && self.native_predicate_possible(provider, right, false) },
++            NativePredicate::Not(inner) => self.native_predicate_possible(provider, inner, !sense),
++            NativePredicate::Truthy { value, input, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.lua_truthiness_type(value, sense).is_never() },
++            NativePredicate::RuntimeType { value, input, kind, equals, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.native_runtime_type(value, kind, *equals == sense).is_never() },
++            _ => true,
++        }
++    }
++
++    fn native_narrow_predicate(&mut self, provider: &dyn NativeFlowProvider, ty: TypeId, predicate: &NativePredicate, sense: bool, reference: NativeReferenceKey) -> TypeId {
++        match predicate {
++            NativePredicate::Not(inner) => self.native_narrow_predicate(provider, ty, inner, !sense, reference),
++            NativePredicate::And(left, right) | NativePredicate::Or(left, right) => {
++                let conjunction = matches!(predicate, NativePredicate::And(..));
++                if conjunction == sense {
++                    let left = self.native_narrow_predicate(provider, ty, left, sense, reference);
++                    self.native_narrow_predicate(provider, left, right, sense, reference)
++                } else {
++                    let bypass = self.native_narrow_predicate(provider, ty, left, sense, reference);
++                    let evaluated = self.native_narrow_predicate(provider, ty, left, !sense, reference);
++                    let evaluated = self.native_narrow_predicate(provider, evaluated, right, sense, reference);
++                    self.union_reduced(&[bypass, evaluated])
++                }
++            }
++            _ if predicate_subject(predicate) != Some(reference) => if self.native_predicate_possible(provider, predicate, sense) { ty } else { TypeId::NEVER },
++            NativePredicate::Truthy { .. } => self.lua_truthiness_type(ty, sense),
++            NativePredicate::Equal { other, input, equals, .. } => { let other = self.native_flow_value(provider, *other, *input); self.native_equal_flow_type(ty, other, *equals == sense) },
++            NativePredicate::RuntimeType { kind, equals, .. } => self.native_runtime_type(ty, kind, *equals == sense),
++            _ => ty,
++        }
++    }
++
++    fn native_narrow_pack(&mut self, provider: &dyn NativeFlowProvider, pack: NativeResultPack, predicate: &NativePredicate, sense: bool, group: NativeReferenceKey) -> NativeResultPack {
++        match predicate {
++            NativePredicate::Not(inner) => return self.native_narrow_pack(provider, pack, inner, !sense, group),
++            NativePredicate::And(left, right) | NativePredicate::Or(left, right) => {
++                let conjunction = matches!(predicate, NativePredicate::And(..));
++                if conjunction == sense {
++                    let left = self.native_narrow_pack(provider, pack, left, sense, group);
++                    return self.native_narrow_pack(provider, left, right, sense, group);
++                }
++                let bypass = self.native_narrow_pack(provider, pack, left, sense, group);
++                let evaluated = self.native_narrow_pack(provider, pack, left, !sense, group);
++                let evaluated = self.native_narrow_pack(provider, evaluated, right, sense, group);
++                return self.native_join_packs(&[bypass, evaluated]);
++            }
++            _ => {}
++        }
++        let projection = predicate_subject(predicate).and_then(|reference| provider.pack_projection(reference)).filter(|projection| projection.group == group);
++        let Some(projection) = projection else { return if self.native_predicate_possible(provider, predicate, sense) { pack } else { NativeResultPack { ty: TypeId::NEVER } } };
++        let index = projection.index;
++        let Some(alternatives) = self.native_pack_alternatives(pack) else { return pack };
++        let mut narrowed = Vec::new();
++        for mut alternative in alternatives {
++            let row = self.native_result_pack(std::slice::from_ref(&alternative));
++            let value = self.native_pack_slot(row, index);
++            let value = match predicate {
++                NativePredicate::Truthy { .. } => self.lua_truthiness_type(value, sense),
++                NativePredicate::Equal { other, input, equals, .. } => {
++                    let other = self.native_flow_value(provider, *other, *input);
++                    self.native_equal_flow_type(value, other, *equals == sense)
++                }
++                NativePredicate::RuntimeType { kind, equals, .. } => self.native_runtime_type(value, kind, *equals == sense),
++                _ => value,
++            };
++            if value.is_never() { continue }
++            if let Some(slot) = alternative.fixed.get_mut(index) {
++                slot.ty = value;
++                if !self.contains_undefined(value) { slot.optional = false; }
++            }
++            narrowed.push(alternative);
++        }
++        self.native_result_pack(&narrowed)
++    }
++
++    pub fn native_flow_pack_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativePackProjection, ordinary: TypeId) -> NativeFlowResult {
++        if projection.input.graph != at.graph {
++            provider.flow_error(at, NativeFlowError::ForeignEdge { from: at, to: projection.input });
++            return NativeFlowResult { ty: TypeId::ERROR, incomplete: false };
++        }
++        if projection.group.graph != at.graph || !provider.contains_reference(projection.group) {
++            provider.flow_error(at, NativeFlowError::InvalidReference(projection.group));
++            return NativeFlowResult { ty: TypeId::ERROR, incomplete: false };
++        }
++        let initial = self.native_flow_pack_value(provider, projection.value, projection.input);
++        if !self.is_union(initial.ty) {
++            return NativeFlowResult { ty: ordinary, incomplete: false };
++        }
++        let result = self.native_flow_type(provider, at, projection.group, initial.ty, initial.ty);
++        let ty = if result.ty == initial.ty {
++            ordinary
++        } else {
++            let projected = self.native_pack_slot(NativeResultPack { ty: result.ty }, projection.index);
++            // Keep the binding's declared view. Correlation removes impossible
++            // union constituents; it must not expose constructor-only fields.
++            self.map_type(ordinary, |checker, part| {
++                if checker.are_comparable(part, projected) { part } else { TypeId::NEVER }
++            })
++        };
++        NativeFlowResult { ty, incomplete: result.incomplete }
++    }
++
++    fn native_flow_pack_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeResultPack {
++        if value.snapshot != input.graph.snapshot || !provider.contains_graph(input.graph) || provider.node(input).is_none() {
++            provider.flow_error(input, NativeFlowError::InvalidValue(value));
++            return NativeResultPack { ty: TypeId::ERROR };
++        }
++        let key = (value, input);
++        if let Some(&pack) = self.flow_memo.native_state.pack_types.get(&key) { return pack }
++        let (pack, stored) = self.run_memoizable(|checker| provider.value_pack(value, input, checker));
++        if stored.is_some() && !self.is_stack_low() { self.flow_memo.native_state.pack_types.insert(key, pack); }
++        pack
++    }
++
+     fn native_numeric_constant(
+         &mut self,
+         provider: &dyn NativeFlowProvider,
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+--- a/src/sema/check/native_packs.rs
++++ b/src/sema/check/native_packs.rs
+@@ -1,4 +1,4 @@
+-use super::{Checker, ResolvedTypeCall, ResolvedTypeCallError};
++use super::{CheckMode, Checker, ResolvedTypeCall, ResolvedTypeCallError};
+ use super::call::Arg;
+ use crate::session::ArenaBox;
+ use crate::types::{ElemFlags, MapperId, NativeResultPack, Shape, SigData, SigId, SigParam, TypeData, TypeId};
+@@ -33,7 +33,44 @@
+     pub errors: Vec<ResolvedTypeCallError>,
+ }
+ 
++#[derive(Copy, Clone, Debug)]
++pub enum NativeCallArgument {
++    Resolved(TypeId),
++    Expression(crate::types::NativeExpressionId),
++    Expand(NativeResultPack),
++    ExpandExpression(crate::types::NativeExpressionId),
++}
++
+ impl<'p, 's> Checker<'p, 's> {
++    pub fn call_native_arguments(
++        &mut self,
++        callee: TypeId,
++        call: Option<crate::types::NativeExpressionId>,
++        args: &[NativeCallArgument],
++        type_args: &[TypeId],
++        expected: Option<NativeResultPack>,
++    ) -> NativeResultPackCall {
++        assert!(call.is_none_or(|call| self.contains_native_expression(call)));
++        let args: Vec<Arg> = args.iter().enumerate().map(|(index, &arg)| match arg {
++            NativeCallArgument::Resolved(ty) => Arg::Resolved(ty),
++            NativeCallArgument::Expression(expression) => {
++                assert!(self.contains_native_expression(expression));
++                Arg::Native(expression)
++            }
++            NativeCallArgument::Expand(pack) => {
++                assert_eq!(index + 1, args.len(), "only the final native argument expands");
++                Arg::ResolvedPack(pack)
++            }
++            NativeCallArgument::ExpandExpression(expression) => {
++                assert_eq!(index + 1, args.len(), "only the final native argument expands");
++                assert!(self.contains_native_expression(expression));
++                Arg::NativePack(expression)
++            }
++        }).collect();
++        let resolved = self.resolve_native_arguments_with_result_pack(callee, &args, type_args, None, expected);
++        self.result_pack_of_native_call(resolved)
++    }
++
+     pub fn call_resolved_result_pack(
+         &mut self,
+         callee: TypeId,
+@@ -64,9 +101,7 @@
+     fn result_pack_of_native_call(&mut self, resolved: ResolvedTypeCall) -> NativeResultPackCall {
+         let pack = match resolved.sig {
+             Some(sig) => self.sig_result_pack(sig),
+-            None if self.is_any(resolved.ret) => self.native_result_pack(&[NativePackAlternative {
+-                fixed: Vec::new(), tail: Some(resolved.ret),
+-            }]),
++            None if self.is_any(resolved.ret) => NativeResultPack { ty: resolved.ret },
+             None => self.native_scalar_pack(resolved.ret),
+         };
+         NativeResultPackCall { pack, errors: resolved.errors }
+@@ -186,6 +221,48 @@
+ 
+     pub fn native_pack_type(&self, pack: NativeResultPack) -> TypeId {
+         pack.ty
++    }
++
++    pub fn native_pack_count_bounds(&mut self, pack: NativeResultPack) -> (usize, Option<usize>) {
++        let Some(alternatives) = self.native_pack_alternatives(pack) else { return (0, None) };
++        let minimum = alternatives.iter().map(|alternative| alternative.fixed.iter()
++            .filter(|slot| !slot.optional).count()).min().unwrap_or(0);
++        let maximum = alternatives.iter().try_fold(0, |maximum, alternative| {
++            alternative.tail.is_none().then_some(maximum.max(alternative.fixed.len()))
++        });
++        (minimum, maximum)
++    }
++
++    /// The existing tuple relation checks physical required/optional/rest lengths after values
++    /// have been erased. A still-symbolic generic rest is rechecked by `chooseOverload` after
++    /// signature instantiation, as in TS.
++    pub(super) fn native_argument_pack_has_correct_arity(&mut self, args: &[Arg], params: &[SigParam]) -> bool {
++        let expected = NativeResultPack { ty: self.rest_type_at_position(params, 0, false) };
++        let Some(mut expected_rows) = self.native_pack_alternatives(expected) else { return true };
++        for row in &mut expected_rows {
++            for slot in &mut row.fixed { slot.ty = TypeId::ANY }
++            if row.tail.is_some() { row.tail = Some(TypeId::ANY) }
++        }
++        let mut actual_rows = if let Some(&arg) = args.last().filter(|arg| arg.is_spread()) {
++            let pack = match arg {
++                Arg::ResolvedPack(pack) => pack,
++                Arg::NativePack(expression) => self.check_native_argument_pack(expression, None, None, CheckMode::empty()),
++                _ => unreachable!("TS spread in native call arity"),
++            };
++            if self.is_any(pack.ty) { return true }
++            let Some(rows) = self.native_pack_alternatives(pack) else { return true };
++            rows
++        } else { vec![NativePackAlternative { fixed: Vec::new(), tail: None }] };
++        let prefix = args.len() - usize::from(args.last().is_some_and(|arg| arg.is_spread()));
++        for row in &mut actual_rows {
++            let mut fixed = vec![NativePackSlot { ty: TypeId::ANY, optional: false }; prefix];
++            fixed.extend(row.fixed.iter().map(|slot| NativePackSlot { ty: TypeId::ANY, optional: slot.optional }));
++            row.fixed = fixed;
++            if row.tail.is_some() { row.tail = Some(TypeId::ANY) }
++        }
++        let actual = self.native_result_pack(&actual_rows);
++        let expected = self.native_result_pack(&expected_rows);
++        self.native_pack_assignable(actual, expected)
+     }
+ 
+     /// Descriptors are unavailable while a symbolic variadic pack has not been instantiated.
+@@ -247,6 +324,28 @@
+         self.union(&slots)
+     }
+ 
++    /// Context describes existing expected positions. It does not invent nil for an unannotated
++    /// destination after the end of a fixed contract.
++    pub fn native_pack_contextual_slot(&mut self, pack: NativeResultPack, index: usize) -> Option<TypeId> {
++        if self.is_any(pack.ty) { return Some(pack.ty) }
++        let parts = self.parts(pack.ty).to_vec();
++        let mut slots = Vec::new();
++        for part in parts {
++            if let Some(element) = self.array_element(part) {
++                slots.push(element);
++            } else if let TypeData::Tuple { flags, .. } = self.data(part) {
++                let fixed = Self::fixed_length(flags);
++                if index < fixed {
++                    let ty = self.type_arguments(part)[index];
++                    slots.push(if flags[index].contains(ElemFlags::OPTIONAL) { self.optional(ty) } else { ty });
++                } else if fixed < flags.len() {
++                    slots.push(self.rest_element_type(part, index));
++                }
++            }
++        }
++        (!slots.is_empty()).then(|| self.union(&slots))
++    }
++
+     /// Preserve tail-length correlation while padding or truncating an assignment result list.
+     pub fn native_adjust_pack(&mut self, pack: NativeResultPack, count: usize) -> Result<NativeResultPack, NativePackAdjustmentError> {
+         let Some(alternatives) = self.native_pack_alternatives(pack) else {
+@@ -289,6 +388,9 @@
+ 
+     /// Prefix items have already been scalarized; only the final pack expands.
+     pub fn native_concat_pack(&mut self, prefix: &[TypeId], tail: NativeResultPack) -> NativeResultPack {
++        if prefix.is_empty() {
++            return tail;
++        }
+         let mut elems = prefix.to_vec();
+         let mut flags = vec![ElemFlags::REQUIRED; elems.len()];
+         elems.push(tail.ty);
+@@ -299,6 +401,25 @@
+     pub fn native_join_packs(&mut self, packs: &[NativeResultPack]) -> NativeResultPack {
+         let types: Vec<TypeId> = packs.iter().map(|pack| pack.ty).collect();
+         NativeResultPack { ty: self.union(&types) }
++    }
++
++    /// A whole row must permit falling through; projecting nullable first slots loses that
++    /// distinction. The single-result policy is the same as TS's explicit-return check.
++    pub fn native_pack_allows_implicit_return(&mut self, pack: NativeResultPack) -> bool {
++        if self.is_any(pack.ty) { return true }
++        let Some(alternatives) = self.native_pack_alternatives(pack) else { return false };
++        alternatives.iter().any(|alternative| {
++            alternative.fixed.iter().all(|slot| slot.optional)
++                || (alternative.fixed.len() == 1 && alternative.tail.is_none()
++                    && self.allows_implicit_return_without_explicit_return(alternative.fixed[0].ty))
++        })
++    }
++
++    /// Preserve actual zero-result fallthrough separately from a written scalar nil contract.
++    pub fn native_pack_with_implicit_empty(&mut self, pack: NativeResultPack) -> NativeResultPack {
++        if self.is_any(pack.ty) || !self.native_pack_allows_implicit_return(pack) { return pack }
++        let empty = self.native_result_pack(&[NativePackAlternative { fixed: Vec::new(), tail: None }]);
++        self.native_join_packs(&[pack, empty])
+     }
+ 
+     /// Context for the final expression after already checked scalar prefix values.
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -2,6 +2,7 @@
+ 
+ use super::*;
+ use super::relate::{Relater, Relation, Ternary, REC_BOTH};
++use super::native_packs::{NativePackAlternative, NativePackSlot};
+ use crate::types::List;
+ 
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+@@ -34,11 +35,23 @@
+     pub sparse: bool,
+ }
+ 
++/// Open sequence entries have integer keys at or above `start`; they do not imply a broad Lua
++/// numeric indexer and cannot overwrite the types of an earlier prefix or fractional key.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeTableSequenceTail {
++    pub start: i64,
++    pub value: TypeId,
++    pub readonly: bool,
++}
++
+ #[derive(PartialEq, Eq, Hash, Debug)]
+ pub struct NativeTableData<'s> {
+     pub fields: List<'s, NativeTableField>,
+     pub indexers: List<'s, NativeTableIndexer>,
++    pub sequence_tails: List<'s, NativeTableSequenceTail>,
+     pub fresh: bool,
++    /// Inferred constructor stores are collision candidates even after freshness is widened.
++    pub collision_candidates: bool,
+ }
+ 
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+@@ -57,6 +70,9 @@
+     ReadOnly { key: NativeTableAccessKey },
+     RequiredDeletion { key: NativeTableKey },
+     DuplicateDeclaredField { key: NativeTableKey },
++    InvalidSequenceStart { start: i64 },
++    SequenceTooComplex { count: usize, alternatives: usize },
++    UnresolvedSequence,
+ }
+ 
+ impl NativeTableKey {
+@@ -76,6 +92,171 @@
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
++    fn native_sequence_contains(start: i64, key: NativeTableKey) -> bool {
++        matches!(key, NativeTableKey::Integer(index) if index >= start)
++    }
++
++    fn native_sequence_access_matches(&mut self, start: i64, key: NativeTableAccessKey) -> bool {
++        match key {
++            NativeTableAccessKey::Literal(key) => Self::native_sequence_contains(start, key),
++            NativeTableAccessKey::Type(ty) => self.is_any(ty) || self.is_assignable(ty, TypeId::NUMBER),
++        }
++    }
++
++    pub(super) fn native_sequence_type_overlaps(&mut self, start: i64, ty: TypeId) -> bool {
++        let key = self.native_table_access(NativeTableAccessKey::Type(ty));
++        key.is_ok_and(|key| self.native_sequence_access_matches(start, key))
++    }
++
++    pub fn native_table_with_sequence(
++        &mut self,
++        fields: &[NativeTableField],
++        indexers: &[NativeTableIndexer],
++        flavor: NativeTableFlavor,
++        start: i64,
++        pack: NativeResultPack,
++        expected: Option<TypeId>,
++    ) -> Result<TypeId, NativeTableError> {
++        self.native_table_with_sequence_and_tails(fields, indexers, &[], flavor, start, pack, expected)
++    }
++
++    /// A final Lua sequence expression expands complete physical result rows. A missing result
++    /// performs no store; an explicit nil candidate deletes an entry through the constructor.
++    pub fn native_table_with_sequence_and_tails(
++        &mut self,
++        fields: &[NativeTableField],
++        indexers: &[NativeTableIndexer],
++        sequence_tails: &[NativeTableSequenceTail],
++        flavor: NativeTableFlavor,
++        start: i64,
++        pack: NativeResultPack,
++        expected: Option<TypeId>,
++    ) -> Result<TypeId, NativeTableError> {
++        self.native_table_with_sequence_and_policy(fields, indexers, sequence_tails, flavor, flavor == NativeTableFlavor::Literal, start, pack, expected)
++    }
++
++    pub fn native_table_with_sequence_and_policy(
++        &mut self,
++        fields: &[NativeTableField],
++        indexers: &[NativeTableIndexer],
++        sequence_tails: &[NativeTableSequenceTail],
++        flavor: NativeTableFlavor,
++        collision_candidates: bool,
++        start: i64,
++        pack: NativeResultPack,
++        expected: Option<TypeId>,
++    ) -> Result<TypeId, NativeTableError> {
++        if start < 1 { return Err(NativeTableError::InvalidSequenceStart { start }) }
++        let alternatives = match self.native_pack_alternatives(pack) {
++            Some(rows) => rows,
++            None if self.is_any(pack.ty) => vec![NativePackAlternative { fixed: Vec::new(), tail: Some(pack.ty) }],
++            None => return Err(NativeTableError::UnresolvedSequence),
++        };
++        let width = alternatives.iter().map(|row| row.fixed.len()).max().unwrap_or(0);
++        let open_start = alternatives.iter().filter(|row| row.tail.is_some())
++            .map(|row| start.checked_add(row.fixed.len() as i64)).collect::<Option<Vec<_>>>()
++            .ok_or(NativeTableError::InvalidSequenceStart { start })?
++            .into_iter().min();
++        let rows = alternatives.iter().try_fold(0usize, |rows, row| {
++            let minimum = row.fixed.iter().position(|slot| slot.optional).unwrap_or(row.fixed.len());
++            rows.checked_add(row.fixed.len() - minimum + 1)
++        });
++        if width >= 10_000 || rows.and_then(|rows| rows.checked_mul(width.max(1))).is_none_or(|slots| slots >= 100_000) {
++            return Err(NativeTableError::SequenceTooComplex { count: width, alternatives: rows.unwrap_or(usize::MAX) });
++        }
++        let mut tables = Vec::new();
++        for row in &alternatives {
++            let minimum = row.fixed.iter().position(|slot| slot.optional).unwrap_or(row.fixed.len());
++            for present in minimum..=row.fixed.len() {
++                let mut actual_fields = fields.to_vec();
++                for (offset, slot) in row.fixed[..present].iter().enumerate() {
++                    let index = start.checked_add(offset as i64).ok_or(NativeTableError::InvalidSequenceStart { start })?;
++                    actual_fields.push(NativeTableField {
++                        key: NativeTableKey::Integer(index), value: slot.ty, optional: false, readonly: false,
++                    });
++                }
++                let mut tails = sequence_tails.to_vec();
++                if present == row.fixed.len() && let Some(value) = row.tail {
++                    let start = start.checked_add(present as i64).ok_or(NativeTableError::InvalidSequenceStart { start })?;
++                    tails.push(NativeTableSequenceTail { start, value, readonly: false });
++                }
++                let table = self.native_table_with_context_and_sequence_policy(&actual_fields, indexers, &tails, flavor, collision_candidates, expected)?;
++                tables.push(self.native_table_sequence_presence(table, start, width, open_start)?);
++            }
++        }
++        Ok(self.union(&tables))
++    }
++
++    /// Absence is a fact in each whole row, rather than an invented nil store. These keys are
++    /// possible sequence positions in another row; unrelated absent closed-shape keys still fail.
++    fn native_table_sequence_presence(&mut self, table: TypeId, start: i64, width: usize, open_start: Option<i64>) -> Result<TypeId, NativeTableError> {
++        let TypeData::NativeTable(data) = self.data(table) else { return Err(NativeTableError::NotTable { ty: table }) };
++        let mut fields = data.fields.to_vec();
++        let mut tails = data.sequence_tails.to_vec();
++        let mut missing = |c: &mut Self, index: i64| {
++            let key = NativeTableKey::Integer(index);
++            if fields.iter().any(|field| field.key == key)
++                || tails.iter().any(|tail| Self::native_sequence_contains(tail.start, key))
++                || data.indexers.iter().any(|indexer| c.is_assignable(c.native_table_key_type(key), indexer.key)) { return }
++            fields.push(NativeTableField { key, value: TypeId::NEVER, optional: true, readonly: false });
++        };
++        for offset in 0..width {
++            let index = start.checked_add(offset as i64).ok_or(NativeTableError::InvalidSequenceStart { start })?;
++            missing(self, index);
++        }
++        if let Some(open) = open_start {
++            match tails.iter().map(|tail| tail.start).min() {
++                None => tails.push(NativeTableSequenceTail { start: open, value: TypeId::NEVER, readonly: false }),
++                Some(current) if current > open => {
++                    let gap = usize::try_from(current - open).map_err(|_| NativeTableError::SequenceTooComplex { count: usize::MAX, alternatives: 1 })?;
++                    if gap >= 10_000 { return Err(NativeTableError::SequenceTooComplex { count: gap, alternatives: 1 }) }
++                    for index in open..current { missing(self, index); }
++                }
++                _ => {}
++            }
++        }
++        self.native_table_from_description_with_policy(&fields, &data.indexers, &tails, data.fresh, data.collision_candidates)
++    }
++
++    /// Context remains a union of whole numeric rows, including gaps and optional presence.
++    /// Selecting a field context and independently unioning positions would lose correlations.
++    pub fn native_table_sequence_context(&mut self, expected: TypeId, start: i64) -> Option<NativeResultPack> {
++        if start < 1 { return None }
++        if self.is_any(expected) { return Some(NativeResultPack { ty: expected }) }
++        let expected = self.base_constraint_or_type(expected);
++        let parts = self.parts(expected).to_vec();
++        let mut alternatives = Vec::new();
++        for &part in &parts {
++            let TypeData::NativeTable(table) = self.data(part) else { continue };
++            let end = table.fields.iter().filter_map(|field| match field.key {
++                NativeTableKey::Integer(index) if index >= start => index.checked_add(1), _ => None,
++            }).chain(table.sequence_tails.iter().map(|tail| tail.start.max(start))).max().unwrap_or(start);
++            let count = usize::try_from(end.checked_sub(start)?).ok()?;
++            if count >= 10_000 || count.checked_mul(parts.len().max(1)).is_none_or(|slots| slots >= 100_000) { return None }
++            let mut fixed = Vec::with_capacity(count);
++            for index in start..end {
++                let literal = NativeTableKey::Integer(index);
++                let field = table.fields.iter().find(|field| field.key == literal);
++                let mut indexed = Vec::new();
++                for tail in &table.sequence_tails { if Self::native_sequence_contains(tail.start, literal) { indexed.push(tail.value); } }
++                let key = self.native_table_key_type(literal);
++                for indexer in &table.indexers { if self.is_assignable(key, indexer.key) { indexed.push(indexer.value); } }
++                let ty = match field {
++                    Some(field) => field.value,
++                    None if indexed.is_empty() => TypeId::UNDEFINED,
++                    None if table.collision_candidates => self.union(&indexed),
++                    None => self.intersection(&indexed),
++                };
++                fixed.push(NativePackSlot { ty, optional: field.is_none_or(|field| field.optional || self.contains_undefined(field.value)) });
++            }
++            let mut values: Vec<_> = table.sequence_tails.iter().map(|tail| tail.value).collect();
++            for indexer in &table.indexers { if self.is_assignable(TypeId::NUMBER, indexer.key) { values.push(indexer.value); } }
++            let tail = if values.is_empty() { None } else if table.collision_candidates { Some(self.union(&values)) } else { Some(self.intersection(&values)) };
++            alternatives.push(NativePackAlternative { fixed, tail });
++        }
++        (!alternatives.is_empty()).then(|| self.native_result_pack(&alternatives))
++    }
++
+     /// Import a checked immutable description without re-running constructor inference. In
+     /// particular, contextual singleton literals and generic substitutions must survive export.
+     pub fn native_table_from_description(
+@@ -83,6 +264,27 @@
+         fields: &[NativeTableField],
+         indexers: &[NativeTableIndexer],
+         fresh: bool,
++    ) -> Result<TypeId, NativeTableError> {
++        self.native_table_from_description_with_sequence_tails(fields, indexers, &[], fresh)
++    }
++
++    pub fn native_table_from_description_with_sequence_tails(
++        &mut self,
++        fields: &[NativeTableField],
++        indexers: &[NativeTableIndexer],
++        sequence_tails: &[NativeTableSequenceTail],
++        fresh: bool,
++    ) -> Result<TypeId, NativeTableError> {
++        self.native_table_from_description_with_policy(fields, indexers, sequence_tails, fresh, fresh)
++    }
++
++    pub fn native_table_from_description_with_policy(
++        &mut self,
++        fields: &[NativeTableField],
++        indexers: &[NativeTableIndexer],
++        sequence_tails: &[NativeTableSequenceTail],
++        fresh: bool,
++        collision_candidates: bool,
+     ) -> Result<TypeId, NativeTableError> {
+         let mut fields = fields.to_vec();
+         for field in &mut fields { field.key = field.key.normalize()?; }
+@@ -99,8 +301,14 @@
+         }
+         let mut indexers = indexers.to_vec();
+         indexers.sort_by_key(|indexer| indexer.key.0);
++        let mut sequence_tails = sequence_tails.to_vec();
++        for tail in &sequence_tails {
++            if tail.start < 1 { return Err(NativeTableError::InvalidSequenceStart { start: tail.start }) }
++        }
++        sequence_tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
+         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+-            fields: self.list(&fields), indexers: self.list(&indexers), fresh,
++            fields: self.list(&fields), indexers: self.list(&indexers),
++            sequence_tails: self.list(&sequence_tails), fresh, collision_candidates,
+         }))))
+     }
+ 
+@@ -118,6 +326,29 @@
+         fields: &[NativeTableField],
+         indexers: &[NativeTableIndexer],
+         flavor: NativeTableFlavor,
++        expected: Option<TypeId>,
++    ) -> Result<TypeId, NativeTableError> {
++        self.native_table_with_context_and_sequence_tails(fields, indexers, &[], flavor, expected)
++    }
++
++    pub fn native_table_with_context_and_sequence_tails(
++        &mut self,
++        fields: &[NativeTableField],
++        indexers: &[NativeTableIndexer],
++        sequence_tails: &[NativeTableSequenceTail],
++        flavor: NativeTableFlavor,
++        expected: Option<TypeId>,
++    ) -> Result<TypeId, NativeTableError> {
++        self.native_table_with_context_and_sequence_policy(fields, indexers, sequence_tails, flavor, flavor == NativeTableFlavor::Literal, expected)
++    }
++
++    pub fn native_table_with_context_and_sequence_policy(
++        &mut self,
++        fields: &[NativeTableField],
++        indexers: &[NativeTableIndexer],
++        sequence_tails: &[NativeTableSequenceTail],
++        flavor: NativeTableFlavor,
++        collision_candidates: bool,
+         expected: Option<TypeId>,
+     ) -> Result<TypeId, NativeTableError> {
+         let fresh = flavor == NativeTableFlavor::Literal;
+@@ -125,15 +356,17 @@
+         for &field in fields {
+             let key = field.key.normalize()?;
+             let mut field = NativeTableField { key, ..field };
+-            if fresh {
++            if collision_candidates {
+                 field.optional |= self.contains_undefined(field.value);
+                 field.value = self.without_undefined(field.value);
++            }
++            if fresh {
+                 let contextual = expected.and_then(|expected| self.native_table_value_context(expected, NativeTableAccessKey::Literal(key)));
+                 field.value = self.widen_literal_for_context(field.value, contextual);
+                 field.value = self.get_widened_type(field.value);
+             }
+             if let Some(previous) = merged.iter_mut().find(|previous| previous.key == key) {
+-                if !fresh {
++                if !collision_candidates {
+                     return Err(NativeTableError::DuplicateDeclaredField { key });
+                 }
+                 previous.value = self.union_reduced(&[previous.value, field.value]);
+@@ -144,7 +377,7 @@
+             }
+         }
+         // Nil-valued constructor fields are absent, including every candidate of a collision.
+-        if fresh {
++        if collision_candidates {
+             merged.retain(|field| !field.value.is_never());
+         }
+         let mut domains: Vec<NativeTableIndexer> = Vec::with_capacity(indexers.len());
+@@ -160,18 +393,35 @@
+                 indexer.value = self.get_widened_type(indexer.value);
+             }
+             if let Some(previous) = domains.iter_mut().find(|previous| previous.key == indexer.key) {
+-                previous.value = if fresh {
++                previous.value = if collision_candidates {
+                     self.union_reduced(&[previous.value, indexer.value])
+                 } else {
+                     self.intersection(&[previous.value, indexer.value])
+                 };
+                 previous.sparse |= indexer.sparse;
+-                previous.readonly = if fresh { previous.readonly && indexer.readonly } else { previous.readonly || indexer.readonly };
++                previous.readonly = if collision_candidates { previous.readonly && indexer.readonly } else { previous.readonly || indexer.readonly };
+             } else {
+                 domains.push(indexer);
+             }
+         }
+-        if fresh {
++        let mut tails: Vec<NativeTableSequenceTail> = Vec::with_capacity(sequence_tails.len());
++        for &tail in sequence_tails {
++            if tail.start < 1 { return Err(NativeTableError::InvalidSequenceStart { start: tail.start }) }
++            let mut tail = tail;
++            if fresh {
++                let contextual = expected.and_then(|expected| self.native_table_sequence_context(expected, tail.start))
++                    .and_then(|pack| self.native_pack_alternatives(pack))
++                    .map(|rows| self.union(&rows.iter().flat_map(|row| row.fixed.iter().map(|slot| slot.ty).chain(row.tail)).collect::<Vec<_>>()));
++                tail.value = self.widen_literal_for_context(tail.value, contextual);
++                tail.value = self.get_widened_type(tail.value);
++            }
++            if let Some(previous) = tails.iter_mut().find(|previous| previous.start == tail.start) {
++                previous.value = if collision_candidates { self.union_reduced(&[previous.value, tail.value]) }
++                    else { self.intersection(&[previous.value, tail.value]) };
++                previous.readonly = if collision_candidates { previous.readonly && tail.readonly } else { previous.readonly || tail.readonly };
++            } else { tails.push(tail); }
++        }
++        if collision_candidates {
+             for field in &mut merged {
+                 let key_type = self.native_table_key_type(field.key);
+                 for indexer in &domains {
+@@ -181,17 +431,28 @@
+                         field.value = self.union_reduced(&[field.value, present]);
+                     }
+                 }
++                for tail in &tails {
++                    if Self::native_sequence_contains(tail.start, field.key) {
++                        field.optional |= self.contains_undefined(tail.value);
++                        let present = self.without_undefined(tail.value);
++                        field.value = self.union_reduced(&[field.value, present]);
++                    }
++                }
+             }
+             // Deletion candidates affect collision presence above, but nil is never a stored
+             // entry. Sparse metadata preserves missing reads after this type is widened/stored.
+             for indexer in &mut domains { indexer.value = self.without_undefined(indexer.value); }
++            for tail in &mut tails { tail.value = self.without_undefined(tail.value); }
+         }
+         merged.sort_by(|a, b| self.native_table_compare_keys(a.key, b.key));
+         domains.sort_by_key(|indexer| indexer.key.0);
++        tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
+         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+             fields: self.list(&merged),
+             indexers: self.list(&domains),
++            sequence_tails: self.list(&tails),
+             fresh,
++            collision_candidates,
+         }))))
+     }
+ 
+@@ -222,6 +483,9 @@
+     /// operations report the invalid schema instead of weakening it or rebuilding a recipe.
+     pub fn native_table_description_error(&self, ty: TypeId) -> Option<NativeTableError> {
+         let TypeData::NativeTable(table) = self.data(ty) else { return None };
++        if let Some(tail) = table.sequence_tails.iter().find(|tail| tail.start < 1) {
++            return Some(NativeTableError::InvalidSequenceStart { start: tail.start });
++        }
+         table.indexers.iter().find_map(|indexer| {
+             (!self.native_table_valid_key_type(indexer.key)).then_some(NativeTableError::InvalidKey {
+                 key: NativeTableAccessKey::Type(indexer.key),
+@@ -293,6 +557,7 @@
+         }
+         let base = self.base_constraint_or_type(table);
+         if base != table { return self.native_table_read(base, key) }
++        if self.is_array_or_tuple(table) { return Err(NativeTableError::NotTable { ty: table }) }
+         let TypeData::NativeTable(data) = self.data(table) else {
+             if let NativeTableAccessKey::Literal(NativeTableKey::String(name)) = key
+                 && self.is_object_type(table)
+@@ -309,8 +574,22 @@
+         let key_type = self.native_table_access_type(key);
+         let mut values = Vec::new();
+         for indexer in &data.indexers {
+-            if self.is_assignable(key_type, indexer.key) {
++            if self.is_assignable(key_type, indexer.key)
++                || data.collision_candidates && self.is_assignable(indexer.key, key_type)
++            {
+                 values.push(if indexer.sparse { self.optional(indexer.value) } else { indexer.value });
++            }
++        }
++        for tail in &data.sequence_tails {
++            if self.native_sequence_access_matches(tail.start, key) {
++                values.push(self.optional(tail.value));
++            }
++        }
++        if (!data.sequence_tails.is_empty() || data.collision_candidates) && let NativeTableAccessKey::Type(_) = key {
++            for field in &data.fields {
++                if self.is_assignable(self.native_table_key_type(field.key), key_type) {
++                    values.push(if field.optional { self.optional(field.value) } else { field.value });
++                }
+             }
+         }
+         if values.is_empty() {
+@@ -320,7 +599,9 @@
+             }
+             return Err(NativeTableError::MissingKey { key });
+         }
+-        Ok(if data.fresh { self.union_reduced(&values) } else { self.intersection(&values) })
++        Ok(if data.collision_candidates || !data.sequence_tails.is_empty() && matches!(key, NativeTableAccessKey::Type(_)) {
++            self.union_reduced(&values)
++        } else { self.intersection(&values) })
+     }
+ 
+     pub fn native_table_value_context(&mut self, expected: TypeId, key: NativeTableAccessKey) -> Option<TypeId> {
+@@ -365,6 +646,7 @@
+         }
+         let base = self.base_constraint_or_type(table);
+         if base != table { return self.native_table_write(base, key, value) }
++        if self.is_array_or_tuple(table) { return Err(NativeTableError::NotTable { ty: table }) }
+         let TypeData::NativeTable(data) = self.data(table) else {
+             if let NativeTableAccessKey::Literal(NativeTableKey::String(name)) = key
+                 && let Some(expected) = self.write_type_of_property(table, name)
+@@ -373,6 +655,11 @@
+             }
+             return Err(NativeTableError::NotTable { ty: table });
+         };
++        for tail in &data.sequence_tails {
++            if tail.readonly && self.native_sequence_access_matches(tail.start, key) {
++                return Err(NativeTableError::ReadOnly { key });
++            }
++        }
+         if let NativeTableAccessKey::Literal(literal) = key
+             && let Some(field) = data.fields.iter().find(|field| field.key == literal)
+         {
+@@ -394,6 +681,28 @@
+                 return Err(NativeTableError::ValueType { value, expected: indexer.value });
+             }
+         }
++        for tail in &data.sequence_tails {
++            if !self.native_sequence_access_matches(tail.start, key) { continue }
++            matched = true;
++            let present = self.without_undefined(value);
++            if !self.is_assignable(present, tail.value) {
++                return Err(NativeTableError::ValueType { value, expected: tail.value });
++            }
++        }
++        if !data.sequence_tails.is_empty() && let NativeTableAccessKey::Type(_) = key {
++            for field in &data.fields {
++                if !self.is_assignable(self.native_table_key_type(field.key), key_type) { continue }
++                matched = true;
++                if field.readonly { return Err(NativeTableError::ReadOnly { key }) }
++                if self.contains_undefined(value) && !field.optional && !self.contains_undefined(field.value) {
++                    return Err(NativeTableError::RequiredDeletion { key: field.key });
++                }
++                let present = self.without_undefined(value);
++                if !self.is_assignable(present, field.value) {
++                    return Err(NativeTableError::ValueType { value, expected: field.value });
++                }
++            }
++        }
+         if matched { Ok(()) } else if !data.indexers.is_empty() {
+             let expected = self.union(&data.indexers.iter().map(|indexer| indexer.key).collect::<Vec<_>>());
+             Err(NativeTableError::KeyType { key: key_type, expected })
+@@ -413,26 +722,51 @@
+         if source.indexers.iter().chain(target.indexers.iter()).any(|indexer| !self.native_table_valid_key_type(indexer.key)) {
+             return Ternary::FALSE;
+         }
+-        if identity && (source.fields.len() != target.fields.len() || source.indexers.len() != target.indexers.len()) {
++        if identity && (source.fields.len() != target.fields.len() || source.indexers.len() != target.indexers.len()
++            || source.sequence_tails.len() != target.sequence_tails.len()
++            || (!source.indexers.is_empty() || !source.sequence_tails.is_empty()) && source.collision_candidates != target.collision_candidates)
++        {
+             return Ternary::FALSE;
+         }
+         if source.fresh && !identity {
+             for field in &source.fields {
++                if field.optional && field.value.is_never() { continue }
+                 if target.fields.iter().any(|other| other.key == field.key) { continue }
+                 let key = self.native_table_key_type(field.key);
+-                if !target.indexers.iter().any(|indexer| self.is_assignable(key, indexer.key)) {
++                if !target.indexers.iter().any(|indexer| self.is_assignable(key, indexer.key))
++                    && !target.sequence_tails.iter().any(|tail| Self::native_sequence_contains(tail.start, field.key))
++                {
+                     return Ternary::FALSE;
+                 }
+             }
+             for indexer in &source.indexers {
++                if indexer.value.is_never() { continue }
+                 if !target.indexers.iter().any(|other| self.is_assignable(indexer.key, other.key)) {
+                     return Ternary::FALSE;
+                 }
++            }
++            for tail in &source.sequence_tails {
++                if tail.value.is_never() { continue }
++                if !target.indexers.iter().any(|indexer| self.is_assignable(TypeId::NUMBER, indexer.key))
++                    && !target.sequence_tails.iter().any(|other| tail.start >= other.start)
++                { return Ternary::FALSE }
+             }
+         }
+         let mut result = Ternary::TRUE;
+         for field in &target.fields {
+             let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) else {
++                let mut values = Vec::new();
++                for tail in &source.sequence_tails {
++                    if Self::native_sequence_contains(tail.start, field.key) { values.push(self.optional(tail.value)); }
++                }
++                if !values.is_empty() && !identity {
++                    let actual = if source.collision_candidates { self.union(&values) } else { self.intersection(&values) };
++                    let expected = if field.optional { self.optional(field.value) } else { field.value };
++                    let related = self.is_related_to_ex::<REPORT>(r, actual, expected, REC_BOTH, state);
++                    if !related.holds() { return related }
++                    result &= related;
++                    continue;
++                }
+                 if field.optional || self.contains_undefined(field.value) && !identity { continue }
+                 return Ternary::FALSE;
+             };
+@@ -459,7 +793,7 @@
+                 matched = true;
+                 // Index signatures restrict present entries. Sparse lookup presence does not add
+                 // a nil entry; constructor nil values delete entries. A declared nil union stays.
+-                let value = if source.fresh { self.without_undefined(actual.value) } else { actual.value };
++                let value = if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value };
+                 let related = self.is_related_to_ex::<REPORT>(r, value, expected, REC_BOTH, state);
+                 if !related.holds() { return Ternary::FALSE }
+                 result &= related;
+@@ -469,14 +803,53 @@
+                 let key = self.native_table_key_type(actual.key);
+                 if !self.is_assignable(key, indexer.key) { continue }
+                 matched = true;
+-                let value = if source.fresh { self.without_undefined(actual.value) } else { actual.value };
++                let value = if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value };
+                 let related = self.is_related_to_ex::<REPORT>(r, value, expected, REC_BOTH, state);
+                 if !related.holds() { return Ternary::FALSE }
+                 result &= related;
+             }
++            if !identity {
++                for actual in &source.sequence_tails {
++                    if !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
++                    matched = true;
++                    let value = if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value };
++                    let related = self.is_related_to_ex::<REPORT>(r, value, expected, REC_BOTH, state);
++                    if !related.holds() { return related }
++                    result &= related;
++                }
++            }
+             // Closed shapes have an inferable index, as ordinary TS object shapes do. A dictionary
+             // with exclusively different domains does not acquire a new domain from its shape.
+-            if !matched && !source.indexers.is_empty() { return Ternary::FALSE }
++            if !matched && (source.indexers.iter().any(|indexer| !indexer.value.is_never())
++                || source.sequence_tails.iter().any(|tail| !tail.value.is_never())) { return Ternary::FALSE }
++        }
++        for tail in &target.sequence_tails {
++            for actual in &source.sequence_tails {
++                if identity && (actual.start != tail.start || actual.readonly != tail.readonly) { continue }
++                let value = if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value };
++                let related = self.is_related_to_ex::<REPORT>(r, value, tail.value, REC_BOTH, state);
++                if !related.holds() { return related }
++                result &= related;
++            }
++            if identity {
++                if !source.sequence_tails.iter().any(|actual| actual.start == tail.start && actual.readonly == tail.readonly) { return Ternary::FALSE }
++                continue;
++            }
++            for actual in &source.indexers {
++                if !self.native_sequence_type_overlaps(tail.start, actual.key) { continue }
++                let value = if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value };
++                let related = self.is_related_to_ex::<REPORT>(r, value, tail.value, REC_BOTH, state);
++                if !related.holds() { return related }
++                result &= related;
++            }
++            for actual in &source.fields {
++                if !Self::native_sequence_contains(tail.start, actual.key)
++                    || target.fields.iter().any(|field| field.key == actual.key) { continue }
++                let value = if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value };
++                let related = self.is_related_to_ex::<REPORT>(r, value, tail.value, REC_BOTH, state);
++                if !related.holds() { return related }
++                result &= related;
++            }
+         }
+         result
+     }
+@@ -503,7 +876,9 @@
+         }).collect::<Vec<_>>();
+         Some(NativeTableData {
+             fields: self.list(&fields), indexers: self.list(&indexers),
++            sequence_tails: self.list(&[]),
+             fresh: self.is_fresh_object_literal_type(ty),
++            collision_candidates: self.is_fresh_object_literal_type(ty),
+         })
+     }
+ 
+@@ -515,8 +890,13 @@
+             key: self.get_widened_type(indexer.key),
+             value: self.get_widened_type(indexer.value), ..*indexer
+         }).collect::<Vec<_>>();
++        let sequence_tails = table.sequence_tails.iter().map(|tail| NativeTableSequenceTail {
++            value: self.get_widened_type(tail.value), ..*tail
++        }).collect::<Vec<_>>();
+         self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+-            fields: self.list(&fields), indexers: self.list(&indexers), fresh: false,
++            fields: self.list(&fields), indexers: self.list(&indexers),
++            sequence_tails: self.list(&sequence_tails), fresh: false,
++            collision_candidates: table.collision_candidates,
+         })))
+     }
+ }
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1817,6 +1817,10 @@
+                     let value = self.type_to_node(indexer.value);
+                     members.push(cat!(if indexer.readonly { &b"readonly "[..] } else { &b""[..] }, b"[key: ", key.text, b"]: ", value.text));
+                 }
++                for tail in &table.sequence_tails {
++                    let value = self.type_to_node(tail.value);
++                    members.push(cat!(if tail.readonly { &b"readonly "[..] } else { &b""[..] }, b"[", tail.start.to_string().as_bytes(), b"..integer]?: ", value.text));
++                }
+                 Node::simple(cat!(b"{ ", members.join(&b"; "[..]), b" }"))
+             }
+             TypeData::NativeArray { element, readonly } => {
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -684,7 +684,7 @@
+     /// `isEmptyResolvedType` of the resolved members of `ty`.
+     fn is_empty_resolved_type(&mut self, ty: TypeId) -> bool {
+         if let TypeData::NativeTable(table) = self.data(ty) {
+-            return table.fields.is_empty() && table.indexers.is_empty();
++            return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
+         }
+         !self.is_any_function_type(ty)
+             && (self.members(ty)).is_some_and(|m| Self::has_no_members(m.whole_shape()))
+@@ -709,7 +709,7 @@
+     /// them: until that is done there are none.
+     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
+         if let TypeData::NativeTable(table) = self.data(ty) {
+-            return table.fields.is_empty() && table.indexers.is_empty();
++            return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
+         }
+         if matches!(ty, TypeId::EMPTY_OBJECT | TypeId::EMPTY_TYPE_LITERAL) {
+             return true;
+@@ -3103,7 +3103,7 @@
+     /// `isWeakType`: properties, all of them optional, and nothing else.
+     pub(super) fn is_weak_type(&mut self, t: TypeId) -> bool {
+         match self.data(t) {
+-            TypeData::NativeTable(table) => !table.fields.is_empty() && table.indexers.is_empty()
++            TypeData::NativeTable(table) => !table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty()
+                 && table.fields.iter().all(|field| field.optional),
+             data if is_object_kind(data) => self.members(t).is_some_and(|m| {
+                 let s = m.whole_shape();
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -3520,7 +3520,9 @@
+     fn regular_type_of_resolved_object_literal(&mut self, ty: TypeId) -> TypeId {
+         match self.data(ty) {
+             TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+-                fields: self.list(&table.fields), indexers: self.list(&table.indexers), fresh: false,
++                fields: self.list(&table.fields), indexers: self.list(&table.indexers),
++                sequence_tails: self.list(&table.sequence_tails), fresh: false,
++                collision_candidates: table.collision_candidates,
+             }))),
+             &TypeData::Anon {
+                 origin:
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -74,7 +74,7 @@
+ pub struct MapperId(pub u32);
+ pub use crate::check::native_tables::{
+     NativeTableAccessKey, NativeTableData, NativeTableField, NativeTableFlavor,
+-    NativeTableIndexer, NativeTableKey,
++    NativeTableIndexer, NativeTableKey, NativeTableSequenceTail,
+ };
+ /// An interned list of `IndexComponent`s.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+@@ -2365,6 +2365,7 @@
+             TypeData::NativeTable(table) => {
+                 let flags = table.fields.iter().fold(ObjectFlags::empty(), |flags, field| flags | self.object_flags(field.value));
+                 let flags = table.indexers.iter().fold(flags, |flags, indexer| flags | self.object_flags(indexer.key) | self.object_flags(indexer.value));
++                let flags = table.sequence_tails.iter().fold(flags, |flags, tail| flags | self.object_flags(tail.value));
+                 if table.fresh { flags | ObjectFlags::CONTAINS_OBJECT_OR_ARRAY_LITERAL } else { flags }
+             }
+             TypeData::Anon {
+@@ -3492,7 +3493,8 @@
+ follow_struct!(NativeCapturedBinding { declaration, ty });
+ follow_struct!(NativeTableField { key, value, optional, readonly });
+ follow_struct!(NativeTableIndexer { key, value, readonly, sparse });
+-follow_struct!(NativeTableData<'_> { fields, indexers, fresh });
++follow_struct!(NativeTableSequenceTail { start, value, readonly });
++follow_struct!(NativeTableData<'_> { fields, indexers, sequence_tails, fresh, collision_candidates });
+ follow_struct!(NativeCapturedFunctionContext { signature });
+ follow_struct!(NativeResultPack { ty });
+ follow_struct!(NativeFunctionContext {
+@@ -3559,6 +3561,7 @@
+     NativeCapturedBinding,
+     NativeTableField,
+     NativeTableIndexer,
++    NativeTableSequenceTail,
+     NativeTableKey,
+     NativeCapturedFunctionContext,
+     NativeResultPack,
+@@ -3749,7 +3752,7 @@
+     pattern_at,
+     mapper
+ });
+-clone_in_struct!(NativeTableData { fields, indexers, fresh });
++clone_in_struct!(NativeTableData { fields, indexers, sequence_tails, fresh, collision_candidates });
+ clone_in_enum!(SigData {
+     Native { declaration, mapper },
+     NativeContextual { declaration, mapper, context, environment },

@@ -58,6 +58,11 @@ pub struct NativeCapturedBinding {
 pub struct NativeCapturedFunctionContext {
     pub signature: SigId,
 }
+/// A Lua result sequence, whose tuple/union carrier is not an ordinary scalar value.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeResultPack {
+    pub(crate) ty: TypeId,
+}
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeFunctionContext {
     pub expression: NativeExpressionId,
@@ -67,6 +72,10 @@ pub struct NativeFunctionContext {
 }
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MapperId(pub u32);
+pub use crate::check::native_tables::{
+    NativeTableAccessKey, NativeTableData, NativeTableField, NativeTableFlavor,
+    NativeTableIndexer, NativeTableKey, NativeTableSequenceTail,
+};
 /// An interned list of `IndexComponent`s.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ComponentsId(pub u32);
@@ -463,6 +472,12 @@ pub enum TypeData<'s> {
         flags: List<'s, ElemFlags>,
         readonly: bool,
     },
+    /// An intrinsic array for a foreign frontend, independent of TS library declarations.
+    NativeArray {
+        element: TypeId,
+        readonly: bool,
+    },
+    NativeTable(ArenaBox<'s, NativeTableData<'s>>),
     Anon {
         origin: Origin,
         mapper: MapperId,
@@ -940,6 +955,8 @@ pub enum SigData<'s> {
     /// mixin constructors (`cloneSignature` with `resolvedReturnType` set). `sig` is never one of
     /// these itself.
     WithReturn { sig: SigId, ret: TypeId },
+    /// Materialized Lua function results, preserving the ordinary parameter/type-parameter signature.
+    WithNativeResultPack { sig: SigId, pack: NativeResultPack },
 }
 
 /// `TypeFlags`, with the values of types.go: `CompareTypes` orders types of different kinds by them.
@@ -2344,6 +2361,13 @@ impl<'p, 's> Types<'p, 's> {
                 TypeArguments::Deferred(deferred) => (self.mapper_record(deferred.mapper).1)
                     .difference(ObjectFlags::PROPAGATING_FLAGS),
             },
+            TypeData::NativeArray { element, .. } => self.object_flags(*element),
+            TypeData::NativeTable(table) => {
+                let flags = table.fields.iter().fold(ObjectFlags::empty(), |flags, field| flags | self.object_flags(field.value));
+                let flags = table.indexers.iter().fold(flags, |flags, indexer| flags | self.object_flags(indexer.key) | self.object_flags(indexer.value));
+                let flags = table.sequence_tails.iter().fold(flags, |flags, tail| flags | self.object_flags(tail.value));
+                if table.fresh { flags | ObjectFlags::CONTAINS_OBJECT_OR_ARRAY_LITERAL } else { flags }
+            }
             TypeData::Anon {
                 origin: Origin::ObjectLiteral(.., object_flags, _),
                 mapper,
@@ -2492,6 +2516,7 @@ impl<'p, 's> Types<'p, 's> {
                 of.iter().fold(flags, |f, &part| f | self.sig_flags(part))
             }
             SigData::WithReturn { sig, ret } => self.sig_flags(*sig) | self.object_flags(*ret),
+            SigData::WithNativeResultPack { sig, pack } => self.sig_flags(*sig) | self.object_flags(pack.ty),
         }
     }
 
@@ -2877,7 +2902,7 @@ impl<'p, 's> Types<'p, 's> {
     pub fn sig_origin(&self, mut sig: SigId) -> SigId {
         loop {
             match self.sig(sig) {
-                SigData::WithReturn { sig: inner, .. } => sig = *inner,
+                SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => sig = *inner,
                 SigData::Synth { of, .. } if !of.is_empty() => sig = of[0],
                 _ => return sig,
             }
@@ -3277,6 +3302,7 @@ has_no_references!(
     u8,
     u32,
     u64,
+    i64,
     NativeFunctionId,
     NativeTypeParamId,
     NativeExpressionId,
@@ -3316,6 +3342,12 @@ impl Follow for ElemFlags {
     fn follow(&mut self, _: &Link) {}
 }
 
+follow_enum!(NativeTableKey {
+    NativeTableKey::String(a) => (a),
+    NativeTableKey::Integer(a) => (a),
+    NativeTableKey::Float(a) => (a),
+    NativeTableKey::Boolean(a) => (a),
+});
 follow_enum!(EnumValue {
     EnumValue::String(a) => (a),
     EnumValue::Number(a) => (a),
@@ -3371,6 +3403,8 @@ follow_enum!(TypeData<'_> {
     TypeData::Intersection(a) => (a),
     TypeData::Ref { target, args } => (target, args),
     TypeData::Tuple { elems, flags, readonly } => (elems, flags, readonly),
+    TypeData::NativeArray { element, readonly } => (element, readonly),
+    TypeData::NativeTable(table) => (table),
     TypeData::Anon { origin, mapper } => (origin, mapper),
     TypeData::Fns { decls, mapper } => (decls, mapper),
     TypeData::Synth(a) => (a),
@@ -3454,9 +3488,15 @@ follow_enum!(SigData<'_> {
     SigData::Construct { class, file, func, mapper } => (class, file, func, mapper),
     SigData::Synth { type_params, params, ret, this, of, is_union } => (type_params, params, ret, this, of, is_union),
     SigData::WithReturn { sig, ret } => (sig, ret),
+    SigData::WithNativeResultPack { sig, pack } => (sig, pack),
 });
 follow_struct!(NativeCapturedBinding { declaration, ty });
+follow_struct!(NativeTableField { key, value, optional, readonly });
+follow_struct!(NativeTableIndexer { key, value, readonly, sparse });
+follow_struct!(NativeTableSequenceTail { start, value, readonly });
+follow_struct!(NativeTableData<'_> { fields, indexers, sequence_tails, fresh, collision_candidates });
 follow_struct!(NativeCapturedFunctionContext { signature });
+follow_struct!(NativeResultPack { ty });
 follow_struct!(NativeFunctionContext {
     expression,
     expected,
@@ -3519,7 +3559,12 @@ clone_in_is_copy!(
     NativeExpressionId,
     NativeBindingId,
     NativeCapturedBinding,
+    NativeTableField,
+    NativeTableIndexer,
+    NativeTableSequenceTail,
+    NativeTableKey,
     NativeCapturedFunctionContext,
+    NativeResultPack,
     NativeFunctionContext,
     MapperId,
     FileId,
@@ -3655,6 +3700,8 @@ clone_in_enum!(TypeData {
     Intersection(a),
     Ref { target, args },
     Tuple { elems, flags, readonly },
+    NativeArray { element, readonly },
+    NativeTable(table),
     Anon { origin, mapper },
     Fns { decls, mapper },
     Synth(a),
@@ -3705,6 +3752,7 @@ clone_in_struct!(Shape {
     pattern_at,
     mapper
 });
+clone_in_struct!(NativeTableData { fields, indexers, sequence_tails, fresh, collision_candidates });
 clone_in_enum!(SigData {
     Native { declaration, mapper },
     NativeContextual { declaration, mapper, context, environment },
@@ -3714,6 +3762,7 @@ clone_in_enum!(SigData {
     Construct { class, file, func, mapper },
     Synth { type_params, params, ret, this, of, is_union },
     WithReturn { sig, ret },
+    WithNativeResultPack { sig, pack },
 });
 clone_in_struct!(Provenance {
     alias,

@@ -12,13 +12,16 @@ mod functions;
 mod native_expressions;
 mod native_flow;
 mod native_functions;
+mod native_named;
+mod native_packs;
+mod native_tables;
 mod native_types;
 mod operators;
 
 use bind::{BindingId, BoundFile};
 use luanalysis_engine::{
-    CapturedFunctionContext, ContextualFunctionContext, Engine, NativeCheckMode, NativeFlowKey,
-    NativeFunctionKey, Property, Type, TypeQueries,
+    CapturedFunctionContext, ContextualFunctionContext, Engine, LuaKey, NativeCheckMode,
+    NativeFlowKey, NativeFunctionKey, TableKey, Type, TypeQueries,
 };
 use luanalysis_syntax::{
     Expr, ExprKind, Name, Span, Stmt, StmtKind, TypeAnnotation, TypeExpr, TypeExprKind, TypeLiteral,
@@ -151,6 +154,7 @@ struct Checker<'a> {
     bound: &'a BoundFile,
     native: Option<&'a NativeRegistry>,
     type_context: Option<NativeFunctionKey>,
+    named_type_context: Option<native_named::NativeNamedKey>,
     contextual_function: Option<ContextualFunctionContext>,
     captured_function: Option<CapturedFunctionContext>,
     incomplete_flow: bool,
@@ -162,6 +166,8 @@ struct Checker<'a> {
     report: CheckReport,
     return_type: Option<Type>,
     return_values: Vec<Type>,
+    return_pack: Option<luanalysis_engine::ValuePack>,
+    return_packs: Vec<luanalysis_engine::ValuePack>,
 }
 
 /// Checks the documented native subset without generating TypeScript source.
@@ -185,6 +191,26 @@ pub fn check(source: &str) -> CheckReport {
             pending_types: Vec::new(),
         };
     }
+    let pending_named: Vec<_> = file
+        .type_declarations
+        .iter()
+        .map(|declaration| Diagnostic {
+            code: "LUA2031",
+            span: declaration.name.span,
+            message: format!(
+                "Named type '{}' requires the native named-declaration integration.",
+                declaration.name.text
+            ),
+        })
+        .chain(file.type_extensions.iter().map(|extension| Diagnostic {
+            code: "LUA2031",
+            span: extension.owner.span,
+            message: format!(
+                "Type augmentation '{}' requires the native named-declaration integration.",
+                extension.owner.text
+            ),
+        }))
+        .collect();
     let bound = bind::bind(&file);
     Engine::new().with_native_provider(
         move || NativeRegistry::new(file, bound),
@@ -195,6 +221,7 @@ pub fn check(source: &str) -> CheckReport {
                     bound: registry.bound(),
                     native: Some(registry),
                     type_context: None,
+                    named_type_context: None,
                     contextual_function: None,
                     captured_function: None,
                     incomplete_flow: false,
@@ -206,11 +233,14 @@ pub fn check(source: &str) -> CheckReport {
                     report: CheckReport::default(),
                     return_type: None,
                     return_values: Vec::new(),
+                    return_pack: None,
+                    return_packs: Vec::new(),
                 };
                 checker.statements(registry.statements());
                 checker.report
             };
             registry.check_all_bodies(engine);
+            report.diagnostics.extend(pending_named);
             report.append(registry.take_report());
             report.render(engine);
             // Explicit display demands can complete a previously unqueried signature.
@@ -401,7 +431,8 @@ impl Checker<'_> {
                         if flow::numeric_literal(step).is_some_and(|value| match value {
                             flow::NumericLiteral::Integer(value) => value == 0,
                             flow::NumericLiteral::Float(value) => value == 0.0,
-                        }) || matches!(self.engine.inspect_type(&step_type), Type::NumberLiteral(value) if value == 0.0) {
+                        }) || matches!(self.engine.inspect_type(&step_type), Type::NumberLiteral(value) if value == 0.0)
+                        {
                             self.error("LUA2030", step.span, "numeric for step must be nonzero");
                         }
                     }
@@ -470,7 +501,10 @@ impl Checker<'_> {
                 _ => {
                     if let Some(ty) = self
                         .native
-                        .and_then(|native| native.resolve_type_name(self.type_context, name))
+                        .and_then(|native| match self.named_type_context {
+                            Some(context) => native.resolve_named_type_parameter(context, name),
+                            None => native.resolve_type_name(self.type_context, name),
+                        })
                     {
                         return ty;
                     }
@@ -495,14 +529,27 @@ impl Checker<'_> {
                         Type::Unknown
                     }),
             },
-            TypeExprKind::Record(fields) => Type::Shape(
-                fields
-                    .iter()
-                    .map(|field| Property::new(field.name.text.clone(), self.annotation(&field.ty)))
-                    .collect(),
-            ),
+            TypeExprKind::Record(fields) => self.native_table_annotation(fields, ty.span),
             TypeExprKind::Parenthesized(ty) => self.annotation(ty),
             TypeExprKind::Function(function) => self.function_annotation(function),
+            TypeExprKind::Array { element, .. } => self.native_array_annotation(element),
+            TypeExprKind::Generic { base, args, .. } if base.text == "table" => {
+                self.native_dictionary_annotation(args, ty.span)
+            }
+            TypeExprKind::Generic { base, args, .. } => {
+                for arg in args {
+                    self.annotation(arg);
+                }
+                self.error(
+                    "LUA2025",
+                    ty.span,
+                    format!(
+                        "generic type '{}' requires native type declaration/table integration",
+                        base.text
+                    ),
+                );
+                Type::Unknown
+            }
             TypeExprKind::Error => Type::Any,
         }
     }
@@ -534,12 +581,8 @@ impl Checker<'_> {
             },
             ExprKind::String(value) => Type::StringLiteral(value.clone()),
             ExprKind::Vararg => {
-                self.error(
-                    "LUA2016",
-                    expr.span,
-                    "vararg values require the native Lua result-pack integration",
-                );
-                Type::Unknown
+                let pack = self.expression_pack(expr, None);
+                self.engine.pack_slot(&pack, 0)
             }
             ExprKind::Name(name) => match self
                 .bound
@@ -577,55 +620,11 @@ impl Checker<'_> {
                 }
             },
             ExprKind::Parenthesized(value) => self.expression_with_expected(value, expected),
-            ExprKind::Table(fields) => {
-                let mut properties: Vec<Property> = Vec::new();
-                let mut duplicate = false;
-                for field in fields {
-                    let field_context = expected
-                        .and_then(|expected| self.engine.property_type(expected, &field.name.text));
-                    let value = self.expression_with_expected(&field.value, field_context.as_ref());
-                    let property =
-                        Property::new(field.name.text.clone(), self.engine.widen(&value));
-                    if properties.iter().any(|item| item.name == property.name) {
-                        self.error("LUA2007", field.name.span, format!("duplicate table field '{}' has undefined assignment order in Lua 5.4 and is not supported", field.name.text));
-                        duplicate = true;
-                    } else {
-                        properties.push(property);
-                    }
-                }
-                if duplicate {
-                    Type::Any
-                } else {
-                    Type::FreshShape(properties)
-                }
-            }
+            ExprKind::Table(fields) => self.native_table_expression(fields, expr.span, expected),
             ExprKind::Field { base, name } => {
                 let receiver = self.expression(base);
-                if matches!(receiver, Type::Any) {
-                    return Type::Any;
-                }
-                if let Some(ty) = self.engine.property_type(&receiver, &name.text) {
-                    if let (Some(native), Some(at)) = (self.native, self.flow_at) {
-                        let result = native.flow_reference_type(expr, at, &ty, &ty, self.engine);
-                        self.incomplete_flow |= result.incomplete;
-                        result.ty
-                    } else {
-                        self.reference(expr)
-                            .and_then(|reference| self.assigned_fields.get(&reference).cloned())
-                            .unwrap_or(ty)
-                    }
-                } else {
-                    self.error(
-                        "TS2339",
-                        name.span,
-                        format!(
-                            "Property '{}' does not exist on type '{}'.",
-                            name.text,
-                            describe(&receiver)
-                        ),
-                    );
-                    Type::Any
-                }
+                let ty = self.native_named_property_read(&receiver, name);
+                self.native_member_flow_type(expr, ty)
             }
             ExprKind::Function(function) => {
                 if let (Some(native), Some(expected)) = (self.native, expected) {
@@ -649,7 +648,12 @@ impl Checker<'_> {
                 left,
                 right,
             } => self.binary_expression(*op, *op_span, left, right),
-            ExprKind::Index { base, index } => self.index_expression(expr, base, index),
+            ExprKind::Index { base, index } => {
+                let receiver = self.expression(base);
+                let key = self.native_table_key(index);
+                let ty = self.native_table_read(&receiver, &key, index.span);
+                self.native_member_flow_type(expr, ty)
+            }
             ExprKind::MethodCall {
                 receiver,
                 name,
@@ -680,9 +684,6 @@ impl Checker<'_> {
     }
 
     fn local(&mut self, names: &[Name], values: &[Expr], annotation: Option<&TypeAnnotation>) {
-        if let Some(annotation) = annotation.filter(|annotation| annotation.packs.is_some()) {
-            self.error("LUA2016", annotation.span, "variadic and alternative type packs require the native Lua result-pack integration");
-        }
         let annotations: Vec<_> = annotation.map_or_else(Vec::new, |annotation| {
             annotation
                 .types
@@ -690,18 +691,16 @@ impl Checker<'_> {
                 .map(|ty| self.annotation(ty))
                 .collect()
         });
-        // Type annotations provide call context without introducing the new
-        // bindings. Every initializer still sees the preceding lexical scope.
-        let values: Vec<_> = values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                (
-                    self.expression_with_expected(value, annotations.get(index)),
-                    value.span,
-                )
-            })
-            .collect();
+        let expected = annotation.map(|annotation| {
+            native_packs::AnnotationPack::annotation(annotation)
+                .lower(&mut |ty| self.annotation(ty))
+        });
+        let values = self.adjusted_list_values(
+            values,
+            names.len(),
+            expected.as_ref(),
+            names.first().map_or(Span::default(), |name| name.span),
+        );
         if annotations.len() > names.len() {
             self.error(
                 "LUA2003",
@@ -758,19 +757,24 @@ impl Checker<'_> {
                 _ => None,
             })
             .collect();
-        let values: Vec<_> = values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
-                (
-                    self.expression_with_expected(
-                        value,
-                        expected.get(index).and_then(Option::as_ref),
-                    ),
-                    value.span,
-                )
-            })
-            .collect();
+        let expected_pack =
+            luanalysis_engine::ValuePack::Alternatives(vec![luanalysis_engine::PackAlternative {
+                fixed: expected
+                    .iter()
+                    .map(|expected| {
+                        luanalysis_engine::PackSlot::required(expected.clone().unwrap_or(Type::Any))
+                    })
+                    .collect(),
+                tail: None,
+            }]);
+        let values = self.adjusted_list_values(
+            values,
+            targets.len(),
+            Some(&expected_pack),
+            targets
+                .first()
+                .map_or(Span::default(), |target| target.span),
+        );
         self.assign_values(targets, values);
     }
 
@@ -806,44 +810,29 @@ impl Checker<'_> {
                     }
                 }
                 ExprKind::Field { .. } | ExprKind::Index { .. } => {
-                    let (base, key, key_span) = match &target.kind {
-                        ExprKind::Field { base, name } => {
-                            (base.as_ref(), name.text.clone(), name.span)
-                        }
-                        ExprKind::Index { base, index } => {
-                            self.expression(index);
-                            let Some(key) = operators::literal_string_key(index)
-                                .and_then(|key| std::str::from_utf8(key).ok())
-                            else {
-                                self.error("LUA2019", index.span, "typed numeric and dynamic table indices require the table/indexer integration");
-                                continue;
-                            };
-                            (base.as_ref(), key.to_owned(), index.span)
+                    let base = match &target.kind {
+                        ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => {
+                            base.as_ref()
                         }
                         _ => unreachable!(),
                     };
                     let receiver = self.expression(base);
-                    if matches!(receiver, Type::Any) {
-                        continue;
-                    }
-                    let Some(constraint) = self.engine.property_type(&receiver, &key) else {
-                        self.error(
-                            "TS2339",
-                            key_span,
-                            format!(
-                                "Property '{}' does not exist on type '{}'.",
-                                key,
-                                describe(&receiver)
-                            ),
-                        );
-                        continue;
+                    let (key, key_span) = match &target.kind {
+                        ExprKind::Field { name, .. } => (
+                            TableKey::Literal(LuaKey::String(name.text.as_bytes().to_vec())),
+                            name.span,
+                        ),
+                        ExprKind::Index { index, .. } => (self.native_table_key(index), index.span),
+                        _ => unreachable!(),
                     };
-                    if self.compatible(&value, &constraint, origin) {
+                    if self.native_table_write(&receiver, &key, &value, key_span, origin) {
                         if let Some(reference) = self.reference(target) {
-                            writes.push(Write::Field(
-                                reference,
-                                self.engine.assignment_value(&constraint, &value),
-                            ));
+                            let constraint = self.engine.table_value_context(&receiver, &key);
+                            let assigned = constraint.as_ref().map_or_else(
+                                || value.clone(),
+                                |constraint| self.engine.assignment_value(constraint, &value),
+                            );
+                            writes.push(Write::Field(reference, assigned));
                         }
                     }
                 }
@@ -978,6 +967,7 @@ pub fn describe(ty: &Type) -> String {
         }
         Type::Union(types) => types.iter().map(describe).collect::<Vec<_>>().join(" | "),
         Type::Intersection(types) => types.iter().map(describe).collect::<Vec<_>>().join(" & "),
+        Type::Table(table) => native_tables::describe_table(table, describe),
         Type::Shape(properties) | Type::FreshShape(properties) => format!(
             "{{ {} }}",
             properties
@@ -1029,7 +1019,9 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
             }
             stack.push(ty.clone());
             let inspected = engine.inspect_type(ty);
-            let text = if &inspected == ty {
+            let text = if let Type::Function(function) = &inspected {
+                describe_native_function(function, Some(ty), engine, stack)
+            } else if &inspected == ty {
                 engine.format(ty)
             } else {
                 describe_native(&inspected, engine, stack)
@@ -1038,6 +1030,9 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
             text
         }
         Type::NativeTypeParameter(_) => engine.format(ty),
+        Type::Table(table) => {
+            native_tables::describe_table(table, |ty| describe_native(ty, engine, stack))
+        }
         Type::NativeFunction(key) => {
             if stack.contains(ty) {
                 return "<recursive function>".into();
@@ -1047,29 +1042,11 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
             }
             stack.push(ty.clone());
             let signature = engine.native_function_signature(*key);
-            let text = describe_native(&Type::Function(signature), engine, stack);
+            let text = describe_native_function(&signature, Some(ty), engine, stack);
             stack.pop();
             text
         }
-        Type::Function(function) => {
-            let parameters: Vec<_> = function
-                .params
-                .iter()
-                .map(|parameter| {
-                    format!(
-                        "{}{}: {}",
-                        parameter.name,
-                        if parameter.optional { "?" } else { "" },
-                        describe_native(&parameter.ty, engine, stack)
-                    )
-                })
-                .collect();
-            format!(
-                "fun({}): {}",
-                parameters.join(", "),
-                describe_native(&function.returns, engine, stack)
-            )
-        }
+        Type::Function(function) => describe_native_function(function, None, engine, stack),
         Type::Union(types) => types
             .iter()
             .map(|ty| describe_native(ty, engine, stack))
@@ -1095,6 +1072,79 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
         ),
         _ => describe(ty),
     }
+}
+
+fn describe_native_function(
+    function: &luanalysis_engine::FunctionType,
+    original: Option<&Type>,
+    engine: &mut dyn TypeQueries,
+    stack: &mut Vec<Type>,
+) -> String {
+    let rest = original.and_then(|ty| engine.signature_rest_pack(ty));
+    let fixed = function
+        .params
+        .len()
+        .saturating_sub(usize::from(rest.is_some()));
+    let mut parameters: Vec<_> = function.params[..fixed]
+        .iter()
+        .map(|parameter| {
+            format!(
+                "{}{}: {}",
+                parameter.name,
+                if parameter.optional { "?" } else { "" },
+                describe_native(&parameter.ty, engine, stack)
+            )
+        })
+        .collect();
+    if let Some(rest) = rest {
+        let text = match engine.inspect_pack(&rest).as_deref() {
+            Some([row]) if row.fixed.is_empty() && row.tail.is_some() => {
+                describe_native(row.tail.as_ref().unwrap(), engine, stack)
+            }
+            _ => describe_native_pack(&rest, engine, stack).unwrap_or_else(|| "...".to_owned()),
+        };
+        parameters.push(format!("...: {text}"));
+    }
+    let returns = original
+        .and_then(|ty| engine.function_result_pack(ty))
+        .and_then(|pack| describe_native_pack(&pack, engine, stack))
+        .unwrap_or_else(|| describe_native(&function.returns, engine, stack));
+    format!("fun({}): {}", parameters.join(", "), returns)
+}
+
+fn describe_native_pack(
+    pack: &luanalysis_engine::ValuePack,
+    engine: &mut dyn TypeQueries,
+    stack: &mut Vec<Type>,
+) -> Option<String> {
+    let alternatives = engine.inspect_pack(pack)?;
+    if alternatives.is_empty() {
+        return Some("never".to_owned());
+    }
+    Some(
+        alternatives
+            .iter()
+            .map(|row| {
+                let mut slots: Vec<_> = row
+                    .fixed
+                    .iter()
+                    .map(|slot| {
+                        let ty = describe_native(&slot.ty, engine, stack);
+                        if slot.optional { format!("{ty}?") } else { ty }
+                    })
+                    .collect();
+                if let Some(tail) = &row.tail {
+                    slots.push(format!("{}...", describe_native(tail, engine, stack)));
+                }
+                match slots.len() {
+                    0 => "void".to_owned(),
+                    1 if row.tail.is_none() => slots.remove(0),
+                    _ => format!("({})", slots.join(", ")),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
+    )
 }
 
 /// One-based original-source line and Unicode scalar column for CLI output.

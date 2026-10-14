@@ -1,0 +1,13 @@
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -585,7 +585,8 @@
+                 values.push(self.optional(tail.value));
+             }
+         }
+-        if (!data.sequence_tails.is_empty() || data.collision_candidates) && let NativeTableAccessKey::Type(_) = key {
++        if !values.is_empty() && (!data.sequence_tails.is_empty() || data.collision_candidates)
++            && let NativeTableAccessKey::Type(_) = key {
+             for field in &data.fields {
+                 if self.is_assignable(self.native_table_key_type(field.key), key_type) {
+                     values.push(if field.optional { self.optional(field.value) } else { field.value });

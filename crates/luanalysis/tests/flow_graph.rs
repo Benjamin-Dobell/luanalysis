@@ -126,7 +126,11 @@ fn simultaneous_property_writes_capture_addresses_and_evaluate_rhs_once() {
     assert_eq!(writes.len(), 2);
     let NodeKind::Write {
         address: field,
-        value: ValueDemand::Evaluation(rhs),
+        value:
+            ValueDemand::PackElement {
+                evaluation: rhs,
+                index: 0,
+            },
         store_order: 0,
         ..
     } = &writes[0].kind
@@ -346,14 +350,48 @@ fn independent_builds_namespace_all_source_identities() {
 }
 
 #[test]
-fn expanding_final_calls_retain_explicit_result_pack_requirement() {
+fn expanding_assignments_share_the_original_pack_and_parentheses_scalarize() {
     let program = graph("local a,b=f()\na,b=(f())\n");
-    let packs: Vec<_> = program
+    assert!(program.pending.is_empty());
+    let writes: Vec<_> = program.graphs[0]
+        .nodes
+        .iter()
+        .filter_map(|node| match &node.kind {
+            NodeKind::Write { value, .. } => Some(value),
+            _ => None,
+        })
+        .collect();
+    let (
+        ValueDemand::PackElement {
+            evaluation: first,
+            index: 0,
+        },
+        ValueDemand::PackElement {
+            evaluation: second,
+            index: 1,
+        },
+    ) = (writes[0], writes[1])
+    else {
+        panic!("both slots project the final original call");
+    };
+    assert_eq!(first, second);
+    assert!(
+        matches!(writes[2], ValueDemand::Nil),
+        "reverse stores pad the scalarized second destination"
+    );
+    assert!(matches!(writes[3], ValueDemand::Evaluation(_)));
+
+    let calls = graph("local a,b=f(g())\na,b=f((g()))");
+    let pending: Vec<_> = calls
         .pending
         .iter()
-        .filter(|f| f.kind == PendingFeature::ResultPacks)
+        .filter(|feature| feature.kind == PendingFeature::ExpandedArguments)
         .collect();
-    assert_eq!(packs.len(), 1, "parentheses scalarize a final call");
+    assert_eq!(
+        pending.len(),
+        1,
+        "only an expanding final argument remains pending"
+    );
 }
 
 #[test]

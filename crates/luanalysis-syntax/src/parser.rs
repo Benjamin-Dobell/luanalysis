@@ -1,7 +1,8 @@
 use crate::{
     BinaryOperator, CommentKind, Diagnostic, Expr, ExprKind, File, Function, FunctionAnnotations,
-    Name, Span, Stmt, StmtKind, TableField, Token, TokenKind, TypeAnnotation, TypeExpr, TypeExprKind,
-    UnaryOperator, lex, types,
+    Name, Span, Stmt, StmtKind, TableField, TableFieldKind, Token, TokenKind, TypeAnnotation, TypeExpr, TypeExprKind,
+    UnaryOperator, lex, types, Comment, NamedTypeDeclaration, NamedTypeDeclarationId,
+    NamedTypeDeclarationKind, TypeExtension,
 };
 
 #[path = "control.rs"]
@@ -26,6 +27,9 @@ pub fn parse(source: &str) -> File {
         pos: 0,
         diagnostics: lexed.diagnostics,
         pending_annotations: FunctionAnnotations::default(),
+        type_declarations: Vec::new(),
+        type_extensions: Vec::new(),
+        documentation_group: None,
         depth: 0,
         block_depth: 0,
         loop_depth: 0,
@@ -34,6 +38,8 @@ pub fn parse(source: &str) -> File {
     let statements = parser.statements(&[]);
     File {
         statements,
+        type_declarations: parser.type_declarations,
+        type_extensions: parser.type_extensions,
         comments,
         diagnostics: parser.diagnostics,
         span: Span::new(0, source.len()),
@@ -46,10 +52,35 @@ struct Parser<'a> {
     pos: usize,
     diagnostics: Vec<Diagnostic>,
     pending_annotations: FunctionAnnotations,
+    type_declarations: Vec<NamedTypeDeclaration>,
+    type_extensions: Vec<TypeExtension>,
+    documentation_group: Option<DocumentationGroup>,
     depth: usize,
     block_depth: usize,
     loop_depth: usize,
     vararg_allowed: bool,
+}
+
+struct DocumentationGroup {
+    span: Span,
+    declarations: Vec<usize>,
+    extensions: Vec<usize>,
+    record: Option<usize>,
+}
+
+fn documentation_gap_is_contiguous(gap: &str) -> bool {
+    if !gap.chars().all(char::is_whitespace) {
+        return false;
+    }
+    let mut lines = 0;
+    let mut carriage_return = false;
+    for character in gap.chars() {
+        if character == '\r' || character == '\n' && !carriage_return {
+            lines += 1;
+        }
+        carriage_return = character == '\r';
+    }
+    lines <= 1
 }
 
 impl Parser<'_> {
@@ -122,7 +153,11 @@ impl Parser<'_> {
                 returned = false;
             }
             let before = self.pos;
+            let group = self.documentation_group.take();
             if let Some(stmt) = self.statement() {
+                if let Some(group) = group {
+                    self.attach_type_group(group, stmt.span);
+                }
                 returned = matches!(stmt.kind, StmtKind::Return(_));
                 return_semicolon_used = false;
                 statements.push(stmt);
@@ -131,7 +166,77 @@ impl Parser<'_> {
         }
         let annotations = std::mem::take(&mut self.pending_annotations);
         self.unattached_annotations(&annotations);
+        self.documentation_group = None;
         statements
+    }
+
+    fn attach_type_group(&mut self, group: DocumentationGroup, statement: Span) {
+        let gap = &self.source[group.span.end..statement.start];
+        if !documentation_gap_is_contiguous(gap) {
+            return;
+        }
+        for index in group.declarations {
+            self.type_declarations[index].attachment = Some(statement);
+        }
+        for index in group.extensions {
+            self.type_extensions[index].attachment = Some(statement);
+        }
+    }
+
+    fn record_documentation(&mut self, comment: &Comment, documentation: types::ParsedDocumentation) -> FunctionAnnotations {
+        let contiguous = self.documentation_group.as_ref().is_some_and(|group| {
+            let gap = &self.source[group.span.end..comment.span.start];
+            documentation_gap_is_contiguous(gap)
+        });
+        if !contiguous {
+            self.documentation_group = Some(DocumentationGroup {
+                span: comment.span, declarations: Vec::new(), extensions: Vec::new(), record: None,
+            });
+        }
+        let group = self.documentation_group.as_mut().unwrap();
+        group.span = group.span.join(comment.span);
+        for item in documentation.declarations {
+            match item {
+                types::DeclarationItem::Named { name, generics, kind, span } => {
+                    let index = self.type_declarations.len();
+                    let record = matches!(kind, NamedTypeDeclarationKind::Record { .. });
+                    self.type_declarations.push(NamedTypeDeclaration {
+                        id: NamedTypeDeclarationId(index.try_into().expect("named declaration index fits u32")),
+                        name, generics, kind, span, group_span: group.span, attachment: None,
+                    });
+                    group.declarations.push(index);
+                    if record { group.record = Some(index); }
+                }
+                types::DeclarationItem::Field(field) => {
+                    let record = group.record.filter(|&index| {
+                        field.explicit_owner.as_ref().is_none_or(|owner| owner.text == self.type_declarations[index].name.text)
+                    });
+                    if let Some(index) = record {
+                        let declaration = &mut self.type_declarations[index];
+                        let NamedTypeDeclarationKind::Record { fields, .. } = &mut declaration.kind else { unreachable!() };
+                        declaration.span = declaration.span.join(field.span);
+                        fields.push(field);
+                    } else if let Some(owner) = field.explicit_owner.clone() {
+                        let index = self.type_extensions.len();
+                        self.type_extensions.push(TypeExtension {
+                            owner, span: field.span, fields: vec![field], group_span: group.span, attachment: None,
+                        });
+                        group.extensions.push(index);
+                    } else {
+                        self.diagnostics.push(Diagnostic {
+                            span: field.span, message: "@field has no preceding class, shape, module or explicit owner in its documentation group".to_owned(),
+                        });
+                    }
+                }
+            }
+        }
+        for &index in &group.declarations {
+            self.type_declarations[index].group_span = group.span;
+        }
+        for &index in &group.extensions {
+            self.type_extensions[index].group_span = group.span;
+        }
+        documentation.functions
     }
     fn unattached_annotations(&mut self, annotations: &FunctionAnnotations) {
         for span in types::annotation_spans(annotations) {
@@ -152,6 +257,7 @@ impl Parser<'_> {
                     }
                     let (annotations, diagnostics) = types::annotations(&comment);
                     self.diagnostics.extend(diagnostics);
+                    let annotations = self.record_documentation(&comment, annotations);
                     if !types::annotation_spans(&annotations).is_empty() {
                         let line_start = self.source[..comment.span.start]
                             .rfind(['\r', '\n'])
@@ -179,6 +285,9 @@ impl Parser<'_> {
                     if comment.kind == CommentKind::Documentation {
                         let (annotations, diagnostics) = types::annotations(&comment);
                         self.diagnostics.extend(diagnostics);
+                        let outer = self.documentation_group.take();
+                        let annotations = self.record_documentation(&comment, annotations);
+                        self.documentation_group = outer;
                         for span in types::annotation_spans(&annotations) {
                             self.diagnostics.push(Diagnostic {
                                 span, message: "annotations inside expressions are unsupported unless attached to a function declaration".to_owned(),
@@ -803,29 +912,38 @@ impl Parser<'_> {
         let start = self.expect("{");
         let mut fields = Vec::new();
         let mut built_depth = 1;
+        let mut sequence_index = 0;
         loop {
             self.inner_trivia();
             if self.eof() || self.symbol("}") {
                 break;
             }
             let before = self.pos;
-            let Some(name) = self.name() else {
-                self.error("table expressions currently require named fields (name = value)");
-                self.recover_table();
-                if self.take_symbol(",").is_some() || self.take_symbol(";").is_some() {
-                    continue;
+            let field_start = self.current().span;
+            let kind = if self.take_symbol("[").is_some() {
+                let (mut key, key_depth) = self.expr_with_depth();
+                if key_depth >= 128 {
+                    self.diagnostics.push(Diagnostic { span: key.span, message: "table key nesting exceeds 128".to_owned() });
+                    key = Expr { kind: ExprKind::Error, span: key.span };
+                } else { built_depth = built_depth.max(key_depth + 1); }
+                self.expect("]");
+                self.expect("=");
+                TableFieldKind::Keyed(Box::new(key))
+            } else if matches!(self.current().kind, TokenKind::Identifier(_)) {
+                let mut lookahead = self.pos + 1;
+                while matches!(self.tokens[lookahead].kind, TokenKind::Newline | TokenKind::Comment(_)) { lookahead += 1; }
+                if matches!(&self.tokens[lookahead].kind, TokenKind::Symbol(symbol) if symbol == "=") {
+                    let name = self.name().unwrap();
+                    self.expect("=");
+                    TableFieldKind::Named(name)
+                } else {
+                    sequence_index += 1;
+                    TableFieldKind::Sequence { index: sequence_index }
                 }
-                break;
+            } else {
+                sequence_index += 1;
+                TableFieldKind::Sequence { index: sequence_index }
             };
-            if !self.significant_symbol("=") {
-                self.error("table expressions currently require named fields (name = value)");
-                self.recover_table();
-                if self.take_symbol(",").is_some() || self.take_symbol(";").is_some() {
-                    continue;
-                }
-                break;
-            }
-            self.expect("=");
             let (mut value, mut value_depth) = self.expr_with_depth();
             if value_depth >= 128 {
                 self.diagnostics.push(Diagnostic {
@@ -839,8 +957,8 @@ impl Parser<'_> {
                 value_depth = 1;
             }
             built_depth = built_depth.max(value_depth + 1);
-            let span = name.span.join(value.span);
-            fields.push(TableField { name, value, span });
+            let span = field_start.join(value.span);
+            fields.push(TableField { kind, value, span });
             self.inner_trivia();
             if self.take_symbol(",").is_some() || self.take_symbol(";").is_some() {
                 continue;
@@ -1048,7 +1166,12 @@ fn statements_depth(body: &[Stmt]) -> usize {
                     pending.extend(args.iter().map(|arg| (Node::Expression(arg), depth + 1)));
                 }
                 ExprKind::Table(fields) => {
-                    pending.extend(fields.iter().map(|field| (Node::Expression(&field.value), depth + 1)));
+                    for field in fields {
+                        if let TableFieldKind::Keyed(key) = &field.kind {
+                            pending.push((Node::Expression(key), depth + 1));
+                        }
+                        pending.push((Node::Expression(&field.value), depth + 1));
+                    }
                 }
                 ExprKind::Function(function) => {
                     pending.extend(function.body.iter().map(|stmt| (Node::Statement(stmt), depth + 2)));

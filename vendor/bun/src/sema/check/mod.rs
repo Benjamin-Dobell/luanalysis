@@ -55,6 +55,7 @@ mod expr;
 mod flow;
 mod flow_walk;
 pub mod native_flow;
+pub mod native_packs;
 mod grammarchecks;
 mod infer;
 mod instantiate;
@@ -120,6 +121,7 @@ use symbols::{AliasTarget, ExcludedMeanings};
 use task::{Open, OrderDependent, Stored, Task};
 
 pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
+pub use native_packs::NativePackResult;
 
 /// Written types need the signature substitution; checked values already used its scoped facts.
 #[derive(Copy, Clone)]
@@ -137,6 +139,11 @@ pub trait NativeFunctionProvider {
         Vec::new()
     }
     fn return_type(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> TypeId;
+    fn has_result_pack(&self, _: NativeFunctionId) -> bool { false }
+    fn return_pack_result(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> NativePackResult {
+        let ty = self.return_type(checker, declaration);
+        NativePackResult::Declaration(checker.native_scalar_pack(ty))
+    }
     fn circular_return_type(&self, declaration: NativeFunctionId);
     fn return_type_too_deep(&self, declaration: NativeFunctionId);
     fn contains_type_parameter(&self, _: NativeTypeParamId) -> bool { false }
@@ -154,11 +161,17 @@ pub trait NativeFunctionProvider {
     fn is_context_sensitive(&self, _: NativeExpressionId) -> bool { false }
     fn has_context_sensitive_parameters(&self, _: NativeExpressionId) -> bool { false }
     fn contextual_parameter_indices(&self, _: NativeFunctionId) -> Vec<usize> { Vec::new() }
+    fn contextual_rest_parameter(&self, _: NativeFunctionId) -> Option<usize> { None }
     fn is_expression_descendant(&self, expression: NativeExpressionId, ancestor: NativeExpressionId) -> bool {
         expression == ancestor
     }
     fn check_expression(&self, _: &mut Checker<'_, '_>, _: NativeExpressionId, _: Option<TypeId>, _: CheckMode) -> TypeId {
         panic!("native expression provider is not installed")
+    }
+    fn check_expression_pack(&self, checker: &mut Checker<'_, '_>, expression: NativeExpressionId, expected: Option<NativeResultPack>, mode: CheckMode) -> NativeResultPack {
+        let expected = expected.map(|pack| checker.native_pack_slot(pack, 0));
+        let ty = self.check_expression(checker, expression, expected, mode);
+        checker.native_scalar_pack(ty)
     }
     /// Written recipes are declaration-space; contextual indices already use expected-type space.
     fn parameters_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, _: NativeFunctionContext) -> Vec<SigParam> {
@@ -169,6 +182,12 @@ pub trait NativeFunctionProvider {
     }
     fn return_type_result_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, context: NativeFunctionContext) -> NativeTypeResult {
         NativeTypeResult::Declaration(self.return_type_in_context(checker, declaration, context))
+    }
+    fn return_pack_result_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, context: NativeFunctionContext) -> NativePackResult {
+        match self.return_type_result_in_context(checker, declaration, context) {
+            NativeTypeResult::Declaration(ty) => NativePackResult::Declaration(checker.native_scalar_pack(ty)),
+            NativeTypeResult::Checked(ty) => NativePackResult::Checked(checker.native_scalar_pack(ty)),
+        }
     }
     fn contains_binding(&self, _: NativeBindingId) -> bool { false }
     /// Parameter recipes are in declaration space; body bindings read mapped signature parameters.
@@ -181,8 +200,15 @@ pub trait NativeFunctionProvider {
     fn return_type_result_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, context: NativeCapturedFunctionContext) -> NativeTypeResult {
         NativeTypeResult::Declaration(self.return_type_in_capture(checker, declaration, context))
     }
+    fn return_pack_result_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, context: NativeCapturedFunctionContext) -> NativePackResult {
+        match self.return_type_result_in_capture(checker, declaration, context) {
+            NativeTypeResult::Declaration(ty) => NativePackResult::Declaration(checker.native_scalar_pack(ty)),
+            NativeTypeResult::Checked(ty) => NativePackResult::Checked(checker.native_scalar_pack(ty)),
+        }
+    }
 }
 pub use shape::Members;
+pub mod native_tables;
 pub use spans::compute_ecma_line_starts;
 
 const RECENT_SIGS: usize = 256;
@@ -701,6 +727,7 @@ impl<'s> Program<'s> {
         Checker {
             p: self,
             native_function_provider: None,
+            native_arrays: false,
             native_function_contexts: Vec::new(),
             native_capture_contexts: Vec::new(),
             arena,
@@ -1205,6 +1232,7 @@ pub enum Requested {
 pub struct Checker<'p, 's> {
     pub p: &'p Program<'s>,
     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
+    native_arrays: bool,
     native_function_contexts: Vec<NativeFunctionContext>,
     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
     /// The arena of the thread that runs the task: for the records that the task creates, which may be
@@ -3973,11 +4001,26 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub fn array_of(&mut self, element: TypeId) -> TypeId {
+        if self.native_arrays {
+            return self.native_array_of(element, false);
+        }
         self.global_ref(known::Array, &[element])
+    }
+
+    /// Use intrinsic arrays for a foreign frontend's tuple and rest normalization.
+    pub fn enable_native_arrays(&mut self) {
+        self.native_arrays = true;
+    }
+
+    pub fn native_array_of(&self, element: TypeId, readonly: bool) -> TypeId {
+        self.intern(TypeData::NativeArray { element, readonly })
     }
 
     /// `globalReadonlyArrayType` is `globalArrayType` if `ReadonlyArray` does not exist.
     pub fn readonly_array_of(&mut self, element: TypeId) -> TypeId {
+        if self.native_arrays {
+            return self.native_array_of(element, true);
+        }
         let name = if self.global_type_of_arity(known::ReadonlyArray, 1).is_some() {
             known::ReadonlyArray
         } else {
@@ -4053,6 +4096,9 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// Whether `ty` is a reference to `getGlobalType(name, arity)`.
     fn is_reference_to_global(&self, ty: TypeId, name: Atom, arity: usize) -> bool {
+        if let TypeData::NativeArray { readonly, .. } = self.data(ty) {
+            return arity == 1 && name == if *readonly { known::ReadonlyArray } else { known::Array };
+        }
         matches!(self.data(ty), TypeData::Ref { target, .. }
             if self.files().symbol(*target).name == name
                 && self.global_type_of_arity(name, arity) == Some(*target))
@@ -4069,6 +4115,9 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// The element type of `T[]` or `readonly T[]`.
     pub fn array_element(&mut self, ty: TypeId) -> Option<TypeId> {
+        if let TypeData::NativeArray { element, .. } = self.data(ty) {
+            return Some(*element);
+        }
         if self.is_array(ty) {
             self.type_arguments(ty).first().copied()
         } else {

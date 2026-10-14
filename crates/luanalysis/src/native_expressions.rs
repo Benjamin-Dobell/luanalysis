@@ -5,7 +5,9 @@ use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NativeBindingKey, NativeCheckMode,
     NativeExpressionKey, NativeFunctionKey, Parameter, Type, TypeQueries,
 };
-use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, File, Function, Span, Stmt, StmtKind};
+use luanalysis_syntax::{
+    BinaryOperator, Expr, ExprKind, File, Function, Span, Stmt, StmtKind, TableFieldKind,
+};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -126,7 +128,14 @@ impl NativeExpressions {
         while let ExprKind::Parenthesized(inner) = &expression.kind {
             expression = inner;
         }
-        matches!(&expression.kind,ExprKind::Function(function) if !Self::contextual_indices(function).is_empty())
+        matches!(&expression.kind,ExprKind::Function(function) if Self::has_contextual_parameters(function))
+    }
+
+    fn has_contextual_parameters(function: &Function) -> bool {
+        !Self::contextual_indices(function).is_empty()
+            || (function.vararg.is_some()
+                && function.annotations.vararg.is_none()
+                && function.annotations.type_annotation.is_none())
     }
     pub(super) fn context_sensitive(&self, key: NativeExpressionKey) -> bool {
         self.sensitive(&self.get(key).expression)
@@ -134,11 +143,13 @@ impl NativeExpressions {
     fn sensitive(&self, expression: &Expr) -> bool {
         match &expression.kind {
             ExprKind::Function(function) => {
-                !Self::contextual_indices(function).is_empty()
-                    || self.sensitive_returns(&function.body)
+                Self::has_contextual_parameters(function) || self.sensitive_returns(&function.body)
             }
             ExprKind::Parenthesized(inner) => self.sensitive(inner),
-            ExprKind::Table(fields) => fields.iter().any(|field| self.sensitive(&field.value)),
+            ExprKind::Table(fields) => fields.iter().any(|field| {
+                matches!(&field.kind, TableFieldKind::Keyed(key) if self.sensitive(key))
+                    || self.sensitive(&field.value)
+            }),
             ExprKind::Binary {
                 op: BinaryOperator::And | BinaryOperator::Or,
                 left,
@@ -378,6 +389,9 @@ impl NativeExpressions {
             }
             ExprKind::Table(fields) => {
                 for field in fields {
+                    if let TableFieldKind::Keyed(key) = &field.kind {
+                        self.index(key, owner, parent);
+                    }
                     self.index(&field.value, owner, parent);
                 }
             }

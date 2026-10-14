@@ -337,6 +337,8 @@ pub(super) fn is_object_kind(data: &TypeData) -> bool {
     matches!(
         data,
         TypeData::Ref { .. }
+            | TypeData::NativeArray { .. }
+            | TypeData::NativeTable(_)
             | TypeData::Tuple { .. }
             | TypeData::Anon { .. }
             | TypeData::Fns { .. }
@@ -681,6 +683,9 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `isEmptyResolvedType` of the resolved members of `ty`.
     fn is_empty_resolved_type(&mut self, ty: TypeId) -> bool {
+        if let TypeData::NativeTable(table) = self.data(ty) {
+            return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
+        }
         !self.is_any_function_type(ty)
             && (self.members(ty)).is_some_and(|m| Self::has_no_members(m.whole_shape()))
     }
@@ -703,6 +708,9 @@ impl<'p, 's> Checker<'p, 's> {
     /// once something else has resolved them (`ObjectFlagsMembersResolved`), or is instantiating
     /// them: until that is done there are none.
     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
+        if let TypeData::NativeTable(table) = self.data(ty) {
+            return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
+        }
         if matches!(ty, TypeId::EMPTY_OBJECT | TypeId::EMPTY_TYPE_LITERAL) {
             return true;
         }
@@ -2740,8 +2748,11 @@ impl<'p, 's> Checker<'p, 's> {
                 && self.is_weak_type(target)
                 && {
                     let apparent = self.reduced_apparent_type_as_object(source);
-                    self.members(apparent)
-                        .is_some_and(|m| !m.shape().props.is_empty() || m.has_signatures())
+                    match self.data(apparent) {
+                        TypeData::NativeTable(table) => !table.fields.is_empty(),
+                        _ => self.members(apparent)
+                            .is_some_and(|m| !m.shape().props.is_empty() || m.has_signatures()),
+                    }
                 };
             if is_performing_common_property_checks && !self.has_common_properties(source, target) {
                 if REPORT {
@@ -3092,6 +3103,8 @@ impl<'p, 's> Checker<'p, 's> {
     /// `isWeakType`: properties, all of them optional, and nothing else.
     pub(super) fn is_weak_type(&mut self, t: TypeId) -> bool {
         match self.data(t) {
+            TypeData::NativeTable(table) => !table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty()
+                && table.fields.iter().all(|field| field.optional),
             data if is_object_kind(data) => self.members(t).is_some_and(|m| {
                 let s = m.whole_shape();
                 !s.props.is_empty()
@@ -3111,9 +3124,20 @@ impl<'p, 's> Checker<'p, 's> {
     /// `hasCommonProperties`
     pub(super) fn has_common_properties(&mut self, source: TypeId, target: TypeId) -> bool {
         let apparent = self.reduced_apparent_type_as_object(source);
+        if let TypeData::NativeTable(source) = self.data(apparent) {
+            if let TypeData::NativeTable(target) = self.data(target) {
+                return source.fields.iter().any(|field| target.fields.iter().any(|other| other.key == field.key));
+            }
+            return source.fields.iter().any(|field| {
+                matches!(field.key, NativeTableKey::String(name) if self.is_known_property(target, name))
+            });
+        }
         let Some(sm) = self.members(apparent) else {
             return false;
         };
+        if let TypeData::NativeTable(target) = self.data(target) {
+            return sm.shape().props.iter().any(|prop| target.fields.iter().any(|field| field.key == NativeTableKey::String(prop.name)));
+        }
         // An attribute with a hyphen in its name is treated as known.
         let is_jsx = matches!(self.data(source), TypeData::Synth(shape) if shape.literal == Literalness::JsxAttributes);
         sm.shape().props.iter().any(|p| {
@@ -5219,6 +5243,33 @@ impl<'p, 's> Checker<'p, 's> {
             return Ternary::FALSE;
         }
         match (sd, td) {
+            (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
+                return self.native_tables_related::<REPORT>(r, source, target, state);
+            }
+            (TypeData::NativeTable(source), _) if is_object_kind(td) => {
+                let Some(target) = self.native_table_object_description(target) else { return Ternary::FALSE };
+                let result = self.native_tables_related::<REPORT>(r, source, &target, state);
+                if !result.holds() { return result }
+            }
+            (_, TypeData::NativeTable(target)) if is_object_kind(sd) => {
+                let Some(source) = self.native_table_object_description(source) else { return Ternary::FALSE };
+                let result = self.native_tables_related::<REPORT>(r, &source, target, state);
+                if !result.holds() { return result }
+            }
+            (
+                TypeData::NativeArray { element: s, readonly: sr },
+                TypeData::NativeArray { element: t, readonly: tr },
+            ) => {
+                if !*tr && *sr || relation == Relation::Identity && sr != tr {
+                    return Ternary::FALSE;
+                }
+                return self.type_arguments_related_to::<REPORT>(r, &[*s], &[*t], &[], state);
+            }
+            (_, TypeData::NativeArray { readonly: false, .. })
+                if self.every_type(source, |c, ty| {
+                    c.is_reference_to_global(ty, known::ReadonlyArray, 1)
+                        || matches!(c.data(ty), TypeData::Tuple { readonly: true, .. })
+                }) => return Ternary::FALSE,
             (TypeData::Ref { target: st, .. }, TypeData::Ref { target: tt, .. })
                 if st == tt && !self.is_marker_type(source) && !self.is_marker_type(target) =>
             {
@@ -5243,7 +5294,7 @@ impl<'p, 's> Checker<'p, 's> {
                     return result;
                 }
             }
-            (_, TypeData::Ref { .. })
+            (_, TypeData::Ref { .. } | TypeData::NativeArray { .. })
                 if self.is_array(target)
                     && (self.is_reference_to_global(target, known::ReadonlyArray, 1)
                         && self.every_type(source, |c, m| c.is_array_or_tuple(m))
@@ -5439,6 +5490,7 @@ impl<'p, 's> Checker<'p, 's> {
         self.is_reference_to_global(t, known::Array, 1)
             || matches!(
                 self.data(t),
+                TypeData::NativeArray { readonly: false, .. } |
                 TypeData::Tuple {
                     readonly: false,
                     ..
@@ -6278,7 +6330,7 @@ impl<'p, 's> Checker<'p, 's> {
                 of.iter().any(|&part| self.is_abstract_signature(part))
             }
             // `cloneSignature` preserves the flags.
-            SigData::WithReturn { sig, .. } => self.is_abstract_signature(sig),
+            SigData::WithReturn { sig, .. } | SigData::WithNativeResultPack { sig, .. } => self.is_abstract_signature(sig),
         }
     }
 
@@ -6602,6 +6654,14 @@ impl<'p, 's> Checker<'p, 's> {
                 mapper: extended(self, mapper),
             },
             // `cloneSignature`: the same signature, with its return type carried over.
+            SigData::WithNativeResultPack { sig: inner, pack } => {
+                let inner = self.with_own_type_params(inner, params, values);
+                let mapper = self.mapper_from(params, values);
+                SigData::WithNativeResultPack {
+                    sig: inner,
+                    pack: self.instantiate_native_pack(pack, mapper),
+                }
+            }
             SigData::WithReturn { sig: inner, ret } => {
                 let inner = self.with_own_type_params(inner, params, values);
                 let mapper = self.mapper_from(params, values);
@@ -6738,7 +6798,7 @@ impl<'p, 's> Checker<'p, 's> {
                 Some(self.instantiate_sig(declared, outer))
             }
             // `cloneSignature` preserves the target.
-            SigData::WithReturn { sig: inner, .. } => self.sig_target(inner),
+            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.sig_target(inner),
             SigData::Synth { ref of, .. } => match of[..] {
                 [only] => self.sig_target(only),
                 // `createUnionSignature`, `combineUnionOrIntersectionMemberSignatures`
@@ -7164,11 +7224,16 @@ impl<'p, 's> Checker<'p, 's> {
         if check_mode & IGNORE_RETURN_TYPES != 0 {
             return result;
         }
-        let target_return = self.non_circular_return_type_of_signature(target);
+        let packed = self.sig_has_native_result_pack(target);
+        let target_return = if packed {
+            self.non_circular_result_pack_of_signature(target).ty
+        } else { self.non_circular_return_type_of_signature(target) };
         if target_return == TypeId::VOID || target_return == TypeId::ANY {
             return result;
         }
-        let source_return = self.non_circular_return_type_of_signature(source);
+        let source_return = if packed {
+            self.non_circular_result_pack_of_signature(source).ty
+        } else { self.non_circular_return_type_of_signature(source) };
         if let Some(expected) = self.sig_predicate(target) {
             match self.sig_predicate(source) {
                 Some(actual) => {

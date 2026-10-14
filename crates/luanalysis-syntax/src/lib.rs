@@ -54,9 +54,79 @@ pub struct Comment {
 #[derive(Clone, Debug, PartialEq)]
 pub struct File {
     pub statements: Vec<Stmt>,
+    /// Documentation declarations are independent from runtime statements and
+    /// remain available when standalone, at EOF, or grouped with other tags.
+    pub type_declarations: Vec<NamedTypeDeclaration>,
+    /// Explicit @field<Owner> augmentations do not declare another named type.
+    pub type_extensions: Vec<TypeExtension>,
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NamedTypeDeclarationId(pub u32);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedTypeDeclaration {
+    pub id: NamedTypeDeclarationId,
+    pub name: Name,
+    pub generics: Vec<GenericParameter>,
+    pub kind: NamedTypeDeclarationKind,
+    pub span: Span,
+    /// Entire contiguous documentation group, including associated fields.
+    pub group_span: Span,
+    /// Original following runtime statement, when directly attached. An alias
+    /// never acquires runtime declaration semantics through this metadata.
+    pub attachment: Option<Span>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum NamedTypeDeclarationKind {
+    Alias { target: TypeExpr },
+    Record {
+        flavor: NamedRecordKind,
+        base: Option<TypeExpr>,
+        fields: Vec<FieldDeclaration>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NamedRecordKind {
+    Shape,
+    Class,
+    Module,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FieldDeclaration {
+    pub key: TypeFieldKey,
+    pub ty: TypeExpr,
+    pub visibility: Option<FieldVisibilityAnnotation>,
+    pub explicit_owner: Option<Name>,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldVisibility {
+    Public,
+    Protected,
+    Private,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FieldVisibilityAnnotation {
+    pub kind: FieldVisibility,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeExtension {
+    pub owner: Name,
+    pub fields: Vec<FieldDeclaration>,
+    pub span: Span,
+    pub group_span: Span,
+    pub attachment: Option<Span>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -281,9 +351,18 @@ pub struct ParamAnnotation {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TableField {
-    pub name: Name,
+    pub kind: TableFieldKind,
     pub value: Expr,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TableFieldKind {
+    Named(Name),
+    /// The original key expression; numeric/string normalization is semantic.
+    Keyed(Box<Expr>),
+    /// One-based ordinal among only the constructor's sequence fields.
+    Sequence { index: usize },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -310,6 +389,15 @@ pub enum TypeExprKind {
     Record(Vec<TypeField>),
     Parenthesized(Box<TypeExpr>),
     Function(FunctionType),
+    Array {
+        element: Box<TypeExpr>,
+        suffix_span: Span,
+    },
+    Generic {
+        base: Name,
+        args: Vec<TypeExpr>,
+        args_span: Span,
+    },
     Error,
 }
 
@@ -360,9 +448,18 @@ pub struct FunctionTypeParam {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeField {
-    pub name: Name,
+    pub key: TypeFieldKey,
     pub ty: TypeExpr,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypeFieldKey {
+    Named(Name),
+    /// Original literal or index-domain type, including numeric/byte-string keys.
+    Indexed(Box<TypeExpr>),
+    /// One-based ordinal among bare tuple-like record type fields.
+    Sequence { index: usize },
 }
 
 #[cfg(test)]
@@ -373,3 +470,9 @@ mod generic_tests;
 
 #[cfg(test)]
 mod pack_tests;
+
+#[cfg(test)]
+mod table_type_tests;
+
+#[cfg(test)]
+mod declaration_tests;

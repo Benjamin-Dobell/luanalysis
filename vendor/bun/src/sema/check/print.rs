@@ -1800,6 +1800,38 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             .deferred(ty)
             .map(|reference| Identity::Node(reference.file, reference.node));
         match self.c.data(ty) {
+            TypeData::NativeTable(table) => {
+                let mut members = Vec::new();
+                for field in &table.fields {
+                    let key = match field.key {
+                        NativeTableKey::String(name) => cat!(b"[", self.type_to_node(self.c.string_literal(name, false)).text, b"]"),
+                        NativeTableKey::Integer(value) => cat!(b"[", value.to_string().as_bytes(), b"]"),
+                        NativeTableKey::Float(bits) => cat!(b"[", f64::from_bits(bits).to_string().as_bytes(), b"]"),
+                        NativeTableKey::Boolean(value) => if value { b"[true]".to_vec() } else { b"[false]".to_vec() },
+                    };
+                    let value = self.type_to_node(field.value);
+                    members.push(cat!(if field.readonly { &b"readonly "[..] } else { &b""[..] }, key, if field.optional { &b"?"[..] } else { &b""[..] }, b": ", value.text));
+                }
+                for indexer in &table.indexers {
+                    let key = self.type_to_node(indexer.key);
+                    let value = self.type_to_node(indexer.value);
+                    members.push(cat!(if indexer.readonly { &b"readonly "[..] } else { &b""[..] }, b"[key: ", key.text, b"]: ", value.text));
+                }
+                for tail in &table.sequence_tails {
+                    let value = self.type_to_node(tail.value);
+                    members.push(cat!(if tail.readonly { &b"readonly "[..] } else { &b""[..] }, b"[", tail.start.to_string().as_bytes(), b"..integer]?: ", value.text));
+                }
+                Node::simple(cat!(b"{ ", members.join(&b"; "[..]), b" }"))
+            }
+            TypeData::NativeArray { element, readonly } => {
+                let element = self.type_to_node(*element);
+                let array = cat!(element.emit(POSTFIX), b"[]");
+                if *readonly {
+                    Node::new(cat!(b"readonly ", array), TYPE_OPERATOR)
+                } else {
+                    Node::new(array, POSTFIX)
+                }
+            }
             TypeData::Ref { target, .. } if node_of_reference.is_some() => self
                 .visit_and_transform_type(ty, node_of_reference, |printer, ty| {
                     let args = printer.c.type_arguments(ty);
@@ -5439,7 +5471,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
     /// for it.
     fn signature_parameters(&mut self, signature: SigId) -> Vec<Parameter> {
         let (file, func, mapper) = match self.c.types().sig(signature) {
-            SigData::WithReturn { sig: inner, .. } => {
+            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => {
                 let inner = *inner;
                 return self.signature_parameters(inner);
             }
@@ -5808,7 +5840,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
     /// `assignContextualParameterTypes`: `sig.typeParameters = context.typeParameters`
     fn type_parameters_from_context(&mut self, signature: SigId) -> Vec<TypeId> {
         match *self.c.types().sig(signature) {
-            SigData::WithReturn { sig: inner, .. } => self.type_parameters_from_context(inner),
+            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.type_parameters_from_context(inner),
             _ => self.c.adopted_type_params(signature),
         }
     }
@@ -5820,7 +5852,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
     /// `instantiateSignature` clones its type parameters. Here the function has the declared ones.
     fn has_inference_context(&mut self, signature: SigId) -> bool {
         let (file, func) = match *self.c.types().sig(signature) {
-            SigData::WithReturn { sig: inner, .. } => return self.has_inference_context(inner),
+            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => return self.has_inference_context(inner),
             SigData::Decl { file, func, .. } => (file, func),
             _ => return false,
         };

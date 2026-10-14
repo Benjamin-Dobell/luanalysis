@@ -1,20 +1,208 @@
-//! Native function annotations and scalar call integration. Signature identity
-//! and lazy return inference belong to the native declaration provider; Lua
-//! result packs remain a separate integration gate.
+//! Original Lua function annotations, call arguments and result-list contexts.
+//! Signature identity, lazy return inference and whole-pack relations are native.
 
+use super::native_packs::{Adjustment, AnnotationPack, adjustment};
 use super::{Binding, Checker, describe};
-use luanalysis_engine::{CallError, CallResult, FunctionType, Parameter, Type};
+use luanalysis_engine::{
+    CallError, CallResult, FunctionType, PackArgument, PackCallResult, PackFunctionType, Parameter,
+    Type, ValuePack,
+};
 use luanalysis_syntax::{Expr, ExprKind, Function, Name, Span};
 use std::collections::HashSet;
 
 impl Checker<'_> {
+    pub(super) fn expression_pack(
+        &mut self,
+        expression: &Expr,
+        expected: Option<&ValuePack>,
+    ) -> ValuePack {
+        let previous = self.flow_at;
+        if let (Some(native), Some(at)) = (self.native, previous) {
+            self.flow_at = Some(native.flow_input_for_expression(expression, at));
+        }
+        let pack = match &expression.kind {
+            ExprKind::Call { callee, args } => {
+                self.call_expression_pack(callee, args, expression.span, expected)
+            }
+            ExprKind::MethodCall {
+                receiver,
+                name,
+                args,
+            } => self.method_call_pack(receiver, name, args, expression.span, expected),
+            ExprKind::Vararg => self.vararg_pack(expression.span),
+            _ => {
+                let context = expected.and_then(|pack| self.engine.pack_contextual_slot(pack, 0));
+                ValuePack::single(self.expression_with_expected(expression, context.as_ref()))
+            }
+        };
+        self.flow_at = previous;
+        pack
+    }
+
+    pub(super) fn expression_list_pack(
+        &mut self,
+        expressions: &[Expr],
+        expected: Option<&ValuePack>,
+    ) -> ValuePack {
+        let Some((last, prefix_expressions)) = expressions.split_last() else {
+            return ValuePack::empty();
+        };
+        let mut prefix = Vec::with_capacity(prefix_expressions.len() + 1);
+        for (index, expression) in prefix_expressions.iter().enumerate() {
+            let context = expected.and_then(|pack| self.engine.pack_contextual_slot(pack, index));
+            prefix.push(self.expression_with_expected(expression, context.as_ref()));
+        }
+        let tail_context = expected.and_then(|pack| {
+            self.engine.pack_contextual_slot(pack, prefix.len())?;
+            self.engine.pack_contextual_tail(pack, &prefix)
+        });
+        let tail = match adjustment(last, true) {
+            Adjustment::Expand => self.expression_pack(last, tail_context.as_ref()),
+            Adjustment::Scalar => {
+                let context =
+                    expected.and_then(|pack| self.engine.pack_contextual_slot(pack, prefix.len()));
+                ValuePack::single(self.expression_with_expected(last, context.as_ref()))
+            }
+        };
+        self.engine.concat_pack(&prefix, &tail)
+    }
+
+    pub(super) fn adjusted_list_values(
+        &mut self,
+        expressions: &[Expr],
+        count: usize,
+        expected: Option<&ValuePack>,
+        missing_origin: Span,
+    ) -> Vec<(Type, Span)> {
+        let pack = self.expression_list_pack(expressions, expected);
+        let adjusted = match self.engine.adjust_pack(&pack, count) {
+            Ok(pack) => pack,
+            Err(error) => {
+                self.error(
+                    "LUA2019",
+                    missing_origin,
+                    format!("native Lua result-pack adjustment failed: {error:?}"),
+                );
+                return vec![(Type::Unknown, missing_origin); count];
+            }
+        };
+        let prefix = expressions.len().saturating_sub(1);
+        (0..count)
+            .map(|index| {
+                let origin = expressions
+                    .get(index)
+                    .filter(|_| index < prefix)
+                    .or_else(|| expressions.last())
+                    .map_or(missing_origin, |expression| expression.span);
+                (self.engine.pack_slot(&adjusted, index), origin)
+            })
+            .collect()
+    }
+
+    fn vararg_pack(&mut self, origin: Span) -> ValuePack {
+        let Some(native) = self.native else {
+            return ValuePack::variadic(Type::Any);
+        };
+        let Some(key) = self.type_context else {
+            return ValuePack::variadic(Type::Any);
+        };
+        let function = native.function(key);
+        if function.vararg.is_none() {
+            self.error(
+                "LUA1001",
+                origin,
+                "vararg expression has no variadic function scope",
+            );
+            return ValuePack::never();
+        }
+        if let Some(captured) = self
+            .captured_function
+            .or_else(|| self.engine.current_captured_function())
+        {
+            let value = self.engine.captured_function_value(&captured);
+            if self.engine.native_function_key(&value) == Some(key) {
+                if let Some(pack) = self.engine.captured_rest_pack(&captured) {
+                    return pack;
+                }
+            }
+        }
+        if let Some(context) = self.contextual_function {
+            if function.annotations.vararg.is_none() {
+                return self
+                    .engine
+                    .contextual_rest_pack(&context, function.params.len());
+            }
+        }
+        self.engine
+            .signature_rest_pack(&Type::NativeFunction(key))
+            .unwrap_or_else(ValuePack::empty)
+    }
+
+    fn call_expression_pack(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        span: Span,
+        expected: Option<&ValuePack>,
+    ) -> ValuePack {
+        let callee_type = self.expression(callee);
+        let arguments = self.call_arguments(args);
+        let call = self
+            .native
+            .map(|native| native.expression_key_for_span(span));
+        let result =
+            self.engine
+                .call_native_arguments(&callee_type, call, &arguments, &[], expected);
+        let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
+        self.pack_call_result(result, &callee_type, &origins, callee.span, span)
+    }
+
+    pub(super) fn call_arguments(&mut self, args: &[Expr]) -> Vec<PackArgument> {
+        args.iter()
+            .enumerate()
+            .map(|(index, argument)| {
+                let expands = adjustment(argument, index + 1 == args.len()) == Adjustment::Expand;
+                if let Some(native) = self.native {
+                    let key = native.expression_key(argument);
+                    if expands {
+                        PackArgument::ExpandExpression(key)
+                    } else {
+                        PackArgument::Expression(key)
+                    }
+                } else if expands {
+                    PackArgument::Expand(self.expression_pack(argument, None))
+                } else {
+                    PackArgument::Resolved(self.expression(argument))
+                }
+            })
+            .collect()
+    }
+
+    pub(super) fn pack_call_result(
+        &mut self,
+        result: PackCallResult,
+        callee: &Type,
+        origins: &[Span],
+        callee_span: Span,
+        span: Span,
+    ) -> ValuePack {
+        self.call_result(
+            CallResult {
+                return_type: result.return_type,
+                errors: result.errors,
+            },
+            callee,
+            origins,
+            callee_span,
+            span,
+        );
+        result.return_pack
+    }
+
     pub(super) fn function_annotation(
         &mut self,
         function: &luanalysis_syntax::FunctionType,
     ) -> Type {
-        if function.vararg.is_some() || function.packs.is_some() {
-            self.error("LUA2016", function.span, "variadic signatures and alternative return packs require the native Lua result-pack integration");
-        }
         let mut optional_seen = false;
         let params = function
             .params
@@ -50,21 +238,18 @@ impl Checker<'_> {
                 }
             })
             .collect();
-        let returns = match function.returns.as_slice() {
-            [] => Type::Void,
-            [ty] => self.annotation(ty),
-            _ => {
-                self.error(
-                    "LUA2016",
-                    function.span,
-                    "multiple function results require the pending result-pack integration",
-                );
-                Type::Any
-            }
-        };
-        Type::Function(FunctionType {
+        let returns =
+            AnnotationPack::new(&function.returns, function.packs.as_deref(), function.span)
+                .lower(&mut |ty| self.annotation(ty));
+        let rest = function
+            .vararg
+            .as_ref()
+            .map(|vararg| ValuePack::variadic(self.annotation(&vararg.ty)));
+        self.engine.pack_function(&PackFunctionType {
             params,
-            returns: Box::new(returns),
+            rest,
+            type_parameters: Vec::new(),
+            returns,
         })
     }
 
@@ -88,28 +273,6 @@ impl Checker<'_> {
         &mut self,
         function: &Function,
     ) -> (Vec<Parameter>, Option<Type>) {
-        if let Some(span) = function.vararg {
-            self.error(
-                "LUA2016",
-                span,
-                "variadic signatures require the native Lua result-pack integration",
-            );
-        }
-        if let Some(vararg) = &function.annotations.vararg {
-            self.error(
-                "LUA2016",
-                vararg.span,
-                "vararg annotations require the native Lua result-pack integration",
-            );
-        }
-        if let Some(annotation) = function
-            .annotations
-            .returns
-            .as_ref()
-            .filter(|annotation| annotation.packs.is_some())
-        {
-            self.error("LUA2016", annotation.span, "variadic and alternative return packs require the native Lua result-pack integration");
-        }
         let context = function
             .annotations
             .type_annotation
@@ -123,9 +286,10 @@ impl Checker<'_> {
                     );
                     return None;
                 }
-                match self.annotation(&annotation.types[0]) {
-                    Type::Function(signature) => Some(signature),
-                    _ => {
+                let ty = self.annotation(&annotation.types[0]);
+                match self.engine.function_signature(&ty) {
+                    Some(signature) => Some(signature),
+                    None => {
                         self.error(
                             "LUA2010",
                             annotation.span,
@@ -200,14 +364,11 @@ impl Checker<'_> {
         }
         let returns = if let Some(annotation) = &function.annotations.returns {
             match annotation.types.as_slice() {
-                [ty] => Some(self.annotation(ty)),
+                [ty] if annotation.packs.is_none() => Some(self.annotation(ty)),
                 _ => {
-                    self.error(
-                        "LUA2016",
-                        annotation.span,
-                        "multiple function results require the pending result-pack integration",
-                    );
-                    Some(Type::Any)
+                    let pack =
+                        AnnotationPack::annotation(annotation).lower(&mut |ty| self.annotation(ty));
+                    Some(self.engine.pack_slot(&pack, 0))
                 }
             }
         } else if let Some(context) = context {
@@ -347,32 +508,26 @@ impl Checker<'_> {
     }
 
     pub(super) fn return_statement(&mut self, values: &[Expr], span: Span) {
-        if values.len() > 1 {
-            self.error(
-                "LUA2016",
-                span,
-                "multiple function results require the pending result-pack integration",
-            );
-        }
-        let mut value = Type::Nil;
-        let expected = self.return_type.clone();
-        for (index, expr) in values.iter().enumerate() {
-            let ty = self.expression_with_expected(
-                expr,
-                (index == 0).then_some(expected.as_ref()).flatten(),
-            );
-            if index == 0 {
-                value = ty;
+        let expected_pack = self.return_pack.clone();
+        let pack = self.expression_list_pack(values, expected_pack.as_ref());
+        if let Some(expected) = expected_pack {
+            if !self.engine.pack_assignable(&pack, &expected) {
+                self.error(
+                    "TS2322",
+                    values.first().map_or(span, |value| value.span),
+                    "Lua result pack is not assignable to the declared result pack.",
+                );
             }
-        }
-        if let Some(expected) = self.return_type.clone() {
+        } else if let Some(expected) = self.return_type.clone() {
+            let value = self.engine.pack_slot(&pack, 0);
             self.compatible(
                 &value,
                 &expected,
                 values.first().map_or(span, |value| value.span),
             );
         }
-        self.return_values.push(value);
+        self.return_values.push(self.engine.pack_slot(&pack, 0));
+        self.return_packs.push(pack);
     }
 
     pub(super) fn call_expression(
@@ -390,59 +545,12 @@ impl Checker<'_> {
         callee: &Expr,
         args: &[Expr],
         span: Span,
-        discard: bool,
+        _discard: bool,
         expected: Option<&Type>,
     ) -> Type {
-        let callee_type = self.expression(callee);
-        if let Some(native) = self.native {
-            let keys: Vec<_> = args
-                .iter()
-                .map(|argument| native.expression_key(argument))
-                .collect();
-            let spans: Vec<_> = args.iter().map(|argument| argument.span).collect();
-            let result = self.engine.call_expression_native(
-                &callee_type,
-                native.expression_key_for_span(span),
-                &keys,
-                &[],
-                expected,
-            );
-            return self.call_result(result, &callee_type, &spans, callee.span, span, discard);
-        }
-        let arguments: Vec<_> = args.iter().map(|arg| self.expression(arg)).collect();
-        let spans: Vec<_> = args.iter().map(|arg| arg.span).collect();
-        self.call_types_with_expected(
-            &callee_type,
-            &arguments,
-            &spans,
-            callee.span,
-            span,
-            discard,
-            expected,
-        )
-    }
-
-    pub(super) fn call_types_with_expected(
-        &mut self,
-        callee_type: &Type,
-        arguments: &[Type],
-        argument_spans: &[Span],
-        callee_span: Span,
-        span: Span,
-        discard: bool,
-        expected: Option<&Type>,
-    ) -> Type {
-        let result = self
-            .engine
-            .call_with_type_arguments(callee_type, arguments, &[], expected);
-        self.call_result(
-            result,
-            callee_type,
-            argument_spans,
-            callee_span,
-            span,
-            discard,
-        )
+        let expected_pack = expected.map(|ty| ValuePack::single(ty.clone()));
+        let pack = self.call_expression_pack(callee, args, span, expected_pack.as_ref());
+        self.engine.pack_slot(&pack, 0)
     }
 
     pub(super) fn call_result(
@@ -452,7 +560,6 @@ impl Checker<'_> {
         argument_spans: &[Span],
         callee_span: Span,
         span: Span,
-        discard: bool,
     ) -> Type {
         for error in result.errors {
             match error {
@@ -465,8 +572,14 @@ impl Checker<'_> {
                     };
                     self.error("TS2554", span, format!("Expected {expected} arguments, but got {actual}."));
                 }
+                CallError::PackArity { actual_minimum, actual_maximum, minimum, maximum, .. } => {
+                    let expected = arity_range(minimum, maximum);
+                    let actual = arity_range(actual_minimum, actual_maximum);
+                    self.error("TS2554", span, format!("Expected {expected} arguments, but got {actual}."));
+                }
                 CallError::Argument { index, source, target } => {
-                    self.error("TS2345", argument_spans.get(index).copied().unwrap_or(span), format!("Argument of type '{}' is not assignable to parameter of type '{}'.", describe(&source), describe(&target)));
+                    let origin = argument_spans.get(index).or_else(|| argument_spans.last()).copied().unwrap_or(span);
+                    self.error("TS2345", origin, format!("Argument of type '{}' is not assignable to parameter of type '{}'.", describe(&source), describe(&target)));
                 }
                 CallError::TypeArgumentArity { actual, minimum, maximum } => {
                     let expected = if maximum == minimum { minimum.to_string() } else { format!("{minimum}-{maximum}") };
@@ -478,19 +591,14 @@ impl Checker<'_> {
                 unsupported => self.error("LUA2018", callee_span, format!("native call form {unsupported:?} requires a later call-checking integration")),
             }
         }
-        // `void` does not establish a Lua result count. Its zero/multiple-result
-        // expansion must be represented before such calls can be used as values.
-        if !discard && contains_void(&result.return_type) {
-            self.error("LUA2016", span, "void call results require the pending Lua result-pack integration; only discarded void calls are supported");
-        }
         result.return_type
     }
 }
 
-fn contains_void(ty: &Type) -> bool {
-    match ty {
-        Type::Void => true,
-        Type::Union(types) | Type::Intersection(types) => types.iter().any(contains_void),
-        _ => false,
+fn arity_range(minimum: usize, maximum: Option<usize>) -> String {
+    match maximum {
+        Some(maximum) if maximum == minimum => minimum.to_string(),
+        Some(maximum) => format!("{minimum}-{maximum}"),
+        None => format!("at least {minimum}"),
     }
 }

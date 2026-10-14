@@ -394,6 +394,56 @@ impl<'p, 's> Checker<'p, 's> {
         let are_both_deferred =
             self.types().deferred(source).is_some() && self.types().deferred(target).is_some();
         match (self.data(source), self.data(target)) {
+            (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
+                let mut sources = Vec::new();
+                let mut targets = Vec::new();
+                for field in &target.fields {
+                    if let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) {
+                        sources.push(if actual.optional { self.optional(actual.value) } else { actual.value });
+                        targets.push(if field.optional { self.optional(field.value) } else { field.value });
+                    }
+                }
+                for indexer in &target.indexers {
+                    for actual in &source.indexers {
+                        if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
+                        sources.extend([actual.key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+                        targets.extend([indexer.key, indexer.value]);
+                    }
+                    for actual in &source.fields {
+                        let key = self.native_table_key_type(actual.key);
+                        if !self.native_table_inference_key_matches(key, indexer.key) { continue }
+                        sources.extend([key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+                        targets.extend([indexer.key, indexer.value]);
+                    }
+                    for actual in &source.sequence_tails {
+                        if !self.native_table_inference_key_matches(TypeId::NUMBER, indexer.key)
+                            || !self.could_contain_type_variables(indexer.key) && !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
+                        sources.extend([TypeId::NUMBER, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+                        targets.extend([indexer.key, indexer.value]);
+                    }
+                }
+                for tail in &target.sequence_tails {
+                    for actual in &source.sequence_tails {
+                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+                        targets.push(tail.value);
+                    }
+                    for actual in &source.indexers {
+                        if !self.native_sequence_type_overlaps(tail.start, actual.key) { continue }
+                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+                        targets.push(tail.value);
+                    }
+                    for actual in &source.fields {
+                        if !matches!(actual.key, NativeTableKey::Integer(index) if index >= tail.start)
+                            || target.fields.iter().any(|field| field.key == actual.key) { continue }
+                        sources.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+                        targets.push(tail.value);
+                    }
+                }
+                self.infer_from_type_arguments(n, &sources, &targets, &[]);
+            }
+            (TypeData::NativeArray { element: s, .. }, TypeData::NativeArray { element: t, .. }) => {
+                self.infer_from_type_arguments(n, &[*s], &[*t], &[]);
+            }
             // Two deferred references go through `invokeOnce`; otherwise inference might not
             // terminate.
             (TypeData::Ref { target: st, .. }, TypeData::Ref { target: tt, .. })
@@ -1850,11 +1900,12 @@ impl<'p, 's> Checker<'p, 's> {
             return Some(ReturnTypePair { s, t });
         }
         // A `NoInfer<T>` in the declaration is preserved.
-        let t = self.sig_return(target);
+        let packed = self.sig_has_native_result_pack(target);
+        let t = if packed { self.sig_result_pack(target).ty } else { self.sig_return(target) };
         if !self.could_contain_type_variables(t) {
             return None;
         }
-        let s = self.sig_return(source);
+        let s = if packed { self.sig_result_pack(source).ty } else { self.sig_return(source) };
         Some(ReturnTypePair { s, t })
     }
 
@@ -2513,6 +2564,15 @@ impl<'p, 's> Checker<'p, 's> {
                 .ty
                 .is_some_and(|ty| self.is_type_parameter_at_top_level(ty, param, 0));
         }
+        if self.sig_has_native_result_pack(sig) {
+            let pack = self.sig_result_pack(sig);
+            if let Some(alternatives) = self.native_pack_alternatives(pack) {
+                return alternatives.iter().any(|alternative| {
+                    alternative.fixed.iter().map(|slot| slot.ty).chain(alternative.tail)
+                        .any(|ty| self.is_type_parameter_at_top_level(ty, param, 0))
+                });
+            }
+        }
         let ret = self.sig_return(sig);
         self.is_type_parameter_at_top_level(ret, param, 0)
     }
@@ -3124,6 +3184,12 @@ impl<'p, 's> Checker<'p, 's> {
                     TypeArguments::Deferred(deferred) => left.extend(values(deferred.mapper)),
                 },
                 TypeData::Template { types, .. } => left.extend_from_slice(types),
+                TypeData::NativeArray { element, .. } => left.push(*element),
+                TypeData::NativeTable(table) => {
+                    left.extend(table.fields.iter().map(|field| field.value));
+                    for indexer in &table.indexers { left.extend([indexer.key, indexer.value]); }
+                    left.extend(table.sequence_tails.iter().map(|tail| tail.value));
+                }
                 TypeData::Anon { mapper, .. }
                 | TypeData::NativeTypeParam { mapper, .. }
                 | TypeData::Fns { mapper, .. }
@@ -3187,6 +3253,10 @@ impl<'p, 's> Checker<'p, 's> {
                     SigData::WithReturn { sig, ret } => {
                         signatures.push(*sig);
                         left.push(*ret);
+                    }
+                    SigData::WithNativeResultPack { sig, pack } => {
+                        signatures.push(*sig);
+                        left.push(pack.ty);
                     }
                 }
             }

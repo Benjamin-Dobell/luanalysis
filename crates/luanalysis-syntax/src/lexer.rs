@@ -155,7 +155,7 @@ impl Lexer<'_> {
     fn comment(&mut self, start: usize) {
         self.pos += 2;
         if let Some((equals, body)) = self.long_open(self.pos) {
-            let doc = self.source[body..].starts_with("---");
+            let doc = self.source[body..].trim_start_matches([' ', '\t', '\r', '\n']).starts_with("---");
             self.long_content(equals, body, start, true);
             self.push_comment(
                 start,

@@ -4,6 +4,7 @@
 //! constraint/default resolution, cycle detection, relations and inference.
 
 use super::Diagnostic;
+use super::native_named::{NamedGenericScopeRecipe, NativeTypeContext};
 use luanalysis_engine::{NativeFunctionKey, NativeTypeParameterKey, Type};
 use luanalysis_syntax::{Name, TypeExpr, TypeExprKind};
 use std::collections::{HashMap, HashSet};
@@ -22,26 +23,45 @@ pub(super) struct TypeScopeRecipe {
 pub(super) struct TypeParameterSource {
     pub key: NativeTypeParameterKey,
     pub name: Name,
-    pub owner: NativeFunctionKey,
+    pub owner: NativeTypeContext,
     pub order: u32,
     pub constraint: Option<TypeExpr>,
 }
 
 struct TypeScope {
-    parent: Option<NativeFunctionKey>,
+    parent: Option<NativeTypeContext>,
+    documentation_parents: Vec<NativeTypeContext>,
     names: HashMap<String, NativeTypeParameterKey>,
     parameters: Vec<NativeTypeParameterKey>,
 }
 
 pub(super) struct NativeTypes {
     snapshot: u64,
-    scopes: HashMap<NativeFunctionKey, TypeScope>,
+    scopes: HashMap<NativeTypeContext, TypeScope>,
     parameters: Vec<TypeParameterSource>,
     diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum TypeNameResolution {
+    Missing,
+    Parameter(NativeTypeParameterKey),
+    /// Original lexical candidate parameters, preserved for a binding diagnostic.
+    Ambiguous(Vec<NativeTypeParameterKey>),
+}
+
 impl NativeTypes {
     pub(super) fn new(snapshot: u64, recipes: Vec<TypeScopeRecipe>) -> Self {
+        Self::new_with_named(snapshot, recipes, Vec::new())
+    }
+
+    /// One allocator owns every function and named parameter identity. Keeping
+    /// function recipes first preserves their existing source parameter indices.
+    pub(super) fn new_with_named(
+        snapshot: u64,
+        recipes: Vec<TypeScopeRecipe>,
+        named: Vec<NamedGenericScopeRecipe>,
+    ) -> Self {
         let mut result = Self {
             snapshot,
             scopes: HashMap::new(),
@@ -50,14 +70,50 @@ impl NativeTypes {
         };
         // Every sibling identity exists before any callback can ask for a
         // constraint, including valid forward references between parameters.
-        for recipe in recipes {
-            assert_eq!(recipe.owner.snapshot, snapshot);
+        let recipes = recipes
+            .into_iter()
+            .map(|recipe| {
+                (
+                    NativeTypeContext::Function(recipe.owner),
+                    recipe.parent.map(NativeTypeContext::Function),
+                    Vec::new(),
+                    recipe.parameters,
+                )
+            })
+            .chain(named.into_iter().map(|recipe| {
+                (
+                    recipe.owner,
+                    recipe.parent,
+                    recipe
+                        .documentation_parents
+                        .into_iter()
+                        .map(NativeTypeContext::NamedType)
+                        .collect(),
+                    recipe
+                        .parameters
+                        .into_iter()
+                        .map(|parameter| TypeParameterRecipe {
+                            name: parameter.name,
+                            constraint: parameter.constraint,
+                        })
+                        .collect(),
+                )
+            }));
+        for (owner, parent, documentation_parents, parameters) in recipes {
+            assert_eq!(context_snapshot(owner), snapshot);
+            assert!(parent.is_none_or(|context| context_snapshot(context) == snapshot));
+            assert!(
+                documentation_parents
+                    .iter()
+                    .all(|&context| context_snapshot(context) == snapshot)
+            );
             let mut scope = TypeScope {
-                parent: recipe.parent,
+                parent,
+                documentation_parents,
                 names: HashMap::new(),
                 parameters: Vec::new(),
             };
-            for (order, parameter) in recipe.parameters.into_iter().enumerate() {
+            for (order, parameter) in parameters.into_iter().enumerate() {
                 let key = NativeTypeParameterKey {
                     snapshot,
                     index: u32::try_from(result.parameters.len())
@@ -76,14 +132,14 @@ impl NativeTypes {
                 result.parameters.push(TypeParameterSource {
                     key,
                     name: parameter.name,
-                    owner: recipe.owner,
+                    owner,
                     order: u32::try_from(order).expect("type parameter order fits in u32"),
                     constraint: parameter.constraint,
                 });
             }
             assert!(
-                result.scopes.insert(recipe.owner, scope).is_none(),
-                "one type scope per original function"
+                result.scopes.insert(owner, scope).is_none(),
+                "one type scope per original generic owner"
             );
         }
         result
@@ -108,30 +164,68 @@ impl NativeTypes {
     }
 
     pub(super) fn own_parameters(&self, owner: NativeFunctionKey) -> Vec<NativeTypeParameterKey> {
+        self.own_parameters_in_context(NativeTypeContext::Function(owner))
+    }
+
+    pub(super) fn own_parameters_in_context(
+        &self,
+        owner: NativeTypeContext,
+    ) -> Vec<NativeTypeParameterKey> {
         self.scopes
             .get(&owner)
-            .expect("original function type scope")
+            .expect("original generic owner scope")
             .parameters
             .clone()
     }
 
     pub(super) fn siblings(&self, key: NativeTypeParameterKey) -> Vec<NativeTypeParameterKey> {
-        self.own_parameters(self.parameter(key).owner)
+        self.own_parameters_in_context(self.parameter(key).owner)
     }
 
     pub(super) fn resolve_name(
         &self,
-        mut context: Option<NativeFunctionKey>,
+        context: Option<NativeFunctionKey>,
         name: &str,
     ) -> Option<Type> {
+        match self.resolve_name_in_context(context.map(NativeTypeContext::Function), name) {
+            TypeNameResolution::Parameter(key) => Some(Type::NativeTypeParameter(key)),
+            TypeNameResolution::Missing | TypeNameResolution::Ambiguous(_) => None,
+        }
+    }
+
+    pub(super) fn resolve_name_in_context(
+        &self,
+        mut context: Option<NativeTypeContext>,
+        name: &str,
+    ) -> TypeNameResolution {
+        let mut remaining = self.scopes.len();
         while let Some(owner) = context {
-            let scope = self.scopes.get(&owner)?;
+            assert!(remaining > 0, "cyclic lexical generic-owner metadata");
+            remaining -= 1;
+            let Some(scope) = self.scopes.get(&owner) else {
+                return TypeNameResolution::Missing;
+            };
             if let Some(key) = scope.names.get(name) {
-                return Some(Type::NativeTypeParameter(*key));
+                return TypeNameResolution::Parameter(*key);
+            }
+            // These are sibling documentation scopes, not recursive alias
+            // edges. Only their own original parameters are lookup candidates.
+            let mut candidates: Vec<_> = scope
+                .documentation_parents
+                .iter()
+                .filter_map(|owner| self.scopes.get(owner))
+                .filter_map(|scope| scope.names.get(name).copied())
+                .collect();
+            candidates.sort_by_key(|key| key.index);
+            candidates.dedup();
+            match candidates.len() {
+                0 => {}
+                1 => return TypeNameResolution::Parameter(candidates[0]),
+                _ => return TypeNameResolution::Ambiguous(candidates),
             }
             context = scope.parent;
         }
-        None
+        TypeNameResolution::Missing
     }
 
     pub(super) fn annotation_dependencies(
@@ -140,31 +234,63 @@ impl NativeTypes {
         ty: &TypeExpr,
         used: &mut HashSet<NativeTypeParameterKey>,
     ) {
+        self.annotation_dependencies_in_context(context.map(NativeTypeContext::Function), ty, used)
+    }
+
+    pub(super) fn annotation_dependencies_in_context(
+        &self,
+        context: Option<NativeTypeContext>,
+        ty: &TypeExpr,
+        used: &mut HashSet<NativeTypeParameterKey>,
+    ) {
         match &ty.kind {
             TypeExprKind::Named(name) => {
-                if let Some(Type::NativeTypeParameter(key)) = self.resolve_name(context, name) {
+                if let TypeNameResolution::Parameter(key) =
+                    self.resolve_name_in_context(context, name)
+                {
                     used.insert(key);
                 }
             }
             TypeExprKind::Union(types) => {
                 for ty in types {
-                    self.annotation_dependencies(context, ty, used);
+                    self.annotation_dependencies_in_context(context, ty, used);
                 }
             }
             TypeExprKind::Record(fields) => {
                 for field in fields {
-                    self.annotation_dependencies(context, &field.ty, used);
+                    if let luanalysis_syntax::TypeFieldKey::Indexed(key) = &field.key {
+                        self.annotation_dependencies_in_context(context, key, used);
+                    }
+                    self.annotation_dependencies_in_context(context, &field.ty, used);
                 }
             }
-            TypeExprKind::Parenthesized(ty) => self.annotation_dependencies(context, ty, used),
+            TypeExprKind::Array { element, .. } => {
+                self.annotation_dependencies_in_context(context, element, used)
+            }
+            TypeExprKind::Generic { base, args, .. } => {
+                if let TypeNameResolution::Parameter(key) =
+                    self.resolve_name_in_context(context, &base.text)
+                {
+                    used.insert(key);
+                }
+                for argument in args {
+                    self.annotation_dependencies_in_context(context, argument, used);
+                }
+            }
+            TypeExprKind::Parenthesized(ty) => {
+                self.annotation_dependencies_in_context(context, ty, used)
+            }
             TypeExprKind::Function(function) => {
                 for param in &function.params {
                     if let Some(ty) = &param.ty {
-                        self.annotation_dependencies(context, ty, used);
+                        self.annotation_dependencies_in_context(context, ty, used);
                     }
                 }
+                if let Some(vararg) = &function.vararg {
+                    self.annotation_dependencies_in_context(context, &vararg.ty, used);
+                }
                 for returned in &function.returns {
-                    self.annotation_dependencies(context, returned, used);
+                    self.annotation_dependencies_in_context(context, returned, used);
                 }
             }
             TypeExprKind::Literal(_) | TypeExprKind::Error => {}
@@ -178,25 +304,54 @@ impl NativeTypes {
         owner: NativeFunctionKey,
         used: &HashSet<NativeTypeParameterKey>,
     ) -> Vec<NativeTypeParameterKey> {
+        self.outer_parameters_in_context(NativeTypeContext::Function(owner), used)
+    }
+
+    pub(super) fn outer_parameters_in_context(
+        &self,
+        owner: NativeTypeContext,
+        used: &HashSet<NativeTypeParameterKey>,
+    ) -> Vec<NativeTypeParameterKey> {
         let mut parents = Vec::new();
-        let mut parent = self
+        let scope = self
             .scopes
             .get(&owner)
-            .expect("original function type scope")
-            .parent;
+            .expect("original generic owner scope");
+        let mut parent = scope.parent;
+        let documentation_parents: Vec<_> = scope
+            .documentation_parents
+            .iter()
+            .map(|owner| {
+                self.scopes
+                    .get(owner)
+                    .expect("original documentation generic owner scope")
+            })
+            .collect();
+        let mut remaining = self.scopes.len();
         while let Some(owner) = parent {
+            assert!(remaining > 0, "cyclic lexical generic-owner metadata");
+            remaining -= 1;
             let scope = self
                 .scopes
                 .get(&owner)
-                .expect("enclosing function type scope");
+                .expect("enclosing generic owner scope");
             parents.push(scope);
             parent = scope.parent;
         }
+        let mut seen = HashSet::new();
         parents
             .into_iter()
             .rev()
+            .chain(documentation_parents)
             .flat_map(|scope| scope.parameters.iter().copied())
-            .filter(|key| used.contains(key))
+            .filter(|key| used.contains(key) && seen.insert(*key))
             .collect()
+    }
+}
+
+fn context_snapshot(context: NativeTypeContext) -> u64 {
+    match context {
+        NativeTypeContext::Function(key) => key.snapshot,
+        NativeTypeContext::NamedType(key) => key.snapshot,
     }
 }

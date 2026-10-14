@@ -8,10 +8,17 @@
 mod native;
 mod native_flow;
 pub use native_flow::*;
+mod native_packs;
+pub use native_packs::*;
+#[cfg(test)]
+mod native_pack_signature_tests;
+mod native_tables;
+pub use native_tables::*;
 
 pub use bun_sema::check::CheckMode as NativeCheckMode;
 use bun_sema::check::{
-    Checker, NativeFunctionProvider, NativeTypeResult, Program, ResolvedTypeCallError,
+    Checker, NativeFunctionProvider, NativePackResult, NativeTypeResult, Program,
+    ResolvedTypeCallError,
 };
 use bun_sema::hir;
 use bun_sema::program::Files;
@@ -20,7 +27,8 @@ use bun_sema::session::Session;
 use bun_sema::types::{
     Intrinsic, Literalness, MapperId, NativeBindingId, NativeCapturedBinding,
     NativeCapturedFunctionContext, NativeExpressionId, NativeFunctionContext, NativeFunctionId,
-    NativeTypeParamId, Prop, PropFlags, PropSource, Shape, SigData, SigParam, TypeData, TypeId,
+    NativeResultPack, NativeTypeParamId, Prop, PropFlags, PropSource, Shape, SigData, SigParam,
+    TypeData, TypeId,
 };
 use std::borrow::Cow;
 
@@ -119,6 +127,8 @@ struct TypeHandleState {
     context_slots: std::collections::HashMap<NativeFunctionContext, u32>,
     captures: Vec<NativeCapturedFunctionContext>,
     capture_slots: std::collections::HashMap<NativeCapturedFunctionContext, u32>,
+    packs: Vec<NativeResultPack>,
+    pack_slots: std::collections::HashMap<TypeId, u32>,
 }
 
 impl TypeHandles {
@@ -241,6 +251,7 @@ pub enum Type {
     Intersection(Vec<Type>),
     Shape(Vec<Property>),
     FreshShape(Vec<Property>),
+    Table(TableType),
     Function(FunctionType),
     NativeFunction(NativeFunctionKey),
     NativeTypeParameter(NativeTypeParameterKey),
@@ -250,6 +261,92 @@ pub enum Type {
 /// Source recipes may use thread-local interior state; release its borrows
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
+    fn check_expression_pack(
+        &self,
+        key: NativeExpressionKey,
+        expected: Option<&ValuePack>,
+        mode: NativeCheckMode,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        let expected = expected.map(|pack| queries.pack_slot(pack, 0));
+        ValuePack::single(self.check_expression(key, expected.as_ref(), mode, queries))
+    }
+    fn function_has_result_pack(&self, _: NativeFunctionKey) -> bool {
+        false
+    }
+    fn function_declared_return_pack(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.function_declared_return(key, queries)
+            .map(ValuePack::single)
+    }
+    fn function_inferred_return_pack(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        ValuePack::single(self.function_inferred_return(key, queries))
+    }
+    fn function_declared_return_pack_in_context(
+        &self,
+        key: NativeFunctionKey,
+        _: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.function_declared_return_pack(key, queries)
+    }
+    fn function_inferred_return_pack_in_context(
+        &self,
+        key: NativeFunctionKey,
+        _: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        self.function_inferred_return_pack(key, queries)
+    }
+    fn function_declared_return_pack_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        _: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.function_declared_return_pack(key, queries)
+    }
+    fn function_inferred_return_pack_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        _: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        self.function_inferred_return_pack(key, queries)
+    }
+    fn function_rest_pack(
+        &self,
+        _: NativeFunctionKey,
+        _: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        None
+    }
+    fn function_rest_pack_in_context(
+        &self,
+        key: NativeFunctionKey,
+        _: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.function_rest_pack(key, queries)
+    }
+    fn function_rest_pack_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        _: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.function_rest_pack(key, queries)
+    }
+    fn contextual_rest_parameter(&self, _: NativeFunctionKey) -> Option<usize> {
+        None
+    }
     fn contains_binding(&self, _: NativeBindingKey) -> bool {
         false
     }
@@ -464,6 +561,13 @@ pub enum CallError {
         minimum: usize,
         maximum: Option<usize>,
     },
+    PackArity {
+        index: usize,
+        actual_minimum: usize,
+        actual_maximum: Option<usize>,
+        minimum: usize,
+        maximum: Option<usize>,
+    },
     Argument {
         index: usize,
         source: Type,
@@ -474,6 +578,94 @@ pub enum CallError {
 /// Queries available during one native checker session. All inputs and outputs
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
+    fn pack_function(&mut self, function: &PackFunctionType) -> Type;
+    fn call_native_arguments(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected: Option<&ValuePack>,
+    ) -> PackCallResult;
+    fn call_arguments_pack(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected: Option<&ValuePack>,
+    ) -> PackCallResult {
+        self.call_native_arguments(callee, call, arguments, type_arguments, expected)
+    }
+    fn call_pack(
+        &mut self,
+        callee: &Type,
+        arguments: &[Type],
+        type_arguments: &[Type],
+        expected: Option<&ValuePack>,
+    ) -> PackCallResult;
+    fn call_expression_pack(
+        &mut self,
+        callee: &Type,
+        call: NativeExpressionKey,
+        arguments: &[NativeExpressionKey],
+        type_arguments: &[Type],
+        expected: Option<&ValuePack>,
+    ) -> PackCallResult;
+    fn function_result_pack(&mut self, function: &Type) -> Option<ValuePack>;
+    fn signature_rest_pack(&mut self, function: &Type) -> Option<ValuePack>;
+    fn contextual_rest_pack(
+        &mut self,
+        context: &ContextualFunctionContext,
+        fixed_count: usize,
+    ) -> ValuePack;
+    fn contextual_return_pack(&mut self, context: &ContextualFunctionContext) -> ValuePack;
+    fn captured_rest_pack(&mut self, context: &CapturedFunctionContext) -> Option<ValuePack>;
+    fn instantiate_pack_in_capture(
+        &mut self,
+        context: &CapturedFunctionContext,
+        pack: &ValuePack,
+    ) -> ValuePack;
+    fn table_type(&mut self, table: &TableType) -> Result<Type, TableError>;
+    fn table_type_in_context(
+        &mut self,
+        table: &TableType,
+        expected: &Type,
+    ) -> Result<Type, TableError>;
+    fn table_with_sequence(
+        &mut self,
+        table: &TableType,
+        start: i64,
+        pack: &ValuePack,
+        expected: Option<&Type>,
+    ) -> Result<Type, TableError>;
+    fn table_sequence_context(&mut self, expected: &Type, start: i64) -> Option<ValuePack>;
+    fn table_lookup(&mut self, table: &Type, key: &TableKey) -> Result<Type, TableError>;
+    fn table_write(&mut self, table: &Type, key: &TableKey, value: &Type)
+    -> Result<(), TableError>;
+    fn table_value_context(&mut self, table: &Type, key: &TableKey) -> Option<Type>;
+    fn array_type(&mut self, element: &Type) -> Type;
+    fn retain_pack(&mut self, pack: &ValuePack) -> ValuePack;
+    fn inspect_pack(&mut self, pack: &ValuePack) -> Option<Vec<PackAlternative>>;
+    fn pack_slot(&mut self, pack: &ValuePack, index: usize) -> Type;
+    fn pack_contextual_slot(&mut self, pack: &ValuePack, index: usize) -> Option<Type>;
+    fn adjust_pack(
+        &mut self,
+        pack: &ValuePack,
+        count: usize,
+    ) -> Result<ValuePack, PackAdjustmentError>;
+    fn concat_pack(&mut self, prefix: &[Type], tail: &ValuePack) -> ValuePack;
+    fn pack_contextual_tail(&mut self, expected: &ValuePack, prefix: &[Type]) -> Option<ValuePack>;
+    fn join_packs(&mut self, packs: &[ValuePack]) -> ValuePack;
+    fn aggregate_result_packs(
+        &mut self,
+        packs: &[ValuePack],
+        has_fallthrough: bool,
+        context: Option<&ValuePack>,
+    ) -> ValuePack;
+    fn pack_assignable(&mut self, actual: &ValuePack, declared: &ValuePack) -> bool;
+    fn pack_allows_implicit_return(&mut self, pack: &ValuePack) -> bool;
+    fn pack_with_implicit_empty(&mut self, pack: &ValuePack) -> ValuePack;
     fn captured_function_value(&mut self, context: &CapturedFunctionContext) -> Type;
     fn native_function_key(&mut self, function: &Type) -> Option<NativeFunctionKey>;
     fn instantiate_in_function(&mut self, function: &Type, declaration_type: &Type)
@@ -522,6 +714,7 @@ pub trait TypeQueries {
         initial: &Type,
     ) -> NativeFlowResult;
     fn flow_reachable(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey) -> bool;
+    fn flow_pack_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativePackProjection, ordinary: &Type) -> NativeFlowResult;
     fn contextual_function(
         &mut self,
         function: NativeFunctionKey,
@@ -589,6 +782,7 @@ impl Engine {
     pub fn with_session<R: Send>(&self, work: impl FnOnce(&mut dyn TypeQueries) -> R + Send) -> R {
         with_program(|program, handles| {
             let mut checker = program.checker();
+            checker.enable_native_arrays();
             work(&mut SessionQueries {
                 checker: &mut checker,
                 handles,
@@ -610,6 +804,7 @@ impl Engine {
                 handles,
             };
             let mut checker = program.checker_with_native_provider(&adapter);
+            checker.enable_native_arrays();
             work(
                 &provider,
                 &mut SessionQueries {
@@ -674,6 +869,148 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn pack_function(&mut self, function: &PackFunctionType) -> Type {
+        self.pack_function_native(function)
+    }
+    fn call_native_arguments(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected: Option<&ValuePack>,
+    ) -> PackCallResult {
+        self.call_native_arguments_owned(callee, call, arguments, type_arguments, expected)
+    }
+    fn call_pack(
+        &mut self,
+        callee: &Type,
+        arguments: &[Type],
+        type_arguments: &[Type],
+        expected: Option<&ValuePack>,
+    ) -> PackCallResult {
+        self.call_pack_native(callee, arguments, type_arguments, expected)
+    }
+    fn call_expression_pack(
+        &mut self,
+        callee: &Type,
+        call: NativeExpressionKey,
+        arguments: &[NativeExpressionKey],
+        type_arguments: &[Type],
+        expected: Option<&ValuePack>,
+    ) -> PackCallResult {
+        self.call_expression_pack_native(callee, call, arguments, type_arguments, expected)
+    }
+    fn function_result_pack(&mut self, function: &Type) -> Option<ValuePack> {
+        self.function_result_pack_native(function)
+    }
+    fn signature_rest_pack(&mut self, function: &Type) -> Option<ValuePack> {
+        self.signature_rest_pack_native(function)
+    }
+    fn contextual_rest_pack(
+        &mut self,
+        context: &ContextualFunctionContext,
+        fixed_count: usize,
+    ) -> ValuePack {
+        self.contextual_rest_pack_native(context, fixed_count)
+    }
+    fn contextual_return_pack(&mut self, context: &ContextualFunctionContext) -> ValuePack {
+        self.contextual_return_pack_native(context)
+    }
+    fn captured_rest_pack(&mut self, context: &CapturedFunctionContext) -> Option<ValuePack> {
+        self.captured_rest_pack_native(context)
+    }
+    fn instantiate_pack_in_capture(
+        &mut self,
+        context: &CapturedFunctionContext,
+        pack: &ValuePack,
+    ) -> ValuePack {
+        self.instantiate_pack_in_capture_native(context, pack)
+    }
+    fn table_type(&mut self, table: &TableType) -> Result<Type, TableError> {
+        self.table_type_native(table)
+    }
+    fn table_type_in_context(
+        &mut self,
+        table: &TableType,
+        expected: &Type,
+    ) -> Result<Type, TableError> {
+        self.table_type_in_context_native(table, expected)
+    }
+    fn table_with_sequence(
+        &mut self,
+        table: &TableType,
+        start: i64,
+        pack: &ValuePack,
+        expected: Option<&Type>,
+    ) -> Result<Type, TableError> {
+        self.table_with_sequence_native(table, start, pack, expected)
+    }
+    fn table_sequence_context(&mut self, expected: &Type, start: i64) -> Option<ValuePack> {
+        self.table_sequence_context_native(expected, start)
+    }
+    fn table_lookup(&mut self, table: &Type, key: &TableKey) -> Result<Type, TableError> {
+        self.table_lookup_native(table, key)
+    }
+    fn table_write(
+        &mut self,
+        table: &Type,
+        key: &TableKey,
+        value: &Type,
+    ) -> Result<(), TableError> {
+        self.table_write_native(table, key, value)
+    }
+    fn table_value_context(&mut self, table: &Type, key: &TableKey) -> Option<Type> {
+        self.table_value_context_native(table, key)
+    }
+    fn array_type(&mut self, element: &Type) -> Type {
+        self.array_type_native(element)
+    }
+    fn retain_pack(&mut self, pack: &ValuePack) -> ValuePack {
+        self.retain_pack_native(pack)
+    }
+    fn inspect_pack(&mut self, pack: &ValuePack) -> Option<Vec<PackAlternative>> {
+        self.inspect_pack_native(pack)
+    }
+    fn pack_slot(&mut self, pack: &ValuePack, index: usize) -> Type {
+        self.pack_slot_native(pack, index)
+    }
+    fn pack_contextual_slot(&mut self, pack: &ValuePack, index: usize) -> Option<Type> {
+        self.pack_contextual_slot_native(pack, index)
+    }
+    fn adjust_pack(
+        &mut self,
+        pack: &ValuePack,
+        count: usize,
+    ) -> Result<ValuePack, PackAdjustmentError> {
+        self.adjust_pack_native(pack, count)
+    }
+    fn concat_pack(&mut self, prefix: &[Type], tail: &ValuePack) -> ValuePack {
+        self.concat_pack_native(prefix, tail)
+    }
+    fn pack_contextual_tail(&mut self, expected: &ValuePack, prefix: &[Type]) -> Option<ValuePack> {
+        self.pack_contextual_tail_native(expected, prefix)
+    }
+    fn join_packs(&mut self, packs: &[ValuePack]) -> ValuePack {
+        self.join_packs_native(packs)
+    }
+    fn aggregate_result_packs(
+        &mut self,
+        packs: &[ValuePack],
+        has_fallthrough: bool,
+        context: Option<&ValuePack>,
+    ) -> ValuePack {
+        self.aggregate_result_packs_native(packs, has_fallthrough, context)
+    }
+    fn pack_assignable(&mut self, actual: &ValuePack, declared: &ValuePack) -> bool {
+        self.pack_assignable_native(actual, declared)
+    }
+    fn pack_allows_implicit_return(&mut self, pack: &ValuePack) -> bool {
+        self.pack_allows_implicit_return_native(pack)
+    }
+    fn pack_with_implicit_empty(&mut self, pack: &ValuePack) -> ValuePack {
+        self.pack_with_implicit_empty_native(pack)
+    }
     fn captured_function_value(&mut self, context: &CapturedFunctionContext) -> Type {
         let context = self.handles.resolve_capture(context);
         let ty = self.checker.native_captured_function_value(context);
@@ -834,6 +1171,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             handles: self.handles,
         };
         self.checker.native_flow_reachable(&adapter, at)
+    }
+    fn flow_pack_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativePackProjection, ordinary: &Type) -> NativeFlowResult {
+        self.flow_pack_projection_native(provider, at, projection, ordinary)
     }
     fn contextual_function(
         &mut self,
@@ -1108,6 +1448,13 @@ impl SessionQueries<'_, '_, '_> {
                     minimum: min,
                     maximum: max,
                 },
+                ResolvedTypeCallError::PackArity { index, actual_min, actual_max, min, max } => CallError::PackArity {
+                    index,
+                    actual_minimum: actual_min,
+                    actual_maximum: actual_max,
+                    minimum: min,
+                    maximum: max,
+                },
                 ResolvedTypeCallError::Argument {
                     index,
                     source,
@@ -1135,6 +1482,17 @@ fn contains_native_function(ty: &Type) -> bool {
         Type::Shape(properties) | Type::FreshShape(properties) => properties
             .iter()
             .any(|property| contains_native_function(&property.ty)),
+        Type::Table(table) => {
+            table
+                .fields
+                .iter()
+                .any(|field| contains_native_function(&field.value))
+                || table.indexers.iter().any(|indexer| {
+                    contains_native_function(&indexer.key)
+                        || contains_native_function(&indexer.value)
+                })
+                || table.sequence_tails.iter().any(|tail| contains_native_function(&tail.value))
+        }
         Type::Function(function) => {
             contains_native_function(&function.returns)
                 || function
@@ -1162,6 +1520,7 @@ fn relation_text(checker: &mut Checker<'_, '_>, source: &Type, ty: TypeId) -> St
 fn with_checker<R: Send>(work: impl FnOnce(&mut Checker<'_, '_>) -> R + Send) -> R {
     with_program(|program, _handles| {
         let mut checker = program.checker();
+        checker.enable_native_arrays();
         work(&mut checker)
     })
 }
@@ -1267,6 +1626,120 @@ struct ProviderAdapter<'a, P> {
 }
 
 impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
+    fn has_result_pack(&self, key: NativeFunctionId) -> bool {
+        self.provider.function_has_result_pack(source_key(key))
+    }
+    fn contextual_rest_parameter(&self, key: NativeFunctionId) -> Option<usize> {
+        self.provider.contextual_rest_parameter(source_key(key))
+    }
+    fn return_pack_result(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeFunctionId,
+    ) -> NativePackResult {
+        let key = source_key(key);
+        let declared = self.provider.function_declared_return_pack(
+            key,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        match declared {
+            Some(pack) => NativePackResult::Declaration(native_packs::import_pack(
+                checker,
+                self.handles,
+                &pack,
+            )),
+            None => {
+                let pack = self.provider.function_inferred_return_pack(
+                    key,
+                    &mut SessionQueries {
+                        checker,
+                        handles: self.handles,
+                    },
+                );
+                // An ordinary declaration body is checked with declaration-space
+                // parameters. Its inferred pack follows the same mapper policy
+                // as the existing scalar native return provider.
+                NativePackResult::Declaration(native_packs::import_pack(
+                    checker,
+                    self.handles,
+                    &pack,
+                ))
+            }
+        }
+    }
+    fn return_pack_result_in_context(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeFunctionId,
+        context: NativeFunctionContext,
+    ) -> NativePackResult {
+        let context = self.handles.retain_context(context);
+        let key = source_key(key);
+        let declared = self.provider.function_declared_return_pack_in_context(
+            key,
+            &context,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        match declared {
+            Some(pack) => NativePackResult::Declaration(native_packs::import_pack(
+                checker,
+                self.handles,
+                &pack,
+            )),
+            None => {
+                let pack = self.provider.function_inferred_return_pack_in_context(
+                    key,
+                    &context,
+                    &mut SessionQueries {
+                        checker,
+                        handles: self.handles,
+                    },
+                );
+                NativePackResult::Checked(native_packs::import_pack(checker, self.handles, &pack))
+            }
+        }
+    }
+    fn return_pack_result_in_capture(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeFunctionId,
+        context: NativeCapturedFunctionContext,
+    ) -> NativePackResult {
+        let context = self.handles.retain_capture(context);
+        let key = source_key(key);
+        let declared = self.provider.function_declared_return_pack_in_capture(
+            key,
+            &context,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        match declared {
+            Some(pack) => NativePackResult::Declaration(native_packs::import_pack(
+                checker,
+                self.handles,
+                &pack,
+            )),
+            None => {
+                let pack = self.provider.function_inferred_return_pack_in_capture(
+                    key,
+                    &context,
+                    &mut SessionQueries {
+                        checker,
+                        handles: self.handles,
+                    },
+                );
+                NativePackResult::Checked(native_packs::import_pack(checker, self.handles, &pack))
+            }
+        }
+    }
     fn return_type_result_in_capture(
         &self,
         checker: &mut Checker<'_, '_>,
@@ -1347,7 +1820,16 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
                 handles: self.handles,
             },
         );
-        import_parameters(checker, self.handles, parameters)
+        let rest = self.provider.function_rest_pack_in_capture(
+            source_key(key),
+            &context,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        let parameters = import_parameters(checker, self.handles, parameters);
+        append_rest_parameter(checker, self.handles, parameters, rest)
     }
     fn return_type_in_capture(
         &self,
@@ -1403,6 +1885,24 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
             source_expression_key(ancestor),
         )
     }
+    fn check_expression_pack(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeExpressionId,
+        expected: Option<NativeResultPack>,
+        mode: NativeCheckMode,
+    ) -> NativeResultPack {
+        let key = source_expression_key(key);
+        if !self.provider.contains_expression(key) {
+            std::panic::panic_any(InvalidNativeExpressionKey(key));
+        }
+        let expected = expected.map(|pack| self.handles.retain_pack(checker, pack));
+        let pack = self.provider.check_expression_pack(
+            key, expected.as_ref(), mode,
+            &mut SessionQueries { checker, handles: self.handles },
+        );
+        native_packs::import_pack(checker, self.handles, &pack)
+    }
     fn check_expression(
         &self,
         checker: &mut Checker<'_, '_>,
@@ -1441,7 +1941,16 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
                 handles: self.handles,
             },
         );
-        import_parameters(checker, self.handles, parameters)
+        let rest = self.provider.function_rest_pack_in_context(
+            source_key(key),
+            &context,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        let parameters = import_parameters(checker, self.handles, parameters);
+        append_rest_parameter(checker, self.handles, parameters, rest)
     }
     fn return_type_in_context(
         &self,
@@ -1574,7 +2083,15 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
                 handles: self.handles,
             },
         );
-        import_parameters(checker, self.handles, parameters)
+        let rest = self.provider.function_rest_pack(
+            source_key(key),
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        let parameters = import_parameters(checker, self.handles, parameters);
+        append_rest_parameter(checker, self.handles, parameters, rest)
     }
 
     fn return_type(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> TypeId {
@@ -1606,6 +2123,26 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     fn return_type_too_deep(&self, key: NativeFunctionId) {
         self.provider.return_type_too_deep(source_key(key));
     }
+}
+
+fn append_rest_parameter(
+    checker: &mut Checker<'_, '_>,
+    handles: &TypeHandles,
+    mut parameters: Vec<SigParam>,
+    rest: Option<ValuePack>,
+) -> Vec<SigParam> {
+    if let Some(rest) = rest {
+        let pack = native_packs::import_pack(checker, handles, &rest);
+        parameters.push(SigParam {
+            name: checker.atoms().intern(b"..."),
+            ty: checker.native_pack_type(pack),
+            optional: false,
+            rest: true,
+            is_required_rest: false,
+            declaration: None,
+        });
+    }
+    parameters
 }
 
 fn import_parameters(
@@ -1646,6 +2183,7 @@ fn import_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: &Type) 
         Type::Number => TypeId::NUMBER,
         Type::String => TypeId::STRING,
         Type::SessionType(reference) => handles.resolve(*reference),
+        Type::Table(table) => native_tables::import_table(checker, handles, table),
         Type::BooleanLiteral(value) => checker.bool_literal(*value, true),
         Type::NumberLiteral(value) => checker.number_literal(*value, true),
         Type::StringLiteral(value) => checker.string_literal(checker.atoms().intern(value), true),
@@ -1730,6 +2268,9 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
         return Type::Boolean;
     }
     match checker.data(ty) {
+        TypeData::NativeTable(_) => native_tables::export_table(checker, handles, ty)
+            .map(Type::Table)
+            .unwrap_or_else(|| handles.retain(ty)),
         TypeData::NativeTypeParam {
             declaration,
             mapper,
@@ -1779,7 +2320,8 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
         }
         TypeData::Synth(shape) if shape.call.len() == 1 && shape.props.is_empty() => {
             let sig = shape.call[0];
-            if checker.sig_native_context(sig).is_some()
+            if (checker.sig_has_native_result_pack(sig) && checker.sig_native_decl(sig).is_none())
+                || checker.sig_native_context(sig).is_some()
                 || matches!(
                     checker.types().sig(checker.types().sig_origin(sig)),
                     SigData::NativeCaptured { .. }
@@ -3899,7 +4441,7 @@ mod tests {
     }
 
     #[test]
-    fn native_call_boundary_rejects_this_and_correlated_rest_metadata() {
+    fn native_call_boundary_rejects_this_and_checks_correlated_rest_metadata() {
         with_checker(|checker| {
             let signature = |checker: &Checker<'_, '_>, this, params: &[SigParam]| {
                 let sig = checker.types().intern_sig(SigData::Synth {
@@ -3938,11 +4480,14 @@ mod tests {
                 }],
             );
             let result = checker.call_resolved_types(with_rest, &[TypeId::STRING, TypeId::NUMBER]);
-            assert!(matches!(
-                result.errors.as_slice(),
-                [ResolvedTypeCallError::UnsupportedRest]
-            ));
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
             assert_eq!(result.ret, TypeId::STRING);
+            let alternate = checker.call_resolved_types(with_rest, &[TypeId::NUMBER, TypeId::STRING]);
+            assert!(alternate.errors.is_empty(), "{:?}", alternate.errors);
+            let crossed = checker.call_resolved_types(with_rest, &[TypeId::NUMBER, TypeId::NUMBER]);
+            assert!(matches!(crossed.errors.as_slice(), [ResolvedTypeCallError::Argument { .. }]));
+            let missing = checker.call_resolved_types(with_rest, &[TypeId::STRING]);
+            assert!(matches!(missing.errors.as_slice(), [ResolvedTypeCallError::Arity { actual: 1, min: 2, max: Some(2) }]));
         });
     }
 }

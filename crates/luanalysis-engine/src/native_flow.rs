@@ -1,12 +1,13 @@
 //! Original-source graph records with owned types at the checker boundary.
 
-use super::{Checker, SessionQueries, Type, TypeHandles, TypeQueries, import_type};
+use super::native_packs::import_pack;
+use super::{Checker, SessionQueries, Type, TypeHandles, TypeQueries, ValuePack, import_type};
 use bun_sema::check::native_flow as core;
 
 pub use core::{
     NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeGraphKey,
-    NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePredicate,
-    NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation,
+    NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePackProjection,
+    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,6 +19,17 @@ pub struct NativeFlowResult {
 /// Immutable graph recipes and source-value demands. No graph join, loop
 /// iteration, or narrowing algorithm is performed by this interface.
 pub trait NativeFlowProvider {
+    fn pack_projection(&self, _: NativeReferenceKey) -> Option<NativePackProjection> {
+        None
+    }
+    fn value_pack(
+        &self,
+        value: NativeValueKey,
+        input: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        ValuePack::single(self.value_type(value, input, queries))
+    }
     fn contains_graph(&self, graph: NativeGraphKey) -> bool;
     fn contains_reference(&self, reference: NativeReferenceKey) -> bool;
     fn node(&self, node: NativeFlowKey) -> Option<NativeFlowNode>;
@@ -49,6 +61,25 @@ pub(super) struct FlowProviderAdapter<'a> {
 }
 
 impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
+    fn pack_projection(&self, reference: NativeReferenceKey) -> Option<NativePackProjection> {
+        self.provider.pack_projection(reference)
+    }
+    fn value_pack(
+        &self,
+        value: NativeValueKey,
+        input: NativeFlowKey,
+        checker: &mut Checker<'_, '_>,
+    ) -> bun_sema::types::NativeResultPack {
+        let pack = self.provider.value_pack(
+            value,
+            input,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        import_pack(checker, self.handles, &pack)
+    }
     fn contains_graph(&self, graph: NativeGraphKey) -> bool {
         self.provider.contains_graph(graph)
     }
@@ -102,6 +133,29 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     }
     fn flow_error(&self, at: NativeFlowKey, error: NativeFlowError) {
         self.provider.flow_error(at, error);
+    }
+}
+
+impl SessionQueries<'_, '_, '_> {
+    pub(super) fn flow_pack_projection_native(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        at: NativeFlowKey,
+        projection: NativePackProjection,
+        ordinary: &Type,
+    ) -> NativeFlowResult {
+        let adapter = FlowProviderAdapter {
+            provider,
+            handles: self.handles,
+        };
+        let ordinary = import_type(self.checker, self.handles, ordinary);
+        let result = self
+            .checker
+            .native_flow_pack_projection(&adapter, at, projection, ordinary);
+        NativeFlowResult {
+            ty: self.handles.retain(result.ty),
+            incomplete: result.incomplete,
+        }
     }
 }
 
@@ -301,6 +355,27 @@ mod tests {
         fn flow_error(&self, _: NativeFlowKey, error: NativeFlowError) {
             self.errors.borrow_mut().push(error);
         }
+    }
+
+    #[test]
+    fn correlated_pack_projection_rejects_foreign_frozen_input_before_value_demand() {
+        Engine::new().with_session(|queries| {
+            let graph = Graph::default();
+            let mut input = Graph::at(0);
+            input.graph.region = 1;
+            let projection = NativePackProjection {
+                group: Graph::reference(),
+                value: Graph::value(0),
+                input,
+                index: 1,
+            };
+            queries.flow_pack_projection(&graph, Graph::at(0), projection, &Type::Number);
+            assert_eq!(graph.reads.get(), 0);
+            assert!(matches!(
+                graph.errors.borrow().as_slice(),
+                [NativeFlowError::ForeignEdge { .. }]
+            ));
+        });
     }
 
     #[test]

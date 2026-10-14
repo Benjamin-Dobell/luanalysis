@@ -228,10 +228,16 @@ fn literal_string_indexing_uses_original_member_facts_without_key_coercion() {
         &missing[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
         "\"absent\""
     );
-    for source in [
-        "local item = {x = 1}\nlocal invalid = item[1]",
-        "local item = {x = 1}\nlocal key = \"x\"\nlocal invalid = item[key]",
-        "local item = {x = 1}\nlocal invalid = item[\"\\255\"]",
+    for (source, original) in [
+        ("local item = {x = 1}\nlocal invalid = item[1]", "1"),
+        (
+            "local item = {x = 1}\nlocal key = \"x\"\nlocal invalid = item[key]",
+            "key",
+        ),
+        (
+            "local item = {x = 1}\nlocal invalid = item[\"\\255\"]",
+            "\"\\255\"",
+        ),
     ] {
         let report = check(source);
         assert_eq!(
@@ -240,8 +246,51 @@ fn literal_string_indexing_uses_original_member_facts_without_key_coercion() {
             "{source}: {:#?}",
             report.diagnostics
         );
-        assert_eq!(report.diagnostics[0].code, "LUA2021");
+        assert_eq!(report.diagnostics[0].code, "TS2339");
+        assert_eq!(
+            &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+            original
+        );
     }
+
+    let known = "local item = {x = 1}\n---@type \"x\"\nlocal key = \"x\"\nlocal valid = item[key]";
+    let report = check(known);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    assert_eq!(ty(&report, "valid"), "number");
+    assert_eq!(report.type_at(known.rfind("key]").unwrap()), Some("\"x\""));
+
+    let broad = "---@param key string\nlocal function invalid(key)\n\
+local item = {x = 1}\nreturn item[key]\nend";
+    let report = check(broad);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2339");
+    assert_eq!(
+        &broad[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+        "key"
+    );
+    assert_eq!(report.type_at(broad.rfind("key]").unwrap()), Some("string"));
+
+    let supported = "local item={[1]=42,[\"1\"]=\"text\",[\"\\255\"]=true}\n\
+---@type number\nlocal numeric=item[1.0]\n\
+---@type string\nlocal string=item[\"1\"]\n\
+---@type boolean\nlocal bytes=item[\"\\xFF\"]\n\
+---@param values table<string,number>\n---@param key string\n\
+---@return number\nlocal function dynamic(values,key) return values[key] end\n\
+local result=dynamic({x=7},\"x\")";
+    let report = check(supported);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    assert_eq!(ty(&report, "numeric"), "number");
+    assert_eq!(ty(&report, "string"), "string");
+    assert_eq!(ty(&report, "bytes"), "boolean");
+    assert_eq!(ty(&report, "result"), "number");
+    let invalid = supported.replace("local numeric=item[1.0]", "local numeric=item[\"1\"]");
+    let report = check(&invalid);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(
+        &invalid[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+        "item[\"1\"]"
+    );
 }
 
 #[test]

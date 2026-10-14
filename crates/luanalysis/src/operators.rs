@@ -6,7 +6,7 @@
 //! arbitrary table indexers require their own later native boundaries.
 
 use super::{Checker, describe};
-use luanalysis_engine::Type;
+use luanalysis_engine::{PackArgument, Type, ValuePack};
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, Name, Span, UnaryOperator};
 
 impl Checker<'_> {
@@ -242,7 +242,7 @@ impl Checker<'_> {
 
     fn length_operand(&mut self, ty: &Type) -> bool {
         match ty {
-            Type::Any | Type::Never | Type::Shape(_) | Type::FreshShape(_) => true,
+            Type::Any | Type::Never | Type::Shape(_) | Type::FreshShape(_) | Type::Table(_) => true,
             Type::Union(types) => types.iter().all(|ty| self.length_operand(ty)),
             Type::Intersection(types) => types.iter().any(|ty| self.length_operand(ty)),
             // A structural empty-object target also accepts non-table values in
@@ -274,59 +274,6 @@ impl Checker<'_> {
         );
     }
 
-    pub(super) fn index_expression(
-        &mut self,
-        expression: &Expr,
-        base: &Expr,
-        index: &Expr,
-    ) -> Type {
-        let receiver = self.expression(base);
-        // Preserve the original expression query, even though only a literal
-        // byte-string key is currently representable by record member lookup.
-        self.expression(index);
-        let Some(bytes) = literal_string_key(index) else {
-            self.error(
-                "LUA2021",
-                index.span,
-                "nonliteral-string table indexing requires native Lua key/indexer support; numeric keys are not coerced to strings",
-            );
-            return Type::Any;
-        };
-        let Ok(key) = std::str::from_utf8(bytes) else {
-            self.error(
-                "LUA2021",
-                index.span,
-                "non-UTF-8 table keys require the pending Lua byte-key representation",
-            );
-            return Type::Any;
-        };
-        if matches!(receiver, Type::Any) {
-            return Type::Any;
-        }
-        if let Some(ty) = self.engine.property_type(&receiver, key) {
-            if let (Some(native), Some(at)) = (self.native, self.flow_at) {
-                let result = native.flow_reference_type(expression, at, &ty, &ty, self.engine);
-                self.incomplete_flow |= result.incomplete;
-                result.ty
-            } else {
-                self.reference(expression)
-                    .and_then(|reference| self.assigned_fields.get(&reference).cloned())
-                    .unwrap_or(ty)
-            }
-        } else {
-            self.error(
-                "TS2339",
-                index.span,
-                format!(
-                    "Property '{}' does not exist on type '{}'.",
-                    key,
-                    describe(&receiver)
-                ),
-            );
-            Type::Any
-        }
-    }
-
     pub(super) fn method_call_expression(
         &mut self,
         receiver: &Expr,
@@ -344,9 +291,22 @@ impl Checker<'_> {
         name: &Name,
         args: &[Expr],
         span: Span,
-        discard: bool,
+        _discard: bool,
         expected: Option<&Type>,
     ) -> Type {
+        let expected_pack = expected.map(|ty| ValuePack::single(ty.clone()));
+        let pack = self.method_call_pack(receiver, name, args, span, expected_pack.as_ref());
+        self.engine.pack_slot(&pack, 0)
+    }
+
+    pub(super) fn method_call_pack(
+        &mut self,
+        receiver: &Expr,
+        name: &Name,
+        args: &[Expr],
+        span: Span,
+        expected: Option<&ValuePack>,
+    ) -> ValuePack {
         let receiver_type = self.expression(receiver);
         let callee = if matches!(receiver_type, Type::Any) {
             Type::Any
@@ -370,35 +330,22 @@ impl Checker<'_> {
             Type::Any
         };
         self.record_expression_type(name.span, &callee);
-        if let Some(native) = self.native {
-            let mut keys = Vec::with_capacity(args.len() + 1);
-            let mut origins = Vec::with_capacity(args.len() + 1);
-            keys.push(native.expression_key(receiver));
-            origins.push(receiver.span);
-            for argument in args {
-                keys.push(native.expression_key(argument));
-                origins.push(argument.span);
-            }
-            let result = self.engine.call_expression_native(
-                &callee,
-                native.expression_key_for_span(span),
-                &keys,
-                &[],
-                expected,
-            );
-            return self.call_result(result, &callee, &origins, name.span, span, discard);
-        }
-        let mut arguments = Vec::with_capacity(args.len() + 1);
-        let mut origins = Vec::with_capacity(args.len() + 1);
-        arguments.push(receiver_type);
-        origins.push(receiver.span);
-        for arg in args {
-            arguments.push(self.expression(arg));
-            origins.push(arg.span);
-        }
-        self.call_types_with_expected(
-            &callee, &arguments, &origins, name.span, span, discard, expected,
-        )
+        let receiver_argument = if let Some(native) = self.native {
+            PackArgument::Expression(native.expression_key(receiver))
+        } else {
+            PackArgument::Resolved(receiver_type)
+        };
+        let mut arguments = vec![receiver_argument];
+        arguments.extend(self.call_arguments(args));
+        let call = self
+            .native
+            .map(|native| native.expression_key_for_span(span));
+        let result = self
+            .engine
+            .call_native_arguments(&callee, call, &arguments, &[], expected);
+        let mut origins = vec![receiver.span];
+        origins.extend(args.iter().map(|argument| argument.span));
+        self.pack_call_result(result, &callee, &origins, name.span, span)
     }
 }
 

@@ -97,6 +97,31 @@ SOURCE_ADAPTATIONS.append({
     "patch": "vendor/patches/bun-sema-numeric-for.patch",
     "reason": "Add original-source numeric iteration facts and reachability with exact Lua numeric-entry evaluation within the shared flow worker.",
 })
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+    "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+    **({"added": True} if path in {"check/native_packs.rs", "check/native_tables.rs"} else {}),
+} for path in [
+    "check/call.rs", "check/decl.rs", "check/explain_relation.rs", "check/infer.rs",
+    "check/instantiate.rs", "check/mod.rs", "check/print.rs", "check/relate.rs",
+    "check/shape.rs", "check/symbols.rs", "types.rs", "check/native_packs.rs",
+    "check/native_tables.rs",
+])
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+    "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+} for path in [
+    "check/call.rs", "check/errors_call.rs", "check/infer.rs", "check/instantiate.rs",
+    "check/mod.rs", "check/native_flow.rs", "check/native_packs.rs", "check/native_tables.rs",
+    "check/print.rs", "check/relate.rs", "check/shape.rs", "types.rs",
+])
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_tables.rs",
+    "patch": "vendor/patches/bun-sema-closed-table-key-coverage.patch",
+    "reason": "Require an actual indexer or ranged-tail domain match before augmenting dynamic constructor lookups with fixed-field collision candidates; closed records retain complete key-domain checks.",
+})
 
 
 def git(source, *args):

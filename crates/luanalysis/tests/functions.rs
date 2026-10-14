@@ -12,7 +12,7 @@ fn annotated_functions_and_nested_scopes_use_original_binding_types() {
     let bound = report.bound.as_ref().unwrap();
     assert_ne!(bound.binding_at(inner_read), bound.binding_at(outer_read));
     for (name, expected) in [
-        ("checked", "{ title: string, id: number }"),
+        ("checked", "{ id: number, title: string }"),
         ("checkedOuter", "number"),
         ("checkedExpression", "string"),
     ] {
@@ -138,24 +138,27 @@ fn declaration_checking_does_not_execute_captured_writes() {
 }
 
 #[test]
-fn unsupported_result_packs_fail_explicitly() {
-    for source in [
-        "---@return number, string\nlocal function pair() return 1, \"second\" end",
-        "---@return void\nlocal function nothing() end\nlocal value = nothing()",
+fn fixed_result_packs_and_empty_call_scalarization_use_native_types() {
+    let source = "---@return number, string\nlocal function pair() return 1, \"second\" end\nlocal number,text,missing=pair()\n---@return void\nlocal function nothing() end\nlocal nil_value=(nothing())\n---@type string\nlocal rejected=number";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    for (name, expected) in [
+        ("number", "number"),
+        ("text", "string"),
+        ("missing", "nil"),
+        ("nil_value", "nil"),
     ] {
-        assert!(
-            check(source)
-                .diagnostics
+        assert_eq!(
+            report
+                .bindings
                 .iter()
-                .any(|error| error.code.starts_with("LUA201")),
-            "{source}"
+                .find(|binding| binding.name == name)
+                .unwrap()
+                .ty,
+            expected
         );
     }
-    assert!(
-        check("---@return void\nlocal function nothing() end\nnothing()")
-            .diagnostics
-            .is_empty()
-    );
 }
 
 #[test]

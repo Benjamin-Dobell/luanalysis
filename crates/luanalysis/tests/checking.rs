@@ -257,26 +257,22 @@ fn duplicate_assignment_destinations_follow_lua_54_reverse_stores() {
 }
 
 #[test]
-fn duplicate_constructor_keys_report_undefined_assignment_order() {
-    let source = "local item = {x = 1, x = \"text\"}\n---@type string\nlocal value = item.x";
-    let report = check(source);
-    assert_eq!(
-        report
-            .diagnostics
-            .iter()
-            .map(|error| error.code)
-            .collect::<Vec<_>>(),
-        ["LUA2007"]
-    );
-    assert!(
-        report.diagnostics[0]
-            .message
-            .contains("undefined assignment order")
-    );
-    assert_eq!(
-        &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
-        "x"
-    );
+fn duplicate_constructor_candidates_form_a_union_in_both_source_orders() {
+    for constructor in ["{x = 1, x = \"text\"}", "{x = \"text\", x = 1}"] {
+        let source = format!("local item = {constructor}\n---@type string\nlocal value = item.x");
+        let report = check(&source);
+        assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(report.diagnostics[0].code, "TS2322");
+        assert_eq!(
+            &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+            "item.x"
+        );
+        let actual = report.type_at(source.find("item.x").unwrap() + "item.".len()).unwrap();
+        let alternatives: std::collections::BTreeSet<_> = actual.split(" | ").collect();
+        assert_eq!(alternatives, ["number", "string"].into_iter().collect());
+        let corrected = source.replace("---@type string", "---@type number|string");
+        assert!(check(&corrected).diagnostics.is_empty());
+    }
 }
 
 #[test]

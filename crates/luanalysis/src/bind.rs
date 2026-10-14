@@ -4,7 +4,9 @@
 //! local initializers therefore resolve before the new declarations exist,
 //! while a local function's name is available to its recursive body.
 
-use luanalysis_syntax::{Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind};
+use luanalysis_syntax::{
+    Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TableFieldKind,
+};
 use std::collections::HashMap;
 
 /// A dense scope identity belonging to one BoundFile source snapshot.
@@ -390,6 +392,9 @@ impl Binder {
             }
             ExprKind::Table(fields) => {
                 for field in fields {
+                    if let TableFieldKind::Keyed(key) = &field.kind {
+                        self.expression(key);
+                    }
                     self.expression(&field.value);
                 }
             }

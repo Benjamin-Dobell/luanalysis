@@ -7,8 +7,9 @@ use super::{bind::BindingId, flow};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NativeCallEffects, NativeFlowError,
     NativeFlowKey, NativeFlowNode, NativeFlowProvider, NativeFunctionKey, NativeGraphKey,
-    NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePredicate,
-    NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation, Type, TypeQueries,
+    NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePackProjection,
+    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation,
+    Type, TypeQueries, ValuePack,
 };
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, File, Span};
 use std::cell::RefCell;
@@ -17,6 +18,10 @@ use std::collections::{HashMap, HashSet};
 #[derive(Clone, Debug)]
 pub(super) enum ValueRecipe {
     Evaluation(flow::EvaluationId),
+    PackElement {
+        evaluation: flow::EvaluationId,
+        index: usize,
+    },
     Nil,
     Function(u32),
     NumericIteration,
@@ -40,6 +45,7 @@ pub(super) struct NativeFlowSources {
     declaration_writes: HashMap<BindingId, flow::FlowId>,
     expression_evaluations: HashMap<(u32, usize, usize), flow::EvaluationId>,
     runtime_type_calls: HashSet<flow::SourceExpressionId>,
+    pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
     contexts: RefCell<HashMap<FlowContext, u64>>,
 }
 
@@ -61,6 +67,7 @@ impl NativeFlowSources {
             declaration_writes: HashMap::new(),
             expression_evaluations: HashMap::new(),
             runtime_type_calls: HashSet::new(),
+            pack_projections: HashMap::new(),
             contexts: RefCell::new(HashMap::new()),
             program,
         };
@@ -136,6 +143,12 @@ impl NativeFlowSources {
                                 flow::ValueDemand::IteratorResult(index) => {
                                     ValueRecipe::IteratorResult(*index)
                                 }
+                                flow::ValueDemand::PackElement { evaluation, index } => {
+                                    ValueRecipe::PackElement {
+                                        evaluation: *evaluation,
+                                        index: *index,
+                                    }
+                                }
                                 flow::ValueDemand::Evaluation(_) => unreachable!(),
                             };
                             let index = result.values.len() as u32;
@@ -152,7 +165,77 @@ impl NativeFlowSources {
                 }
             }
         }
+        let written: HashSet<_> = bound
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.kind == super::bind::OccurrenceKind::Write)
+            .filter_map(|occurrence| occurrence.binding)
+            .collect();
+        let mut mutable_groups = HashSet::new();
+        for graph in &result.program.graphs {
+            for node in &graph.nodes {
+                if let flow::NodeKind::Write {
+                    address,
+                    value: flow::ValueDemand::PackElement { evaluation, index },
+                    declaration: true,
+                    ..
+                } = &node.kind
+                {
+                    let flow::ReferenceRoot::Binding(binding) = address.reference.root else {
+                        continue;
+                    };
+                    if written.contains(&binding) {
+                        mutable_groups.insert(*evaluation);
+                    }
+                    result
+                        .pack_projections
+                        .insert(binding, (*evaluation, *index));
+                    let reference = flow::Reference {
+                        root: flow::ReferenceRoot::Pack(*evaluation),
+                        path: Vec::new(),
+                    };
+                    intern_reference(
+                        &mut result.references[graph.index as usize],
+                        &mut result.reference_indices[graph.index as usize],
+                        &reference,
+                    );
+                }
+            }
+        }
         result
+            .pack_projections
+            .retain(|_, (evaluation, _)| !mutable_groups.contains(evaluation));
+        result
+    }
+
+    pub(super) fn pack_projection(
+        &self,
+        reference: NativeReferenceKey,
+    ) -> Option<NativePackProjection> {
+        let source = self.source_reference(reference)?;
+        if !source.path.is_empty() {
+            return None;
+        }
+        let flow::ReferenceRoot::Binding(binding) = source.root else {
+            return None;
+        };
+        let &(evaluation, index) = self.pack_projections.get(&binding)?;
+        let evaluation = self.program.evaluation(evaluation);
+        // Captured bindings cross an activation/graph boundary; their capture
+        // environment remains authoritative until that contract carries groups.
+        if evaluation.input.graph != reference.graph.region {
+            return None;
+        }
+        let group = flow::Reference {
+            root: flow::ReferenceRoot::Pack(evaluation.id),
+            path: Vec::new(),
+        };
+        Some(NativePackProjection {
+            group: self.reference_key(reference.graph, &group)?,
+            value: self.evaluation_value(evaluation.id),
+            input: self.flow_key(evaluation.input, reference.graph.context),
+            index,
+        })
     }
 
     pub(super) fn graph_for_function(
@@ -339,7 +422,56 @@ impl NativeFlowSources {
                 "predicate evaluation is missing its frozen input",
             );
         };
+        self.predicate_evaluation(key, evaluation)
+    }
+
+    fn predicate_evaluation(
+        &self,
+        key: NativeFlowKey,
+        evaluation: &flow::Evaluation,
+    ) -> NativePredicate {
+        let expression = evaluation.expression;
         let source = &self.program.expression(expression).expression;
+        match &source.kind {
+            ExprKind::Parenthesized(_) => {
+                if let Some(inner) = evaluation.operands.first() {
+                    return self.predicate_evaluation(key, self.program.evaluation(*inner));
+                }
+            }
+            ExprKind::Unary {
+                op: luanalysis_syntax::UnaryOperator::Not,
+                ..
+            } => {
+                if let Some(inner) = evaluation.operands.first() {
+                    return NativePredicate::Not(Box::new(
+                        self.predicate_evaluation(key, self.program.evaluation(*inner)),
+                    ));
+                }
+            }
+            ExprKind::Binary {
+                op: BinaryOperator::And | BinaryOperator::Or,
+                ..
+            } if evaluation.operands.len() == 2 => {
+                let left = Box::new(
+                    self.predicate_evaluation(key, self.program.evaluation(evaluation.operands[0])),
+                );
+                let right = Box::new(
+                    self.predicate_evaluation(key, self.program.evaluation(evaluation.operands[1])),
+                );
+                return if matches!(
+                    &source.kind,
+                    ExprKind::Binary {
+                        op: BinaryOperator::And,
+                        ..
+                    }
+                ) {
+                    NativePredicate::And(left, right)
+                } else {
+                    NativePredicate::Or(left, right)
+                };
+            }
+            _ => {}
+        }
         if let ExprKind::Binary {
             op: BinaryOperator::Equal | BinaryOperator::NotEqual,
             ..
@@ -448,11 +580,7 @@ impl NativeFlowSources {
         })
     }
 
-    fn numeric_input(
-        &self,
-        evaluation: flow::EvaluationId,
-        context: u64,
-    ) -> NativeNumericInput {
+    fn numeric_input(&self, evaluation: flow::EvaluationId, context: u64) -> NativeNumericInput {
         let evaluation = self.program.evaluation(evaluation);
         let expression = &self.program.expression(evaluation.expression).expression;
         NativeNumericInput {
@@ -475,29 +603,21 @@ impl NativeFlowSources {
             | flow::NodeKind::CreateFunction { .. }
             | flow::NodeKind::Break => NativeFlowNode::Pass { before: before()? },
             flow::NodeKind::Write { address, value, .. } => {
-                if address
-                    .reference
-                    .path
-                    .iter()
-                    .any(|key| matches!(key, flow::Key::Dynamic(_)))
-                {
-                    NativeFlowNode::Unsupported("dynamic Lua addresses require native key matching")
-                } else {
-                    let input = match value {
-                        flow::ValueDemand::Evaluation(evaluation) => {
-                            self.program.evaluation(*evaluation).input
-                        }
-                        _ => address.epoch,
-                    };
-                    NativeFlowNode::Write {
-                        before: before()?,
-                        target: self.reference_key(key.graph, &address.reference)?,
-                        value: NativeValueKey {
-                            snapshot: self.program.snapshot,
-                            index: self.write_values[&node.id],
-                        },
-                        input: edge(input),
+                let input = match value {
+                    flow::ValueDemand::Evaluation(evaluation)
+                    | flow::ValueDemand::PackElement { evaluation, .. } => {
+                        self.program.evaluation(*evaluation).input
                     }
+                    _ => address.epoch,
+                };
+                NativeFlowNode::Write {
+                    before: before()?,
+                    target: self.reference_key(key.graph, &address.reference)?,
+                    value: NativeValueKey {
+                        snapshot: self.program.snapshot,
+                        index: self.write_values[&node.id],
+                    },
+                    input: edge(input),
                 }
             }
             flow::NodeKind::Predicate {
@@ -578,6 +698,18 @@ impl NativeFlowSources {
         if query.root != target.root {
             return NativeWriteRelation::Unaffected;
         }
+        for (query_key, target_key) in query.path.iter().zip(&target.path) {
+            if matches!(query_key, flow::Key::Dynamic(_))
+                || matches!(target_key, flow::Key::Dynamic(_))
+            {
+                // A computed key may overwrite this member. Reset through the
+                // native declared-type transfer rather than claiming key identity.
+                return NativeWriteRelation::Ancestor;
+            }
+            if query_key != target_key {
+                return NativeWriteRelation::Unaffected;
+            }
+        }
         if query.path == target.path {
             NativeWriteRelation::Exact
         } else if target.path.len() < query.path.len() && query.path.starts_with(&target.path) {
@@ -601,6 +733,15 @@ fn intern_reference(
 }
 
 pub(super) trait FlowValueQueries {
+    fn flow_value_pack(
+        &self,
+        sources: &NativeFlowSources,
+        value: &ValueRecipe,
+        input: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        ValuePack::single(self.flow_value_type(sources, value, input, queries))
+    }
     fn flow_value_type(
         &self,
         sources: &NativeFlowSources,
@@ -624,6 +765,22 @@ pub(super) struct FlowAdapter<'a> {
 }
 
 impl NativeFlowProvider for FlowAdapter<'_> {
+    fn pack_projection(&self, reference: NativeReferenceKey) -> Option<NativePackProjection> {
+        self.sources.pack_projection(reference)
+    }
+    fn value_pack(
+        &self,
+        value: NativeValueKey,
+        input: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        let recipe = self
+            .sources
+            .value(value)
+            .expect("native pack query uses an original source evaluation");
+        self.values
+            .flow_value_pack(self.sources, recipe, input, queries)
+    }
     fn contains_graph(&self, graph: NativeGraphKey) -> bool {
         self.sources.contains_graph(graph)
     }

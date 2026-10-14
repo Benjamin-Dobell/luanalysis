@@ -983,8 +983,12 @@ impl Checker<'_, '_> {
         check_mode: CheckMode,
     ) -> Option<(usize, TypeId, TypeId)> {
         let mut params = self.sig_params(sig);
-        assert!(self.non_array_rest_type(&params).is_none());
-        for (i, &arg) in args.iter().enumerate() {
+        let rest = self.non_array_rest_type(&params);
+        let boundary = args.iter().position(|arg| arg.is_spread()).unwrap_or(args.len());
+        let boundary = if rest.is_some() {
+            boundary.min(self.parameter_count(&params).saturating_sub(1))
+        } else { boundary };
+        for (i, &arg) in args.iter().enumerate().take(boundary) {
             if let List::Own(_) = params {
                 params = self.sig_params_up_to(sig, i + 1);
             }
@@ -1004,6 +1008,14 @@ impl Checker<'_, '_> {
             if !self.is_resolved_call_argument_applicable(actual, expected, relation) {
                 self.note_parameter_types_resolved(sig, &params, i + 1);
                 return Some((i, actual, expected));
+            }
+        }
+        if boundary < args.len() || rest.is_some() {
+            let expected = self.rest_type_at_position(&params, boundary, false);
+            let actual = self.native_argument_sequence_type(args, boundary, expected, None, check_mode);
+            if !self.is_resolved_call_argument_applicable(actual, expected, relation) {
+                self.note_parameter_types_resolved(sig, &params, boundary);
+                return Some((boundary, actual, expected));
             }
         }
         self.note_parameter_types_resolved(sig, &params, args.len());

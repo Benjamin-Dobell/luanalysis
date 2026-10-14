@@ -422,6 +422,164 @@
       "patch": "vendor/patches/bun-sema-numeric-for.patch",
       "reason": "Add original-source numeric iteration facts and reachability with exact Lua numeric-entry evaluation within the shared flow worker.",
       "patch_sha256": "48809e2e47bf06dd3a73ab5a33eb1768b7fc28c7a0426b0c85da72f97e86682f"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/explain_relation.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/symbols.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "added": true,
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-lua-packs-tables.patch",
+      "reason": "Add native Lua table/key relations and correlated result packs using intrinsic tuple/rest storage, shared signature caches, mappers and call inference workers.",
+      "added": true,
+      "patch_sha256": "0bffc40d09f752014b3d01537c2097c291d51d227b59ebd655abe05e1c545e8e"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/errors_call.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-lua-pack-calls-flow-sequences.patch",
+      "reason": "Add lazy final-pack arguments through shared call/rest inference, whole-pack flow projections and predicates, and exact ranged table sequence/collision policies independent of freshness.",
+      "patch_sha256": "591a54e5ab1d403c242d9562c33d5c72ddd1a1b603264548da244fc56eddf590"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-closed-table-key-coverage.patch",
+      "reason": "Require an actual indexer or ranged-tail domain match before augmenting dynamic constructor lookups with fixed-field collision candidates; closed records retain complete key-domain checks.",
+      "patch_sha256": "ef9f2e0429a7c4cb26577b8a8ea43a587d03f58ed3d4e44487c6e9f891d3a5d3"
     }
   ],
   "source_additions": {
@@ -430,8 +588,16 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "e234382d31247da4b55e1cbcdb13ee7a5c0161cffc5a05c7d047856725da3168",
+      "extracted_sha256": "86917e9752e0193f1116a6b2849f350263993ce96950eb1a042203cb1d6428e3",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
+    },
+    "src/sema/check/native_packs.rs": {
+      "extracted_sha256": "529c3206e50790c61ea377e2bf1e7cdc001672dd292b654b3c0d74463121d134",
+      "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
+    },
+    "src/sema/check/native_tables.rs": {
+      "extracted_sha256": "e5f3099ab3f9b1ddcdad6f7f7b4963014907988b56a08e47b98d0dbaf7efe4bd",
+      "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
   "files": {
@@ -1128,7 +1294,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "a040a76b00d7b179e54fb91a2533a4f2ceacf9dab80c703b743ea42f6385ad97"
+      "extracted_sha256": "4f2d241a0fb4cc5104b831da6af78e68603ca794f499d27049b88b20c3516b95"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -1143,7 +1309,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "6209199c4a9aefff85e8ceceebc3fd728c971b012e55dcc70ca0ee2b40b0fbba"
+      "extracted_sha256": "40dbd3317d2e325d6ac7a8063cab3227f517d0f3e0537961a13c72b915e1ca03"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -1178,7 +1344,7 @@
     "src/sema/check/errors_call.rs": {
       "upstream": "src/sema/check/errors_call.rs",
       "sha256": "d3afd92a719df2d061cc57fdbaaceab03111588613ea9748fe20a3a2cfab230f",
-      "extracted_sha256": "c9161274051001f2293eab89db458e166e595a274759164570357d494f203964"
+      "extracted_sha256": "aa194849edc0f98e340ad100de22bf2d442e778cd579f4fdf44a058d5ab4f4dd"
     },
     "src/sema/check/errors_circular.rs": {
       "upstream": "src/sema/check/errors_circular.rs",
@@ -1333,7 +1499,7 @@
     "src/sema/check/explain_relation.rs": {
       "upstream": "src/sema/check/explain_relation.rs",
       "sha256": "3cd5cea2059c6d9748f4fb35f723fdec0d85d2e2177e3a9c17f11bc0f80da601",
-      "extracted_sha256": "133062f1676b36948471cc84dfa44622b21971a07a7c5378c7ef537a4c42dcf9"
+      "extracted_sha256": "94582e8e1a4ee32a29aa3fee957f13f80ee8aff41b6371a2b91941ae1a95ee07"
     },
     "src/sema/check/expr.rs": {
       "upstream": "src/sema/check/expr.rs",
@@ -1353,12 +1519,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "2ba07066fc057fc0f7d74588039f1e7c120017ba7dd47ef6cbea4485bffc3171"
+      "extracted_sha256": "f08b6ee0317f7fbe95040ebf22f4eca515eb4bfd72e4b434c260f8996ccc69d5"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "d144057100653c8e3eaba8814104139e8c90185a5035497a8476ea962131c852"
+      "extracted_sha256": "57336e176ed1990cc5d20562a5ebafe57641915e683d5e82ac0e77c77c23b812"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -1388,7 +1554,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "ec75888f08802808ebd680fcabdfd48e8ec732466b339a33a76dff3fb17c1c83"
+      "extracted_sha256": "1507eabe5e1cf55b6f68bab2c86a08c284d9e3c0b5d978047422380bf061cd7a"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -1398,7 +1564,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "0d494c8e267834f0aacb43e7544b0908a03eb00ab5095b2c2db3a7c728c53d1f"
+      "extracted_sha256": "adc7f51478f5b0d2c083ae00f1488dc0492948124f07feab1eeabd6edb735354"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -1413,7 +1579,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "e5aa637a3d6160f73219d8ecfcd1df4e430c5a7abc47cd27559931e76c25fb21"
+      "extracted_sha256": "f1dff3a67a322674756a23e0f222c4b9f3786d36508b6966b9a53e58b84ee7d3"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -1468,7 +1634,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "62e019f075b1e44aa1f800bdcb0eeff96e75425b35ecac95ead0e31c7abe4dc0"
+      "extracted_sha256": "f15ecc21501072e8de2f7f7839832c800ca680d40fc4f23acaa280a400d52fdd"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -1488,7 +1654,7 @@
     "src/sema/check/symbols.rs": {
       "upstream": "src/sema/check/symbols.rs",
       "sha256": "ef1c369442929fa1f57e979c571a01d2d7aebbadba0d1f3f8d7e750ca080936b",
-      "extracted_sha256": "b386208ec2e5e59f1197736009f90ce8a7d9d8ca2afb460bd079363b6caaa2d1"
+      "extracted_sha256": "c5d064099fc60085da7b9fe5f7b81b3a1d52c37a2d26159a409ba74957b1e8ee"
     },
     "src/sema/check/task.rs": {
       "upstream": "src/sema/check/task.rs",
@@ -1593,7 +1759,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "c500e470f457c4eb714ba288fb1fbde938b64bc4f09516907f93f3eaef497f0d"
+      "extracted_sha256": "31df9c96d20f4c06241e35b78380a9f60fb028b5049081de62a852b9acc5f881"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

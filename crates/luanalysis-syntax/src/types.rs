@@ -1,12 +1,30 @@
 use crate::{
     Comment, Diagnostic, FunctionAnnotations, FunctionType, FunctionTypeParam, GenericParameter,
     Name, ParamAnnotation, Span, Token, TokenKind, TypeAnnotation, TypeExpr, TypeExprKind,
-    TypeField, TypeLiteral, TypePack, TypePacks, VarargAnnotation, VariadicTypeIndex, lex,
+    TypeField, TypeFieldKey, TypeLiteral, TypePack, TypePacks, VarargAnnotation, VariadicTypeIndex, lex,
+    FieldDeclaration, FieldVisibility, FieldVisibilityAnnotation, NamedRecordKind,
+    NamedTypeDeclarationKind,
 };
 
+#[derive(Default)]
+pub(crate) struct ParsedDocumentation {
+    pub functions: FunctionAnnotations,
+    pub declarations: Vec<DeclarationItem>,
+}
+
+pub(crate) enum DeclarationItem {
+    Named {
+        name: Name,
+        generics: Vec<GenericParameter>,
+        kind: NamedTypeDeclarationKind,
+        span: Span,
+    },
+    Field(FieldDeclaration),
+}
+
 /// Parse only documentation tags. Ordinary prose remains a retained comment.
-pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagnostic>) {
-    let mut result = FunctionAnnotations::default();
+pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagnostic>) {
+    let mut result = ParsedDocumentation::default();
     let mut diagnostics = Vec::new();
     let text = &comment.text;
     let (body, base) = if text.starts_with("---") {
@@ -44,11 +62,11 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
                 .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                 .unwrap_or(tag.len());
             let tag_name = &tag[..tag_len];
-            if !matches!(tag_name, "type" | "param" | "return" | "generic" | "vararg") {
+            if !matches!(tag_name, "type" | "param" | "return" | "generic" | "vararg" | "alias" | "shape" | "class" | "module" | "field") {
                 diagnostics.push(Diagnostic {
                     span: Span::new(tag_offset, tag_offset + 1 + tag_len),
                     message: format!(
-                        "unsupported Luanalysis annotation @{tag_name}; this slice supports @type, @param, @return, @generic, and @vararg"
+                        "unsupported Luanalysis annotation @{tag_name}"
                     ),
                 });
             } else {
@@ -64,10 +82,16 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
                 let tokens = lexed
                     .tokens
                     .into_iter()
-                    .map(|mut token| {
+                    .flat_map(|mut token| {
                         token.span.start += types_offset;
                         token.span.end += types_offset;
-                        token
+                        // Annotation generic closers are individual source `>`
+                        // tokens, while the shared Lua lexer recognizes `>>`.
+                        if matches!(&token.kind, TokenKind::Symbol(symbol) if symbol == ">>") {
+                            let middle = token.span.start + 1;
+                            vec![Token { kind: TokenKind::Symbol(">".to_owned()), span: Span::new(token.span.start, middle) },
+                                Token { kind: TokenKind::Symbol(">".to_owned()), span: Span::new(middle, token.span.end) }]
+                        } else { vec![token] }
                     })
                     .collect();
                 diagnostics.extend(lexed.diagnostics.into_iter().map(|mut diagnostic| {
@@ -85,6 +109,36 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
                 let annotation_span = Span::new(tag_offset, types_offset + types.len());
                 let mut group = FunctionAnnotations::default();
                 match tag_name {
+                    "alias" | "shape" | "class" | "module" => {
+                        if let Some(name) = parser.declaration_name("named type") {
+                            let generics = parser.declaration_parameters();
+                            let kind = if tag_name == "alias" {
+                                NamedTypeDeclarationKind::Alias { target: parser.union() }
+                            } else {
+                                let base = parser.take(":").map(|_| parser.primary());
+                                NamedTypeDeclarationKind::Record {
+                                    flavor: match tag_name {
+                                        "shape" => NamedRecordKind::Shape,
+                                        "class" => NamedRecordKind::Class,
+                                        "module" => NamedRecordKind::Module,
+                                        _ => unreachable!(),
+                                    },
+                                    base,
+                                    fields: Vec::new(),
+                                }
+                            };
+                            result.declarations.push(DeclarationItem::Named {
+                                name, generics, kind, span: annotation_span,
+                            });
+                            parser.documentation_tail();
+                        }
+                    }
+                    "field" => {
+                        if let Some(field) = parser.field_declaration(annotation_span) {
+                            result.declarations.push(DeclarationItem::Field(field));
+                            parser.documentation_tail();
+                        }
+                    }
                     "generic" => {
                         group.generics = parser.generic_parameters();
                     }
@@ -131,12 +185,39 @@ pub(crate) fn annotations(comment: &Comment) -> (FunctionAnnotations, Vec<Diagno
                     ));
                 }
                 diagnostics.extend(parser.diagnostics);
-                merge_annotations(&mut result, group, &mut diagnostics);
+                merge_annotations(&mut result.functions, group, &mut diagnostics);
             }
         }
         line_offset += line.len();
     }
     (result, diagnostics)
+}
+
+fn type_depth(root: &TypeExpr) -> usize {
+    let mut pending = vec![(root, 1_usize)];
+    let mut depth = 0;
+    while let Some((ty, current)) = pending.pop() {
+        depth = depth.max(current);
+        match &ty.kind {
+            TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. } => pending.push((element, current + 1)),
+            TypeExprKind::Union(types) | TypeExprKind::Generic { args: types, .. } => {
+                pending.extend(types.iter().map(|ty| (ty, current + 1)));
+            }
+            TypeExprKind::Record(fields) => {
+                for field in fields {
+                    if let TypeFieldKey::Indexed(key) = &field.key { pending.push((key, current + 1)); }
+                    pending.push((&field.ty, current + 1));
+                }
+            }
+            TypeExprKind::Function(function) => {
+                pending.extend(function.params.iter().filter_map(|param| param.ty.as_ref()).map(|ty| (ty, current + 1)));
+                if let Some(vararg) = &function.vararg { pending.push((&vararg.ty, current + 1)); }
+                pending.extend(function.returns.iter().map(|ty| (ty, current + 1)));
+            }
+            TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::Error => {},
+        }
+    }
+    depth
 }
 
 fn annotation_type_text(text: &str) -> &str {
@@ -258,6 +339,94 @@ enum ReturnUnit {
 }
 
 impl TypeParser {
+    fn declaration_name(&mut self, context: &str) -> Option<Name> {
+        match self.current().kind.clone() {
+            TokenKind::Identifier(text) | TokenKind::Keyword(text) => {
+                let span = self.current().span;
+                self.pos += 1;
+                Some(Name { text, span })
+            }
+            _ => {
+                self.error(format!("expected a name in {context} annotation"));
+                None
+            }
+        }
+    }
+
+    fn declaration_parameters(&mut self) -> Vec<GenericParameter> {
+        if self.take("<").is_none() {
+            return Vec::new();
+        }
+        let mut parameters = Vec::new();
+        while !self.eof() && !self.symbol(">") {
+            let Some(name) = self.declaration_name("generic declaration") else {
+                break;
+            };
+            let constraint = if self.take(":").is_some() {
+                self.comma_ends_type += 1;
+                // generic_def and class extension use one `ty` in doc.bnf;
+                // a union constraint must be explicitly parenthesized.
+                let constraint = self.primary();
+                self.comma_ends_type -= 1;
+                Some(constraint)
+            } else {
+                None
+            };
+            let span = constraint.as_ref().map_or(name.span, |ty| name.span.join(ty.span));
+            parameters.push(GenericParameter { name, constraint, span });
+            if self.take(",").is_none() {
+                break;
+            }
+            if self.symbol(">") {
+                self.error("expected a generic parameter after ','".to_owned());
+            }
+        }
+        if parameters.is_empty() {
+            self.error("named generic declaration requires at least one parameter".to_owned());
+        }
+        self.expect(">");
+        parameters
+    }
+
+    fn field_declaration(&mut self, span: Span) -> Option<FieldDeclaration> {
+        let visibility = match &self.current().kind {
+            TokenKind::Identifier(word) if matches!(word.as_str(), "public" | "protected" | "private") => {
+                let kind = match word.as_str() {
+                    "public" => FieldVisibility::Public,
+                    "protected" => FieldVisibility::Protected,
+                    "private" => FieldVisibility::Private,
+                    _ => unreachable!(),
+                };
+                let span = self.current().span;
+                self.pos += 1;
+                Some(FieldVisibilityAnnotation { kind, span })
+            }
+            _ => None,
+        };
+        let explicit_owner = if self.take("<").is_some() {
+            let owner = self.declaration_name("field owner");
+            self.expect(">");
+            owner
+        } else { None };
+        let key = if self.take("[").is_some() {
+            let ty = self.union();
+            self.expect("]");
+            TypeFieldKey::Indexed(Box::new(ty))
+        } else {
+            TypeFieldKey::Named(self.declaration_name("field")?)
+        };
+        let ty = self.union();
+        Some(FieldDeclaration { key, ty, visibility, explicit_owner, span })
+    }
+
+    fn documentation_tail(&mut self) {
+        // doc.bnf permits comment_string after named declarations/fields.
+        // Punctuation that would continue a malformed type remains an error.
+        if matches!(self.current().kind, TokenKind::Identifier(_) | TokenKind::Keyword(_) | TokenKind::String(_)) {
+            while !self.eof() { self.pos += 1; }
+        }
+    }
+
     fn current(&self) -> &Token {
         &self.tokens[self.pos]
     }
@@ -511,10 +680,11 @@ impl TypeParser {
         self.comma_ends_type = surrounding_comma_mode;
         let span = start.join(end);
         if types.len() == 1 && ellipsis_span.is_none() {
-            ReturnUnit::Scalar(TypeExpr {
+            let ty = TypeExpr {
                 kind: TypeExprKind::Parenthesized(Box::new(types.pop().unwrap())),
                 span,
-            })
+            };
+            ReturnUnit::Scalar(self.array_suffix(ty))
         } else {
             ReturnUnit::Pack(ParsedReturnPack {
                 types,
@@ -554,7 +724,7 @@ impl TypeParser {
             };
         }
         self.depth += 1;
-        let ty = match self.current().kind.clone() {
+        let mut ty = match self.current().kind.clone() {
             TokenKind::Identifier(name) if name == "fun" => self.function_type(),
             TokenKind::Identifier(name) => {
                 self.pos += 1;
@@ -632,7 +802,60 @@ impl TypeParser {
                 }
             }
         };
+        if self.symbol("<") {
+            if let TypeExprKind::Named(text) = &ty.kind {
+                let base = Name { text: text.clone(), span: ty.span };
+                let args_start = self.expect("<");
+                let mut args = Vec::new();
+                if self.symbol(">") {
+                    self.error("generic type argument list must not be empty".to_owned());
+                } else {
+                    loop {
+                        self.comma_ends_type += 1;
+                        args.push(self.union());
+                        self.comma_ends_type -= 1;
+                        if self.take(",").is_none() { break; }
+                        if self.symbol(">") {
+                            self.error("generic type argument list cannot have a trailing comma".to_owned());
+                            break;
+                        }
+                    }
+                }
+                let end = self.expect(">");
+                let args_span = args_start.join(end);
+                let span = base.span.join(end);
+                if args.iter().map(type_depth).max().unwrap_or(0) >= 128 {
+                    self.diagnostics.push(Diagnostic { span: args_span, message: "generic type nesting exceeds 128".to_owned() });
+                    ty = TypeExpr { kind: TypeExprKind::Error, span };
+                } else {
+                    ty = TypeExpr { kind: TypeExprKind::Generic { base, args, args_span }, span };
+                }
+            }
+        }
+        ty = self.array_suffix(ty);
         self.depth -= 1;
+        ty
+    }
+    fn array_suffix(&mut self, mut ty: TypeExpr) -> TypeExpr {
+        let mut depth = type_depth(&ty);
+        let mut exceeded = false;
+        while self.symbol("[") && self.symbol_at(self.pos + 1, "]") {
+            let start = self.expect("[");
+            let end = self.expect("]");
+            let suffix_span = start.join(end);
+            let span = ty.span.join(end);
+            if exceeded || depth >= 128 {
+                if !exceeded {
+                    self.diagnostics.push(Diagnostic { span: suffix_span, message: "array type nesting exceeds 128".to_owned() });
+                }
+                ty = TypeExpr { kind: TypeExprKind::Error, span };
+                depth = 1;
+                exceeded = true;
+            } else {
+                ty = TypeExpr { kind: TypeExprKind::Array { element: Box::new(ty), suffix_span }, span };
+                depth += 1;
+            }
+        }
         ty
     }
     fn function_type(&mut self) -> TypeExpr {
@@ -763,28 +986,42 @@ impl TypeParser {
     fn record(&mut self) -> TypeExpr {
         let start = self.expect("{");
         let mut fields = Vec::new();
+        let mut sequence_index = 0;
         while !self.eof() && !self.symbol("}") {
             let field_start = self.current().span;
-            let name = if let TokenKind::Identifier(text) = self.current().kind.clone() {
-                self.pos += 1;
-                Name {
-                    text,
-                    span: field_start,
+            let key = if self.take("[").is_some() {
+                self.comma_ends_type += 1;
+                let mut key = self.union();
+                self.comma_ends_type -= 1;
+                if type_depth(&key) >= 128 {
+                    self.diagnostics.push(Diagnostic { span: key.span, message: "record key type nesting exceeds 128".to_owned() });
+                    key = TypeExpr { kind: TypeExprKind::Error, span: key.span };
+                }
+                self.expect("]");
+                self.expect(":");
+                TypeFieldKey::Indexed(Box::new(key))
+            } else if let TokenKind::Identifier(text) | TokenKind::Keyword(text) = self.current().kind.clone() {
+                if self.symbol_at(self.pos + 1, ":") {
+                    self.pos += 1;
+                    self.expect(":");
+                    TypeFieldKey::Named(Name { text, span: field_start })
+                } else {
+                    sequence_index += 1;
+                    TypeFieldKey::Sequence { index: sequence_index }
                 }
             } else {
-                self.error("record annotations currently require named fields".to_owned());
-                self.recover_record();
-                if self.take(",").is_some() {
-                    continue;
-                }
-                break;
+                sequence_index += 1;
+                TypeFieldKey::Sequence { index: sequence_index }
             };
-            self.expect(":");
             self.comma_ends_type += 1;
-            let ty = self.union();
+            let mut ty = self.union();
             self.comma_ends_type -= 1;
+            if type_depth(&ty) >= 128 {
+                self.diagnostics.push(Diagnostic { span: ty.span, message: "record value type nesting exceeds 128".to_owned() });
+                ty = TypeExpr { kind: TypeExprKind::Error, span: ty.span };
+            }
             let span = field_start.join(ty.span);
-            fields.push(TypeField { name, ty, span });
+            fields.push(TypeField { key, ty, span });
             if self.take(",").is_some() {
                 continue;
             }

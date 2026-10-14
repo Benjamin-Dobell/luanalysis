@@ -6,13 +6,15 @@
 
 use super::native_expressions::NativeExpressions;
 use super::native_flow::{FlowAdapter, FlowValueQueries, NativeFlowSources, ValueRecipe};
-use super::native_types::{NativeTypes, TypeParameterRecipe, TypeScopeRecipe};
+use super::native_named::{NativeNamed, NativeTypeContext};
+use super::native_packs::{AnnotationPack, InitializerContext, NativePacks, only_empty_results};
+use super::native_types::{NativeTypes, TypeNameResolution, TypeParameterRecipe, TypeScopeRecipe};
 use super::{Binding, CheckReport, Checker, Diagnostic, bind};
 use bind::{BindingId, BoundFile};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NativeBindingKey, NativeCallEffects,
     NativeExpressionKey, NativeFlowError, NativeFlowKey, NativeFlowResult, NativeFunctionKey,
-    NativeTypeParameterKey, NativeTypeProvider, Parameter, Type, TypeQueries,
+    NativeTypeParameterKey, NativeTypeProvider, Parameter, Type, TypeQueries, ValuePack,
 };
 use luanalysis_syntax::{Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TypeExpr};
 use std::cell::RefCell;
@@ -45,7 +47,9 @@ pub(super) struct NativeRegistry {
     function_spans: HashMap<(usize, usize), u32>,
     declarations: HashMap<BindingId, DeclarationSource>,
     types: NativeTypes,
+    named: NativeNamed,
     expressions: NativeExpressions,
+    packs: NativePacks,
     flow: NativeFlowSources,
     completed_bindings: RefCell<HashMap<BindingId, Binding>>,
     /// Only completion of body diagnostics is cached here. Return-type cache,
@@ -75,8 +79,25 @@ impl NativeRegistry {
             declarations,
             ..
         } = index;
-        let types = NativeTypes::new(snapshot, type_scope_recipes(snapshot, &functions, &bound));
+        let source_function_keys = function_spans
+            .iter()
+            .map(|(&span, &index)| (span, NativeFunctionKey { snapshot, index }))
+            .collect();
+        let named = NativeNamed::new(snapshot, &file, &bound, &source_function_keys)
+            .expect("original named declaration metadata");
+        let types = NativeTypes::new_with_named(
+            snapshot,
+            type_scope_recipes(snapshot, &functions, &bound),
+            named
+                .declarations()
+                .iter()
+                .map(|source| source.generic_scope.clone())
+                .collect(),
+        );
         let expressions = NativeExpressions::new(snapshot, &file, &function_spans);
+        let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
+            expressions.key_for_span(expression.span)
+        });
         let flow = NativeFlowSources::new(&file, &bound, snapshot, &function_spans);
         let mut report = CheckReport::default();
         report
@@ -91,7 +112,9 @@ impl NativeRegistry {
             function_spans,
             declarations,
             types,
+            named,
             expressions,
+            packs,
             flow,
             completed_bindings: RefCell::new(HashMap::new()),
             checked_bodies: RefCell::new(HashSet::new()),
@@ -111,6 +134,140 @@ impl NativeRegistry {
 
     pub(super) fn expressions(&self) -> &NativeExpressions {
         &self.expressions
+    }
+
+    pub(super) fn packs(&self) -> &NativePacks {
+        &self.packs
+    }
+
+
+    /// The native call scheduler requests the original final expression under
+    /// its active inference/context frame. Cardinality and row relations stay
+    /// in the native pack worker.
+    pub(super) fn source_check_expression_pack(
+        &self,
+        key: NativeExpressionKey,
+        expected: Option<&ValuePack>,
+        mode: luanalysis_engine::NativeCheckMode,
+        queries: &mut dyn luanalysis_engine::TypeQueries,
+    ) -> ValuePack {
+        let expression = &self.expressions().get(key).expression;
+        let mut checker = self.checker_for_expression(key, mode, queries);
+        checker.check_mode = mode;
+        let pack = checker.expression_pack(expression, expected);
+        if super::native_expressions::publishes(mode) && !checker.incomplete_flow {
+            self.merge_report(checker.report);
+        }
+        pack
+    }
+
+    fn declared_pack_recipe(&self, key: NativeFunctionKey) -> Option<AnnotationPack<'_>> {
+        let function = self.function(key);
+        Some(if let Some(annotation) = &function.annotations.returns {
+            AnnotationPack::annotation(annotation)
+        } else {
+            let annotation = function.annotations.type_annotation.as_ref()?;
+            let mut ty = match annotation.types.as_slice() {
+                [ty] => ty,
+                _ => return None,
+            };
+            while let luanalysis_syntax::TypeExprKind::Parenthesized(inner) = &ty.kind {
+                ty = inner;
+            }
+            let luanalysis_syntax::TypeExprKind::Function(signature) = &ty.kind else {
+                return None;
+            };
+            AnnotationPack::new(
+                &signature.returns,
+                signature.packs.as_deref(),
+                signature.span,
+            )
+        })
+    }
+
+    pub(super) fn declared_pack_contract(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        let recipe = self.declared_pack_recipe(key)?;
+        let mut checker = self.checker(queries);
+        checker.type_context = Some(key);
+        checker.check_mode = checker
+            .engine
+            .current_contextual_function()
+            .map_or_else(luanalysis_engine::NativeCheckMode::empty, |context| {
+                context.mode
+            });
+        let pack = recipe.lower(&mut |ty| checker.annotation(ty));
+        if super::native_expressions::publishes(checker.check_mode) {
+            self.merge_report(checker.report);
+        }
+        Some(pack)
+    }
+
+    pub(super) fn source_declared_return_pack(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        let pack = self.declared_pack_contract(key, queries)?;
+        // Written scalar nil/void/any contracts may allow a function to end.
+        // Their permission cannot fabricate a value in its runtime pack.
+        if only_empty_results(self.function(key)) {
+            if queries.pack_allows_implicit_return(&pack) {
+                return Some(ValuePack::empty());
+            }
+        }
+        Some(pack)
+    }
+
+    pub(super) fn source_rest_pack(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        let function = self.function(key);
+        if function.vararg.is_none() {
+            return None;
+        }
+        let annotation = function.annotations.vararg.as_deref().or_else(|| {
+            let annotation = function.annotations.type_annotation.as_ref()?;
+            let mut ty = match annotation.types.as_slice() {
+                [ty] => ty,
+                _ => return None,
+            };
+            while let luanalysis_syntax::TypeExprKind::Parenthesized(inner) = &ty.kind {
+                ty = inner;
+            }
+            let luanalysis_syntax::TypeExprKind::Function(signature) = &ty.kind else {
+                return None;
+            };
+            signature.vararg.as_deref()
+        });
+        let mut checker = self.checker(queries);
+        checker.type_context = Some(key);
+        checker.check_mode = checker
+            .engine
+            .current_contextual_function()
+            .map_or_else(luanalysis_engine::NativeCheckMode::empty, |context| {
+                context.mode
+            });
+        let ty = match annotation {
+            None => {
+                checker.error(
+                    "TS7019",
+                    function.vararg.unwrap(),
+                    "Rest parameter '...' implicitly has an 'any[]' type.",
+                );
+                Type::Any
+            }
+            Some(annotation) => checker.annotation(&annotation.ty),
+        };
+        if super::native_expressions::publishes(checker.check_mode) {
+            self.merge_report(checker.report);
+        }
+        Some(ValuePack::variadic(ty))
     }
 
     pub(super) fn checker_for_expression<'a>(
@@ -190,7 +347,10 @@ impl NativeRegistry {
             report: CheckReport::default(),
             return_type: None,
             return_values: Vec::new(),
+            return_pack: None,
+            return_packs: Vec::new(),
             type_context: None,
+            named_type_context: None,
             contextual_function: None,
             captured_function: None,
             check_mode: luanalysis_engine::NativeCheckMode::empty(),
@@ -241,7 +401,7 @@ impl NativeRegistry {
                 incomplete: false,
             };
         };
-        queries.flow_type(
+        let ordinary = queries.flow_type(
             &FlowAdapter {
                 sources: &self.flow,
                 values: self,
@@ -250,7 +410,14 @@ impl NativeRegistry {
             reference,
             declared,
             initial,
-        )
+        );
+        if let Some(projection) = self.flow.pack_projection(reference) {
+            let mut narrowed = queries.flow_pack_projection(&FlowAdapter { sources: &self.flow, values: self }, at, projection, &ordinary.ty);
+            narrowed.incomplete |= ordinary.incomplete;
+            narrowed
+        } else {
+            ordinary
+        }
     }
 
     fn checker_at_flow<'a>(
@@ -345,7 +512,8 @@ impl NativeRegistry {
             .flow
             .graph_with_contexts(write.id.graph, contextual, captured.as_ref());
         let input = match value {
-            super::flow::ValueDemand::Evaluation(evaluation) => {
+            super::flow::ValueDemand::Evaluation(evaluation)
+            | super::flow::ValueDemand::PackElement { evaluation, .. } => {
                 self.flow.program.evaluation(*evaluation).input
             }
             _ => address.epoch,
@@ -384,6 +552,20 @@ impl NativeRegistry {
         name: &str,
     ) -> Option<Type> {
         self.types.resolve_name(context, name)
+    }
+
+    pub(super) fn resolve_named_type_parameter(
+        &self,
+        context: super::native_named::NativeNamedKey,
+        name: &str,
+    ) -> Option<Type> {
+        match self
+            .types
+            .resolve_name_in_context(Some(NativeTypeContext::NamedType(context)), name)
+        {
+            TypeNameResolution::Parameter(key) => Some(Type::NativeTypeParameter(key)),
+            TypeNameResolution::Missing | TypeNameResolution::Ambiguous(_) => None,
+        }
     }
 
     pub(super) fn metadata(
@@ -626,6 +808,69 @@ impl NativeRegistry {
         self.inferred_return_with_context(key, queries, None, None)
     }
 
+    fn inferred_return_pack_with_context(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+        contextual: Option<ContextualFunctionContext>,
+        captured: Option<CapturedFunctionContext>,
+    ) -> ValuePack {
+        let base = self
+            .flow
+            .graph_for_function(key, contextual.as_ref())
+            .unwrap();
+        let graph =
+            self.flow
+                .graph_with_contexts(base.region, contextual.as_ref(), captured.as_ref());
+        let source = &self.flow.program.graphs[graph.region as usize];
+        let context = contextual
+            .as_ref()
+            .map(|context| queries.contextual_return_pack(context));
+        let adapter = FlowAdapter {
+            sources: &self.flow,
+            values: self,
+        };
+        let mut returned = Vec::new();
+        for return_id in &source.returns {
+            let statement = self.flow.program.node(*return_id);
+            let recipe = self
+                .packs()
+                .list_at(statement.span)
+                .expect("original return owns an immutable pack recipe");
+            assert_eq!(
+                recipe.owner,
+                Some(key),
+                "return pack belongs to this original function"
+            );
+            let at = self.flow.flow_key(statement.antecedents[0], graph.context);
+            if !queries.flow_reachable(&adapter, at) {
+                continue;
+            }
+            let super::flow::NodeKind::Return { values } = &statement.kind else {
+                unreachable!();
+            };
+            let expressions: Vec<_> = values
+                .iter()
+                .map(|value| {
+                    let evaluation = self.flow.program.evaluation(*value);
+                    self.flow
+                        .program
+                        .expression(evaluation.expression)
+                        .expression
+                        .clone()
+                })
+                .collect();
+            let mut checker = self.checker_at_flow(at, queries);
+            returned.push(checker.expression_list_pack(&expressions, context.as_ref()));
+            if !checker.incomplete_flow {
+                self.merge_flow_report(at, checker.check_mode, checker.report);
+            }
+        }
+        let has_fallthrough =
+            queries.flow_reachable(&adapter, self.flow.flow_key(source.exit, graph.context));
+        queries.aggregate_result_packs(&returned, has_fallthrough, context.as_ref())
+    }
+
     pub(super) fn inferred_return_in_context(
         &self,
         key: NativeFunctionKey,
@@ -772,6 +1017,14 @@ impl NativeRegistry {
             checker.check_mode = context.mode;
         }
         checker.return_type = declared_return.clone();
+        checker.return_pack = self
+            .declared_pack_contract(key, checker.engine)
+            .map(|mut pack| {
+                if let Some(captured) = captured {
+                    pack = checker.engine.instantiate_pack_in_capture(&captured, &pack);
+                }
+                checker.engine.pack_with_implicit_empty(&pack)
+            });
         checker.flow_at = Some(self.flow_entry(Some(key), contextual.as_ref()));
         let at = checker.flow_at.unwrap();
         checker.flow_at = Some(NativeFlowKey {
@@ -796,12 +1049,14 @@ impl NativeRegistry {
             ),
         );
         if let Some(expected) = &declared_return {
-            if !terminated && !checker.engine.allows_implicit_return(expected) {
-                let origin = function
-                    .annotations
-                    .returns
-                    .as_ref()
-                    .map_or(function.span, |annotation| annotation.span);
+            let accepts_empty = checker
+                .return_pack
+                .as_ref()
+                .is_some_and(|pack| checker.engine.pack_assignable(&ValuePack::empty(), pack));
+            if !terminated && !checker.engine.allows_implicit_return(expected) && !accepts_empty {
+                let origin = self
+                    .declared_pack_recipe(key)
+                    .map_or(function.span, |recipe| recipe.span);
                 let (code, message) = if matches!(expected, Type::Never) {
                     (
                         "TS2534",
@@ -916,6 +1171,10 @@ impl NativeRegistry {
         for parameter in &function.annotations.params {
             self.types
                 .annotation_dependencies(Some(key), &parameter.ty, used);
+        }
+        if let Some(vararg) = &function.annotations.vararg {
+            self.types
+                .annotation_dependencies(Some(key), &vararg.ty, used);
         }
         if let Some(annotation) = &function.annotations.type_annotation {
             for ty in &annotation.types {
@@ -1043,6 +1302,9 @@ impl NativeRegistry {
             }
             ExprKind::Table(fields) => {
                 for field in fields {
+                    if let luanalysis_syntax::TableFieldKind::Keyed(key) = &field.kind {
+                        self.value_type_dependencies(key, used, functions, bindings);
+                    }
                     self.value_type_dependencies(&field.value, used, functions, bindings);
                 }
             }
@@ -1095,6 +1357,49 @@ impl NativeRegistry {
 }
 
 impl NativeRegistry {
+    /// Restore the original declaration/assignment context without changing the
+    /// source graph or publishing a mutable last-call context. Native pack
+    /// filtering owns the remaining-row guidance for an expanded final RHS.
+    fn flow_initializer_context(
+        &self,
+        expression: &Expr,
+        expanded: bool,
+        checker: &mut Checker<'_>,
+    ) -> Option<ValuePack> {
+        let key = self.expression_key(expression);
+        let (list, source, index) = self.packs.initializer_for_expression(key)?;
+        debug_assert_eq!(list.owner, checker.type_context, "initializer retains its original type scope");
+        let expected = match source {
+            InitializerContext::Local(annotation) => {
+                AnnotationPack::annotation(annotation).lower(&mut |ty| checker.annotation(ty))
+            }
+            InitializerContext::Assignment(targets) => {
+                let fixed = targets.iter().map(|target| {
+                    let ty = match &target.kind {
+                        ExprKind::Name(name) => checker.bound.binding_at(name.span.start)
+                            .and_then(|binding| checker.resolve_local(binding))
+                            .filter(|binding| !binding.evolves_from_nil)
+                            .map(|binding| binding.constraint.clone()),
+                        _ => None,
+                    };
+                    luanalysis_engine::PackSlot::required(ty.unwrap_or(Type::Any))
+                }).collect();
+                ValuePack::Alternatives(vec![luanalysis_engine::PackAlternative { fixed, tail: None }])
+            }
+        };
+        let slot_context = checker.engine.pack_contextual_slot(&expected, index)?;
+        if !expanded {
+            return Some(ValuePack::single(slot_context));
+        }
+        let mut prefix = Vec::with_capacity(index);
+        for (slot, expression) in list.expressions.iter().take(index).enumerate() {
+            let context = checker.engine.pack_contextual_slot(&expected, slot);
+            let expression = &self.expressions().get(expression.expression).expression;
+            prefix.push(checker.expression_with_expected(expression, context.as_ref()));
+        }
+        checker.engine.pack_contextual_tail(&expected, &prefix)
+    }
+
     fn flow_value_type_in_context(
         &self,
         sources: &NativeFlowSources,
@@ -1104,6 +1409,20 @@ impl NativeRegistry {
     ) -> Type {
         match value {
             ValueRecipe::Nil => Type::Nil,
+            ValueRecipe::PackElement { evaluation, index } => {
+                let expression = &sources
+                    .program
+                    .expression(sources.program.evaluation(*evaluation).expression)
+                    .expression;
+                let mut checker = self.checker_at_flow(input, queries);
+                let expected = self.flow_initializer_context(expression, true, &mut checker);
+                let pack = checker.expression_pack(expression, expected.as_ref());
+                let value = checker.engine.pack_slot(&pack, *index);
+                if !checker.incomplete_flow {
+                    self.merge_flow_report(input, checker.check_mode, checker.report);
+                }
+                value
+            }
             ValueRecipe::Function(region) => {
                 let key = sources
                     .function_for_graph(sources.graph(*region, 0))
@@ -1132,7 +1451,9 @@ impl NativeRegistry {
                 let evaluation = sources.program.evaluation(*evaluation);
                 let expression = &sources.program.expression(evaluation.expression).expression;
                 let mut checker = self.checker_at_flow(input, queries);
-                let result = checker.expression(expression);
+                let expected = self.flow_initializer_context(expression, false, &mut checker);
+                let expected = expected.as_ref().map(|pack| checker.engine.pack_slot(pack, 0));
+                let result = checker.expression_with_expected(expression, expected.as_ref());
                 if !checker.incomplete_flow {
                     self.merge_flow_report(input, checker.check_mode, checker.report);
                 }
@@ -1208,6 +1529,20 @@ impl NativeRegistry {
 }
 
 impl FlowValueQueries for NativeRegistry {
+    fn flow_value_pack(&self, sources: &NativeFlowSources, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> ValuePack {
+        self.with_flow_context(input, queries, &mut |queries| {
+            let ValueRecipe::Evaluation(evaluation) = value else {
+                return ValuePack::single(self.flow_value_type_in_context(sources, value, input, queries));
+            };
+            let evaluation = sources.program.evaluation(*evaluation);
+            let expression = &sources.program.expression(evaluation.expression).expression;
+            let mut checker = self.checker_at_flow(input, queries);
+            let expected = self.flow_initializer_context(expression, true, &mut checker);
+            let pack = checker.expression_pack(expression, expected.as_ref());
+            if !checker.incomplete_flow { self.merge_flow_report(input, checker.check_mode, checker.report); }
+            pack
+        })
+    }
     fn flow_value_type(
         &self,
         sources: &NativeFlowSources,
@@ -1248,6 +1583,90 @@ impl FlowValueQueries for NativeRegistry {
 }
 
 impl NativeTypeProvider for NativeRegistry {
+    fn function_has_result_pack(&self, key: NativeFunctionKey) -> bool {
+        self.contains_function(key)
+    }
+    fn function_inferred_return_pack(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        self.inferred_return_pack_with_context(key, queries, None, None)
+    }
+    fn function_inferred_return_pack_in_context(
+        &self,
+        key: NativeFunctionKey,
+        context: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        let captured = queries.current_captured_function();
+        self.inferred_return_pack_with_context(key, queries, Some(*context), captured)
+    }
+    fn function_inferred_return_pack_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        context: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        self.inferred_return_pack_with_context(key, queries, None, Some(*context))
+    }
+    fn function_declared_return_pack(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.source_declared_return_pack(key, queries)
+    }
+    fn function_declared_return_pack_in_context(
+        &self,
+        key: NativeFunctionKey,
+        _: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.source_declared_return_pack(key, queries)
+    }
+    fn function_declared_return_pack_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        _: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.source_declared_return_pack(key, queries)
+    }
+    fn function_rest_pack(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.source_rest_pack(key, queries)
+    }
+    fn function_rest_pack_in_capture(
+        &self,
+        key: NativeFunctionKey,
+        _: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        self.source_rest_pack(key, queries)
+    }
+    fn contextual_rest_parameter(&self, key: NativeFunctionKey) -> Option<usize> {
+        let function = self.function(key);
+        (function.vararg.is_some()
+            && function.annotations.vararg.is_none()
+            && function.annotations.type_annotation.is_none())
+        .then_some(function.params.len())
+    }
+    fn function_rest_pack_in_context(
+        &self,
+        key: NativeFunctionKey,
+        context: &ContextualFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<ValuePack> {
+        if let Some(count) = self.contextual_rest_parameter(key) {
+            Some(queries.contextual_rest_pack(context, count))
+        } else {
+            self.source_rest_pack(key, queries)
+        }
+    }
     fn contains_binding(&self, key: NativeBindingKey) -> bool {
         key.snapshot == self.snapshot && (key.index as usize) < self.bound.declarations.len()
     }
@@ -1300,6 +1719,16 @@ impl NativeTypeProvider for NativeRegistry {
     ) -> Type {
         self.source_check_expression(key, expected, mode, queries)
     }
+    fn check_expression_pack(
+        &self,
+        key: NativeExpressionKey,
+        expected: Option<&ValuePack>,
+        mode: luanalysis_engine::NativeCheckMode,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        self.source_check_expression_pack(key, expected, mode, queries)
+    }
+
     fn contextual_parameter_indices(&self, key: NativeFunctionKey) -> Vec<usize> {
         NativeExpressions::contextual_indices(self.function(key))
     }
@@ -1401,7 +1830,10 @@ impl NativeTypeProvider for NativeRegistry {
         let source = self.types.parameter(key);
         let recipe = source.constraint.as_ref()?;
         let mut checker = self.checker(queries);
-        checker.type_context = Some(source.owner);
+        match source.owner {
+            NativeTypeContext::Function(owner) => checker.type_context = Some(owner),
+            NativeTypeContext::NamedType(owner) => checker.named_type_context = Some(owner),
+        }
         let constraint = checker.annotation(recipe);
         self.merge_report(checker.report);
         Some(constraint)
@@ -1668,6 +2100,9 @@ impl RegistryIndex<'_> {
             }
             ExprKind::Table(fields) => {
                 for field in fields {
+                    if let luanalysis_syntax::TableFieldKind::Keyed(key) = &field.kind {
+                        self.expression(key, None);
+                    }
                     self.expression(&field.value, None);
                 }
             }

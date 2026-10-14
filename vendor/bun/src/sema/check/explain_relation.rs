@@ -520,6 +520,7 @@ impl<'p, 's> Checker<'p, 's> {
                     break Some((file, func));
                 }
                 SigData::WithReturn { sig: inner, .. }
+                | SigData::WithNativeResultPack { sig: inner, .. }
                 | SigData::DefaultConstruct {
                     base: Some(inner), ..
                 } => inner,

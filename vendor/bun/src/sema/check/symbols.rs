@@ -2124,6 +2124,11 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 None => ty,
             },
+            TypeData::NativeArray { element, readonly } => {
+                let element = self.get_widened_type(*element);
+                self.native_array_of(element, *readonly)
+            }
+            TypeData::NativeTable(table) => self.native_table_widened(table),
             TypeData::Ref {
                 target,
                 args: TypeArguments::Given(args),
@@ -3840,7 +3845,9 @@ impl<'p, 's> Checker<'p, 's> {
             }
             SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } => {
                 if let Some(resolved) = self.p.resolved_return_types.get(&self.task, &sig) {
-                    return resolved;
+                    return if self.sig_has_native_result_pack(sig) {
+                        self.native_pack_slot(NativeResultPack { ty: resolved }, 0)
+                    } else { resolved };
                 }
             }
             // `signature.composite != nil`
@@ -3861,11 +3868,25 @@ impl<'p, 's> Checker<'p, 's> {
                 ret: TypeId::UNRESOLVED,
             } if self.is_optional_call_signature_of(of) => return self.sig_return(sig),
             SigData::WithReturn { ret, .. } => return ret,
+            SigData::WithNativeResultPack { .. } => return self.sig_return(sig),
             SigData::Construct { .. } | SigData::DefaultConstruct { .. } => {
                 return self.sig_return(sig);
             }
         }
         self.resolve_non_circular_return_type_of_signature(sig)
+    }
+
+    /// Whole native results use the same unresolved-return comparison guard as scalar returns.
+    pub(super) fn non_circular_result_pack_of_signature(&mut self, sig: SigId) -> NativeResultPack {
+        if self.sig_has_native_result_pack(sig) {
+            if self.is_resolving_return_type(sig) {
+                return NativeResultPack { ty: self.any_for_return_type_in_resolution() };
+            }
+            self.sig_result_pack(sig)
+        } else {
+            let scalar = self.non_circular_return_type_of_signature(sig);
+            self.native_scalar_pack(scalar)
+        }
     }
 
     /// `anyType` for `isResolvingReturnTypeOfSignature`. If a comparison is waiting for a return

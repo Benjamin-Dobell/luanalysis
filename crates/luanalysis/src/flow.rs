@@ -3,7 +3,7 @@
 
 use crate::bind::{BindingId, BoundFile, ScopeId};
 use luanalysis_syntax::{
-    BinaryOperator, Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind,
+    BinaryOperator, Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TableFieldKind,
     UnaryOperator,
 };
 use std::collections::HashMap;
@@ -36,12 +36,15 @@ pub struct AssignmentId {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ReferenceRoot {
     Binding(BindingId),
+    /// The immutable physical result list shared by a local binding group.
+    Pack(EvaluationId),
     Global(String),
     Temporary(SourceExpressionId),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Key {
     String(Vec<u8>),
+    Boolean(bool),
     Integer(i64),
     Float(u64),
     Dynamic(SourceExpressionId),
@@ -80,6 +83,12 @@ pub struct CapturedAddress {
 #[derive(Clone, Debug)]
 pub enum ValueDemand {
     Evaluation(EvaluationId),
+    /// A projection of one original expanding RHS evaluation. Sibling writes
+    /// retain the same evaluation identity instead of independent scalar lists.
+    PackElement {
+        evaluation: EvaluationId,
+        index: usize,
+    },
     Nil,
     Function(u32),
     NumericIteration,
@@ -114,16 +123,27 @@ pub enum NumericLiteral {
 pub fn numeric_literal(expression: &Expr) -> Option<NumericLiteral> {
     match &expression.kind {
         ExprKind::Number(spelling) => {
-            if let Some(hex) = spelling.strip_prefix("0x").or_else(|| spelling.strip_prefix("0X"))
+            if let Some(hex) = spelling
+                .strip_prefix("0x")
+                .or_else(|| spelling.strip_prefix("0X"))
                 && !hex.contains(['.', 'p', 'P'])
             {
-                return u64::from_str_radix(hex, 16).ok().map(|value| NumericLiteral::Integer(value as i64));
+                return u64::from_str_radix(hex, 16)
+                    .ok()
+                    .map(|value| NumericLiteral::Integer(value as i64));
             }
-            spelling.parse::<i64>().ok().map(NumericLiteral::Integer)
+            spelling
+                .parse::<i64>()
+                .ok()
+                .map(NumericLiteral::Integer)
                 .or_else(|| crate::number(spelling).map(NumericLiteral::Float))
         }
         ExprKind::Parenthesized(value) => numeric_literal(value),
-        ExprKind::Unary { op: UnaryOperator::Negate, value, .. } => numeric_literal(value).map(|value| match value {
+        ExprKind::Unary {
+            op: UnaryOperator::Negate,
+            value,
+            ..
+        } => numeric_literal(value).map(|value| match value {
             NumericLiteral::Integer(value) => NumericLiteral::Integer(value.wrapping_neg()),
             NumericLiteral::Float(value) => NumericLiteral::Float(-value),
         }),
@@ -182,7 +202,7 @@ pub struct FunctionGraph {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PendingFeature {
-    ResultPacks,
+    ExpandedArguments,
     NumericIteration,
     GenericIteration,
     DynamicAddress,
@@ -417,6 +437,9 @@ impl Builder<'_> {
             }
             ExprKind::Table(fields) => {
                 for field in fields {
+                    if let TableFieldKind::Keyed(key) = &field.kind {
+                        operands.push(self.evaluate(context, key));
+                    }
                     operands.push(self.evaluate(context, &field.value));
                 }
             }
@@ -459,12 +482,14 @@ impl Builder<'_> {
                 operands.push(self.evaluate(context, right));
             }
             ExprKind::Call { callee, args } => {
+                self.expanded_arguments(args);
                 operands.push(self.evaluate(context, callee));
                 for arg in args {
                     operands.push(self.evaluate(context, arg));
                 }
             }
             ExprKind::MethodCall { receiver, args, .. } => {
+                self.expanded_arguments(args);
                 operands.push(self.evaluate(context, receiver));
                 for arg in args {
                     operands.push(self.evaluate(context, arg));
@@ -478,8 +503,8 @@ impl Builder<'_> {
                     expr.span,
                 );
             }
-            ExprKind::Vararg => self.feature(PendingFeature::ResultPacks, expr.span),
-            ExprKind::Nil
+            ExprKind::Vararg
+            | ExprKind::Nil
             | ExprKind::Boolean(_)
             | ExprKind::Number(_)
             | ExprKind::String(_)
@@ -533,16 +558,19 @@ impl Builder<'_> {
             }
             ExprKind::Index { base, index } => {
                 let mut reference = self.reference(base);
-                let mut literal = index.as_ref();
-                while let ExprKind::Parenthesized(inner) = &literal.kind {
-                    literal = inner;
-                }
-                let key = match &literal.kind {
-                    ExprKind::String(bytes) => Key::String(bytes.clone()),
-                    ExprKind::Number(spelling) => {
-                        numeric_key(spelling).unwrap_or_else(|| Key::Dynamic(self.expr_id(index)))
+                let key = match crate::native_tables::literal_key(index) {
+                    Some(luanalysis_engine::LuaKey::String(bytes)) => Key::String(bytes),
+                    Some(luanalysis_engine::LuaKey::Boolean(value)) => Key::Boolean(value),
+                    Some(luanalysis_engine::LuaKey::Integer(value)) => Key::Integer(value),
+                    Some(luanalysis_engine::LuaKey::Number(value))
+                        if value >= i64::MIN as f64
+                            && value < -(i64::MIN as f64)
+                            && value.fract() == 0.0 =>
+                    {
+                        Key::Integer(value as i64)
                     }
-                    _ => Key::Dynamic(self.expr_id(index)),
+                    Some(luanalysis_engine::LuaKey::Number(value)) => Key::Float(value.to_bits()),
+                    None => Key::Dynamic(self.expr_id(index)),
                 };
                 reference.path.push(key);
                 reference
@@ -612,16 +640,42 @@ impl Builder<'_> {
             span: name.span,
         }
     }
-    fn pack_feature(&mut self, values: &[Expr]) {
+    fn expanded_arguments(&mut self, values: &[Expr]) {
         if let Some(last) = values.last() {
             if matches!(
                 last.kind,
-                ExprKind::Call { .. } | ExprKind::MethodCall { .. }
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Vararg
             ) {
-                self.feature(PendingFeature::ResultPacks, last.span);
+                self.feature(PendingFeature::ExpandedArguments, last.span);
             }
         }
     }
+
+    fn adjusted_value(&self, values: &[EvaluationId], index: usize) -> ValueDemand {
+        if let Some(&last) = values.last() {
+            let expression = &self
+                .program
+                .expression(self.program.evaluation(last).expression)
+                .expression;
+            let final_index = values.len() - 1;
+            if index >= final_index
+                && matches!(
+                    expression.kind,
+                    ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Vararg
+                )
+            {
+                return ValueDemand::PackElement {
+                    evaluation: last,
+                    index: index - final_index,
+                };
+            }
+        }
+        values
+            .get(index)
+            .copied()
+            .map_or(ValueDemand::Nil, ValueDemand::Evaluation)
+    }
+
     fn statements(&mut self, context: &mut Context, statements: &[Stmt]) {
         for statement in statements {
             self.statement(context, statement);
@@ -631,7 +685,6 @@ impl Builder<'_> {
         let span = statement.span;
         match &statement.kind {
             StmtKind::Local { names, values, .. } => {
-                self.pack_feature(values);
                 let transaction = self.transaction();
                 let epoch = context.current;
                 let values: Vec<_> = values
@@ -640,10 +693,7 @@ impl Builder<'_> {
                     .collect();
                 for (index, name) in names.iter().enumerate() {
                     let address = self.name_address(name, transaction, epoch);
-                    let value = values
-                        .get(index)
-                        .copied()
-                        .map_or(ValueDemand::Nil, ValueDemand::Evaluation);
+                    let value = self.adjusted_value(&values, index);
                     self.append(
                         context,
                         NodeKind::Write {
@@ -659,7 +709,6 @@ impl Builder<'_> {
             StmtKind::Assign {
                 targets, values, ..
             } => {
-                self.pack_feature(values);
                 let transaction = self.transaction();
                 let epoch = context.current;
                 let addresses: Vec<_> = targets
@@ -671,10 +720,7 @@ impl Builder<'_> {
                     .map(|value| self.evaluate(context, value))
                     .collect();
                 for (order, index) in (0..addresses.len()).rev().enumerate() {
-                    let value = values
-                        .get(index)
-                        .copied()
-                        .map_or(ValueDemand::Nil, ValueDemand::Evaluation);
+                    let value = self.adjusted_value(&values, index);
                     self.append(
                         context,
                         NodeKind::Write {
@@ -726,10 +772,6 @@ impl Builder<'_> {
                 self.evaluate(context, expr);
             }
             StmtKind::Return(values) => {
-                self.pack_feature(values);
-                if values.len() > 1 {
-                    self.feature(PendingFeature::ResultPacks, span);
-                }
                 let values = values
                     .iter()
                     .map(|expr| self.evaluate(context, expr))
@@ -916,7 +958,6 @@ impl Builder<'_> {
                 ..
             } => {
                 self.feature(PendingFeature::GenericIteration, span);
-                self.pack_feature(values);
                 for value in values {
                     self.evaluate(context, value);
                 }
@@ -943,22 +984,46 @@ impl Builder<'_> {
     ) {
         let incoming_live = context.live;
         let before = context.current;
-        let predicate = |stage| Predicate::NumericIteration { start, limit, step, stage };
-        let first_exit = self.node(context, NodeKind::Predicate {
-            predicate: predicate(NumericIterationStage::First), sense: false,
-        }, vec![before], span);
-        self.node(context, NodeKind::Predicate {
-            predicate: predicate(NumericIterationStage::First), sense: true,
-        }, vec![before], span);
+        let predicate = |stage| Predicate::NumericIteration {
+            start,
+            limit,
+            step,
+            stage,
+        };
+        let first_exit = self.node(
+            context,
+            NodeKind::Predicate {
+                predicate: predicate(NumericIterationStage::First),
+                sense: false,
+            },
+            vec![before],
+            span,
+        );
+        self.node(
+            context,
+            NodeKind::Predicate {
+                predicate: predicate(NumericIterationStage::First),
+                sense: true,
+            },
+            vec![before],
+            span,
+        );
         let header = self.append(context, NodeKind::Loop, span);
         let transaction = self.transaction();
         let epoch = context.current;
         let address = self.name_address(name, transaction, epoch);
         // This write resets the visible control variable on every body entry.
         // Lua's hidden counter is distinct from body writes to that variable.
-        self.append(context, NodeKind::Write {
-            address, value: ValueDemand::NumericIteration, store_order: 0, declaration: true,
-        }, name.span);
+        self.append(
+            context,
+            NodeKind::Write {
+                address,
+                value: ValueDemand::NumericIteration,
+                store_order: 0,
+                declaration: true,
+            },
+            name.span,
+        );
         context.breaks.push(Vec::new());
         self.statements(context, body);
         let back = context.current;
@@ -967,17 +1032,40 @@ impl Builder<'_> {
             exits.push(first_exit);
         }
         if context.live {
-            let next_exit = self.node(context, NodeKind::Predicate {
-                predicate: predicate(NumericIterationStage::Next), sense: false,
-            }, vec![back], span);
-            let next_body = self.node(context, NodeKind::Predicate {
-                predicate: predicate(NumericIterationStage::Next), sense: true,
-            }, vec![back], span);
-            self.program.graphs[context.graph as usize].nodes[header.index as usize].antecedents.push(next_body);
+            let next_exit = self.node(
+                context,
+                NodeKind::Predicate {
+                    predicate: predicate(NumericIterationStage::Next),
+                    sense: false,
+                },
+                vec![back],
+                span,
+            );
+            let next_body = self.node(
+                context,
+                NodeKind::Predicate {
+                    predicate: predicate(NumericIterationStage::Next),
+                    sense: true,
+                },
+                vec![back],
+                span,
+            );
+            self.program.graphs[context.graph as usize].nodes[header.index as usize]
+                .antecedents
+                .push(next_body);
             exits.push(next_exit);
         }
         context.live = !exits.is_empty();
-        self.node(context, if context.live { NodeKind::Merge } else { NodeKind::Unreachable }, exits, span);
+        self.node(
+            context,
+            if context.live {
+                NodeKind::Merge
+            } else {
+                NodeKind::Unreachable
+            },
+            exits,
+            span,
+        );
     }
 
     fn iteration(
@@ -1044,21 +1132,5 @@ impl Builder<'_> {
             exits.push(exit);
         }
         self.node(context, NodeKind::Merge, exits, span);
-    }
-}
-fn numeric_key(spelling: &str) -> Option<Key> {
-    // Exact integers retain their identity; integral floats share that key.
-    if let Ok(integer) = spelling.parse::<i64>() {
-        return Some(Key::Integer(integer));
-    }
-    let number = spelling.parse::<f64>().ok()?;
-    if number.is_finite()
-        && number.fract() == 0.0
-        && number >= i64::MIN as f64
-        && number < i64::MAX as f64
-    {
-        Some(Key::Integer(number as i64))
-    } else {
-        Some(Key::Float(number.to_bits()))
     }
 }

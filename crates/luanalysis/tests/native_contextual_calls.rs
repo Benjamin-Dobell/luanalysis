@@ -339,6 +339,16 @@ fn recursive_local_function_keeps_the_enclosing_callback_capture_facet() {
 }
 
 #[test]
+fn unannotated_vararg_only_callback_receives_the_expected_input_pack() {
+    let source = "---@param callback fun(...: number): number...\n\
+---@return nil|number\nlocal function use(callback) return (callback(1,2)) end\n\
+local result=use(function(...) return ... end)\n\
+---@type nil|number\nlocal accepted=result";
+    let report = check(source);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn cli_contextual_member_error_disappears_after_original_lua_correction() {
     use std::{fs, process::Command};
     let directory =

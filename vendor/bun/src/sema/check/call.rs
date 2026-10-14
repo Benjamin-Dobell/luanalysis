@@ -17,6 +17,7 @@ pub struct ResolvedCall {
 /// Type ids belong to the checker session; this does not retain frontend nodes or positions.
 #[derive(Clone, Debug)]
 pub struct ResolvedTypeCall {
+    pub sig: Option<SigId>,
     pub ret: TypeId,
     pub errors: Vec<ResolvedTypeCallError>,
 }
@@ -33,6 +34,13 @@ pub enum ResolvedTypeCallError {
     TypeArgument { index: usize, source: TypeId, target: TypeId },
     Arity {
         actual: usize,
+        min: usize,
+        max: Option<usize>,
+    },
+    PackArity {
+        index: usize,
+        actual_min: usize,
+        actual_max: Option<usize>,
         min: usize,
         max: Option<usize>,
     },
@@ -63,6 +71,8 @@ pub(super) enum Arg {
     /// An already checked value with no TS syntax node.
     Resolved(TypeId),
     Native(NativeExpressionId),
+    ResolvedPack(NativeResultPack),
+    NativePack(NativeExpressionId),
     Expr(ExprId),
     /// `createSyntheticExpression`: a type, and its label (`tupleNameSource`) or `NONE`. The last
     /// field is the node it is positioned at: the argument whose tuple it is an element of, the
@@ -83,7 +93,7 @@ impl Arg {
     /// The node at which an error about it is reported.
     pub(super) fn node(self) -> ExprId {
         match self {
-            Arg::Resolved(_) | Arg::Native(_) => panic!("native argument has no TS syntax node"),
+            Arg::Resolved(_) | Arg::Native(_) | Arg::ResolvedPack(_) | Arg::NativePack(_) => panic!("native argument has no TS syntax node"),
             Arg::Expr(e)
             | Arg::Type(_, _, e)
             | Arg::Spread(_, _, _, e)
@@ -93,7 +103,7 @@ impl Arg {
 
     /// `isSpreadArgument`
     pub(super) fn is_spread(self) -> bool {
-        matches!(self, Arg::Spread(..) | Arg::SpreadElement(..))
+        matches!(self, Arg::Spread(..) | Arg::SpreadElement(..) | Arg::ResolvedPack(_) | Arg::NativePack(_))
     }
 }
 
@@ -147,6 +157,7 @@ pub(super) enum CallSite {
     },
     Native {
         expected_return: Option<TypeId>,
+        expected_result_pack: Option<NativeResultPack>,
         this_type: Option<TypeId>,
     },
 }
@@ -365,10 +376,13 @@ impl<'p, 's> Checker<'p, 's> {
         let expected = self.single_call_signature(expected)?;
         let provider = self.native_function_provider?;
         let params = self.sig_params(expected);
-        let read: Vec<TypeId> = provider.contextual_parameter_indices(declaration)
+        let mut read: Vec<TypeId> = provider.contextual_parameter_indices(declaration)
             .into_iter()
             .filter_map(|index| self.param_type_at(&params, index))
             .collect();
+        if let Some(index) = provider.contextual_rest_parameter(declaration) {
+            read.push(self.rest_type_at_position(&params, index, false));
+        }
         let assigned = self.get_native_inference_context(expression)
             .and_then(|level| self.with_inference_context(level, |c, n| {
                 c.instantiate_signature_in_inference_context(n, expected, &read, mode.contains(CheckMode::INFERENTIAL))
@@ -442,13 +456,27 @@ impl<'p, 's> Checker<'p, 's> {
         type_args: &[TypeId],
         expected_return: Option<TypeId>,
     ) -> ResolvedTypeCall {
+        self.resolve_native_arguments_with_result_pack(callee, args, type_args, expected_return, None)
+    }
+
+    pub(super) fn resolve_native_arguments_with_result_pack(
+        &mut self,
+        callee: TypeId,
+        args: &[Arg],
+        type_args: &[TypeId],
+        expected_return: Option<TypeId>,
+        expected_result_pack: Option<NativeResultPack>,
+    ) -> ResolvedTypeCall {
         if self.is_any(callee) {
             for &arg in args {
-                if let Arg::Native(expression) = arg {
-                    self.check_native_argument(expression, None, None, CheckMode::empty());
+                match arg {
+                    Arg::Native(expression) => { self.check_native_argument(expression, None, None, CheckMode::empty()); }
+                    Arg::NativePack(expression) => { self.check_native_argument_pack(expression, None, None, CheckMode::empty()); }
+                    _ => {}
                 }
             }
             return ResolvedTypeCall {
+                sig: None,
                 ret: TypeId::ANY,
                 errors: Vec::new(),
             };
@@ -464,6 +492,7 @@ impl<'p, 's> Checker<'p, 's> {
         };
         if let Some(error) = error {
             return ResolvedTypeCall {
+                sig: None,
                 ret: TypeId::ERROR,
                 errors: vec![error],
             };
@@ -473,36 +502,33 @@ impl<'p, 's> Checker<'p, 's> {
             let sigs = self.signatures(arg, false);
             if sigs.iter().any(|&sig| !self.sig_type_params(sig).is_empty()) {
                 return ResolvedTypeCall {
+                    sig: None,
                     ret: TypeId::ERROR,
                     errors: vec![ResolvedTypeCallError::UnsupportedGenericFunctionArgument { index }],
                 };
             }
         }
         let sig = candidates[0];
-        let params = self.sig_params(sig);
         let error = if self.sig_this_type(sig).is_some_and(|ty| ty != TypeId::VOID) {
             Some(ResolvedTypeCallError::UnsupportedThis)
-        } else if self.non_array_rest_type(&params).is_some() {
-            // The native applicability worker compares this rest as a whole argument tuple.
-            // Comparing positions separately would discard correlations between tuple members.
-            Some(ResolvedTypeCallError::UnsupportedRest)
         } else {
             None
         };
         if let Some(error) = error {
             return ResolvedTypeCall {
+                sig: Some(sig),
                 ret: self.sig_return(sig),
                 errors: vec![error],
             };
         }
         let is_single_non_generic = self.sig_type_params(sig).is_empty();
         let has_context_sensitive = args.iter().any(|arg| match arg {
-            Arg::Native(expression) => self.native_function_provider
+            Arg::Native(expression) | Arg::NativePack(expression) => self.native_function_provider
                 .is_some_and(|provider| provider.is_context_sensitive(*expression)),
             _ => false,
         });
         let mut state = CallState {
-            site: CallSite::Native { expected_return, this_type: None },
+            site: CallSite::Native { expected_return, expected_result_pack, this_type: None },
             type_args,
             args,
             candidates: SmallVec::from_slice(&candidates),
@@ -537,12 +563,25 @@ impl<'p, 's> Checker<'p, 's> {
             } else {
                 let params = self.sig_params(selected);
                 if !self.has_correct_arity(&state, &params) {
-                    errors.push(ResolvedTypeCallError::Arity {
-                        actual: args.len(),
-                        min: self.min_argument_count(&params),
-                        max: (!self.has_effective_rest_parameter(&params))
-                            .then(|| self.parameter_count(&params)),
-                    });
+                    let (min, max) = if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(&params).is_some() {
+                        let expected = NativeResultPack { ty: self.rest_type_at_position(&params, 0, false) };
+                        self.native_pack_count_bounds(expected)
+                    } else {
+                        (self.min_argument_count(&params), (!self.has_effective_rest_parameter(&params)).then(|| self.parameter_count(&params)))
+                    };
+                    if let Some(index) = args.iter().position(|arg| arg.is_spread()) {
+                        let actual = self.native_argument_sequence_type(args, index, TypeId::UNKNOWN, None, CheckMode::empty());
+                        let (actual_min, actual_max) = self.native_pack_count_bounds(NativeResultPack { ty: actual });
+                        errors.push(ResolvedTypeCallError::PackArity {
+                            index, actual_min: index + actual_min, actual_max: actual_max.and_then(|maximum| index.checked_add(maximum)),
+                            min, max,
+                        });
+                    } else {
+                        errors.push(ResolvedTypeCallError::Arity {
+                            actual: args.len(),
+                            min, max,
+                        });
+                    }
                 } else if let Some((index, source, target)) = self.resolved_signature_argument_error(
                     selected, args, Relation::Assignable, CheckMode::empty(),
                 ) {
@@ -550,7 +589,7 @@ impl<'p, 's> Checker<'p, 's> {
                 }
             }
         }
-        ResolvedTypeCall { ret: self.sig_return(selected), errors }
+        ResolvedTypeCall { sig: Some(selected), ret: self.sig_return(selected), errors }
     }
 
     /// `isContextSensitive`. For `JsxAttributes`: `is_jsx_attributes_context_sensitive`.
@@ -1061,7 +1100,7 @@ impl<'p, 's> Checker<'p, 's> {
             Some(&(Arg::Resolved(ty) | Arg::Type(ty, ..) | Arg::Spread(ty, ..) | Arg::SpreadElement(ty, ..))) => {
                 Some(ty)
             }
-            Some(&Arg::Native(_)) => unreachable!("native argument in a TS immediate invocation"),
+            Some(&(Arg::Native(_) | Arg::ResolvedPack(_) | Arg::NativePack(_))) => unreachable!("native argument in a TS immediate invocation"),
             None if own.default.is_some() => None,
             None => Some(self.undefined_widening()),
         }
@@ -1092,6 +1131,9 @@ impl<'p, 's> Checker<'p, 's> {
     ) -> bool {
         let args = s.args;
         if matches!(s.site, CallSite::Native { .. }) {
+            if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(params).is_some() {
+                return self.native_argument_pack_has_correct_arity(args, params);
+            }
             return self.has_correct_arity_for_count(params, matches!(params, List::Own(_)), args.len(), None, false);
         }
         let (file, call, node, _) = s.ts_site();
@@ -1901,6 +1943,12 @@ impl<'p, 's> Checker<'p, 's> {
                 }
             }
         }
+        } else if let CallSite::Native { expected_result_pack: Some(expected), .. } = s.site {
+            let target = self.sig_result_pack(signature).ty;
+            if self.could_contain_type_variables(target) {
+                self.infer(context, expected.ty, target, PRIORITY_RETURN);
+                self.infer_call_return_context(context, signature, expected.ty, target);
+            }
         } else if let CallSite::Native { expected_return: Some(expected), .. } = s.site {
             let target = self.sig_return(signature);
             if self.could_contain_type_variables(target) {
@@ -1916,6 +1964,9 @@ impl<'p, 's> Checker<'p, 's> {
         } else {
             args.len()
         };
+        let arg_count = if matches!(s.site, CallSite::Native { .. }) {
+            args.iter().position(|arg| arg.is_spread()).unwrap_or(arg_count).min(arg_count)
+        } else { arg_count };
         if let Some(rest) = rest_type
             && let Some(k) = context.params.iter().position(|&p| p == rest)
             && !args[arg_count..].iter().any(|a| a.is_spread())
@@ -1951,11 +2002,18 @@ impl<'p, 's> Checker<'p, 's> {
                 self.infer(context, arg_type, param_type, 0);
             }
         }
+        let rest_type = if matches!(s.site, CallSite::Native { .. })
+            && (rest_type.is_some() || args.iter().any(|arg| arg.is_spread()))
+        {
+            Some(self.rest_type_at_position(&params, arg_count, false))
+        } else { rest_type };
         if let Some(rest) = rest_type
             && self.could_contain_type_variables(rest)
         {
-            let (file, _, _, _) = s.ts_site();
-            let spread_type = self.spread_argument_type(file, args, arg_count, rest, Some(context), check_mode);
+            let spread_type = match s.site {
+                CallSite::Ts { file, .. } => self.spread_argument_type(file, args, arg_count, rest, Some(context), check_mode),
+                CallSite::Native { .. } => self.native_argument_sequence_type(args, arg_count, rest, Some(context), check_mode),
+            };
             self.infer(context, spread_type, rest, 0);
         }
         self.inference_mapper(context)
@@ -2095,6 +2153,7 @@ impl<'p, 's> Checker<'p, 's> {
         let (ty, node) = match arg {
             Arg::Resolved(ty) => return ty,
             Arg::Native(expression) => return self.check_native_argument(expression, Some(contextual_type), inference_context, check_mode),
+            Arg::ResolvedPack(_) | Arg::NativePack(_) => panic!("native result pack requires a whole-pack argument demand"),
             Arg::Expr(e) => {
                 let contextual_type = self.without_no_infer(contextual_type);
                 return self.check_expression_with_contextual_type(
@@ -2966,6 +3025,31 @@ impl<'p, 's> Checker<'p, 's> {
         args: &[Arg],
         index: usize,
         rest: TypeId,
+        context: Option<&mut Inference>,
+        check_mode: CheckMode,
+    ) -> TypeId {
+        self.argument_sequence_type(Some(file), args, index, rest, context, check_mode)
+    }
+
+    pub(super) fn native_argument_sequence_type(
+        &mut self,
+        args: &[Arg],
+        index: usize,
+        rest: TypeId,
+        context: Option<&mut Inference>,
+        check_mode: CheckMode,
+    ) -> TypeId {
+        self.argument_sequence_type(None, args, index, rest, context, check_mode)
+    }
+
+    /// Shared tuple construction and literal policy of `getSpreadArgumentType`. The language
+    /// adapter supplies scalar or whole-pack demands; only TS spreads use JS iteration/HIR.
+    fn argument_sequence_type(
+        &mut self,
+        file: Option<FileId>,
+        args: &[Arg],
+        index: usize,
+        rest: TypeId,
         mut context: Option<&mut Inference>,
         check_mode: CheckMode,
     ) -> TypeId {
@@ -2973,11 +3057,15 @@ impl<'p, 's> Checker<'p, 's> {
         // "both the parameter and the argument are ...x forms"
         if index + 1 >= args.len() {
             let spread_type = match args.last() {
+                Some(&Arg::ResolvedPack(pack)) => return pack.ty,
+                Some(&Arg::NativePack(expression)) => return self.check_native_argument_pack(
+                    expression, (rest != TypeId::UNKNOWN).then_some(NativeResultPack { ty: rest }), context, check_mode,
+                ).ty,
                 Some(&Arg::Spread(_, list, ..)) => Some(list),
                 Some(&Arg::SpreadElement(_, _, operand, _)) => {
                     let contextual_type = self.without_no_infer(rest);
                     Some(self.check_expression_with_contextual_type(
-                        file,
+                        file.expect("TS spread argument without a file"),
                         operand,
                         contextual_type,
                         context.as_deref_mut(),
@@ -2992,7 +3080,7 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 let element = match args.last() {
                     Some(&Arg::SpreadElement(_, _, operand, _)) => {
-                        self.check_iterated_type_of_spread_element(file, spread_type, operand)
+                        self.check_iterated_type_of_spread_element(file.expect("TS spread argument without a file"), spread_type, operand)
                     }
                     _ => self.iterated_type_of_spread(spread_type),
                 };
@@ -3008,6 +3096,13 @@ impl<'p, 's> Checker<'p, 's> {
         let mut flags: SmallVec<[ElemFlags; 8]> = SmallVec::with_capacity(length);
         for i in index..args.len() {
             let (ty, flag) = match args[i] {
+                Arg::ResolvedPack(pack) => (pack.ty, ElemFlags::VARIADIC),
+                Arg::NativePack(expression) => {
+                    let expected = if rest == TypeId::UNKNOWN { None }
+                        else if self.is_tuple(rest) || self.is_union(rest) { self.native_pack_contextual_tail(NativeResultPack { ty: rest }, &elems) }
+                        else { Some(NativeResultPack { ty: rest }) };
+                    (self.check_native_argument_pack(expression, expected, context.as_deref_mut(), check_mode).ty, ElemFlags::VARIADIC)
+                }
                 Arg::Spread(_, list, ..) | Arg::SpreadElement(_, list, ..)
                     if self.is_array_like(list) =>
                 {
@@ -3015,7 +3110,7 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 Arg::Spread(element, ..) => (element, ElemFlags::REST),
                 Arg::SpreadElement(_, list, operand, _) => (
-                    self.check_iterated_type_of_spread_element(file, list, operand),
+                    self.check_iterated_type_of_spread_element(file.expect("TS spread argument without a file"), list, operand),
                     ElemFlags::REST,
                 ),
                 arg => {
@@ -3025,13 +3120,11 @@ impl<'p, 's> Checker<'p, 's> {
                     } else {
                         self.contextual_indexed_access(rest, i - index)
                     };
-                    let ty = self.check_argument(
-                        file,
-                        arg,
-                        contextual,
-                        context.as_deref_mut(),
-                        check_mode,
-                    );
+                    let ty = match arg {
+                        Arg::Resolved(ty) => ty,
+                        Arg::Native(expression) => self.check_native_argument(expression, Some(contextual), context.as_deref_mut(), check_mode),
+                        _ => self.check_argument(file.expect("TS argument without a file"), arg, contextual, context.as_deref_mut(), check_mode),
+                    };
                     let has_primitive_contextual_type =
                         is_const || self.may_be_primitive_or_key(contextual);
                     (
@@ -3362,6 +3455,36 @@ impl<'p, 's> Checker<'p, 's> {
         }
         self.restore_lent_inference_context(inference_context);
         ty
+    }
+
+    pub(super) fn check_native_argument_pack(
+        &mut self,
+        expression: NativeExpressionId,
+        expected: Option<NativeResultPack>,
+        mut inference_context: Option<&mut Inference>,
+        mode: CheckMode,
+    ) -> NativeResultPack {
+        let provider = self.native_function_provider.expect("native expression without a provider");
+        assert!(provider.contains_expression(expression), "foreign native expression identity");
+        let (mode, outside) = self.push_inference_context_for_origin(
+            ExpressionOrigin::Native(expression), inference_context.as_deref_mut(), mode,
+        );
+        let pack = provider.check_expression_pack(self, expression, expected, mode);
+        if let Some(alternatives) = self.native_pack_alternatives(pack) {
+            for alternative in alternatives {
+                for ty in alternative.fixed.iter().map(|slot| slot.ty).chain(alternative.tail) {
+                    if let Some(sig) = self.single_call_signature(ty)
+                        && self.sig_native_context(sig).is_some()
+                    {
+                        self.sig_params(sig);
+                        self.sig_return(sig);
+                    }
+                }
+            }
+        }
+        self.restore_inference_recheck(outside);
+        self.restore_lent_inference_context(inference_context);
+        pack
     }
 
     fn restore_inference_recheck(&mut self, outside: OutsideInferenceContext) {

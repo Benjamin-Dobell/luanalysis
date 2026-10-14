@@ -686,6 +686,31 @@ impl<'p, 's> Checker<'p, 's> {
             return self.instantiate_deferred_type_reference(ty, mapper, None);
         }
         match self.data(ty) {
+            TypeData::NativeTable(table) => {
+                let fields: Vec<NativeTableField> = table.fields.iter().map(|field| NativeTableField {
+                    value: self.instantiate(field.value, mapper),
+                    ..*field
+                }).collect();
+                let indexers: Vec<NativeTableIndexer> = table.indexers.iter().map(|indexer| NativeTableIndexer {
+                    key: self.instantiate(indexer.key, mapper),
+                    value: self.instantiate(indexer.value, mapper),
+                    ..*indexer
+                }).collect();
+                let sequence_tails: Vec<NativeTableSequenceTail> = table.sequence_tails.iter().map(|tail| NativeTableSequenceTail {
+                    value: self.instantiate(tail.value, mapper), ..*tail
+                }).collect();
+                self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+                    fields: self.list(&fields),
+                    indexers: self.list(&indexers),
+                    sequence_tails: self.list(&sequence_tails),
+                    fresh: table.fresh,
+                    collision_candidates: table.collision_candidates,
+                })))
+            }
+            TypeData::NativeArray { element, readonly } => {
+                let element = self.instantiate(*element, mapper);
+                self.native_array_of(element, *readonly)
+            }
             // `instantiateTypeWorker`: an unchanged type is returned as is, unreduced if it was.
             TypeData::Union(_) | TypeData::Intersection(_) => {
                 self.instantiate_union_or_intersection(ty, mapper, None)
@@ -1187,7 +1212,9 @@ impl<'p, 's> Checker<'p, 's> {
                 });
                 let params = ArenaBox::from_iter_in(params, arena);
                 // `getReturnTypeOfSignature`, `case sig.target != nil`
-                let ret = self.sig_return(sig);
+                let ret = if self.sig_has_native_result_pack(sig) {
+                    self.signature_return_type(sig)
+                } else { self.sig_return(sig) };
                 SigData::Synth {
                     type_params: remaining.into(),
                     params,
@@ -1202,6 +1229,12 @@ impl<'p, 's> Checker<'p, 's> {
             }
             // `cloneSignature` with its own return type, which is instantiated with the same mapper
             // as the rest.
+            SigData::WithNativeResultPack { sig: inner, pack } => {
+                SigData::WithNativeResultPack {
+                    sig: self.instantiate_sig(*inner, mapper),
+                    pack: self.instantiate_native_pack(*pack, mapper),
+                }
+            }
             SigData::WithReturn { sig: inner, ret } => {
                 let (inner, ret) = (*inner, *ret);
                 let sig = self.instantiate_sig(inner, mapper);

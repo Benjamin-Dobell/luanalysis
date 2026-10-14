@@ -1,6 +1,6 @@
 //! End-to-end original-Lua source gates for the shared native flow worker.
 //! These exercise the public checker/CLI, rather than joining graph types here.
-use luanalysis::{CheckReport, check};
+use luanalysis::{CheckReport, check, location};
 use std::{fs, process::Command};
 
 fn clean(source: &str) -> CheckReport {
@@ -262,16 +262,30 @@ fn generic_iterator_predicates_are_explicitly_unsupported_in_this_named_referenc
 }
 
 #[test]
-fn dynamic_indexed_writes_report_the_key_integration_gate() {
+fn dynamic_indexed_writes_check_the_declared_key_domain_and_original_origins() {
     let source = "---@param key string\nlocal function write(key)\nlocal record={x=1}\nrecord[key]=2\nreturn record.x\nend\nwrite(\"x\")";
     let report = check(source);
-    assert!(
-        report.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.code,
-            "LUA2019" | "LUA2020"
-        ) && diagnostic.message.contains("dynamic")),
-        "{:#?}",
-        report.diagnostics
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2339");
+    assert_eq!(
+        &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+        "key"
+    );
+    assert_eq!(location(source, report.diagnostics[0].span), (4, 8));
+
+    let declared = "---@param key string\nlocal function write(key)\n\
+---@type table<string,number>\nlocal record={x=1}\n\
+record[key]=2\nreturn record[key]\nend\n\
+---@type number\nlocal result=write(\"x\")";
+    let report = check(declared);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    let invalid = declared.replace("record[key]=2", "record[key]=\"bad\"");
+    let report = check(&invalid);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(
+        &invalid[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+        "\"bad\""
     );
 }
 

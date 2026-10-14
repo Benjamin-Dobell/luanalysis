@@ -1,0 +1,2046 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -17,6 +17,7 @@
+ /// Type ids belong to the checker session; this does not retain frontend nodes or positions.
+ #[derive(Clone, Debug)]
+ pub struct ResolvedTypeCall {
++    pub sig: Option<SigId>,
+     pub ret: TypeId,
+     pub errors: Vec<ResolvedTypeCallError>,
+ }
+@@ -147,6 +148,7 @@
+     },
+     Native {
+         expected_return: Option<TypeId>,
++        expected_result_pack: Option<NativeResultPack>,
+         this_type: Option<TypeId>,
+     },
+ }
+@@ -365,10 +367,13 @@
+         let expected = self.single_call_signature(expected)?;
+         let provider = self.native_function_provider?;
+         let params = self.sig_params(expected);
+-        let read: Vec<TypeId> = provider.contextual_parameter_indices(declaration)
++        let mut read: Vec<TypeId> = provider.contextual_parameter_indices(declaration)
+             .into_iter()
+             .filter_map(|index| self.param_type_at(&params, index))
+             .collect();
++        if let Some(index) = provider.contextual_rest_parameter(declaration) {
++            read.push(self.rest_type_at_position(&params, index, false));
++        }
+         let assigned = self.get_native_inference_context(expression)
+             .and_then(|level| self.with_inference_context(level, |c, n| {
+                 c.instantiate_signature_in_inference_context(n, expected, &read, mode.contains(CheckMode::INFERENTIAL))
+@@ -442,6 +447,17 @@
+         type_args: &[TypeId],
+         expected_return: Option<TypeId>,
+     ) -> ResolvedTypeCall {
++        self.resolve_native_arguments_with_result_pack(callee, args, type_args, expected_return, None)
++    }
++
++    pub(super) fn resolve_native_arguments_with_result_pack(
++        &mut self,
++        callee: TypeId,
++        args: &[Arg],
++        type_args: &[TypeId],
++        expected_return: Option<TypeId>,
++        expected_result_pack: Option<NativeResultPack>,
++    ) -> ResolvedTypeCall {
+         if self.is_any(callee) {
+             for &arg in args {
+                 if let Arg::Native(expression) = arg {
+@@ -449,6 +465,7 @@
+                 }
+             }
+             return ResolvedTypeCall {
++                sig: None,
+                 ret: TypeId::ANY,
+                 errors: Vec::new(),
+             };
+@@ -464,6 +481,7 @@
+         };
+         if let Some(error) = error {
+             return ResolvedTypeCall {
++                sig: None,
+                 ret: TypeId::ERROR,
+                 errors: vec![error],
+             };
+@@ -473,6 +491,7 @@
+             let sigs = self.signatures(arg, false);
+             if sigs.iter().any(|&sig| !self.sig_type_params(sig).is_empty()) {
+                 return ResolvedTypeCall {
++                    sig: None,
+                     ret: TypeId::ERROR,
+                     errors: vec![ResolvedTypeCallError::UnsupportedGenericFunctionArgument { index }],
+                 };
+@@ -491,6 +510,7 @@
+         };
+         if let Some(error) = error {
+             return ResolvedTypeCall {
++                sig: Some(sig),
+                 ret: self.sig_return(sig),
+                 errors: vec![error],
+             };
+@@ -502,7 +522,7 @@
+             _ => false,
+         });
+         let mut state = CallState {
+-            site: CallSite::Native { expected_return, this_type: None },
++            site: CallSite::Native { expected_return, expected_result_pack, this_type: None },
+             type_args,
+             args,
+             candidates: SmallVec::from_slice(&candidates),
+@@ -550,7 +570,7 @@
+                 }
+             }
+         }
+-        ResolvedTypeCall { ret: self.sig_return(selected), errors }
++        ResolvedTypeCall { sig: Some(selected), ret: self.sig_return(selected), errors }
+     }
+ 
+     /// `isContextSensitive`. For `JsxAttributes`: `is_jsx_attributes_context_sensitive`.
+@@ -1901,6 +1921,12 @@
+                 }
+             }
+         }
++        } else if let CallSite::Native { expected_result_pack: Some(expected), .. } = s.site {
++            let target = self.sig_result_pack(signature).ty;
++            if self.could_contain_type_variables(target) {
++                self.infer(context, expected.ty, target, PRIORITY_RETURN);
++                self.infer_call_return_context(context, signature, expected.ty, target);
++            }
+         } else if let CallSite::Native { expected_return: Some(expected), .. } = s.site {
+             let target = self.sig_return(signature);
+             if self.could_contain_type_variables(target) {
+diff --git a/src/sema/check/decl.rs b/src/sema/check/decl.rs
+--- a/src/sema/check/decl.rs
++++ b/src/sema/check/decl.rs
+@@ -4485,7 +4485,7 @@
+     fn sig_type_params_not_recent(&mut self, sig: SigId) -> List<'p, TypeId> {
+         match self.types().sig(sig) {
+             SigData::Synth { type_params, .. } => return List::Kept(type_params),
+-            SigData::WithReturn { sig: inner, .. } => return self.sig_type_params(*inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => return self.sig_type_params(*inner),
+             // Most functions have none.
+             SigData::Decl { file, func, .. } if self.hir(*file)[*func].type_params.is_empty() => {
+                 // `assignContextualParameterTypes`: `sig.typeParameters = context.typeParameters`
+@@ -4569,7 +4569,7 @@
+                     .collect()
+             }
+             SigData::Synth { type_params, .. } => type_params.to_vec(),
+-            SigData::WithReturn { sig: inner, .. } => {
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => {
+                 let inner = *inner;
+                 self.sig_type_params(inner).into_vec()
+             }
+@@ -4582,7 +4582,7 @@
+             | SigData::Construct {
+                 file, func, mapper, ..
+             } => Some((file, func, mapper)),
+-            SigData::WithReturn { sig: inner, .. } => self.sig_decl(inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.sig_decl(inner),
+             _ => None,
+         }
+     }
+@@ -4592,7 +4592,7 @@
+             SigData::Native { declaration, mapper }
+             | SigData::NativeCaptured { declaration, mapper, .. }
+             | SigData::NativeContextual { declaration, mapper, .. } => Some((declaration, mapper)),
+-            SigData::WithReturn { sig: inner, .. } => self.sig_native_decl(inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.sig_native_decl(inner),
+             _ => None,
+         }
+     }
+@@ -4600,7 +4600,7 @@
+     pub fn sig_native_context(&self, sig: SigId) -> Option<NativeFunctionContext> {
+         match *self.types().sig(sig) {
+             SigData::NativeContextual { context, .. } => Some(context),
+-            SigData::WithReturn { sig: inner, .. } => self.sig_native_context(inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.sig_native_context(inner),
+             _ => None,
+         }
+     }
+@@ -4637,7 +4637,7 @@
+     pub(super) fn default_construct_base_sig(&mut self, mut sig: SigId) -> Option<SigId> {
+         loop {
+             sig = match *self.types().sig(sig) {
+-                SigData::WithReturn { sig: inner, .. } => inner,
++                SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => inner,
+                 SigData::DefaultConstruct { base, mapper, .. } => {
+                     self.instantiate_sig(base?, mapper)
+                 }
+@@ -4884,7 +4884,11 @@
+                 let scope = self.begin_scope();
+                 let provider = self.native_provider_for(declaration);
+                 let contextual = match self.types().sig(sig) {
+-                    SigData::NativeContextual { .. } => provider.contextual_parameter_indices(declaration),
++                    SigData::NativeContextual { .. } => {
++                        let mut indices = provider.contextual_parameter_indices(declaration);
++                        indices.extend(provider.contextual_rest_parameter(declaration));
++                        indices
++                    }
+                     _ => Vec::new(),
+                 };
+                 let params = match self.types().sig(sig) {
+@@ -4914,7 +4918,7 @@
+                 }
+                 return List::Own(params);
+             }
+-            SigData::WithReturn { sig: inner, .. } => return self.sig_params(*inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => return self.sig_params(*inner),
+             SigData::Synth { params, .. } => return self.cached_sig_params(sig, params),
+             // Nothing is cached for these.
+             SigData::DefaultConstruct { .. } => {
+@@ -5064,16 +5068,45 @@
+         }
+     }
+ 
++    fn resolve_native_pack_result(&mut self, result: super::NativePackResult, mapper: MapperId) -> TypeId {
++        match result {
++            super::NativePackResult::Declaration(pack) => self.instantiate_native_pack(pack, mapper).ty,
++            super::NativePackResult::Checked(pack) => pack.ty,
++        }
++    }
++
+     pub fn sig_return(&mut self, sig: SigId) -> TypeId {
++        if let SigData::WithReturn { ret, .. } = *self.types().sig(sig)
++            && ret != TypeId::UNRESOLVED
++        {
++            return ret;
++        }
++        let returned = self.signature_return_type(sig);
++        if self.sig_has_native_result_pack(sig) {
++            self.native_pack_slot(NativeResultPack { ty: returned }, 0)
++        } else { returned }
++    }
++
++    pub(super) fn signature_return_type(&mut self, sig: SigId) -> TypeId {
+         match *self.types().sig(sig) {
+             SigData::Native { declaration, mapper } => self.resolve_return_type(sig, |c| {
+                 let provider = c.native_provider_for(declaration);
++                if provider.has_result_pack(declaration) {
++                    let result = provider.return_pack_result(c, declaration);
++                    return c.resolve_native_pack_result(result, mapper);
++                }
+                 let declared = provider.return_type(c, declaration);
+                 c.instantiate(declared, mapper)
+             }),
+             SigData::NativeContextual { declaration, mapper, context, .. } => {
+                 self.resolve_return_type(sig, |c| {
+                     let provider = c.native_provider_for(declaration);
++                    if provider.has_result_pack(declaration) {
++                        let result = c.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
++                            c.with_native_function_context(context, |c| provider.return_pack_result_in_context(c, declaration, context))
++                        });
++                        return c.resolve_native_pack_result(result, mapper);
++                    }
+                     let result = c.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
+                         c.with_native_function_context(context, |c| provider.return_type_result_in_context(c, declaration, context))
+                     });
+@@ -5084,6 +5117,10 @@
+                 self.resolve_return_type(sig, |c| {
+                     let provider = c.native_provider_for(declaration);
+                     let context = NativeCapturedFunctionContext { signature: sig };
++                    if provider.has_result_pack(declaration) {
++                        let result = c.with_native_captured_function(context, |c| provider.return_pack_result_in_capture(c, declaration, context));
++                        return c.resolve_native_pack_result(result, mapper);
++                    }
+                     let result = c.with_native_captured_function(context, |c| provider.return_type_result_in_capture(c, declaration, context));
+                     c.resolve_native_type_result(result, mapper)
+                 })
+@@ -5096,7 +5133,10 @@
+                 ref type_params,
+                 ..
+             } if of.len() > 1 => self.resolve_return_type(sig, |c| {
+-                let returns: Vec<TypeId> = of.iter().map(|&member| c.sig_return(member)).collect();
++                let packed = c.sig_has_native_result_pack(sig);
++                let returns: Vec<TypeId> = of.iter().map(|&member| {
++                    if packed { c.sig_result_pack(member).ty } else { c.sig_return(member) }
++                }).collect();
+                 let combined = if is_union {
+                     c.union_reduced(&returns)
+                 } else {
+@@ -5127,6 +5167,7 @@
+                 self.resolve_return_type(sig, |c| c.return_type_of_optional_call_signature(of))
+             }
+             SigData::Synth { ret, .. } | SigData::WithReturn { ret, .. } => ret,
++            SigData::WithNativeResultPack { pack, .. } => pack.ty,
+             // `case sig.target != nil`
+             SigData::Decl { file, func, mapper } if self.is_instantiating(mapper) => self
+                 .resolve_return_type(sig, |c| {
+@@ -5275,7 +5316,7 @@
+     /// takes the one of its contextual signature (`assignContextualParameterTypes`: `createSymbolWithType(context.thisParameter, nil)`).
+     pub(super) fn sig_this_parameter(&mut self, sig: SigId) -> Option<(TypeId, SigId)> {
+         let (file, func, mapper) = match *self.types().sig(sig) {
+-            SigData::WithReturn { sig: inner, .. } => return self.sig_this_parameter(inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => return self.sig_this_parameter(inner),
+             SigData::Synth { this, .. } => return Some((this?, sig)),
+             SigData::Decl { file, func, mapper } => (file, func, mapper),
+             _ => return None,
+@@ -5326,7 +5367,7 @@
+ 
+     pub fn sig_predicate(&mut self, sig: SigId) -> Option<Predicate> {
+         let (file, func, mapper) = match *self.types().sig(sig) {
+-            SigData::WithReturn { sig: inner, .. } => return self.sig_predicate(inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => return self.sig_predicate(inner),
+             SigData::Synth {
+                 ref of, is_union, ..
+             } => {
+diff --git a/src/sema/check/explain_relation.rs b/src/sema/check/explain_relation.rs
+--- a/src/sema/check/explain_relation.rs
++++ b/src/sema/check/explain_relation.rs
+@@ -520,6 +520,7 @@
+                     break Some((file, func));
+                 }
+                 SigData::WithReturn { sig: inner, .. }
++                | SigData::WithNativeResultPack { sig: inner, .. }
+                 | SigData::DefaultConstruct {
+                     base: Some(inner), ..
+                 } => inner,
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -394,6 +394,33 @@
+         let are_both_deferred =
+             self.types().deferred(source).is_some() && self.types().deferred(target).is_some();
+         match (self.data(source), self.data(target)) {
++            (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
++                let mut sources = Vec::new();
++                let mut targets = Vec::new();
++                for field in &target.fields {
++                    if let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) {
++                        sources.push(if actual.optional { self.optional(actual.value) } else { actual.value });
++                        targets.push(if field.optional { self.optional(field.value) } else { field.value });
++                    }
++                }
++                for indexer in &target.indexers {
++                    for actual in &source.indexers {
++                        if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
++                        sources.extend([actual.key, if source.fresh { self.without_undefined(actual.value) } else { actual.value }]);
++                        targets.extend([indexer.key, indexer.value]);
++                    }
++                    for actual in &source.fields {
++                        let key = self.native_table_key_type(actual.key);
++                        if !self.native_table_inference_key_matches(key, indexer.key) { continue }
++                        sources.extend([key, if source.fresh { self.without_undefined(actual.value) } else { actual.value }]);
++                        targets.extend([indexer.key, indexer.value]);
++                    }
++                }
++                self.infer_from_type_arguments(n, &sources, &targets, &[]);
++            }
++            (TypeData::NativeArray { element: s, .. }, TypeData::NativeArray { element: t, .. }) => {
++                self.infer_from_type_arguments(n, &[*s], &[*t], &[]);
++            }
+             // Two deferred references go through `invokeOnce`; otherwise inference might not
+             // terminate.
+             (TypeData::Ref { target: st, .. }, TypeData::Ref { target: tt, .. })
+@@ -1850,11 +1877,12 @@
+             return Some(ReturnTypePair { s, t });
+         }
+         // A `NoInfer<T>` in the declaration is preserved.
+-        let t = self.sig_return(target);
++        let packed = self.sig_has_native_result_pack(target);
++        let t = if packed { self.sig_result_pack(target).ty } else { self.sig_return(target) };
+         if !self.could_contain_type_variables(t) {
+             return None;
+         }
+-        let s = self.sig_return(source);
++        let s = if packed { self.sig_result_pack(source).ty } else { self.sig_return(source) };
+         Some(ReturnTypePair { s, t })
+     }
+ 
+@@ -2512,6 +2540,15 @@
+             return predicate
+                 .ty
+                 .is_some_and(|ty| self.is_type_parameter_at_top_level(ty, param, 0));
++        }
++        if self.sig_has_native_result_pack(sig) {
++            let pack = self.sig_result_pack(sig);
++            if let Some(alternatives) = self.native_pack_alternatives(pack) {
++                return alternatives.iter().any(|alternative| {
++                    alternative.fixed.iter().map(|slot| slot.ty).chain(alternative.tail)
++                        .any(|ty| self.is_type_parameter_at_top_level(ty, param, 0))
++                });
++            }
+         }
+         let ret = self.sig_return(sig);
+         self.is_type_parameter_at_top_level(ret, param, 0)
+@@ -3124,6 +3161,11 @@
+                     TypeArguments::Deferred(deferred) => left.extend(values(deferred.mapper)),
+                 },
+                 TypeData::Template { types, .. } => left.extend_from_slice(types),
++                TypeData::NativeArray { element, .. } => left.push(*element),
++                TypeData::NativeTable(table) => {
++                    left.extend(table.fields.iter().map(|field| field.value));
++                    for indexer in &table.indexers { left.extend([indexer.key, indexer.value]); }
++                }
+                 TypeData::Anon { mapper, .. }
+                 | TypeData::NativeTypeParam { mapper, .. }
+                 | TypeData::Fns { mapper, .. }
+@@ -3188,6 +3230,10 @@
+                         signatures.push(*sig);
+                         left.push(*ret);
+                     }
++                    SigData::WithNativeResultPack { sig, pack } => {
++                        signatures.push(*sig);
++                        left.push(pack.ty);
++                    }
+                 }
+             }
+         }
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -686,6 +686,26 @@
+             return self.instantiate_deferred_type_reference(ty, mapper, None);
+         }
+         match self.data(ty) {
++            TypeData::NativeTable(table) => {
++                let fields: Vec<NativeTableField> = table.fields.iter().map(|field| NativeTableField {
++                    value: self.instantiate(field.value, mapper),
++                    ..*field
++                }).collect();
++                let indexers: Vec<NativeTableIndexer> = table.indexers.iter().map(|indexer| NativeTableIndexer {
++                    key: self.instantiate(indexer.key, mapper),
++                    value: self.instantiate(indexer.value, mapper),
++                    ..*indexer
++                }).collect();
++                self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++                    fields: self.list(&fields),
++                    indexers: self.list(&indexers),
++                    fresh: table.fresh,
++                })))
++            }
++            TypeData::NativeArray { element, readonly } => {
++                let element = self.instantiate(*element, mapper);
++                self.native_array_of(element, *readonly)
++            }
+             // `instantiateTypeWorker`: an unchanged type is returned as is, unreduced if it was.
+             TypeData::Union(_) | TypeData::Intersection(_) => {
+                 self.instantiate_union_or_intersection(ty, mapper, None)
+@@ -1187,7 +1207,9 @@
+                 });
+                 let params = ArenaBox::from_iter_in(params, arena);
+                 // `getReturnTypeOfSignature`, `case sig.target != nil`
+-                let ret = self.sig_return(sig);
++                let ret = if self.sig_has_native_result_pack(sig) {
++                    self.signature_return_type(sig)
++                } else { self.sig_return(sig) };
+                 SigData::Synth {
+                     type_params: remaining.into(),
+                     params,
+@@ -1202,6 +1224,12 @@
+             }
+             // `cloneSignature` with its own return type, which is instantiated with the same mapper
+             // as the rest.
++            SigData::WithNativeResultPack { sig: inner, pack } => {
++                SigData::WithNativeResultPack {
++                    sig: self.instantiate_sig(*inner, mapper),
++                    pack: self.instantiate_native_pack(*pack, mapper),
++                }
++            }
+             SigData::WithReturn { sig: inner, ret } => {
+                 let (inner, ret) = (*inner, *ret);
+                 let sig = self.instantiate_sig(inner, mapper);
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -55,6 +55,7 @@
+ mod flow;
+ mod flow_walk;
+ pub mod native_flow;
++pub mod native_packs;
+ mod grammarchecks;
+ mod infer;
+ mod instantiate;
+@@ -120,6 +121,7 @@
+ use task::{Open, OrderDependent, Stored, Task};
+ 
+ pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
++pub use native_packs::NativePackResult;
+ 
+ /// Written types need the signature substitution; checked values already used its scoped facts.
+ #[derive(Copy, Clone)]
+@@ -137,6 +139,11 @@
+         Vec::new()
+     }
+     fn return_type(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> TypeId;
++    fn has_result_pack(&self, _: NativeFunctionId) -> bool { false }
++    fn return_pack_result(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> NativePackResult {
++        let ty = self.return_type(checker, declaration);
++        NativePackResult::Declaration(checker.native_scalar_pack(ty))
++    }
+     fn circular_return_type(&self, declaration: NativeFunctionId);
+     fn return_type_too_deep(&self, declaration: NativeFunctionId);
+     fn contains_type_parameter(&self, _: NativeTypeParamId) -> bool { false }
+@@ -154,6 +161,7 @@
+     fn is_context_sensitive(&self, _: NativeExpressionId) -> bool { false }
+     fn has_context_sensitive_parameters(&self, _: NativeExpressionId) -> bool { false }
+     fn contextual_parameter_indices(&self, _: NativeFunctionId) -> Vec<usize> { Vec::new() }
++    fn contextual_rest_parameter(&self, _: NativeFunctionId) -> Option<usize> { None }
+     fn is_expression_descendant(&self, expression: NativeExpressionId, ancestor: NativeExpressionId) -> bool {
+         expression == ancestor
+     }
+@@ -169,6 +177,12 @@
+     }
+     fn return_type_result_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, context: NativeFunctionContext) -> NativeTypeResult {
+         NativeTypeResult::Declaration(self.return_type_in_context(checker, declaration, context))
++    }
++    fn return_pack_result_in_context(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, context: NativeFunctionContext) -> NativePackResult {
++        match self.return_type_result_in_context(checker, declaration, context) {
++            NativeTypeResult::Declaration(ty) => NativePackResult::Declaration(checker.native_scalar_pack(ty)),
++            NativeTypeResult::Checked(ty) => NativePackResult::Checked(checker.native_scalar_pack(ty)),
++        }
+     }
+     fn contains_binding(&self, _: NativeBindingId) -> bool { false }
+     /// Parameter recipes are in declaration space; body bindings read mapped signature parameters.
+@@ -181,8 +195,15 @@
+     fn return_type_result_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, context: NativeCapturedFunctionContext) -> NativeTypeResult {
+         NativeTypeResult::Declaration(self.return_type_in_capture(checker, declaration, context))
+     }
++    fn return_pack_result_in_capture(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId, context: NativeCapturedFunctionContext) -> NativePackResult {
++        match self.return_type_result_in_capture(checker, declaration, context) {
++            NativeTypeResult::Declaration(ty) => NativePackResult::Declaration(checker.native_scalar_pack(ty)),
++            NativeTypeResult::Checked(ty) => NativePackResult::Checked(checker.native_scalar_pack(ty)),
++        }
++    }
+ }
+ pub use shape::Members;
++pub mod native_tables;
+ pub use spans::compute_ecma_line_starts;
+ 
+ const RECENT_SIGS: usize = 256;
+@@ -701,6 +722,7 @@
+         Checker {
+             p: self,
+             native_function_provider: None,
++            native_arrays: false,
+             native_function_contexts: Vec::new(),
+             native_capture_contexts: Vec::new(),
+             arena,
+@@ -1205,6 +1227,7 @@
+ pub struct Checker<'p, 's> {
+     pub p: &'p Program<'s>,
+     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
++    native_arrays: bool,
+     native_function_contexts: Vec<NativeFunctionContext>,
+     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
+     /// The arena of the thread that runs the task: for the records that the task creates, which may be
+@@ -3973,11 +3996,26 @@
+     }
+ 
+     pub fn array_of(&mut self, element: TypeId) -> TypeId {
++        if self.native_arrays {
++            return self.native_array_of(element, false);
++        }
+         self.global_ref(known::Array, &[element])
++    }
++
++    /// Use intrinsic arrays for a foreign frontend's tuple and rest normalization.
++    pub fn enable_native_arrays(&mut self) {
++        self.native_arrays = true;
++    }
++
++    pub fn native_array_of(&self, element: TypeId, readonly: bool) -> TypeId {
++        self.intern(TypeData::NativeArray { element, readonly })
+     }
+ 
+     /// `globalReadonlyArrayType` is `globalArrayType` if `ReadonlyArray` does not exist.
+     pub fn readonly_array_of(&mut self, element: TypeId) -> TypeId {
++        if self.native_arrays {
++            return self.native_array_of(element, true);
++        }
+         let name = if self.global_type_of_arity(known::ReadonlyArray, 1).is_some() {
+             known::ReadonlyArray
+         } else {
+@@ -4053,6 +4091,9 @@
+ 
+     /// Whether `ty` is a reference to `getGlobalType(name, arity)`.
+     fn is_reference_to_global(&self, ty: TypeId, name: Atom, arity: usize) -> bool {
++        if let TypeData::NativeArray { readonly, .. } = self.data(ty) {
++            return arity == 1 && name == if *readonly { known::ReadonlyArray } else { known::Array };
++        }
+         matches!(self.data(ty), TypeData::Ref { target, .. }
+             if self.files().symbol(*target).name == name
+                 && self.global_type_of_arity(name, arity) == Some(*target))
+@@ -4069,6 +4110,9 @@
+ 
+     /// The element type of `T[]` or `readonly T[]`.
+     pub fn array_element(&mut self, ty: TypeId) -> Option<TypeId> {
++        if let TypeData::NativeArray { element, .. } = self.data(ty) {
++            return Some(*element);
++        }
+         if self.is_array(ty) {
+             self.type_arguments(ty).first().copied()
+         } else {
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1800,6 +1800,34 @@
+             .deferred(ty)
+             .map(|reference| Identity::Node(reference.file, reference.node));
+         match self.c.data(ty) {
++            TypeData::NativeTable(table) => {
++                let mut members = Vec::new();
++                for field in &table.fields {
++                    let key = match field.key {
++                        NativeTableKey::String(name) => cat!(b"[", self.type_to_node(self.c.string_literal(name, false)).text, b"]"),
++                        NativeTableKey::Integer(value) => cat!(b"[", value.to_string().as_bytes(), b"]"),
++                        NativeTableKey::Float(bits) => cat!(b"[", f64::from_bits(bits).to_string().as_bytes(), b"]"),
++                        NativeTableKey::Boolean(value) => if value { b"[true]".to_vec() } else { b"[false]".to_vec() },
++                    };
++                    let value = self.type_to_node(field.value);
++                    members.push(cat!(if field.readonly { &b"readonly "[..] } else { &b""[..] }, key, if field.optional { &b"?"[..] } else { &b""[..] }, b": ", value.text));
++                }
++                for indexer in &table.indexers {
++                    let key = self.type_to_node(indexer.key);
++                    let value = self.type_to_node(indexer.value);
++                    members.push(cat!(if indexer.readonly { &b"readonly "[..] } else { &b""[..] }, b"[key: ", key.text, b"]: ", value.text));
++                }
++                Node::simple(cat!(b"{ ", members.join(&b"; "[..]), b" }"))
++            }
++            TypeData::NativeArray { element, readonly } => {
++                let element = self.type_to_node(*element);
++                let array = cat!(element.emit(POSTFIX), b"[]");
++                if *readonly {
++                    Node::new(cat!(b"readonly ", array), TYPE_OPERATOR)
++                } else {
++                    Node::new(array, POSTFIX)
++                }
++            }
+             TypeData::Ref { target, .. } if node_of_reference.is_some() => self
+                 .visit_and_transform_type(ty, node_of_reference, |printer, ty| {
+                     let args = printer.c.type_arguments(ty);
+@@ -5439,7 +5467,7 @@
+     /// for it.
+     fn signature_parameters(&mut self, signature: SigId) -> Vec<Parameter> {
+         let (file, func, mapper) = match self.c.types().sig(signature) {
+-            SigData::WithReturn { sig: inner, .. } => {
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => {
+                 let inner = *inner;
+                 return self.signature_parameters(inner);
+             }
+@@ -5808,7 +5836,7 @@
+     /// `assignContextualParameterTypes`: `sig.typeParameters = context.typeParameters`
+     fn type_parameters_from_context(&mut self, signature: SigId) -> Vec<TypeId> {
+         match *self.c.types().sig(signature) {
+-            SigData::WithReturn { sig: inner, .. } => self.type_parameters_from_context(inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.type_parameters_from_context(inner),
+             _ => self.c.adopted_type_params(signature),
+         }
+     }
+@@ -5820,7 +5848,7 @@
+     /// `instantiateSignature` clones its type parameters. Here the function has the declared ones.
+     fn has_inference_context(&mut self, signature: SigId) -> bool {
+         let (file, func) = match *self.c.types().sig(signature) {
+-            SigData::WithReturn { sig: inner, .. } => return self.has_inference_context(inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => return self.has_inference_context(inner),
+             SigData::Decl { file, func, .. } => (file, func),
+             _ => return false,
+         };
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -337,6 +337,8 @@
+     matches!(
+         data,
+         TypeData::Ref { .. }
++            | TypeData::NativeArray { .. }
++            | TypeData::NativeTable(_)
+             | TypeData::Tuple { .. }
+             | TypeData::Anon { .. }
+             | TypeData::Fns { .. }
+@@ -681,6 +683,9 @@
+ 
+     /// `isEmptyResolvedType` of the resolved members of `ty`.
+     fn is_empty_resolved_type(&mut self, ty: TypeId) -> bool {
++        if let TypeData::NativeTable(table) = self.data(ty) {
++            return table.fields.is_empty() && table.indexers.is_empty();
++        }
+         !self.is_any_function_type(ty)
+             && (self.members(ty)).is_some_and(|m| Self::has_no_members(m.whole_shape()))
+     }
+@@ -703,6 +708,9 @@
+     /// once something else has resolved them (`ObjectFlagsMembersResolved`), or is instantiating
+     /// them: until that is done there are none.
+     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
++        if let TypeData::NativeTable(table) = self.data(ty) {
++            return table.fields.is_empty() && table.indexers.is_empty();
++        }
+         if matches!(ty, TypeId::EMPTY_OBJECT | TypeId::EMPTY_TYPE_LITERAL) {
+             return true;
+         }
+@@ -2740,8 +2748,11 @@
+                 && self.is_weak_type(target)
+                 && {
+                     let apparent = self.reduced_apparent_type_as_object(source);
+-                    self.members(apparent)
+-                        .is_some_and(|m| !m.shape().props.is_empty() || m.has_signatures())
++                    match self.data(apparent) {
++                        TypeData::NativeTable(table) => !table.fields.is_empty(),
++                        _ => self.members(apparent)
++                            .is_some_and(|m| !m.shape().props.is_empty() || m.has_signatures()),
++                    }
+                 };
+             if is_performing_common_property_checks && !self.has_common_properties(source, target) {
+                 if REPORT {
+@@ -3092,6 +3103,8 @@
+     /// `isWeakType`: properties, all of them optional, and nothing else.
+     pub(super) fn is_weak_type(&mut self, t: TypeId) -> bool {
+         match self.data(t) {
++            TypeData::NativeTable(table) => !table.fields.is_empty() && table.indexers.is_empty()
++                && table.fields.iter().all(|field| field.optional),
+             data if is_object_kind(data) => self.members(t).is_some_and(|m| {
+                 let s = m.whole_shape();
+                 !s.props.is_empty()
+@@ -3111,9 +3124,20 @@
+     /// `hasCommonProperties`
+     pub(super) fn has_common_properties(&mut self, source: TypeId, target: TypeId) -> bool {
+         let apparent = self.reduced_apparent_type_as_object(source);
++        if let TypeData::NativeTable(source) = self.data(apparent) {
++            if let TypeData::NativeTable(target) = self.data(target) {
++                return source.fields.iter().any(|field| target.fields.iter().any(|other| other.key == field.key));
++            }
++            return source.fields.iter().any(|field| {
++                matches!(field.key, NativeTableKey::String(name) if self.is_known_property(target, name))
++            });
++        }
+         let Some(sm) = self.members(apparent) else {
+             return false;
+         };
++        if let TypeData::NativeTable(target) = self.data(target) {
++            return sm.shape().props.iter().any(|prop| target.fields.iter().any(|field| field.key == NativeTableKey::String(prop.name)));
++        }
+         // An attribute with a hyphen in its name is treated as known.
+         let is_jsx = matches!(self.data(source), TypeData::Synth(shape) if shape.literal == Literalness::JsxAttributes);
+         sm.shape().props.iter().any(|p| {
+@@ -5219,6 +5243,33 @@
+             return Ternary::FALSE;
+         }
+         match (sd, td) {
++            (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
++                return self.native_tables_related::<REPORT>(r, source, target, state);
++            }
++            (TypeData::NativeTable(source), _) if is_object_kind(td) => {
++                let Some(target) = self.native_table_object_description(target) else { return Ternary::FALSE };
++                let result = self.native_tables_related::<REPORT>(r, source, &target, state);
++                if !result.holds() { return result }
++            }
++            (_, TypeData::NativeTable(target)) if is_object_kind(sd) => {
++                let Some(source) = self.native_table_object_description(source) else { return Ternary::FALSE };
++                let result = self.native_tables_related::<REPORT>(r, &source, target, state);
++                if !result.holds() { return result }
++            }
++            (
++                TypeData::NativeArray { element: s, readonly: sr },
++                TypeData::NativeArray { element: t, readonly: tr },
++            ) => {
++                if !*tr && *sr || relation == Relation::Identity && sr != tr {
++                    return Ternary::FALSE;
++                }
++                return self.type_arguments_related_to::<REPORT>(r, &[*s], &[*t], &[], state);
++            }
++            (_, TypeData::NativeArray { readonly: false, .. })
++                if self.every_type(source, |c, ty| {
++                    c.is_reference_to_global(ty, known::ReadonlyArray, 1)
++                        || matches!(c.data(ty), TypeData::Tuple { readonly: true, .. })
++                }) => return Ternary::FALSE,
+             (TypeData::Ref { target: st, .. }, TypeData::Ref { target: tt, .. })
+                 if st == tt && !self.is_marker_type(source) && !self.is_marker_type(target) =>
+             {
+@@ -5243,7 +5294,7 @@
+                     return result;
+                 }
+             }
+-            (_, TypeData::Ref { .. })
++            (_, TypeData::Ref { .. } | TypeData::NativeArray { .. })
+                 if self.is_array(target)
+                     && (self.is_reference_to_global(target, known::ReadonlyArray, 1)
+                         && self.every_type(source, |c, m| c.is_array_or_tuple(m))
+@@ -5439,6 +5490,7 @@
+         self.is_reference_to_global(t, known::Array, 1)
+             || matches!(
+                 self.data(t),
++                TypeData::NativeArray { readonly: false, .. } |
+                 TypeData::Tuple {
+                     readonly: false,
+                     ..
+@@ -6278,7 +6330,7 @@
+                 of.iter().any(|&part| self.is_abstract_signature(part))
+             }
+             // `cloneSignature` preserves the flags.
+-            SigData::WithReturn { sig, .. } => self.is_abstract_signature(sig),
++            SigData::WithReturn { sig, .. } | SigData::WithNativeResultPack { sig, .. } => self.is_abstract_signature(sig),
+         }
+     }
+ 
+@@ -6602,6 +6654,14 @@
+                 mapper: extended(self, mapper),
+             },
+             // `cloneSignature`: the same signature, with its return type carried over.
++            SigData::WithNativeResultPack { sig: inner, pack } => {
++                let inner = self.with_own_type_params(inner, params, values);
++                let mapper = self.mapper_from(params, values);
++                SigData::WithNativeResultPack {
++                    sig: inner,
++                    pack: self.instantiate_native_pack(pack, mapper),
++                }
++            }
+             SigData::WithReturn { sig: inner, ret } => {
+                 let inner = self.with_own_type_params(inner, params, values);
+                 let mapper = self.mapper_from(params, values);
+@@ -6738,7 +6798,7 @@
+                 Some(self.instantiate_sig(declared, outer))
+             }
+             // `cloneSignature` preserves the target.
+-            SigData::WithReturn { sig: inner, .. } => self.sig_target(inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.sig_target(inner),
+             SigData::Synth { ref of, .. } => match of[..] {
+                 [only] => self.sig_target(only),
+                 // `createUnionSignature`, `combineUnionOrIntersectionMemberSignatures`
+@@ -7164,11 +7224,16 @@
+         if check_mode & IGNORE_RETURN_TYPES != 0 {
+             return result;
+         }
+-        let target_return = self.non_circular_return_type_of_signature(target);
++        let packed = self.sig_has_native_result_pack(target);
++        let target_return = if packed {
++            self.non_circular_result_pack_of_signature(target).ty
++        } else { self.non_circular_return_type_of_signature(target) };
+         if target_return == TypeId::VOID || target_return == TypeId::ANY {
+             return result;
+         }
+-        let source_return = self.non_circular_return_type_of_signature(source);
++        let source_return = if packed {
++            self.non_circular_result_pack_of_signature(source).ty
++        } else { self.non_circular_return_type_of_signature(source) };
+         if let Some(expected) = self.sig_predicate(target) {
+             match self.sig_predicate(source) {
+                 Some(actual) => {
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -492,6 +492,7 @@
+     fn resolved_type_arguments(&mut self, ty: TypeId) -> Option<&'p [TypeId]> {
+         let p = self.p;
+         match self.data(ty) {
++            TypeData::NativeArray { element, .. } => Some(std::slice::from_ref(element)),
+             TypeData::Ref { args, .. } | TypeData::Tuple { elems: args, .. } => match args.actual()
+             {
+                 Some(actual) => Some(actual),
+@@ -592,6 +593,8 @@
+     /// unchanged.
+     pub(super) fn create_type_reference(&self, ty: TypeId, arguments: &[TypeId]) -> TypeId {
+         match self.data(ty) {
++            TypeData::NativeArray { readonly, .. } => arguments.first()
++                .map(|&element| self.native_array_of(element, *readonly)).unwrap_or(ty),
+             TypeData::Ref { target, .. } => self.intern_key(TypeKey::Ref {
+                 target: *target,
+                 args: arguments,
+@@ -1379,6 +1382,44 @@
+                     self.shape_memo(ty, |c| c.build_reverse_mapped_shape(ty, source, mapped, of));
+                 Some((resolved, MapperId::IDENTITY))
+             }
++            TypeData::NativeTable(table) => {
++                let shape = self.shape_memo(ty, |c| {
++                    let mut shape = Shape::new_in(c.arena);
++                    for field in &table.fields {
++                        if let NativeTableKey::String(name) = field.key {
++                            shape.props.push(Prop {
++                                name,
++                                flags: if field.readonly { PropFlags::READONLY } else { PropFlags::empty() }
++                                    | if field.optional { PropFlags::OPTIONAL } else { PropFlags::empty() },
++                                source: PropSource::Type(field.value),
++                                mapper: MapperId::IDENTITY,
++                                name_type: TypeId::UNRESOLVED,
++                            });
++                        }
++                    }
++                    for indexer in &table.indexers {
++                        shape.index.push(IndexInfo::new(indexer.key, if indexer.sparse { c.optional(indexer.value) } else { indexer.value }, indexer.readonly));
++                    }
++                    shape
++                });
++                Some((shape, MapperId::IDENTITY))
++            }
++            TypeData::NativeArray { element, readonly } => {
++                let (element, readonly) = (*element, *readonly);
++                let shape = self.shape_memo(ty, |c| {
++                    let mut shape = Shape::new_in(c.arena);
++                    shape.props.push(Prop {
++                        name: known::length,
++                        flags: if readonly { PropFlags::READONLY } else { PropFlags::empty() },
++                        source: PropSource::Type(TypeId::NUMBER),
++                        mapper: MapperId::IDENTITY,
++                        name_type: TypeId::UNRESOLVED,
++                    });
++                    shape.index.push(IndexInfo::new(TypeId::NUMBER, element, readonly));
++                    shape
++                });
++                Some((shape, MapperId::IDENTITY))
++            }
+             TypeData::Tuple { .. } => self.tuple_members(ty, ty),
+             // Its properties. See `structured_members`.
+             TypeData::Intersection(parts) => Some((
+@@ -3478,6 +3519,9 @@
+     /// `regular_type_of_object_literal` has returned.
+     fn regular_type_of_resolved_object_literal(&mut self, ty: TypeId) -> TypeId {
+         match self.data(ty) {
++            TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++                fields: self.list(&table.fields), indexers: self.list(&table.indexers), fresh: false,
++            }))),
+             &TypeData::Anon {
+                 origin:
+                     Origin::ObjectLiteral(
+@@ -7417,6 +7461,9 @@
+ 
+     /// The type of `ty.name`. `None`: there is no such property.
+     pub fn type_of_property(&mut self, ty: TypeId, name: Atom) -> Option<TypeId> {
++        if matches!(self.data(ty), TypeData::NativeTable(_)) {
++            return self.native_table_read(ty, NativeTableAccessKey::Literal(NativeTableKey::String(name))).ok();
++        }
+         self.property_type(ty, ty, name, Access::Read)
+             .map(|found| found.0)
+     }
+@@ -8489,7 +8536,7 @@
+             | SigData::NativeCaptured { mapper, .. }
+             | SigData::Construct { mapper, .. }
+             | SigData::DefaultConstruct { mapper, .. } => mapper,
+-            SigData::WithReturn { sig: inner, .. } => self.mapper_around_sig(inner),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.mapper_around_sig(inner),
+             // The type parameters of a union signature are those of the first constituent signature
+             // that has any.
+             SigData::Synth { ref of, .. } => {
+diff --git a/src/sema/check/symbols.rs b/src/sema/check/symbols.rs
+--- a/src/sema/check/symbols.rs
++++ b/src/sema/check/symbols.rs
+@@ -2124,6 +2124,11 @@
+                 }
+                 None => ty,
+             },
++            TypeData::NativeArray { element, readonly } => {
++                let element = self.get_widened_type(*element);
++                self.native_array_of(element, *readonly)
++            }
++            TypeData::NativeTable(table) => self.native_table_widened(table),
+             TypeData::Ref {
+                 target,
+                 args: TypeArguments::Given(args),
+@@ -3840,7 +3845,9 @@
+             }
+             SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } => {
+                 if let Some(resolved) = self.p.resolved_return_types.get(&self.task, &sig) {
+-                    return resolved;
++                    return if self.sig_has_native_result_pack(sig) {
++                        self.native_pack_slot(NativeResultPack { ty: resolved }, 0)
++                    } else { resolved };
+                 }
+             }
+             // `signature.composite != nil`
+@@ -3861,11 +3868,25 @@
+                 ret: TypeId::UNRESOLVED,
+             } if self.is_optional_call_signature_of(of) => return self.sig_return(sig),
+             SigData::WithReturn { ret, .. } => return ret,
++            SigData::WithNativeResultPack { .. } => return self.sig_return(sig),
+             SigData::Construct { .. } | SigData::DefaultConstruct { .. } => {
+                 return self.sig_return(sig);
+             }
+         }
+         self.resolve_non_circular_return_type_of_signature(sig)
++    }
++
++    /// Whole native results use the same unresolved-return comparison guard as scalar returns.
++    pub(super) fn non_circular_result_pack_of_signature(&mut self, sig: SigId) -> NativeResultPack {
++        if self.sig_has_native_result_pack(sig) {
++            if self.is_resolving_return_type(sig) {
++                return NativeResultPack { ty: self.any_for_return_type_in_resolution() };
++            }
++            self.sig_result_pack(sig)
++        } else {
++            let scalar = self.non_circular_return_type_of_signature(sig);
++            self.native_scalar_pack(scalar)
++        }
+     }
+ 
+     /// `anyType` for `isResolvingReturnTypeOfSignature`. If a comparison is waiting for a return
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -58,6 +58,11 @@
+ pub struct NativeCapturedFunctionContext {
+     pub signature: SigId,
+ }
++/// A Lua result sequence, whose tuple/union carrier is not an ordinary scalar value.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeResultPack {
++    pub(crate) ty: TypeId,
++}
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeFunctionContext {
+     pub expression: NativeExpressionId,
+@@ -67,6 +72,10 @@
+ }
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct MapperId(pub u32);
++pub use crate::check::native_tables::{
++    NativeTableAccessKey, NativeTableData, NativeTableField, NativeTableFlavor,
++    NativeTableIndexer, NativeTableKey,
++};
+ /// An interned list of `IndexComponent`s.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct ComponentsId(pub u32);
+@@ -463,6 +472,12 @@
+         flags: List<'s, ElemFlags>,
+         readonly: bool,
+     },
++    /// An intrinsic array for a foreign frontend, independent of TS library declarations.
++    NativeArray {
++        element: TypeId,
++        readonly: bool,
++    },
++    NativeTable(ArenaBox<'s, NativeTableData<'s>>),
+     Anon {
+         origin: Origin,
+         mapper: MapperId,
+@@ -940,6 +955,8 @@
+     /// mixin constructors (`cloneSignature` with `resolvedReturnType` set). `sig` is never one of
+     /// these itself.
+     WithReturn { sig: SigId, ret: TypeId },
++    /// Materialized Lua function results, preserving the ordinary parameter/type-parameter signature.
++    WithNativeResultPack { sig: SigId, pack: NativeResultPack },
+ }
+ 
+ /// `TypeFlags`, with the values of types.go: `CompareTypes` orders types of different kinds by them.
+@@ -2344,6 +2361,12 @@
+                 TypeArguments::Deferred(deferred) => (self.mapper_record(deferred.mapper).1)
+                     .difference(ObjectFlags::PROPAGATING_FLAGS),
+             },
++            TypeData::NativeArray { element, .. } => self.object_flags(*element),
++            TypeData::NativeTable(table) => {
++                let flags = table.fields.iter().fold(ObjectFlags::empty(), |flags, field| flags | self.object_flags(field.value));
++                let flags = table.indexers.iter().fold(flags, |flags, indexer| flags | self.object_flags(indexer.key) | self.object_flags(indexer.value));
++                if table.fresh { flags | ObjectFlags::CONTAINS_OBJECT_OR_ARRAY_LITERAL } else { flags }
++            }
+             TypeData::Anon {
+                 origin: Origin::ObjectLiteral(.., object_flags, _),
+                 mapper,
+@@ -2492,6 +2515,7 @@
+                 of.iter().fold(flags, |f, &part| f | self.sig_flags(part))
+             }
+             SigData::WithReturn { sig, ret } => self.sig_flags(*sig) | self.object_flags(*ret),
++            SigData::WithNativeResultPack { sig, pack } => self.sig_flags(*sig) | self.object_flags(pack.ty),
+         }
+     }
+ 
+@@ -2877,7 +2901,7 @@
+     pub fn sig_origin(&self, mut sig: SigId) -> SigId {
+         loop {
+             match self.sig(sig) {
+-                SigData::WithReturn { sig: inner, .. } => sig = *inner,
++                SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => sig = *inner,
+                 SigData::Synth { of, .. } if !of.is_empty() => sig = of[0],
+                 _ => return sig,
+             }
+@@ -3277,6 +3301,7 @@
+     u8,
+     u32,
+     u64,
++    i64,
+     NativeFunctionId,
+     NativeTypeParamId,
+     NativeExpressionId,
+@@ -3316,6 +3341,12 @@
+     fn follow(&mut self, _: &Link) {}
+ }
+ 
++follow_enum!(NativeTableKey {
++    NativeTableKey::String(a) => (a),
++    NativeTableKey::Integer(a) => (a),
++    NativeTableKey::Float(a) => (a),
++    NativeTableKey::Boolean(a) => (a),
++});
+ follow_enum!(EnumValue {
+     EnumValue::String(a) => (a),
+     EnumValue::Number(a) => (a),
+@@ -3371,6 +3402,8 @@
+     TypeData::Intersection(a) => (a),
+     TypeData::Ref { target, args } => (target, args),
+     TypeData::Tuple { elems, flags, readonly } => (elems, flags, readonly),
++    TypeData::NativeArray { element, readonly } => (element, readonly),
++    TypeData::NativeTable(table) => (table),
+     TypeData::Anon { origin, mapper } => (origin, mapper),
+     TypeData::Fns { decls, mapper } => (decls, mapper),
+     TypeData::Synth(a) => (a),
+@@ -3454,9 +3487,14 @@
+     SigData::Construct { class, file, func, mapper } => (class, file, func, mapper),
+     SigData::Synth { type_params, params, ret, this, of, is_union } => (type_params, params, ret, this, of, is_union),
+     SigData::WithReturn { sig, ret } => (sig, ret),
++    SigData::WithNativeResultPack { sig, pack } => (sig, pack),
+ });
+ follow_struct!(NativeCapturedBinding { declaration, ty });
++follow_struct!(NativeTableField { key, value, optional, readonly });
++follow_struct!(NativeTableIndexer { key, value, readonly, sparse });
++follow_struct!(NativeTableData<'_> { fields, indexers, fresh });
+ follow_struct!(NativeCapturedFunctionContext { signature });
++follow_struct!(NativeResultPack { ty });
+ follow_struct!(NativeFunctionContext {
+     expression,
+     expected,
+@@ -3519,7 +3557,11 @@
+     NativeExpressionId,
+     NativeBindingId,
+     NativeCapturedBinding,
++    NativeTableField,
++    NativeTableIndexer,
++    NativeTableKey,
+     NativeCapturedFunctionContext,
++    NativeResultPack,
+     NativeFunctionContext,
+     MapperId,
+     FileId,
+@@ -3655,6 +3697,8 @@
+     Intersection(a),
+     Ref { target, args },
+     Tuple { elems, flags, readonly },
++    NativeArray { element, readonly },
++    NativeTable(table),
+     Anon { origin, mapper },
+     Fns { decls, mapper },
+     Synth(a),
+@@ -3705,6 +3749,7 @@
+     pattern_at,
+     mapper
+ });
++clone_in_struct!(NativeTableData { fields, indexers, fresh });
+ clone_in_enum!(SigData {
+     Native { declaration, mapper },
+     NativeContextual { declaration, mapper, context, environment },
+@@ -3714,6 +3759,7 @@
+     Construct { class, file, func, mapper },
+     Synth { type_params, params, ret, this, of, is_union },
+     WithReturn { sig, ret },
++    WithNativeResultPack { sig, pack },
+ });
+ clone_in_struct!(Provenance {
+     alias,
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/native_packs.rs
+@@ -0,0 +1,388 @@
++use super::{Checker, ResolvedTypeCall, ResolvedTypeCallError};
++use super::call::Arg;
++use crate::session::ArenaBox;
++use crate::types::{ElemFlags, MapperId, NativeResultPack, Shape, SigData, SigId, SigParam, TypeData, TypeId};
++
++#[derive(Copy, Clone, Debug)]
++pub struct NativePackSlot {
++    pub ty: TypeId,
++    pub optional: bool,
++}
++
++#[derive(Clone, Debug)]
++pub struct NativePackAlternative {
++    pub fixed: Vec<NativePackSlot>,
++    pub tail: Option<TypeId>,
++}
++
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++pub enum NativePackAdjustmentError {
++    TooComplex { count: usize, alternatives: usize },
++    Unresolved,
++}
++
++#[derive(Copy, Clone, Debug)]
++pub enum NativePackResult {
++    Declaration(NativeResultPack),
++    Checked(NativeResultPack),
++}
++
++#[derive(Clone, Debug)]
++pub struct NativeResultPackCall {
++    pub pack: NativeResultPack,
++    pub errors: Vec<ResolvedTypeCallError>,
++}
++
++impl<'p, 's> Checker<'p, 's> {
++    pub fn call_resolved_result_pack(
++        &mut self,
++        callee: TypeId,
++        args: &[TypeId],
++        type_args: &[TypeId],
++        expected: Option<NativeResultPack>,
++    ) -> NativeResultPackCall {
++        let args: Vec<Arg> = args.iter().copied().map(Arg::Resolved).collect();
++        let resolved = self.resolve_native_arguments_with_result_pack(callee, &args, type_args, None, expected);
++        self.result_pack_of_native_call(resolved)
++    }
++
++    pub fn call_expression_result_pack(
++        &mut self,
++        callee: TypeId,
++        call: crate::types::NativeExpressionId,
++        args: &[crate::types::NativeExpressionId],
++        type_args: &[TypeId],
++        expected: Option<NativeResultPack>,
++    ) -> NativeResultPackCall {
++        assert!(self.contains_native_expression(call));
++        assert!(args.iter().all(|&arg| self.contains_native_expression(arg)));
++        let args: Vec<Arg> = args.iter().copied().map(Arg::Native).collect();
++        let resolved = self.resolve_native_arguments_with_result_pack(callee, &args, type_args, None, expected);
++        self.result_pack_of_native_call(resolved)
++    }
++
++    fn result_pack_of_native_call(&mut self, resolved: ResolvedTypeCall) -> NativeResultPackCall {
++        let pack = match resolved.sig {
++            Some(sig) => self.sig_result_pack(sig),
++            None if self.is_any(resolved.ret) => self.native_result_pack(&[NativePackAlternative {
++                fixed: Vec::new(), tail: Some(resolved.ret),
++            }]),
++            None => self.native_scalar_pack(resolved.ret),
++        };
++        NativeResultPackCall { pack, errors: resolved.errors }
++    }
++
++    pub fn sig_has_native_result_pack(&self, sig: SigId) -> bool {
++        match self.types().sig(sig) {
++            SigData::WithNativeResultPack { .. } => true,
++            SigData::Native { declaration, .. }
++            | SigData::NativeCaptured { declaration, .. }
++            | SigData::NativeContextual { declaration, .. } => self.native_function_provider
++                .is_some_and(|provider| provider.has_result_pack(*declaration)),
++            SigData::WithReturn { sig, .. } => self.sig_has_native_result_pack(*sig),
++            SigData::Synth { of, .. } => of.len() > 1 && of.iter().all(|&sig| self.sig_has_native_result_pack(sig)),
++            _ => false,
++        }
++    }
++
++    pub fn sig_result_pack(&mut self, sig: SigId) -> NativeResultPack {
++        if let SigData::WithReturn { sig: inner, ret } = *self.types().sig(sig)
++            && ret != TypeId::UNRESOLVED && self.sig_has_native_result_pack(inner)
++        {
++            let pack = self.sig_result_pack(inner);
++            return self.native_pack_with_first_result(pack, ret);
++        }
++        if self.sig_has_native_result_pack(sig) {
++            NativeResultPack { ty: self.signature_return_type(sig) }
++        } else {
++            let scalar = self.sig_return(sig);
++            self.native_scalar_pack(scalar)
++        }
++    }
++
++    pub fn native_pack_function(&mut self, params: &[SigParam], type_params: &[TypeId], pack: NativeResultPack) -> TypeId {
++        let ret = self.native_pack_slot(pack, 0);
++        let sig = self.types().intern_sig(SigData::Synth {
++            type_params: self.list(type_params), params: self.list(params), ret, this: None,
++            of: ArenaBox::empty(), is_union: false,
++        });
++        let sig = self.types().intern_sig(SigData::WithNativeResultPack { sig, pack });
++        // A materialized foreign function type can mention free type parameters despite having
++        // no TS declaration symbol, just like the ordinary owned function-type constructor.
++        let mut shape = Shape::new_in(self.arena);
++        shape.call.push(sig);
++        self.synth(shape)
++    }
++
++    pub fn contextual_rest_pack(&mut self, context: crate::types::NativeFunctionContext, fixed_count: usize) -> NativeResultPack {
++        let params = self.sig_params(context.expected);
++        NativeResultPack { ty: self.rest_type_at_position(&params, fixed_count, false) }
++    }
++
++    pub fn native_contextual_return_pack(&mut self, context: crate::types::NativeFunctionContext) -> NativeResultPack {
++        let returned = self.sig_result_pack(context.expected);
++        self.get_native_inference_context(context.expression)
++            .and_then(|level| self.with_inference_context(level, |c, n| {
++                let mapper = c.non_fixing_mapper(n, returned.ty);
++                c.instantiate_native_pack(returned, mapper)
++            }))
++            .unwrap_or(returned)
++    }
++
++    pub fn native_capture_rest_pack(&mut self, context: crate::types::NativeCapturedFunctionContext) -> Option<NativeResultPack> {
++        self.signature_rest_pack(context.signature)
++    }
++
++    pub fn instantiate_native_pack_in_capture(&mut self, context: crate::types::NativeCapturedFunctionContext, pack: NativeResultPack) -> NativeResultPack {
++        NativeResultPack { ty: self.instantiate_in_native_capture(context, pack.ty) }
++    }
++
++    pub fn signature_rest_pack(&mut self, sig: SigId) -> Option<NativeResultPack> {
++        let params = self.sig_params(sig);
++        let parameter = params.last().filter(|parameter| parameter.rest)?;
++        Some(NativeResultPack { ty: self.get_type_of_parameter(parameter) })
++    }
++
++    fn native_pack_with_first_result(&mut self, pack: NativeResultPack, ty: TypeId) -> NativeResultPack {
++        let Some(mut alternatives) = self.native_pack_alternatives(pack) else { return pack };
++        let mut expanded = Vec::new();
++        for alternative in &mut alternatives {
++            if let Some(first) = alternative.fixed.first_mut() {
++                first.ty = ty;
++            } else if alternative.tail.is_some() {
++                expanded.push(NativePackAlternative {
++                    fixed: vec![NativePackSlot { ty, optional: false }], tail: alternative.tail,
++                });
++                alternative.tail = None;
++            }
++        }
++        alternatives.extend(expanded);
++        self.native_result_pack(&alternatives)
++    }
++
++    pub fn native_scalar_pack(&mut self, ty: TypeId) -> NativeResultPack {
++        self.native_result_pack(&[NativePackAlternative {
++            fixed: vec![NativePackSlot { ty, optional: false }], tail: None,
++        }])
++    }
++
++    /// An empty alternative list is no reachable result; one empty row is zero results.
++    pub fn native_result_pack(&mut self, alternatives: &[NativePackAlternative]) -> NativeResultPack {
++        assert!(self.native_arrays, "native packs require intrinsic array mode");
++        let mut rows = Vec::with_capacity(alternatives.len());
++        for alternative in alternatives {
++            let mut elems: Vec<TypeId> = alternative.fixed.iter().map(|slot| slot.ty).collect();
++            let mut flags: Vec<ElemFlags> = alternative.fixed.iter().map(|slot| {
++                if slot.optional { ElemFlags::OPTIONAL } else { ElemFlags::REQUIRED }
++            }).collect();
++            if let Some(tail) = alternative.tail {
++                elems.push(tail);
++                flags.push(ElemFlags::REST);
++            }
++            rows.push(self.tuple(&elems, &flags, false));
++        }
++        NativeResultPack { ty: self.union(&rows) }
++    }
++
++    pub fn native_pack_type(&self, pack: NativeResultPack) -> TypeId {
++        pack.ty
++    }
++
++    /// Descriptors are unavailable while a symbolic variadic pack has not been instantiated.
++    pub fn native_pack_alternatives(&mut self, pack: NativeResultPack) -> Option<Vec<NativePackAlternative>> {
++        if pack.ty.is_never() {
++            return Some(Vec::new());
++        }
++        let parts = self.parts(pack.ty).to_vec();
++        let mut alternatives = Vec::with_capacity(parts.len());
++        for part in parts {
++            if let Some(element) = self.array_element(part) {
++                alternatives.push(NativePackAlternative { fixed: Vec::new(), tail: Some(element) });
++                continue;
++            }
++            let TypeData::Tuple { flags, .. } = self.data(part) else { return None };
++            if flags.iter().any(|flag| flag.contains(ElemFlags::VARIADIC)) {
++                return None;
++            }
++            let elems = self.type_arguments(part);
++            let fixed = Self::fixed_length(flags);
++            if flags.len() > fixed + 1 {
++                return None;
++            }
++            alternatives.push(NativePackAlternative {
++                fixed: (0..fixed).map(|index| NativePackSlot {
++                    ty: elems[index], optional: flags[index].contains(ElemFlags::OPTIONAL),
++                }).collect(),
++                tail: (fixed < flags.len()).then(|| elems[fixed]),
++            });
++        }
++        Some(alternatives)
++    }
++
++    /// Lua scalar adjustment: an absent slot is nil, including the first slot of zero results.
++    pub fn native_pack_slot(&mut self, pack: NativeResultPack, index: usize) -> TypeId {
++        if pack.ty.is_never() || self.is_any(pack.ty) {
++            return pack.ty;
++        }
++        let parts = self.parts(pack.ty).to_vec();
++        let mut slots = Vec::with_capacity(parts.len());
++        for part in parts {
++            let slot = if let Some(element) = self.array_element(part) {
++                self.union(&[element, TypeId::UNDEFINED])
++            } else if let TypeData::Tuple { flags, .. } = self.data(part) {
++                let elems = self.type_arguments(part);
++                let fixed = Self::fixed_length(flags);
++                if index < fixed {
++                    let ty = elems[index];
++                    if flags[index].contains(ElemFlags::OPTIONAL) {
++                        self.union(&[ty, TypeId::UNDEFINED])
++                    } else { ty }
++                } else if fixed < flags.len() {
++                    let ty = self.rest_element_type(part, index);
++                    self.union(&[ty, TypeId::UNDEFINED])
++                } else { TypeId::UNDEFINED }
++            } else { TypeId::ERROR };
++            slots.push(slot);
++        }
++        self.union(&slots)
++    }
++
++    /// Preserve tail-length correlation while padding or truncating an assignment result list.
++    pub fn native_adjust_pack(&mut self, pack: NativeResultPack, count: usize) -> Result<NativeResultPack, NativePackAdjustmentError> {
++        let Some(alternatives) = self.native_pack_alternatives(pack) else {
++            if self.is_any(pack.ty) {
++                if count >= 10_000 {
++                    return Err(NativePackAdjustmentError::TooComplex { count, alternatives: 1 });
++                }
++                return Ok(self.native_result_pack(&[NativePackAlternative {
++                    fixed: vec![NativePackSlot { ty: pack.ty, optional: false }; count], tail: None,
++                }]));
++            }
++            return Err(NativePackAdjustmentError::Unresolved);
++        };
++        let rows = alternatives.iter().try_fold(0usize, |total, alternative| {
++            let minimum = alternative.fixed.iter().position(|slot| slot.optional)
++                .unwrap_or(alternative.fixed.len()).min(count);
++            let maximum = if alternative.tail.is_some() { count } else { alternative.fixed.len().min(count) };
++            total.checked_add((maximum.max(minimum) - minimum).checked_add(1)?)
++        });
++        if count >= 10_000 || rows.and_then(|rows| rows.checked_mul(count.max(1))).is_none_or(|slots| slots >= 100_000) {
++            return Err(NativePackAdjustmentError::TooComplex { count, alternatives: rows.unwrap_or(usize::MAX) });
++        }
++        let mut rows = Vec::new();
++        for alternative in alternatives {
++            let minimum = alternative.fixed.iter().position(|slot| slot.optional)
++                .unwrap_or(alternative.fixed.len());
++            let maximum = if alternative.tail.is_some() { count } else { alternative.fixed.len().min(count) };
++            let minimum = minimum.min(count);
++            for present in minimum..=maximum.max(minimum) {
++                let fixed = (0..count).map(|index| NativePackSlot {
++                    ty: if index >= present { TypeId::UNDEFINED }
++                        else { alternative.fixed.get(index).map(|slot| slot.ty).or(alternative.tail).unwrap_or(TypeId::UNDEFINED) },
++                    optional: false,
++                }).collect();
++                rows.push(NativePackAlternative { fixed, tail: None });
++            }
++        }
++        Ok(self.native_result_pack(&rows))
++    }
++
++    /// Prefix items have already been scalarized; only the final pack expands.
++    pub fn native_concat_pack(&mut self, prefix: &[TypeId], tail: NativeResultPack) -> NativeResultPack {
++        let mut elems = prefix.to_vec();
++        let mut flags = vec![ElemFlags::REQUIRED; elems.len()];
++        elems.push(tail.ty);
++        flags.push(ElemFlags::VARIADIC);
++        NativeResultPack { ty: self.normalized_tuple(&elems, &flags, false) }
++    }
++
++    pub fn native_join_packs(&mut self, packs: &[NativeResultPack]) -> NativeResultPack {
++        let types: Vec<TypeId> = packs.iter().map(|pack| pack.ty).collect();
++        NativeResultPack { ty: self.union(&types) }
++    }
++
++    /// Context for the final expression after already checked scalar prefix values.
++    pub fn native_pack_contextual_tail(&mut self, expected: NativeResultPack, prefix: &[TypeId]) -> Option<NativeResultPack> {
++        let parts = self.parts(expected.ty).to_vec();
++        let mut remaining = Vec::new();
++        for part in parts {
++            let mut matches = true;
++            for (index, &actual) in prefix.iter().enumerate() {
++                let target = if let Some(element) = self.array_element(part) {
++                    Some(element)
++                } else if let TypeData::Tuple { flags, .. } = self.data(part) {
++                    let fixed = Self::fixed_length(flags);
++                    (index < fixed || fixed < flags.len()).then(|| self.rest_element_type(part, index))
++                } else { None };
++                if !target.is_some_and(|target| self.is_assignable(actual, target)) {
++                    matches = false;
++                    break;
++                }
++            }
++            if !matches { continue }
++            let tail = if self.is_array(part) {
++                part
++            } else if let TypeData::Tuple { flags, .. } = self.data(part) {
++                let elems = self.type_arguments(part);
++                self.slice_tuple(elems, flags, prefix.len(), 0)
++            } else { continue };
++            remaining.push(tail);
++        }
++        (!remaining.is_empty()).then(|| NativeResultPack { ty: self.union(&remaining) })
++    }
++
++    /// Widen returned values with the existing literal policy, preserving each complete row.
++    pub fn native_aggregate_result_packs(
++        &mut self,
++        packs: &[NativeResultPack],
++        has_fallthrough: bool,
++        context: Option<NativeResultPack>,
++    ) -> NativeResultPack {
++        let joined = self.native_join_packs(packs);
++        let Some(mut alternatives) = self.native_pack_alternatives(joined) else { return joined };
++        if has_fallthrough {
++            alternatives.push(NativePackAlternative { fixed: Vec::new(), tail: None });
++        }
++        let contextual = context.and_then(|pack| self.native_pack_alternatives(pack));
++        for alternative in &mut alternatives {
++            let mut matching = Vec::new();
++            if let Some(contextual) = &contextual {
++                for expected in contextual {
++                    if alternative.fixed.len() != expected.fixed.len() && expected.tail.is_none() {
++                        continue;
++                    }
++                    let matches = alternative.fixed.iter().enumerate().all(|(index, slot)| {
++                        if !self.is_fresh_literal(slot.ty) { return true }
++                        let target = expected.fixed.get(index).map(|slot| slot.ty).or(expected.tail);
++                        target.is_some_and(|target| self.is_assignable(slot.ty, target))
++                    });
++                    if matches { matching.push(expected) }
++                }
++            }
++            for (index, slot) in alternative.fixed.iter_mut().enumerate() {
++                let expected: Vec<TypeId> = matching.iter()
++                    .filter_map(|alternative| alternative.fixed.get(index).map(|slot| slot.ty).or(alternative.tail))
++                    .collect();
++                let expected = (!expected.is_empty()).then(|| self.union(&expected));
++                let ty = self.widen_literal_for_context(slot.ty, expected);
++                slot.ty = self.get_widened_type(ty);
++            }
++            if let Some(tail) = alternative.tail {
++                let expected: Vec<TypeId> = matching.iter().filter_map(|alternative| alternative.tail).collect();
++                let expected = (!expected.is_empty()).then(|| self.union(&expected));
++                let ty = self.widen_literal_for_context(tail, expected);
++                alternative.tail = Some(self.get_widened_type(ty));
++            }
++        }
++        self.native_result_pack(&alternatives)
++    }
++
++    /// Written return contracts keep required lengths and whole alternative correlations.
++    pub fn native_pack_assignable(&mut self, actual: NativeResultPack, declared: NativeResultPack) -> bool {
++        self.is_assignable(actual.ty, declared.ty)
++    }
++
++    pub fn instantiate_native_pack(&mut self, pack: NativeResultPack, mapper: MapperId) -> NativeResultPack {
++        NativeResultPack { ty: self.instantiate(pack.ty, mapper) }
++    }
++}
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/native_tables.rs
+@@ -0,0 +1,522 @@
++//! Immutable Lua table shapes and key domains, independent of JS property-name coercion.
++
++use super::*;
++use super::relate::{Relater, Relation, Ternary, REC_BOTH};
++use crate::types::List;
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeTableKey {
++    String(Atom),
++    Integer(i64),
++    Float(u64),
++    Boolean(bool),
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeTableAccessKey {
++    Literal(NativeTableKey),
++    Type(TypeId),
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeTableField {
++    pub key: NativeTableKey,
++    pub value: TypeId,
++    pub optional: bool,
++    pub readonly: bool,
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeTableIndexer {
++    pub key: TypeId,
++    pub value: TypeId,
++    pub readonly: bool,
++    pub sparse: bool,
++}
++
++#[derive(PartialEq, Eq, Hash, Debug)]
++pub struct NativeTableData<'s> {
++    pub fields: List<'s, NativeTableField>,
++    pub indexers: List<'s, NativeTableIndexer>,
++    pub fresh: bool,
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeTableFlavor {
++    Declared,
++    Literal,
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Debug)]
++pub enum NativeTableError {
++    InvalidKey { key: NativeTableAccessKey },
++    NotTable { ty: TypeId },
++    MissingKey { key: NativeTableAccessKey },
++    KeyType { key: TypeId, expected: TypeId },
++    ValueType { value: TypeId, expected: TypeId },
++    ReadOnly { key: NativeTableAccessKey },
++    RequiredDeletion { key: NativeTableKey },
++    DuplicateDeclaredField { key: NativeTableKey },
++}
++
++impl NativeTableKey {
++    pub fn normalize(self) -> Result<Self, NativeTableError> {
++        let NativeTableKey::Float(bits) = self else { return Ok(self) };
++        let value = f64::from_bits(bits);
++        if value.is_nan() {
++            return Err(NativeTableError::InvalidKey { key: NativeTableAccessKey::Literal(self) });
++        }
++        // 2^63 is excluded: its f64 value cannot represent i64::MAX.
++        if value >= i64::MIN as f64 && value < -(i64::MIN as f64) && value.fract() == 0.0 {
++            Ok(NativeTableKey::Integer(value as i64))
++        } else {
++            Ok(self)
++        }
++    }
++}
++
++impl<'p, 's> Checker<'p, 's> {
++    /// Import a checked immutable description without re-running constructor inference. In
++    /// particular, contextual singleton literals and generic substitutions must survive export.
++    pub fn native_table_from_description(
++        &mut self,
++        fields: &[NativeTableField],
++        indexers: &[NativeTableIndexer],
++        fresh: bool,
++    ) -> Result<TypeId, NativeTableError> {
++        let mut fields = fields.to_vec();
++        for field in &mut fields { field.key = field.key.normalize()?; }
++        fields.sort_by(|a, b| self.native_table_compare_keys(a.key, b.key));
++        for pair in fields.windows(2) {
++            if pair[0].key == pair[1].key {
++                return Err(NativeTableError::DuplicateDeclaredField { key: pair[0].key });
++            }
++        }
++        for indexer in indexers {
++            if !self.native_table_valid_key_type(indexer.key) {
++                return Err(NativeTableError::InvalidKey { key: NativeTableAccessKey::Type(indexer.key) });
++            }
++        }
++        let mut indexers = indexers.to_vec();
++        indexers.sort_by_key(|indexer| indexer.key.0);
++        Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            fields: self.list(&fields), indexers: self.list(&indexers), fresh,
++        }))))
++    }
++
++    pub fn native_table(
++        &mut self,
++        fields: &[NativeTableField],
++        indexers: &[NativeTableIndexer],
++        flavor: NativeTableFlavor,
++    ) -> Result<TypeId, NativeTableError> {
++        self.native_table_with_context(fields, indexers, flavor, None)
++    }
++
++    pub fn native_table_with_context(
++        &mut self,
++        fields: &[NativeTableField],
++        indexers: &[NativeTableIndexer],
++        flavor: NativeTableFlavor,
++        expected: Option<TypeId>,
++    ) -> Result<TypeId, NativeTableError> {
++        let fresh = flavor == NativeTableFlavor::Literal;
++        let mut merged: Vec<NativeTableField> = Vec::with_capacity(fields.len());
++        for &field in fields {
++            let key = field.key.normalize()?;
++            let mut field = NativeTableField { key, ..field };
++            if fresh {
++                field.optional |= self.contains_undefined(field.value);
++                field.value = self.without_undefined(field.value);
++                let contextual = expected.and_then(|expected| self.native_table_value_context(expected, NativeTableAccessKey::Literal(key)));
++                field.value = self.widen_literal_for_context(field.value, contextual);
++                field.value = self.get_widened_type(field.value);
++            }
++            if let Some(previous) = merged.iter_mut().find(|previous| previous.key == key) {
++                if !fresh {
++                    return Err(NativeTableError::DuplicateDeclaredField { key });
++                }
++                previous.value = self.union_reduced(&[previous.value, field.value]);
++                previous.optional |= field.optional;
++                previous.readonly &= field.readonly;
++            } else {
++                merged.push(field);
++            }
++        }
++        // Nil-valued constructor fields are absent, including every candidate of a collision.
++        if fresh {
++            merged.retain(|field| !field.value.is_never());
++        }
++        let mut domains: Vec<NativeTableIndexer> = Vec::with_capacity(indexers.len());
++        for &indexer in indexers {
++            if !self.native_table_valid_key_type(indexer.key) {
++                return Err(NativeTableError::InvalidKey { key: NativeTableAccessKey::Type(indexer.key) });
++            }
++            let mut indexer = indexer;
++            if fresh {
++                indexer.sparse = true;
++                let contextual = expected.and_then(|expected| self.native_table_value_context(expected, NativeTableAccessKey::Type(indexer.key)));
++                indexer.value = self.widen_literal_for_context(indexer.value, contextual);
++                indexer.value = self.get_widened_type(indexer.value);
++            }
++            if let Some(previous) = domains.iter_mut().find(|previous| previous.key == indexer.key) {
++                previous.value = if fresh {
++                    self.union_reduced(&[previous.value, indexer.value])
++                } else {
++                    self.intersection(&[previous.value, indexer.value])
++                };
++                previous.sparse |= indexer.sparse;
++                previous.readonly = if fresh { previous.readonly && indexer.readonly } else { previous.readonly || indexer.readonly };
++            } else {
++                domains.push(indexer);
++            }
++        }
++        if fresh {
++            for field in &mut merged {
++                let key_type = self.native_table_key_type(field.key);
++                for indexer in &domains {
++                    if self.is_assignable(key_type, indexer.key) {
++                        field.optional |= self.contains_undefined(indexer.value);
++                        let present = self.without_undefined(indexer.value);
++                        field.value = self.union_reduced(&[field.value, present]);
++                    }
++                }
++            }
++            // Deletion candidates affect collision presence above, but nil is never a stored
++            // entry. Sparse metadata preserves missing reads after this type is widened/stored.
++            for indexer in &mut domains { indexer.value = self.without_undefined(indexer.value); }
++        }
++        merged.sort_by(|a, b| self.native_table_compare_keys(a.key, b.key));
++        domains.sort_by_key(|indexer| indexer.key.0);
++        Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            fields: self.list(&merged),
++            indexers: self.list(&domains),
++            fresh,
++        }))))
++    }
++
++    fn native_table_compare_keys(&self, a: NativeTableKey, b: NativeTableKey) -> std::cmp::Ordering {
++        use NativeTableKey::*;
++        let rank = |key| match key { String(_) => 0, Integer(_) => 1, Float(_) => 2, Boolean(_) => 3 };
++        rank(a).cmp(&rank(b)).then_with(|| match (a, b) {
++            (String(a), String(b)) => self.atoms().bytes(a).cmp(self.atoms().bytes(b)),
++            (Integer(a), Integer(b)) => a.cmp(&b),
++            (Float(a), Float(b)) => f64::from_bits(a).total_cmp(&f64::from_bits(b)),
++            (Boolean(a), Boolean(b)) => a.cmp(&b),
++            _ => std::cmp::Ordering::Equal,
++        })
++    }
++
++    pub(super) fn native_table_valid_key_type(&self, ty: TypeId) -> bool {
++        if let TypeData::Intersection(parts) = self.data(ty) {
++            return parts.iter().any(|&part| self.native_table_valid_key_type(part));
++        }
++        self.parts(ty).iter().all(|&part| {
++            let flags = self.flags(part);
++            flags & (tf::ANY | tf::STRING_LIKE | tf::NUMBER_LIKE | tf::BOOLEAN | tf::BOOLEAN_LITERAL | tf::OBJECT | tf::TYPE_PARAMETER | tf::NEVER) != 0
++                && !part.is_undefined() && !part.is_null()
++        })
++    }
++
++    /// Instantiation keeps exact types even when a generic key becomes invalid. Inspection and
++    /// operations report the invalid schema instead of weakening it or rebuilding a recipe.
++    pub fn native_table_description_error(&self, ty: TypeId) -> Option<NativeTableError> {
++        let TypeData::NativeTable(table) = self.data(ty) else { return None };
++        table.indexers.iter().find_map(|indexer| {
++            (!self.native_table_valid_key_type(indexer.key)).then_some(NativeTableError::InvalidKey {
++                key: NativeTableAccessKey::Type(indexer.key),
++            })
++        })
++    }
++
++    pub(super) fn native_table_key_type(&self, key: NativeTableKey) -> TypeId {
++        match key {
++            NativeTableKey::String(value) => self.string_literal(value, false),
++            NativeTableKey::Integer(value) => self.number_literal(value as f64, false),
++            NativeTableKey::Float(value) => self.number_literal(f64::from_bits(value), false),
++            NativeTableKey::Boolean(value) => if value { TypeId::TRUE } else { TypeId::FALSE },
++        }
++    }
++
++    pub(super) fn native_table_inference_key_matches(&mut self, source: TypeId, target: TypeId) -> bool {
++        let domain = if self.could_contain_type_variables(target) {
++            let constraint = self.base_constraint_or_type(target);
++            if constraint == target || !self.native_table_valid_key_type(constraint) { return true }
++            constraint
++        } else { target };
++        self.is_assignable(source, domain) || self.is_assignable(domain, source)
++    }
++
++    fn native_table_access_type(&self, key: NativeTableAccessKey) -> TypeId {
++        match key {
++            NativeTableAccessKey::Literal(key) => self.native_table_key_type(key),
++            NativeTableAccessKey::Type(ty) => ty,
++        }
++    }
++
++    fn native_table_access(&self, key: NativeTableAccessKey) -> Result<NativeTableAccessKey, NativeTableError> {
++        match key {
++            NativeTableAccessKey::Literal(key) => key.normalize().map(NativeTableAccessKey::Literal),
++            NativeTableAccessKey::Type(ty) => {
++                if !self.native_table_valid_key_type(ty) {
++                    return Err(NativeTableError::InvalidKey { key });
++                }
++                let literal = match *self.data(ty) {
++                    TypeData::StringLit { value, .. } => Some(NativeTableKey::String(value)),
++                    TypeData::NumberLit { bits, .. } => Some(NativeTableKey::Float(bits)),
++                    TypeData::BoolLit { value, .. } => Some(NativeTableKey::Boolean(value)),
++                    _ => None,
++                };
++                match literal {
++                    Some(literal) => literal.normalize().map(NativeTableAccessKey::Literal),
++                    None => Ok(key),
++                }
++            }
++        }
++    }
++
++    pub fn native_table_read(&mut self, table: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
++        if let Some(error) = self.native_table_description_error(table) { return Err(error) }
++        let key = self.native_table_access(key)?;
++        if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
++            let mut values = Vec::new();
++            for &part in self.parts(ty) { values.push(self.native_table_read(table, NativeTableAccessKey::Type(part))?); }
++            return Ok(self.union_reduced(&values));
++        }
++        if self.is_any(table) { return Ok(TypeId::ANY) }
++        if self.is_union(table) {
++            let mut values = Vec::new();
++            for &part in self.parts(table) {
++                values.push(self.native_table_read(part, key)?);
++            }
++            return Ok(self.union_reduced(&values));
++        }
++        let base = self.base_constraint_or_type(table);
++        if base != table { return self.native_table_read(base, key) }
++        let TypeData::NativeTable(data) = self.data(table) else {
++            if let NativeTableAccessKey::Literal(NativeTableKey::String(name)) = key
++                && self.is_object_type(table)
++            {
++                return self.type_of_property(table, name).ok_or(NativeTableError::MissingKey { key });
++            }
++            return Err(NativeTableError::NotTable { ty: table });
++        };
++        if let NativeTableAccessKey::Literal(literal) = key
++            && let Some(field) = data.fields.iter().find(|field| field.key == literal)
++        {
++            return Ok(if field.optional { self.optional(field.value) } else { field.value });
++        }
++        let key_type = self.native_table_access_type(key);
++        let mut values = Vec::new();
++        for indexer in &data.indexers {
++            if self.is_assignable(key_type, indexer.key) {
++                values.push(if indexer.sparse { self.optional(indexer.value) } else { indexer.value });
++            }
++        }
++        if values.is_empty() {
++            if !data.indexers.is_empty() {
++                let expected = self.union(&data.indexers.iter().map(|indexer| indexer.key).collect::<Vec<_>>());
++                return Err(NativeTableError::KeyType { key: key_type, expected });
++            }
++            return Err(NativeTableError::MissingKey { key });
++        }
++        Ok(if data.fresh { self.union_reduced(&values) } else { self.intersection(&values) })
++    }
++
++    pub fn native_table_value_context(&mut self, expected: TypeId, key: NativeTableAccessKey) -> Option<TypeId> {
++        if self.is_union(expected) {
++            // Contextual object properties draw information from every member that declares the
++            // key; an ordinary read still requires the key in every member.
++            let mut values = Vec::new();
++            for &part in self.parts(expected) { values.extend(self.native_table_value_context(part, key)); }
++            return if values.is_empty() { None } else { Some(self.union(&values)) };
++        }
++        if let TypeData::Intersection(parts) = self.data(expected) {
++            let mut values = Vec::new();
++            let mut declared = Vec::new();
++            for &part in parts.iter() {
++                let field = match (self.data(part), key) {
++                    (TypeData::NativeTable(table), NativeTableAccessKey::Literal(key)) => table.fields.iter()
++                        .find(|field| field.key == key).map(|field| if field.optional { self.optional(field.value) } else { field.value }),
++                    (_, NativeTableAccessKey::Literal(NativeTableKey::String(name))) => self.type_of_property(part, name),
++                    _ => None,
++                };
++                declared.extend(field);
++                if field.is_none() { values.extend(self.native_table_value_context(part, key)); }
++            }
++            if !declared.is_empty() { values = declared; }
++            for value in &mut values { if self.is_any(*value) { *value = TypeId::UNKNOWN; } }
++            return if values.is_empty() { None } else { Some(self.intersection(&values)) };
++        }
++        self.native_table_read(expected, key).ok()
++    }
++
++    pub fn native_table_write(&mut self, table: TypeId, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
++        if let Some(error) = self.native_table_description_error(table) { return Err(error) }
++        let key = self.native_table_access(key)?;
++        if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
++            for &part in self.parts(ty) { self.native_table_write(table, NativeTableAccessKey::Type(part), value)?; }
++            return Ok(());
++        }
++        if self.is_any(table) { return Ok(()) }
++        if self.is_union(table) {
++            for &part in self.parts(table) { self.native_table_write(part, key, value)?; }
++            return Ok(());
++        }
++        let base = self.base_constraint_or_type(table);
++        if base != table { return self.native_table_write(base, key, value) }
++        let TypeData::NativeTable(data) = self.data(table) else {
++            if let NativeTableAccessKey::Literal(NativeTableKey::String(name)) = key
++                && let Some(expected) = self.write_type_of_property(table, name)
++            {
++                return if self.is_assignable(value, expected) { Ok(()) } else { Err(NativeTableError::ValueType { value, expected }) };
++            }
++            return Err(NativeTableError::NotTable { ty: table });
++        };
++        if let NativeTableAccessKey::Literal(literal) = key
++            && let Some(field) = data.fields.iter().find(|field| field.key == literal)
++        {
++            if field.readonly { return Err(NativeTableError::ReadOnly { key }) }
++            if self.contains_undefined(value) && !field.optional && !self.contains_undefined(field.value) {
++                return Err(NativeTableError::RequiredDeletion { key: literal });
++            }
++            let present = self.without_undefined(value);
++            return if self.is_assignable(present, field.value) { Ok(()) } else { Err(NativeTableError::ValueType { value, expected: field.value }) };
++        }
++        let key_type = self.native_table_access_type(key);
++        let mut matched = false;
++        for indexer in &data.indexers {
++            if !self.is_assignable(key_type, indexer.key) { continue }
++            matched = true;
++            if indexer.readonly { return Err(NativeTableError::ReadOnly { key }) }
++            let present = self.without_undefined(value);
++            if !self.is_assignable(present, indexer.value) {
++                return Err(NativeTableError::ValueType { value, expected: indexer.value });
++            }
++        }
++        if matched { Ok(()) } else if !data.indexers.is_empty() {
++            let expected = self.union(&data.indexers.iter().map(|indexer| indexer.key).collect::<Vec<_>>());
++            Err(NativeTableError::KeyType { key: key_type, expected })
++        } else { Err(NativeTableError::MissingKey { key }) }
++    }
++
++    /// Lua key selection stays native; the selected values use the ordinary relation worker and
++    /// its recursion, inference-marker, diagnostic and relation caches.
++    pub(super) fn native_tables_related<const REPORT: bool>(
++        &mut self,
++        r: &mut Relater,
++        source: &NativeTableData<'_>,
++        target: &NativeTableData<'_>,
++        state: u8,
++    ) -> Ternary {
++        let identity = r.relation == Relation::Identity;
++        if source.indexers.iter().chain(target.indexers.iter()).any(|indexer| !self.native_table_valid_key_type(indexer.key)) {
++            return Ternary::FALSE;
++        }
++        if identity && (source.fields.len() != target.fields.len() || source.indexers.len() != target.indexers.len()) {
++            return Ternary::FALSE;
++        }
++        if source.fresh && !identity {
++            for field in &source.fields {
++                if target.fields.iter().any(|other| other.key == field.key) { continue }
++                let key = self.native_table_key_type(field.key);
++                if !target.indexers.iter().any(|indexer| self.is_assignable(key, indexer.key)) {
++                    return Ternary::FALSE;
++                }
++            }
++            for indexer in &source.indexers {
++                if !target.indexers.iter().any(|other| self.is_assignable(indexer.key, other.key)) {
++                    return Ternary::FALSE;
++                }
++            }
++        }
++        let mut result = Ternary::TRUE;
++        for field in &target.fields {
++            let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) else {
++                if field.optional || self.contains_undefined(field.value) && !identity { continue }
++                return Ternary::FALSE;
++            };
++            if identity && (actual.optional != field.optional || actual.readonly != field.readonly) {
++                return Ternary::FALSE;
++            }
++            let actual_type = if actual.optional { self.optional(actual.value) } else { actual.value };
++            let expected_type = if field.optional { self.optional(field.value) } else { field.value };
++            let related = self.is_related_to_ex::<REPORT>(r, actual_type, expected_type, REC_BOTH, state);
++            if !related.holds() { return Ternary::FALSE }
++            result &= related;
++        }
++        for indexer in &target.indexers {
++            let expected = indexer.value;
++            let mut matched = false;
++            for actual in &source.indexers {
++                let matches = if identity {
++                    actual.readonly == indexer.readonly && actual.sparse == indexer.sparse
++                        && self.is_related_to_ex::<REPORT>(r, actual.key, indexer.key, REC_BOTH, state).holds()
++                } else {
++                    self.is_assignable(actual.key, indexer.key) || self.is_assignable(indexer.key, actual.key)
++                };
++                if !matches { continue }
++                matched = true;
++                // Index signatures restrict present entries. Sparse lookup presence does not add
++                // a nil entry; constructor nil values delete entries. A declared nil union stays.
++                let value = if source.fresh { self.without_undefined(actual.value) } else { actual.value };
++                let related = self.is_related_to_ex::<REPORT>(r, value, expected, REC_BOTH, state);
++                if !related.holds() { return Ternary::FALSE }
++                result &= related;
++            }
++            if identity && !matched { return Ternary::FALSE }
++            for actual in &source.fields {
++                let key = self.native_table_key_type(actual.key);
++                if !self.is_assignable(key, indexer.key) { continue }
++                matched = true;
++                let value = if source.fresh { self.without_undefined(actual.value) } else { actual.value };
++                let related = self.is_related_to_ex::<REPORT>(r, value, expected, REC_BOTH, state);
++                if !related.holds() { return Ternary::FALSE }
++                result &= related;
++            }
++            // Closed shapes have an inferable index, as ordinary TS object shapes do. A dictionary
++            // with exclusively different domains does not acquire a new domain from its shape.
++            if !matched && !source.indexers.is_empty() { return Ternary::FALSE }
++        }
++        result
++    }
++
++    /// Old/native class namespaces expose genuine byte-string names. They can participate in
++    /// native table relations without manufacturing JS names for numeric or boolean Lua keys.
++    pub(super) fn native_table_object_description(&mut self, ty: TypeId) -> Option<NativeTableData<'s>> {
++        if self.is_array_or_tuple(ty) { return None }
++        let members = self.structured_members(ty)?;
++        let mut fields = Vec::new();
++        for prop in &members.shape().props {
++            fields.push(NativeTableField {
++                key: NativeTableKey::String(prop.name),
++                value: self.type_of_prop(prop, members.mapper),
++                optional: prop.flags.contains(PropFlags::OPTIONAL),
++                readonly: prop.flags.contains(PropFlags::READONLY),
++            });
++        }
++        let indexers = members.index_infos().iter().map(|indexer| NativeTableIndexer {
++            key: self.instantiate(indexer.key, members.mapper),
++            value: self.instantiate(indexer.value, members.mapper),
++            readonly: indexer.readonly,
++            sparse: false,
++        }).collect::<Vec<_>>();
++        Some(NativeTableData {
++            fields: self.list(&fields), indexers: self.list(&indexers),
++            fresh: self.is_fresh_object_literal_type(ty),
++        })
++    }
++
++    pub(super) fn native_table_widened(&mut self, table: &NativeTableData<'p>) -> TypeId {
++        let fields = table.fields.iter().map(|field| NativeTableField {
++            value: self.get_widened_type(field.value), ..*field
++        }).collect::<Vec<_>>();
++        let indexers = table.indexers.iter().map(|indexer| NativeTableIndexer {
++            key: self.get_widened_type(indexer.key),
++            value: self.get_widened_type(indexer.value), ..*indexer
++        }).collect::<Vec<_>>();
++        self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            fields: self.list(&fields), indexers: self.list(&indexers), fresh: false,
++        })))
++    }
++}

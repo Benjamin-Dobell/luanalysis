@@ -492,6 +492,7 @@ impl<'p, 's> Checker<'p, 's> {
     fn resolved_type_arguments(&mut self, ty: TypeId) -> Option<&'p [TypeId]> {
         let p = self.p;
         match self.data(ty) {
+            TypeData::NativeArray { element, .. } => Some(std::slice::from_ref(element)),
             TypeData::Ref { args, .. } | TypeData::Tuple { elems: args, .. } => match args.actual()
             {
                 Some(actual) => Some(actual),
@@ -592,6 +593,8 @@ impl<'p, 's> Checker<'p, 's> {
     /// unchanged.
     pub(super) fn create_type_reference(&self, ty: TypeId, arguments: &[TypeId]) -> TypeId {
         match self.data(ty) {
+            TypeData::NativeArray { readonly, .. } => arguments.first()
+                .map(|&element| self.native_array_of(element, *readonly)).unwrap_or(ty),
             TypeData::Ref { target, .. } => self.intern_key(TypeKey::Ref {
                 target: *target,
                 args: arguments,
@@ -1378,6 +1381,44 @@ impl<'p, 's> Checker<'p, 's> {
                 let resolved =
                     self.shape_memo(ty, |c| c.build_reverse_mapped_shape(ty, source, mapped, of));
                 Some((resolved, MapperId::IDENTITY))
+            }
+            TypeData::NativeTable(table) => {
+                let shape = self.shape_memo(ty, |c| {
+                    let mut shape = Shape::new_in(c.arena);
+                    for field in &table.fields {
+                        if let NativeTableKey::String(name) = field.key {
+                            shape.props.push(Prop {
+                                name,
+                                flags: if field.readonly { PropFlags::READONLY } else { PropFlags::empty() }
+                                    | if field.optional { PropFlags::OPTIONAL } else { PropFlags::empty() },
+                                source: PropSource::Type(field.value),
+                                mapper: MapperId::IDENTITY,
+                                name_type: TypeId::UNRESOLVED,
+                            });
+                        }
+                    }
+                    for indexer in &table.indexers {
+                        shape.index.push(IndexInfo::new(indexer.key, if indexer.sparse { c.optional(indexer.value) } else { indexer.value }, indexer.readonly));
+                    }
+                    shape
+                });
+                Some((shape, MapperId::IDENTITY))
+            }
+            TypeData::NativeArray { element, readonly } => {
+                let (element, readonly) = (*element, *readonly);
+                let shape = self.shape_memo(ty, |c| {
+                    let mut shape = Shape::new_in(c.arena);
+                    shape.props.push(Prop {
+                        name: known::length,
+                        flags: if readonly { PropFlags::READONLY } else { PropFlags::empty() },
+                        source: PropSource::Type(TypeId::NUMBER),
+                        mapper: MapperId::IDENTITY,
+                        name_type: TypeId::UNRESOLVED,
+                    });
+                    shape.index.push(IndexInfo::new(TypeId::NUMBER, element, readonly));
+                    shape
+                });
+                Some((shape, MapperId::IDENTITY))
             }
             TypeData::Tuple { .. } => self.tuple_members(ty, ty),
             // Its properties. See `structured_members`.
@@ -3478,6 +3519,11 @@ impl<'p, 's> Checker<'p, 's> {
     /// `regular_type_of_object_literal` has returned.
     fn regular_type_of_resolved_object_literal(&mut self, ty: TypeId) -> TypeId {
         match self.data(ty) {
+            TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+                fields: self.list(&table.fields), indexers: self.list(&table.indexers),
+                sequence_tails: self.list(&table.sequence_tails), fresh: false,
+                collision_candidates: table.collision_candidates,
+            }))),
             &TypeData::Anon {
                 origin:
                     Origin::ObjectLiteral(
@@ -7417,6 +7463,9 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// The type of `ty.name`. `None`: there is no such property.
     pub fn type_of_property(&mut self, ty: TypeId, name: Atom) -> Option<TypeId> {
+        if matches!(self.data(ty), TypeData::NativeTable(_)) {
+            return self.native_table_read(ty, NativeTableAccessKey::Literal(NativeTableKey::String(name))).ok();
+        }
         self.property_type(ty, ty, name, Access::Read)
             .map(|found| found.0)
     }
@@ -8489,7 +8538,7 @@ impl<'p, 's> Checker<'p, 's> {
             | SigData::NativeCaptured { mapper, .. }
             | SigData::Construct { mapper, .. }
             | SigData::DefaultConstruct { mapper, .. } => mapper,
-            SigData::WithReturn { sig: inner, .. } => self.mapper_around_sig(inner),
+            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.mapper_around_sig(inner),
             // The type parameters of a union signature are those of the first constituent signature
             // that has any.
             SigData::Synth { ref of, .. } => {
