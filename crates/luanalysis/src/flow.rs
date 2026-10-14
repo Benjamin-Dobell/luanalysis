@@ -32,12 +32,19 @@ pub struct AssignmentId {
     pub snapshot: u64,
     pub index: u32,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct IteratorId {
+    pub snapshot: u64,
+    pub index: u32,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ReferenceRoot {
     Binding(BindingId),
     /// The immutable physical result list shared by a local binding group.
     Pack(EvaluationId),
+    /// Lua's hidden iterator/state/control frame; body bindings cannot write it.
+    Iterator(IteratorId),
     Global(String),
     Temporary(SourceExpressionId),
 }
@@ -92,7 +99,10 @@ pub enum ValueDemand {
     Nil,
     Function(u32),
     NumericIteration,
-    IteratorResult(usize),
+    IteratorResult {
+        iterator: IteratorId,
+        index: usize,
+    },
 }
 #[derive(Clone, Debug)]
 pub enum Predicate {
@@ -103,11 +113,18 @@ pub enum Predicate {
         step: Option<EvaluationId>,
         stage: NumericIterationStage,
     },
-    GenericIteration,
+    GenericIteration {
+        iterator: IteratorId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NumericIterationStage {
+    First,
+    Next,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IteratorStage {
     First,
     Next,
 }
@@ -171,6 +188,13 @@ pub enum NodeKind {
     Merge,
     /// Predecessor zero is the entry; remaining predecessors are back edges.
     Loop,
+    IteratorStart {
+        iterator: IteratorId,
+    },
+    Iteration {
+        iterator: IteratorId,
+        stage: IteratorStage,
+    },
     Call {
         expression: SourceExpressionId,
         evaluation: EvaluationId,
@@ -204,7 +228,6 @@ pub struct FunctionGraph {
 pub enum PendingFeature {
     ExpandedArguments,
     NumericIteration,
-    GenericIteration,
     DynamicAddress,
     InvalidSource,
 }
@@ -219,6 +242,7 @@ pub struct ProgramFlow {
     pub graphs: Vec<FunctionGraph>,
     pub expressions: Vec<SourceExpression>,
     pub evaluations: Vec<Evaluation>,
+    pub iterators: Vec<IteratorRecipe>,
     pub pending: Vec<Feature>,
     /// Original function source spans select separate graphs, never inline execution.
     pub functions: HashMap<(usize, usize), u32>,
@@ -226,7 +250,23 @@ pub struct ProgramFlow {
     /// Temporary roots/dynamic keys remain explicit; the backend decides keyability.
     pub references: HashMap<SourceExpressionId, Reference>,
 }
+#[derive(Clone, Debug)]
+pub struct IteratorRecipe {
+    pub id: IteratorId,
+    pub span: Span,
+    pub input: FlowId,
+    pub values: Vec<EvaluationId>,
+    /// Successful first/later steps join here before body-visible stores.
+    pub step: FlowId,
+}
 impl ProgramFlow {
+    pub fn iterator(&self, id: IteratorId) -> &IteratorRecipe {
+        assert_eq!(
+            id.snapshot, self.snapshot,
+            "foreign source iterator snapshot"
+        );
+        &self.iterators[id.index as usize]
+    }
     pub fn node(&self, id: FlowId) -> &Node {
         assert_eq!(id.snapshot, self.snapshot, "foreign source graph snapshot");
         &self.graphs[id.graph as usize].nodes[id.index as usize]
@@ -262,6 +302,7 @@ pub fn build(file: &File, bound: &BoundFile) -> ProgramFlow {
             graphs: Vec::new(),
             expressions: Vec::new(),
             evaluations: Vec::new(),
+            iterators: Vec::new(),
             pending: Vec::new(),
             functions: HashMap::new(),
             references: HashMap::new(),
@@ -957,18 +998,23 @@ impl Builder<'_> {
                 body,
                 ..
             } => {
-                self.feature(PendingFeature::GenericIteration, span);
-                for value in values {
-                    self.evaluate(context, value);
-                }
-                self.iteration(
-                    context,
-                    Predicate::GenericIteration,
-                    names,
-                    body,
+                let input = context.current;
+                let values = values
+                    .iter()
+                    .map(|value| self.evaluate(context, value))
+                    .collect();
+                let iterator = IteratorId {
+                    snapshot: self.program.snapshot,
+                    index: self.program.iterators.len() as u32,
+                };
+                self.program.iterators.push(IteratorRecipe {
+                    id: iterator,
                     span,
-                    false,
-                );
+                    input,
+                    values,
+                    step: context.current,
+                });
+                self.generic_iteration(context, iterator, names, body, span);
             }
         }
     }
@@ -1068,36 +1114,50 @@ impl Builder<'_> {
         );
     }
 
-    fn iteration(
+    fn generic_iteration(
         &mut self,
         context: &mut Context,
-        predicate: Predicate,
+        iterator: IteratorId,
         names: &[Name],
         body: &[Stmt],
         span: Span,
-        numeric: bool,
     ) {
         let incoming_live = context.live;
-        let header = self.append(context, NodeKind::Loop, span);
-        let pre = context.current;
+        self.append(context, NodeKind::IteratorStart { iterator }, span);
+        let first = self.append(
+            context,
+            NodeKind::Iteration {
+                iterator,
+                stage: IteratorStage::First,
+            },
+            span,
+        );
+        let predicate = Predicate::GenericIteration { iterator };
+        let first_exit = self.node(
+            context,
+            NodeKind::Predicate {
+                predicate: predicate.clone(),
+                sense: false,
+            },
+            vec![first],
+            span,
+        );
         self.node(
             context,
             NodeKind::Predicate {
                 predicate: predicate.clone(),
                 sense: true,
             },
-            vec![pre],
+            vec![first],
             span,
         );
+        let header = self.append(context, NodeKind::Loop, span);
+        self.program.iterators[iterator.index as usize].step = header;
         let transaction = self.transaction();
         let epoch = context.current;
         for (index, name) in names.iter().enumerate() {
             let address = self.name_address(name, transaction, epoch);
-            let value = if numeric {
-                ValueDemand::NumericIteration
-            } else {
-                ValueDemand::IteratorResult(index)
-            };
+            let value = ValueDemand::IteratorResult { iterator, index };
             self.append(
                 context,
                 NodeKind::Write {
@@ -1112,25 +1172,44 @@ impl Builder<'_> {
         context.breaks.push(Vec::new());
         self.statements(context, body);
         let back = context.current;
+        let mut exits = context.breaks.pop().unwrap();
+        if incoming_live {
+            exits.push(first_exit);
+        }
         if context.live {
+            let next = self.node(
+                context,
+                NodeKind::Iteration {
+                    iterator,
+                    stage: IteratorStage::Next,
+                },
+                vec![back],
+                span,
+            );
+            let next_exit = self.node(
+                context,
+                NodeKind::Predicate {
+                    predicate: predicate.clone(),
+                    sense: false,
+                },
+                vec![next],
+                span,
+            );
+            let next_body = self.node(
+                context,
+                NodeKind::Predicate {
+                    predicate,
+                    sense: true,
+                },
+                vec![next],
+                span,
+            );
             self.program.graphs[context.graph as usize].nodes[header.index as usize]
                 .antecedents
-                .push(back);
+                .push(next_body);
+            exits.push(next_exit);
         }
-        let mut exits = context.breaks.pop().unwrap();
-        context.live = incoming_live;
-        let exit = self.node(
-            context,
-            NodeKind::Predicate {
-                predicate,
-                sense: false,
-            },
-            vec![pre],
-            span,
-        );
-        if context.live {
-            exits.push(exit);
-        }
+        context.live = !exits.is_empty();
         self.node(context, NodeKind::Merge, exits, span);
     }
 }

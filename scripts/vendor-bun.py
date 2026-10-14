@@ -124,6 +124,14 @@ SOURCE_ADAPTATIONS.append({
 })
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-generic-iteration.patch",
+    "reason": "Add correlated Lua generic-for hidden frames and nil-only iteration filtering through the shared call and flow workers; retain Any tail values during fixed assignment adjustment.",
+    **({"added": True} if path == "native_iterators.rs" else {}),
+} for path in ["mod.rs", "native_flow.rs", "native_packs.rs", "native_iterators.rs"])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

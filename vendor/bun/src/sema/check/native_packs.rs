@@ -376,7 +376,11 @@ impl<'p, 's> Checker<'p, 's> {
             let minimum = minimum.min(count);
             for present in minimum..=maximum.max(minimum) {
                 let fixed = (0..count).map(|index| NativePackSlot {
-                    ty: if index >= present { TypeId::UNDEFINED }
+                    ty: if index >= present {
+                        if index >= alternative.fixed.len() && alternative.tail.is_some_and(|tail| self.is_any(tail)) {
+                            alternative.tail.unwrap()
+                        } else { TypeId::UNDEFINED }
+                    }
                         else { alternative.fixed.get(index).map(|slot| slot.ty).or(alternative.tail).unwrap_or(TypeId::UNDEFINED) },
                     optional: false,
                 }).collect();

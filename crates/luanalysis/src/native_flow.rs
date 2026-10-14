@@ -7,9 +7,9 @@ use super::{bind::BindingId, flow};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NativeCallEffects, NativeFlowError,
     NativeFlowKey, NativeFlowNode, NativeFlowProvider, NativeFunctionKey, NativeGraphKey,
-    NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePackProjection,
-    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation,
-    Type, TypeQueries, ValuePack,
+    NativeIteratorProjection, NativeIteratorStage, NativeNumericConstant, NativeNumericInput,
+    NativeNumericIterationStage, NativePackProjection, NativePredicate, NativeReferenceKey,
+    NativeRuntimeType, NativeValueKey, NativeWriteRelation, Type, TypeQueries, ValuePack,
 };
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, File, Span};
 use std::cell::RefCell;
@@ -25,7 +25,11 @@ pub(super) enum ValueRecipe {
     Nil,
     Function(u32),
     NumericIteration,
-    IteratorResult(usize),
+    IteratorHeader(flow::IteratorId),
+    IteratorResult {
+        iterator: flow::IteratorId,
+        index: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -41,11 +45,13 @@ pub(super) struct NativeFlowSources {
     reference_indices: Vec<HashMap<flow::Reference, u32>>,
     values: Vec<ValueRecipe>,
     evaluation_values: HashMap<flow::EvaluationId, u32>,
+    iterator_values: HashMap<flow::IteratorId, u32>,
     write_values: HashMap<flow::FlowId, u32>,
     declaration_writes: HashMap<BindingId, flow::FlowId>,
     expression_evaluations: HashMap<(u32, usize, usize), flow::EvaluationId>,
     runtime_type_calls: HashSet<flow::SourceExpressionId>,
     pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
+    iterator_projections: HashMap<BindingId, (flow::IteratorId, usize)>,
     contexts: RefCell<HashMap<FlowContext, u64>>,
 }
 
@@ -63,11 +69,13 @@ impl NativeFlowSources {
             functions: HashMap::new(),
             values: Vec::new(),
             evaluation_values: HashMap::new(),
+            iterator_values: HashMap::new(),
             write_values: HashMap::new(),
             declaration_writes: HashMap::new(),
             expression_evaluations: HashMap::new(),
             runtime_type_calls: HashSet::new(),
             pack_projections: HashMap::new(),
+            iterator_projections: HashMap::new(),
             contexts: RefCell::new(HashMap::new()),
             program,
         };
@@ -115,6 +123,25 @@ impl NativeFlowSources {
             }
         }
         for graph in &result.program.graphs {
+            for iterator in result
+                .program
+                .iterators
+                .iter()
+                .filter(|iterator| iterator.input.graph == graph.index)
+            {
+                let reference = flow::Reference {
+                    root: flow::ReferenceRoot::Iterator(iterator.id),
+                    path: Vec::new(),
+                };
+                intern_reference(
+                    &mut result.references[graph.index as usize],
+                    &mut result.reference_indices[graph.index as usize],
+                    &reference,
+                );
+                let index = result.values.len() as u32;
+                result.values.push(ValueRecipe::IteratorHeader(iterator.id));
+                result.iterator_values.insert(iterator.id, index);
+            }
             for node in &graph.nodes {
                 if let flow::NodeKind::Write {
                     address,
@@ -140,8 +167,11 @@ impl NativeFlowSources {
                                 flow::ValueDemand::NumericIteration => {
                                     ValueRecipe::NumericIteration
                                 }
-                                flow::ValueDemand::IteratorResult(index) => {
-                                    ValueRecipe::IteratorResult(*index)
+                                flow::ValueDemand::IteratorResult { iterator, index } => {
+                                    ValueRecipe::IteratorResult {
+                                        iterator: *iterator,
+                                        index: *index,
+                                    }
                                 }
                                 flow::ValueDemand::PackElement { evaluation, index } => {
                                     ValueRecipe::PackElement {
@@ -172,8 +202,25 @@ impl NativeFlowSources {
             .filter_map(|occurrence| occurrence.binding)
             .collect();
         let mut mutable_groups = HashSet::new();
+        let mut mutable_iterators = HashSet::new();
         for graph in &result.program.graphs {
             for node in &graph.nodes {
+                if let flow::NodeKind::Write {
+                    address,
+                    value: flow::ValueDemand::IteratorResult { iterator, index },
+                    declaration: true,
+                    ..
+                } = &node.kind
+                {
+                    if let flow::ReferenceRoot::Binding(binding) = address.reference.root {
+                        if written.contains(&binding) {
+                            mutable_iterators.insert(*iterator);
+                        }
+                        result
+                            .iterator_projections
+                            .insert(binding, (*iterator, *index + 2));
+                    }
+                }
                 if let flow::NodeKind::Write {
                     address,
                     value: flow::ValueDemand::PackElement { evaluation, index },
@@ -206,6 +253,9 @@ impl NativeFlowSources {
             .pack_projections
             .retain(|_, (evaluation, _)| !mutable_groups.contains(evaluation));
         result
+            .iterator_projections
+            .retain(|_, (iterator, _)| !mutable_iterators.contains(iterator));
+        result
     }
 
     pub(super) fn pack_projection(
@@ -234,6 +284,41 @@ impl NativeFlowSources {
             group: self.reference_key(reference.graph, &group)?,
             value: self.evaluation_value(evaluation.id),
             input: self.flow_key(evaluation.input, reference.graph.context),
+            index,
+        })
+    }
+
+    pub(super) fn iterator_reference(
+        &self,
+        graph: NativeGraphKey,
+        iterator: flow::IteratorId,
+    ) -> Option<NativeReferenceKey> {
+        self.reference_key(
+            graph,
+            &flow::Reference {
+                root: flow::ReferenceRoot::Iterator(iterator),
+                path: Vec::new(),
+            },
+        )
+    }
+
+    pub(super) fn iterator_projection(
+        &self,
+        reference: NativeReferenceKey,
+    ) -> Option<NativeIteratorProjection> {
+        let source = self.source_reference(reference)?;
+        if !source.path.is_empty() {
+            return None;
+        }
+        let flow::ReferenceRoot::Binding(binding) = source.root else {
+            return None;
+        };
+        let &(iterator, index) = self.iterator_projections.get(&binding)?;
+        if self.program.iterator(iterator).input.graph != reference.graph.region {
+            return None;
+        }
+        Some(NativeIteratorProjection {
+            frame: self.iterator_reference(reference.graph, iterator)?,
             index,
         })
     }
@@ -650,9 +735,34 @@ impl NativeFlowSources {
                 },
                 sense: *sense,
             },
-            flow::NodeKind::Predicate { .. } => NativeFlowNode::Unsupported(
-                "Lua iteration predicates require native iteration effects",
-            ),
+            flow::NodeKind::Predicate {
+                predicate: flow::Predicate::GenericIteration { iterator },
+                sense,
+            } => NativeFlowNode::Predicate {
+                before: before()?,
+                predicate: NativePredicate::GenericIteration {
+                    frame: self.iterator_reference(key.graph, *iterator)?,
+                    input: before()?,
+                },
+                sense: *sense,
+            },
+            flow::NodeKind::IteratorStart { iterator } => NativeFlowNode::IteratorStart {
+                before: before()?,
+                frame: self.iterator_reference(key.graph, *iterator)?,
+                header: NativeValueKey {
+                    snapshot: self.program.snapshot,
+                    index: self.iterator_values[iterator],
+                },
+                input: edge(self.program.iterator(*iterator).input),
+            },
+            flow::NodeKind::Iteration { iterator, stage } => NativeFlowNode::Iteration {
+                before: before()?,
+                frame: self.iterator_reference(key.graph, *iterator)?,
+                stage: match stage {
+                    flow::IteratorStage::First => NativeIteratorStage::First,
+                    flow::IteratorStage::Next => NativeIteratorStage::Next,
+                },
+            },
             flow::NodeKind::Merge => NativeFlowNode::Merge {
                 edges: node.antecedents.iter().copied().map(edge).collect(),
             },
@@ -733,6 +843,14 @@ fn intern_reference(
 }
 
 pub(super) trait FlowValueQueries {
+    fn report_iterator_error(
+        &self,
+        at: NativeFlowKey,
+        stage: NativeIteratorStage,
+        callee: &Type,
+        error: luanalysis_engine::CallError,
+        queries: &mut dyn TypeQueries,
+    );
     fn flow_value_pack(
         &self,
         sources: &NativeFlowSources,
@@ -765,6 +883,23 @@ pub(super) struct FlowAdapter<'a> {
 }
 
 impl NativeFlowProvider for FlowAdapter<'_> {
+    fn iterator_error(
+        &self,
+        at: NativeFlowKey,
+        stage: NativeIteratorStage,
+        callee: &Type,
+        error: luanalysis_engine::CallError,
+        queries: &mut dyn TypeQueries,
+    ) {
+        self.values
+            .report_iterator_error(at, stage, callee, error, queries);
+    }
+    fn iterator_projection(
+        &self,
+        reference: NativeReferenceKey,
+    ) -> Option<NativeIteratorProjection> {
+        self.sources.iterator_projection(reference)
+    }
     fn pack_projection(&self, reference: NativeReferenceKey) -> Option<NativePackProjection> {
         self.sources.pack_projection(reference)
     }

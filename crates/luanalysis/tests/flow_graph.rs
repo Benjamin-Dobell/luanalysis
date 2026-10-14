@@ -273,7 +273,7 @@ fn returns_keep_original_unicode_spans_and_exclude_structurally_dead_sites() {
 }
 
 #[test]
-fn for_headers_record_binding_ids_frozen_numeric_recipes_and_pending_generic_iteration() {
+fn for_headers_record_binding_ids_and_frozen_native_iteration_recipes() {
     let program = graph("for i=1,3 do break end\nfor key,value in items() do break end");
     let nodes = &program.graphs[0].nodes;
     assert_eq!(
@@ -332,12 +332,15 @@ fn for_headers_record_binding_ids_frozen_numeric_recipes_and_pending_generic_ite
             .iter()
             .any(|feature| feature.kind == PendingFeature::NumericIteration)
     );
+    assert_eq!(program.iterators.len(), 1);
+    let iterator = &program.iterators[0];
     assert!(
-        program
-            .pending
+        iterator
+            .values
             .iter()
-            .any(|f| f.kind == PendingFeature::GenericIteration)
+            .all(|value| program.evaluation(*value).completed.index < iterator.step.index)
     );
+    assert!(matches!(program.node(iterator.step).kind, NodeKind::Loop));
 }
 
 #[test]

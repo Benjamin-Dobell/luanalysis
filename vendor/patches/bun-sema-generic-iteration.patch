@@ -1,0 +1,355 @@
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -55,6 +55,7 @@
+ mod flow;
+ mod flow_walk;
+ pub mod native_flow;
++pub mod native_iterators;
+ pub mod native_packs;
+ mod grammarchecks;
+ mod infer;
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -66,6 +66,12 @@
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum NativeNumericIterationStage {
++    First,
++    Next,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeIteratorStage {
+     First,
+     Next,
+ }
+@@ -100,6 +106,10 @@
+         step: Option<NativeNumericInput>,
+         stage: NativeNumericIterationStage,
+     },
++    GenericIteration {
++        frame: NativeReferenceKey,
++        input: NativeFlowKey,
++    },
+     Unsupported(&'static str),
+ }
+ 
+@@ -115,6 +125,17 @@
+         value: NativeValueKey,
+         /// Frozen RHS evaluation context, prior to every store in its transaction.
+         input: NativeFlowKey,
++    },
++    IteratorStart {
++        before: NativeFlowKey,
++        frame: NativeReferenceKey,
++        header: NativeValueKey,
++        input: NativeFlowKey,
++    },
++    Iteration {
++        before: NativeFlowKey,
++        frame: NativeReferenceKey,
++        stage: NativeIteratorStage,
+     },
+     Predicate {
+         before: NativeFlowKey,
+@@ -180,7 +201,16 @@
+     pub index: usize,
+ }
+ 
++#[derive(Clone, Copy, Debug)]
++pub struct NativeIteratorProjection {
++    pub frame: NativeReferenceKey,
++    /// Physical hidden-frame column: iterator/state occupy columns zero/one.
++    pub index: usize,
++}
++
+ pub trait NativeFlowProvider {
++    fn iterator_error(&self, _: NativeFlowKey, _: NativeIteratorStage, _: TypeId, _: ResolvedTypeCallError, _: &mut Checker<'_, '_>) {}
++    fn iterator_projection(&self, _: NativeReferenceKey) -> Option<NativeIteratorProjection> { None }
+     fn pack_projection(&self, _: NativeReferenceKey) -> Option<NativePackProjection> { None }
+     fn value_pack(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> NativeResultPack {
+         let ty = self.value_type(value, input, checker);
+@@ -250,6 +280,8 @@
+ enum NativeTransfer {
+     Predicate(NativePredicate, bool),
+     PackPredicate { predicate: NativePredicate, sense: bool, group: NativeReferenceKey },
++    Iteration(NativeFlowKey, NativeIteratorStage),
++    GenericIteration(bool),
+     Nothing,
+ }
+ 
+@@ -271,7 +303,7 @@
+     match predicate {
+         NativePredicate::And(left, right) | NativePredicate::Or(left, right) => predicate_mentions(provider, left, reference, pack) || predicate_mentions(provider, right, reference, pack),
+         NativePredicate::Not(inner) => predicate_mentions(provider, inner, reference, pack),
+-        _ => predicate_subject(predicate).is_some_and(|subject| if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) } else { subject == reference }),
++        _ => predicate_subject(predicate).is_some_and(|subject| if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) || provider.iterator_projection(subject).is_some_and(|projection| projection.frame == reference) } else { subject == reference }),
+     }
+ }
+ 
+@@ -346,6 +378,7 @@
+             NativePredicate::Truthy { subject, input, .. } => (*subject, *input),
+             NativePredicate::Equal { subject, input, .. } => (Some(*subject), *input),
+             NativePredicate::RuntimeType { subject, input, .. } => (Some(*subject), *input),
++            NativePredicate::GenericIteration { frame, input } => (Some(*frame), *input),
+             NativePredicate::NumericIteration { start, limit, step, .. } => {
+                 return [Some(*start), Some(*limit), *step].into_iter().flatten().all(|header| {
+                     if !self.edge(at, header.input) {
+@@ -455,6 +488,31 @@
+                     },
+                 }
+             }
++            NativeFlowNode::IteratorStart { before, frame, header, input } => {
++                if !self.edge(at, before) || !self.edge(at, input) {
++                    return FlowStep::Value(TypeId::ERROR);
++                }
++                if frame.graph != self.graph || !self.provider.contains_reference(frame) {
++                    self.provider.flow_error(at, NativeFlowError::InvalidReference(frame));
++                    return FlowStep::Value(TypeId::ERROR);
++                }
++                if walk.reference == frame {
++                    let header = checker.native_flow_pack_value(self.provider, header, input);
++                    FlowStep::Value(checker.native_iterator_header(header).ty)
++                } else {
++                    FlowStep::Follow { before, transfer: None, count_passed: false }
++                }
++            }
++            NativeFlowNode::Iteration { before, frame, stage } => {
++                if !self.edge(at, before) {
++                    return FlowStep::Value(TypeId::ERROR);
++                }
++                if frame.graph != self.graph || !self.provider.contains_reference(frame) {
++                    self.provider.flow_error(at, NativeFlowError::InvalidReference(frame));
++                    return FlowStep::Value(TypeId::ERROR);
++                }
++                FlowStep::Follow { before, transfer: (walk.reference == frame).then_some(NativeTransfer::Iteration(at, stage)), count_passed: false }
++            }
+             NativeFlowNode::Predicate {
+                 before,
+                 predicate,
+@@ -462,6 +520,9 @@
+             } => {
+                 if !self.edge(at, before) || !self.predicate_valid(at, &predicate) {
+                     return FlowStep::Value(TypeId::ERROR);
++                }
++                if let NativePredicate::GenericIteration { frame, .. } = predicate {
++                    return FlowStep::Follow { before, transfer: (walk.reference == frame).then_some(NativeTransfer::GenericIteration(sense)), count_passed: true };
+                 }
+                 let applies = predicate_mentions(self.provider, &predicate, walk.reference, false);
+                 let projection = predicate_mentions(self.provider, &predicate, walk.reference, true);
+@@ -522,6 +583,8 @@
+         previous: FlowType,
+     ) -> FlowType {
+         let ty = match transfer {
++            NativeTransfer::Iteration(at, stage) => checker.native_iterator_step(self.provider, at, stage, NativeResultPack { ty: previous.ty }).ty,
++            NativeTransfer::GenericIteration(sense) => checker.native_iterator_filter(NativeResultPack { ty: previous.ty }, sense).ty,
+             NativeTransfer::PackPredicate { predicate, sense, group } => {
+                 checker.native_narrow_pack(self.provider, NativeResultPack { ty: previous.ty }, &predicate, sense, group).ty
+             }
+@@ -547,6 +610,7 @@
+                 checker.native_runtime_type(previous.ty, &kind, equals == sense)
+             }
+             NativeTransfer::Predicate(NativePredicate::NumericIteration { .. }, _) => previous.ty,
++            NativeTransfer::Predicate(NativePredicate::GenericIteration { .. }, _) => previous.ty,
+             NativeTransfer::Predicate(NativePredicate::Unsupported(_), _) => TypeId::ERROR,
+         };
+         let _ = walk;
+@@ -728,7 +792,9 @@
+                 ReachStep::Value(false)
+             }
+             NativeFlowNode::Pass { before }
+-            | NativeFlowNode::Write { before, .. } => {
++            | NativeFlowNode::Write { before, .. }
++            | NativeFlowNode::IteratorStart { before, .. }
++            | NativeFlowNode::Iteration { before, .. } => {
+                 if self.edge(at, before) {
+                     ReachStep::Follow(before)
+                 } else {
+@@ -768,6 +834,14 @@
+                             NumericEntry::Known(_) | NumericEntry::Unknown => ReachStep::Follow(before),
+                         }
+                     }
++                    NativePredicate::GenericIteration { frame, input } => {
++                        let pack = checker.native_flow_iterator_pack(self.provider, input, frame);
++                        if checker.native_iterator_filter(pack, sense).ty.is_never() {
++                            ReachStep::Value(false)
++                        } else {
++                            ReachStep::Follow(before)
++                        }
++                    }
+                     NativePredicate::Unsupported(feature) => {
+                         self.provider.flow_error(at, NativeFlowError::Unsupported(feature));
+                         ReachStep::Value(false)
+@@ -858,9 +932,11 @@
+             }
+             _ => {}
+         }
+-        let projection = predicate_subject(predicate).and_then(|reference| provider.pack_projection(reference)).filter(|projection| projection.group == group);
+-        let Some(projection) = projection else { return if self.native_predicate_possible(provider, predicate, sense) { pack } else { NativeResultPack { ty: TypeId::NEVER } } };
+-        let index = projection.index;
++        let index = predicate_subject(predicate).and_then(|reference| {
++            provider.pack_projection(reference).filter(|projection| projection.group == group).map(|projection| projection.index)
++                .or_else(|| provider.iterator_projection(reference).filter(|projection| projection.frame == group).map(|projection| projection.index))
++        });
++        let Some(index) = index else { return if self.native_predicate_possible(provider, predicate, sense) { pack } else { NativeResultPack { ty: TypeId::NEVER } } };
+         let Some(alternatives) = self.native_pack_alternatives(pack) else { return pack };
+         let mut narrowed = Vec::new();
+         for mut alternative in alternatives {
+@@ -984,7 +1060,7 @@
+         numeric_first_entry(start, limit, step)
+     }
+ 
+-    fn native_runtime_type(&mut self, ty: TypeId, kind: &NativeRuntimeType, sense: bool) -> TypeId {
++    pub(super) fn native_runtime_type(&mut self, ty: TypeId, kind: &NativeRuntimeType, sense: bool) -> TypeId {
+         let name = match kind {
+             NativeRuntimeType::Nil => known::undefined,
+             NativeRuntimeType::Boolean => known::boolean,
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+--- a/src/sema/check/native_packs.rs
++++ b/src/sema/check/native_packs.rs
+@@ -376,7 +376,11 @@
+             let minimum = minimum.min(count);
+             for present in minimum..=maximum.max(minimum) {
+                 let fixed = (0..count).map(|index| NativePackSlot {
+-                    ty: if index >= present { TypeId::UNDEFINED }
++                    ty: if index >= present {
++                        if index >= alternative.fixed.len() && alternative.tail.is_some_and(|tail| self.is_any(tail)) {
++                            alternative.tail.unwrap()
++                        } else { TypeId::UNDEFINED }
++                    }
+                         else { alternative.fixed.get(index).map(|slot| slot.ty).or(alternative.tail).unwrap_or(TypeId::UNDEFINED) },
+                     optional: false,
+                 }).collect();
+diff --git a/src/sema/check/native_iterators.rs b/src/sema/check/native_iterators.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/native_iterators.rs
+@@ -0,0 +1,126 @@
++//! Lua generic-for hidden state, carried as correlated native result-pack rows.
++//! Traversal and loop publication remain in the shared flow walker.
++
++use super::Checker;
++use super::native_flow::{NativeFlowKey, NativeFlowProvider, NativeReferenceKey, NativeIteratorProjection, NativeFlowResult, NativeIteratorStage};
++use super::native_packs::{NativePackAlternative, NativePackSlot};
++use crate::types::{NativeResultPack, TypeId};
++
++impl<'p, 's> Checker<'p, 's> {
++    pub(super) fn native_iterator_header(&mut self, pack: NativeResultPack) -> NativeResultPack {
++        // Lua adjusts the frozen header list to iterator, invariant state and
++        // initial hidden control. The optional fourth closing value does not
++        // participate in the iterator call.
++        match self.native_adjust_pack(pack, 3) {
++            Ok(frame) => frame,
++            Err(_) => NativeResultPack { ty: TypeId::ERROR },
++        }
++    }
++
++    pub(super) fn native_iterator_step(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        at: NativeFlowKey,
++        stage: NativeIteratorStage,
++        frame: NativeResultPack,
++    ) -> NativeResultPack {
++        let Some(rows) = self.native_pack_alternatives(frame) else {
++            provider.flow_error(at, super::native_flow::NativeFlowError::Unsupported("unresolved generic-for frame"));
++            return NativeResultPack { ty: TypeId::ERROR };
++        };
++        let mut results = Vec::with_capacity(rows.len());
++        for row in rows {
++            let row = self.native_result_pack(&[row]);
++            let iterator = self.native_pack_slot(row, 0);
++            let state = self.native_pack_slot(row, 1);
++            let control = self.native_pack_slot(row, 2);
++            let called = self.call_resolved_result_pack(iterator, &[state, control], &[], None);
++            for error in called.errors {
++                provider.iterator_error(at, stage, iterator, error, self);
++            }
++            let returned = self.native_concat_pack(&[iterator, state], called.pack);
++            results.push(returned.ty);
++        }
++        NativeResultPack { ty: self.union(&results) }
++    }
++
++    pub(super) fn native_iterator_filter(&mut self, frame: NativeResultPack, enters: bool) -> NativeResultPack {
++        let Some(rows) = self.native_pack_alternatives(frame) else { return frame };
++        let mut filtered = Vec::with_capacity(rows.len());
++        for mut row in rows {
++            let pack = self.native_result_pack(&[row.clone()]);
++            let control = self.native_pack_slot(pack, 2);
++            let control = self.native_runtime_type(control, &super::native_flow::NativeRuntimeType::Nil, !enters);
++            if control.is_never() { continue; }
++            if let Some(slot) = row.fixed.get_mut(2) {
++                slot.ty = control;
++                if enters { slot.optional = false; }
++            } else if enters {
++                while row.fixed.len() < 2 {
++                    row.fixed.push(NativePackSlot { ty: TypeId::UNDEFINED, optional: false });
++                }
++                row.fixed.push(NativePackSlot { ty: control, optional: false });
++            } else {
++                // Rest-only returns can produce zero values. A physically
++                // present nil first result is another row only when the rest
++                // element itself admits nil; retain each complete row.
++                let absent = NativePackAlternative { fixed: row.fixed.clone(), tail: None };
++                if let Some(tail) = row.tail {
++                    let present = self.native_runtime_type(tail, &super::native_flow::NativeRuntimeType::Nil, true);
++                    if !present.is_never() {
++                        row.fixed.push(NativePackSlot { ty: present, optional: false });
++                        filtered.push(row);
++                    }
++                }
++                filtered.push(absent);
++                continue;
++            }
++            filtered.push(row);
++        }
++        self.native_result_pack(&filtered)
++    }
++
++    pub fn native_flow_iterator_pack(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        at: NativeFlowKey,
++        frame: NativeReferenceKey,
++    ) -> NativeResultPack {
++        // UNKNOWN is the broad declared carrier, distinct from the entry pack.
++        // NEVER is the initial value before IteratorStart. This keeps the
++        // shared walker's ordinary entry-first back-edge policy active.
++        let result = self.native_flow_type(provider, at, frame, TypeId::UNKNOWN, TypeId::NEVER);
++        NativeResultPack { ty: result.ty }
++    }
++
++    pub fn native_iterator_result(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        at: NativeFlowKey,
++        frame: NativeReferenceKey,
++        index: usize,
++    ) -> TypeId {
++        self.native_iterator_result_with_status(provider, at, frame, index).ty
++    }
++
++    pub fn native_iterator_result_with_status(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        at: NativeFlowKey,
++        frame: NativeReferenceKey,
++        index: usize,
++    ) -> NativeFlowResult {
++        let frame = self.native_flow_type(provider, at, frame, TypeId::UNKNOWN, TypeId::NEVER);
++        let ty = self.native_pack_slot(NativeResultPack { ty: frame.ty }, index.saturating_add(2));
++        NativeFlowResult { ty, incomplete: frame.incomplete }
++    }
++
++    pub fn native_flow_iterator_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativeIteratorProjection, ordinary: TypeId) -> NativeFlowResult {
++        let frame = self.native_flow_type(provider, at, projection.frame, TypeId::UNKNOWN, TypeId::NEVER);
++        let projected = self.native_pack_slot(NativeResultPack { ty: frame.ty }, projection.index);
++        let ty = self.map_type(ordinary, |checker, part| {
++            if checker.are_comparable(part, projected) { part } else { TypeId::NEVER }
++        });
++        NativeFlowResult { ty, incomplete: frame.incomplete }
++    }
++}

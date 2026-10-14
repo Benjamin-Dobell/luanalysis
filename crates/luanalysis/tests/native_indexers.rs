@@ -347,7 +347,6 @@ local item={{[1]=1}}\nlocal previous=item\n{stores}\n\
 }
 
 #[test]
-#[ignore = "pending native generic-for iterator state/control pack effects"]
 fn tableutils_iterate_pattern_preserves_dictionary_key_and_value_types() {
     // TableUtils.ttslua:24-33 reduction: remove builtins/overloads/packed-array
     // dispatch, retain generic iterator,state,control return and actual indexing.

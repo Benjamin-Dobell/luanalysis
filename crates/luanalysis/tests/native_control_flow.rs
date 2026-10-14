@@ -243,22 +243,21 @@ fn simultaneous_owner_replacement_in_a_branch_keeps_old_field_addresses() {
 }
 
 #[test]
-fn generic_iterator_predicates_are_explicitly_unsupported_in_this_named_reference_slice() {
-    for source in
-        ["local function iterator() return 1 end\nfor value in iterator do local copy=value end"]
-    {
-        let report = check(source);
-        assert!(
-            report.diagnostics.iter().any(|diagnostic| matches!(
-                diagnostic.code,
-                "LUA2020" | "LUA2023"
-            ) && diagnostic
-                .message
-                .contains("iteration")),
-            "{source}\n{:#?}",
-            report.diagnostics
-        );
-    }
+fn generic_iteration_checks_its_two_implicit_arguments_through_native_calls() {
+    let source =
+        "local function iterator() return 1 end\nfor value in iterator do local copy=value end";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2554");
+    assert_eq!(
+        &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+        "iterator"
+    );
+    let corrected = format!(
+        "---@param state nil\n---@param control nil|number\n{}",
+        source.replace("iterator()", "iterator(state,control)")
+    );
+    clean(&corrected);
 }
 
 #[test]

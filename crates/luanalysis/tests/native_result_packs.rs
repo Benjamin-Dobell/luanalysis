@@ -223,7 +223,6 @@ local function invalid() return false,42 end";
 }
 
 #[test]
-#[ignore = "pending native iterator pack return plus generic-for flow effects"]
 fn fixed_length_iterator_retains_the_key_value_return_pair() {
     // ge_tts/TableUtils.ttslua:9-17 reduction: std__Packed<T> is replaced by
     // one explicit record field so this gate isolates iterator result packs.

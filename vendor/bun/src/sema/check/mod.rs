@@ -55,6 +55,7 @@ mod expr;
 mod flow;
 mod flow_walk;
 pub mod native_flow;
+pub mod native_iterators;
 pub mod native_packs;
 mod grammarchecks;
 mod infer;

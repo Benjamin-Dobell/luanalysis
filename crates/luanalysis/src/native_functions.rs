@@ -415,12 +415,16 @@ impl NativeRegistry {
             let mut narrowed = queries.flow_pack_projection(&FlowAdapter { sources: &self.flow, values: self }, at, projection, &ordinary.ty);
             narrowed.incomplete |= ordinary.incomplete;
             narrowed
+        } else if let Some(projection) = self.flow.iterator_projection(reference) {
+            let mut narrowed = queries.flow_iterator_projection(&FlowAdapter { sources: &self.flow, values: self }, at, projection, &ordinary.ty);
+            narrowed.incomplete |= ordinary.incomplete;
+            narrowed
         } else {
             ordinary
         }
     }
 
-    fn checker_at_flow<'a>(
+    pub(super) fn checker_at_flow<'a>(
         &'a self,
         at: NativeFlowKey,
         queries: &'a mut dyn TypeQueries,
@@ -455,7 +459,7 @@ impl NativeRegistry {
         checker
     }
 
-    fn merge_flow_report(
+    pub(super) fn merge_flow_report(
         &self,
         at: NativeFlowKey,
         mode: luanalysis_engine::NativeCheckMode,
@@ -538,7 +542,10 @@ impl NativeRegistry {
         std::mem::take(&mut *self.report.borrow_mut())
     }
 
+    pub(super) fn iterator_sources(&self) -> &NativeFlowSources { &self.flow }
+
     pub(super) fn publish_binding(&self, binding: BindingId, value: &Binding) {
+        if matches!(self.declarations.get(&binding), Some(DeclarationSource::GenericLoop)) { return; }
         let mut captured = value.clone();
         captured.value = captured.constraint.clone();
         self.completed_bindings
@@ -689,7 +696,9 @@ impl NativeRegistry {
                 (ty, false)
             }
             DeclarationSource::NumericLoop => (Type::Number, false),
-            DeclarationSource::GenericLoop => (Type::Unknown, false),
+            DeclarationSource::GenericLoop => {
+                return self.iterator_binding_in_current_context(binding, checker.engine).map(|(binding, _)| binding);
+            },
         };
         self.merge_report(checker.report);
         Some(Binding {
@@ -1435,18 +1444,11 @@ impl NativeRegistry {
                 self.source_function_value(self.function(key), mode, queries)
             }
             ValueRecipe::NumericIteration => Type::Number,
-            ValueRecipe::IteratorResult(index) => {
-                self.report_flow_error(
-                    sources
-                        .source_node(input)
-                        .map_or(Span::default(), |node| node.span),
-                    NativeFlowError::Unsupported(
-                        "Lua iterator results require native iteration effects",
-                    ),
-                );
-                let _ = index;
-                Type::Unknown
+            ValueRecipe::IteratorHeader(iterator) => {
+                let pack = self.source_iterator_header(*iterator, input, queries);
+                queries.pack_slot(&pack, 0)
             }
+            ValueRecipe::IteratorResult { iterator, index } => self.source_iterator_result(*iterator, *index, input, queries).ty,
             ValueRecipe::Evaluation(evaluation) => {
                 let evaluation = sources.program.evaluation(*evaluation);
                 let expression = &sources.program.expression(evaluation.expression).expression;
@@ -1529,8 +1531,49 @@ impl NativeRegistry {
 }
 
 impl FlowValueQueries for NativeRegistry {
+    fn report_iterator_error(
+        &self,
+        at: NativeFlowKey,
+        stage: luanalysis_engine::NativeIteratorStage,
+        callee: &Type,
+        error: luanalysis_engine::CallError,
+        queries: &mut dyn TypeQueries,
+    ) {
+        let Some(node) = self.flow.source_node(at) else { return; };
+        let super::flow::NodeKind::Iteration { iterator, .. } = &node.kind else { return; };
+        let recipe = self.flow.program.iterator(*iterator);
+        let expressions: Vec<_> = recipe.values.iter().map(|value| {
+            &self.flow.program.expression(self.flow.program.evaluation(*value).expression).expression
+        }).collect();
+        let origin = |slot: usize| {
+            let Some((last, prefix)) = expressions.split_last() else { return recipe.span; };
+            if let Some(expression) = prefix.get(slot) { return expression.span; }
+            if slot == prefix.len() || super::native_packs::adjustment(last, true) == super::native_packs::Adjustment::Expand { last.span } else { recipe.span }
+        };
+        let callee_origin = origin(0);
+        let arguments = if stage == luanalysis_engine::NativeIteratorStage::First {
+            vec![origin(1), origin(2)]
+        } else {
+            vec![callee_origin; 2]
+        };
+        let feedback = stage == luanalysis_engine::NativeIteratorStage::Next && matches!(&error, luanalysis_engine::CallError::Argument { index: 1, .. });
+        let mut checker = self.checker_at_flow(at, queries);
+        let first_diagnostic = checker.report.diagnostics.len();
+        checker.call_result(luanalysis_engine::CallResult { return_type: Type::Any, errors: vec![error] }, callee, &arguments, callee_origin, callee_origin);
+        if feedback {
+            for diagnostic in checker.report.diagnostics.iter_mut().skip(first_diagnostic) {
+                diagnostic.message.push_str(" The previous first iterator result supplies the next control argument.");
+            }
+        }
+        self.merge_flow_report(at, checker.check_mode, checker.report);
+    }
+
     fn flow_value_pack(&self, sources: &NativeFlowSources, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> ValuePack {
         self.with_flow_context(input, queries, &mut |queries| {
+            if let ValueRecipe::IteratorHeader(iterator) = value {
+                return self.source_iterator_header(*iterator, input, queries);
+            }
+
             let ValueRecipe::Evaluation(evaluation) = value else {
                 return ValuePack::single(self.flow_value_type_in_context(sources, value, input, queries));
             };

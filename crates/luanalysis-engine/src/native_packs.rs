@@ -654,6 +654,57 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_any_tail_assignment_keeps_known_prefix_and_unknown_suffix() {
+        Engine::new().with_session(|queries| {
+            let any = queries.call_pack(&Type::Any, &[], &[], None).return_pack;
+            let packed = queries.concat_pack(&[Type::Number, Type::String], &any);
+            let adjusted = queries.adjust_pack(&packed, 4).unwrap();
+            for (index, expected) in [Type::Number, Type::String, Type::Any, Type::Any]
+                .into_iter()
+                .enumerate()
+            {
+                assert_eq!(queries.pack_slot(&adjusted, index), expected);
+            }
+            assert_eq!(queries.inspect_pack(&adjusted).unwrap().len(), 1);
+            let zero = queries.pack_function(&PackFunctionType {
+                params: Vec::new(),
+                rest: None,
+                type_parameters: Vec::new(),
+                returns: ValuePack::empty(),
+            });
+            let called = queries.call_native_arguments(
+                &zero,
+                None,
+                &[PackArgument::Expand(packed)],
+                &[],
+                None,
+            );
+            assert!(matches!(
+                called.errors.as_slice(),
+                [CallError::PackArity {
+                    actual_minimum: 2,
+                    actual_maximum: None,
+                    maximum: Some(0),
+                    ..
+                }]
+            ));
+            let finite = queries
+                .adjust_pack(&fixed(vec![Type::Number, Type::String]), 4)
+                .unwrap();
+            assert_eq!(queries.pack_slot(&finite, 2), Type::Nil);
+            let numeric = queries.concat_pack(
+                &[Type::Number, Type::String],
+                &ValuePack::variadic(Type::Number),
+            );
+            let numeric = queries.adjust_pack(&numeric, 4).unwrap();
+            let third = queries.pack_slot(&numeric, 2);
+            assert!(queries.is_assignable(&Type::Number, &third));
+            assert!(queries.is_assignable(&Type::Nil, &third));
+            assert!(queries.inspect_pack(&numeric).unwrap().len() > 1);
+        });
+    }
+
+    #[test]
     fn native_pack_implicit_return_policy_preserves_required_counts_and_scalar_ts_policy() {
         Engine::new().with_session(|queries| {
             for permitted in [

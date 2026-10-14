@@ -8,6 +8,7 @@
 mod native;
 mod native_flow;
 pub use native_flow::*;
+mod native_iterators;
 mod native_packs;
 pub use native_packs::*;
 #[cfg(test)]
@@ -714,6 +715,10 @@ pub trait TypeQueries {
         initial: &Type,
     ) -> NativeFlowResult;
     fn flow_reachable(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey) -> bool;
+    fn flow_iterator_pack(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey) -> ValuePack;
+    fn iterator_result(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey, index: usize) -> Type;
+    fn iterator_result_with_status(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey, index: usize) -> NativeFlowResult;
+    fn flow_iterator_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativeIteratorProjection, ordinary: &Type) -> NativeFlowResult;
     fn flow_pack_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativePackProjection, ordinary: &Type) -> NativeFlowResult;
     fn contextual_function(
         &mut self,
@@ -1171,6 +1176,18 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             handles: self.handles,
         };
         self.checker.native_flow_reachable(&adapter, at)
+    }
+    fn flow_iterator_pack(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey) -> ValuePack {
+        self.flow_iterator_pack_native(provider, at, frame)
+    }
+    fn iterator_result(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey, index: usize) -> Type {
+        self.iterator_result_native(provider, at, frame, index)
+    }
+    fn iterator_result_with_status(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey, index: usize) -> NativeFlowResult {
+        self.iterator_result_with_status_native(provider, at, frame, index)
+    }
+    fn flow_iterator_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativeIteratorProjection, ordinary: &Type) -> NativeFlowResult {
+        self.flow_iterator_projection_native(provider, at, projection, ordinary)
     }
     fn flow_pack_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativePackProjection, ordinary: &Type) -> NativeFlowResult {
         self.flow_pack_projection_native(provider, at, projection, ordinary)

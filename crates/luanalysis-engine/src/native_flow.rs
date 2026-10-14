@@ -7,7 +7,7 @@ use bun_sema::check::native_flow as core;
 pub use core::{
     NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeGraphKey,
     NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePackProjection,
-    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation,
+    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation, NativeIteratorProjection, NativeIteratorStage,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +19,8 @@ pub struct NativeFlowResult {
 /// Immutable graph recipes and source-value demands. No graph join, loop
 /// iteration, or narrowing algorithm is performed by this interface.
 pub trait NativeFlowProvider {
+    fn iterator_error(&self, _: NativeFlowKey, _: NativeIteratorStage, _: &Type, _: super::CallError, _: &mut dyn TypeQueries) {}
+    fn iterator_projection(&self, _: NativeReferenceKey) -> Option<NativeIteratorProjection> { None }
     fn pack_projection(&self, _: NativeReferenceKey) -> Option<NativePackProjection> {
         None
     }
@@ -61,6 +63,13 @@ pub(super) struct FlowProviderAdapter<'a> {
 }
 
 impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
+    fn iterator_projection(&self, reference: NativeReferenceKey) -> Option<NativeIteratorProjection> { self.provider.iterator_projection(reference) }
+    fn iterator_error(&self, at: NativeFlowKey, stage: NativeIteratorStage, callee: bun_sema::types::TypeId, error: bun_sema::check::ResolvedTypeCallError, checker: &mut Checker<'_, '_>) {
+        let mut queries = SessionQueries { checker, handles: self.handles };
+        let callee = queries.handles.retain(callee);
+        let result = queries.export_call_result(bun_sema::check::ResolvedTypeCall { sig: None, ret: bun_sema::types::TypeId::ANY, errors: vec![error] });
+        for error in result.errors { self.provider.iterator_error(at, stage, &callee, error, &mut queries); }
+    }
     fn pack_projection(&self, reference: NativeReferenceKey) -> Option<NativePackProjection> {
         self.provider.pack_projection(reference)
     }

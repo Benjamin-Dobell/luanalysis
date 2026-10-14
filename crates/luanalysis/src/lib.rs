@@ -11,6 +11,7 @@ pub mod flow;
 mod functions;
 mod native_expressions;
 mod native_flow;
+mod native_iterators;
 mod native_functions;
 mod native_named;
 mod native_packs;
@@ -300,7 +301,10 @@ impl Checker<'_> {
                 let context = self
                     .contextual_function
                     .or_else(|| self.engine.current_contextual_function());
-                let value = if let Some(context) = context {
+                let value = if let Some((value, incomplete)) = native.iterator_binding_in_current_context(binding, self.engine) {
+                    self.incomplete_flow |= incomplete;
+                    Some(value)
+                } else if let Some(context) = context {
                     native.resolve_binding_in_context(binding, &context, self.engine)
                 } else {
                     native.resolve_binding(binding, self.engine)
@@ -443,14 +447,27 @@ impl Checker<'_> {
                     self.record_binding(name, binding, &Type::Number);
                     self.statements(body);
                 }
-                StmtKind::GenericFor { values, body, .. } => {
-                    self.error(
-                        "LUA2023",
-                        statement.span,
-                        "generic iteration requires the native Lua iterator integration",
-                    );
-                    for value in values {
-                        self.expression(value);
+                StmtKind::GenericFor { names, body, .. } => {
+                    if let (Some(native), Some(at)) = (self.native, self.flow_at) {
+                        for name in names {
+                            let id = self
+                                .bound
+                                .binding_at(name.span.start)
+                                .expect("bound Lua generic loop variable");
+                            let (binding, incomplete) = native
+                                .iterator_body_binding(id, at, self.engine)
+                                .expect("an original generic loop has a body binding recipe");
+                            self.incomplete_flow |= incomplete;
+                            let constraint = binding.constraint.clone();
+                            self.locals.insert(id, binding);
+                            self.record_binding(name, id, &constraint);
+                        }
+                    } else {
+                        self.error(
+                            "LUA2023",
+                            statement.span,
+                            "generic iteration requires an original native flow context",
+                        );
                     }
                     self.statements(body);
                 }
