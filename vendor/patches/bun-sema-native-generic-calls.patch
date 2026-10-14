@@ -1,0 +1,564 @@
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -28,6 +28,9 @@
+     UnsupportedOverloads,
+     UnsupportedRest,
+     UnsupportedThis,
++    UnsupportedGenericFunctionArgument { index: usize },
++    TypeArgumentArity { actual: usize, min: usize, max: usize },
++    TypeArgument { index: usize, source: TypeId, target: TypeId },
+     Arity {
+         actual: usize,
+         min: usize,
+@@ -57,6 +60,8 @@
+ 
+ #[derive(Copy, Clone)]
+ pub(super) enum Arg {
++    /// An already checked value with no TS syntax node.
++    Resolved(TypeId),
+     Expr(ExprId),
+     /// `createSyntheticExpression`: a type, and its label (`tupleNameSource`) or `NONE`. The last
+     /// field is the node it is positioned at: the argument whose tuple it is an element of, the
+@@ -77,6 +82,7 @@
+     /// The node at which an error about it is reported.
+     pub(super) fn node(self) -> ExprId {
+         match self {
++            Arg::Resolved(_) => panic!("resolved argument has no TS syntax node"),
+             Arg::Expr(e)
+             | Arg::Type(_, _, e)
+             | Arg::Spread(_, _, _, e)
+@@ -130,16 +136,25 @@
+     Yes,
+ }
+ 
++#[derive(Copy, Clone)]
++pub(super) enum CallSite {
++    Ts {
++        file: FileId,
++        call: ExprId,
++        node: CallLike,
++        this_arg: Option<ExprId>,
++    },
++    Native {
++        expected_return: Option<TypeId>,
++        this_type: Option<TypeId>,
++    },
++}
++
+ /// `CallState`
+ pub(super) struct CallState<'a> {
+-    pub(super) file: FileId,
+-    /// The key for `node` in the tables.
+-    pub(super) call: ExprId,
+-    pub(super) node: CallLike,
++    pub(super) site: CallSite,
+     pub(super) type_args: &'a [TypeId],
+     pub(super) args: &'a [Arg],
+-    /// `getThisArgumentOfCall`
+-    pub(super) this_arg: Option<ExprId>,
+     pub(super) candidates: Sigs,
+     pub(super) arg_check_mode: CheckMode,
+     pub(super) is_single_non_generic_candidate: bool,
+@@ -153,6 +168,15 @@
+     pub(super) candidate_for_type_argument_error: Option<SigId>,
+ }
+ 
++impl CallState<'_> {
++    pub(super) fn ts_site(&self) -> (FileId, ExprId, CallLike, Option<ExprId>) {
++        match self.site {
++            CallSite::Ts { file, call, node, this_arg } => (file, call, node, this_arg),
++            CallSite::Native { .. } => panic!("native call has no TS syntax site"),
++        }
++    }
++}
++
+ /// What `push_inference_context` replaces in the checker, and `pop_inference_context` puts back.
+ struct OutsideInferenceContext {
+     mode_of_recheck: CheckMode,
+@@ -181,11 +205,18 @@
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
+-    /// Check a single non-generic call signature against already-resolved argument types.
+-    /// Signature discovery, callable-union combination, arity, parameter lookup and type
+-    /// relations use the same workers as `resolve_call`. Contextual argument checking and
+-    /// generic inference require frontend expressions and are deliberately not approximated.
++    /// Check already-resolved argument values through the native call scheduler.
+     pub fn call_resolved_types(&mut self, callee: TypeId, args: &[TypeId]) -> ResolvedTypeCall {
++        self.call_resolved_types_with_type_arguments(callee, args, &[], None)
++    }
++
++    pub fn call_resolved_types_with_type_arguments(
++        &mut self,
++        callee: TypeId,
++        args: &[TypeId],
++        type_args: &[TypeId],
++        expected_return: Option<TypeId>,
++    ) -> ResolvedTypeCall {
+         if self.is_any(callee) {
+             return ResolvedTypeCall {
+                 ret: TypeId::ANY,
+@@ -198,8 +229,6 @@
+             Some(ResolvedTypeCallError::NotCallable)
+         } else if candidates.len() != 1 {
+             Some(ResolvedTypeCallError::UnsupportedOverloads)
+-        } else if !self.sig_type_params(candidates[0]).is_empty() {
+-            Some(ResolvedTypeCallError::UnsupportedGeneric)
+         } else {
+             None
+         };
+@@ -208,6 +237,15 @@
+                 ret: TypeId::ERROR,
+                 errors: vec![error],
+             };
++        }
++        for (index, &arg) in args.iter().enumerate() {
++            let sigs = self.signatures(arg, false);
++            if sigs.iter().any(|&sig| !self.sig_type_params(sig).is_empty()) {
++                return ResolvedTypeCall {
++                    ret: TypeId::ERROR,
++                    errors: vec![ResolvedTypeCallError::UnsupportedGenericFunctionArgument { index }],
++                };
++            }
+         }
+         let sig = candidates[0];
+         let params = self.sig_params(sig);
+@@ -226,41 +264,55 @@
+                 errors: vec![error],
+             };
+         }
+-        if !self.has_correct_arity_for_count(
+-            &params,
+-            matches!(params, List::Own(_)),
+-            args.len(),
+-            None,
+-            false,
+-        ) {
+-            let min = self.min_argument_count(&params);
+-            let max = (!self.has_effective_rest_parameter(&params))
+-                .then(|| self.parameter_count(&params));
+-            return ResolvedTypeCall {
+-                ret: self.sig_return(sig),
+-                errors: vec![ResolvedTypeCallError::Arity {
+-                    actual: args.len(),
+-                    min,
+-                    max,
+-                }],
+-            };
+-        }
+-        // `choose_overload` goes straight to Assignable for one non-generic candidate.
++        let arguments: Args = args.iter().copied().map(Arg::Resolved).collect();
++        let mut state = CallState {
++            site: CallSite::Native { expected_return, this_type: None },
++            type_args,
++            args: &arguments,
++            candidates: SmallVec::from_slice(&candidates),
++            arg_check_mode: CheckMode::empty(),
++            is_single_non_generic_candidate: self.sig_type_params(sig).is_empty(),
++            checks_arguments_once: false,
++            candidates_for_argument_error: Sigs::new(),
++            candidate_for_argument_arity_error: None,
++            candidate_for_type_argument_error: None,
++        };
++        let chosen = self.choose_overload(&mut state, Relation::Assignable);
++        let selected = chosen.unwrap_or_else(|| self.candidate_for_overload_failure(&state));
+         let mut errors = Vec::new();
+-        for (index, &source) in args.iter().enumerate() {
+-            let Some(target) = self.param_type_at(&params, index) else {
+-                continue;
+-            };
+-            if !self.is_resolved_call_argument_applicable(source, target, Relation::Assignable) {
+-                errors.push(ResolvedTypeCallError::Argument {
+-                    index,
+-                    source,
+-                    target,
++        if chosen.is_none() {
++            let type_params = self.sig_type_params(sig);
++            if !self.has_correct_type_argument_arity(&type_params, type_args.len()) {
++                errors.push(ResolvedTypeCallError::TypeArgumentArity {
++                    actual: type_args.len(),
++                    min: self.min_type_argument_count(&type_params),
++                    max: type_params.len(),
+                 });
+-                break;
+-            }
+-        }
+-        ResolvedTypeCall { ret: self.sig_return(sig), errors }
++            } else if state.candidate_for_type_argument_error.is_some() {
++                let filled = self.fill_sig_type_args(sig, &type_params, type_args);
++                for index in 0..type_args.len().min(type_params.len()) {
++                    if let Some((source, target)) = self.type_argument_constraint_error(sig, &type_params, &filled, index) {
++                        errors.push(ResolvedTypeCallError::TypeArgument { index, source, target });
++                        break;
++                    }
++                }
++            } else {
++                let params = self.sig_params(selected);
++                if !self.has_correct_arity(&state, &params) {
++                    errors.push(ResolvedTypeCallError::Arity {
++                        actual: args.len(),
++                        min: self.min_argument_count(&params),
++                        max: (!self.has_effective_rest_parameter(&params))
++                            .then(|| self.parameter_count(&params)),
++                    });
++                } else if let Some((index, source, target)) = self.resolved_signature_argument_error(
++                    selected, &arguments, Relation::Assignable, CheckMode::empty(),
++                ) {
++                    errors.push(ResolvedTypeCallError::Argument { index, source, target });
++                }
++            }
++        }
++        ResolvedTypeCall { ret: self.sig_return(selected), errors }
+     }
+ 
+     /// `isContextSensitive`. For `JsxAttributes`: `is_jsx_attributes_context_sensitive`.
+@@ -768,7 +820,7 @@
+                 self.iife_resolving.pop();
+                 Some(self.widen_literal(ty))
+             }
+-            Some(&(Arg::Type(ty, ..) | Arg::Spread(ty, ..) | Arg::SpreadElement(ty, ..))) => {
++            Some(&(Arg::Resolved(ty) | Arg::Type(ty, ..) | Arg::Spread(ty, ..) | Arg::SpreadElement(ty, ..))) => {
+                 Some(ty)
+             }
+             None if own.default.is_some() => None,
+@@ -799,7 +851,11 @@
+         s: &CallState<'_>,
+         params: &List<'_, SigParam>,
+     ) -> bool {
+-        let (file, call, node, args) = (s.file, s.call, s.node, s.args);
++        let args = s.args;
++        if matches!(s.site, CallSite::Native { .. }) {
++            return self.has_correct_arity_for_count(params, matches!(params, List::Own(_)), args.len(), None, false);
++        }
++        let (file, call, node, _) = s.ts_site();
+         // The attributes are a single argument, regardless of the component's other parameters.
+         if matches!(node, CallLike::Jsx(_)) {
+             return true;
+@@ -1341,12 +1397,9 @@
+             };
+         }
+         let mut s = CallState {
+-            file,
+-            call,
+-            node,
++            site: CallSite::Ts { file, call, node, this_arg },
+             type_args,
+             args,
+-            this_arg,
+             candidates: SmallVec::from_slice(&candidates),
+             arg_check_mode: CheckMode::empty(),
+             is_single_non_generic_candidate: false,
+@@ -1472,7 +1525,10 @@
+                     check_candidate = self.instantiate_sig(candidate, mapper);
+                 } else {
+                     let mut context = Inference::for_params(&type_params, Some(candidate));
+-                    context.any_default = self.hir(s.file).is_js;
++                    context.any_default = match s.site {
++                        CallSite::Ts { file, .. } => self.hir(file).is_js,
++                        CallSite::Native { .. } => false,
++                    };
+                     let check_mode = s.arg_check_mode | CheckMode::SKIP_GENERIC_FUNCTIONS;
+                     let mapper = self.infer_type_arguments(s, candidate, check_mode, &mut context);
+                     if context.skipped_generic_function {
+@@ -1542,13 +1598,14 @@
+         check_mode: CheckMode,
+         context: &mut Inference,
+     ) -> MapperId {
+-        let (file, call, args) = (s.file, s.call, s.args);
+-        if let CallLike::Jsx(j) = s.node
++        let args = s.args;
++        if let CallSite::Ts { file, call, node, .. } = s.site {
++        if let CallLike::Jsx(j) = node
+             && self.hir(file)[j].tag.is_some()
+         {
+             return self.infer_jsx_type_arguments(file, call, signature, check_mode, context);
+         }
+-        if matches!(s.node, CallLike::Call(_)) {
++        if matches!(node, CallLike::Call(_)) {
+             let mut skip_binding_patterns = true;
+             for i in 0..context.params.len() {
+                 skip_binding_patterns =
+@@ -1595,23 +1652,21 @@
+                             PRIORITY_RETURN,
+                         );
+                     }
+-                    let mut return_context =
+-                        Inference::for_params(&context.params, Some(signature));
+-                    return_context.any_default = context.any_default;
+                     let return_source_type = match outer_context {
+                         Some(level) => {
+                             self.instantiate_with_outer_return_mapper(level, contextual_type)
+                         }
+                         None => contextual_type,
+                     };
+-                    self.infer(
+-                        &mut return_context,
+-                        return_source_type,
+-                        inference_target_type,
+-                        0,
+-                    );
+-                    context.return_context = Self::clone_inferred_part_of_context(&return_context);
+-                }
++                    self.infer_call_return_context(context, signature, return_source_type, inference_target_type);
++                }
++            }
++        }
++        } else if let CallSite::Native { expected_return: Some(expected), .. } = s.site {
++            let target = self.sig_return(signature);
++            if self.could_contain_type_variables(target) {
++                self.infer(context, expected, target, PRIORITY_RETURN);
++                self.infer_call_return_context(context, signature, expected, target);
+             }
+         }
+         // `getTypeAtPosition(signature, i)` for every argument.
+@@ -1631,29 +1686,50 @@
+         if let Some(this_type) = self.sig_this_type(signature)
+             && self.could_contain_type_variables(this_type)
+         {
+-            let this_argument_type = self.this_argument_type(file, s.this_arg);
++            let this_argument_type = match s.site {
++                CallSite::Ts { file, this_arg, .. } => self.this_argument_type(file, this_arg),
++                CallSite::Native { this_type, .. } => this_type.unwrap_or(TypeId::VOID),
++            };
+             self.infer(context, this_argument_type, this_type, 0);
+         }
+         for (i, &arg) in args.iter().enumerate().take(arg_count) {
+-            if matches!(self.hir(file)[arg.node()].kind, ExprKind::Missing) {
++            if let CallSite::Ts { file, .. } = s.site
++                && matches!(self.hir(file)[arg.node()].kind, ExprKind::Missing)
++            {
+                 continue;
+             }
+             if let Some(param_type) = self.param_type_at(&params, i)
+                 && self.could_contain_type_variables(param_type)
+             {
+-                let arg_type =
+-                    self.check_argument(file, arg, param_type, Some(context), check_mode);
++                let arg_type = match (s.site, arg) {
++                    (CallSite::Native { .. }, Arg::Resolved(ty)) => ty,
++                    (CallSite::Ts { file, .. }, _) => self.check_argument(file, arg, param_type, Some(context), check_mode),
++                    _ => unreachable!("native argument demand is not implemented"),
++                };
+                 self.infer(context, arg_type, param_type, 0);
+             }
+         }
+         if let Some(rest) = rest_type
+             && self.could_contain_type_variables(rest)
+         {
+-            let spread_type =
+-                self.spread_argument_type(file, args, arg_count, rest, Some(context), check_mode);
++            let (file, _, _, _) = s.ts_site();
++            let spread_type = self.spread_argument_type(file, args, arg_count, rest, Some(context), check_mode);
+             self.infer(context, spread_type, rest, 0);
+         }
+         self.inference_mapper(context)
++    }
++
++    fn infer_call_return_context(
++        &mut self,
++        context: &mut Inference,
++        signature: SigId,
++        source: TypeId,
++        target: TypeId,
++    ) {
++        let mut returned = Inference::for_params(&context.params, Some(signature));
++        returned.any_default = context.any_default;
++        self.infer(&mut returned, source, target, 0);
++        context.return_context = Self::clone_inferred_part_of_context(&returned);
+     }
+ 
+     /// Whether the call of `getContextualType` that has just returned `contextual_type` created it,
+@@ -1775,6 +1851,7 @@
+         check_mode: CheckMode,
+     ) -> TypeId {
+         let (ty, node) = match arg {
++            Arg::Resolved(ty) => return ty,
+             Arg::Expr(e) => {
+                 let contextual_type = self.without_no_infer(contextual_type);
+                 return self.check_expression_with_contextual_type(
+@@ -2076,7 +2153,10 @@
+         }
+         // `inferSignatureInstantiationForOverloadFailure`
+         let mut context = Inference::for_params(&type_params, Some(candidate));
+-        context.any_default = self.hir(s.file).is_js;
++        context.any_default = match s.site {
++            CallSite::Ts { file, .. } => self.hir(file).is_js,
++            CallSite::Native { .. } => false,
++        };
+         let check_mode = CheckMode::SKIP_CONTEXT_SENSITIVE | CheckMode::SKIP_GENERIC_FUNCTIONS;
+         let mapper = self.infer_type_arguments(s, candidate, check_mode, &mut context);
+         self.instantiate_sig(candidate, mapper)
+--- a/src/sema/check/errors_call.rs
++++ b/src/sema/check/errors_call.rs
+@@ -10,7 +10,7 @@
+ //! (`arg_type_under`). Whenever that leaves the applicability of a candidate undecided, nothing is
+ //! reported.
+ 
+-use super::call::{Arg, CallLike, CallState};
++use super::call::{Arg, CallLike, CallSite, CallState};
+ use super::explain::{Line, NOWHERE};
+ use super::relate::Relation;
+ use super::sink::{held, number_text};
+@@ -783,7 +783,8 @@
+         sigs: &[SigId],
+         head: Option<u32>,
+     ) {
+-        let (file, node, type_args) = (s.file, s.node, s.type_args);
++        let (file, _, node, _) = s.ts_site();
++        let type_args = s.type_args;
+         let hir = self.hir(file);
+         let type_argument_list = match node {
+             CallLike::Call(c) => Some(hir[c].type_args),
+@@ -902,23 +903,64 @@
+         let mapper = self.mapper_from(type_params, &filled);
+         let outer = self.mapper_around_sig(sig);
+         for i in 0..type_args.len().min(type_params.len()) {
+-            let Some(constraint) = self.constraint_of_type_param(type_params[i]) else {
+-                continue;
+-            };
+-            let constraint = self.filled_in_around(type_params[i], constraint, outer);
+-            let constraint = self.instantiate(constraint, mapper);
+-            let constraint = self.type_with_this_argument(constraint, filled[i]);
+-            let error_node = error_nodes.map(|(file, nodes)| {
++            if let Some((file, nodes)) = error_nodes {
++                let Some(constraint) = self.type_argument_constraint(
++                    type_params[i], filled[i], outer, mapper,
++                ) else {
++                    continue;
++                };
+                 let hir = self.hir(file);
+                 let node: TypeNodeId = hir.id_at(nodes, i);
+                 let start = super::errors_type_nodes::start_of_type(hir, node);
+-                (file, start, self.end_of_type_node_from(file, node, start))
+-            });
+-            if !self.check_type_assignable_to(filled[i], constraint, error_node, Some(2344)) {
++                let error_node = (file, start, self.end_of_type_node_from(file, node, start));
++                if !self.check_type_assignable_to(filled[i], constraint, Some(error_node), Some(2344)) {
++                    return None;
++                }
++            } else if self.type_argument_constraint_error_with_mapper(
++                type_params[i], filled[i], outer, mapper,
++            ).is_some() {
+                 return None;
+             }
+         }
+         Some(filled)
++    }
++
++    /// The first-stage constraint relation for one explicit type argument, without a source node.
++    pub(super) fn type_argument_constraint_error(
++        &mut self,
++        sig: SigId,
++        type_params: &[TypeId],
++        filled: &[TypeId],
++        index: usize,
++    ) -> Option<(TypeId, TypeId)> {
++        let mapper = self.mapper_from(type_params, filled);
++        let outer = self.mapper_around_sig(sig);
++        self.type_argument_constraint_error_with_mapper(type_params[index], filled[index], outer, mapper)
++    }
++
++    fn type_argument_constraint_error_with_mapper(
++        &mut self,
++        param: TypeId,
++        actual: TypeId,
++        outer: MapperId,
++        mapper: MapperId,
++    ) -> Option<(TypeId, TypeId)> {
++        let constraint = self.type_argument_constraint(param, actual, outer, mapper)?;
++        (!self.check_type_assignable_to(actual, constraint, None, Some(2344)))
++            .then_some((actual, constraint))
++    }
++
++    fn type_argument_constraint(
++        &mut self,
++        param: TypeId,
++        actual: TypeId,
++        outer: MapperId,
++        mapper: MapperId,
++    ) -> Option<TypeId> {
++        let constraint = self.constraint_of_type_param(param)?;
++        let constraint = self.filled_in_around(param, constraint, outer);
++        let constraint = self.instantiate(constraint, mapper);
++        Some(self.type_with_this_argument(constraint, actual))
+     }
+ 
+     /// The relation step of `isSignatureApplicable`, after an argument has been resolved under
+@@ -930,6 +972,40 @@
+         relation: Relation,
+     ) -> bool {
+         self.related(actual, expected, relation)
++    }
++
++    /// Applicability for arguments resolved by a native frontend, without TS syntax or positions.
++    pub(super) fn resolved_signature_argument_error(
++        &mut self,
++        sig: SigId,
++        args: &[Arg],
++        relation: Relation,
++        check_mode: CheckMode,
++    ) -> Option<(usize, TypeId, TypeId)> {
++        let mut params = self.sig_params(sig);
++        assert!(self.non_array_rest_type(&params).is_none());
++        for (i, &arg) in args.iter().enumerate() {
++            if let List::Own(_) = params {
++                params = self.sig_params_up_to(sig, i + 1);
++            }
++            let Some(expected) = self.param_type_at(&params, i) else {
++                continue;
++            };
++            let Arg::Resolved(actual) = arg else {
++                panic!("native call applicability requires resolved arguments");
++            };
++            let actual = if check_mode.contains(CheckMode::SKIP_CONTEXT_SENSITIVE) {
++                self.regular_type_of_object_literal(actual)
++            } else {
++                actual
++            };
++            if !self.is_resolved_call_argument_applicable(actual, expected, relation) {
++                self.note_parameter_types_resolved(sig, &params, i + 1);
++                return Some((i, actual, expected));
++            }
++        }
++        self.note_parameter_types_resolved(sig, &params, args.len());
++        None
+     }
+ 
+     /// `isSignatureApplicable`. Where something could not be determined the result is true, except
+@@ -942,10 +1018,15 @@
+         check_mode: CheckMode,
+         report: bool,
+     ) -> bool {
+-        if let CallLike::Jsx(_) = s.node {
++        if matches!(s.site, CallSite::Native { .. }) {
++            return self.resolved_signature_argument_error(sig, s.args, relation, check_mode).is_none();
++        }
++        let (file, e, node, this_arg) = s.ts_site();
++        let args = s.args;
++        if let CallLike::Jsx(_) = node {
+             return self.check_applicable_signature_for_jsx_call_like_element(
+-                s.file,
+-                s.call,
++                file,
++                e,
+                 sig,
+                 relation,
+                 check_mode,
+@@ -953,7 +1034,6 @@
+                 report,
+             );
+         }
+-        let (file, e, node, args, this_arg) = (s.file, s.call, s.node, s.args, s.this_arg);
+         let hir = self.hir(file);
+         // The arguments of a decorator are synthetic (`createSyntheticExpression`): an error about
+         // one is reported at the decorator expression.
+@@ -1239,7 +1319,8 @@
+     /// `getArgumentArityError`: 2554 2555 2556 2575 2794 2810, and 1278 1279 for a decorator.
+     /// `head`: `headMessage`.
+     fn report_argument_arity(&mut self, s: &CallState<'_>, sigs: &[SigId], head: Option<u32>) {
+-        let (file, e, node, args) = (s.file, s.call, s.node, s.args);
++        let (file, e, node, _) = s.ts_site();
++        let args = s.args;
+         if let Some(spread) = args.iter().find(|a| a.is_spread()) {
+             let start = self.start_of(file, spread.node());
+             self.error_at(

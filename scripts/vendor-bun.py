@@ -57,6 +57,11 @@ SOURCE_ADAPTATIONS.extend({
     "check/mapped.rs", "check/mod.rs", "check/print.rs", "check/relate.rs",
     "check/shape.rs", "check/unions.rs", "types.rs",
 ])
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-generic-calls.patch",
+    "reason": "Route resolved native generic calls through shared overload selection, type argument inference, defaults, constraints and signature instantiation.",
+} for path in ["call.rs", "errors_call.rs"])
 
 
 def git(source, *args):

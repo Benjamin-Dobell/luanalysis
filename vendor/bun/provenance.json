@@ -204,6 +204,18 @@
       "patch": "vendor/patches/bun-sema-native-type-parameters.patch",
       "reason": "Add source-identified native generic parameters using shared constraint/default, relation and sibling-clone mapper workers.",
       "patch_sha256": "a3b6ed594a47ec69361671b64a49a71fc481ebea2eb6648011244dad48b13117"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-calls.patch",
+      "reason": "Route resolved native generic calls through shared overload selection, type argument inference, defaults, constraints and signature instantiation.",
+      "patch_sha256": "c63815011d1875e51aa207e8e7c56b7351cb2746efb1a6d802b4fdbfac42ebb7"
+    },
+    {
+      "path": "src/sema/check/errors_call.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-calls.patch",
+      "reason": "Route resolved native generic calls through shared overload selection, type argument inference, defaults, constraints and signature instantiation.",
+      "patch_sha256": "c63815011d1875e51aa207e8e7c56b7351cb2746efb1a6d802b4fdbfac42ebb7"
     }
   ],
   "files": {
@@ -900,7 +912,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "06393330a0bf0141104049d465159c2ba67c977f56c957345f45b468470251f7"
+      "extracted_sha256": "3d1f5a07f7d9afbf83c5f48f04a2f16e4e9e1ec7e5df5a68853af69ed0d3a13c"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -950,7 +962,7 @@
     "src/sema/check/errors_call.rs": {
       "upstream": "src/sema/check/errors_call.rs",
       "sha256": "d3afd92a719df2d061cc57fdbaaceab03111588613ea9748fe20a3a2cfab230f",
-      "extracted_sha256": "836ea82186b08c868c021c03c1b6edf0e92821d3f3338ee83791c612218ecce0"
+      "extracted_sha256": "396bd027d30485e2b5c19347ab2c7b87a2e02d3b6db2b33ff59e33259f964bbb"
     },
     "src/sema/check/errors_circular.rs": {
       "upstream": "src/sema/check/errors_circular.rs",

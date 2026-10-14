@@ -28,6 +28,9 @@ pub enum ResolvedTypeCallError {
     UnsupportedOverloads,
     UnsupportedRest,
     UnsupportedThis,
+    UnsupportedGenericFunctionArgument { index: usize },
+    TypeArgumentArity { actual: usize, min: usize, max: usize },
+    TypeArgument { index: usize, source: TypeId, target: TypeId },
     Arity {
         actual: usize,
         min: usize,
@@ -57,6 +60,8 @@ impl crate::table::Packed for ResolvedCall {
 
 #[derive(Copy, Clone)]
 pub(super) enum Arg {
+    /// An already checked value with no TS syntax node.
+    Resolved(TypeId),
     Expr(ExprId),
     /// `createSyntheticExpression`: a type, and its label (`tupleNameSource`) or `NONE`. The last
     /// field is the node it is positioned at: the argument whose tuple it is an element of, the
@@ -77,6 +82,7 @@ impl Arg {
     /// The node at which an error about it is reported.
     pub(super) fn node(self) -> ExprId {
         match self {
+            Arg::Resolved(_) => panic!("resolved argument has no TS syntax node"),
             Arg::Expr(e)
             | Arg::Type(_, _, e)
             | Arg::Spread(_, _, _, e)
@@ -130,16 +136,25 @@ pub(super) enum AllowMembers {
     Yes,
 }
 
+#[derive(Copy, Clone)]
+pub(super) enum CallSite {
+    Ts {
+        file: FileId,
+        call: ExprId,
+        node: CallLike,
+        this_arg: Option<ExprId>,
+    },
+    Native {
+        expected_return: Option<TypeId>,
+        this_type: Option<TypeId>,
+    },
+}
+
 /// `CallState`
 pub(super) struct CallState<'a> {
-    pub(super) file: FileId,
-    /// The key for `node` in the tables.
-    pub(super) call: ExprId,
-    pub(super) node: CallLike,
+    pub(super) site: CallSite,
     pub(super) type_args: &'a [TypeId],
     pub(super) args: &'a [Arg],
-    /// `getThisArgumentOfCall`
-    pub(super) this_arg: Option<ExprId>,
     pub(super) candidates: Sigs,
     pub(super) arg_check_mode: CheckMode,
     pub(super) is_single_non_generic_candidate: bool,
@@ -151,6 +166,15 @@ pub(super) struct CallState<'a> {
     pub(super) candidates_for_argument_error: Sigs,
     pub(super) candidate_for_argument_arity_error: Option<SigId>,
     pub(super) candidate_for_type_argument_error: Option<SigId>,
+}
+
+impl CallState<'_> {
+    pub(super) fn ts_site(&self) -> (FileId, ExprId, CallLike, Option<ExprId>) {
+        match self.site {
+            CallSite::Ts { file, call, node, this_arg } => (file, call, node, this_arg),
+            CallSite::Native { .. } => panic!("native call has no TS syntax site"),
+        }
+    }
 }
 
 /// What `push_inference_context` replaces in the checker, and `pop_inference_context` puts back.
@@ -181,11 +205,18 @@ enum SigParent {
 }
 
 impl<'p, 's> Checker<'p, 's> {
-    /// Check a single non-generic call signature against already-resolved argument types.
-    /// Signature discovery, callable-union combination, arity, parameter lookup and type
-    /// relations use the same workers as `resolve_call`. Contextual argument checking and
-    /// generic inference require frontend expressions and are deliberately not approximated.
+    /// Check already-resolved argument values through the native call scheduler.
     pub fn call_resolved_types(&mut self, callee: TypeId, args: &[TypeId]) -> ResolvedTypeCall {
+        self.call_resolved_types_with_type_arguments(callee, args, &[], None)
+    }
+
+    pub fn call_resolved_types_with_type_arguments(
+        &mut self,
+        callee: TypeId,
+        args: &[TypeId],
+        type_args: &[TypeId],
+        expected_return: Option<TypeId>,
+    ) -> ResolvedTypeCall {
         if self.is_any(callee) {
             return ResolvedTypeCall {
                 ret: TypeId::ANY,
@@ -198,8 +229,6 @@ impl<'p, 's> Checker<'p, 's> {
             Some(ResolvedTypeCallError::NotCallable)
         } else if candidates.len() != 1 {
             Some(ResolvedTypeCallError::UnsupportedOverloads)
-        } else if !self.sig_type_params(candidates[0]).is_empty() {
-            Some(ResolvedTypeCallError::UnsupportedGeneric)
         } else {
             None
         };
@@ -208,6 +237,15 @@ impl<'p, 's> Checker<'p, 's> {
                 ret: TypeId::ERROR,
                 errors: vec![error],
             };
+        }
+        for (index, &arg) in args.iter().enumerate() {
+            let sigs = self.signatures(arg, false);
+            if sigs.iter().any(|&sig| !self.sig_type_params(sig).is_empty()) {
+                return ResolvedTypeCall {
+                    ret: TypeId::ERROR,
+                    errors: vec![ResolvedTypeCallError::UnsupportedGenericFunctionArgument { index }],
+                };
+            }
         }
         let sig = candidates[0];
         let params = self.sig_params(sig);
@@ -226,41 +264,55 @@ impl<'p, 's> Checker<'p, 's> {
                 errors: vec![error],
             };
         }
-        if !self.has_correct_arity_for_count(
-            &params,
-            matches!(params, List::Own(_)),
-            args.len(),
-            None,
-            false,
-        ) {
-            let min = self.min_argument_count(&params);
-            let max = (!self.has_effective_rest_parameter(&params))
-                .then(|| self.parameter_count(&params));
-            return ResolvedTypeCall {
-                ret: self.sig_return(sig),
-                errors: vec![ResolvedTypeCallError::Arity {
-                    actual: args.len(),
-                    min,
-                    max,
-                }],
-            };
-        }
-        // `choose_overload` goes straight to Assignable for one non-generic candidate.
+        let arguments: Args = args.iter().copied().map(Arg::Resolved).collect();
+        let mut state = CallState {
+            site: CallSite::Native { expected_return, this_type: None },
+            type_args,
+            args: &arguments,
+            candidates: SmallVec::from_slice(&candidates),
+            arg_check_mode: CheckMode::empty(),
+            is_single_non_generic_candidate: self.sig_type_params(sig).is_empty(),
+            checks_arguments_once: false,
+            candidates_for_argument_error: Sigs::new(),
+            candidate_for_argument_arity_error: None,
+            candidate_for_type_argument_error: None,
+        };
+        let chosen = self.choose_overload(&mut state, Relation::Assignable);
+        let selected = chosen.unwrap_or_else(|| self.candidate_for_overload_failure(&state));
         let mut errors = Vec::new();
-        for (index, &source) in args.iter().enumerate() {
-            let Some(target) = self.param_type_at(&params, index) else {
-                continue;
-            };
-            if !self.is_resolved_call_argument_applicable(source, target, Relation::Assignable) {
-                errors.push(ResolvedTypeCallError::Argument {
-                    index,
-                    source,
-                    target,
+        if chosen.is_none() {
+            let type_params = self.sig_type_params(sig);
+            if !self.has_correct_type_argument_arity(&type_params, type_args.len()) {
+                errors.push(ResolvedTypeCallError::TypeArgumentArity {
+                    actual: type_args.len(),
+                    min: self.min_type_argument_count(&type_params),
+                    max: type_params.len(),
                 });
-                break;
+            } else if state.candidate_for_type_argument_error.is_some() {
+                let filled = self.fill_sig_type_args(sig, &type_params, type_args);
+                for index in 0..type_args.len().min(type_params.len()) {
+                    if let Some((source, target)) = self.type_argument_constraint_error(sig, &type_params, &filled, index) {
+                        errors.push(ResolvedTypeCallError::TypeArgument { index, source, target });
+                        break;
+                    }
+                }
+            } else {
+                let params = self.sig_params(selected);
+                if !self.has_correct_arity(&state, &params) {
+                    errors.push(ResolvedTypeCallError::Arity {
+                        actual: args.len(),
+                        min: self.min_argument_count(&params),
+                        max: (!self.has_effective_rest_parameter(&params))
+                            .then(|| self.parameter_count(&params)),
+                    });
+                } else if let Some((index, source, target)) = self.resolved_signature_argument_error(
+                    selected, &arguments, Relation::Assignable, CheckMode::empty(),
+                ) {
+                    errors.push(ResolvedTypeCallError::Argument { index, source, target });
+                }
             }
         }
-        ResolvedTypeCall { ret: self.sig_return(sig), errors }
+        ResolvedTypeCall { ret: self.sig_return(selected), errors }
     }
 
     /// `isContextSensitive`. For `JsxAttributes`: `is_jsx_attributes_context_sensitive`.
@@ -768,7 +820,7 @@ impl<'p, 's> Checker<'p, 's> {
                 self.iife_resolving.pop();
                 Some(self.widen_literal(ty))
             }
-            Some(&(Arg::Type(ty, ..) | Arg::Spread(ty, ..) | Arg::SpreadElement(ty, ..))) => {
+            Some(&(Arg::Resolved(ty) | Arg::Type(ty, ..) | Arg::Spread(ty, ..) | Arg::SpreadElement(ty, ..))) => {
                 Some(ty)
             }
             None if own.default.is_some() => None,
@@ -799,7 +851,11 @@ impl<'p, 's> Checker<'p, 's> {
         s: &CallState<'_>,
         params: &List<'_, SigParam>,
     ) -> bool {
-        let (file, call, node, args) = (s.file, s.call, s.node, s.args);
+        let args = s.args;
+        if matches!(s.site, CallSite::Native { .. }) {
+            return self.has_correct_arity_for_count(params, matches!(params, List::Own(_)), args.len(), None, false);
+        }
+        let (file, call, node, _) = s.ts_site();
         // The attributes are a single argument, regardless of the component's other parameters.
         if matches!(node, CallLike::Jsx(_)) {
             return true;
@@ -1341,12 +1397,9 @@ impl<'p, 's> Checker<'p, 's> {
             };
         }
         let mut s = CallState {
-            file,
-            call,
-            node,
+            site: CallSite::Ts { file, call, node, this_arg },
             type_args,
             args,
-            this_arg,
             candidates: SmallVec::from_slice(&candidates),
             arg_check_mode: CheckMode::empty(),
             is_single_non_generic_candidate: false,
@@ -1472,7 +1525,10 @@ impl<'p, 's> Checker<'p, 's> {
                     check_candidate = self.instantiate_sig(candidate, mapper);
                 } else {
                     let mut context = Inference::for_params(&type_params, Some(candidate));
-                    context.any_default = self.hir(s.file).is_js;
+                    context.any_default = match s.site {
+                        CallSite::Ts { file, .. } => self.hir(file).is_js,
+                        CallSite::Native { .. } => false,
+                    };
                     let check_mode = s.arg_check_mode | CheckMode::SKIP_GENERIC_FUNCTIONS;
                     let mapper = self.infer_type_arguments(s, candidate, check_mode, &mut context);
                     if context.skipped_generic_function {
@@ -1542,13 +1598,14 @@ impl<'p, 's> Checker<'p, 's> {
         check_mode: CheckMode,
         context: &mut Inference,
     ) -> MapperId {
-        let (file, call, args) = (s.file, s.call, s.args);
-        if let CallLike::Jsx(j) = s.node
+        let args = s.args;
+        if let CallSite::Ts { file, call, node, .. } = s.site {
+        if let CallLike::Jsx(j) = node
             && self.hir(file)[j].tag.is_some()
         {
             return self.infer_jsx_type_arguments(file, call, signature, check_mode, context);
         }
-        if matches!(s.node, CallLike::Call(_)) {
+        if matches!(node, CallLike::Call(_)) {
             let mut skip_binding_patterns = true;
             for i in 0..context.params.len() {
                 skip_binding_patterns =
@@ -1595,23 +1652,21 @@ impl<'p, 's> Checker<'p, 's> {
                             PRIORITY_RETURN,
                         );
                     }
-                    let mut return_context =
-                        Inference::for_params(&context.params, Some(signature));
-                    return_context.any_default = context.any_default;
                     let return_source_type = match outer_context {
                         Some(level) => {
                             self.instantiate_with_outer_return_mapper(level, contextual_type)
                         }
                         None => contextual_type,
                     };
-                    self.infer(
-                        &mut return_context,
-                        return_source_type,
-                        inference_target_type,
-                        0,
-                    );
-                    context.return_context = Self::clone_inferred_part_of_context(&return_context);
+                    self.infer_call_return_context(context, signature, return_source_type, inference_target_type);
                 }
+            }
+        }
+        } else if let CallSite::Native { expected_return: Some(expected), .. } = s.site {
+            let target = self.sig_return(signature);
+            if self.could_contain_type_variables(target) {
+                self.infer(context, expected, target, PRIORITY_RETURN);
+                self.infer_call_return_context(context, signature, expected, target);
             }
         }
         // `getTypeAtPosition(signature, i)` for every argument.
@@ -1631,29 +1686,50 @@ impl<'p, 's> Checker<'p, 's> {
         if let Some(this_type) = self.sig_this_type(signature)
             && self.could_contain_type_variables(this_type)
         {
-            let this_argument_type = self.this_argument_type(file, s.this_arg);
+            let this_argument_type = match s.site {
+                CallSite::Ts { file, this_arg, .. } => self.this_argument_type(file, this_arg),
+                CallSite::Native { this_type, .. } => this_type.unwrap_or(TypeId::VOID),
+            };
             self.infer(context, this_argument_type, this_type, 0);
         }
         for (i, &arg) in args.iter().enumerate().take(arg_count) {
-            if matches!(self.hir(file)[arg.node()].kind, ExprKind::Missing) {
+            if let CallSite::Ts { file, .. } = s.site
+                && matches!(self.hir(file)[arg.node()].kind, ExprKind::Missing)
+            {
                 continue;
             }
             if let Some(param_type) = self.param_type_at(&params, i)
                 && self.could_contain_type_variables(param_type)
             {
-                let arg_type =
-                    self.check_argument(file, arg, param_type, Some(context), check_mode);
+                let arg_type = match (s.site, arg) {
+                    (CallSite::Native { .. }, Arg::Resolved(ty)) => ty,
+                    (CallSite::Ts { file, .. }, _) => self.check_argument(file, arg, param_type, Some(context), check_mode),
+                    _ => unreachable!("native argument demand is not implemented"),
+                };
                 self.infer(context, arg_type, param_type, 0);
             }
         }
         if let Some(rest) = rest_type
             && self.could_contain_type_variables(rest)
         {
-            let spread_type =
-                self.spread_argument_type(file, args, arg_count, rest, Some(context), check_mode);
+            let (file, _, _, _) = s.ts_site();
+            let spread_type = self.spread_argument_type(file, args, arg_count, rest, Some(context), check_mode);
             self.infer(context, spread_type, rest, 0);
         }
         self.inference_mapper(context)
+    }
+
+    fn infer_call_return_context(
+        &mut self,
+        context: &mut Inference,
+        signature: SigId,
+        source: TypeId,
+        target: TypeId,
+    ) {
+        let mut returned = Inference::for_params(&context.params, Some(signature));
+        returned.any_default = context.any_default;
+        self.infer(&mut returned, source, target, 0);
+        context.return_context = Self::clone_inferred_part_of_context(&returned);
     }
 
     /// Whether the call of `getContextualType` that has just returned `contextual_type` created it,
@@ -1775,6 +1851,7 @@ impl<'p, 's> Checker<'p, 's> {
         check_mode: CheckMode,
     ) -> TypeId {
         let (ty, node) = match arg {
+            Arg::Resolved(ty) => return ty,
             Arg::Expr(e) => {
                 let contextual_type = self.without_no_infer(contextual_type);
                 return self.check_expression_with_contextual_type(
@@ -2076,7 +2153,10 @@ impl<'p, 's> Checker<'p, 's> {
         }
         // `inferSignatureInstantiationForOverloadFailure`
         let mut context = Inference::for_params(&type_params, Some(candidate));
-        context.any_default = self.hir(s.file).is_js;
+        context.any_default = match s.site {
+            CallSite::Ts { file, .. } => self.hir(file).is_js,
+            CallSite::Native { .. } => false,
+        };
         let check_mode = CheckMode::SKIP_CONTEXT_SENSITIVE | CheckMode::SKIP_GENERIC_FUNCTIONS;
         let mapper = self.infer_type_arguments(s, candidate, check_mode, &mut context);
         self.instantiate_sig(candidate, mapper)

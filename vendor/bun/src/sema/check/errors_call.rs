@@ -10,7 +10,7 @@
 //! (`arg_type_under`). Whenever that leaves the applicability of a candidate undecided, nothing is
 //! reported.
 
-use super::call::{Arg, CallLike, CallState};
+use super::call::{Arg, CallLike, CallSite, CallState};
 use super::explain::{Line, NOWHERE};
 use super::relate::Relation;
 use super::sink::{held, number_text};
@@ -783,7 +783,8 @@ impl Checker<'_, '_> {
         sigs: &[SigId],
         head: Option<u32>,
     ) {
-        let (file, node, type_args) = (s.file, s.node, s.type_args);
+        let (file, _, node, _) = s.ts_site();
+        let type_args = s.type_args;
         let hir = self.hir(file);
         let type_argument_list = match node {
             CallLike::Call(c) => Some(hir[c].type_args),
@@ -902,23 +903,64 @@ impl Checker<'_, '_> {
         let mapper = self.mapper_from(type_params, &filled);
         let outer = self.mapper_around_sig(sig);
         for i in 0..type_args.len().min(type_params.len()) {
-            let Some(constraint) = self.constraint_of_type_param(type_params[i]) else {
-                continue;
-            };
-            let constraint = self.filled_in_around(type_params[i], constraint, outer);
-            let constraint = self.instantiate(constraint, mapper);
-            let constraint = self.type_with_this_argument(constraint, filled[i]);
-            let error_node = error_nodes.map(|(file, nodes)| {
+            if let Some((file, nodes)) = error_nodes {
+                let Some(constraint) = self.type_argument_constraint(
+                    type_params[i], filled[i], outer, mapper,
+                ) else {
+                    continue;
+                };
                 let hir = self.hir(file);
                 let node: TypeNodeId = hir.id_at(nodes, i);
                 let start = super::errors_type_nodes::start_of_type(hir, node);
-                (file, start, self.end_of_type_node_from(file, node, start))
-            });
-            if !self.check_type_assignable_to(filled[i], constraint, error_node, Some(2344)) {
+                let error_node = (file, start, self.end_of_type_node_from(file, node, start));
+                if !self.check_type_assignable_to(filled[i], constraint, Some(error_node), Some(2344)) {
+                    return None;
+                }
+            } else if self.type_argument_constraint_error_with_mapper(
+                type_params[i], filled[i], outer, mapper,
+            ).is_some() {
                 return None;
             }
         }
         Some(filled)
+    }
+
+    /// The first-stage constraint relation for one explicit type argument, without a source node.
+    pub(super) fn type_argument_constraint_error(
+        &mut self,
+        sig: SigId,
+        type_params: &[TypeId],
+        filled: &[TypeId],
+        index: usize,
+    ) -> Option<(TypeId, TypeId)> {
+        let mapper = self.mapper_from(type_params, filled);
+        let outer = self.mapper_around_sig(sig);
+        self.type_argument_constraint_error_with_mapper(type_params[index], filled[index], outer, mapper)
+    }
+
+    fn type_argument_constraint_error_with_mapper(
+        &mut self,
+        param: TypeId,
+        actual: TypeId,
+        outer: MapperId,
+        mapper: MapperId,
+    ) -> Option<(TypeId, TypeId)> {
+        let constraint = self.type_argument_constraint(param, actual, outer, mapper)?;
+        (!self.check_type_assignable_to(actual, constraint, None, Some(2344)))
+            .then_some((actual, constraint))
+    }
+
+    fn type_argument_constraint(
+        &mut self,
+        param: TypeId,
+        actual: TypeId,
+        outer: MapperId,
+        mapper: MapperId,
+    ) -> Option<TypeId> {
+        let constraint = self.constraint_of_type_param(param)?;
+        let constraint = self.filled_in_around(param, constraint, outer);
+        let constraint = self.instantiate(constraint, mapper);
+        Some(self.type_with_this_argument(constraint, actual))
     }
 
     /// The relation step of `isSignatureApplicable`, after an argument has been resolved under
@@ -932,6 +974,40 @@ impl Checker<'_, '_> {
         self.related(actual, expected, relation)
     }
 
+    /// Applicability for arguments resolved by a native frontend, without TS syntax or positions.
+    pub(super) fn resolved_signature_argument_error(
+        &mut self,
+        sig: SigId,
+        args: &[Arg],
+        relation: Relation,
+        check_mode: CheckMode,
+    ) -> Option<(usize, TypeId, TypeId)> {
+        let mut params = self.sig_params(sig);
+        assert!(self.non_array_rest_type(&params).is_none());
+        for (i, &arg) in args.iter().enumerate() {
+            if let List::Own(_) = params {
+                params = self.sig_params_up_to(sig, i + 1);
+            }
+            let Some(expected) = self.param_type_at(&params, i) else {
+                continue;
+            };
+            let Arg::Resolved(actual) = arg else {
+                panic!("native call applicability requires resolved arguments");
+            };
+            let actual = if check_mode.contains(CheckMode::SKIP_CONTEXT_SENSITIVE) {
+                self.regular_type_of_object_literal(actual)
+            } else {
+                actual
+            };
+            if !self.is_resolved_call_argument_applicable(actual, expected, relation) {
+                self.note_parameter_types_resolved(sig, &params, i + 1);
+                return Some((i, actual, expected));
+            }
+        }
+        self.note_parameter_types_resolved(sig, &params, args.len());
+        None
+    }
+
     /// `isSignatureApplicable`. Where something could not be determined the result is true, except
     /// in the subtype pass.
     pub(super) fn is_signature_applicable(
@@ -942,10 +1018,15 @@ impl Checker<'_, '_> {
         check_mode: CheckMode,
         report: bool,
     ) -> bool {
-        if let CallLike::Jsx(_) = s.node {
+        if matches!(s.site, CallSite::Native { .. }) {
+            return self.resolved_signature_argument_error(sig, s.args, relation, check_mode).is_none();
+        }
+        let (file, e, node, this_arg) = s.ts_site();
+        let args = s.args;
+        if let CallLike::Jsx(_) = node {
             return self.check_applicable_signature_for_jsx_call_like_element(
-                s.file,
-                s.call,
+                file,
+                e,
                 sig,
                 relation,
                 check_mode,
@@ -953,7 +1034,6 @@ impl Checker<'_, '_> {
                 report,
             );
         }
-        let (file, e, node, args, this_arg) = (s.file, s.call, s.node, s.args, s.this_arg);
         let hir = self.hir(file);
         // The arguments of a decorator are synthetic (`createSyntheticExpression`): an error about
         // one is reported at the decorator expression.
@@ -1239,7 +1319,8 @@ impl Checker<'_, '_> {
     /// `getArgumentArityError`: 2554 2555 2556 2575 2794 2810, and 1278 1279 for a decorator.
     /// `head`: `headMessage`.
     fn report_argument_arity(&mut self, s: &CallState<'_>, sigs: &[SigId], head: Option<u32>) {
-        let (file, e, node, args) = (s.file, s.call, s.node, s.args);
+        let (file, e, node, _) = s.ts_site();
+        let args = s.args;
         if let Some(spread) = args.iter().find(|a| a.is_spread()) {
             let start = self.start_of(file, spread.node());
             self.error_at(

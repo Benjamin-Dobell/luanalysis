@@ -30,9 +30,6 @@ pub struct NativeFunctionKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidNativeFunctionKey(pub NativeFunctionKey);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnsupportedNativeFunctionContext(pub NativeFunctionKey);
-
 /// A source type parameter, in a namespace separate from function declarations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeTypeParameterKey {
@@ -43,8 +40,71 @@ pub struct NativeTypeParameterKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidNativeTypeParameterKey(pub NativeTypeParameterKey);
 
+/// A capability for an exact type in one checker session. Its ordinal is not a
+/// backend type ID, and callers cannot construct or change its owner epoch.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionTypeRef {
+    epoch: u64,
+    slot: u32,
+}
+
+impl std::fmt::Debug for SessionTypeRef {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SessionTypeRef")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UnsupportedNativeTypeParameterContext(pub NativeTypeParameterKey);
+pub struct InvalidSessionType(pub SessionTypeRef);
+
+struct TypeHandles {
+    epoch: u64,
+    state: std::cell::RefCell<TypeHandleState>,
+}
+
+#[derive(Default)]
+struct TypeHandleState {
+    types: Vec<TypeId>,
+    slots: std::collections::HashMap<TypeId, u32>,
+}
+
+impl TypeHandles {
+    fn new() -> Self {
+        static NEXT_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            epoch: NEXT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            state: Default::default(),
+        }
+    }
+    fn retain(&self, ty: TypeId) -> Type {
+        let mut state = self.state.borrow_mut();
+        let slot = match state.slots.get(&ty).copied() {
+            Some(slot) => slot,
+            None => {
+                let slot = u32::try_from(state.types.len()).expect("session type handle capacity");
+                state.types.push(ty);
+                state.slots.insert(ty, slot);
+                slot
+            }
+        };
+        Type::SessionType(SessionTypeRef {
+            epoch: self.epoch,
+            slot,
+        })
+    }
+    fn resolve(&self, reference: SessionTypeRef) -> TypeId {
+        if reference.epoch != self.epoch {
+            std::panic::panic_any(InvalidSessionType(reference));
+        }
+        let ty = self
+            .state
+            .borrow()
+            .types
+            .get(reference.slot as usize)
+            .copied();
+        ty.unwrap_or_else(|| std::panic::panic_any(InvalidSessionType(reference)))
+    }
+}
 
 /// Resolved type descriptions; every comparison creates real checker-owned IDs.
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +128,7 @@ pub enum Type {
     Function(FunctionType),
     NativeFunction(NativeFunctionKey),
     NativeTypeParameter(NativeTypeParameterKey),
+    SessionType(SessionTypeRef),
 }
 
 /// Source recipes may use thread-local interior state; release its borrows
@@ -187,9 +248,22 @@ pub struct CallResult {
 pub enum CallError {
     NotCallable,
     UnsupportedGeneric,
+    UnsupportedGenericFunctionArgument {
+        index: usize,
+    },
     UnsupportedOverloads,
     UnsupportedRest,
     UnsupportedThis,
+    TypeArgumentArity {
+        actual: usize,
+        minimum: usize,
+        maximum: usize,
+    },
+    TypeArgument {
+        index: usize,
+        source: Type,
+        target: Type,
+    },
     Arity {
         actual: usize,
         minimum: usize,
@@ -212,6 +286,15 @@ pub trait TypeQueries {
     fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type>;
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type;
     fn call(&mut self, callee: &Type, arguments: &[Type]) -> CallResult;
+    fn call_with_type_arguments(
+        &mut self,
+        callee: &Type,
+        arguments: &[Type],
+        type_arguments: &[Type],
+        expected_return: Option<&Type>,
+    ) -> CallResult;
+    fn function_signature(&mut self, ty: &Type) -> Option<FunctionType>;
+    fn inspect_type(&mut self, ty: &Type) -> Type;
     fn allows_implicit_return(&mut self, returned: &Type) -> bool;
     fn aggregate_returns(
         &mut self,
@@ -240,7 +323,13 @@ impl Engine {
     /// Runs a complete check with one worker, arena, program, and checker task.
     /// Returning owned results ends the batch and frees its native state.
     pub fn with_session<R: Send>(&self, work: impl FnOnce(&mut dyn TypeQueries) -> R + Send) -> R {
-        with_checker(|checker| work(&mut SessionQueries { checker }))
+        with_program(|program, handles| {
+            let mut checker = program.checker();
+            work(&mut SessionQueries {
+                checker: &mut checker,
+                handles,
+            })
+        })
     }
 
     /// The provider is constructed inside the worker and need not be Send or
@@ -250,16 +339,18 @@ impl Engine {
         factory: impl FnOnce() -> P + Send,
         work: impl FnOnce(&P, &mut dyn TypeQueries) -> R + Send,
     ) -> R {
-        with_program(|program| {
+        with_program(|program, handles| {
             let provider = factory();
             let adapter = ProviderAdapter {
                 provider: &provider,
+                handles,
             };
             let mut checker = program.checker_with_native_provider(&adapter);
             work(
                 &provider,
                 &mut SessionQueries {
                     checker: &mut checker,
+                    handles,
                 },
             )
         })
@@ -292,6 +383,18 @@ impl Engine {
         self.with_session(|queries| queries.call(callee, arguments))
     }
 
+    pub fn call_with_type_arguments(
+        &self,
+        callee: &Type,
+        arguments: &[Type],
+        type_arguments: &[Type],
+        expected_return: Option<&Type>,
+    ) -> CallResult {
+        self.with_session(|queries| {
+            queries.call_with_type_arguments(callee, arguments, type_arguments, expected_return)
+        })
+    }
+
     pub fn allows_implicit_return(&self, returned: &Type) -> bool {
         self.with_session(|queries| queries.allows_implicit_return(returned))
     }
@@ -303,19 +406,34 @@ impl Engine {
 
 struct SessionQueries<'a, 'p, 's> {
     checker: &'a mut Checker<'p, 's>,
+    handles: &'a TypeHandles,
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn inspect_type(&mut self, ty: &Type) -> Type {
+        let id = import_type(self.checker, self.handles, ty);
+        let signatures = self.checker.signatures(id, false);
+        if signatures.len() == 1 {
+            Type::Function(export_signature(self.checker, self.handles, signatures[0]))
+        } else {
+            export_type(self.checker, self.handles, id)
+        }
+    }
+    fn function_signature(&mut self, ty: &Type) -> Option<FunctionType> {
+        let ty = import_type(self.checker, self.handles, ty);
+        let signatures = self.checker.signatures(ty, false);
+        (signatures.len() == 1).then(|| export_signature(self.checker, self.handles, signatures[0]))
+    }
     fn native_function_type_parameters(
         &mut self,
         key: NativeFunctionKey,
     ) -> Vec<NativeTypeParameterKey> {
-        let ty = import_type(self.checker, &Type::NativeFunction(key));
+        let ty = import_type(self.checker, self.handles, &Type::NativeFunction(key));
         let signatures = self.checker.signatures(ty, false);
         let params = self.checker.sig_type_params(signatures[0]).into_vec();
         params
             .into_iter()
-            .map(|ty| match export_type(self.checker, ty) {
+            .map(|ty| match export_type(self.checker, self.handles, ty) {
                 Type::NativeTypeParameter(key) => key,
                 _ => panic!("native generic declaration has a nonparameter type"),
             })
@@ -323,17 +441,17 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
 
     fn type_parameter_constraint(&mut self, key: NativeTypeParameterKey) -> Option<Type> {
-        let ty = import_type(self.checker, &Type::NativeTypeParameter(key));
+        let ty = import_type(self.checker, self.handles, &Type::NativeTypeParameter(key));
         self.checker
             .constraint_of_type_param(ty)
-            .map(|ty| export_type(self.checker, ty))
+            .map(|ty| export_type(self.checker, self.handles, ty))
     }
 
     fn type_parameter_default(&mut self, key: NativeTypeParameterKey) -> Option<Type> {
-        let ty = import_type(self.checker, &Type::NativeTypeParameter(key));
+        let ty = import_type(self.checker, self.handles, &Type::NativeTypeParameter(key));
         self.checker
             .default_of_type_param(ty)
-            .map(|ty| export_type(self.checker, ty))
+            .map(|ty| export_type(self.checker, self.handles, ty))
     }
 
     fn aggregate_returns(
@@ -344,37 +462,37 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     ) -> Type {
         let returned: Vec<_> = returned
             .iter()
-            .map(|ty| import_type(self.checker, ty))
+            .map(|ty| import_type(self.checker, self.handles, ty))
             .collect();
-        let context = context.map(|ty| import_type(self.checker, ty));
+        let context = context.map(|ty| import_type(self.checker, self.handles, ty));
         let ty = self
             .checker
             .aggregate_return_types(&returned, has_fallthrough, context);
-        export_type(self.checker, ty)
+        export_type(self.checker, self.handles, ty)
     }
 
     fn native_function_signature(&mut self, key: NativeFunctionKey) -> FunctionType {
-        let ty = import_type(self.checker, &Type::NativeFunction(key));
+        let ty = import_type(self.checker, self.handles, &Type::NativeFunction(key));
         let signatures = self.checker.signatures(ty, false);
-        export_signature(self.checker, signatures[0])
+        export_signature(self.checker, self.handles, signatures[0])
     }
 
     fn allows_implicit_return(&mut self, returned: &Type) -> bool {
-        let returned = import_type(self.checker, returned);
+        let returned = import_type(self.checker, self.handles, returned);
         self.checker
             .allows_implicit_return_without_explicit_return(returned)
     }
     fn is_assignable(&mut self, source: &Type, target: &Type) -> bool {
-        let source = import_type(self.checker, source);
-        let target = import_type(self.checker, target);
+        let source = import_type(self.checker, self.handles, source);
+        let target = import_type(self.checker, self.handles, target);
         self.checker.is_assignable(source, target)
     }
 
     fn compare(&mut self, source: &Type, target: &Type) -> Relation {
         let source_input = source;
         let target_input = target;
-        let source = import_type(self.checker, source_input);
-        let target = import_type(self.checker, target_input);
+        let source = import_type(self.checker, self.handles, source_input);
+        let target = import_type(self.checker, self.handles, target_input);
         Relation {
             assignable: self.checker.is_assignable(source, target),
             source: relation_text(self.checker, source_input, source),
@@ -383,56 +501,95 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
 
     fn widen(&mut self, ty: &Type) -> Type {
-        let ty = import_type(self.checker, ty);
+        let ty = import_type(self.checker, self.handles, ty);
         let ty = self.checker.widened(ty);
-        export_type(self.checker, ty)
+        export_type(self.checker, self.handles, ty)
     }
 
     fn union_reduced(&mut self, types: &[Type]) -> Type {
         let types: Vec<_> = types
             .iter()
-            .map(|ty| import_type(self.checker, ty))
+            .map(|ty| import_type(self.checker, self.handles, ty))
             .collect();
         let ty = self.checker.union_reduced(&types);
-        export_type(self.checker, ty)
+        export_type(self.checker, self.handles, ty)
     }
 
     fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type> {
-        let ty = import_type(self.checker, ty);
+        let ty = import_type(self.checker, self.handles, ty);
         let name = self.checker.atoms().intern(name.as_bytes());
         self.checker
             .type_of_property(ty, name)
-            .map(|ty| export_type(self.checker, ty))
+            .map(|ty| export_type(self.checker, self.handles, ty))
     }
 
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type {
-        let declared = import_type(self.checker, declared);
-        let assigned = import_type(self.checker, assigned);
+        let declared = import_type(self.checker, self.handles, declared);
+        let assigned = import_type(self.checker, self.handles, assigned);
         let value = if self.checker.is_union(declared) {
             self.checker.assignment_reduced_type(declared, assigned)
         } else {
             declared
         };
-        export_type(self.checker, value)
+        export_type(self.checker, self.handles, value)
     }
 
     fn call(&mut self, callee: &Type, arguments: &[Type]) -> CallResult {
-        let callee = import_type(self.checker, callee);
+        self.call_with_type_arguments(callee, arguments, &[], None)
+    }
+
+    fn call_with_type_arguments(
+        &mut self,
+        callee: &Type,
+        arguments: &[Type],
+        type_arguments: &[Type],
+        expected_return: Option<&Type>,
+    ) -> CallResult {
+        let callee = import_type(self.checker, self.handles, callee);
         let arguments: Vec<_> = arguments
             .iter()
-            .map(|argument| import_type(self.checker, argument))
+            .map(|argument| import_type(self.checker, self.handles, argument))
             .collect();
-        let result = self.checker.call_resolved_types(callee, &arguments);
-        let return_type = export_type(self.checker, result.ret);
+        let type_arguments: Vec<_> = type_arguments
+            .iter()
+            .map(|ty| import_type(self.checker, self.handles, ty))
+            .collect();
+        let expected_return = expected_return.map(|ty| import_type(self.checker, self.handles, ty));
+        let result = self.checker.call_resolved_types_with_type_arguments(
+            callee,
+            &arguments,
+            &type_arguments,
+            expected_return,
+        );
+        let return_type = export_type(self.checker, self.handles, result.ret);
         let errors = result
             .errors
             .into_iter()
             .map(|error| match error {
                 ResolvedTypeCallError::NotCallable => CallError::NotCallable,
                 ResolvedTypeCallError::UnsupportedGeneric => CallError::UnsupportedGeneric,
+                ResolvedTypeCallError::UnsupportedGenericFunctionArgument { index } => {
+                    CallError::UnsupportedGenericFunctionArgument { index }
+                }
                 ResolvedTypeCallError::UnsupportedOverloads => CallError::UnsupportedOverloads,
                 ResolvedTypeCallError::UnsupportedRest => CallError::UnsupportedRest,
                 ResolvedTypeCallError::UnsupportedThis => CallError::UnsupportedThis,
+                ResolvedTypeCallError::TypeArgumentArity { actual, min, max } => {
+                    CallError::TypeArgumentArity {
+                        actual,
+                        minimum: min,
+                        maximum: max,
+                    }
+                }
+                ResolvedTypeCallError::TypeArgument {
+                    index,
+                    source,
+                    target,
+                } => CallError::TypeArgument {
+                    index,
+                    source: export_type(self.checker, self.handles, source),
+                    target: export_type(self.checker, self.handles, target),
+                },
                 ResolvedTypeCallError::Arity { actual, min, max } => CallError::Arity {
                     actual,
                     minimum: min,
@@ -444,8 +601,8 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
                     target,
                 } => CallError::Argument {
                     index,
-                    source: export_type(self.checker, source),
-                    target: export_type(self.checker, target),
+                    source: export_type(self.checker, self.handles, source),
+                    target: export_type(self.checker, self.handles, target),
                 },
             })
             .collect();
@@ -456,14 +613,14 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
 
     fn format(&mut self, ty: &Type) -> String {
-        let ty = import_type(self.checker, ty);
+        let ty = import_type(self.checker, self.handles, ty);
         String::from_utf8_lossy(&self.checker.type_to_string(ty)).into_owned()
     }
 }
 
 fn contains_native_function(ty: &Type) -> bool {
     match ty {
-        Type::NativeFunction(_) => true,
+        Type::NativeFunction(_) | Type::SessionType(_) => true,
         Type::Union(types) | Type::Intersection(types) => {
             types.iter().any(contains_native_function)
         }
@@ -493,14 +650,15 @@ fn relation_text(checker: &mut Checker<'_, '_>, source: &Type, ty: TypeId) -> St
 
 // The native checker measures its remaining stack; use the same stack as its
 // upstream standalone worker rather than guessing the caller's thread stack.
+#[cfg(test)]
 fn with_checker<R: Send>(work: impl FnOnce(&mut Checker<'_, '_>) -> R + Send) -> R {
-    with_program(|program| {
+    with_program(|program, _handles| {
         let mut checker = program.checker();
         work(&mut checker)
     })
 }
 
-fn with_program<R: Send>(work: impl FnOnce(&mut Program<'_>) -> R + Send) -> R {
+fn with_program<R: Send>(work: impl FnOnce(&mut Program<'_>, &TypeHandles) -> R + Send) -> R {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .name("luanalysis-type-core".into())
@@ -527,8 +685,10 @@ fn with_program<R: Send>(work: impl FnOnce(&mut Program<'_>) -> R + Send) -> R {
                     &|_| {},
                 ));
                 let mut program = Program::new(&session, files);
-                let result =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&mut program)));
+                let handles = TypeHandles::new();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    work(&mut program, &handles)
+                }));
                 program.release();
                 result.unwrap_or_else(|error| std::panic::resume_unwind(error))
             })
@@ -568,6 +728,7 @@ fn source_parameter_key(key: NativeTypeParamId) -> NativeTypeParameterKey {
 
 struct ProviderAdapter<'a, P> {
     provider: &'a P,
+    handles: &'a TypeHandles,
 }
 
 impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
@@ -579,11 +740,15 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
             .collect()
     }
     fn type_parameters(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Vec<TypeId> {
-        let keys = self
-            .provider
-            .function_type_parameters(source_key(key), &mut SessionQueries { checker });
+        let keys = self.provider.function_type_parameters(
+            source_key(key),
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
         keys.into_iter()
-            .map(|key| import_type(checker, &Type::NativeTypeParameter(key)))
+            .map(|key| import_type(checker, self.handles, &Type::NativeTypeParameter(key)))
             .collect()
     }
 
@@ -611,10 +776,14 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
         checker: &mut Checker<'_, '_>,
         key: NativeTypeParamId,
     ) -> Option<TypeId> {
-        let ty = self
-            .provider
-            .type_parameter_constraint(source_parameter_key(key), &mut SessionQueries { checker });
-        ty.map(|ty| import_type(checker, &ty))
+        let ty = self.provider.type_parameter_constraint(
+            source_parameter_key(key),
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        ty.map(|ty| import_type(checker, self.handles, &ty))
     }
     fn has_type_parameter_default(&self, key: NativeTypeParamId) -> bool {
         self.provider
@@ -625,10 +794,14 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
         checker: &mut Checker<'_, '_>,
         key: NativeTypeParamId,
     ) -> Option<TypeId> {
-        let ty = self
-            .provider
-            .type_parameter_default(source_parameter_key(key), &mut SessionQueries { checker });
-        ty.map(|ty| import_type(checker, &ty))
+        let ty = self.provider.type_parameter_default(
+            source_parameter_key(key),
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        ty.map(|ty| import_type(checker, self.handles, &ty))
     }
     fn type_parameter_order(&self, key: NativeTypeParamId) -> u32 {
         self.provider
@@ -654,13 +827,17 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     }
 
     fn parameters(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Vec<SigParam> {
-        let parameters = self
-            .provider
-            .function_parameters(source_key(key), &mut SessionQueries { checker });
+        let parameters = self.provider.function_parameters(
+            source_key(key),
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
         parameters
             .into_iter()
             .map(|parameter| {
-                let mut ty = import_type(checker, &parameter.ty);
+                let mut ty = import_type(checker, self.handles, &parameter.ty);
                 if parameter.optional {
                     ty = checker.optional(ty);
                 }
@@ -678,16 +855,24 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
 
     fn return_type(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> TypeId {
         let key = source_key(key);
-        let declared = self
-            .provider
-            .function_declared_return(key, &mut SessionQueries { checker });
+        let declared = self.provider.function_declared_return(
+            key,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
         let returned = match declared {
             Some(ty) => ty,
-            None => self
-                .provider
-                .function_inferred_return(key, &mut SessionQueries { checker }),
+            None => self.provider.function_inferred_return(
+                key,
+                &mut SessionQueries {
+                    checker,
+                    handles: self.handles,
+                },
+            ),
         };
-        import_type(checker, &returned)
+        import_type(checker, self.handles, &returned)
     }
 
     fn circular_return_type(&self, key: NativeFunctionId) {
@@ -699,7 +884,7 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     }
 }
 
-fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
+fn import_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: &Type) -> TypeId {
     match ty {
         Type::Any => TypeId::ANY,
         Type::Unknown => TypeId::UNKNOWN,
@@ -712,6 +897,7 @@ fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
         Type::Boolean => TypeId::BOOLEAN,
         Type::Number => TypeId::NUMBER,
         Type::String => TypeId::STRING,
+        Type::SessionType(reference) => handles.resolve(*reference),
         Type::BooleanLiteral(value) => checker.bool_literal(*value, true),
         Type::NumberLiteral(value) => checker.number_literal(*value, true),
         Type::StringLiteral(value) => checker.string_literal(checker.atoms().intern(value), true),
@@ -722,11 +908,17 @@ fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
             .native_type_parameter(core_parameter_key(*key))
             .unwrap_or_else(|| std::panic::panic_any(InvalidNativeTypeParameterKey(*key))),
         Type::Union(types) => {
-            let types: Vec<_> = types.iter().map(|ty| import_type(checker, ty)).collect();
+            let types: Vec<_> = types
+                .iter()
+                .map(|ty| import_type(checker, handles, ty))
+                .collect();
             checker.union(&types)
         }
         Type::Intersection(types) => {
-            let types: Vec<_> = types.iter().map(|ty| import_type(checker, ty)).collect();
+            let types: Vec<_> = types
+                .iter()
+                .map(|ty| import_type(checker, handles, ty))
+                .collect();
             checker.intersection(&types)
         }
         Type::Shape(properties) | Type::FreshShape(properties) => {
@@ -739,7 +931,7 @@ fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
                 flags.set(PropFlags::OPTIONAL, property.optional);
                 flags.set(PropFlags::READONLY, property.readonly);
                 flags.set(PropFlags::WRITTEN, matches!(ty, Type::FreshShape(_)));
-                let mut ty = import_type(checker, &property.ty);
+                let mut ty = import_type(checker, handles, &property.ty);
                 if property.optional {
                     ty = checker.optional(ty);
                 }
@@ -756,7 +948,7 @@ fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
         Type::Function(function) => {
             let mut params = Vec::new();
             for param in &function.params {
-                let mut ty = import_type(checker, &param.ty);
+                let mut ty = import_type(checker, handles, &param.ty);
                 if param.optional {
                     ty = checker.optional(ty);
                 }
@@ -769,7 +961,7 @@ fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
                     declaration: None,
                 });
             }
-            let ret = import_type(checker, &function.returns);
+            let ret = import_type(checker, handles, &function.returns);
             let sig = checker.types().intern_sig(SigData::Synth {
                 type_params: checker.list(&[]),
                 params: checker.list(&params),
@@ -785,7 +977,7 @@ fn import_type(checker: &mut Checker<'_, '_>, ty: &Type) -> TypeId {
     }
 }
 
-fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
+fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId) -> Type {
     if ty == TypeId::BOOLEAN {
         return Type::Boolean;
     }
@@ -796,7 +988,7 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
         } => {
             let key = source_parameter_key(*declaration);
             if *mapper != MapperId::IDENTITY {
-                std::panic::panic_any(UnsupportedNativeTypeParameterContext(key));
+                return handles.retain(ty);
             }
             Type::NativeTypeParameter(key)
         }
@@ -821,7 +1013,7 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
             Type::Union(
                 types
                     .into_iter()
-                    .map(|ty| export_type(checker, ty))
+                    .map(|ty| export_type(checker, handles, ty))
                     .collect(),
             )
         }
@@ -830,7 +1022,7 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
             Type::Intersection(
                 types
                     .into_iter()
-                    .map(|ty| export_type(checker, ty))
+                    .map(|ty| export_type(checker, handles, ty))
                     .collect(),
             )
         }
@@ -844,11 +1036,11 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
                     .iter()
                     .any(|(source, target)| source != target)
                 {
-                    std::panic::panic_any(UnsupportedNativeFunctionContext(key));
+                    return handles.retain(ty);
                 }
                 Type::NativeFunction(key)
             } else {
-                Type::Function(export_signature(checker, sig))
+                Type::Function(export_signature(checker, handles, sig))
             }
         }
         TypeData::Synth(shape) => {
@@ -870,7 +1062,7 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
                 .into_iter()
                 .map(|(name, ty, optional, readonly)| Property {
                     name,
-                    ty: export_type(checker, ty),
+                    ty: export_type(checker, handles, ty),
                     optional,
                     readonly,
                 })
@@ -881,11 +1073,15 @@ fn export_type(checker: &mut Checker<'_, '_>, ty: TypeId) -> Type {
                 Type::Shape(properties)
             }
         }
-        other => panic!("unsupported exported type: {other:?}"),
+        _ => handles.retain(ty),
     }
 }
 
-fn export_signature(checker: &mut Checker<'_, '_>, sig: bun_sema::types::SigId) -> FunctionType {
+fn export_signature(
+    checker: &mut Checker<'_, '_>,
+    handles: &TypeHandles,
+    sig: bun_sema::types::SigId,
+) -> FunctionType {
     let params = checker.sig_params(sig).into_vec();
     let returns = checker.sig_return(sig);
     FunctionType {
@@ -893,11 +1089,11 @@ fn export_signature(checker: &mut Checker<'_, '_>, sig: bun_sema::types::SigId) 
             .into_iter()
             .map(|param| Parameter {
                 name: String::from_utf8_lossy(checker.atoms().bytes(param.name)).into_owned(),
-                ty: export_type(checker, param.ty),
+                ty: export_type(checker, handles, param.ty),
                 optional: param.optional,
             })
             .collect(),
-        returns: Box::new(export_type(checker, returns)),
+        returns: Box::new(export_type(checker, handles, returns)),
     }
 }
 
@@ -958,6 +1154,271 @@ impl Host for TypeCoreHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct StaticGenericProvider;
+    impl StaticGenericProvider {
+        fn function(index: u32) -> NativeFunctionKey {
+            NativeFunctionKey {
+                snapshot: 91,
+                index,
+            }
+        }
+        fn parameter(index: u32) -> NativeTypeParameterKey {
+            NativeTypeParameterKey {
+                snapshot: 91,
+                index,
+            }
+        }
+        fn variable(index: u32) -> Type {
+            Type::NativeTypeParameter(Self::parameter(index))
+        }
+        fn argument(name: &str, ty: Type) -> Parameter {
+            Parameter {
+                name: name.into(),
+                ty,
+                optional: false,
+            }
+        }
+        fn callback(parameter: Option<Type>, returned: Type) -> Type {
+            Type::Function(FunctionType {
+                params: parameter
+                    .into_iter()
+                    .map(|ty| Self::argument("value", ty))
+                    .collect(),
+                returns: Box::new(returned),
+            })
+        }
+    }
+    impl NativeTypeProvider for StaticGenericProvider {
+        fn contains_function(&self, key: NativeFunctionKey) -> bool {
+            key.snapshot == 91 && key.index < 7
+        }
+        fn function_parameters(
+            &self,
+            key: NativeFunctionKey,
+            _: &mut dyn TypeQueries,
+        ) -> Vec<Parameter> {
+            match key.index {
+                0 | 1 | 6 => vec![Self::argument("value", Self::variable(key.index))],
+                3 => vec![Self::argument("value", Self::variable(1))],
+                4 => vec![
+                    Self::argument("value", Self::variable(3)),
+                    Self::argument(
+                        "map",
+                        Self::callback(Some(Self::variable(3)), Self::variable(4)),
+                    ),
+                ],
+                5 => vec![
+                    Self::argument("produce", Self::callback(None, Self::variable(5))),
+                    Self::argument(
+                        "consume",
+                        Self::callback(Some(Self::variable(5)), Type::Void),
+                    ),
+                ],
+                _ => Vec::new(),
+            }
+        }
+        fn function_declared_return(
+            &self,
+            key: NativeFunctionKey,
+            _: &mut dyn TypeQueries,
+        ) -> Option<Type> {
+            Some(match key.index {
+                1 => Type::NativeFunction(Self::function(3)),
+                3 => Self::variable(1),
+                4 => Self::variable(4),
+                _ => Self::variable(key.index),
+            })
+        }
+        fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type {
+            panic!("static generic fixture returns are annotated");
+        }
+        fn return_cycle(&self, _: NativeFunctionKey) {
+            panic!("static generic fixture cannot cycle");
+        }
+        fn return_type_too_deep(&self, _: NativeFunctionKey) {
+            panic!("static generic fixture exceeds depth");
+        }
+        fn function_type_parameters(
+            &self,
+            key: NativeFunctionKey,
+            _: &mut dyn TypeQueries,
+        ) -> Vec<NativeTypeParameterKey> {
+            match key.index {
+                3 => vec![],
+                4 => vec![Self::parameter(3), Self::parameter(4)],
+                _ => vec![Self::parameter(key.index)],
+            }
+        }
+        fn function_outer_type_parameters(
+            &self,
+            key: NativeFunctionKey,
+        ) -> Vec<NativeTypeParameterKey> {
+            if key.index == 3 {
+                vec![Self::parameter(1)]
+            } else {
+                Vec::new()
+            }
+        }
+        fn contains_type_parameter(&self, key: NativeTypeParameterKey) -> bool {
+            key.snapshot == 91 && key.index < 7
+        }
+        fn type_parameter_name(&self, key: NativeTypeParameterKey) -> String {
+            format!("T{}", key.index)
+        }
+        fn has_type_parameter_constraint(&self, key: NativeTypeParameterKey) -> bool {
+            key.index == 6
+        }
+        fn type_parameter_constraint(
+            &self,
+            _: NativeTypeParameterKey,
+            _: &mut dyn TypeQueries,
+        ) -> Option<Type> {
+            Some(Type::Number)
+        }
+        fn has_type_parameter_default(&self, key: NativeTypeParameterKey) -> bool {
+            key.index == 2
+        }
+        fn type_parameter_default(
+            &self,
+            _: NativeTypeParameterKey,
+            _: &mut dyn TypeQueries,
+        ) -> Option<Type> {
+            Some(Type::String)
+        }
+        fn type_parameter_siblings(
+            &self,
+            key: NativeTypeParameterKey,
+        ) -> Vec<NativeTypeParameterKey> {
+            if matches!(key.index, 3 | 4) {
+                vec![Self::parameter(3), Self::parameter(4)]
+            } else {
+                vec![key]
+            }
+        }
+    }
+
+    #[test]
+    fn native_static_generic_identity_defaults_constraints_and_explicit_arguments() {
+        Engine::new().with_native_provider(
+            || StaticGenericProvider,
+            |_, queries| {
+                let id = Type::NativeFunction(StaticGenericProvider::function(0));
+                for value in [Type::Number, Type::String] {
+                    let result = queries.call(&id, std::slice::from_ref(&value));
+                    assert!(result.errors.is_empty(), "{result:?}");
+                    assert_eq!(result.return_type, value);
+                }
+                let explicit =
+                    queries.call_with_type_arguments(&id, &[Type::Number], &[Type::Number], None);
+                assert!(explicit.errors.is_empty());
+                assert_eq!(explicit.return_type, Type::Number);
+                assert!(matches!(
+                    queries
+                        .call_with_type_arguments(
+                            &id,
+                            &[Type::Number],
+                            &[Type::Number, Type::String],
+                            None
+                        )
+                        .errors
+                        .as_slice(),
+                    [CallError::TypeArgumentArity { .. }]
+                ));
+                let default = Type::NativeFunction(StaticGenericProvider::function(2));
+                assert_eq!(queries.call(&default, &[]).return_type, Type::String);
+                let contextual =
+                    queries.call_with_type_arguments(&default, &[], &[], Some(&Type::Number));
+                assert!(contextual.errors.is_empty());
+                assert_eq!(contextual.return_type, Type::Number);
+                let bounded = Type::NativeFunction(StaticGenericProvider::function(6));
+                assert!(queries.call(&bounded, &[Type::Number]).errors.is_empty());
+                assert!(matches!(
+                    queries.call(&bounded, &[Type::String]).errors.as_slice(),
+                    [CallError::Argument { .. }]
+                ));
+                assert!(matches!(
+                    queries
+                        .call_with_type_arguments(&bounded, &[Type::String], &[Type::String], None)
+                        .errors
+                        .as_slice(),
+                    [CallError::TypeArgument { .. }]
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn native_static_generic_callbacks_use_the_native_signature_inference_loop() {
+        Engine::new().with_native_provider(
+            || StaticGenericProvider,
+            |_, queries| {
+                let map = Type::NativeFunction(StaticGenericProvider::function(4));
+                let result = queries.call(
+                    &map,
+                    &[
+                        Type::Number,
+                        StaticGenericProvider::callback(Some(Type::Number), Type::String),
+                    ],
+                );
+                assert!(result.errors.is_empty(), "{result:?}");
+                assert_eq!(result.return_type, Type::String);
+                let pipeline = Type::NativeFunction(StaticGenericProvider::function(5));
+                let result = queries.call(
+                    &pipeline,
+                    &[
+                        StaticGenericProvider::callback(None, Type::Number),
+                        StaticGenericProvider::callback(Some(Type::Number), Type::Void),
+                    ],
+                );
+                assert!(result.errors.is_empty(), "{result:?}");
+                assert_eq!(result.return_type, Type::Number);
+            },
+        );
+    }
+
+    #[test]
+    fn native_static_generic_returned_function_handles_preserve_context_and_reject_other_epochs() {
+        let retained = Engine::new().with_native_provider(
+            || StaticGenericProvider,
+            |_, queries| {
+                let maker = Type::NativeFunction(StaticGenericProvider::function(1));
+                let result = queries.call(&maker, &[Type::Number]);
+                assert!(result.errors.is_empty(), "{result:?}");
+                assert!(matches!(result.return_type, Type::SessionType(_)));
+                let signature = queries.function_signature(&result.return_type).unwrap();
+                assert_eq!(signature.params[0].ty, Type::Number);
+                assert_eq!(signature.returns.as_ref(), &Type::Number);
+                assert!(matches!(
+                    queries.inspect_type(&result.return_type),
+                    Type::Function(_)
+                ));
+                assert_eq!(
+                    queries
+                        .call(&result.return_type, &[Type::Number])
+                        .return_type,
+                    Type::Number
+                );
+                assert!(matches!(
+                    queries
+                        .call(&result.return_type, &[Type::String])
+                        .errors
+                        .as_slice(),
+                    [CallError::Argument { .. }]
+                ));
+                assert!(queries.format(&result.return_type).contains("number"));
+                result.return_type
+            },
+        );
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Engine::new().with_session(|queries| {
+                queries.format(&retained);
+            })
+        }))
+        .expect_err("a native context handle cannot cross checker epochs");
+        assert!(failure.downcast::<InvalidSessionType>().is_ok());
+        assert!(Engine::new().is_assignable(&Type::Number, &Type::Number));
+    }
 
     struct SourceProvider {
         calls: [std::cell::Cell<usize>; 5],
@@ -1140,7 +1601,7 @@ mod tests {
                         &[Type::Number]
                     )
                     .errors,
-                vec![CallError::UnsupportedGeneric]
+                vec![]
             );
         });
     }
@@ -1162,56 +1623,50 @@ mod tests {
     }
 
     #[test]
-    fn native_parameter_clone_keeps_sibling_mapper_and_rejects_context_loss() {
-        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_program(|program| {
-                let provider = GenericProvider {
-                    with_outer: true,
-                    ..GenericProvider::new()
-                };
-                let adapter = ProviderAdapter {
-                    provider: &provider,
-                };
-                let mut checker = program.checker_with_native_provider(&adapter);
-                let t = checker
-                    .native_type_parameter(core_parameter_key(GenericProvider::parameter(0)))
-                    .unwrap();
-                let outer = checker
-                    .native_type_parameter(core_parameter_key(GenericProvider::parameter(4)))
-                    .unwrap();
-                let around = checker.mapper_from(&[outer], &[TypeId::STRING]);
-                let cloned = checker.cloned_native_type_param(
-                    core_parameter_key(GenericProvider::parameter(1)),
-                    around,
+    fn native_parameter_clone_keeps_sibling_mapper_in_session_handle() {
+        with_program(|program, handles| {
+            let provider = GenericProvider {
+                with_outer: true,
+                ..GenericProvider::new()
+            };
+            let adapter = ProviderAdapter {
+                provider: &provider,
+                handles,
+            };
+            let mut checker = program.checker_with_native_provider(&adapter);
+            let t = checker
+                .native_type_parameter(core_parameter_key(GenericProvider::parameter(0)))
+                .unwrap();
+            let outer = checker
+                .native_type_parameter(core_parameter_key(GenericProvider::parameter(4)))
+                .unwrap();
+            let around = checker.mapper_from(&[outer], &[TypeId::STRING]);
+            let cloned = checker.cloned_native_type_param(
+                core_parameter_key(GenericProvider::parameter(1)),
+                around,
+            );
+            for referenced in [
+                checker.constraint_of_type_param(cloned).unwrap(),
+                checker.default_of_type_param(cloned).unwrap(),
+            ] {
+                assert_eq!(
+                    checker.native_type_parameter_decl(referenced),
+                    Some((core_parameter_key(GenericProvider::parameter(0)), around))
                 );
-                for referenced in [
-                    checker.constraint_of_type_param(cloned).unwrap(),
-                    checker.default_of_type_param(cloned).unwrap(),
-                ] {
-                    assert_eq!(
-                        checker.native_type_parameter_decl(referenced),
-                        Some((core_parameter_key(GenericProvider::parameter(0)), around))
-                    );
-                    assert_ne!(referenced, t);
-                    assert_eq!(
-                        checker.constraint_of_type_param(referenced),
-                        Some(TypeId::STRING)
-                    );
-                    assert_eq!(
-                        checker.default_of_type_param(referenced),
-                        Some(TypeId::STRING)
-                    );
-                }
-                export_type(&mut checker, cloned);
-            });
-        }))
-        .expect_err("mapped parameter context cannot be discarded");
-        assert_eq!(
-            *error
-                .downcast::<UnsupportedNativeTypeParameterContext>()
-                .unwrap(),
-            UnsupportedNativeTypeParameterContext(GenericProvider::parameter(1))
-        );
+                assert_ne!(referenced, t);
+                assert_eq!(
+                    checker.constraint_of_type_param(referenced),
+                    Some(TypeId::STRING)
+                );
+                assert_eq!(
+                    checker.default_of_type_param(referenced),
+                    Some(TypeId::STRING)
+                );
+            }
+            let retained = export_type(&mut checker, handles, cloned);
+            assert!(matches!(retained, Type::SessionType(_)));
+            assert_eq!(import_type(&mut checker, handles, &retained), cloned);
+        });
     }
 
     #[test]
@@ -1280,7 +1735,7 @@ mod tests {
     }
 
     #[test]
-    fn native_function_identity_pairs_preserve_refs_and_substitution_rejects_context_loss() {
+    fn native_function_identity_pairs_preserve_refs_and_substitution_preserves_session_context() {
         Engine::new().with_native_provider(
             || GenericProvider {
                 with_outer: true,
@@ -1291,36 +1746,31 @@ mod tests {
                 assert_eq!(queries.widen(&function), function);
             },
         );
-        let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_program(|program| {
-                let provider = GenericProvider {
-                    with_outer: true,
-                    ..GenericProvider::new()
-                };
-                let adapter = ProviderAdapter {
-                    provider: &provider,
-                };
-                let mut checker = program.checker_with_native_provider(&adapter);
-                let function = import_type(
-                    &mut checker,
-                    &Type::NativeFunction(GenericProvider::function()),
-                );
-                let outer = checker
-                    .native_type_parameter(core_parameter_key(GenericProvider::parameter(4)))
-                    .unwrap();
-                let mapper = checker.mapper_from(&[outer], &[TypeId::STRING]);
-                let instantiated = checker.instantiate(function, mapper);
-                assert_ne!(instantiated, function);
-                export_type(&mut checker, instantiated);
-            });
-        }))
-        .expect_err("instantiated source function context must not be discarded");
-        assert_eq!(
-            *error
-                .downcast::<UnsupportedNativeFunctionContext>()
-                .unwrap(),
-            UnsupportedNativeFunctionContext(GenericProvider::function())
-        );
+        with_program(|program, handles| {
+            let provider = GenericProvider {
+                with_outer: true,
+                ..GenericProvider::new()
+            };
+            let adapter = ProviderAdapter {
+                provider: &provider,
+                handles,
+            };
+            let mut checker = program.checker_with_native_provider(&adapter);
+            let function = import_type(
+                &mut checker,
+                handles,
+                &Type::NativeFunction(GenericProvider::function()),
+            );
+            let outer = checker
+                .native_type_parameter(core_parameter_key(GenericProvider::parameter(4)))
+                .unwrap();
+            let mapper = checker.mapper_from(&[outer], &[TypeId::STRING]);
+            let instantiated = checker.instantiate(function, mapper);
+            assert_ne!(instantiated, function);
+            let retained = export_type(&mut checker, handles, instantiated);
+            assert!(matches!(retained, Type::SessionType(_)));
+            assert_eq!(import_type(&mut checker, handles, &retained), instantiated);
+        });
     }
 
     impl SourceProvider {
@@ -1484,10 +1934,11 @@ mod tests {
 
     #[test]
     fn native_return_depth_refusal_reports_before_recovery() {
-        with_program(|program| {
+        with_program(|program, handles| {
             let provider = SourceProvider::new();
             let adapter = ProviderAdapter {
                 provider: &provider,
+                handles,
             };
             let mut checker = program.checker_with_native_provider(&adapter);
             let ty = checker
@@ -1500,7 +1951,7 @@ mod tests {
             checker.set_stack_limit(6 << 20);
             assert_eq!(provider.depths.get(), 1);
             assert_eq!(provider.calls[0].get(), 0);
-            assert_eq!(export_type(&mut checker, returned), Type::Any);
+            assert_eq!(export_type(&mut checker, handles, returned), Type::Any);
         });
     }
 
