@@ -7,11 +7,12 @@ use super::{bind::BindingId, flow};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NativeCallEffects, NativeFlowError,
     NativeFlowKey, NativeFlowNode, NativeFlowProvider, NativeFunctionKey, NativeGraphKey,
-    NativePredicate, NativeReferenceKey, NativeValueKey, NativeWriteRelation, Type, TypeQueries,
+    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation,
+    Type, TypeQueries,
 };
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, File, Span};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 pub(super) enum ValueRecipe {
@@ -38,6 +39,7 @@ pub(super) struct NativeFlowSources {
     write_values: HashMap<flow::FlowId, u32>,
     declaration_writes: HashMap<BindingId, flow::FlowId>,
     expression_evaluations: HashMap<(u32, usize, usize), flow::EvaluationId>,
+    runtime_type_calls: HashSet<flow::SourceExpressionId>,
     contexts: RefCell<HashMap<FlowContext, u64>>,
 }
 
@@ -58,6 +60,7 @@ impl NativeFlowSources {
             write_values: HashMap::new(),
             declaration_writes: HashMap::new(),
             expression_evaluations: HashMap::new(),
+            runtime_type_calls: HashSet::new(),
             contexts: RefCell::new(HashMap::new()),
             program,
         };
@@ -73,6 +76,17 @@ impl NativeFlowSources {
         }
         for evaluation in &result.program.evaluations {
             let expression = &result.program.expression(evaluation.expression).expression;
+            if let ExprKind::Call { callee, args } = &expression.kind {
+                let mut callee = callee.as_ref();
+                while let ExprKind::Parenthesized(inner) = &callee.kind {
+                    callee = inner;
+                }
+                if args.len() == 1
+                    && matches!(&callee.kind, ExprKind::Name(name) if name.text == "type" && bound.binding_at(name.span.start).is_none())
+                {
+                    result.runtime_type_calls.insert(evaluation.expression);
+                }
+            }
             result.expression_evaluations.insert(
                 (
                     evaluation.input.graph,
@@ -334,6 +348,19 @@ impl NativeFlowSources {
             if evaluation.operands.len() == 2 {
                 let left = self.program.evaluation(evaluation.operands[0]);
                 let right = self.program.evaluation(evaluation.operands[1]);
+                let equals = matches!(
+                    &source.kind,
+                    ExprKind::Binary {
+                        op: BinaryOperator::Equal,
+                        ..
+                    }
+                );
+                if let Some(predicate) = self
+                    .runtime_type_predicate(key, left, right, equals)
+                    .or_else(|| self.runtime_type_predicate(key, right, left, equals))
+                {
+                    return predicate;
+                }
                 let pair = self
                     .program
                     .references
@@ -372,6 +399,53 @@ impl NativeFlowSources {
             value: self.evaluation_value(evaluation.id),
             input: self.flow_key(evaluation.input, key.graph.context),
         }
+    }
+
+    fn runtime_type_predicate(
+        &self,
+        key: NativeFlowKey,
+        call: &flow::Evaluation,
+        literal: &flow::Evaluation,
+        equals: bool,
+    ) -> Option<NativePredicate> {
+        let mut call = call;
+        while matches!(
+            self.program.expression(call.expression).expression.kind,
+            ExprKind::Parenthesized(_)
+        ) {
+            call = self.program.evaluation(*call.operands.first()?);
+        }
+        if !self.runtime_type_calls.contains(&call.expression) {
+            return None;
+        }
+        let mut literal = &self.program.expression(literal.expression).expression;
+        while let ExprKind::Parenthesized(inner) = &literal.kind {
+            literal = inner;
+        }
+        let ExprKind::String(name) = &literal.kind else {
+            return None;
+        };
+        let kind = match name.as_slice() {
+            b"nil" => NativeRuntimeType::Nil,
+            b"boolean" => NativeRuntimeType::Boolean,
+            b"number" => NativeRuntimeType::Number,
+            b"string" => NativeRuntimeType::String,
+            b"table" | b"function" | b"userdata" | b"thread" => {
+                return Some(NativePredicate::Unsupported(
+                    "nonprimitive Lua runtime type predicates require native runtime-domain types",
+                ));
+            }
+            _ => return None,
+        };
+        let argument = self.program.evaluation(*call.operands.get(1)?);
+        let reference = self.program.references.get(&argument.expression)?;
+        Some(NativePredicate::RuntimeType {
+            subject: self.reference_key(key.graph, reference)?,
+            value: self.evaluation_value(argument.id),
+            input: self.flow_key(argument.input, key.graph.context),
+            kind,
+            equals,
+        })
     }
 
     pub(super) fn node(&self, key: NativeFlowKey) -> Option<NativeFlowNode> {

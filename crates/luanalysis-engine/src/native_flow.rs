@@ -5,7 +5,7 @@ use bun_sema::check::native_flow as core;
 
 pub use core::{
     NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeGraphKey,
-    NativePredicate, NativeReferenceKey, NativeValueKey, NativeWriteRelation,
+    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation,
 };
 
 #[derive(Debug, Clone, PartialEq)]

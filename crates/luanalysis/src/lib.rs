@@ -6,6 +6,7 @@
 //! contextual expression demands and project services are integration gates.
 
 pub mod bind;
+mod builtins;
 pub mod flow;
 mod functions;
 mod native_expressions;
@@ -548,6 +549,12 @@ impl Checker<'_> {
                     }
                 }
                 None => {
+                    if self.bound.binding_at(name.span.start).is_none() {
+                        if let Some(ty) = builtins::value(&name.text) {
+                            self.record_expression_type(expr.span, &ty);
+                            return ty;
+                        }
+                    }
                     self.error(
                         "TS2304",
                         name.span,
