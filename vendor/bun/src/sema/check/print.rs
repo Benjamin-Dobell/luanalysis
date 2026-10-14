@@ -1816,6 +1816,10 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 Node::simple(text)
             }
             TypeData::NativeTable(table) => {
+                if let Some(origin) = table.nominal_origin {
+                    let reference = self.c.intern(TypeData::NativeObject(origin));
+                    return self.type_to_node(reference);
+                }
                 let mut members = Vec::new();
                 for field in &table.fields {
                     let key = match field.key {

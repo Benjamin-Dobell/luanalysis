@@ -1,0 +1,269 @@
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -2367,7 +2367,8 @@
+             TypeData::NativeObject(reference) => self.mapper_record(reference.mapper).1
+                 .difference(ObjectFlags::PROPAGATING_FLAGS),
+             TypeData::NativeTable(table) => {
+-                let flags = table.fields.iter().fold(ObjectFlags::empty(), |flags, field| flags | self.object_flags(field.value));
++                let origin_flags = table.nominal_origin.map_or(ObjectFlags::empty(), |origin| self.mapper_record(origin.mapper).1);
++                let flags = table.fields.iter().fold(origin_flags, |flags, field| flags | self.object_flags(field.value));
+                 let flags = table.indexers.iter().fold(flags, |flags, indexer| flags | self.object_flags(indexer.key) | self.object_flags(indexer.value));
+                 let flags = table.sequence_tails.iter().fold(flags, |flags, tail| flags | self.object_flags(tail.value));
+                 if table.fresh { flags | ObjectFlags::CONTAINS_OBJECT_OR_ARRAY_LITERAL } else { flags }
+@@ -3502,7 +3503,7 @@
+ follow_struct!(NativeTableField { key, value, optional, readonly });
+ follow_struct!(NativeTableIndexer { key, value, readonly, sparse });
+ follow_struct!(NativeTableSequenceTail { start, value, readonly });
+-follow_struct!(NativeTableData<'_> { fields, indexers, sequence_tails, fresh, collision_candidates });
++follow_struct!(NativeTableData<'_> { nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+ follow_struct!(NativeCapturedFunctionContext { signature });
+ follow_struct!(NativeResultPack { ty });
+ follow_struct!(NativeFunctionContext {
+@@ -3764,7 +3765,7 @@
+     pattern_at,
+     mapper
+ });
+-clone_in_struct!(NativeTableData { fields, indexers, sequence_tails, fresh, collision_candidates });
++clone_in_struct!(NativeTableData { nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+ clone_in_enum!(SigData {
+     Native { declaration, mapper },
+     NativeContextual { declaration, mapper, context, environment },
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -15,14 +15,15 @@
+ //! relation solver. Native members use the common recursive relation and invokeOnce inference
+ //! guards. Query::Shape and shape_memo own the string/index/signature view required by TS workers.
+ //!
+-//! Class/module heads, base inheritance and non-public member visibility are explicit unsupported
+-//! errors until their origins are preserved throughout nested relation workers. They must never
+-//! silently acquire structural semantics. Explicit-owner augmentations resolve aliases through
++//! Class heads retain their original declaration origin through native table materialization and
++//! recursive relation workers. A class target requires that origin before ordinary member checks;
++//! structural targets still accept compatible classes. Module heads, base inheritance and non-public
++//! member visibility remain explicit unsupported errors. Explicit-owner augmentations resolve aliases through
+ //! the same declared-head query, retain ambiguity errors and skip unrelated canonical owners.
+ 
+ use crate::atom::Atom;
+ use crate::check::{Checker, Query};
+-use crate::types::{MapperId, NativeFunctionId, NativeTableKey, NativeTypeParamId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
++use crate::types::{CloneIn, MapperId, NativeFunctionId, NativeTableKey, NativeTypeParamId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
+ use super::native_tables::{NativeTableAccessKey, NativeTableError};
+ use super::task::Stored;
+ use crate::util::FxHashMap;
+@@ -250,7 +251,7 @@
+         let header = provider.type_declaration_header(self, declaration);
+         let result = match header.kind {
+             NativeTypeDeclarationKind::Alias => Ok(provider.type_alias_target(self, declaration)),
+-            NativeTypeDeclarationKind::Shape => {
++            NativeTypeDeclarationKind::Shape | NativeTypeDeclarationKind::Class => {
+                 if let Some(NativeObjectDeclarationForm::Table { type_argument_count }) = header.object_form
+                     && type_argument_count != 2 {
+                     Err(NativeNamedTypeError::TypeArgumentArity { declaration, actual: type_argument_count, minimum: 2, maximum: 2 })
+@@ -410,6 +411,18 @@
+         self.native_named_provider(reference.declaration).is_ok_and(|p| p.type_declaration_header(self, reference.declaration).object_form == Some(NativeObjectDeclarationForm::Array))
+     }
+ 
++    /// Nominal provenance is a declaration fact, never inferred from object fields. Materialized
++    /// class descriptions retain the same fact so native key relations cannot erase it.
++    pub(super) fn native_nominal_origin(&self, ty: TypeId) -> Option<NativeObjectReference> {
++        match *self.data(ty) {
++            TypeData::NativeObject(reference) => self.native_named_provider(reference.declaration).ok()
++                .filter(|p| p.type_declaration_header(self, reference.declaration).kind.is_nominal())
++                .map(|_| reference),
++            TypeData::NativeTable(ref table) => table.nominal_origin,
++            _ => None,
++        }
++    }
++
+     /// Materialize a declaration-space description once per object mapper. Recursive member types
+     /// only request the already-published head, so productive recursion does not recurse into fields.
+     pub fn native_object_resolved(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+@@ -460,8 +473,13 @@
+                 return Err(NativeNamedTypeError::InvalidDeclaration(declaration));
+             }
+         }
+-        self.native_table(&fields, &indexers, NativeTableFlavor::Declared)
+-            .map_err(|error| NativeNamedTypeError::Table { declaration, error })
++        let table = self.native_table(&fields, &indexers, NativeTableFlavor::Declared)
++            .map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
++        if header.kind != NativeTypeDeclarationKind::Class { return Ok(table) }
++        let TypeData::NativeTable(data) = self.data(table) else { unreachable!() };
++        let mut description = (**data).clone_in(self.arena);
++        description.nominal_origin = Some(reference);
++        Ok(self.intern(TypeData::NativeTable(self.boxed(description))))
+     }
+ 
+     /// A literal field read demands just that field, preserving laziness across sibling members.
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -46,6 +46,9 @@
+ 
+ #[derive(PartialEq, Eq, Hash, Debug)]
+ pub struct NativeTableData<'s> {
++    /// The original class declaration carried by a resolved native object. Ordinary table
++    /// construction never supplies an origin; it cannot infer one from equal fields.
++    pub nominal_origin: Option<NativeObjectReference>,
+     pub fields: List<'s, NativeTableField>,
+     pub indexers: List<'s, NativeTableIndexer>,
+     pub sequence_tails: List<'s, NativeTableSequenceTail>,
+@@ -307,6 +310,7 @@
+         }
+         sequence_tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
+         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            nominal_origin: None,
+             fields: self.list(&fields), indexers: self.list(&indexers),
+             sequence_tails: self.list(&sequence_tails), fresh, collision_candidates,
+         }))))
+@@ -448,6 +452,7 @@
+         domains.sort_by_key(|indexer| indexer.key.0);
+         tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
+         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            nominal_origin: None,
+             fields: self.list(&merged),
+             indexers: self.list(&domains),
+             sequence_tails: self.list(&tails),
+@@ -724,6 +729,11 @@
+         state: u8,
+     ) -> Ternary {
+         let identity = r.relation == Relation::Identity;
++        if let Some(target_origin) = target.nominal_origin {
++            if source.nominal_origin.is_none_or(|source_origin| source_origin.declaration != target_origin.declaration) {
++                return Ternary::FALSE;
++            }
++        } else if identity && source.nominal_origin.is_some() { return Ternary::FALSE }
+         if source.indexers.iter().chain(target.indexers.iter()).any(|indexer| !self.native_table_valid_key_type(indexer.key)) {
+             return Ternary::FALSE;
+         }
+@@ -882,6 +892,7 @@
+             sparse: false,
+         }).collect::<Vec<_>>();
+         Some(NativeTableData {
++            nominal_origin: None,
+             fields: self.list(&fields), indexers: self.list(&indexers),
+             sequence_tails: self.list(&[]),
+             fresh: self.is_fresh_object_literal_type(ty),
+@@ -901,6 +912,7 @@
+             value: self.get_widened_type(tail.value), ..*tail
+         }).collect::<Vec<_>>();
+         self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            nominal_origin: table.nominal_origin,
+             fields: self.list(&fields), indexers: self.list(&indexers),
+             sequence_tails: self.list(&sequence_tails), fresh: false,
+             collision_candidates: table.collision_candidates,
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -495,6 +495,16 @@
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
++    /// Atomic object comparisons enforce declaration origin inside the recursive relation worker.
++    /// Composite and instantiable types still use its ordinary distribution/constraint rules.
++    fn native_nominal_objects_compatible(&self, source: TypeId, target: TypeId, relation: Relation) -> bool {
++        if !is_object_kind(self.data(source)) || !is_object_kind(self.data(target)) { return true }
++        let (source, target) = (self.native_nominal_origin(source), self.native_nominal_origin(target));
++        match target {
++            Some(target) => source.is_some_and(|source| source.declaration == target.declaration),
++            None => relation != Relation::Identity || source.is_none(),
++        }
++    }
+     pub fn is_assignable(&mut self, source: TypeId, target: TypeId) -> bool {
+         self.related(source, target, Relation::Assignable)
+     }
+@@ -686,6 +696,7 @@
+     fn is_empty_resolved_type(&mut self, ty: TypeId) -> bool {
+         let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
+         if let TypeData::NativeTable(table) = self.data(ty) {
++            if table.nominal_origin.is_some() { return false }
+             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
+         }
+         !self.is_any_function_type(ty)
+@@ -712,6 +723,7 @@
+     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
+         let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
+         if let TypeData::NativeTable(table) = self.data(ty) {
++            if table.nominal_origin.is_some() { return false }
+             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
+         }
+         if matches!(ty, TypeId::EMPTY_OBJECT | TypeId::EMPTY_TYPE_LITERAL) {
+@@ -988,6 +1000,7 @@
+         if source == target {
+             return true;
+         }
++        if !self.native_nominal_objects_compatible(source, target, relation) { return false }
+         // A relation check made while a type is being simplified does not go through `enter`.
+         if self.is_stack_low() {
+             self.bailed_out();
+@@ -2618,6 +2631,10 @@
+             return Ternary::TRUE;
+         }
+         let head = if REPORT { r.head_message.take() } else { None };
++        if !self.native_nominal_objects_compatible(original_source, original_target, r.relation) {
++            if REPORT { self.report_relation_error(r, head, original_source, original_target) }
++            return Ternary::FALSE;
++        }
+         let (original_sd, original_td) = (self.data(original_source), self.data(original_target));
+         let relation = r.relation;
+         let is_from_related = std::mem::take(&mut r.is_from_related)
+@@ -2671,6 +2688,10 @@
+         }
+         let (source, sd) = self.normalized_as(original_source, original_sd, false);
+         let (mut target, mut td) = self.normalized_as(original_target, original_td, true);
++        if !self.native_nominal_objects_compatible(source, target, relation) {
++            if REPORT { self.report_relation_error(r, head, source, target) }
++            return Ternary::FALSE;
++        }
+         // `getRegularTypeOfObjectLiteral` recurses only into properties that are object literals
+         // themselves.
+         let state = if state & STATE_REGULAR != 0 && !is_object_literal_kind(sd) {
+@@ -3106,6 +3127,7 @@
+ 
+     /// `isWeakType`: properties, all of them optional, and nothing else.
+     pub(super) fn is_weak_type(&mut self, t: TypeId) -> bool {
++        if self.native_nominal_origin(t).is_some() { return false }
+         let t = match self.native_object_resolved(t) { Ok(ty) => ty, Err(_) => return false };
+         match self.data(t) {
+             TypeData::NativeTable(table) => !table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty()
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -704,7 +704,11 @@
+                 let sequence_tails: Vec<NativeTableSequenceTail> = table.sequence_tails.iter().map(|tail| NativeTableSequenceTail {
+                     value: self.instantiate(tail.value, mapper), ..*tail
+                 }).collect();
++                let nominal_origin = table.nominal_origin.map(|origin| NativeObjectReference {
++                    declaration: origin.declaration, mapper: self.compose(origin.mapper, mapper),
++                });
+                 self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++                    nominal_origin,
+                     fields: self.list(&fields),
+                     indexers: self.list(&indexers),
+                     sequence_tails: self.list(&sequence_tails),
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -3534,6 +3534,7 @@
+     fn regular_type_of_resolved_object_literal(&mut self, ty: TypeId) -> TypeId {
+         match self.data(ty) {
+             TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++                nominal_origin: table.nominal_origin,
+                 fields: self.list(&table.fields), indexers: self.list(&table.indexers),
+                 sequence_tails: self.list(&table.sequence_tails), fresh: false,
+                 collision_candidates: table.collision_candidates,
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1816,6 +1816,10 @@
+                 Node::simple(text)
+             }
+             TypeData::NativeTable(table) => {
++                if let Some(origin) = table.nominal_origin {
++                    let reference = self.c.intern(TypeData::NativeObject(origin));
++                    return self.type_to_node(reference);
++                }
+                 let mut members = Vec::new();
+                 for field in &table.fields {
+                     let key = match field.key {

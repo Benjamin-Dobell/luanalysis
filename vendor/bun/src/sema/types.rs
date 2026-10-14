@@ -2367,7 +2367,8 @@ impl<'p, 's> Types<'p, 's> {
             TypeData::NativeObject(reference) => self.mapper_record(reference.mapper).1
                 .difference(ObjectFlags::PROPAGATING_FLAGS),
             TypeData::NativeTable(table) => {
-                let flags = table.fields.iter().fold(ObjectFlags::empty(), |flags, field| flags | self.object_flags(field.value));
+                let origin_flags = table.nominal_origin.map_or(ObjectFlags::empty(), |origin| self.mapper_record(origin.mapper).1);
+                let flags = table.fields.iter().fold(origin_flags, |flags, field| flags | self.object_flags(field.value));
                 let flags = table.indexers.iter().fold(flags, |flags, indexer| flags | self.object_flags(indexer.key) | self.object_flags(indexer.value));
                 let flags = table.sequence_tails.iter().fold(flags, |flags, tail| flags | self.object_flags(tail.value));
                 if table.fresh { flags | ObjectFlags::CONTAINS_OBJECT_OR_ARRAY_LITERAL } else { flags }
@@ -3502,7 +3503,7 @@ follow_struct!(NativeObjectReference { declaration, mapper });
 follow_struct!(NativeTableField { key, value, optional, readonly });
 follow_struct!(NativeTableIndexer { key, value, readonly, sparse });
 follow_struct!(NativeTableSequenceTail { start, value, readonly });
-follow_struct!(NativeTableData<'_> { fields, indexers, sequence_tails, fresh, collision_candidates });
+follow_struct!(NativeTableData<'_> { nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 follow_struct!(NativeCapturedFunctionContext { signature });
 follow_struct!(NativeResultPack { ty });
 follow_struct!(NativeFunctionContext {
@@ -3764,7 +3765,7 @@ clone_in_struct!(Shape {
     pattern_at,
     mapper
 });
-clone_in_struct!(NativeTableData { fields, indexers, sequence_tails, fresh, collision_candidates });
+clone_in_struct!(NativeTableData { nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 clone_in_enum!(SigData {
     Native { declaration, mapper },
     NativeContextual { declaration, mapper, context, environment },

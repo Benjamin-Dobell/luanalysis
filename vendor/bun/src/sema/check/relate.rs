@@ -495,6 +495,16 @@ fn is_normalized_kind(data: &TypeData) -> bool {
 }
 
 impl<'p, 's> Checker<'p, 's> {
+    /// Atomic object comparisons enforce declaration origin inside the recursive relation worker.
+    /// Composite and instantiable types still use its ordinary distribution/constraint rules.
+    fn native_nominal_objects_compatible(&self, source: TypeId, target: TypeId, relation: Relation) -> bool {
+        if !is_object_kind(self.data(source)) || !is_object_kind(self.data(target)) { return true }
+        let (source, target) = (self.native_nominal_origin(source), self.native_nominal_origin(target));
+        match target {
+            Some(target) => source.is_some_and(|source| source.declaration == target.declaration),
+            None => relation != Relation::Identity || source.is_none(),
+        }
+    }
     pub fn is_assignable(&mut self, source: TypeId, target: TypeId) -> bool {
         self.related(source, target, Relation::Assignable)
     }
@@ -686,6 +696,7 @@ impl<'p, 's> Checker<'p, 's> {
     fn is_empty_resolved_type(&mut self, ty: TypeId) -> bool {
         let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
         if let TypeData::NativeTable(table) = self.data(ty) {
+            if table.nominal_origin.is_some() { return false }
             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
         }
         !self.is_any_function_type(ty)
@@ -712,6 +723,7 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
         let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
         if let TypeData::NativeTable(table) = self.data(ty) {
+            if table.nominal_origin.is_some() { return false }
             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
         }
         if matches!(ty, TypeId::EMPTY_OBJECT | TypeId::EMPTY_TYPE_LITERAL) {
@@ -988,6 +1000,7 @@ impl<'p, 's> Checker<'p, 's> {
         if source == target {
             return true;
         }
+        if !self.native_nominal_objects_compatible(source, target, relation) { return false }
         // A relation check made while a type is being simplified does not go through `enter`.
         if self.is_stack_low() {
             self.bailed_out();
@@ -2618,6 +2631,10 @@ impl<'p, 's> Checker<'p, 's> {
             return Ternary::TRUE;
         }
         let head = if REPORT { r.head_message.take() } else { None };
+        if !self.native_nominal_objects_compatible(original_source, original_target, r.relation) {
+            if REPORT { self.report_relation_error(r, head, original_source, original_target) }
+            return Ternary::FALSE;
+        }
         let (original_sd, original_td) = (self.data(original_source), self.data(original_target));
         let relation = r.relation;
         let is_from_related = std::mem::take(&mut r.is_from_related)
@@ -2671,6 +2688,10 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let (source, sd) = self.normalized_as(original_source, original_sd, false);
         let (mut target, mut td) = self.normalized_as(original_target, original_td, true);
+        if !self.native_nominal_objects_compatible(source, target, relation) {
+            if REPORT { self.report_relation_error(r, head, source, target) }
+            return Ternary::FALSE;
+        }
         // `getRegularTypeOfObjectLiteral` recurses only into properties that are object literals
         // themselves.
         let state = if state & STATE_REGULAR != 0 && !is_object_literal_kind(sd) {
@@ -3106,6 +3127,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `isWeakType`: properties, all of them optional, and nothing else.
     pub(super) fn is_weak_type(&mut self, t: TypeId) -> bool {
+        if self.native_nominal_origin(t).is_some() { return false }
         let t = match self.native_object_resolved(t) { Ok(ty) => ty, Err(_) => return false };
         match self.data(t) {
             TypeData::NativeTable(table) => !table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty()

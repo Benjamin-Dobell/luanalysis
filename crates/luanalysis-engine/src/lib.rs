@@ -837,6 +837,7 @@ pub trait TypeQueries {
     fn type_parameter_default(&mut self, key: NativeTypeParameterKey) -> Option<Type>;
     fn format(&mut self, ty: &Type) -> String;
     fn named_type_reference(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Result<Type, NamedTypeError>;
+    fn named_object_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey>;
     fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
     fn validate_named_declaration(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
     fn validate_named_member(&mut self, member: NativeTypeMemberKey) -> Result<Type, NamedTypeError>;
@@ -1532,6 +1533,13 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn named_type_reference(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Result<Type, NamedTypeError> {
         native_named::resolve(self, declaration, arguments)
+    }
+    fn named_object_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey> {
+        let ty = import_type(self.checker, self.handles, ty);
+        match self.checker.data(ty) {
+            TypeData::NativeObject(reference) => Some(native_named::source_declaration(reference.declaration)),
+            _ => None,
+        }
     }
     fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError> {
         native_named::declared(self, declaration, false)
@@ -2636,6 +2644,9 @@ impl Host for TypeCoreHost {
 
 #[cfg(test)]
 mod native_named_core_tests;
+
+#[cfg(test)]
+mod class_nominal_tests;
 
 #[cfg(test)]
 mod tests {

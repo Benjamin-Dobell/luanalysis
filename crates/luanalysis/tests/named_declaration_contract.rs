@@ -6,8 +6,8 @@ fn retained_standalone_declarations_cannot_count_as_semantically_checked() {
         ("---@alias Unused Missing", "LUA2001", "Missing"),
         (
             "---@class Unused\n---@field member Missing",
-            "LUA2031",
-            "Unused",
+            "LUA2001",
+            "Missing",
         ),
         (
             "---@shape Unused\n---@field member Missing",

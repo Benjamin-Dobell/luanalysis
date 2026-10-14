@@ -15,14 +15,15 @@
 //! relation solver. Native members use the common recursive relation and invokeOnce inference
 //! guards. Query::Shape and shape_memo own the string/index/signature view required by TS workers.
 //!
-//! Class/module heads, base inheritance and non-public member visibility are explicit unsupported
-//! errors until their origins are preserved throughout nested relation workers. They must never
-//! silently acquire structural semantics. Explicit-owner augmentations resolve aliases through
+//! Class heads retain their original declaration origin through native table materialization and
+//! recursive relation workers. A class target requires that origin before ordinary member checks;
+//! structural targets still accept compatible classes. Module heads, base inheritance and non-public
+//! member visibility remain explicit unsupported errors. Explicit-owner augmentations resolve aliases through
 //! the same declared-head query, retain ambiguity errors and skip unrelated canonical owners.
 
 use crate::atom::Atom;
 use crate::check::{Checker, Query};
-use crate::types::{MapperId, NativeFunctionId, NativeTableKey, NativeTypeParamId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
+use crate::types::{CloneIn, MapperId, NativeFunctionId, NativeTableKey, NativeTypeParamId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
 use super::native_tables::{NativeTableAccessKey, NativeTableError};
 use super::task::Stored;
 use crate::util::FxHashMap;
@@ -250,7 +251,7 @@ impl<'p, 's> Checker<'p, 's> {
         let header = provider.type_declaration_header(self, declaration);
         let result = match header.kind {
             NativeTypeDeclarationKind::Alias => Ok(provider.type_alias_target(self, declaration)),
-            NativeTypeDeclarationKind::Shape => {
+            NativeTypeDeclarationKind::Shape | NativeTypeDeclarationKind::Class => {
                 if let Some(NativeObjectDeclarationForm::Table { type_argument_count }) = header.object_form
                     && type_argument_count != 2 {
                     Err(NativeNamedTypeError::TypeArgumentArity { declaration, actual: type_argument_count, minimum: 2, maximum: 2 })
@@ -410,6 +411,18 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_named_provider(reference.declaration).is_ok_and(|p| p.type_declaration_header(self, reference.declaration).object_form == Some(NativeObjectDeclarationForm::Array))
     }
 
+    /// Nominal provenance is a declaration fact, never inferred from object fields. Materialized
+    /// class descriptions retain the same fact so native key relations cannot erase it.
+    pub(super) fn native_nominal_origin(&self, ty: TypeId) -> Option<NativeObjectReference> {
+        match *self.data(ty) {
+            TypeData::NativeObject(reference) => self.native_named_provider(reference.declaration).ok()
+                .filter(|p| p.type_declaration_header(self, reference.declaration).kind.is_nominal())
+                .map(|_| reference),
+            TypeData::NativeTable(ref table) => table.nominal_origin,
+            _ => None,
+        }
+    }
+
     /// Materialize a declaration-space description once per object mapper. Recursive member types
     /// only request the already-published head, so productive recursion does not recurse into fields.
     pub fn native_object_resolved(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
@@ -460,8 +473,13 @@ impl<'p, 's> Checker<'p, 's> {
                 return Err(NativeNamedTypeError::InvalidDeclaration(declaration));
             }
         }
-        self.native_table(&fields, &indexers, NativeTableFlavor::Declared)
-            .map_err(|error| NativeNamedTypeError::Table { declaration, error })
+        let table = self.native_table(&fields, &indexers, NativeTableFlavor::Declared)
+            .map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
+        if header.kind != NativeTypeDeclarationKind::Class { return Ok(table) }
+        let TypeData::NativeTable(data) = self.data(table) else { unreachable!() };
+        let mut description = (**data).clone_in(self.arena);
+        description.nominal_origin = Some(reference);
+        Ok(self.intern(TypeData::NativeTable(self.boxed(description))))
     }
 
     /// A literal field read demands just that field, preserving laziness across sibling members.

@@ -208,9 +208,9 @@ fn unknown_primitive_ambiguous_and_specialized_augmentation_owners_are_rejected(
 }
 
 #[test]
-fn class_module_base_and_visibility_semantics_stay_explicit_gates() {
+fn class_runtime_module_base_and_visibility_semantics_stay_explicit_gates() {
     for source in [
-        "---@class Nominal\n",
+        "---@class Nominal\nlocal Nominal={}\n",
         "---@module Module\n",
         "---@shape Derived:Base\n---@shape Base\n",
         "---@shape Private\n---@field private value number\n",
@@ -228,18 +228,17 @@ fn class_module_base_and_visibility_semantics_stay_explicit_gates() {
 }
 
 #[test]
-fn implicit_shape_attachments_stay_gated_until_the_actual_value_is_checked() {
+fn implicit_shape_attachments_check_the_actual_initializer() {
     let wrong = include_str!("fixtures/named/implicit_shape_wrong.lua");
     let corrected = include_str!("fixtures/named/implicit_shape_corrected.lua");
-    for source in [wrong, corrected] {
-        let report = check(source);
-        assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
-        assert_eq!(report.diagnostics[0].code, "LUA2031");
-        assert_eq!(
-            &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
-            "Attached"
-        );
-    }
+    let report = check(wrong);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(
+        &wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+        "{value = \"wrong\"}"
+    );
+    passes(corrected);
     let explicit = wrong.replace("local attached", "---@type Attached\nlocal attached");
     let report = check(&explicit);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);

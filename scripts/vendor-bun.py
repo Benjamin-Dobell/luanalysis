@@ -158,6 +158,16 @@ SOURCE_ADAPTATIONS.extend({
 } for path in ["flow.rs", "flow_walk.rs", "native_flow.rs", "native_iterators.rs"])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-nominal-class-origins.patch",
+    "reason": "Retain original nominal class declarations through native table descriptions, mapping, lookup, inference and structural relation demands while preserving structural shape semantics and explicit unsupported inheritance and visibility boundaries.",
+} for path in [
+    "types.rs", "check/native_named.rs", "check/native_tables.rs", "check/relate.rs",
+    "check/instantiate.rs", "check/shape.rs", "check/print.rs",
+])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

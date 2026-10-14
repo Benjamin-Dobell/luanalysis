@@ -178,6 +178,13 @@ pub(super) struct RuntimeAttachment {
     pub declarations: Vec<NativeNamedKey>,
     pub augmentations: Vec<NativeAugmentationKey>,
     pub has_explicit_type_annotation: bool,
+    pub local_values: Vec<AttachmentValueOrigin>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct AttachmentValueOrigin {
+    pub span: Span,
+    pub table_literal: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -800,6 +807,19 @@ fn runtime_attachment(
                 function.annotations.type_annotation.is_some()
             }
             _ => false,
+        },
+        local_values: match &statement.kind {
+            StmtKind::Local { values, .. } => values.iter().map(|value| {
+                let mut literal = value;
+                while let ExprKind::Parenthesized(inner) = &literal.kind {
+                    literal = inner;
+                }
+                AttachmentValueOrigin {
+                    span: value.span,
+                    table_literal: matches!(literal.kind, ExprKind::Table(_)),
+                }
+            }).collect(),
+            _ => Vec::new(),
         },
     })
 }

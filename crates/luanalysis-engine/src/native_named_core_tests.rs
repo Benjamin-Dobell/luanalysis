@@ -740,13 +740,7 @@ fn nominal_base_visibility_and_duplicate_definitions_remain_explicit_errors() {
             }
         },
         |_, q| {
-            assert_eq!(
-                q.named_type_reference(declaration(0), &[]),
-                Err(NamedTypeError::UnsupportedKind(
-                    declaration(0),
-                    TypeDeclarationKind::Class
-                ))
-            );
+            assert!(q.named_type_reference(declaration(0), &[]).is_ok());
             assert_eq!(
                 q.named_type_reference(declaration(1), &[]),
                 Err(NamedTypeError::UnsupportedKind(

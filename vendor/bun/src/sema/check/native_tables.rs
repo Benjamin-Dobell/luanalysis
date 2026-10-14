@@ -46,6 +46,9 @@ pub struct NativeTableSequenceTail {
 
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub struct NativeTableData<'s> {
+    /// The original class declaration carried by a resolved native object. Ordinary table
+    /// construction never supplies an origin; it cannot infer one from equal fields.
+    pub nominal_origin: Option<NativeObjectReference>,
     pub fields: List<'s, NativeTableField>,
     pub indexers: List<'s, NativeTableIndexer>,
     pub sequence_tails: List<'s, NativeTableSequenceTail>,
@@ -307,6 +310,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         sequence_tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            nominal_origin: None,
             fields: self.list(&fields), indexers: self.list(&indexers),
             sequence_tails: self.list(&sequence_tails), fresh, collision_candidates,
         }))))
@@ -448,6 +452,7 @@ impl<'p, 's> Checker<'p, 's> {
         domains.sort_by_key(|indexer| indexer.key.0);
         tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            nominal_origin: None,
             fields: self.list(&merged),
             indexers: self.list(&domains),
             sequence_tails: self.list(&tails),
@@ -724,6 +729,11 @@ impl<'p, 's> Checker<'p, 's> {
         state: u8,
     ) -> Ternary {
         let identity = r.relation == Relation::Identity;
+        if let Some(target_origin) = target.nominal_origin {
+            if source.nominal_origin.is_none_or(|source_origin| source_origin.declaration != target_origin.declaration) {
+                return Ternary::FALSE;
+            }
+        } else if identity && source.nominal_origin.is_some() { return Ternary::FALSE }
         if source.indexers.iter().chain(target.indexers.iter()).any(|indexer| !self.native_table_valid_key_type(indexer.key)) {
             return Ternary::FALSE;
         }
@@ -882,6 +892,7 @@ impl<'p, 's> Checker<'p, 's> {
             sparse: false,
         }).collect::<Vec<_>>();
         Some(NativeTableData {
+            nominal_origin: None,
             fields: self.list(&fields), indexers: self.list(&indexers),
             sequence_tails: self.list(&[]),
             fresh: self.is_fresh_object_literal_type(ty),
@@ -901,6 +912,7 @@ impl<'p, 's> Checker<'p, 's> {
             value: self.get_widened_type(tail.value), ..*tail
         }).collect::<Vec<_>>();
         self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            nominal_origin: table.nominal_origin,
             fields: self.list(&fields), indexers: self.list(&indexers),
             sequence_tails: self.list(&sequence_tails), fresh: false,
             collision_candidates: table.collision_candidates,

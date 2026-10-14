@@ -704,7 +704,11 @@ impl<'p, 's> Checker<'p, 's> {
                 let sequence_tails: Vec<NativeTableSequenceTail> = table.sequence_tails.iter().map(|tail| NativeTableSequenceTail {
                     value: self.instantiate(tail.value, mapper), ..*tail
                 }).collect();
+                let nominal_origin = table.nominal_origin.map(|origin| NativeObjectReference {
+                    declaration: origin.declaration, mapper: self.compose(origin.mapper, mapper),
+                });
                 self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+                    nominal_origin,
                     fields: self.list(&fields),
                     indexers: self.list(&indexers),
                     sequence_tails: self.list(&sequence_tails),

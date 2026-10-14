@@ -168,6 +168,7 @@ impl<'a> AnnotationPack<'a> {
 #[derive(Clone, Debug)]
 pub(super) enum InitializerContext {
     Local(TypeAnnotation),
+    LocalDeclarations(Vec<luanalysis_syntax::Name>),
     Assignment(Vec<Expr>),
 }
 
@@ -312,6 +313,8 @@ impl NativePacks {
                     );
                     if let Some(annotation) = annotation {
                         self.initializer(list, InitializerContext::Local(annotation.clone()));
+                    } else {
+                        self.initializer(list, InitializerContext::LocalDeclarations(names.clone()));
                     }
                     for value in values {
                         self.expression(value, owner, functions, expression_key);

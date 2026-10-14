@@ -3534,6 +3534,7 @@ impl<'p, 's> Checker<'p, 's> {
     fn regular_type_of_resolved_object_literal(&mut self, ty: TypeId) -> TypeId {
         match self.data(ty) {
             TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+                nominal_origin: table.nominal_origin,
                 fields: self.list(&table.fields), indexers: self.list(&table.indexers),
                 sequence_tails: self.list(&table.sequence_tails), fresh: false,
                 collision_candidates: table.collision_candidates,

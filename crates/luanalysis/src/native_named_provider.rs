@@ -670,21 +670,18 @@ impl NativeRegistry {
     pub(crate) fn check_named_declarations(&self, queries: &mut dyn TypeQueries) {
         let mut seen = HashSet::new();
         for source in self.named.declarations() {
-            if matches!(
-                source.syntax.kind,
-                NamedTypeDeclarationKind::Record {
-                    flavor: NamedRecordKind::Shape,
-                    ..
-                }
-            ) && source
-                .syntax
-                .attachment
-                .and_then(|span| self.named.attachment(span))
-                .is_some_and(|attachment| !attachment.has_explicit_type_annotation)
-            {
+            if matches!(source.syntax.kind, NamedTypeDeclarationKind::Record {
+                flavor: NamedRecordKind::Class, ..
+            }) && source.syntax.attachment.is_some() {
+                self.report.borrow_mut().diagnostics.push(Diagnostic {
+                    code: "LUA2031", span: source.syntax.name.span,
+                    message: format!("Runtime class declaration value '{}' requires explicit declaration-value ownership checking; standalone class annotations are supported in this slice.", source.syntax.name.text),
+                });
+            }
+            if let Err(reason) = self.shape_attachment_directive(source) {
                 self.report.borrow_mut().diagnostics.push(Diagnostic {
                     code:"LUA2031",span:source.syntax.name.span,
-                    message:format!("Implicit runtime attachment of shape '{}' requires value ownership checking; use an explicit @type annotation in this slice.",source.syntax.name.text),
+                    message:format!("Shape '{}' attachment is unsupported: {reason}.",source.syntax.name.text),
                 });
             }
             if !seen.insert(&source.syntax.name.text) {

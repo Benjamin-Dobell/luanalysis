@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "native_named_provider.rs"]
 mod named_provider;
+#[path = "native_shape_attachment.rs"]
+mod shape_attachment;
 #[path = "native_project_provider.rs"]
 pub(crate) mod project_provider;
 
@@ -679,7 +681,13 @@ impl NativeRegistry {
                 if let Some(annotation) = annotation {
                     // The declaration already supplies the captured type.
                     // Its file/body check still validates the initializer.
-                    (checker.annotation(&annotation), false)
+                    let explicit = checker.annotation(&annotation);
+                    let constraint = checker
+                        .shape_binding_constraint(binding, Some(&explicit), Some(annotation.span))
+                        .unwrap_or(explicit);
+                    (constraint, false)
+                } else if let Some(constraint) = checker.shape_binding_constraint(binding, None, None) {
+                    (constraint, false)
                 } else {
                     let resolved = self.flow_declaration_binding(binding, None, checker.engine)?;
                     // A demand can run inside an active native loop query.
@@ -799,7 +807,19 @@ impl NativeRegistry {
                 checker.captured_function = checker.engine.current_captured_function();
                 checker.check_mode = context.mode;
                 if let Some(annotation) = annotation {
-                    let constraint = checker.annotation(&annotation);
+                    let explicit = checker.annotation(&annotation);
+                    let constraint = checker
+                        .shape_binding_constraint(binding, Some(&explicit), Some(annotation.span))
+                        .unwrap_or(explicit);
+                    self.contextual_report(context, checker.report);
+                    return Some(Binding {
+                        initial: constraint.clone(),
+                        value: constraint.clone(),
+                        constraint,
+                        evolves_from_nil: false,
+                    });
+                }
+                if let Some(constraint) = checker.shape_binding_constraint(binding, None, None) {
                     self.contextual_report(context, checker.report);
                     return Some(Binding {
                         initial: constraint.clone(),
@@ -1417,7 +1437,21 @@ impl NativeRegistry {
         debug_assert_eq!(list.owner, checker.type_context, "initializer retains its original type scope");
         let expected = match source {
             InitializerContext::Local(annotation) => {
-                AnnotationPack::annotation(annotation).lower(&mut |ty| checker.annotation(ty))
+                let expected = AnnotationPack::annotation(annotation)
+                    .lower(&mut |ty| checker.annotation(ty));
+                if let Some(directive) = self.shape_for_initializer(expression.span) {
+                    let explicit = checker.engine.pack_slot(&expected, 0);
+                    ValuePack::single(checker
+                        .shape_binding_constraint(directive.binding, Some(&explicit), Some(annotation.span))
+                        .unwrap_or(explicit))
+                } else {
+                    expected
+                }
+            }
+            InitializerContext::LocalDeclarations(names) => {
+                let binding = names.first()
+                    .and_then(|name| checker.bound.binding_at(name.span.start))?;
+                ValuePack::single(checker.shape_binding_constraint(binding, None, None)?)
             }
             InitializerContext::Assignment(targets) => {
                 let fixed = targets.iter().map(|target| {

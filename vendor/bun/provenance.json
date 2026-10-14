@@ -720,6 +720,48 @@
       "patch": "vendor/patches/bun-sema-automatic-variables.patch",
       "reason": "Share native automatic assignment transfer with TS flow and resolve original-source automatic captures through the shared walker using lexical creation/write metadata, retaining opaque unresolved constraints until actual reads.",
       "patch_sha256": "840677191010153bb6dcd71cdd2ec22ccafeaf2cc9bdf6d1f822e8770b2e8568"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-nominal-class-origins.patch",
+      "reason": "Retain original nominal class declarations through native table descriptions, mapping, lookup, inference and structural relation demands while preserving structural shape semantics and explicit unsupported inheritance and visibility boundaries.",
+      "patch_sha256": "636aff438fe3e36e6ba4afe3b3b27f77985af50ec0035a642e1fae726f4a6b5b"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-nominal-class-origins.patch",
+      "reason": "Retain original nominal class declarations through native table descriptions, mapping, lookup, inference and structural relation demands while preserving structural shape semantics and explicit unsupported inheritance and visibility boundaries.",
+      "patch_sha256": "636aff438fe3e36e6ba4afe3b3b27f77985af50ec0035a642e1fae726f4a6b5b"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-nominal-class-origins.patch",
+      "reason": "Retain original nominal class declarations through native table descriptions, mapping, lookup, inference and structural relation demands while preserving structural shape semantics and explicit unsupported inheritance and visibility boundaries.",
+      "patch_sha256": "636aff438fe3e36e6ba4afe3b3b27f77985af50ec0035a642e1fae726f4a6b5b"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-nominal-class-origins.patch",
+      "reason": "Retain original nominal class declarations through native table descriptions, mapping, lookup, inference and structural relation demands while preserving structural shape semantics and explicit unsupported inheritance and visibility boundaries.",
+      "patch_sha256": "636aff438fe3e36e6ba4afe3b3b27f77985af50ec0035a642e1fae726f4a6b5b"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-nominal-class-origins.patch",
+      "reason": "Retain original nominal class declarations through native table descriptions, mapping, lookup, inference and structural relation demands while preserving structural shape semantics and explicit unsupported inheritance and visibility boundaries.",
+      "patch_sha256": "636aff438fe3e36e6ba4afe3b3b27f77985af50ec0035a642e1fae726f4a6b5b"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-nominal-class-origins.patch",
+      "reason": "Retain original nominal class declarations through native table descriptions, mapping, lookup, inference and structural relation demands while preserving structural shape semantics and explicit unsupported inheritance and visibility boundaries.",
+      "patch_sha256": "636aff438fe3e36e6ba4afe3b3b27f77985af50ec0035a642e1fae726f4a6b5b"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-nominal-class-origins.patch",
+      "reason": "Retain original nominal class declarations through native table descriptions, mapping, lookup, inference and structural relation demands while preserving structural shape semantics and explicit unsupported inheritance and visibility boundaries.",
+      "patch_sha256": "636aff438fe3e36e6ba4afe3b3b27f77985af50ec0035a642e1fae726f4a6b5b"
     }
   ],
   "source_additions": {
@@ -736,7 +778,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "dae5e82b77760237245a4923b415a55f33e04db43ea8b6197da8748e1bd4d3dc",
+      "extracted_sha256": "24399c474b942c1523c0212c1ebf116667e2aa714f59dfda4e8e0f873fbf19d3",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -744,7 +786,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "f406d58cfec53bae8181b88c71141c2b9723693cb81fed63a3bb4a2202c61e4c",
+      "extracted_sha256": "f8210e054be31509554f872b62d41c554ae3c13cf174892999ea04279ad11756",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -1672,7 +1714,7 @@
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "9b2b0112d2a3a47b92686c7abd8b16453bde4b9f7eb3140e33646a5533c3220e"
+      "extracted_sha256": "5de5e4e45a56cc0a962dcafdb36f23f8abcb3e55b55ed04db31fd44f172735cd"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -1712,7 +1754,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "7ecf7fd566caafa3fdfb6e27af66169bc67c0e083776e761711d712bd7a1a13e"
+      "extracted_sha256": "3031d9c68335c2de416bdc603893613b90d61028566de685f271bd3b0016eb4c"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -1727,7 +1769,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "9e6af526836d24ec91e13f8524510e13c078383fa176fceb132aea35013b2ee3"
+      "extracted_sha256": "91338443df5deab14e074775513db51f9816daf99abfc90e8c6b60ac28cf516a"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -1782,7 +1824,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "a95a21335f79824fd7e189235e8e37ec588d52db046179b08e49e3d46d09cbef"
+      "extracted_sha256": "21a192c5e63b1cfdc8f6dab384ac3e239029fd7ebabf82cd8ea816751c5ce1f9"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -1907,7 +1949,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "5eb38609e8c7198d9475d93a7c55d09bda3bc1e243e88ac2cde934991a9706bb"
+      "extracted_sha256": "6694992f0d5f263189bab768bd7471d90c857757193e6ae789ea52937982ccfa"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

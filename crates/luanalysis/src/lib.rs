@@ -711,17 +711,29 @@ impl Checker<'_> {
     }
 
     fn local(&mut self, names: &[Name], values: &[Expr], annotation: Option<&TypeAnnotation>) {
-        let annotations: Vec<_> = annotation.map_or_else(Vec::new, |annotation| {
+        let mut annotations: Vec<_> = annotation.map_or_else(Vec::new, |annotation| {
             annotation
                 .types
                 .iter()
                 .map(|ty| self.annotation(ty))
                 .collect()
         });
-        let expected = annotation.map(|annotation| {
+        let attached = names.first()
+            .and_then(|name| self.bound.binding_at(name.span.start))
+            .and_then(|binding| self.shape_binding_constraint(
+                binding, annotations.first(), annotation.map(|annotation| annotation.span),
+            ));
+        if let Some(constraint) = &attached {
+            if annotations.is_empty() {
+                annotations.push(constraint.clone());
+            } else {
+                annotations[0] = constraint.clone();
+            }
+        }
+        let expected = attached.map(luanalysis_engine::ValuePack::single).or_else(|| annotation.map(|annotation| {
             native_packs::AnnotationPack::annotation(annotation)
                 .lower(&mut |ty| self.annotation(ty))
-        });
+        }));
         let automatic: Vec<_> = names.iter().enumerate()
             .map(|(index, _)| annotations.get(index).is_none() && automatic_nil_initializer(values, index))
             .collect();

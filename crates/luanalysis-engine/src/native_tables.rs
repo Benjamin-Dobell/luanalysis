@@ -219,6 +219,8 @@ pub(super) fn export_table(
     let TypeData::NativeTable(table) = checker.data(ty) else {
         return None;
     };
+    // A class description is a session capability, not a forgeable structural table recipe.
+    if table.nominal_origin.is_some() { return None }
     // Copy the immutable native descriptors before recursively exporting any
     // member. Recursion may demand further types from this same checker.
     let fields = table.fields.to_vec();
