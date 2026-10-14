@@ -8,6 +8,7 @@
 pub mod bind;
 mod builtins;
 pub mod flow;
+pub mod project_check;
 mod functions;
 mod native_expressions;
 mod native_flow;

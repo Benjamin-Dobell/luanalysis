@@ -1,0 +1,511 @@
+//! Aggregate source recipe transport. Keys stay in each original file snapshot;
+//! all type queries and recursion guards remain in the one native checker.
+use super::{NativeRegistry, NativeTypeProvider};
+use crate::bind::BoundFile;
+use crate::project_check::FileCheckReport;
+use crate::{CheckReport, Diagnostic};
+use luanalysis_engine::{
+    CapturedFunctionContext, ContextualFunctionContext, NamedTypeError, NamedTypeQuery,
+    NativeBindingKey, NativeCheckMode, NativeExpressionKey, NativeFunctionKey,
+    NativeTypeDeclarationKey, NativeTypeMemberKey, NativeTypeParameterKey, Parameter, Type,
+    TypeDeclarationHeader, TypeDeclarationOwner, TypeMemberHeader, TypeMemberOwner, TypeQueries,
+    ValuePack,
+};
+use luanalysis_project::{FileId, SourceRole};
+use luanalysis_syntax::File;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+pub(crate) struct RegistryInput {
+    pub id: FileId,
+    pub role: SourceRole,
+    pub syntax: File,
+    pub bound: BoundFile,
+}
+
+#[derive(Default)]
+pub(crate) struct ProjectNamedIndex {
+    names: HashMap<String, Vec<NativeTypeDeclarationKey>>,
+}
+impl ProjectNamedIndex {
+    pub(crate) fn candidates(&self, name: &str) -> &[NativeTypeDeclarationKey] {
+        self.names.get(name).map_or(&[], Vec::as_slice)
+    }
+}
+
+struct FileRegistry {
+    id: FileId,
+    role: SourceRole,
+    source: NativeRegistry,
+}
+
+pub(crate) struct ProjectRegistry {
+    files: Vec<FileRegistry>,
+    snapshots: HashMap<u64, usize>,
+    names: Rc<ProjectNamedIndex>,
+}
+
+impl ProjectRegistry {
+    pub(crate) fn new(inputs: Vec<RegistryInput>) -> Self {
+        let mut snapshots = HashMap::new();
+        let mut names = ProjectNamedIndex::default();
+        let mut files: Vec<_> = inputs
+            .into_iter()
+            .enumerate()
+            .map(|(index, input)| {
+                let source = NativeRegistry::new(input.syntax, input.bound);
+                assert!(snapshots.insert(source.snapshot, index).is_none());
+                for declaration in source.named.declarations() {
+                    names
+                        .names
+                        .entry(declaration.syntax.name.text.clone())
+                        .or_default()
+                        .push(NativeTypeDeclarationKey {
+                            snapshot: declaration.key.snapshot,
+                            index: declaration.key.index,
+                        });
+                }
+                FileRegistry {
+                    id: input.id,
+                    role: input.role,
+                    source,
+                }
+            })
+            .collect();
+        let names = Rc::new(names);
+        for file in &mut files {
+            file.source.project_names = Some(Rc::clone(&names));
+            for declaration in file.source.named.declarations() {
+                if names.candidates(&declaration.syntax.name.text).len() > 1 {
+                    file.source
+                        .report
+                        .borrow_mut()
+                        .diagnostics
+                        .push(Diagnostic {
+                            code: "TS2300",
+                            span: declaration.syntax.name.span,
+                            message: format!(
+                                "Duplicate identifier '{}'.",
+                                declaration.syntax.name.text
+                            ),
+                        });
+                }
+            }
+        }
+        Self {
+            files,
+            snapshots,
+            names,
+        }
+    }
+
+    fn owner_if(&self, snapshot: u64) -> Option<&NativeRegistry> {
+        self.snapshots
+            .get(&snapshot)
+            .map(|&index| &self.files[index].source)
+    }
+
+    fn owner(&self, snapshot: u64) -> &NativeRegistry {
+        self.owner_if(snapshot)
+            .expect("native source key belongs to this immutable project provider")
+    }
+
+    pub(crate) fn check(&self, queries: &mut dyn TypeQueries) -> Vec<FileCheckReport> {
+        // Every identity/name exists before any declaration or body demand.
+        for file in &self.files {
+            file.source.check_named_declarations(queries);
+        }
+        let mut reports = Vec::with_capacity(self.files.len());
+        for file in &self.files {
+            let mut report = CheckReport::default();
+            if file.role == SourceRole::Implementation {
+                let mut checker = file.source.checker(queries);
+                checker.flow_at = Some(file.source.flow_entry(None, None));
+                checker.statements(file.source.statements());
+                report = checker.report;
+                file.source.check_all_bodies(queries);
+            } else {
+                // A declaration stub is not executable code. Written aliases,
+                // members and constraints above are checked; value/global or
+                // module contracts require their coordinated native query lane.
+                for statement in file.source.statements() {
+                    report.diagnostics.push(Diagnostic {
+                        code: "LUA2034",
+                        span: statement.span,
+                        message: "Declaration value contracts require the native global/module integration."
+                            .into(),
+                    });
+                }
+            }
+            reports.push(FileCheckReport {
+                file: file.id,
+                report,
+            });
+        }
+        // Rendering can complete a deferred signature in any owner file. Drain
+        // those source report queues before the arena ends; this schedules
+        // report publication only and never iterates or joins inferred types.
+        loop {
+            let mut published = false;
+            for (file, report) in self.files.iter().zip(&mut reports) {
+                let pending = file.source.take_report();
+                published |= !pending.diagnostics.is_empty()
+                    || !pending.bindings.is_empty()
+                    || !pending.types.is_empty()
+                    || !pending.pending_bindings.is_empty()
+                    || !pending.pending_types.is_empty();
+                report.report.append(pending);
+                published |= !report.report.pending_bindings.is_empty()
+                    || !report.report.pending_types.is_empty();
+                report.report.render(queries);
+            }
+            if !published {
+                break;
+            }
+        }
+        for (file, report) in self.files.iter().zip(&mut reports) {
+            report.report.diagnostics.sort_by(|left, right| {
+                (left.span.start, left.span.end, left.code, &left.message).cmp(&(
+                    right.span.start,
+                    right.span.end,
+                    right.code,
+                    &right.message,
+                ))
+            });
+            report.report.diagnostics.dedup();
+            report
+                .report
+                .bindings
+                .sort_by_key(|binding| binding.span.start);
+            report.report.bindings.dedup();
+            report
+                .report
+                .types
+                .sort_by_key(|ty| (ty.span.start, ty.span.end));
+            report.report.types.dedup();
+            report.report.bound = Some(file.source.bound().clone());
+        }
+        reports
+    }
+}
+
+// Keeping every hook explicit preserves the file provider's contextual,
+// captured, declaration-space and whole-pack behavior. Defaults must not
+// silently turn a physical pack demand into a scalar one.
+macro_rules! dispatch {
+    ($(fn $method:ident($key:ident: $key_ty:ty $(, $arg:ident: $arg_ty:ty)*) -> $result:ty;)*) => {
+        $(fn $method(&self, $key: $key_ty $(, $arg: $arg_ty)*) -> $result {
+            self.owner($key.snapshot).$method($key $(, $arg)*)
+        })*
+    };
+}
+
+impl NativeTypeProvider for ProjectRegistry {
+    fn contains_function(&self, key: NativeFunctionKey) -> bool {
+        self.owner_if(key.snapshot)
+            .is_some_and(|owner| owner.contains_function(key))
+    }
+    fn contains_binding(&self, key: NativeBindingKey) -> bool {
+        self.owner_if(key.snapshot)
+            .is_some_and(|owner| owner.contains_binding(key))
+    }
+    fn contains_expression(&self, key: NativeExpressionKey) -> bool {
+        self.owner_if(key.snapshot)
+            .is_some_and(|owner| owner.contains_expression(key))
+    }
+    fn contains_type_parameter(&self, key: NativeTypeParameterKey) -> bool {
+        self.owner_if(key.snapshot)
+            .is_some_and(|owner| owner.contains_type_parameter(key))
+    }
+    fn contains_type_declaration(&self, key: NativeTypeDeclarationKey) -> bool {
+        self.owner_if(key.snapshot)
+            .is_some_and(|owner| owner.contains_type_declaration(key))
+    }
+    fn contains_type_member(&self, key: NativeTypeMemberKey) -> bool {
+        self.owner_if(key.snapshot)
+            .is_some_and(|owner| owner.contains_type_member(key))
+    }
+    fn is_expression_descendant(
+        &self,
+        expression: NativeExpressionKey,
+        ancestor: NativeExpressionKey,
+    ) -> bool {
+        expression.snapshot == ancestor.snapshot
+            && self.owner_if(expression.snapshot).is_some_and(|owner| {
+                owner.contains_expression(expression)
+                    && owner.contains_expression(ancestor)
+                    && owner.is_expression_descendant(expression, ancestor)
+            })
+    }
+    fn type_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
+        let mut header = self.owner(key.snapshot).type_member_header(key);
+        if let TypeMemberOwner::Reference { name, candidates } = &mut header.owner {
+            *candidates = self.names.candidates(name).to_vec();
+        }
+        header
+    }
+    fn type_declaration_members(&self, key: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> {
+        let mut members = self.owner(key.snapshot).type_declaration_members(key);
+        // Applicability, aliases, specialized owners and canonical object
+        // ownership are resolved by the backend, not by source name matching.
+        for file in &self.files {
+            if file.source.snapshot == key.snapshot {
+                continue;
+            }
+            members.extend(
+                file.source
+                    .named
+                    .augmentations()
+                    .iter()
+                    .flat_map(|augmentation| {
+                        augmentation
+                            .members
+                            .iter()
+                            .map(|member| NativeTypeMemberKey {
+                                snapshot: member.snapshot,
+                                index: member.index,
+                            })
+                    }),
+            );
+        }
+        members
+    }
+    fn type_declaration_error(&self, error: NamedTypeError) {
+        let snapshot = match &error {
+            NamedTypeError::InvalidDeclaration(key)
+            | NamedTypeError::CircularAlias(key)
+            | NamedTypeError::CircularBase(key)
+            | NamedTypeError::UnsupportedKind(key, _)
+            | NamedTypeError::UnsupportedBases(key) => key.snapshot,
+            NamedTypeError::InvalidMember(key)
+            | NamedTypeError::UnsupportedVisibility(key)
+            | NamedTypeError::UnsupportedOwnerInstantiation(key) => key.snapshot,
+            NamedTypeError::InvalidTypeParameter(key) => key.snapshot,
+            NamedTypeError::UnknownOwner { member, .. }
+            | NamedTypeError::AmbiguousOwner { member, .. } => member.snapshot,
+            NamedTypeError::TypeArgumentArity { declaration, .. }
+            | NamedTypeError::TypeArgumentConstraint { declaration, .. }
+            | NamedTypeError::Table { declaration, .. } => declaration.snapshot,
+            NamedTypeError::TooDeep(query) => match query {
+                NamedTypeQuery::Head(key)
+                | NamedTypeQuery::Bases(key)
+                | NamedTypeQuery::ObjectMembers(key) => key.snapshot,
+                NamedTypeQuery::Member(key) | NamedTypeQuery::Indexer(key) => key.snapshot,
+            },
+        };
+        self.owner(snapshot).type_declaration_error(error);
+    }
+
+    dispatch! {
+        fn function_declared_scalar_contract(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
+        fn function_declared_scalar_contract_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
+        fn function_declared_scalar_contract_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
+        fn type_declaration_header(key: NativeTypeDeclarationKey) -> TypeDeclarationHeader;
+        fn type_alias_target(key: NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Type;
+        fn type_member_type(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Type;
+        fn type_indexer_key(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Type;
+        fn type_declaration_bases(key: NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Vec<Type>;
+        fn type_parameter_owner(key: NativeTypeParameterKey) -> Option<TypeDeclarationOwner>;
+        fn check_expression_pack(key: NativeExpressionKey, expected: Option<&ValuePack>, mode: NativeCheckMode, queries: &mut dyn TypeQueries) -> ValuePack;
+        fn function_has_result_pack(key: NativeFunctionKey) -> bool;
+        fn function_declared_return_pack(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
+        fn function_inferred_return_pack(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> ValuePack;
+        fn function_declared_return_pack_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
+        fn function_inferred_return_pack_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> ValuePack;
+        fn function_declared_return_pack_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
+        fn function_inferred_return_pack_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> ValuePack;
+        fn function_rest_pack(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
+        fn function_rest_pack_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
+        fn function_rest_pack_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
+        fn contextual_rest_parameter(key: NativeFunctionKey) -> Option<usize>;
+        fn function_parameters_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Vec<Parameter>;
+        fn function_declared_return_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<Type>;
+        fn function_inferred_return_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Type;
+        fn is_context_sensitive(key: NativeExpressionKey) -> bool;
+        fn has_context_sensitive_parameters(key: NativeExpressionKey) -> bool;
+        fn check_expression(key: NativeExpressionKey, expected: Option<&Type>, mode: NativeCheckMode, queries: &mut dyn TypeQueries) -> Type;
+        fn contextual_parameter_indices(key: NativeFunctionKey) -> Vec<usize>;
+        fn function_parameters_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Vec<Parameter>;
+        fn function_declared_return_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Option<Type>;
+        fn function_inferred_return_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Type;
+        fn function_parameters(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Vec<Parameter>;
+        fn function_declared_return(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<Type>;
+        fn function_inferred_return(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Type;
+        fn return_cycle(key: NativeFunctionKey) -> ();
+        fn return_type_too_deep(key: NativeFunctionKey) -> ();
+        fn function_type_parameters(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Vec<NativeTypeParameterKey>;
+        fn function_outer_type_parameters(key: NativeFunctionKey) -> Vec<NativeTypeParameterKey>;
+        fn type_parameter_name(key: NativeTypeParameterKey) -> String;
+        fn has_type_parameter_constraint(key: NativeTypeParameterKey) -> bool;
+        fn type_parameter_constraint(key: NativeTypeParameterKey, queries: &mut dyn TypeQueries) -> Option<Type>;
+        fn has_type_parameter_default(key: NativeTypeParameterKey) -> bool;
+        fn type_parameter_default(key: NativeTypeParameterKey, queries: &mut dyn TypeQueries) -> Option<Type>;
+        fn type_parameter_order(key: NativeTypeParameterKey) -> u32;
+        fn type_parameter_siblings(key: NativeTypeParameterKey) -> Vec<NativeTypeParameterKey>;
+        fn circular_type_parameter_constraint(key: NativeTypeParameterKey) -> ();
+        fn circular_type_parameter_default(key: NativeTypeParameterKey) -> ();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luanalysis_engine::Engine;
+
+    fn input(index: u32, source: &str) -> RegistryInput {
+        let syntax = luanalysis_syntax::parse(source);
+        assert!(syntax.diagnostics.is_empty(), "{:#?}", syntax.diagnostics);
+        let bound = crate::bind::bind(&syntax);
+        RegistryInput {
+            id: FileId {
+                project: 777,
+                index,
+            },
+            role: SourceRole::Implementation,
+            syntax,
+            bound,
+        }
+    }
+
+    #[test]
+    fn all_native_provider_hooks_have_explicit_aggregate_transport() {
+        let facade = include_str!("../../luanalysis-engine/src/lib.rs");
+        let trait_source = facade
+            .split("pub trait NativeTypeProvider {")
+            .nth(1)
+            .unwrap()
+            .split("\n}\n")
+            .next()
+            .unwrap();
+        let implementation = include_str!("native_project_provider.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        for method in trait_source.split("fn ").skip(1) {
+            let name = method.split('(').next().unwrap();
+            assert!(
+                implementation.contains(&format!("fn {name}(")),
+                "native hook {name} must be explicitly transported; a default may drop context or physical result count"
+            );
+        }
+    }
+
+    #[test]
+    fn equal_local_function_indices_keep_distinct_capture_mappers_and_whole_result_packs() {
+        let source = "---@generic T\n---@param seed T\nlocal function outer(seed) return function() return seed,seed end end";
+        Engine::new().with_native_provider(
+            move || ProjectRegistry::new(vec![input(0, source), input(1, source)]),
+            |provider, queries| {
+                let first = provider.files[0].source.key(0);
+                let second = provider.files[1].source.key(0);
+                assert_eq!(first.index, second.index);
+                assert_ne!(first.snapshot, second.snapshot);
+                assert!(provider.contains_function(first));
+                assert!(provider.contains_function(second));
+                let numeric = queries.call(&Type::NativeFunction(first), &[Type::Number]);
+                let textual = queries.call(&Type::NativeFunction(second), &[Type::String]);
+                assert!(numeric.errors.is_empty(), "{:#?}", numeric.errors);
+                assert!(textual.errors.is_empty(), "{:#?}", textual.errors);
+                let first_inner = queries.native_function_key(&numeric.return_type).unwrap();
+                let second_inner = queries.native_function_key(&textual.return_type).unwrap();
+                assert_eq!(first_inner.index, second_inner.index);
+                assert_ne!(first_inner.snapshot, second_inner.snapshot);
+                let numeric_pack = queries.function_result_pack(&numeric.return_type).unwrap();
+                let textual_pack = queries.function_result_pack(&textual.return_type).unwrap();
+                for slot in 0..2 {
+                    let number = queries.pack_slot(&numeric_pack, slot);
+                    let string = queries.pack_slot(&textual_pack, slot);
+                    assert!(queries.is_assignable(&number, &Type::Number));
+                    assert!(!queries.is_assignable(&number, &Type::String));
+                    assert!(queries.is_assignable(&string, &Type::String));
+                    assert!(!queries.is_assignable(&string, &Type::Number));
+                }
+                assert!(matches!(queries.pack_slot(&numeric_pack, 2), Type::Nil));
+                let one = provider.files[0].source.types.own_parameters(first)[0];
+                let two = provider.files[1].source.types.own_parameters(second)[0];
+                assert_eq!(one.index, two.index);
+                assert_ne!(one.snapshot, two.snapshot);
+                assert_eq!(
+                    provider.type_parameter_owner(one),
+                    Some(TypeDeclarationOwner::Function(first))
+                );
+                assert_eq!(
+                    provider.type_parameter_owner(two),
+                    Some(TypeDeclarationOwner::Function(second))
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn a_contextual_call_routes_callee_and_argument_expressions_to_different_original_files() {
+        let callee = "---@generic T,R\n---@param value T\n---@param project fun(value:T):R\n---@return R\nlocal function transform(value,project) return project(value) end";
+        let caller = "local result=external({id=42},function(value) return value.id end)";
+        Engine::new().with_native_provider(
+            move || ProjectRegistry::new(vec![input(0, callee), input(1, caller)]),
+            |provider, queries| {
+                let source = &provider.files[1].source;
+                let luanalysis_syntax::StmtKind::Local { values, .. } =
+                    &source.statements()[0].kind
+                else {
+                    panic!("local")
+                };
+                let expression = &values[0];
+                let luanalysis_syntax::ExprKind::Call { args, .. } = &expression.kind else {
+                    panic!("call")
+                };
+                let arguments: Vec<_> = args
+                    .iter()
+                    .map(|argument| source.expression_key(argument))
+                    .collect();
+                let result = queries.call_expression_native(
+                    &Type::NativeFunction(provider.files[0].source.key(0)),
+                    source.expression_key(expression),
+                    &arguments,
+                    &[],
+                    None,
+                );
+                assert!(result.errors.is_empty(), "{:#?}", result.errors);
+                assert!(queries.is_assignable(&result.return_type, &Type::Number));
+                assert!(!queries.is_assignable(&result.return_type, &Type::String));
+                assert!(source.take_report().diagnostics.is_empty());
+                let callee_source = &provider.files[0].source;
+                let luanalysis_syntax::StmtKind::Return(returned) =
+                    &callee_source.functions[0].body[0].kind
+                else {
+                    panic!("return")
+                };
+                assert!(!provider.is_expression_descendant(
+                    arguments[0],
+                    callee_source.expression_key(&returned[0])
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn aggregate_validation_rejects_foreign_snapshots_and_local_index_overflow() {
+        let provider = ProjectRegistry::new(vec![input(0, "local function first() return 1 end")]);
+        let key = provider.files[0].source.key(0);
+        let foreign = ProjectRegistry::new(vec![input(0, "local function second() return 1 end")]);
+        assert!(!provider.contains_function(foreign.files[0].source.key(0)));
+        assert!(!provider.contains_function(NativeFunctionKey {
+            index: u32::MAX,
+            ..key
+        }));
+        assert!(
+            !provider.contains_type_declaration(NativeTypeDeclarationKey {
+                snapshot: key.snapshot,
+                index: u32::MAX
+            })
+        );
+        assert!(!provider.contains_type_member(NativeTypeMemberKey {
+            snapshot: key.snapshot,
+            index: u32::MAX
+        }));
+        assert!(!provider.contains_binding(NativeBindingKey {
+            snapshot: key.snapshot,
+            index: u32::MAX
+        }));
+    }
+}

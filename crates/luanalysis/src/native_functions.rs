@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "native_named_provider.rs"]
 mod named_provider;
+#[path = "native_project_provider.rs"]
+pub(crate) mod project_provider;
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 
@@ -51,6 +53,7 @@ pub(super) struct NativeRegistry {
     declarations: HashMap<BindingId, DeclarationSource>,
     types: NativeTypes,
     named: NativeNamed,
+    project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
     expressions: NativeExpressions,
     packs: NativePacks,
     flow: NativeFlowSources,
@@ -116,6 +119,7 @@ impl NativeRegistry {
             declarations,
             types,
             named,
+            project_names: None,
             expressions,
             packs,
             flow,
