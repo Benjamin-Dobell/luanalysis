@@ -1,0 +1,26 @@
+-- Future syntax/binding acceptance fixture. No claim of current type support.
+-- Idioms adapted from ge_tts/Vector2.ttslua:7-35 and Json.ttslua:77-79.
+
+---@shape Corpus__Coordinate<T>
+---@field x T
+---@field y T
+---@field [1] T
+---@field [2] T
+
+---@class Corpus__Vector : Corpus__Coordinate<number>
+
+---@class Corpus__VectorFactory
+---@overload fun(): Corpus__Vector
+---@overload fun(x: number, y: number): Corpus__Vector
+local Vector = {}
+
+---@alias Corpus__TaggedValue {[1]: 0, [2]: string}
+
+---@param value nil | string
+---@return string
+local function present(value)
+    if value then
+        return --[[---@not Falsey]] value
+    end
+    return ""
+end
