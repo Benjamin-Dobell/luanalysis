@@ -81,7 +81,6 @@ pub trait NativeGlobalsProvider {
 enum NativeGlobalsValue { Type(TypeId), NoContract }
 impl NativeGlobalsValue {
     fn encode(self) -> u64 { match self { Self::Type(ty) => u64::from(ty.0) + 1, Self::NoContract => 0 } }
-    fn decode(raw: u64) -> Self { if raw == 0 { Self::NoContract } else { Self::Type(TypeId((raw - 1) as u32)) } }
     fn into_type(self) -> TypeId { match self { Self::Type(ty) => ty, Self::NoContract => unreachable!("value query returned an absent contract") } }
 }
 
@@ -258,7 +257,11 @@ impl<'p, 's> Checker<'p, 's> {
         };
         if !valid { self.report_native_global(invalid.clone()); return Err(invalid); }
         let query = Query::NativeGlobals(demand);
-        if let Some(raw) = self.provisional(query) { return Ok(NativeGlobalsValue::decode(raw)); }
+        // Only unresolved computations enter this provisional table. A hit
+        // retains their dependency/lifetime effects, not permission to use the
+        // fallback as a finished declaration. Current-only pure contracts take
+        // the uncached completion path below and never create such an entry.
+        if self.provisional(query).is_some() { return Err(NativeGlobalQueryError::UnresolvedQuery(demand)); }
         if !self.enter(query) {
             let error = if self.found_cycle { NativeGlobalQueryError::CircularQuery(demand) } else { NativeGlobalQueryError::TooDeep(demand) };
             self.report_native_global(error.clone());
