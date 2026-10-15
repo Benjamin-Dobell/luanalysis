@@ -57,7 +57,7 @@ impl<'p, 's> Checker<'p, 's> {
         let completed = self.end_memoizable(begun);
         let ended = self.leave(query);
         if let Err(error) = result { self.report_native_named(error); return Err(error) }
-        if matches!(result, Ok(Pending)) { self.mark_tainted_from(0); return result }
+        if matches!(result, Ok(Pending)) { self.mark_tainted_from(0); self.note_cycle(); return result }
         match ended {
             Ok(_) if completed.is_some() => result,
             Err(_) if self.native_complete_without_cache(context, completed.is_some()) => result,
@@ -65,6 +65,10 @@ impl<'p, 's> Checker<'p, 's> {
                 // An Ok base value can still be a provisional fallback. Never
                 // turn fresh dependency taint into a completed category/absence.
                 self.mark_tainted_from(0);
+                // Reachability has a boolean result but shares memoizable
+                // scope counters. An unfinished category cannot publish even
+                // its conservative reachable answer as a completed cache entry.
+                self.note_cycle();
                 Ok(Pending)
             },
         }

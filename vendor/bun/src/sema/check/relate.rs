@@ -727,6 +727,11 @@ impl<'p, 's> Checker<'p, 's> {
     /// once something else has resolved them (`ObjectFlagsMembersResolved`), or is instantiating
     /// them: until that is done there are none.
     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
+        // A declared nominal class is not an anonymous empty object. Its
+        // materialized schema carries the same nominal_origin checked below;
+        // answer from that original fact before demanding any member recipes.
+        if matches!(self.data(ty), TypeData::NativeObject(_))
+            && self.native_nominal_origin(ty).is_some() { return false }
         let ty = match self.native_object_relation_view(ty) { Ok(ty) => ty, Err(_) => return false };
         if let TypeData::NativeTable(table) = self.data(ty) {
             if table.nominal_origin.is_some() { return false }

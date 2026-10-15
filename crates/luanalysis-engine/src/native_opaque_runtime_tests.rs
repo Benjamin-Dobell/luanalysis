@@ -38,6 +38,7 @@ struct Provider {
     ready: Cell<bool>,
     refuse: Cell<bool>,
     base_demands: Cell<usize>,
+    empty_shape_demands: Cell<usize>,
     errors: RefCell<Vec<NamedTypeError>>,
 }
 impl Provider {
@@ -48,6 +49,7 @@ impl Provider {
             ready: Cell::new(false),
             refuse: Cell::new(false),
             base_demands: Cell::new(0),
+            empty_shape_demands: Cell::new(0),
             errors: RefCell::new(Vec::new()),
         }
     }
@@ -59,7 +61,11 @@ impl NativeTypeProvider for Provider {
     fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> {
         panic!("runtime ancestry must not demand function parameters")
     }
-    fn function_declared_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> {
+    fn function_declared_return(
+        &self,
+        _: NativeFunctionKey,
+        _: &mut dyn TypeQueries,
+    ) -> Option<Type> {
         panic!("runtime ancestry must not demand function returns")
     }
     fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type {
@@ -81,13 +87,13 @@ impl NativeTypeProvider for Provider {
         }))
     }
     fn contains_type_declaration(&self, key: NativeTypeDeclarationKey) -> bool {
-        key.snapshot == SNAPSHOT && (key.index < 9 || (100..2010).contains(&key.index))
+        key.snapshot == SNAPSHOT && (key.index < 11 || (100..2010).contains(&key.index))
     }
     fn type_declaration_header(&self, key: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
         TypeDeclarationHeader {
-            kind: if key.index >= 100 {
+            kind: if key.index == 10 || key.index >= 100 {
                 TypeDeclarationKind::Alias
-            } else if key.index == 7 {
+            } else if matches!(key.index, 7 | 9) {
                 TypeDeclarationKind::Shape
             } else {
                 TypeDeclarationKind::Class
@@ -99,7 +105,8 @@ impl NativeTypeProvider for Provider {
                 4 => "userdata".into(),
                 _ => format!("Class{}", key.index),
             },
-            object_form: (key.index < 100).then_some(ObjectDeclarationForm::Record),
+            object_form: (key.index < 100 && key.index != 10)
+                .then_some(ObjectDeclarationForm::Record),
             parameters: if key.index == 2 {
                 vec![parameter()]
             } else {
@@ -140,6 +147,9 @@ impl NativeTypeProvider for Provider {
         key: NativeTypeDeclarationKey,
         queries: &mut dyn TypeQueries,
     ) -> Type {
+        if key.index == 10 {
+            return reference(9);
+        }
         assert!((100..2010).contains(&key.index));
         if key.index == 2009 {
             Type::Number
@@ -154,6 +164,10 @@ impl NativeTypeProvider for Provider {
             !self.metadata_only,
             "runtime category demanded member inference"
         );
+        if key.index == 9 {
+            self.empty_shape_demands
+                .set(self.empty_shape_demands.get() + 1);
+        }
         match key.index {
             2 => vec![member(0)],
             7 => vec![member(1)],
@@ -372,9 +386,29 @@ fn opaque_categories_use_original_roots_and_bases_without_member_or_call_demands
                 Type::RuntimeTable,
                 Type::RuntimeFunction,
             ]);
-            for (context, kind, expected) in [
-                (1, NativeRuntimeType::Userdata, child),
-                (2, NativeRuntimeType::Thread, thread),
+            for (context, kind, expected, complement) in [
+                (
+                    1,
+                    NativeRuntimeType::Userdata,
+                    child.clone(),
+                    Type::Union(vec![
+                        thread.clone(),
+                        Type::Number,
+                        Type::RuntimeTable,
+                        Type::RuntimeFunction,
+                    ]),
+                ),
+                (
+                    2,
+                    NativeRuntimeType::Thread,
+                    thread,
+                    Type::Union(vec![
+                        child,
+                        Type::Number,
+                        Type::RuntimeTable,
+                        Type::RuntimeFunction,
+                    ]),
+                ),
             ] {
                 let graph = Graph {
                     context,
@@ -386,7 +420,7 @@ fn opaque_categories_use_original_roots_and_bases_without_member_or_call_demands
                 assert_eq!(yes.ty, expected);
                 let no = graph.narrowed(queries, false);
                 assert!(!no.incomplete);
-                assert!(!queries.is_assignable(&expected, &no.ty));
+                assert_eq!(no.ty, queries.regular_type(&complement));
             }
             let impostor = queries.named_type_reference(declaration(4), &[]).unwrap();
             let graph = Graph {
@@ -644,4 +678,23 @@ fn materialized_host_namespaces_keep_the_definition_facet_in_runtime_predicates(
             assert_eq!(graph.narrowed(&mut queries, false).ty, value);
         }
     });
+}
+
+#[test]
+fn structural_empty_shape_and_alias_intersections_keep_the_ordinary_member_worker() {
+    Engine::new().with_native_provider(
+        || Provider::new(false),
+        |provider, queries| {
+            for key in [declaration(9), declaration(10)] {
+                let shape = queries.named_type_reference(key, &[]).unwrap();
+                let intersection = queries.regular_type(&Type::Intersection(vec![
+                    Type::NativeTypeParameter(parameter()), shape,
+                ]));
+                assert_ne!(intersection, Type::Never);
+                assert!(!queries.is_assignable(&Type::Nil, &intersection));
+            }
+            assert!(provider.empty_shape_demands.get() > 0,
+                "structural empty shapes must still be resolved; nominal early rejection must not apply");
+        },
+    );
 }

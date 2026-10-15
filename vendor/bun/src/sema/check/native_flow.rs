@@ -895,11 +895,19 @@ impl FlowDomain for NativeDomain<'_> {
             NativeTransfer::Iteration(at, stage) => checker.native_iterator_step(self.provider, at, stage, NativeResultPack { ty: previous.ty }).ty,
             NativeTransfer::GenericIteration(sense) => checker.native_iterator_filter(NativeResultPack { ty: previous.ty }, sense).ty,
             NativeTransfer::PackPredicate { predicate, sense, group } => {
-                checker.native_narrow_pack(self.provider, NativeResultPack { ty: previous.ty }, &predicate, sense, group).ty
+                let scope = checker.begin_scope();
+                let (ty, completed) = checker.run_memoizable(|checker| checker.native_narrow_pack(self.provider, NativeResultPack { ty: previous.ty }, &predicate, sense, group).ty);
+                let settled = checker.end_scope(scope).is_ok() && completed.is_some();
+                return FlowType::new(ty, previous.incomplete || !settled);
             }
             NativeTransfer::Nothing => previous.ty,
             NativeTransfer::Predicate(_, _) if previous.ty.is_never() => previous.ty,
-            NativeTransfer::Predicate(ref predicate, sense) => checker.native_narrow_predicate(self.provider, previous.ty, predicate, sense, walk.reference, walk.declared),
+            NativeTransfer::Predicate(ref predicate, sense) => {
+                let scope = checker.begin_scope();
+                let (ty, completed) = checker.run_memoizable(|checker| checker.native_narrow_predicate(self.provider, previous.ty, predicate, sense, walk.reference, walk.declared));
+                let settled = checker.end_scope(scope).is_ok() && completed.is_some();
+                return FlowType::new(ty, previous.incomplete || !settled);
+            },
         };
         let _ = walk;
         FlowType::new(ty, previous.incomplete)
