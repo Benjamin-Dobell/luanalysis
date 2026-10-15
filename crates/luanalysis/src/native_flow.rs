@@ -1384,7 +1384,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
                     // Lua equality dispatches __eq only for two tables or two
                     // full userdata. An original primitive literal rules that
                     // out; operand evaluations keep their own effects/nodes.
-                    ExprKind::Binary { op: BinaryOperator::Equal | BinaryOperator::NotEqual, left, right }
+                    ExprKind::Binary { op: BinaryOperator::Equal | BinaryOperator::NotEqual, left, right, .. }
                         if primitive_literal(left) || primitive_literal(right) => NoDispatch,
                     ExprKind::Binary { left, right, .. }
                         if flow::numeric_literal(left).is_some() && flow::numeric_literal(right).is_some() => NoDispatch,
