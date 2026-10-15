@@ -275,7 +275,10 @@ impl NativeFlowProvider for GlobalContexts {
             0 => NativeFlowNode::Start,
             1 => NativeFlowNode::Loop { edges: vec![at(region, 0), at(region, 2)] },
             2 => NativeFlowNode::Write {
-                before: at(region, 1), target: reference(region), value: value(region), input: at(region, 1),
+                before: at(region, 3), target: reference(region), value: value(region), input: at(region, 3),
+            },
+            3 => NativeFlowNode::Call {
+                before: at(region, 1), value: value(region), input: at(region, 1),
             },
             _ => return None,
         })
@@ -284,8 +287,17 @@ impl NativeFlowProvider for GlobalContexts {
     fn write_affects(&self, reference: NativeReferenceKey, target: NativeReferenceKey, _: NativeFlowKey) -> NativeWriteRelation {
         if reference == target { NativeWriteRelation::Exact } else { NativeWriteRelation::Unaffected }
     }
-    fn value_type(&self, key: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type {
+    fn value_type(&self, key: NativeValueKey, input: NativeFlowKey, _: &mut dyn TypeQueries) -> Type {
         assert_eq!(key, value(input.graph.region));
+        Type::Number
+    }
+    fn call_effects(&self, key: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeCallEffects {
+        assert_eq!(key, value(input.graph.region));
+        // Native value demands have a memo scope but no query frame. Reading
+        // the active loop there can be incomplete without marking any frame:
+        // its saved stack depth equals the current frame count. The real call
+        // effect demand supplies a frame above the loop; the read marks that
+        // frame, and declaration queries below genuinely inherit its flow.
         let active = self.read_loop(queries, input.graph.region);
         assert!(active.incomplete, "the original backedge must read its in-progress loop");
         if input.graph.region == 0 {
@@ -294,10 +306,7 @@ impl NativeFlowProvider for GlobalContexts {
             self.assert_current_queries(queries);
             self.inside_loop.set(false);
         }
-        Type::Number
-    }
-    fn call_effects(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> NativeCallEffects {
-        panic!("this original graph contains no calls")
+        NativeCallEffects::None
     }
     fn flow_error(&self, _: NativeFlowKey, error: NativeFlowError) { panic!("invalid original graph: {error:?}") }
 }
