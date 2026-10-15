@@ -1144,6 +1144,33 @@ fn number(spelling: &str) -> Option<f64> {
     Some(sign * value * 2.0_f64.powi(exponent))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TypePrecedence {
+    Function,
+    Union,
+    Intersection,
+    Postfix,
+    Atom,
+}
+
+fn parenthesize_type(text: String, precedence: TypePrecedence, minimum: TypePrecedence) -> String {
+    if precedence < minimum {
+        format!("({text})")
+    } else {
+        text
+    }
+}
+
+fn describe_at_precedence(ty: &Type, minimum: TypePrecedence) -> String {
+    let precedence = match ty {
+        Type::Function(_) => TypePrecedence::Function,
+        Type::Union(_) => TypePrecedence::Union,
+        Type::Intersection(_) => TypePrecedence::Intersection,
+        _ => TypePrecedence::Atom,
+    };
+    parenthesize_type(describe(ty), precedence, minimum)
+}
+
 /// Lua-oriented presentation of resolved type descriptions.
 pub fn describe(ty: &Type) -> String {
     match ty {
@@ -1172,9 +1199,19 @@ pub fn describe(ty: &Type) -> String {
             result.push('"');
             result
         }
-        Type::Union(types) => types.iter().map(describe).collect::<Vec<_>>().join(" | "),
-        Type::Intersection(types) => types.iter().map(describe).collect::<Vec<_>>().join(" & "),
-        Type::Table(table) => native_tables::describe_table(table, describe),
+        Type::Union(types) => types
+            .iter()
+            .map(|ty| describe_at_precedence(ty, TypePrecedence::Union))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        Type::Intersection(types) => types
+            .iter()
+            .map(|ty| describe_at_precedence(ty, TypePrecedence::Intersection))
+            .collect::<Vec<_>>()
+            .join(" & "),
+        Type::Table(table) => native_tables::describe_table(table, |ty| {
+            describe_at_precedence(ty, TypePrecedence::Union)
+        }),
         Type::Shape(properties) | Type::FreshShape(properties) => format!(
             "{{ {} }}",
             properties
@@ -1184,7 +1221,7 @@ pub fn describe(ty: &Type) -> String {
                         "{}{}: {}",
                         property.name,
                         if property.optional { "?" } else { "" },
-                        describe(&property.ty)
+                        describe_at_precedence(&property.ty, TypePrecedence::Union)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -1200,7 +1237,7 @@ pub fn describe(ty: &Type) -> String {
                         "{}{}: {}",
                         parameter.name,
                         if parameter.optional { "?" } else { "" },
-                        describe(&parameter.ty)
+                        describe_at_precedence(&parameter.ty, TypePrecedence::Union)
                     )
                 })
                 .collect::<Vec<_>>()
@@ -1224,7 +1261,22 @@ fn describe_diagnostic_type(ty: &Type, engine: &mut dyn TypeQueries) -> String {
     describe_native_mode(ty, engine, &mut Vec::new(), true)
 }
 
-fn describe_native_mode(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type>, diagnostic: bool) -> String {
+fn describe_native_mode(
+    ty: &Type,
+    engine: &mut dyn TypeQueries,
+    stack: &mut Vec<Type>,
+    diagnostic: bool,
+) -> String {
+    describe_native_at_precedence(ty, engine, stack, diagnostic, TypePrecedence::Function)
+}
+
+fn describe_native_at_precedence(
+    ty: &Type,
+    engine: &mut dyn TypeQueries,
+    stack: &mut Vec<Type>,
+    diagnostic: bool,
+    minimum: TypePrecedence,
+) -> String {
     match ty {
         Type::SessionType(_) => {
             // A named object already has its original printable identity.
@@ -1242,19 +1294,23 @@ fn describe_native_mode(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec
             stack.push(ty.clone());
             let inspected = engine.inspect_type(ty);
             let text = if let Type::Function(function) = &inspected {
-                describe_native_function(function, Some(ty), engine, stack, diagnostic)
+                parenthesize_type(
+                    describe_native_function(function, Some(ty), engine, stack, diagnostic),
+                    TypePrecedence::Function,
+                    minimum,
+                )
             } else if &inspected == ty {
                 engine.format(ty)
             } else {
-                describe_native_mode(&inspected, engine, stack, diagnostic)
+                describe_native_at_precedence(&inspected, engine, stack, diagnostic, minimum)
             };
             stack.pop();
             text
         }
         Type::NativeTypeParameter(_) | Type::NativeNamedReference { .. } => engine.format(ty),
-        Type::Table(table) => {
-            native_tables::describe_table(table, |ty| describe_native_mode(ty, engine, stack, diagnostic))
-        }
+        Type::Table(table) => native_tables::describe_table(table, |ty| {
+            describe_native_at_precedence(ty, engine, stack, diagnostic, TypePrecedence::Union)
+        }),
         Type::NativeFunction(_) | Type::NativeSignature(_) => {
             if stack.contains(ty) {
                 return "<recursive function>".into();
@@ -1266,27 +1322,62 @@ fn describe_native_mode(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec
             // Public heads can differ from the private runtime body signature.
             // Each native handle retains its exact capture/context mapper.
             let heads = engine.call_signature_types(ty);
-            let texts: Vec<_> = heads.iter()
-                .map(|head|describe_native_mode(head,engine,stack,diagnostic)).collect();
-            let text=match texts.as_slice() {
-                []=>"function".into(),
-                [single]=>single.clone(),
-                _=>format!("overload {{ {} }}",texts.join("; ")),
+            let text = match heads.as_slice() {
+                [] => "function".into(),
+                [single] => {
+                    describe_native_at_precedence(single, engine, stack, diagnostic, minimum)
+                }
+                _ => format!(
+                    "overload {{ {} }}",
+                    heads
+                        .iter()
+                        .map(|head| describe_native_mode(head, engine, stack, diagnostic))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
             };
             stack.pop();
             text
         }
-        Type::Function(function) => describe_native_function(function, None, engine, stack, diagnostic),
-        Type::Union(types) => types
-            .iter()
-            .map(|ty| describe_native_mode(ty, engine, stack, diagnostic))
-            .collect::<Vec<_>>()
-            .join(" | "),
-        Type::Intersection(types) => types
-            .iter()
-            .map(|ty| describe_native_mode(ty, engine, stack, diagnostic))
-            .collect::<Vec<_>>()
-            .join(" & "),
+        Type::Function(function) => parenthesize_type(
+            describe_native_function(function, None, engine, stack, diagnostic),
+            TypePrecedence::Function,
+            minimum,
+        ),
+        Type::Union(types) => parenthesize_type(
+            types
+                .iter()
+                .map(|ty| {
+                    describe_native_at_precedence(
+                        ty,
+                        engine,
+                        stack,
+                        diagnostic,
+                        TypePrecedence::Union,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | "),
+            TypePrecedence::Union,
+            minimum,
+        ),
+        Type::Intersection(types) => parenthesize_type(
+            types
+                .iter()
+                .map(|ty| {
+                    describe_native_at_precedence(
+                        ty,
+                        engine,
+                        stack,
+                        diagnostic,
+                        TypePrecedence::Intersection,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" & "),
+            TypePrecedence::Intersection,
+            minimum,
+        ),
         Type::Shape(properties) | Type::FreshShape(properties) => format!(
             "{{ {} }}",
             properties
@@ -1295,7 +1386,13 @@ fn describe_native_mode(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec
                     "{}{}: {}",
                     property.name,
                     if property.optional { "?" } else { "" },
-                    describe_native_mode(&property.ty, engine, stack, diagnostic)
+                    describe_native_at_precedence(
+                        &property.ty,
+                        engine,
+                        stack,
+                        diagnostic,
+                        TypePrecedence::Union
+                    )
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -1323,16 +1420,29 @@ fn describe_native_function(
                 "{}{}: {}",
                 parameter.name,
                 if parameter.optional { "?" } else { "" },
-                describe_native_mode(&parameter.ty, engine, stack, diagnostic)
+                describe_native_at_precedence(
+                    &parameter.ty,
+                    engine,
+                    stack,
+                    diagnostic,
+                    TypePrecedence::Union
+                )
             )
         })
         .collect();
     if let Some(rest) = rest {
         let text = match engine.inspect_pack(&rest).as_deref() {
             Some([row]) if row.fixed.is_empty() && row.tail.is_some() => {
-                describe_native_mode(row.tail.as_ref().unwrap(), engine, stack, diagnostic)
+                describe_native_at_precedence(
+                    row.tail.as_ref().unwrap(),
+                    engine,
+                    stack,
+                    diagnostic,
+                    TypePrecedence::Union,
+                )
             }
-            _ => describe_native_pack(&rest, engine, stack, diagnostic).unwrap_or_else(|| "...".to_owned()),
+            _ => describe_native_pack(&rest, engine, stack, diagnostic)
+                .unwrap_or_else(|| "...".to_owned()),
         };
         parameters.push(format!("...: {text}"));
     }
@@ -1357,16 +1467,36 @@ fn describe_native_pack(
         alternatives
             .iter()
             .map(|row| {
+                let tuple_slot =
+                    row.fixed.len() > 1 || row.tail.is_some() || alternatives.len() > 1;
                 let mut slots: Vec<_> = row
                     .fixed
                     .iter()
                     .map(|slot| {
-                        let ty = describe_native_mode(&slot.ty, engine, stack, diagnostic);
+                        let minimum = if slot.optional {
+                            TypePrecedence::Postfix
+                        } else if tuple_slot {
+                            TypePrecedence::Union
+                        } else {
+                            TypePrecedence::Function
+                        };
+                        let ty = describe_native_at_precedence(
+                            &slot.ty, engine, stack, diagnostic, minimum,
+                        );
                         if slot.optional { format!("{ty}?") } else { ty }
                     })
                     .collect();
                 if let Some(tail) = &row.tail {
-                    slots.push(format!("{}...", describe_native_mode(tail, engine, stack, diagnostic)));
+                    slots.push(format!(
+                        "{}...",
+                        describe_native_at_precedence(
+                            tail,
+                            engine,
+                            stack,
+                            diagnostic,
+                            TypePrecedence::Postfix
+                        )
+                    ));
                 }
                 match slots.len() {
                     0 => "void".to_owned(),

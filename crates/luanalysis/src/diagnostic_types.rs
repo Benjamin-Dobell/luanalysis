@@ -180,6 +180,129 @@ mod tests {
     use super::*;
     use luanalysis_engine::{Engine, LuaKey};
 
+    fn callback(returns: Type) -> Type {
+        Type::Function(luanalysis_engine::FunctionType {
+            params: Vec::new(),
+            returns: Box::new(returns),
+        })
+    }
+
+    #[test]
+    fn diagnostic_type_operators_preserve_callable_and_union_precedence() {
+        use luanalysis_engine::{Parameter, Property};
+        Engine::new().with_session(|queries| {
+            let callable = callback(Type::Union(vec![Type::Nil, Type::String]));
+            let union = Type::Union(vec![callable.clone(), Type::String]);
+            let intersection = Type::Intersection(vec![
+                Type::Union(vec![Type::Number, Type::String]),
+                Type::Shape(vec![Property::new("tag", Type::Boolean)]),
+            ]);
+            let nested = Type::Function(luanalysis_engine::FunctionType {
+                params: vec![
+                    Parameter {
+                        name: "callback".into(),
+                        ty: callback(Type::Number),
+                        optional: false,
+                    },
+                    Parameter {
+                        name: "name".into(),
+                        ty: Type::String,
+                        optional: false,
+                    },
+                ],
+                returns: Box::new(Type::Number),
+            });
+            for (ty, expected) in [
+                (union, "(fun(): nil | string) | string"),
+                (intersection, "(number | string) & { tag: boolean }"),
+                (
+                    nested,
+                    "fun(callback: (fun(): number), name: string): number",
+                ),
+            ] {
+                let span = Span { start: 3, end: 7 };
+                let mut report = CheckReport::default();
+                report.push_type_diagnostic("TS2349", span, "Type '{}'.", &[&ty]);
+                report.render_diagnostics(queries);
+                assert_eq!(report.diagnostics[0].message, format!("Type '{expected}'."));
+                assert_eq!(report.diagnostics[0].code, "TS2349");
+                assert_eq!(report.diagnostics[0].span, span);
+                assert_eq!(crate::describe(&ty), expected);
+            }
+            let retained = queries.regular_type(&callable);
+            assert!(matches!(retained, Type::SessionType(_)));
+            let callable_text = crate::describe_diagnostic_type(&retained, queries);
+            let union = Type::Union(vec![retained, Type::String]);
+            assert_eq!(
+                crate::describe_diagnostic_type(&union, queries),
+                format!("({callable_text}) | string"),
+                "inspection must retain the callable's precedence",
+            );
+        });
+    }
+
+    #[test]
+    fn pack_slots_group_compound_optional_variadic_and_callable_types() {
+        use luanalysis_engine::{PackAlternative, PackSlot};
+        Engine::new().with_session(|queries| {
+            let union = queries.regular_type(&Type::Union(vec![Type::Number, Type::String]));
+            let union_text = crate::describe_diagnostic_type(&union, queries);
+            let callable = callback(Type::Number);
+            let cases = [
+                (
+                    vec![PackSlot {
+                        ty: union.clone(),
+                        optional: true,
+                    }],
+                    None,
+                    format!("({union_text})?"),
+                ),
+                (
+                    Vec::new(),
+                    Some(Box::new(union)),
+                    format!("(({union_text})...)"),
+                ),
+                (
+                    vec![PackSlot {
+                        ty: callable.clone(),
+                        optional: true,
+                    }],
+                    None,
+                    "(fun(): number)?".into(),
+                ),
+                (
+                    Vec::new(),
+                    Some(Box::new(callable.clone())),
+                    "((fun(): number)...)".into(),
+                ),
+                (
+                    vec![
+                        PackSlot::required(callable),
+                        PackSlot::required(Type::String),
+                    ],
+                    None,
+                    "((fun(): number), string)".into(),
+                ),
+            ];
+            for (fixed, tail, expected) in cases {
+                let original = ValuePack::Alternatives(vec![PackAlternative { fixed, tail }]);
+                let retained = queries.retain_pack(&original);
+                assert!(matches!(retained, ValuePack::Session(_)));
+                for pack in [original, retained] {
+                    let mut report = CheckReport::default();
+                    report.push_pack_diagnostic(
+                        "TS2322",
+                        Span { start: 1, end: 4 },
+                        "Pack '{}'.",
+                        &[&pack],
+                    );
+                    report.render_diagnostics(queries);
+                    assert_eq!(report.diagnostics[0].message, format!("Pack '{expected}'."));
+                }
+            }
+        });
+    }
+
     #[test]
     fn diagnostic_notes_survive_report_append_and_late_native_rendering() {
         Engine::new().with_session(|queries| {

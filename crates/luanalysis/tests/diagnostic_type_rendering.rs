@@ -123,6 +123,26 @@ fn api_errors_render_original_named_generic_union_function_and_table_types() {
     );
 }
 
+#[test]
+fn a_callable_union_member_groups_its_own_nullable_return_type() {
+    let source =
+        "---@param value string | (fun(): nil | string)\nlocal function read(value) value() end\n";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.code, "TS2349");
+    assert_eq!(&source[diagnostic.span.start..diagnostic.span.end], "value");
+    assert!(
+        diagnostic.message.contains("(fun(): nil | string)"),
+        "{diagnostic:?}"
+    );
+    assert!(
+        diagnostic.message.ends_with("has no call signatures."),
+        "{diagnostic:?}"
+    );
+    no_placeholders(&diagnostic.message);
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 #[test]
