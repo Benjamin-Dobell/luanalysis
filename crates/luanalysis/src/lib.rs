@@ -78,19 +78,23 @@ impl CheckReport {
     }
 
     fn render(&mut self, engine: &mut dyn TypeQueries) {
+        let mut bindings = HashMap::with_capacity(self.pending_bindings.len());
         for (binding, ty) in std::mem::take(&mut self.pending_bindings) {
             let displayed = describe_native(&ty, engine, &mut Vec::new());
-            for info in self
-                .bindings
-                .iter_mut()
-                .filter(|info| info.binding == binding)
-            {
+            bindings.insert(binding, displayed);
+        }
+        for info in &mut self.bindings {
+            if let Some(displayed) = bindings.get(&info.binding) {
                 info.ty.clone_from(&displayed);
             }
         }
+        let mut types = HashMap::with_capacity(self.pending_types.len());
         for (span, ty) in std::mem::take(&mut self.pending_types) {
             let displayed = describe_native(&ty, engine, &mut Vec::new());
-            for info in self.types.iter_mut().filter(|info| info.span == span) {
+            types.insert((span.start, span.end), displayed);
+        }
+        for info in &mut self.types {
+            if let Some(displayed) = types.get(&(info.span.start, info.span.end)) {
                 info.ty.clone_from(&displayed);
             }
         }
