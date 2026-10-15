@@ -3562,7 +3562,7 @@ follow_struct!(NativeTableIndexer { key, value, readonly, sparse, origin });
 follow_struct!(NativeTableSequenceTail { start, value, readonly, origin });
 follow_struct!(NativeEnvironmentId { snapshot, index });
 follow_struct!(NativeGlobalBindingId { environment, index });
-follow_struct!(NativeTableData<'_> { environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+follow_struct!(NativeTableData<'_> { is_array, environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 follow_struct!(NativeCapturedFunctionContext { signature });
 follow_struct!(NativeResultPack { ty });
 follow_enum!(NativeRuntimeKind {
