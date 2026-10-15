@@ -112,6 +112,9 @@ impl Origin {
 }
 
 impl<'p, 's> Checker<'p, 's> {
+    fn native_alias_stable_cell(&self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey) -> bool {
+        provider.reference_is_cell(reference) && provider.reference_declaration(reference).is_some_and(|declaration| declaration.writes.iter().all(|write| write.owner == declaration.owner))
+    }
     pub fn native_flow_alias_intrinsic(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasIntrinsic {
         let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
         let origins = self.native_alias_value(provider, value, input, 0);
@@ -146,8 +149,11 @@ impl<'p, 's> Checker<'p, 's> {
                 if declarations.is_empty() { return opaque() }
                 let mut selected = None;
                 for declaration in declarations {
-                    if !globals.contains_value_declaration(declaration) || globals.value_declaration_header(declaration).role != NativeGlobalSourceRole::Declaration { return opaque() }
-                    let Some(heads) = globals.value_declaration_signatures(declaration).filter(|heads| !heads.is_empty()) else { return opaque() };
+                    if !globals.contains_value_declaration(declaration) { return opaque() }
+                    // Implementation owners execute at their original writes;
+                    // their mere future presence cannot change the initial library.
+                    if globals.value_declaration_header(declaration).role != NativeGlobalSourceRole::Declaration { continue }
+                    let Some(heads) = globals.value_declaration_function_signatures(declaration).filter(|heads| !heads.is_empty()) else { return opaque() };
                     for head in heads {
                         if !functions.contains_signature(head) { return opaque() }
                         let Some(site) = functions.signature_intrinsic(head) else { return opaque() };
@@ -378,7 +384,7 @@ impl<'p, 's> Checker<'p, 's> {
                 { self.native_alias_reference(provider, outer, creation.input) }
                 else { self.native_alias_initial(provider, reference, at) }
             }
-            Some(NativeFlowNode::Write { before, .. }) if !self.native_alias_dispatch_safe(provider, at, before) => Origins::one(Origin::OpaqueReference(reference, at), true),
+            Some(NativeFlowNode::Write { before, .. }) if !self.native_alias_stable_cell(provider, reference) && !self.native_alias_dispatch_safe(provider, at, before) => Origins::one(Origin::OpaqueReference(reference, at), true),
             Some(NativeFlowNode::Write { before, target, value, input }) => match if provider.reference_is_cell(reference) {
                 // Heap stores cannot rebind a lexical cell. Resolve only the
                 // cell's original assignments; classifying heap aliases here
@@ -401,7 +407,7 @@ impl<'p, 's> Checker<'p, 's> {
                 _ => self.native_alias_reference(provider, reference, before),
             },
             Some(NativeFlowNode::Call { before, value, input }) => {
-                let stable_cell = provider.reference_declaration(reference).is_some_and(|declaration| declaration.writes.iter().all(|write| write.owner == declaration.owner));
+                let stable_cell = self.native_alias_stable_cell(provider, reference);
                 let preservation = if stable_cell && !provider.call_invalidates_reference(reference, at, self) {
                     NativeCallPreservation::Preserved
                 } else { self.native_alias_call_preservation(provider, reference, value, input) };
@@ -418,8 +424,11 @@ impl<'p, 's> Checker<'p, 's> {
             // A static allocation site on a backedge can denote another
             // physical object. Never equate iterations through a cycle token.
             Some(NativeFlowNode::Loop { .. }) => Origins::unknown(),
-            Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
-                | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => {
+            Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }) => {
+                if self.native_alias_stable_cell(provider, reference) || self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_reference(provider, reference, before) }
+                else { Origins::one(Origin::OpaqueReference(reference, at), true) }
+            },
+            Some(NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => {
                 if self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_reference(provider, reference, before) }
                 else { Origins::one(Origin::OpaqueReference(reference, at), true) }
             },

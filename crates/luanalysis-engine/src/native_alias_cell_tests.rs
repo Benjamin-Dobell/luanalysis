@@ -2,11 +2,15 @@ use super::*;
 
 struct Cells {
     source: Source,
+    lexical: bool,
+    unknown_dispatch: bool,
 }
 impl Cells {
     fn new() -> Self {
         Self {
             source: Source::new(),
+            lexical: true,
+            unknown_dispatch: false,
         }
     }
     fn with_heap_store() -> Self {
@@ -22,7 +26,8 @@ impl Cells {
 }
 impl NativeFlowProvider for Cells {
     fn alias_node_dispatch(&self, original: NativeFlowKey) -> NativeAliasDispatch {
-        self.source.alias_node_dispatch(original)
+        if self.unknown_dispatch && original.node == 6 { NativeAliasDispatch::Unknown }
+        else { self.source.alias_node_dispatch(original) }
     }
     fn alias_call_source(&self, original: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> {
         self.source.alias_call_source(original, input)
@@ -31,7 +36,7 @@ impl NativeFlowProvider for Cells {
         self.source.function_alias_execution(original, creation)
     }
     fn reference_is_cell(&self, original: NativeReferenceKey) -> bool {
-        original.reference < 2
+        self.lexical && original.reference < 2
     }
     fn contains_graph(&self, original: NativeGraphKey) -> bool {
         self.source.contains_graph(original)
@@ -193,5 +198,35 @@ fn intervening_calls_preserve_stable_cells_but_not_cross_function_writes() {
                 );
             },
         );
+    }
+}
+
+#[test]
+fn a_declared_heap_slot_cannot_borrow_the_immutable_cell_call_shortcut() {
+    Engine::new().with_native_provider(|| Functions, |_, queries| {
+        let mut source = Cells::new();
+        source.lexical = false;
+        assert!(source.reference_declaration(reference(0, 0)).unwrap().writes.is_empty());
+        assert_eq!(queries.flow_alias_relation(&source, reference(0, 0), at(0, 4), value(17), at(0, 3)), NativeAliasRelation::Possible);
+    });
+}
+
+#[test]
+fn implicit_dispatch_preserves_only_uncaptured_lexical_cells() {
+    for write in [false, true] {
+        for lexical in [false, true] {
+            for foreign in [false, true] {
+                Engine::new().with_native_provider(|| Functions, |_, queries| {
+                    let mut source = if write { Cells::with_heap_store() } else { Cells::new() };
+                    if !write { source.source.nodes.push(NativeFlowNode::Pass { before: at(0, 2) }); }
+                    source.lexical = lexical;
+                    source.unknown_dispatch = true;
+                    source.source.foreign_write = foreign;
+                    assert_eq!(queries.flow_alias_relation(&source, reference(0, 0), at(0, 6), value(3), at(0, 2)),
+                        if lexical && !foreign { NativeAliasRelation::Same } else { NativeAliasRelation::Possible },
+                        "write={write}, lexical={lexical}, foreign={foreign}");
+                });
+            }
+        }
     }
 }

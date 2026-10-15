@@ -49,6 +49,8 @@ fn site(index: u32, kind: NativeIntrinsicKind) -> NativeIntrinsicSite {
 struct StandardRecipes {
     routed: bool,
     original_loader: bool,
+    extra_owner: Option<NativeValueDeclarationKey>,
+    long_form: bool,
     nodes: HashMap<NativeFlowKey, NativeFlowNode>,
 }
 
@@ -85,7 +87,7 @@ impl StandardRecipes {
         insert(4, 0, NativeFlowNode::Start);
         insert(4, 1, NativeFlowNode::Call { before: at(4, 0), value: value(4, 105), input: at(4, 0) });
         insert(4, 2, NativeFlowNode::Return { before: at(4, 1) });
-        Self { routed, original_loader: true, nodes }
+        Self { routed, original_loader: true, extra_owner: None, long_form: false, nodes }
     }
 
     fn selected() -> NativeAliasIntrinsic {
@@ -94,6 +96,14 @@ impl StandardRecipes {
 
     fn execution(region: u32) -> NativeAliasExecution {
         NativeAliasExecution { entry: at(region, 0), terminals: vec![at(region, 2)] }
+    }
+    fn function_heads(original: NativeValueDeclarationKey) -> Option<Vec<NativeSignatureKey>> {
+        if original == declaration(1) { return None; }
+        Some(match original.index {
+            0 => vec![signature(0), signature(9)],
+            7 => vec![signature(7), signature(8)],
+            index => vec![signature(index)],
+        })
     }
 }
 
@@ -110,7 +120,9 @@ impl NativeTypeProvider for StandardRecipes {
         (original == environment(0)).then_some(binding(1))
     }
     fn global_binding_declarations(&self, original: NativeGlobalBindingKey) -> Vec<NativeValueDeclarationKey> {
-        vec![declaration(original.index)]
+        let mut owners = vec![declaration(original.index)];
+        if original == binding(0) { owners.extend(self.extra_owner); }
+        owners
     }
     fn contains_value_declaration(&self, original: NativeValueDeclarationKey) -> bool {
         original.snapshot == declaration(0).snapshot && original.index < 8
@@ -122,12 +134,10 @@ impl NativeTypeProvider for StandardRecipes {
         }
     }
     fn value_declaration_signatures(&self, original: NativeValueDeclarationKey) -> Option<Vec<NativeSignatureKey>> {
-        if original == declaration(1) { return None; }
-        Some(match original.index {
-            0 => vec![signature(0), signature(9)],
-            7 => vec![signature(7), signature(8)],
-            index => vec![signature(index)],
-        })
+        if self.long_form { None } else { Self::function_heads(original) }
+    }
+    fn value_declaration_function_signatures(&self, original: NativeValueDeclarationKey) -> Option<Vec<NativeSignatureKey>> {
+        Self::function_heads(original)
     }
     fn contains_signature(&self, original: NativeSignatureKey) -> bool {
         original.snapshot == signature(0).snapshot && original.index < 10
@@ -332,6 +342,48 @@ fn written_callable_heads_and_forged_standard_membership_do_not_attest_runtime_i
             }
             assert_ne!(queries.flow_alias_relation(recipes, reference(0, 2), at(0, 0), value(0, 7), at(0, 0)), NativeAliasRelation::Same);
             assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, 0), at(0, 0)), StandardRecipes::selected());
+        });
+    }
+}
+
+#[test]
+fn future_implementation_owners_do_not_rewrite_the_initial_standard_origin() {
+    for routed in [false, true] {
+        for owner in [6, 3] {
+            Engine::new().with_native_provider(move || {
+                let mut source = StandardRecipes::new(routed);
+                source.extra_owner = Some(declaration(owner));
+                source
+            }, |source, queries| {
+                let initial = queries.flow_alias_intrinsic(source, value(0, 0), at(0, 0));
+                let copy = queries.flow_alias_intrinsic(source, value(0, 50), at(0, 1));
+                if owner == 6 {
+                    assert_eq!(initial, StandardRecipes::selected());
+                    assert_eq!(copy, StandardRecipes::selected());
+                    assert_eq!(queries.flow_alias_intrinsic(source, value(0, 0), at(0, 4)), NativeAliasIntrinsic::Unknown);
+                } else {
+                    assert_eq!(initial, NativeAliasIntrinsic::Unknown);
+                    assert_eq!(copy, NativeAliasIntrinsic::Unknown);
+                }
+            });
+        }
+    }
+}
+
+#[test]
+fn original_long_form_heads_do_not_turn_a_runtime_global_into_a_bodyless_declaration() {
+    for routed in [false, true] {
+        Engine::new().with_native_provider(move || {
+            let mut source = StandardRecipes::new(routed);
+            source.long_form = true;
+            source.extra_owner = Some(declaration(6));
+            source
+        }, |source, queries| {
+            assert_eq!(source.value_declaration_signatures(declaration(0)), None);
+            assert_eq!(source.value_declaration_function_signatures(declaration(0)), Some(vec![signature(0), signature(9)]));
+            assert_eq!(queries.flow_alias_intrinsic(source, value(0, 0), at(0, 0)), StandardRecipes::selected());
+            assert_eq!(queries.flow_alias_intrinsic(source, value(0, 50), at(0, 1)), StandardRecipes::selected());
+            assert_eq!(queries.flow_alias_intrinsic(source, value(0, 0), at(0, 4)), NativeAliasIntrinsic::Unknown);
         });
     }
 }

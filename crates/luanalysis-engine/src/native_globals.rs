@@ -239,6 +239,10 @@ impl<P: NativeTypeProvider> core::NativeGlobalsProvider for ProviderAdapter<'_, 
         self.provider.value_declaration_signatures(declaration(key))
             .map(|heads| heads.into_iter().map(crate::core_signature_key).collect())
     }
+    fn value_declaration_function_signatures(&self, key: core::NativeValueDeclarationId) -> Option<Vec<bun_sema::types::NativeSignatureId>> {
+        self.provider.value_declaration_function_signatures(declaration(key))
+            .map(|heads| heads.into_iter().map(crate::core_signature_key).collect())
+    }
     fn value_declaration_initializer(
         &self,
         checker: &mut Checker<'_, '_>,

@@ -105,6 +105,7 @@ impl Source {
     }
 }
 impl NativeFlowProvider for Source {
+    fn reference_is_cell(&self, original: NativeReferenceKey) -> bool { original.reference < 2 }
     fn alias_node_dispatch(&self, original: NativeFlowKey) -> NativeAliasDispatch {
         if self.node(original).is_some() { NativeAliasDispatch::NoDispatch }
         else { NativeAliasDispatch::Unknown }

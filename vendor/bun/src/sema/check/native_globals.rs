@@ -63,6 +63,9 @@ pub trait NativeGlobalsProvider {
     /// Pure original callable heads, independent of any runtime function/body.
     /// `Some` must be nonempty; `None` retains ordinary value declaration rules.
     fn value_declaration_signatures(&self, _: NativeValueDeclarationId) -> Option<Vec<NativeSignatureId>> { None }
+    /// Pure original function heads, including ambient long-form functions.
+    /// This does not classify a global as a bodyless callable declaration.
+    fn value_declaration_function_signatures(&self, declaration: NativeValueDeclarationId) -> Option<Vec<NativeSignatureId>> { self.value_declaration_signatures(declaration) }
     /// Original annotation space; this must never inspect an ambient stub body.
     fn value_declaration_contract(&self, checker: &mut Checker<'_, '_>, declaration: NativeValueDeclarationId) -> Option<TypeId>;
     /// Executable source values only. The requesting checker owns every demand.

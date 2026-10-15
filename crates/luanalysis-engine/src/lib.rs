@@ -340,6 +340,8 @@ pub trait NativeTypeProvider {
     fn value_declaration_header(&self, _: NativeValueDeclarationKey) -> ValueDeclarationHeader { panic!("native global value provider is not installed") }
     /// Pure original callable heads; no runtime function or initializer exists.
     fn value_declaration_signatures(&self, _: NativeValueDeclarationKey) -> Option<Vec<NativeSignatureKey>> { None }
+    /// Original function heads without classifying the declaration as bodyless.
+    fn value_declaration_function_signatures(&self, declaration: NativeValueDeclarationKey) -> Option<Vec<NativeSignatureKey>> { self.value_declaration_signatures(declaration) }
     fn value_declaration_contract(&self, _: NativeValueDeclarationKey, _: &mut dyn TypeQueries) -> Option<Type> { None }
     fn value_declaration_initializer(&self, _: NativeValueDeclarationKey, _: &mut dyn TypeQueries) -> Type { panic!("native global initializer provider is not installed") }
     fn global_query_error(&self, _: GlobalQueryError, _: &mut dyn TypeQueries) {}
