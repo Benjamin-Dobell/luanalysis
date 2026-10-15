@@ -1763,6 +1763,24 @@
       "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
       "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
       "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-namespace-capture-lua-printing.patch",
+      "reason": "Retain attested namespace contracts in deferred bodies, resolve proven immutable captured callees before local loop effects, and expose a structural Lua nil printer mode while preserving default TypeScript formatting through kernel 696582a.",
+      "patch_sha256": "34c07c2ed6cda9fdb8a0f3538f7843277650e521516bbf9926a4d40530f689d7"
+    },
+    {
+      "path": "src/sema/check/native_standard_assumptions.rs",
+      "patch": "vendor/patches/bun-sema-native-namespace-capture-lua-printing.patch",
+      "reason": "Retain attested namespace contracts in deferred bodies, resolve proven immutable captured callees before local loop effects, and expose a structural Lua nil printer mode while preserving default TypeScript formatting through kernel 696582a.",
+      "patch_sha256": "34c07c2ed6cda9fdb8a0f3538f7843277650e521516bbf9926a4d40530f689d7"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-namespace-capture-lua-printing.patch",
+      "reason": "Retain attested namespace contracts in deferred bodies, resolve proven immutable captured callees before local loop effects, and expose a structural Lua nil printer mode while preserving default TypeScript formatting through kernel 696582a.",
+      "patch_sha256": "34c07c2ed6cda9fdb8a0f3538f7843277650e521516bbf9926a4d40530f689d7"
     }
   ],
   "source_additions": {
@@ -1803,7 +1821,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "b3ad265dbc300f80104141e13ccd6966bbc6b32aa60ebec09d2f06841ea52122",
+      "extracted_sha256": "20748bf73ba96bb91ccba9bc99440beae5c7b82693ad1826d7727ea39359f978",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1827,7 +1845,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_standard_assumptions.rs": {
-      "extracted_sha256": "f5197a993f7ef800e49bad03c3ac1091050c3b0ee94365b02f7e14868ccd5334",
+      "extracted_sha256": "5d14432b53ca8cb8985166ce33ff816f4fc1cf015cb7470a5d0956a64793c5e5",
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
@@ -2799,7 +2817,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "52e9a0475c941046812716cb92570511c2e2c6ae7a0ef353ee2096232e1ece8d"
+      "extracted_sha256": "4575afadfbde0d16bc81f2f85cc40ba7d0c510e12d1e478f1e48b9fac0dd51bf"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",

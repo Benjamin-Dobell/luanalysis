@@ -1,0 +1,84 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 0f80b1148d8d629d01828192801d91d2ebf043c6..5cba1142720ac14dfd592e7fdf090664040a6ed5 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -1615,6 +1615,14 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+     }
+ 
++    /// A deferred body may use its original namespace's declared contract.
++    /// This preserves the exact checked class facet without turning an alias,
++    /// replacement definition or ordinary table into that namespace value.
++    pub fn native_definition_member_contract(&self, owner: NativeDefinitionId, actual: TypeId) -> Option<TypeId> {
++        let reference = self.native_definition_ref(actual)?;
++        (reference.owner == owner).then(|| self.intern(TypeData::NativeObject(reference.class)))
++    }
++
+     /// A proven fixed store updates presence in an immutable actual view. It never reconstructs
+     /// the full class instance or grants an ordinary table a declaration origin.
+     pub fn native_definition_fixed_write(&mut self, table: TypeId, key: NativeTableKey, value: TypeId) -> Result<TypeId, NativeTableError> {
+diff --git a/src/sema/check/native_standard_assumptions.rs b/src/sema/check/native_standard_assumptions.rs
+index ed28511d769b3d9b277f36082574b6ebd56e3fbb..6dab4d0c5f41a6fcc311a01cade23a6dd8466229 100644
+--- a/src/sema/check/native_standard_assumptions.rs
++++ b/src/sema/check/native_standard_assumptions.rs
+@@ -203,6 +203,27 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     fn native_standard_reference_worker(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Origins {
++        if provider.reference_is_cell(reference)
++            && let Some(declaration) = provider.reference_declaration(reference)
++            && declaration.owner != reference.graph
++            && let Some(creation) = provider.graph_creation(reference.graph)
++            && provider.graph_creation(declaration.owner).is_none()
++            && declaration.writes.iter().all(|write| write.owner == declaration.owner && write.statement_end <= creation.position)
++        {
++            // This exact captured lexical cell cannot change in the body.
++            // Resolve its original creation value before traversing local
++            // calls/loops, which can themselves be classifying this callee.
++            // Preserve the same actual execution-parent routing as Start.
++            if let Some(index) = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry.graph == at.graph) {
++                let caller = self.native_alias_cache.executions[index].caller;
++                if let Some(parent) = provider.reference_in_graph(reference, caller.graph) {
++                    return self.with_native_alias_parent(index, |checker| checker.native_standard_reference(provider, parent, caller));
++                }
++            }
++            if let Some(outer) = provider.reference_in_graph(reference, creation.input.graph) {
++                return self.native_standard_reference(provider, outer, creation.input);
++            }
++        }
+         match provider.node(at) {
+             Some(NativeFlowNode::Start) => {
+                 let declaration = provider.reference_declaration(reference);
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+index e50d0e22bf3bcb8d9f756bd80dc803382af0e539..e93e9183278169a2897b9dd3436c56044834d597 100644
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -39,6 +39,7 @@ pub(super) const MULTILINE_OBJECT_LITERALS: u32 = 1 << 13;
+ const FORBID_INDEXED_ACCESS_SYMBOL_REFERENCES: u32 = 1 << 14;
+ pub(super) const WRITE_TYPE_PARAMETERS_IN_QUALIFIED_NAME: u32 = 1 << 15;
+ pub(super) const WRITE_ARRAY_AS_GENERIC_TYPE: u32 = 1 << 16;
++const NATIVE_LUA_TYPES: u32 = 1 << 17;
+ /// What `typeToString` hands `typeToStringEx`.
+ pub(super) const TYPE_TO_STRING: u32 =
+     ALLOW_UNIQUE_ES_SYMBOL_TYPE | USE_ALIAS_DEFINED_OUTSIDE_CURRENT_SCOPE;
+@@ -137,6 +138,11 @@ impl Checker<'_, '_> {
+         self.printed(|c, out| c.write_type(out, ty, TYPE_TO_STRING))
+     }
+ 
++    /// The same printer with Lua's spelling for its native nil value.
++    pub fn native_type_to_string(&mut self, ty: TypeId) -> Vec<u8> {
++        self.printed(|c, out| c.write_type(out, ty, TYPE_TO_STRING | NATIVE_LUA_TYPES))
++    }
++
+     /// `TypeToTypeNode` with the flags of `typeWriterWalker.writeTypeOrSymbol`.
+     #[cfg(feature = "baselines")]
+     pub(super) fn type_to_string_for_baseline_with(
+@@ -1698,7 +1704,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
+                     | Intrinsic::UniqueLiteral => (b"never", 5),
+                     Intrinsic::Void => (b"void", 4),
+                     Intrinsic::Undefined | Intrinsic::Missing | Intrinsic::UndefinedWidening => {
+-                        (b"undefined", 9)
++                        if self.flags & NATIVE_LUA_TYPES != 0 { (b"nil", 3) } else { (b"undefined", 9) }
+                     }
+                     Intrinsic::Null | Intrinsic::NullWidening => (b"null", 4),
+                     Intrinsic::String => (b"string", 6),

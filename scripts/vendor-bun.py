@@ -404,6 +404,12 @@ SOURCE_ADAPTATIONS.extend({
     "native_project.rs", "native_standard_assumptions.rs", "native_tables.rs", "shape.rs", "sink.rs",
 ])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-namespace-capture-lua-printing.patch",
+    "reason": "Retain attested namespace contracts in deferred bodies, resolve proven immutable captured callees before local loop effects, and expose a structural Lua nil printer mode while preserving default TypeScript formatting through kernel 696582a.",
+} for path in ["native_named.rs", "native_standard_assumptions.rs", "print.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
