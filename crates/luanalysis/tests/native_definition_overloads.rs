@@ -43,9 +43,9 @@ fn signature_local_generics_infer_independently_on_a_definition() {
     let report = clean(
         "---@class Factory\n---@overload fun<T:number>(value:T):T\n---@overload fun<T:string>(value:T):T\nlocal factory={}\nlocal number=factory(42)\nlocal string=factory(\"text\")\nlocal repeated=factory(84)",
     );
-    assert_eq!(ty(&report, "number"), "number");
-    assert_eq!(ty(&report, "string"), "string");
-    assert_eq!(ty(&report, "repeated"), "number");
+    assert_eq!(ty(&report, "number"), "42");
+    assert_eq!(ty(&report, "string"), "\"text\"");
+    assert_eq!(ty(&report, "repeated"), "84");
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn a_signature_local_parameter_shadows_an_outer_parameter_in_named_head_dependen
 fn an_alias_generic_constraint_alone_keeps_the_outer_parameter_dependency() {
     let source = "---@generic T\n---@param value T\nlocal function make(value)\n---@alias Identity fun<U:T>(value:U):U\n\n---@class Factory\n---@overload fun():Identity\nlocal factory={}\nreturn factory\nend\nlocal factory=make(42)\nlocal identity=factory()\nlocal result=identity(84)";
     let report = clean(source);
-    assert_eq!(ty(&report, "result"), "number");
+    assert_eq!(ty(&report, "result"), "84");
     let rejected = check(&format!("{source}\nlocal invalid=identity(\"wrong\")"));
     assert!(
         rejected

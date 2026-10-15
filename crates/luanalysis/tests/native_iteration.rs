@@ -134,8 +134,8 @@ end"#,
 #[test]
 fn visible_loop_key_writes_do_not_replace_the_hidden_control() {
     let source = r#"---@param state nil
----@param control 0|1
----@return nil|(1,string)
+---@param control number
+---@return nil|(number,string)
 local function iterator(state,control)
 if control==0 then return 1,"value" end
 return nil
@@ -157,6 +157,16 @@ end"#;
     let error = &report.diagnostics[0];
     assert_eq!(error.code, "TS2322");
     assert_eq!(&wrong[error.span.start..error.span.end], "key");
+}
+
+#[test]
+fn a_written_literal_iterator_key_rejects_an_incompatible_body_assignment() {
+    let source = "---@param state nil\n---@param control 0|1\n---@return nil|(1,string)\nlocal function iterator(state,control)\nif control==0 then return 1,'value' end\nreturn nil\nend\nfor key,value in iterator,nil,0 do\nkey=0\nend";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    let error = &report.diagnostics[0];
+    assert_eq!(error.code, "TS2322");
+    assert_eq!(&source[error.span.start..error.span.end], "0");
 }
 
 #[test]

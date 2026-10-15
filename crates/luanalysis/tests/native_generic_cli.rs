@@ -37,7 +37,7 @@ fn cli_rejects_a_constrained_generic_call_then_infers_the_corrected_call() {
     assert!(
         types
             .lines()
-            .any(|line| line == format!("{}:5:7: inferred: number", file.display())),
+            .any(|line| line == format!("{}:5:7: inferred: 42", file.display())),
         "{types}"
     );
     assert!(
