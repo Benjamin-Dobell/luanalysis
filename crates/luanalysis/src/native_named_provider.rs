@@ -102,10 +102,14 @@ fn key_recipe(key: &TypeFieldKey) -> TypeMemberKeyRecipe {
 }
 
 impl NativeRegistry {
+    fn signature_aware_head_context(&self,head:&AnonymousHeadSource)->Option<NativeTypeContext> {
+        self.signature_context_for_annotation(head.syntax.span)
+            .map(NativeTypeContext::Signature).or_else(||head_context(head))
+    }
     /// Follow finite source annotation edges solely to collect parameter
     /// occurrences. This does not produce types, expand aliases, or diagnose
     /// semantic cycles; those demands remain in the native checker.
-    pub(super) fn annotation_parameter_dependencies(
+    pub(crate) fn annotation_parameter_dependencies(
         &self,
         context: Option<NativeTypeContext>,
         ty: &TypeExpr,
@@ -134,6 +138,9 @@ impl NativeRegistry {
                     }
                 }
                 TypeExprKind::Function(function) => {
+                    let context=self.signature_key_for(function.span)
+                        .map(NativeTypeContext::Signature).or(context);
+                    pending.extend(function.generics.iter().filter_map(|parameter| parameter.constraint.as_ref()).map(|ty|(context,ty)));
                     pending.extend(
                         function
                             .params
@@ -341,7 +348,7 @@ impl NativeRegistry {
             name,
             object_form: Some(object_form),
             parameters: Vec::new(),
-            outer_parameters: self.named_outer_parameters(head_context(source), &source.syntax),
+            outer_parameters: self.named_outer_parameters(self.signature_aware_head_context(source), &source.syntax),
         }
     }
     pub(super) fn named_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
@@ -428,6 +435,7 @@ impl NativeRegistry {
         match lexical_context(context, documentation) {
             Some(NativeTypeContext::Function(key)) => checker.type_context = Some(key),
             Some(NativeTypeContext::NamedType(key)) => checker.named_type_context = Some(key),
+            Some(NativeTypeContext::Signature(key)) => checker.signature_type_context = Some(key),
             None => {}
         }
         let result = checker.annotation(ty);
@@ -475,7 +483,7 @@ impl NativeRegistry {
             .anonymous_head(source.owner)
             .expect("original anonymous head");
         self.named_annotation(
-            head_context(head),
+            self.signature_aware_head_context(head),
             &head.documentation_contexts,
             &source.ty,
             queries,
@@ -512,7 +520,7 @@ impl NativeRegistry {
             _ => unreachable!("original anonymous indexer"),
         };
         self.named_annotation(
-            head_context(head),
+            self.signature_aware_head_context(head),
             &head.documentation_contexts,
             ty,
             queries,
@@ -547,6 +555,7 @@ impl NativeRegistry {
             .contains(key)
             .then(|| match self.types.parameter(key).owner {
                 NativeTypeContext::Function(key) => TypeDeclarationOwner::Function(key),
+                NativeTypeContext::Signature(key) => TypeDeclarationOwner::Signature(key),
                 NativeTypeContext::NamedType(key) => {
                     TypeDeclarationOwner::NamedType(declaration(key))
                 }

@@ -3,15 +3,15 @@ use luanalysis::check;
 #[test]
 fn retained_standalone_declarations_cannot_count_as_semantically_checked() {
     for (source, code, origin) in [
-        ("---@alias Unused Missing", "LUA2001", "Missing"),
+        ("---@alias Unused Missing", "TS2304", "Missing"),
         (
             "---@class Unused\n---@field member Missing",
-            "LUA2001",
+            "TS2304",
             "Missing",
         ),
         (
             "---@shape Unused\n---@field member Missing",
-            "LUA2001",
+            "TS2304",
             "Missing",
         ),
     ] {

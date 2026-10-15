@@ -54,9 +54,10 @@ pub(super) struct NativeRegistry {
     function_names: Vec<Option<Name>>,
     function_spans: HashMap<(usize, usize), u32>,
     declarations: HashMap<BindingId, DeclarationSource>,
-    types: NativeTypes,
+    pub(super) types: NativeTypes,
     named: NativeNamed,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
+    pub(super) signatures: super::native_signatures::NativeSignatures,
     expressions: NativeExpressions,
     packs: NativePacks,
     flow: NativeFlowSources,
@@ -94,15 +95,20 @@ impl NativeRegistry {
             .collect();
         let named = NativeNamed::new(snapshot, &file, &bound, &source_function_keys)
             .expect("original named declaration metadata");
-        let types = NativeTypes::new_with_named(
+        let signatures=super::native_signatures::NativeSignatures::new(snapshot,&file,&functions,&named);
+        let mut types = NativeTypes::new_with_named(
             snapshot,
             type_scope_recipes(snapshot, &functions, &bound),
             named
                 .declarations()
                 .iter()
                 .map(|source| source.generic_scope.clone())
+                .chain(signatures.scopes())
                 .collect(),
         );
+        for (function,signature) in signatures.implementation_scopes(&functions) {
+            types.attach_signature_scope(function,signature);
+        }
         let expressions = NativeExpressions::new(snapshot, &file, &function_spans);
         let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
             expressions.key_for_span(expression.span)
@@ -112,6 +118,7 @@ impl NativeRegistry {
         report
             .diagnostics
             .extend(types.diagnostics().iter().cloned());
+        report.diagnostics.extend(signatures.diagnostics.iter().cloned());
         Self {
             snapshot,
             file,
@@ -123,6 +130,7 @@ impl NativeRegistry {
             types,
             named,
             project_names: None,
+            signatures,
             expressions,
             packs,
             flow,
@@ -207,6 +215,7 @@ impl NativeRegistry {
         let recipe = self.declared_pack_recipe(key)?;
         let mut checker = self.checker(queries);
         checker.type_context = Some(key);
+        checker.signature_type_context=self.signature_key_for(recipe.span);
         checker.check_mode = checker
             .engine
             .current_contextual_function()
@@ -258,6 +267,7 @@ impl NativeRegistry {
         });
         let mut checker = self.checker(queries);
         checker.type_context = Some(key);
+        if function.annotations.vararg.is_none(){checker.signature_type_context=self.implementation_annotation_signature(key);}
         checker.check_mode = checker
             .engine
             .current_contextual_function()
@@ -363,6 +373,7 @@ impl NativeRegistry {
             return_packs: Vec::new(),
             type_context: None,
             named_type_context: None,
+            signature_type_context: None,
             contextual_function: None,
             captured_function: None,
             check_mode: luanalysis_engine::NativeCheckMode::empty(),
@@ -1172,6 +1183,7 @@ impl NativeRegistry {
     /// Demand every body for semantic diagnostics, including unused annotated
     /// declarations whose return type required no native inference query.
     pub(super) fn check_all_bodies(&self, queries: &mut dyn TypeQueries) {
+        self.check_all_signatures(queries);
         for index in 0..self.functions.len() {
             let key = self.key(index as u32);
             for parameter in self.types.own_parameters(key) {
@@ -1708,6 +1720,23 @@ impl FlowValueQueries for NativeRegistry {
 }
 
 impl NativeTypeProvider for NativeRegistry {
+    fn contains_signature(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signatures.contains(key)}
+    fn signature_header(&self,key:luanalysis_engine::NativeSignatureKey)->luanalysis_engine::SignatureHeader{self.signatures.get(key).header}
+    fn function_overload_signatures(&self,key:NativeFunctionKey)->Vec<luanalysis_engine::NativeSignatureKey>{self.signatures.function_heads(key)}
+    fn signature_type_parameters(&self,key:luanalysis_engine::NativeSignatureKey)->Vec<NativeTypeParameterKey>{self.signature_parameters_keys(key)}
+    fn signature_outer_type_parameters(&self,key:luanalysis_engine::NativeSignatureKey)->Vec<NativeTypeParameterKey>{self.signature_outer_keys(key)}
+    fn signature_parameters(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->Vec<Parameter>{self.source_signature_parameters(key,queries)}
+    fn signature_rest_pack(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->Option<ValuePack>{self.source_signature_rest(key,queries)}
+    fn signature_declared_return_pack(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->ValuePack{self.source_signature_return(key,queries)}
+    fn signature_return_cycle(&self,key:luanalysis_engine::NativeSignatureKey) {
+        self.merge_report(CheckReport { diagnostics:vec![Diagnostic {code:"TS2577",span:self.signatures.get(key).span,message:"Return type annotation circularly references itself.".into()}],..Default::default() });
+    }
+    fn signature_return_type_too_deep(&self,key:luanalysis_engine::NativeSignatureKey) {
+        self.merge_report(CheckReport { diagnostics:vec![Diagnostic {code:"TS2589",span:self.signatures.get(key).span,message:"Type instantiation is excessively deep and possibly infinite.".into()}],..Default::default() });
+    }
+    fn type_declaration_call_signatures(&self,key:luanalysis_engine::NativeTypeDeclarationKey)->Vec<luanalysis_engine::NativeSignatureKey>{
+        self.signatures.named_heads(super::native_named::NativeNamedKey{snapshot:key.snapshot,index:key.index})
+    }
     fn contains_type_declaration(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> bool {
         self.named_contains_declaration(key)
     }
@@ -1980,7 +2009,7 @@ impl NativeTypeProvider for NativeRegistry {
         _: &mut dyn TypeQueries,
     ) -> Vec<NativeTypeParameterKey> {
         self.function(key);
-        self.types.own_parameters(key)
+        self.implementation_type_parameters(key)
     }
 
     fn function_outer_type_parameters(
@@ -2015,6 +2044,7 @@ impl NativeTypeProvider for NativeRegistry {
         match source.owner {
             NativeTypeContext::Function(owner) => checker.type_context = Some(owner),
             NativeTypeContext::NamedType(owner) => checker.named_type_context = Some(owner),
+            NativeTypeContext::Signature(owner) => checker.signature_type_context = Some(owner),
         }
         let constraint = checker.annotation(recipe);
         self.merge_report(checker.report);

@@ -525,6 +525,7 @@ impl<'p, 's> Checker<'p, 's> {
                     base: Some(inner), ..
                 } => inner,
                 SigData::Native { .. }
+                | SigData::NativeDeclarationSignature { .. }
                 | SigData::NativeContextual { .. }
                 | SigData::NativeCaptured { .. }
                 | SigData::DefaultConstruct { base: None, .. }

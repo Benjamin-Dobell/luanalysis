@@ -235,7 +235,7 @@ fn declaration_only_invocation_validates_unused_named_contracts() {
         .unwrap();
     assert_eq!(invalid.status.code(), Some(1), "{}", text(&invalid));
     assert!(
-        String::from_utf8_lossy(&invalid.stderr).contains("count.def.lua:1:17: error[LUA2001]"),
+        String::from_utf8_lossy(&invalid.stderr).contains("count.def.lua:1:17: error[TS2304]"),
         "{}",
         text(&invalid)
     );

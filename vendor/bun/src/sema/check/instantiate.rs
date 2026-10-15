@@ -1045,7 +1045,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// for `sig`, which has the symbol of `sig.declaration`: whether that is a function, a method
     /// or a type literal. A call or construct signature, a constructor and an accessor are not.
     pub(super) fn has_instantiable_symbol(&self, sig: SigId) -> bool {
-        if self.sig_native_decl(self.types().sig_origin(sig)).is_some() {
+        if self.sig_native_decl(self.types().sig_origin(sig)).is_some() || self.sig_native_signature_decl(self.types().sig_origin(sig)).is_some() {
             return true;
         }
         let declared = self.sig_decl(self.types().sig_origin(sig));
@@ -1122,6 +1122,13 @@ impl<'p, 's> Checker<'p, 's> {
             return sig;
         }
         let data = match self.types().sig(sig) {
+            SigData::NativeDeclarationSignature { declaration, mapper: own, implementation } => {
+                let declaration = *declaration;
+                let own = *own;
+                let implementation = *implementation;
+                let declared = self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper: MapperId::IDENTITY, implementation: None });
+                SigData::NativeDeclarationSignature { declaration, mapper: self.native_signature_mapper(declared, own, mapper), implementation: implementation.map(|sig| self.instantiate_sig(sig, mapper)) }
+            }
             SigData::Native { declaration, mapper: own } => SigData::Native {
                 declaration: *declaration,
                 mapper: self.native_sig_mapper(*declaration, *own, mapper),
@@ -1387,6 +1394,10 @@ impl<'p, 's> Checker<'p, 's> {
             declaration,
             mapper: MapperId::IDENTITY,
         });
+        self.native_signature_mapper(declared, own, second)
+    }
+
+    fn native_signature_mapper(&mut self, declared: SigId, own: MapperId, second: MapperId) -> MapperId {
         let type_params = self.sig_type_params(declared).into_vec();
         let is_own = |c: &Self, param: TypeId| {
             c.native_type_parameter_decl(param).is_some_and(|(id, mapper)| {

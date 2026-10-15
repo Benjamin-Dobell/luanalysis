@@ -125,6 +125,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub fn sig_has_native_result_pack(&self, sig: SigId) -> bool {
         match self.types().sig(sig) {
+            SigData::NativeDeclarationSignature { .. } => true,
             SigData::WithNativeResultPack { .. } => true,
             SigData::Native { declaration, .. }
             | SigData::NativeCaptured { declaration, .. }

@@ -1389,10 +1389,18 @@ impl<'p, 's> Checker<'p, 's> {
                     self.shape_memo(ty, |c| c.build_reverse_mapped_shape(ty, source, mapped, of));
                 Some((resolved, MapperId::IDENTITY))
             }
-            TypeData::NativeObject(_) => {
+            TypeData::NativeObject(reference) => {
+                let reference = *reference;
                 let shape = self.shape_memo(ty, |c| {
                     let resolved = match c.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return Shape::new_in(c.arena) };
-                    c.members(resolved).map(|m| m.whole_shape().clone_in(c.arena)).unwrap_or_else(|| Shape::new_in(c.arena))
+                    let mut shape = c.members(resolved).map(|m| m.whole_shape().clone_in(c.arena)).unwrap_or_else(|| Shape::new_in(c.arena));
+                    if let Ok(provider) = c.native_named_provider(reference.declaration) {
+                        for declaration in provider.type_declaration_call_signatures(reference.declaration) {
+                            c.native_signature_provider_for(declaration);
+                            shape.call.push(c.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper: reference.mapper, implementation: None }));
+                        }
+                    }
+                    shape
                 });
                 Some((shape, MapperId::IDENTITY))
             }
@@ -8548,6 +8556,7 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn mapper_around_sig(&mut self, sig: SigId) -> MapperId {
         match *self.types().sig(sig) {
             SigData::Decl { mapper, .. }
+            | SigData::NativeDeclarationSignature { mapper, .. }
             | SigData::Native { mapper, .. }
             | SigData::NativeContextual { mapper, .. }
             | SigData::NativeCaptured { mapper, .. }

@@ -62,6 +62,9 @@ pub struct File {
     pub type_declarations: Vec<NamedTypeDeclaration>,
     /// Explicit @field<Owner> augmentations do not declare another named type.
     pub type_extensions: Vec<TypeExtension>,
+    /// Canonical original @overload heads. Documentation/function associations
+    /// reference these nodes instead of cloning signature-local generic scopes.
+    pub overload_annotations: Vec<OverloadAnnotation>,
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
@@ -338,6 +341,7 @@ pub struct Function {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FunctionAnnotations {
+    pub overloads: Vec<OverloadReference>,
     pub generics: Vec<GenericParameter>,
     pub params: Vec<ParamAnnotation>,
     pub vararg: Option<Box<VarargAnnotation>>,
@@ -424,12 +428,34 @@ pub enum TypeExprKind {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FunctionType {
+    pub generics: Vec<GenericParameter>,
     pub params: Vec<FunctionTypeParam>,
     pub vararg: Option<Box<VarargAnnotation>>,
     pub returns: Vec<TypeExpr>,
     /// Pack indices refer to `returns`, without duplicating type nodes.
     pub packs: Option<Box<TypePacks>>,
     pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OverloadDeclarationId(pub u32);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverloadReference {
+    pub id: OverloadDeclarationId,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverloadAnnotation {
+    pub id: OverloadDeclarationId,
+    pub signature: Box<FunctionType>,
+    pub span: Span,
+    pub tag_span: Span,
+    pub group_span: Span,
+    /// Neutral documentation candidates. The registry selects semantic owner;
+    /// multiple candidates are not silently resolved by source order.
+    pub named_candidates: Vec<NamedTypeDeclarationId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -501,3 +527,6 @@ mod table_type_tests;
 
 #[cfg(test)]
 mod declaration_tests;
+
+#[cfg(test)]
+mod function_documentation_tests;

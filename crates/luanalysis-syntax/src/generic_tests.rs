@@ -162,13 +162,35 @@ fn generic_names_follow_documentation_identifiers_not_lua_keywords() {
 }
 
 #[test]
-fn generic_function_types_remain_explicitly_gated() {
-    let file =
-        parse("---@type fun<T>(value: T): T\nlocal identity = function(value) return value end\n");
-    assert!(file.diagnostics.iter().any(|diagnostic| {
-        diagnostic.message
-            == "generic function types are unsupported until generic inference is implemented"
-    }));
+fn generic_function_types_preserve_their_own_original_parameter_scope() {
+    let source =
+        "---@type fun<T: number>(value: T): T\nlocal identity = function(value) return value end\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let StmtKind::Local { values, .. } = &file.statements[0].kind else {
+        panic!("local function value")
+    };
+    let ExprKind::Function(body) = &values[0].kind else {
+        panic!("function initializer")
+    };
+    assert!(body.annotations.generics.is_empty());
+    let TypeExprKind::Function(signature) =
+        &body.annotations.type_annotation.as_ref().unwrap().types[0].kind
+    else {
+        panic!("generic function-type head")
+    };
+    assert_eq!(signature.generics.len(), 1);
+    assert_eq!(
+        &source[signature.generics[0].name.span.start..signature.generics[0].name.span.end],
+        "T"
+    );
+    assert!(
+        matches!(&signature.generics[0].constraint.as_ref().unwrap().kind, TypeExprKind::Named(name) if name=="number")
+    );
+    assert!(
+        matches!(&signature.params[0].ty.as_ref().unwrap().kind, TypeExprKind::Named(name) if name=="T")
+    );
+    assert!(matches!(&signature.returns[0].kind, TypeExprKind::Named(name) if name=="T"));
 }
 
 #[test]

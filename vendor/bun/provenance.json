@@ -775,6 +775,91 @@
       "reason": "Add original-source inline assertion overlap and exclusion operations using native comparability, non-nullability, assignability and whole correlated pack storage.",
       "added": true,
       "patch_sha256": "fb35a7ba15de22491fdec247f87207d99621e96725121b21ed284127dc417b99"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/explain_relation.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/native_signatures.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "added": true,
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/check/symbols.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+      "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+      "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
     }
   ],
   "source_additions": {
@@ -795,12 +880,16 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "24399c474b942c1523c0212c1ebf116667e2aa714f59dfda4e8e0f873fbf19d3",
+      "extracted_sha256": "14cbc5cc1fc38b55f2ac45a256d53320e5629ace4cd6e3a4de161a7465c184a4",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "0871075a57eea2a85b30a371ed674540cd28ba4c35421dd18309ab20769d9cc5",
+      "extracted_sha256": "773d2771f263643a1baec872e645c81fdea47b85c1dc6ba15fa4adf2758bb246",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
+    },
+    "src/sema/check/native_signatures.rs": {
+      "extracted_sha256": "4836b3fc101fd87b79d5b7717c87ea3bbd7371e06c480c537cb9ebf94e351201",
+      "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_tables.rs": {
       "extracted_sha256": "f8210e054be31509554f872b62d41c554ae3c13cf174892999ea04279ad11756",
@@ -1501,7 +1590,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "4f2d241a0fb4cc5104b831da6af78e68603ca794f499d27049b88b20c3516b95"
+      "extracted_sha256": "2fa621c746eb35d37f78fc5a7a94e49746243a15091b3f371a66304750b41d1b"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -1516,7 +1605,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "70871a795103d49b4ac1e7e97b7449e47a2b14ac7f74b0f3576c389ee72d6306"
+      "extracted_sha256": "26873e0114b3ffd3f251a357593fa823ffbba479e006833a4e2c7e599691b864"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -1706,7 +1795,7 @@
     "src/sema/check/explain_relation.rs": {
       "upstream": "src/sema/check/explain_relation.rs",
       "sha256": "3cd5cea2059c6d9748f4fb35f723fdec0d85d2e2177e3a9c17f11bc0f80da601",
-      "extracted_sha256": "94582e8e1a4ee32a29aa3fee957f13f80ee8aff41b6371a2b91941ae1a95ee07"
+      "extracted_sha256": "7c33cdd70806300de20a2cb3d7c303aba693c3ed57738a295b11f8cb15af11ab"
     },
     "src/sema/check/expr.rs": {
       "upstream": "src/sema/check/expr.rs",
@@ -1726,12 +1815,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "c6735335381224351ac0896abb5e5b0c621795d0d02c2677625748878277dd88"
+      "extracted_sha256": "f8c82fb05cbca7cc96e3f721bc57e3851544f3bcd06097f85ffa2a109083c407"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "5de5e4e45a56cc0a962dcafdb36f23f8abcb3e55b55ed04db31fd44f172735cd"
+      "extracted_sha256": "c9ac7616d4db8d06699c3e435271f3b658a0e8e47e83da12d3fd089035ba855c"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -1761,7 +1850,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "9d786117d7e8c68d50442ff6b45b35e41a07befbcacbdeb95c0b4998252ba22c"
+      "extracted_sha256": "b362e86a2da5aa716f27b2d38b8049c437d51a3139e2d2d5056f70392e4ff4be"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -1771,7 +1860,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "3031d9c68335c2de416bdc603893613b90d61028566de685f271bd3b0016eb4c"
+      "extracted_sha256": "a724a08e60f3c05f97202a93189a54e75b4f11da9011c0a5af4b98a49ccef054"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -1786,7 +1875,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "91338443df5deab14e074775513db51f9816daf99abfc90e8c6b60ac28cf516a"
+      "extracted_sha256": "4ff8434910f2b9c64ef38b7e9985ac8d1798deacce74d8527b43d2f2ccdf9d5a"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -1841,7 +1930,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "21a192c5e63b1cfdc8f6dab384ac3e239029fd7ebabf82cd8ea816751c5ce1f9"
+      "extracted_sha256": "2148bba508bb17b1bd676cc413b45475f9c8a76c2d2f396ed29a9f3b39f4f823"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -1861,7 +1950,7 @@
     "src/sema/check/symbols.rs": {
       "upstream": "src/sema/check/symbols.rs",
       "sha256": "ef1c369442929fa1f57e979c571a01d2d7aebbadba0d1f3f8d7e750ca080936b",
-      "extracted_sha256": "c5d064099fc60085da7b9fe5f7b81b3a1d52c37a2d26159a409ba74957b1e8ee"
+      "extracted_sha256": "fe2c79ad762ee886e3d33707e44a839df16748809089a942a5d853542ee434c9"
     },
     "src/sema/check/task.rs": {
       "upstream": "src/sema/check/task.rs",
@@ -1966,7 +2055,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "6694992f0d5f263189bab768bd7471d90c857757193e6ae789ea52937982ccfa"
+      "extracted_sha256": "f9d5cfcd63e1ba4d3f866fd0fc48ecc9ff0ff0a68bbaaa721f8df6b52d6b0add"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

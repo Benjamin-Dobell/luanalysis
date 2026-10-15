@@ -16,6 +16,7 @@ mod native_assertions;
 mod native_iterators;
 mod native_functions;
 mod native_named;
+mod native_signatures;
 mod native_packs;
 mod native_tables;
 mod native_types;
@@ -172,6 +173,7 @@ struct Checker<'a> {
     native: Option<&'a NativeRegistry>,
     type_context: Option<NativeFunctionKey>,
     named_type_context: Option<native_named::NativeNamedKey>,
+    signature_type_context: Option<luanalysis_engine::NativeSignatureKey>,
     contextual_function: Option<ContextualFunctionContext>,
     captured_function: Option<CapturedFunctionContext>,
     incomplete_flow: bool,
@@ -222,6 +224,7 @@ pub fn check(source: &str) -> CheckReport {
                     native: Some(registry),
                     type_context: None,
                     named_type_context: None,
+                    signature_type_context: None,
                     contextual_function: None,
                     captured_function: None,
                     incomplete_flow: false,
@@ -518,7 +521,8 @@ impl Checker<'_> {
                 "void" => Type::Void,
                 _ => {
                     if let Some(native)=self.native {
-                        let context=self.named_type_context.map(native_named::NativeTypeContext::NamedType)
+                        let context=self.signature_type_context.map(native_named::NativeTypeContext::Signature)
+                            .or_else(||self.named_type_context.map(native_named::NativeTypeContext::NamedType))
                             .or_else(||self.type_context.map(native_named::NativeTypeContext::Function));
                         match native.annotation_parameter_resolution(context,name) {
                             native_types::TypeNameResolution::Parameter(key)=>return Type::NativeTypeParameter(key),
@@ -531,9 +535,9 @@ impl Checker<'_> {
                     }
                     if let Some(resolved)=self.native_named_reference(name,&[],ty){return resolved;}
                     self.error(
-                        "LUA2001",
+                        "TS2304",
                         ty.span,
-                        format!("type {name:?} is not supported in this slice"),
+                        format!("Cannot find name '{name}'."),
                     );
                     Type::Any
                 }
@@ -561,14 +565,19 @@ impl Checker<'_> {
             TypeExprKind::Generic { base, args, .. } => {
                 let arguments:Vec<_>=args.iter().map(|arg|self.annotation(arg)).collect();
                 if let Some(resolved)=self.native_named_reference(&base.text,&arguments,ty){return resolved;}
-                self.error(
-                    "LUA2025",
-                    ty.span,
-                    format!(
-                        "generic type '{}' requires native type declaration/table integration",
-                        base.text
-                    ),
-                );
+                let parameter=self.native.map(|native| {
+                    let context=self.signature_type_context.map(native_named::NativeTypeContext::Signature)
+                        .or_else(||self.named_type_context.map(native_named::NativeTypeContext::NamedType))
+                        .or_else(||self.type_context.map(native_named::NativeTypeContext::Function));
+                    native.annotation_parameter_resolution(context,&base.text)
+                });
+                let (code,message)=match parameter {
+                    Some(native_types::TypeNameResolution::Ambiguous(_))=>("TS2300",format!("Ambiguous generic parameter '{}'.",base.text)),
+                    Some(native_types::TypeNameResolution::Parameter(_))=>("TS2315",format!("Type '{}' is not generic.",base.text)),
+                    _ if matches!(base.text.as_str(),"any"|"unknown"|"never"|"nil"|"boolean"|"number"|"string"|"void")=>("TS2315",format!("Type '{}' is not generic.",base.text)),
+                    _=>("TS2304",format!("Cannot find name '{}'.",base.text)),
+                };
+                self.error(code,base.span,message);
                 Type::Unknown
             }
             TypeExprKind::Error => Type::Any,
@@ -1052,7 +1061,7 @@ pub fn describe(ty: &Type) -> String {
         ),
         // Native declarations remain references during checking. Expanding
         // their signatures here would create artificial return-demand cycles.
-        Type::NativeFunction(_) => "function".into(),
+        Type::NativeFunction(_) | Type::NativeSignature(_) => "function".into(),
         Type::NativeTypeParameter(_) => "type parameter".into(),
         Type::NativeNamedReference { .. } => "named type".into(),
         Type::SessionType(_) => "contextual type".into(),
@@ -1084,7 +1093,7 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
         Type::Table(table) => {
             native_tables::describe_table(table, |ty| describe_native(ty, engine, stack))
         }
-        Type::NativeFunction(key) => {
+        Type::NativeFunction(_) | Type::NativeSignature(_) => {
             if stack.contains(ty) {
                 return "<recursive function>".into();
             }
@@ -1092,8 +1101,16 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
                 return "...".into();
             }
             stack.push(ty.clone());
-            let signature = engine.native_function_signature(*key);
-            let text = describe_native_function(&signature, Some(ty), engine, stack);
+            // Public heads can differ from the private runtime body signature.
+            // Each native handle retains its exact capture/context mapper.
+            let heads = engine.call_signature_types(ty);
+            let texts: Vec<_> = heads.iter()
+                .map(|head|describe_native(head,engine,stack)).collect();
+            let text=match texts.as_slice() {
+                []=>"function".into(),
+                [single]=>single.clone(),
+                _=>format!("overload {{ {} }}",texts.join("; ")),
+            };
             stack.pop();
             text
         }

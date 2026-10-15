@@ -203,6 +203,8 @@ pub(super) type Sigs = SmallVec<[SigId; 8]>;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum SigSymbol {
+    NativeStandalone(NativeSignatureId),
+    Native(super::native_signatures::NativeSignatureOwner),
     Function(Sym),
     Member(Sym, MemberKind, Option<Atom>),
     Literal(FileId, MemberOwner, MemberKind, Option<Atom>),
@@ -211,6 +213,7 @@ enum SigSymbol {
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum SigParent {
+    Native(super::native_signatures::NativeSignatureSite),
     Block(FileId, Parent),
     Type(FileId, MemberOwner),
     Lone(FileId, FnId),
@@ -273,7 +276,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// The active lexical function value, retaining its environment and contextual facet.
     pub fn native_captured_function_value(&self, context: NativeCapturedFunctionContext) -> TypeId {
-        self.type_of_signature(context.signature, false)
+        self.native_function_overload_type(context.signature)
     }
 
     /// Apply a signature substitution once to a written source type used inside its body.
@@ -325,7 +328,7 @@ impl<'p, 's> Checker<'p, 's> {
             mapper: self.types().mapper(outer),
             environment: self.list(&environment),
         });
-        Some(self.type_of_signature(sig, false))
+        Some(self.native_function_overload_type(sig))
     }
 
     pub(super) fn with_native_function_context<R>(
@@ -360,7 +363,7 @@ impl<'p, 's> Checker<'p, 's> {
         expected: TypeId,
         mode: CheckMode,
     ) -> Option<TypeId> {
-        let signature = self.single_call_signature(function)?;
+        let signature = self.native_implementation_signature(function)?;
         let (declaration, mapper) = self.sig_native_decl(signature)?;
         let environment = match self.types().sig(signature) {
             SigData::NativeCaptured { environment, .. }
@@ -401,7 +404,7 @@ impl<'p, 's> Checker<'p, 's> {
             context,
             environment,
         });
-        Some(self.type_of_signature(sig, false))
+        Some(self.native_function_overload_type(sig))
     }
 
     pub fn contextual_parameter_type(&mut self, context: NativeFunctionContext, index: usize) -> Option<TypeId> {
@@ -485,8 +488,6 @@ impl<'p, 's> Checker<'p, 's> {
         let candidates = self.candidates_in_order(&signatures);
         let error = if candidates.is_empty() {
             Some(ResolvedTypeCallError::NotCallable)
-        } else if candidates.len() != 1 {
-            Some(ResolvedTypeCallError::UnsupportedOverloads)
         } else {
             None
         };
@@ -521,7 +522,7 @@ impl<'p, 's> Checker<'p, 's> {
                 errors: vec![error],
             };
         }
-        let is_single_non_generic = self.sig_type_params(sig).is_empty();
+        let is_single_non_generic = candidates.len() == 1 && self.sig_type_params(sig).is_empty();
         let has_context_sensitive = args.iter().any(|arg| match arg {
             Arg::Native(expression) | Arg::NativePack(expression) => self.native_function_provider
                 .is_some_and(|provider| provider.is_context_sensitive(*expression)),
@@ -541,11 +542,22 @@ impl<'p, 's> Checker<'p, 's> {
             candidate_for_argument_arity_error: None,
             candidate_for_type_argument_error: None,
         };
-        let chosen = self.choose_overload(&mut state, Relation::Assignable);
+        let mut chosen = if candidates.len() > 1 { self.choose_overload(&mut state, Relation::Subtype) } else { None };
+        if chosen.is_none() {
+            chosen = self.choose_overload(&mut state, Relation::Assignable);
+        }
         let selected = chosen.unwrap_or_else(|| self.candidate_for_overload_failure(&state));
         let mut errors = Vec::new();
         if chosen.is_none() {
-            let type_params = self.sig_type_params(sig);
+            let argument_candidate = state.candidates_for_argument_error.last().copied().and_then(|failed| {
+                state.candidates.iter().copied().find(|&candidate| {
+                    self.types().sig_origin(candidate) == self.types().sig_origin(failed)
+                        || self.sig_native_decl(candidate).zip(self.sig_native_decl(failed)).is_some_and(|(left, right)| left.0 == right.0)
+                        || self.sig_native_signature_decl(candidate).zip(self.sig_native_signature_decl(failed)).is_some_and(|(left, right)| left.0 == right.0)
+                })
+            });
+            let diagnostic_sig = state.candidate_for_type_argument_error.or(argument_candidate).unwrap_or(sig);
+            let type_params = self.sig_type_params(diagnostic_sig);
             if !self.has_correct_type_argument_arity(&type_params, type_args.len()) {
                 errors.push(ResolvedTypeCallError::TypeArgumentArity {
                     actual: type_args.len(),
@@ -553,9 +565,9 @@ impl<'p, 's> Checker<'p, 's> {
                     max: type_params.len(),
                 });
             } else if state.candidate_for_type_argument_error.is_some() {
-                let filled = self.fill_sig_type_args(sig, &type_params, type_args);
+                let filled = self.fill_sig_type_args(diagnostic_sig, &type_params, type_args);
                 for index in 0..type_args.len().min(type_params.len()) {
-                    if let Some((source, target)) = self.type_argument_constraint_error(sig, &type_params, &filled, index) {
+                    if let Some((source, target)) = self.type_argument_constraint_error(diagnostic_sig, &type_params, &filled, index) {
                         errors.push(ResolvedTypeCallError::TypeArgument { index, source, target });
                         break;
                     }
@@ -2903,7 +2915,11 @@ impl<'p, 's> Checker<'p, 's> {
                     let (symbol, parent) = self.sig_home(file, func, before);
                     (Some(symbol), Some(parent))
                 }
-                None => (None, None),
+                None => if let Some((signature, _)) = self.sig_native_signature_decl(declared) {
+                    let header = self.native_signature_provider_for(signature).signature_header(signature);
+                    let symbol = if header.owner == super::native_signatures::NativeSignatureOwner::Standalone { SigSymbol::NativeStandalone(signature) } else { SigSymbol::Native(header.owner) };
+                    (Some(symbol), Some(SigParent::Native(header.site)))
+                } else { (None, None) },
             };
             match &last {
                 Some((last_symbol, last_parent))
@@ -2919,7 +2935,9 @@ impl<'p, 's> Checker<'p, 's> {
                 _ => index = cutoff,
             }
             last = Some((symbol, parent));
-            let at = if declaration.is_some_and(|(file, func)| self.has_literal_types(file, func)) {
+            let has_literal = declaration.is_some_and(|(file, func)| self.has_literal_types(file, func))
+                || self.sig_native_signature_decl(declared).is_some_and(|(signature, _)| self.native_signature_provider_for(signature).signature_header(signature).has_direct_literal_parameter);
+            let at = if has_literal {
                 specialized += 1;
                 cutoff += 1;
                 specialized - 1

@@ -204,6 +204,11 @@ impl Checker<'_> {
         &mut self,
         function: &luanalysis_syntax::FunctionType,
     ) -> Type {
+        if let Some(native)=self.native {
+            if let Some(key)=native.signature_key_for(function.span) {
+                return self.engine.signature_type(key);
+            }
+        }
         let mut optional_seen = false;
         let params = function
             .params

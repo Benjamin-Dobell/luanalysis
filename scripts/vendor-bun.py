@@ -176,6 +176,19 @@ SOURCE_ADAPTATIONS.extend({
 } for path in ["mod.rs", "native_assertions.rs"])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
+    "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
+    **({"added": True} if path == "check/native_signatures.rs" else {}),
+} for path in [
+    "check/call.rs", "check/decl.rs", "check/explain_relation.rs", "check/infer.rs",
+    "check/instantiate.rs", "check/mod.rs", "check/native_named.rs", "check/native_packs.rs",
+    "check/native_signatures.rs", "check/print.rs", "check/relate.rs", "check/shape.rs",
+    "check/symbols.rs", "types.rs",
+])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

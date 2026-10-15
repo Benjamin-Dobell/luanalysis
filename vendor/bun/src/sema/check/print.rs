@@ -5494,7 +5494,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 let inner = *inner;
                 return self.signature_parameters(inner);
             }
-            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } => {
+            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } | SigData::NativeDeclarationSignature { .. } => {
                 let params = self.c.sig_params(signature);
                 let mut list = Vec::with_capacity(params.len());
                 for (i, parameter) in params.iter().enumerate() {

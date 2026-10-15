@@ -29,6 +29,9 @@ pub(super) struct TypeParameterSource {
 }
 
 struct TypeScope {
+    // A written generic function-type head supplies body-visible names without
+    // changing their original Signature owner or creating a parent cycle.
+    annotation_scope: Option<NativeTypeContext>,
     parent: Option<NativeTypeContext>,
     documentation_parents: Vec<NativeTypeContext>,
     names: HashMap<String, NativeTypeParameterKey>,
@@ -108,6 +111,7 @@ impl NativeTypes {
                     .all(|&context| context_snapshot(context) == snapshot)
             );
             let mut scope = TypeScope {
+                annotation_scope: None,
                 parent,
                 documentation_parents,
                 names: HashMap::new(),
@@ -143,6 +147,13 @@ impl NativeTypes {
             );
         }
         result
+    }
+
+    pub(super) fn attach_signature_scope(&mut self,function:NativeFunctionKey,signature:luanalysis_engine::NativeSignatureKey) {
+        let context=NativeTypeContext::Signature(signature);
+        assert!(self.scopes.contains_key(&context),"original annotation signature scope");
+        self.scopes.get_mut(&NativeTypeContext::Function(function))
+            .expect("original runtime function scope").annotation_scope=Some(context);
     }
 
     pub(super) fn diagnostics(&self) -> &[Diagnostic] {
@@ -207,6 +218,11 @@ impl NativeTypes {
             };
             if let Some(key) = scope.names.get(name) {
                 return TypeNameResolution::Parameter(*key);
+            }
+            if let Some(annotation)=scope.annotation_scope {
+                if let Some(key)=self.scopes[&annotation].names.get(name) {
+                    return TypeNameResolution::Parameter(*key);
+                }
             }
             // These are sibling documentation scopes, not recursive alias
             // edges. Only their own original parameters are lookup candidates.
@@ -353,5 +369,6 @@ fn context_snapshot(context: NativeTypeContext) -> u64 {
     match context {
         NativeTypeContext::Function(key) => key.snapshot,
         NativeTypeContext::NamedType(key) => key.snapshot,
+        NativeTypeContext::Signature(key) => key.snapshot,
     }
 }

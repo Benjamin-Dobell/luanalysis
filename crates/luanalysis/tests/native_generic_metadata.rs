@@ -93,7 +93,7 @@ fn unknown_generic_constraints_diagnose_original_annotation_ranges() {
     let source = "---@generic T : Missing\n---@param value T\nlocal function identity(value) return value end";
     let report = check(source);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
-    assert_eq!(report.diagnostics[0].code, "LUA2001");
+    assert_eq!(report.diagnostics[0].code, "TS2304");
     assert_eq!(
         &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
         "Missing"
@@ -142,7 +142,7 @@ fn native_generic_metadata_cli_rejects_then_accepts_a_constraint_correction() {
     assert_eq!(rejected.status.code(), Some(1));
     let error = String::from_utf8(rejected.stderr).unwrap();
     assert!(
-        error.contains("generic.lua:1:17: error[LUA2001]"),
+        error.contains("generic.lua:1:17: error[TS2304]"),
         "{error}"
     );
     fs::write(&file, source.replace("Missing", "number")).unwrap();

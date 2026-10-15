@@ -58,6 +58,7 @@ pub mod native_flow;
 pub mod native_iterators;
 pub mod native_packs;
 pub mod native_assertions;
+pub mod native_signatures;
 pub mod native_named;
 mod grammarchecks;
 mod infer;
@@ -137,6 +138,15 @@ pub enum NativeTypeResult {
 /// Language-specific declaration demands executed in the same checker and query scope.
 /// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
 pub trait NativeFunctionProvider {
+    fn contains_signature(&self, _: NativeSignatureId) -> bool { false }
+    fn signature_header(&self, _: NativeSignatureId) -> native_signatures::NativeSignatureHeader { panic!("native signature provider is not installed") }
+    fn overload_signatures(&self, _: NativeFunctionId) -> Vec<NativeSignatureId> { Vec::new() }
+    fn signature_parameters(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<SigParam> { panic!("native signature provider is not installed") }
+    fn signature_type_parameters(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<TypeId> { Vec::new() }
+    fn signature_outer_type_parameters(&self, _: NativeSignatureId) -> Vec<NativeTypeParamId> { Vec::new() }
+    fn signature_return_pack_result(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> NativePackResult { panic!("native signature provider is not installed") }
+    fn circular_signature_return(&self, _: NativeSignatureId) {}
+    fn signature_return_type_too_deep(&self, _: NativeSignatureId) {}
     fn contains_function(&self, declaration: NativeFunctionId) -> bool;
     fn parameters(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> Vec<SigParam>;
     fn type_parameters(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Vec<TypeId> {

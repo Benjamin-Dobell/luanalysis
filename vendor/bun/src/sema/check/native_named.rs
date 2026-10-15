@@ -23,7 +23,7 @@
 
 use crate::atom::Atom;
 use crate::check::{Checker, Query};
-use crate::types::{CloneIn, MapperId, NativeFunctionId, NativeTableKey, NativeTypeParamId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
+use crate::types::{CloneIn, MapperId, NativeFunctionId, NativeSignatureId, NativeTableKey, NativeTypeParamId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
 use super::native_tables::{NativeTableAccessKey, NativeTableError};
 use super::task::Stored;
 use crate::util::FxHashMap;
@@ -48,6 +48,7 @@ pub struct NativeTypeMemberId {
 pub enum NativeTypeDeclarationOwner {
     Function(NativeFunctionId),
     NamedType(NativeTypeDeclarationId),
+    Signature(NativeSignatureId),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -162,6 +163,7 @@ pub trait NativeTypeDeclarationProvider {
     /// Own declarations plus potential explicit-owner augmentations; the backend validates each
     /// original owner candidate before publishing or inheriting its member origin.
     fn type_declaration_members(&self, declaration: NativeTypeDeclarationId) -> Vec<NativeTypeMemberId>;
+    fn type_declaration_call_signatures(&self, _: NativeTypeDeclarationId) -> Vec<NativeSignatureId> { Vec::new() }
 
     /// Alias target only. Record/class/module heads are created by the checker from their header
     /// before it requests members, rather than supplied as an eagerly expanded source table.
@@ -221,7 +223,7 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_type_declaration_provider = Some(provider);
     }
 
-    fn native_named_provider(&self, declaration: NativeTypeDeclarationId) -> Result<&'p dyn NativeTypeDeclarationProvider, NativeNamedTypeError> {
+    pub(super) fn native_named_provider(&self, declaration: NativeTypeDeclarationId) -> Result<&'p dyn NativeTypeDeclarationProvider, NativeNamedTypeError> {
         self.native_type_declaration_provider.filter(|p| p.contains_type_declaration(declaration))
             .ok_or(NativeNamedTypeError::InvalidDeclaration(declaration))
     }
@@ -442,6 +444,17 @@ impl<'p, 's> Checker<'p, 's> {
         }
         if let Err(error) = result { self.report_native_named(error) }
         result
+    }
+
+    /// Callable named objects keep their original signature view in recursive
+    /// relations; exact Lua fields/keys still use the resolved table view.
+    pub(super) fn native_object_relation_view(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+        let resolved = self.native_object_resolved(ty)?;
+        if let TypeData::NativeObject(reference) = self.data(ty)
+            && !self.native_named_provider(reference.declaration)?.type_declaration_call_signatures(reference.declaration).is_empty() {
+            return Ok(ty);
+        }
+        Ok(resolved)
     }
 
     fn native_object_resolved_uncached(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {

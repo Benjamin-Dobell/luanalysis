@@ -41,6 +41,7 @@ pub enum ObjectDeclarationForm {
 pub enum TypeDeclarationOwner {
     Function(NativeFunctionKey),
     NamedType(NativeTypeDeclarationKey),
+    Signature(super::NativeSignatureKey),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,6 +159,9 @@ fn source_kind(kind: NativeTypeDeclarationKind) -> TypeDeclarationKind {
 }
 
 impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_, P> {
+    fn type_declaration_call_signatures(&self, key: NativeTypeDeclarationId) -> Vec<bun_sema::types::NativeSignatureId> {
+        self.provider.type_declaration_call_signatures(source_declaration(key)).into_iter().map(super::core_signature_key).collect()
+    }
     fn contains_type_declaration(&self, key: NativeTypeDeclarationId) -> bool {
         self.provider
             .contains_type_declaration(source_declaration(key))
@@ -309,6 +313,7 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
                 TypeDeclarationOwner::NamedType(key) => {
                     NativeTypeDeclarationOwner::NamedType(core_declaration(key))
                 }
+                TypeDeclarationOwner::Signature(key) => NativeTypeDeclarationOwner::Signature(super::core_signature_key(key)),
             })
     }
     fn type_declaration_error(&self, checker: &mut Checker<'_, '_>, error: NativeNamedTypeError) {

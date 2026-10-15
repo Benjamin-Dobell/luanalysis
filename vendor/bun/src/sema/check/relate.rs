@@ -694,7 +694,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `isEmptyResolvedType` of the resolved members of `ty`.
     fn is_empty_resolved_type(&mut self, ty: TypeId) -> bool {
-        let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
+        let ty = match self.native_object_relation_view(ty) { Ok(ty) => ty, Err(_) => return false };
         if let TypeData::NativeTable(table) = self.data(ty) {
             if table.nominal_origin.is_some() { return false }
             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
@@ -721,7 +721,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// once something else has resolved them (`ObjectFlagsMembersResolved`), or is instantiating
     /// them: until that is done there are none.
     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
-        let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
+        let ty = match self.native_object_relation_view(ty) { Ok(ty) => ty, Err(_) => return false };
         if let TypeData::NativeTable(table) = self.data(ty) {
             if table.nominal_origin.is_some() { return false }
             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
@@ -2862,7 +2862,12 @@ impl<'p, 's> Checker<'p, 's> {
         let (source, target) = (self.erased_sig(implementation), self.erased_sig(overload));
         let (source_return, target_return) = (self.sig_return(source), self.sig_return(target));
         // Their return types must be related in one direction or the other.
-        if target_return != TypeId::VOID
+        if self.sig_has_native_result_pack(target) {
+            let source_pack = self.sig_declared_result_pack_contract(source).unwrap_or_else(|| self.sig_result_pack(source));
+            let target_pack = self.sig_result_pack(target);
+            let ignored_return = target_return == TypeId::VOID || self.native_pack_count_bounds(target_pack) == (0, Some(0));
+            if !ignored_return && !self.native_pack_assignable(target_pack, source_pack) && !self.native_pack_assignable(source_pack, target_pack) { return false; }
+        } else if target_return != TypeId::VOID
             && !self.is_assignable(target_return, source_return)
             && !self.is_assignable(source_return, target_return)
         {
@@ -3128,7 +3133,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// `isWeakType`: properties, all of them optional, and nothing else.
     pub(super) fn is_weak_type(&mut self, t: TypeId) -> bool {
         if self.native_nominal_origin(t).is_some() { return false }
-        let t = match self.native_object_resolved(t) { Ok(ty) => ty, Err(_) => return false };
+        let t = match self.native_object_relation_view(t) { Ok(ty) => ty, Err(_) => return false };
         match self.data(t) {
             TypeData::NativeTable(table) => !table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty()
                 && table.fields.iter().all(|field| field.optional),
@@ -5239,9 +5244,15 @@ impl<'p, 's> Checker<'p, 's> {
         state: u8,
         shared: &mut WorkerState,
     ) -> Ternary {
-        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
-        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
+        let source = match self.native_object_relation_view(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
+        let target = match self.native_object_relation_view(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
         let (sd, td) = (self.data(source), self.data(target));
+        if matches!(sd, TypeData::NativeObject(_)) && matches!(td, TypeData::NativeObject(_)) {
+            let Some(source_table) = self.native_table_object_description(source) else { return Ternary::FALSE };
+            let Some(target_table) = self.native_table_object_description(target) else { return Ternary::FALSE };
+            let result = self.native_tables_related::<REPORT>(r, &source_table, &target_table, state);
+            if !result.holds() { return result; }
+        }
         let relation = r.relation;
         let target_is_mapped = is_mapped_kind(td);
         // `isPartialMappedType(target) && isEmptyObjectType(source)`
@@ -6346,7 +6357,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// `SignatureFlagsAbstract`
     pub(super) fn is_abstract_signature(&self, sig: SigId) -> bool {
         match *self.types().sig(sig) {
-            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } => false,
+            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } | SigData::NativeDeclarationSignature { .. } => false,
             // `getDefaultConstructSignatures`, `getSignatureFromDeclaration`: of several class
             // declarations with one name the first is used.
             SigData::Construct { class, .. } | SigData::DefaultConstruct { class, .. } => self
@@ -6660,6 +6671,7 @@ impl<'p, 's> Checker<'p, 's> {
             c.types().mapper(pairs)
         };
         let data = match *self.types().sig(sig) {
+            SigData::NativeDeclarationSignature { declaration, mapper, implementation } => SigData::NativeDeclarationSignature { declaration, mapper: extended(self, mapper), implementation },
             SigData::Native { declaration, mapper } => SigData::Native {
                 declaration,
                 mapper: extended(self, mapper),
@@ -6787,6 +6799,14 @@ impl<'p, 's> Checker<'p, 's> {
     /// `getSignatureInstantiation` apply them to a signature that has its outer mapping already.
     fn sig_target(&mut self, sig: SigId) -> Option<SigId> {
         match *self.types().sig(sig) {
+            SigData::NativeDeclarationSignature { declaration, mapper, implementation } => {
+                let declared = self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper: MapperId::IDENTITY, implementation });
+                let own = self.sig_type_params(declared);
+                if own.iter().all(|&param| self.types().map(mapper, param).is_none()) { return (declared != sig).then_some(declared); }
+                let outer = self.types().mapping(mapper).iter().copied().filter(|pair| !own.contains(&pair.0)).collect();
+                let outer = self.types().mapper(outer);
+                Some(self.instantiate_sig(declared, outer))
+            }
             SigData::Native { declaration, mapper } => {
                 let declared = self.types().intern_sig(SigData::Native {
                     declaration,
@@ -7264,13 +7284,13 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let packed = self.sig_has_native_result_pack(target);
         let target_return = if packed {
-            self.non_circular_result_pack_of_signature(target).ty
+            self.sig_declared_result_pack_contract(target).unwrap_or_else(|| self.non_circular_result_pack_of_signature(target)).ty
         } else { self.non_circular_return_type_of_signature(target) };
         if target_return == TypeId::VOID || target_return == TypeId::ANY {
             return result;
         }
         let source_return = if packed {
-            self.non_circular_result_pack_of_signature(source).ty
+            self.sig_declared_result_pack_contract(source).unwrap_or_else(|| self.non_circular_result_pack_of_signature(source)).ty
         } else { self.non_circular_return_type_of_signature(source) };
         if let Some(expected) = self.sig_predicate(target) {
             match self.sig_predicate(source) {

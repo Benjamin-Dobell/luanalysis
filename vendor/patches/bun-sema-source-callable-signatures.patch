@@ -1,0 +1,719 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -203,6 +203,8 @@
+ 
+ #[derive(Copy, Clone, PartialEq, Eq)]
+ enum SigSymbol {
++    NativeStandalone(NativeSignatureId),
++    Native(super::native_signatures::NativeSignatureOwner),
+     Function(Sym),
+     Member(Sym, MemberKind, Option<Atom>),
+     Literal(FileId, MemberOwner, MemberKind, Option<Atom>),
+@@ -211,6 +213,7 @@
+ 
+ #[derive(Copy, Clone, PartialEq, Eq)]
+ enum SigParent {
++    Native(super::native_signatures::NativeSignatureSite),
+     Block(FileId, Parent),
+     Type(FileId, MemberOwner),
+     Lone(FileId, FnId),
+@@ -273,7 +276,7 @@
+ 
+     /// The active lexical function value, retaining its environment and contextual facet.
+     pub fn native_captured_function_value(&self, context: NativeCapturedFunctionContext) -> TypeId {
+-        self.type_of_signature(context.signature, false)
++        self.native_function_overload_type(context.signature)
+     }
+ 
+     /// Apply a signature substitution once to a written source type used inside its body.
+@@ -325,7 +328,7 @@
+             mapper: self.types().mapper(outer),
+             environment: self.list(&environment),
+         });
+-        Some(self.type_of_signature(sig, false))
++        Some(self.native_function_overload_type(sig))
+     }
+ 
+     pub(super) fn with_native_function_context<R>(
+@@ -360,7 +363,7 @@
+         expected: TypeId,
+         mode: CheckMode,
+     ) -> Option<TypeId> {
+-        let signature = self.single_call_signature(function)?;
++        let signature = self.native_implementation_signature(function)?;
+         let (declaration, mapper) = self.sig_native_decl(signature)?;
+         let environment = match self.types().sig(signature) {
+             SigData::NativeCaptured { environment, .. }
+@@ -401,7 +404,7 @@
+             context,
+             environment,
+         });
+-        Some(self.type_of_signature(sig, false))
++        Some(self.native_function_overload_type(sig))
+     }
+ 
+     pub fn contextual_parameter_type(&mut self, context: NativeFunctionContext, index: usize) -> Option<TypeId> {
+@@ -485,8 +488,6 @@
+         let candidates = self.candidates_in_order(&signatures);
+         let error = if candidates.is_empty() {
+             Some(ResolvedTypeCallError::NotCallable)
+-        } else if candidates.len() != 1 {
+-            Some(ResolvedTypeCallError::UnsupportedOverloads)
+         } else {
+             None
+         };
+@@ -521,7 +522,7 @@
+                 errors: vec![error],
+             };
+         }
+-        let is_single_non_generic = self.sig_type_params(sig).is_empty();
++        let is_single_non_generic = candidates.len() == 1 && self.sig_type_params(sig).is_empty();
+         let has_context_sensitive = args.iter().any(|arg| match arg {
+             Arg::Native(expression) | Arg::NativePack(expression) => self.native_function_provider
+                 .is_some_and(|provider| provider.is_context_sensitive(*expression)),
+@@ -541,11 +542,22 @@
+             candidate_for_argument_arity_error: None,
+             candidate_for_type_argument_error: None,
+         };
+-        let chosen = self.choose_overload(&mut state, Relation::Assignable);
++        let mut chosen = if candidates.len() > 1 { self.choose_overload(&mut state, Relation::Subtype) } else { None };
++        if chosen.is_none() {
++            chosen = self.choose_overload(&mut state, Relation::Assignable);
++        }
+         let selected = chosen.unwrap_or_else(|| self.candidate_for_overload_failure(&state));
+         let mut errors = Vec::new();
+         if chosen.is_none() {
+-            let type_params = self.sig_type_params(sig);
++            let argument_candidate = state.candidates_for_argument_error.last().copied().and_then(|failed| {
++                state.candidates.iter().copied().find(|&candidate| {
++                    self.types().sig_origin(candidate) == self.types().sig_origin(failed)
++                        || self.sig_native_decl(candidate).zip(self.sig_native_decl(failed)).is_some_and(|(left, right)| left.0 == right.0)
++                        || self.sig_native_signature_decl(candidate).zip(self.sig_native_signature_decl(failed)).is_some_and(|(left, right)| left.0 == right.0)
++                })
++            });
++            let diagnostic_sig = state.candidate_for_type_argument_error.or(argument_candidate).unwrap_or(sig);
++            let type_params = self.sig_type_params(diagnostic_sig);
+             if !self.has_correct_type_argument_arity(&type_params, type_args.len()) {
+                 errors.push(ResolvedTypeCallError::TypeArgumentArity {
+                     actual: type_args.len(),
+@@ -553,9 +565,9 @@
+                     max: type_params.len(),
+                 });
+             } else if state.candidate_for_type_argument_error.is_some() {
+-                let filled = self.fill_sig_type_args(sig, &type_params, type_args);
++                let filled = self.fill_sig_type_args(diagnostic_sig, &type_params, type_args);
+                 for index in 0..type_args.len().min(type_params.len()) {
+-                    if let Some((source, target)) = self.type_argument_constraint_error(sig, &type_params, &filled, index) {
++                    if let Some((source, target)) = self.type_argument_constraint_error(diagnostic_sig, &type_params, &filled, index) {
+                         errors.push(ResolvedTypeCallError::TypeArgument { index, source, target });
+                         break;
+                     }
+@@ -2903,7 +2915,11 @@
+                     let (symbol, parent) = self.sig_home(file, func, before);
+                     (Some(symbol), Some(parent))
+                 }
+-                None => (None, None),
++                None => if let Some((signature, _)) = self.sig_native_signature_decl(declared) {
++                    let header = self.native_signature_provider_for(signature).signature_header(signature);
++                    let symbol = if header.owner == super::native_signatures::NativeSignatureOwner::Standalone { SigSymbol::NativeStandalone(signature) } else { SigSymbol::Native(header.owner) };
++                    (Some(symbol), Some(SigParent::Native(header.site)))
++                } else { (None, None) },
+             };
+             match &last {
+                 Some((last_symbol, last_parent))
+@@ -2919,7 +2935,9 @@
+                 _ => index = cutoff,
+             }
+             last = Some((symbol, parent));
+-            let at = if declaration.is_some_and(|(file, func)| self.has_literal_types(file, func)) {
++            let has_literal = declaration.is_some_and(|(file, func)| self.has_literal_types(file, func))
++                || self.sig_native_signature_decl(declared).is_some_and(|(signature, _)| self.native_signature_provider_for(signature).signature_header(signature).has_direct_literal_parameter);
++            let at = if has_literal {
+                 specialized += 1;
+                 cutoff += 1;
+                 specialized - 1
+diff --git a/src/sema/check/decl.rs b/src/sema/check/decl.rs
+--- a/src/sema/check/decl.rs
++++ b/src/sema/check/decl.rs
+@@ -4515,6 +4515,17 @@
+     #[inline(never)]
+     fn sig_type_params_of_declaration(&mut self, sig: SigId) -> Vec<TypeId> {
+         match self.types().sig(sig) {
++            SigData::NativeDeclarationSignature { declaration, mapper, .. } => {
++                let (declaration, mapper) = (*declaration, *mapper);
++                let provider = self.native_signature_provider_for(declaration);
++                provider.signature_type_parameters(self, declaration).into_iter().filter_map(|param| match self.types().map(mapper, param) {
++                    None => Some(param),
++                    Some(actual) => match (self.native_type_parameter_decl(param), self.native_type_parameter_decl(actual)) {
++                        (Some((declared, _)), Some((cloned, around))) if declared == cloned && around != MapperId::IDENTITY => Some(actual),
++                        _ => None,
++                    },
++                }).collect()
++            }
+             SigData::Native { declaration, mapper }
+             | SigData::NativeCaptured { declaration, mapper, .. }
+             | SigData::NativeContextual { declaration, mapper, .. } => {
+@@ -4613,6 +4624,11 @@
+ 
+     /// Register a lazy function type without demanding its parameters or return type.
+     pub fn native_function_type(&self, declaration: NativeFunctionId) -> Option<TypeId> {
++        let sig = self.native_function_implementation_signature(declaration)?;
++        Some(self.native_function_overload_type(sig))
++    }
++
++    pub fn native_function_implementation_signature(&self, declaration: NativeFunctionId) -> Option<SigId> {
+         if !self.native_function_provider?.contains_function(declaration) {
+             return None;
+         }
+@@ -4627,7 +4643,7 @@
+                 })
+                 .collect()),
+         });
+-        Some(self.type_of_signature(sig, false))
++        Some(sig)
+     }
+ 
+     /// `getDefaultConstructSignatures`: the base signature that the default construct signature `sig` clones, instantiated with the
+@@ -4874,6 +4890,18 @@
+     /// `sig_params` for a signature that was not queried recently.
+     fn sig_params_not_recent(&mut self, sig: SigId) -> List<'p, SigParam> {
+         let (file, func, mapper) = match self.types().sig(sig) {
++            SigData::NativeDeclarationSignature { declaration, mapper, .. } => {
++                if let Some(kept) = self.p.sig_params.get_ref(&self.task, &sig) { return self.cached_sig_params(sig, kept); }
++                let (declaration, mapper) = (*declaration, *mapper);
++                let scope = self.begin_scope();
++                let provider = self.native_signature_provider_for(declaration);
++                let params = provider.signature_parameters(self, declaration).into_iter().map(|param| SigParam { ty: self.instantiate(param.ty, mapper), ..param }).collect::<Vec<_>>();
++                if let Ok(stored) = self.end_scope_by_counters(scope) {
++                    let kept = self.p.sig_params.insert_ref(&self.task, sig, self.list(&params), stored);
++                    return self.cached_sig_params(sig, kept.1);
++                }
++                return List::Own(params);
++            }
+             SigData::Native { declaration, mapper }
+             | SigData::NativeCaptured { declaration, mapper, .. }
+             | SigData::NativeContextual { declaration, mapper, .. } => {
+@@ -5148,6 +5176,11 @@
+ 
+     pub(super) fn signature_return_type(&mut self, sig: SigId) -> TypeId {
+         match *self.types().sig(sig) {
++            SigData::NativeDeclarationSignature { declaration, mapper, .. } => self.resolve_return_type(sig, |c| {
++                let provider = c.native_signature_provider_for(declaration);
++                let declared = provider.signature_return_pack_result(c, declaration);
++                c.resolve_native_pack_result(declared, mapper)
++            }),
+             SigData::Native { declaration, mapper } => self.resolve_return_type(sig, |c| {
+                 let provider = c.native_provider_for(declaration);
+                 if provider.has_result_pack(declaration) {
+@@ -5323,6 +5356,9 @@
+             {
+                 return self.native_pack_with_implicit_empty(contract).ty;
+             }
++            if !self.found_cycle && let Some((declaration, _)) = self.sig_native_signature_decl(sig) {
++                self.native_signature_provider_for(declaration).signature_return_type_too_deep(declaration);
++            }
+             if !self.found_cycle
+                 && let Some((declaration, _)) = self.sig_native_decl(sig)
+             {
+@@ -5348,6 +5384,8 @@
+                 self.report_circular_return_type(Some(Query::ReturnOfSignature(sig)), file, func);
+             } else if let Some((declaration, _)) = self.sig_native_decl(self.types().sig_origin(sig)) {
+                 self.native_provider_for(declaration).circular_return_type(declaration);
++            } else if let Some((declaration, _)) = self.sig_native_signature_decl(self.types().sig_origin(sig)) {
++                self.native_signature_provider_for(declaration).circular_signature_return(declaration);
+             }
+             return (self.p.resolved_return_types).insert(&self.task, sig, TypeId::ANY, stored);
+         }
+diff --git a/src/sema/check/explain_relation.rs b/src/sema/check/explain_relation.rs
+--- a/src/sema/check/explain_relation.rs
++++ b/src/sema/check/explain_relation.rs
+@@ -525,6 +525,7 @@
+                     base: Some(inner), ..
+                 } => inner,
+                 SigData::Native { .. }
++                | SigData::NativeDeclarationSignature { .. }
+                 | SigData::NativeContextual { .. }
+                 | SigData::NativeCaptured { .. }
+                 | SigData::DefaultConstruct { base: None, .. }
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -3250,6 +3250,7 @@
+                         left.extend(environment.iter().map(|binding| binding.ty));
+                     }
+                     SigData::Native { mapper, .. }
++                    | SigData::NativeDeclarationSignature { mapper, .. }
+                     | SigData::Decl { mapper, .. }
+                     | SigData::Construct { mapper, .. } => {
+                         left.extend(values(*mapper))
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -1045,7 +1045,7 @@
+     /// for `sig`, which has the symbol of `sig.declaration`: whether that is a function, a method
+     /// or a type literal. A call or construct signature, a constructor and an accessor are not.
+     pub(super) fn has_instantiable_symbol(&self, sig: SigId) -> bool {
+-        if self.sig_native_decl(self.types().sig_origin(sig)).is_some() {
++        if self.sig_native_decl(self.types().sig_origin(sig)).is_some() || self.sig_native_signature_decl(self.types().sig_origin(sig)).is_some() {
+             return true;
+         }
+         let declared = self.sig_decl(self.types().sig_origin(sig));
+@@ -1122,6 +1122,13 @@
+             return sig;
+         }
+         let data = match self.types().sig(sig) {
++            SigData::NativeDeclarationSignature { declaration, mapper: own, implementation } => {
++                let declaration = *declaration;
++                let own = *own;
++                let implementation = *implementation;
++                let declared = self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper: MapperId::IDENTITY, implementation: None });
++                SigData::NativeDeclarationSignature { declaration, mapper: self.native_signature_mapper(declared, own, mapper), implementation: implementation.map(|sig| self.instantiate_sig(sig, mapper)) }
++            }
+             SigData::Native { declaration, mapper: own } => SigData::Native {
+                 declaration: *declaration,
+                 mapper: self.native_sig_mapper(*declaration, *own, mapper),
+@@ -1387,6 +1394,10 @@
+             declaration,
+             mapper: MapperId::IDENTITY,
+         });
++        self.native_signature_mapper(declared, own, second)
++    }
++
++    fn native_signature_mapper(&mut self, declared: SigId, own: MapperId, second: MapperId) -> MapperId {
+         let type_params = self.sig_type_params(declared).into_vec();
+         let is_own = |c: &Self, param: TypeId| {
+             c.native_type_parameter_decl(param).is_some_and(|(id, mapper)| {
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -58,6 +58,7 @@
+ pub mod native_iterators;
+ pub mod native_packs;
+ pub mod native_assertions;
++pub mod native_signatures;
+ pub mod native_named;
+ mod grammarchecks;
+ mod infer;
+@@ -137,6 +138,15 @@
+ /// Language-specific declaration demands executed in the same checker and query scope.
+ /// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
+ pub trait NativeFunctionProvider {
++    fn contains_signature(&self, _: NativeSignatureId) -> bool { false }
++    fn signature_header(&self, _: NativeSignatureId) -> native_signatures::NativeSignatureHeader { panic!("native signature provider is not installed") }
++    fn overload_signatures(&self, _: NativeFunctionId) -> Vec<NativeSignatureId> { Vec::new() }
++    fn signature_parameters(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<SigParam> { panic!("native signature provider is not installed") }
++    fn signature_type_parameters(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<TypeId> { Vec::new() }
++    fn signature_outer_type_parameters(&self, _: NativeSignatureId) -> Vec<NativeTypeParamId> { Vec::new() }
++    fn signature_return_pack_result(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> NativePackResult { panic!("native signature provider is not installed") }
++    fn circular_signature_return(&self, _: NativeSignatureId) {}
++    fn signature_return_type_too_deep(&self, _: NativeSignatureId) {}
+     fn contains_function(&self, declaration: NativeFunctionId) -> bool;
+     fn parameters(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> Vec<SigParam>;
+     fn type_parameters(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Vec<TypeId> {
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -23,7 +23,7 @@
+ 
+ use crate::atom::Atom;
+ use crate::check::{Checker, Query};
+-use crate::types::{CloneIn, MapperId, NativeFunctionId, NativeTableKey, NativeTypeParamId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
++use crate::types::{CloneIn, MapperId, NativeFunctionId, NativeSignatureId, NativeTableKey, NativeTypeParamId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
+ use super::native_tables::{NativeTableAccessKey, NativeTableError};
+ use super::task::Stored;
+ use crate::util::FxHashMap;
+@@ -48,6 +48,7 @@
+ pub enum NativeTypeDeclarationOwner {
+     Function(NativeFunctionId),
+     NamedType(NativeTypeDeclarationId),
++    Signature(NativeSignatureId),
+ }
+ 
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+@@ -162,6 +163,7 @@
+     /// Own declarations plus potential explicit-owner augmentations; the backend validates each
+     /// original owner candidate before publishing or inheriting its member origin.
+     fn type_declaration_members(&self, declaration: NativeTypeDeclarationId) -> Vec<NativeTypeMemberId>;
++    fn type_declaration_call_signatures(&self, _: NativeTypeDeclarationId) -> Vec<NativeSignatureId> { Vec::new() }
+ 
+     /// Alias target only. Record/class/module heads are created by the checker from their header
+     /// before it requests members, rather than supplied as an eagerly expanded source table.
+@@ -221,7 +223,7 @@
+         self.native_type_declaration_provider = Some(provider);
+     }
+ 
+-    fn native_named_provider(&self, declaration: NativeTypeDeclarationId) -> Result<&'p dyn NativeTypeDeclarationProvider, NativeNamedTypeError> {
++    pub(super) fn native_named_provider(&self, declaration: NativeTypeDeclarationId) -> Result<&'p dyn NativeTypeDeclarationProvider, NativeNamedTypeError> {
+         self.native_type_declaration_provider.filter(|p| p.contains_type_declaration(declaration))
+             .ok_or(NativeNamedTypeError::InvalidDeclaration(declaration))
+     }
+@@ -444,6 +446,17 @@
+         result
+     }
+ 
++    /// Callable named objects keep their original signature view in recursive
++    /// relations; exact Lua fields/keys still use the resolved table view.
++    pub(super) fn native_object_relation_view(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
++        let resolved = self.native_object_resolved(ty)?;
++        if let TypeData::NativeObject(reference) = self.data(ty)
++            && !self.native_named_provider(reference.declaration)?.type_declaration_call_signatures(reference.declaration).is_empty() {
++            return Ok(ty);
++        }
++        Ok(resolved)
++    }
++
+     fn native_object_resolved_uncached(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {
+         let declaration = reference.declaration;
+         let provider = self.native_named_provider(declaration)?;
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+--- a/src/sema/check/native_packs.rs
++++ b/src/sema/check/native_packs.rs
+@@ -125,6 +125,7 @@
+ 
+     pub fn sig_has_native_result_pack(&self, sig: SigId) -> bool {
+         match self.types().sig(sig) {
++            SigData::NativeDeclarationSignature { .. } => true,
+             SigData::WithNativeResultPack { .. } => true,
+             SigData::Native { declaration, .. }
+             | SigData::NativeCaptured { declaration, .. }
+diff --git a/src/sema/check/native_signatures.rs b/src/sema/check/native_signatures.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/native_signatures.rs
+@@ -0,0 +1,100 @@
++//! Original written callable heads and their independent runtime implementations.
++
++use super::{Checker, NativeFunctionProvider};
++use super::native_named::NativeTypeDeclarationId;
++use crate::types::{MapperId, NativeFunctionId, NativeSignatureId, Shape, SigData, SigId, TypeId};
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeSignatureOwner {
++    Standalone,
++    Function(NativeFunctionId),
++    NamedType(NativeTypeDeclarationId),
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeSignatureSite {
++    pub snapshot: u64,
++    pub index: u32,
++}
++
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeSignatureHeader {
++    pub owner: NativeSignatureOwner,
++    pub site: NativeSignatureSite,
++    pub parent: Option<NativeSignatureId>,
++    /// Matches TS's direct, unparenthesized literal parameter syntax flag.
++    pub has_direct_literal_parameter: bool,
++}
++
++impl<'p, 's> Checker<'p, 's> {
++    pub(super) fn native_signature_provider_for(&self, declaration: NativeSignatureId) -> &'p dyn NativeFunctionProvider {
++        let provider = self.native_function_provider.expect("native signature without a provider");
++        assert!(provider.contains_signature(declaration), "foreign native signature identity");
++        provider
++    }
++
++    pub fn native_signature_type(&mut self, declaration: NativeSignatureId) -> Option<TypeId> {
++        if !self.native_function_provider?.contains_signature(declaration) { return None; }
++        let provider = self.native_signature_provider_for(declaration);
++        let outer = provider.signature_outer_type_parameters(declaration).into_iter().map(|id| {
++            let param = self.cloned_native_type_param(id, MapperId::IDENTITY);
++            (param, param)
++        }).collect();
++        let sig = self.types().intern_sig(SigData::NativeDeclarationSignature {
++            declaration, mapper: self.types().mapper(outer), implementation: None,
++        });
++        Some(self.type_of_signature(sig, false))
++    }
++
++    pub(super) fn native_function_overload_type(&self, implementation: SigId) -> TypeId {
++        let Some((function, mapper)) = self.sig_native_decl(implementation) else { return self.type_of_signature(implementation, false) };
++        let declarations = self.native_function_provider.expect("native function provider").overload_signatures(function);
++        if declarations.is_empty() { return self.type_of_signature(implementation, false); }
++        let mut shape = Shape::new_in(self.arena);
++        for declaration in declarations {
++            self.native_signature_provider_for(declaration);
++            shape.call.push(self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper, implementation: Some(implementation) }));
++        }
++        self.synth(shape)
++    }
++
++    pub fn native_implementation_signature(&mut self, ty: TypeId) -> Option<SigId> {
++        let signatures = self.signatures(ty, false);
++        let mut implementation = None;
++        for &signature in signatures.iter() {
++            let signature = match *self.types().sig(signature) {
++                SigData::NativeDeclarationSignature { implementation: Some(runtime), .. } => runtime,
++                SigData::NativeDeclarationSignature { implementation: None, .. } => return None,
++                _ if self.sig_native_decl(signature).is_some() => signature,
++                _ => return None,
++            };
++            if implementation.is_some_and(|prior| prior != signature) { return None; }
++            implementation = Some(signature);
++        }
++        implementation
++    }
++
++    pub fn native_implementation_type(&mut self, ty: TypeId) -> Option<TypeId> {
++        let implementation = self.native_implementation_signature(ty)?;
++        Some(self.type_of_signature(implementation, false))
++    }
++
++    pub fn native_call_signature_types(&mut self, ty: TypeId) -> Vec<TypeId> {
++        let signatures = self.signatures(ty, false);
++        signatures.iter().map(|&sig| self.type_of_signature(sig, false)).collect()
++    }
++
++    pub fn sig_native_signature_decl(&self, sig: SigId) -> Option<(NativeSignatureId, MapperId)> {
++        match *self.types().sig(sig) {
++            SigData::NativeDeclarationSignature { declaration, mapper, .. } => Some((declaration, mapper)),
++            SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.sig_native_signature_decl(inner),
++            _ => None,
++        }
++    }
++
++    pub fn native_signature_implementation_compatible(&mut self, declaration: NativeSignatureId, implementation: TypeId) -> bool {
++        let Some(overload) = self.native_signature_type(declaration).and_then(|ty| self.single_call_signature(ty)) else { return false; };
++        let Some(implementation) = self.native_implementation_signature(implementation).or_else(|| self.single_call_signature(implementation)) else { return false; };
++        self.is_implementation_compatible_with_overload(implementation, overload)
++    }
++}
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -5494,7 +5494,7 @@
+                 let inner = *inner;
+                 return self.signature_parameters(inner);
+             }
+-            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } => {
++            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } | SigData::NativeDeclarationSignature { .. } => {
+                 let params = self.c.sig_params(signature);
+                 let mut list = Vec::with_capacity(params.len());
+                 for (i, parameter) in params.iter().enumerate() {
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -694,7 +694,7 @@
+ 
+     /// `isEmptyResolvedType` of the resolved members of `ty`.
+     fn is_empty_resolved_type(&mut self, ty: TypeId) -> bool {
+-        let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
++        let ty = match self.native_object_relation_view(ty) { Ok(ty) => ty, Err(_) => return false };
+         if let TypeData::NativeTable(table) = self.data(ty) {
+             if table.nominal_origin.is_some() { return false }
+             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
+@@ -721,7 +721,7 @@
+     /// once something else has resolved them (`ObjectFlagsMembersResolved`), or is instantiating
+     /// them: until that is done there are none.
+     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
+-        let ty = match self.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return false };
++        let ty = match self.native_object_relation_view(ty) { Ok(ty) => ty, Err(_) => return false };
+         if let TypeData::NativeTable(table) = self.data(ty) {
+             if table.nominal_origin.is_some() { return false }
+             return table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty();
+@@ -2862,7 +2862,12 @@
+         let (source, target) = (self.erased_sig(implementation), self.erased_sig(overload));
+         let (source_return, target_return) = (self.sig_return(source), self.sig_return(target));
+         // Their return types must be related in one direction or the other.
+-        if target_return != TypeId::VOID
++        if self.sig_has_native_result_pack(target) {
++            let source_pack = self.sig_declared_result_pack_contract(source).unwrap_or_else(|| self.sig_result_pack(source));
++            let target_pack = self.sig_result_pack(target);
++            let ignored_return = target_return == TypeId::VOID || self.native_pack_count_bounds(target_pack) == (0, Some(0));
++            if !ignored_return && !self.native_pack_assignable(target_pack, source_pack) && !self.native_pack_assignable(source_pack, target_pack) { return false; }
++        } else if target_return != TypeId::VOID
+             && !self.is_assignable(target_return, source_return)
+             && !self.is_assignable(source_return, target_return)
+         {
+@@ -3128,7 +3133,7 @@
+     /// `isWeakType`: properties, all of them optional, and nothing else.
+     pub(super) fn is_weak_type(&mut self, t: TypeId) -> bool {
+         if self.native_nominal_origin(t).is_some() { return false }
+-        let t = match self.native_object_resolved(t) { Ok(ty) => ty, Err(_) => return false };
++        let t = match self.native_object_relation_view(t) { Ok(ty) => ty, Err(_) => return false };
+         match self.data(t) {
+             TypeData::NativeTable(table) => !table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty()
+                 && table.fields.iter().all(|field| field.optional),
+@@ -5239,9 +5244,15 @@
+         state: u8,
+         shared: &mut WorkerState,
+     ) -> Ternary {
+-        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
+-        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
++        let source = match self.native_object_relation_view(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
++        let target = match self.native_object_relation_view(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
+         let (sd, td) = (self.data(source), self.data(target));
++        if matches!(sd, TypeData::NativeObject(_)) && matches!(td, TypeData::NativeObject(_)) {
++            let Some(source_table) = self.native_table_object_description(source) else { return Ternary::FALSE };
++            let Some(target_table) = self.native_table_object_description(target) else { return Ternary::FALSE };
++            let result = self.native_tables_related::<REPORT>(r, &source_table, &target_table, state);
++            if !result.holds() { return result; }
++        }
+         let relation = r.relation;
+         let target_is_mapped = is_mapped_kind(td);
+         // `isPartialMappedType(target) && isEmptyObjectType(source)`
+@@ -6346,7 +6357,7 @@
+     /// `SignatureFlagsAbstract`
+     pub(super) fn is_abstract_signature(&self, sig: SigId) -> bool {
+         match *self.types().sig(sig) {
+-            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } => false,
++            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } | SigData::NativeDeclarationSignature { .. } => false,
+             // `getDefaultConstructSignatures`, `getSignatureFromDeclaration`: of several class
+             // declarations with one name the first is used.
+             SigData::Construct { class, .. } | SigData::DefaultConstruct { class, .. } => self
+@@ -6660,6 +6671,7 @@
+             c.types().mapper(pairs)
+         };
+         let data = match *self.types().sig(sig) {
++            SigData::NativeDeclarationSignature { declaration, mapper, implementation } => SigData::NativeDeclarationSignature { declaration, mapper: extended(self, mapper), implementation },
+             SigData::Native { declaration, mapper } => SigData::Native {
+                 declaration,
+                 mapper: extended(self, mapper),
+@@ -6787,6 +6799,14 @@
+     /// `getSignatureInstantiation` apply them to a signature that has its outer mapping already.
+     fn sig_target(&mut self, sig: SigId) -> Option<SigId> {
+         match *self.types().sig(sig) {
++            SigData::NativeDeclarationSignature { declaration, mapper, implementation } => {
++                let declared = self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper: MapperId::IDENTITY, implementation });
++                let own = self.sig_type_params(declared);
++                if own.iter().all(|&param| self.types().map(mapper, param).is_none()) { return (declared != sig).then_some(declared); }
++                let outer = self.types().mapping(mapper).iter().copied().filter(|pair| !own.contains(&pair.0)).collect();
++                let outer = self.types().mapper(outer);
++                Some(self.instantiate_sig(declared, outer))
++            }
+             SigData::Native { declaration, mapper } => {
+                 let declared = self.types().intern_sig(SigData::Native {
+                     declaration,
+@@ -7264,13 +7284,13 @@
+         }
+         let packed = self.sig_has_native_result_pack(target);
+         let target_return = if packed {
+-            self.non_circular_result_pack_of_signature(target).ty
++            self.sig_declared_result_pack_contract(target).unwrap_or_else(|| self.non_circular_result_pack_of_signature(target)).ty
+         } else { self.non_circular_return_type_of_signature(target) };
+         if target_return == TypeId::VOID || target_return == TypeId::ANY {
+             return result;
+         }
+         let source_return = if packed {
+-            self.non_circular_result_pack_of_signature(source).ty
++            self.sig_declared_result_pack_contract(source).unwrap_or_else(|| self.non_circular_result_pack_of_signature(source)).ty
+         } else { self.non_circular_return_type_of_signature(source) };
+         if let Some(expected) = self.sig_predicate(target) {
+             match self.sig_predicate(source) {
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -1389,10 +1389,18 @@
+                     self.shape_memo(ty, |c| c.build_reverse_mapped_shape(ty, source, mapped, of));
+                 Some((resolved, MapperId::IDENTITY))
+             }
+-            TypeData::NativeObject(_) => {
++            TypeData::NativeObject(reference) => {
++                let reference = *reference;
+                 let shape = self.shape_memo(ty, |c| {
+                     let resolved = match c.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return Shape::new_in(c.arena) };
+-                    c.members(resolved).map(|m| m.whole_shape().clone_in(c.arena)).unwrap_or_else(|| Shape::new_in(c.arena))
++                    let mut shape = c.members(resolved).map(|m| m.whole_shape().clone_in(c.arena)).unwrap_or_else(|| Shape::new_in(c.arena));
++                    if let Ok(provider) = c.native_named_provider(reference.declaration) {
++                        for declaration in provider.type_declaration_call_signatures(reference.declaration) {
++                            c.native_signature_provider_for(declaration);
++                            shape.call.push(c.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper: reference.mapper, implementation: None }));
++                        }
++                    }
++                    shape
+                 });
+                 Some((shape, MapperId::IDENTITY))
+             }
+@@ -8548,6 +8556,7 @@
+     pub(super) fn mapper_around_sig(&mut self, sig: SigId) -> MapperId {
+         match *self.types().sig(sig) {
+             SigData::Decl { mapper, .. }
++            | SigData::NativeDeclarationSignature { mapper, .. }
+             | SigData::Native { mapper, .. }
+             | SigData::NativeContextual { mapper, .. }
+             | SigData::NativeCaptured { mapper, .. }
+diff --git a/src/sema/check/symbols.rs b/src/sema/check/symbols.rs
+--- a/src/sema/check/symbols.rs
++++ b/src/sema/check/symbols.rs
+@@ -3843,7 +3843,7 @@
+                     return resolved;
+                 }
+             }
+-            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } => {
++            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } | SigData::NativeDeclarationSignature { .. } => {
+                 if let Some(resolved) = self.p.resolved_return_types.get(&self.task, &sig) {
+                     return if self.sig_has_native_result_pack(sig) {
+                         self.native_pack_slot(NativeResultPack { ty: resolved }, 0)
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -31,6 +31,12 @@
+ /// A function in a foreign frontend's source snapshot, independent of TS HIR ids.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeFunctionId {
++    pub snapshot: u64,
++    pub index: u32,
++}
++/// A written callable declaration, distinct from its optional runtime implementation.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub struct NativeSignatureId {
+     pub snapshot: u64,
+     pub index: u32,
+ }
+@@ -901,6 +907,12 @@
+ 
+ #[derive(PartialEq, Eq, Hash, Debug)]
+ pub enum SigData<'s> {
++    NativeDeclarationSignature {
++        declaration: NativeSignatureId,
++        mapper: MapperId,
++        /// Actual runtime implementation/capture capability, never a callable candidate.
++        implementation: Option<SigId>,
++    },
+     /// A declaration resolved on demand by the checker's native function provider.
+     Native {
+         declaration: NativeFunctionId,
+@@ -2502,6 +2514,7 @@
+                 environment.iter().fold(self.mapper_record(*mapper).1, |flags, binding| flags | self.object_flags(binding.ty))
+             }
+             SigData::Native { mapper, .. }
++            | SigData::NativeDeclarationSignature { mapper, .. }
+             | SigData::Decl { mapper, .. }
+             | SigData::DefaultConstruct { mapper, .. }
+             | SigData::Construct { mapper, .. } => self.mapper_record(*mapper).1,
+@@ -3309,6 +3322,7 @@
+     u64,
+     i64,
+     NativeFunctionId,
++    NativeSignatureId,
+     NativeTypeDeclarationId,
+     NativeTypeMemberId,
+     NativeTypeParamId,
+@@ -3488,6 +3502,7 @@
+     declaration
+ });
+ follow_enum!(SigData<'_> {
++    SigData::NativeDeclarationSignature { declaration, mapper, implementation } => (declaration, mapper, implementation),
+     SigData::Native { declaration, mapper } => (declaration, mapper),
+     SigData::NativeContextual { declaration, mapper, context, environment } => (declaration, mapper, context, environment),
+     SigData::NativeCaptured { declaration, mapper, environment } => (declaration, mapper, environment),
+@@ -3564,6 +3579,7 @@
+     TypeId,
+     SigId,
+     NativeFunctionId,
++    NativeSignatureId,
+     NativeTypeDeclarationId,
+     NativeTypeMemberId,
+     NativeObjectReference,
+@@ -3767,6 +3783,7 @@
+ });
+ clone_in_struct!(NativeTableData { nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+ clone_in_enum!(SigData {
++    NativeDeclarationSignature { declaration, mapper, implementation },
+     Native { declaration, mapper },
+     NativeContextual { declaration, mapper, context, environment },
+     NativeCaptured { declaration, mapper, environment },

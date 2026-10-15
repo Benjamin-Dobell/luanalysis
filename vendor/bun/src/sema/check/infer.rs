@@ -3250,6 +3250,7 @@ impl<'p, 's> Checker<'p, 's> {
                         left.extend(environment.iter().map(|binding| binding.ty));
                     }
                     SigData::Native { mapper, .. }
+                    | SigData::NativeDeclarationSignature { mapper, .. }
                     | SigData::Decl { mapper, .. }
                     | SigData::Construct { mapper, .. } => {
                         left.extend(values(*mapper))

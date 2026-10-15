@@ -3843,7 +3843,7 @@ impl<'p, 's> Checker<'p, 's> {
                     return resolved;
                 }
             }
-            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } => {
+            SigData::Native { .. } | SigData::NativeContextual { .. } | SigData::NativeCaptured { .. } | SigData::NativeDeclarationSignature { .. } => {
                 if let Some(resolved) = self.p.resolved_return_types.get(&self.task, &sig) {
                     return if self.sig_has_native_result_pack(sig) {
                         self.native_pack_slot(NativeResultPack { ty: resolved }, 0)

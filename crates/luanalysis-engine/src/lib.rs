@@ -16,6 +16,8 @@ pub use native_named::*;
 mod native_iterators;
 mod native_packs;
 pub use native_packs::*;
+mod native_signatures;
+pub use native_signatures::*;
 #[cfg(test)]
 mod native_pack_signature_tests;
 #[cfg(test)]
@@ -262,6 +264,7 @@ pub enum Type {
     Table(TableType),
     Function(FunctionType),
     NativeFunction(NativeFunctionKey),
+    NativeSignature(NativeSignatureKey),
     NativeTypeParameter(NativeTypeParameterKey),
     /// Original declaration reference. Import resolves transparent aliases in
     /// the native checker; lazy objects remain exact session capabilities.
@@ -283,6 +286,16 @@ pub trait NativeTypeProvider {
     fn function_declared_scalar_contract_in_capture(&self, key: NativeFunctionKey, _: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack> {
         self.function_declared_scalar_contract(key, queries)
     }
+    fn contains_signature(&self, _: NativeSignatureKey) -> bool { false }
+    fn signature_header(&self, _: NativeSignatureKey) -> SignatureHeader { panic!("native signature provider is not installed") }
+    fn function_overload_signatures(&self, _: NativeFunctionKey) -> Vec<NativeSignatureKey> { Vec::new() }
+    fn signature_type_parameters(&self, _: NativeSignatureKey) -> Vec<NativeTypeParameterKey> { Vec::new() }
+    fn signature_outer_type_parameters(&self, _: NativeSignatureKey) -> Vec<NativeTypeParameterKey> { Vec::new() }
+    fn signature_parameters(&self, _: NativeSignatureKey, _: &mut dyn TypeQueries) -> Vec<Parameter> { panic!("native signature provider is not installed") }
+    fn signature_rest_pack(&self, _: NativeSignatureKey, _: &mut dyn TypeQueries) -> Option<ValuePack> { None }
+    fn signature_declared_return_pack(&self, _: NativeSignatureKey, _: &mut dyn TypeQueries) -> ValuePack { panic!("native signature provider is not installed") }
+    fn signature_return_cycle(&self, _: NativeSignatureKey) {}
+    fn signature_return_type_too_deep(&self, _: NativeSignatureKey) {}
     fn contains_type_declaration(&self, _: NativeTypeDeclarationKey) -> bool { false }
     fn type_declaration_header(&self, _: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
         panic!("native named declaration provider is not installed")
@@ -292,6 +305,7 @@ pub trait NativeTypeProvider {
         panic!("native named member provider is not installed")
     }
     fn type_declaration_members(&self, _: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> { Vec::new() }
+    fn type_declaration_call_signatures(&self, _: NativeTypeDeclarationKey) -> Vec<NativeSignatureKey> { Vec::new() }
     fn type_alias_target(&self, _: NativeTypeDeclarationKey, _: &mut dyn TypeQueries) -> Type {
         panic!("native named alias provider is not installed")
     }
@@ -624,6 +638,10 @@ pub trait TypeQueries {
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool;
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type;
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack;
+    fn signature_type(&mut self, declaration: NativeSignatureKey) -> Type;
+    fn call_signature_types(&mut self, function: &Type) -> Vec<Type>;
+    fn function_implementation_type(&mut self, function: &Type) -> Option<Type>;
+    fn signature_implementation_compatible(&mut self, declaration: NativeSignatureKey, implementation: &Type) -> bool;
     fn pack_function(&mut self, function: &PackFunctionType) -> Type;
     fn declared_result_pack(&mut self, pack: &ValuePack) -> ValuePack;
     fn return_pack_with_cardinality(&mut self, declared: &ValuePack, actual: &ValuePack) -> ValuePack;
@@ -951,6 +969,20 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool { self.assertion_overlap_native(source, target) }
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type { self.exclude_type_native(source, excluded) }
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack { self.exclude_pack_native(source, fixed, tail) }
+    fn signature_type(&mut self, declaration: NativeSignatureKey) -> Type { self.signature_type_native(declaration) }
+    fn call_signature_types(&mut self, function: &Type) -> Vec<Type> {
+        let function = import_type(self.checker, self.handles, function);
+        self.checker.native_call_signature_types(function).into_iter().map(|ty| self.handles.retain(ty)).collect()
+    }
+    fn function_implementation_type(&mut self, function: &Type) -> Option<Type> {
+        let function = import_type(self.checker, self.handles, function);
+        let ty = self.checker.native_implementation_type(function)?;
+        Some(self.handles.retain(ty))
+    }
+    fn signature_implementation_compatible(&mut self, declaration: NativeSignatureKey, implementation: &Type) -> bool {
+        let implementation = import_type(self.checker, self.handles, implementation);
+        self.checker.native_signature_implementation_compatible(core_signature_key(declaration), implementation)
+    }
     fn pack_function(&mut self, function: &PackFunctionType) -> Type {
         self.pack_function_native(function)
     }
@@ -1119,12 +1151,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn native_function_key(&mut self, function: &Type) -> Option<NativeFunctionKey> {
         let function = import_type(self.checker, self.handles, function);
-        let signatures = self.checker.signatures(function, false);
-        if signatures.len() != 1 {
-            return None;
-        }
+        let signature = self.checker.native_implementation_signature(function)?;
         self.checker
-            .sig_native_decl(signatures[0])
+            .sig_native_decl(signature)
             .map(|(key, _)| source_key(key))
     }
     fn instantiate_in_function(
@@ -1133,11 +1162,8 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         declaration_type: &Type,
     ) -> Option<Type> {
         let function = import_type(self.checker, self.handles, function);
-        let signatures = self.checker.signatures(function, false);
-        if signatures.len() != 1 {
-            return None;
-        }
-        let (_, mapper) = self.checker.sig_native_decl(signatures[0])?;
+        let signature = self.checker.native_implementation_signature(function)?;
+        let (_, mapper) = self.checker.sig_native_decl(signature)?;
         let ty = import_type(self.checker, self.handles, declaration_type);
         let ty = self.checker.instantiate(ty, mapper);
         Some(export_type(self.checker, self.handles, ty))
@@ -1390,8 +1416,8 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         key: NativeFunctionKey,
     ) -> Vec<NativeTypeParameterKey> {
         let ty = import_type(self.checker, self.handles, &Type::NativeFunction(key));
-        let signatures = self.checker.signatures(ty, false);
-        let params = self.checker.sig_type_params(signatures[0]).into_vec();
+        let signature = self.checker.native_implementation_signature(ty).expect("runtime native function has an implementation signature");
+        let params = self.checker.sig_type_params(signature).into_vec();
         params
             .into_iter()
             .map(|ty| match export_type(self.checker, self.handles, ty) {
@@ -1434,8 +1460,8 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
 
     fn native_function_signature(&mut self, key: NativeFunctionKey) -> FunctionType {
         let ty = import_type(self.checker, self.handles, &Type::NativeFunction(key));
-        let signatures = self.checker.signatures(ty, false);
-        export_signature(self.checker, self.handles, signatures[0])
+        let signature = self.checker.native_implementation_signature(ty).expect("runtime native function has an implementation signature");
+        export_signature(self.checker, self.handles, signature)
     }
 
     fn allows_implicit_return(&mut self, returned: &Type) -> bool {
@@ -1817,6 +1843,15 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
         let pack = native_packs::import_declared_pack(checker, self.handles, &pack);
         Some(NativeTypeResult::Declaration(checker.native_pack_slot(pack, 0)))
     }
+    fn contains_signature(&self, key: bun_sema::types::NativeSignatureId) -> bool { self.provider.contains_signature(source_signature_key(key)) }
+    fn signature_header(&self, key: bun_sema::types::NativeSignatureId) -> bun_sema::check::native_signatures::NativeSignatureHeader { self.signature_header_core(key) }
+    fn overload_signatures(&self, function: NativeFunctionId) -> Vec<bun_sema::types::NativeSignatureId> { self.provider.function_overload_signatures(source_key(function)).into_iter().map(core_signature_key).collect() }
+    fn signature_parameters(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Vec<SigParam> { self.signature_parameters_core(checker, key) }
+    fn signature_type_parameters(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Vec<TypeId> { self.provider.signature_type_parameters(source_signature_key(key)).into_iter().map(|key| import_type(checker, self.handles, &Type::NativeTypeParameter(key))).collect() }
+    fn signature_outer_type_parameters(&self, key: bun_sema::types::NativeSignatureId) -> Vec<NativeTypeParamId> { self.provider.signature_outer_type_parameters(source_signature_key(key)).into_iter().map(core_parameter_key).collect() }
+    fn signature_return_pack_result(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> NativePackResult { self.signature_return_pack_core(checker, key) }
+    fn circular_signature_return(&self, key: bun_sema::types::NativeSignatureId) { self.provider.signature_return_cycle(source_signature_key(key)); }
+    fn signature_return_type_too_deep(&self, key: bun_sema::types::NativeSignatureId) { self.provider.signature_return_type_too_deep(source_signature_key(key)); }
     fn has_result_pack(&self, key: NativeFunctionId) -> bool {
         self.provider.function_has_result_pack(source_key(key))
     }
@@ -2381,6 +2416,7 @@ fn import_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: &Type) 
         Type::NativeFunction(key) => checker
             .native_function_type(core_key(*key))
             .unwrap_or_else(|| std::panic::panic_any(InvalidNativeFunctionKey(*key))),
+        Type::NativeSignature(key) => checker.native_signature_type(core_signature_key(*key)).unwrap_or_else(|| std::panic::panic_any(InvalidNativeSignatureKey(*key))),
         Type::NativeTypeParameter(key) => checker
             .native_type_parameter(core_parameter_key(*key))
             .unwrap_or_else(|| std::panic::panic_any(InvalidNativeTypeParameterKey(*key))),
@@ -2542,6 +2578,9 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
             }
         }
         TypeData::Synth(shape) => {
+            if !shape.call.is_empty() || !shape.construct.is_empty() {
+                return handles.retain(ty);
+            }
             let fresh = shape.literal.is_of_expression() && !shape.is_regular;
             let properties: Vec<_> = shape
                 .props
@@ -4620,7 +4659,7 @@ mod tests {
     }
 
     #[test]
-    fn native_calls_report_noncallable_and_unsupported_overloads() {
+    fn native_calls_report_noncallable_and_choose_overloads() {
         let engine = Engine::new();
         assert_eq!(
             engine.call(&Type::Number, &[]).errors,
@@ -4637,10 +4676,13 @@ mod tests {
             function(Type::Number, false, Type::String),
             function(Type::String, false, Type::Number),
         ]);
-        assert_eq!(
-            engine.call(&overloaded, &[Type::Number]).errors,
-            vec![CallError::UnsupportedOverloads]
-        );
+        let number = engine.call(&overloaded, &[Type::Number]);
+        assert!(number.errors.is_empty());
+        assert_eq!(number.return_type, Type::String);
+        let string = engine.call(&overloaded, &[Type::String]);
+        assert!(string.errors.is_empty());
+        assert_eq!(string.return_type, Type::Number);
+        assert!(!engine.call(&overloaded, &[Type::Boolean]).errors.is_empty());
     }
 
     #[test]

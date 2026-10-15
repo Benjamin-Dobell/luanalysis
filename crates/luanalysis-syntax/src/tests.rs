@@ -182,7 +182,7 @@ fn unsupported_lua_and_annotation_forms_are_reported_and_recover() {
         "local x = {[1] 'one'}",
         "local function f(..., value) end",
         "---@type number[index]",
-        "---@type fun<T>(x: T): T",
+        "---@type fun<>(x: T): T",
         "---@overload fun(value: number): number",
         "---@type { [string] number }",
         "---@type number |",

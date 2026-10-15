@@ -3,6 +3,7 @@ use crate::{
     FunctionAnnotations, Name, NamedTypeDeclaration, NamedTypeDeclarationId,
     NamedTypeDeclarationKind, Span, Stmt, StmtKind, TableField, TableFieldKind, Token, TokenKind,
     TypeAnnotation, TypeExpr, TypeExprKind, TypeExtension, UnaryOperator, lex, types,
+    OverloadAnnotation, OverloadDeclarationId, OverloadReference,
 };
 
 #[path = "control.rs"]
@@ -30,6 +31,7 @@ pub fn parse(source: &str) -> File {
         type_declarations: Vec::new(),
         type_extensions: Vec::new(),
         expression_assertions: Vec::new(),
+        overload_annotations: Vec::new(),
         documentation_group: None,
         depth: 0,
         block_depth: 0,
@@ -42,6 +44,7 @@ pub fn parse(source: &str) -> File {
         expression_assertions: parser.expression_assertions,
         type_declarations: parser.type_declarations,
         type_extensions: parser.type_extensions,
+        overload_annotations: parser.overload_annotations,
         comments,
         diagnostics: parser.diagnostics,
         span: Span::new(0, source.len()),
@@ -57,6 +60,7 @@ struct Parser<'a> {
     type_declarations: Vec<NamedTypeDeclaration>,
     type_extensions: Vec<TypeExtension>,
     expression_assertions: Vec<crate::ExpressionAssertion>,
+    overload_annotations: Vec<OverloadAnnotation>,
     documentation_group: Option<DocumentationGroup>,
     depth: usize,
     block_depth: usize,
@@ -69,6 +73,7 @@ struct DocumentationGroup {
     declarations: Vec<usize>,
     extensions: Vec<usize>,
     record: Option<usize>,
+    overloads: Vec<usize>,
 }
 
 fn documentation_gap_is_contiguous(gap: &str) -> bool {
@@ -201,7 +206,7 @@ impl Parser<'_> {
     fn record_documentation(
         &mut self,
         comment: &Comment,
-        documentation: types::ParsedDocumentation,
+        mut documentation: types::ParsedDocumentation,
     ) -> FunctionAnnotations {
         for annotation in &documentation.exclusions {
             self.diagnostics.push(Diagnostic {
@@ -219,18 +224,23 @@ impl Parser<'_> {
                 declarations: Vec::new(),
                 extensions: Vec::new(),
                 record: None,
+                overloads: Vec::new(),
             });
         }
         let group = self.documentation_group.as_mut().unwrap();
         group.span = group.span.join(comment.span);
         for item in documentation.declarations {
             match item {
-                types::DeclarationItem::Named {
-                    name,
-                    generics,
-                    kind,
-                    span,
-                } => {
+                types::DeclarationItem::Overload { signature, span, tag_span } => {
+                    let index = self.overload_annotations.len();
+                    let id = OverloadDeclarationId(index.try_into().expect("original overload index fits u32"));
+                    self.overload_annotations.push(OverloadAnnotation {
+                        id, signature, span, tag_span, group_span: group.span, named_candidates: Vec::new(),
+                    });
+                    group.overloads.push(index);
+                    documentation.functions.overloads.push(OverloadReference { id, span });
+                }
+                types::DeclarationItem::Named { name, generics, kind, span } => {
                     let index = self.type_declarations.len();
                     let record = matches!(kind, NamedTypeDeclarationKind::Record { .. });
                     self.type_declarations.push(NamedTypeDeclaration {
@@ -287,10 +297,21 @@ impl Parser<'_> {
         for &index in &group.extensions {
             self.type_extensions[index].group_span = group.span;
         }
+        let named_candidates: Vec<_> = group.declarations.iter().filter_map(|&index| {
+            matches!(self.type_declarations[index].kind, NamedTypeDeclarationKind::Record { .. }).then_some(self.type_declarations[index].id)
+        }).collect();
+        for &index in &group.overloads {
+            self.overload_annotations[index].group_span = group.span;
+            self.overload_annotations[index].named_candidates.clone_from(&named_candidates);
+        }
         documentation.functions
     }
     fn unattached_annotations(&mut self, annotations: &FunctionAnnotations) {
         for span in types::annotation_spans(annotations) {
+            if annotations.overloads.iter().any(|reference| reference.span == span
+                && !self.overload_annotations[reference.id.0 as usize].named_candidates.is_empty()) {
+                continue;
+            }
             self.diagnostics.push(Diagnostic {
                 span,
                 message:
@@ -344,11 +365,29 @@ impl Parser<'_> {
         }
     }
     fn inner_trivia(&mut self) {
+        self.trivia(false);
+    }
+    // Expression and field owners retain their own documentation. In
+    // particular this never uses the statement-level pending annotations.
+    fn expression_trivia(&mut self) {
+        self.trivia(true);
+    }
+    fn trivia(&mut self, expression_documentation: bool) {
         loop {
             match self.current().kind.clone() {
                 TokenKind::Newline => self.pos += 1,
                 TokenKind::Comment(comment) => {
                     if expression_assertion_comment(&comment) {
+                        break;
+                    }
+                    if expression_documentation
+                        && comment.kind == CommentKind::Documentation
+                        && {
+                            let documentation=types::annotations(&comment).0;
+                            !types::annotation_spans(&documentation.functions).is_empty()
+                                || documentation.declarations.iter().any(|item|matches!(item,types::DeclarationItem::Overload {..}))
+                        }
+                    {
                         break;
                     }
                     self.pos += 1;
@@ -556,6 +595,28 @@ impl Parser<'_> {
             span: start.join(end),
         })
     }
+    fn record_expression_overloads(
+        &mut self,
+        comment:Span,
+        declarations:Vec<types::DeclarationItem>,
+        annotations:&mut FunctionAnnotations,
+        role:&str,
+    ) {
+        for declaration in declarations {
+            if let types::DeclarationItem::Overload {signature,span,tag_span}=declaration {
+                let id=OverloadDeclarationId(self.overload_annotations.len().try_into().expect("original overload index fits u32"));
+                self.overload_annotations.push(OverloadAnnotation {
+                    id,signature,span,tag_span,group_span:comment,named_candidates:Vec::new(),
+                });
+                annotations.overloads.push(OverloadReference {id,span});
+            } else {
+                self.diagnostics.push(Diagnostic {
+                    span:comment,message:format!("named declarations cannot annotate {role}"),
+                });
+            }
+        }
+    }
+
     fn attach_function_annotations(
         &mut self,
         values: &mut [Expr],
@@ -566,11 +627,25 @@ impl Parser<'_> {
         }
         if let [value] = values {
             if let Some(function) = function_initializer(value) {
+                // Documentation before a declaration/field precedes any
+                // documentation directly on its initializer in source order.
+                let mut combined = annotations;
                 types::merge_annotations(
-                    &mut function.annotations,
-                    annotations,
+                    &mut combined,
+                    std::mem::take(&mut function.annotations),
                     &mut self.diagnostics,
                 );
+                function.annotations = combined;
+                // Field/declaration docs and initializer docs describe the same
+                // original function. Keep one declaration site and source order.
+                let group=function.annotations.overloads.iter()
+                    .map(|reference|self.overload_annotations[reference.id.0 as usize].group_span)
+                    .reduce(Span::join);
+                if let Some(group)=group {
+                    for reference in &function.annotations.overloads {
+                        self.overload_annotations[reference.id.0 as usize].group_span=group;
+                    }
+                }
                 return;
             }
         }
@@ -779,12 +854,13 @@ impl Parser<'_> {
     }
     fn expr_binding_power(&mut self, min_precedence: u8) -> (Expr, usize) {
         let mut assertions = Vec::new();
+        let mut function_annotations = FunctionAnnotations::default();
         loop {
-            self.inner_trivia();
+            self.expression_trivia();
             let TokenKind::Comment(comment) = self.current().kind.clone() else {
                 break;
             };
-            if !expression_assertion_comment(&comment) {
+            if comment.kind != CommentKind::Documentation {
                 break;
             }
             self.pos += 1;
@@ -804,18 +880,12 @@ impl Parser<'_> {
                     comment.span,
                 ));
             }
-            for span in types::annotation_spans(&documentation.functions) {
-                self.diagnostics.push(Diagnostic {
-                    span,
-                    message: "only @type and @not apply to an inline expression".to_owned(),
-                });
-            }
-            if !documentation.declarations.is_empty() {
-                self.diagnostics.push(Diagnostic {
-                    span: comment.span,
-                    message: "named declarations cannot annotate an inline expression".to_owned(),
-                });
-            }
+            self.record_expression_overloads(comment.span,documentation.declarations,&mut documentation.functions,"an inline expression");
+            types::merge_annotations(
+                &mut function_annotations,
+                documentation.functions,
+                &mut self.diagnostics,
+            );
         }
         let start = self.current().span;
         if self.depth + self.block_depth >= 128 {
@@ -872,6 +942,7 @@ impl Parser<'_> {
             }
         }
         self.depth -= 1;
+        self.attach_function_annotations(std::slice::from_mut(&mut expr), function_annotations);
         for (kind, annotation, comment) in assertions {
             self.expression_assertions.push(crate::ExpressionAssertion {
                 kind,
@@ -893,7 +964,7 @@ impl Parser<'_> {
             while let Some(op) = unary_operator(&self.current().kind) {
                 operators.push((op, self.current().span));
                 self.pos += 1;
-                self.inner_trivia();
+                self.expression_trivia();
             }
             // Lua exponentiation binds more tightly than unary operators.
             let (mut value, mut value_depth) = self.expr_binding_power(13);
@@ -1211,14 +1282,14 @@ impl Parser<'_> {
         let start = self.expect("(");
         let mut args = Vec::new();
         let mut built_depth = 0;
-        self.inner_trivia();
+        self.expression_trivia();
         while !self.eof() && !self.symbol(")") {
             let (arg, arg_depth) = self.expr_with_depth();
             args.push(arg);
             built_depth = built_depth.max(arg_depth);
             self.inner_trivia();
             if self.take_symbol(",").is_some() {
-                self.inner_trivia();
+                self.expression_trivia();
                 if self.symbol(")") {
                     self.error("trailing comma in Lua function call arguments");
                 }
@@ -1241,9 +1312,25 @@ impl Parser<'_> {
         let mut built_depth = 1;
         let mut sequence_index = 0;
         loop {
-            self.inner_trivia();
+            self.expression_trivia();
             if self.eof() || self.symbol("}") {
                 break;
+            }
+            let mut function_annotations = FunctionAnnotations::default();
+            while let TokenKind::Comment(comment) = self.current().kind.clone() {
+                if expression_assertion_comment(&comment) {
+                    break;
+                }
+                self.pos += 1;
+                let (mut documentation, diagnostics) = types::annotations(&comment);
+                self.diagnostics.extend(diagnostics);
+                self.record_expression_overloads(comment.span,documentation.declarations,&mut documentation.functions,"a table field");
+                types::merge_annotations(
+                    &mut function_annotations,
+                    documentation.functions,
+                    &mut self.diagnostics,
+                );
+                self.expression_trivia();
             }
             let before = self.pos;
             let field_start = self.current().span;
@@ -1290,6 +1377,10 @@ impl Parser<'_> {
                 }
             };
             let (mut value, mut value_depth) = self.expr_with_depth();
+            self.attach_function_annotations(
+                std::slice::from_mut(&mut value),
+                function_annotations,
+            );
             if value_depth >= 128 {
                 self.diagnostics.push(Diagnostic {
                     span: value.span,

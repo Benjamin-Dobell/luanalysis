@@ -6,7 +6,7 @@ use crate::project_check::FileCheckReport;
 use crate::{CheckReport, Diagnostic};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NamedTypeError, NamedTypeQuery,
-    NativeBindingKey, NativeCheckMode, NativeExpressionKey, NativeFunctionKey,
+    NativeBindingKey, NativeCheckMode, NativeExpressionKey, NativeFunctionKey, NativeSignatureKey, SignatureHeader,
     NativeTypeDeclarationKey, NativeTypeMemberKey, NativeTypeParameterKey, Parameter, Type,
     TypeDeclarationHeader, TypeDeclarationOwner, TypeMemberHeader, TypeMemberOwner, TypeQueries,
     ValuePack,
@@ -201,6 +201,9 @@ macro_rules! dispatch {
 }
 
 impl NativeTypeProvider for ProjectRegistry {
+    fn contains_signature(&self,key:NativeSignatureKey)->bool {
+        self.owner_if(key.snapshot).is_some_and(|owner|owner.contains_signature(key))
+    }
     fn contains_function(&self, key: NativeFunctionKey) -> bool {
         self.owner_if(key.snapshot)
             .is_some_and(|owner| owner.contains_function(key))
@@ -297,6 +300,16 @@ impl NativeTypeProvider for ProjectRegistry {
     }
 
     dispatch! {
+        fn signature_header(key: NativeSignatureKey) -> SignatureHeader;
+        fn function_overload_signatures(key: NativeFunctionKey) -> Vec<NativeSignatureKey>;
+        fn signature_type_parameters(key: NativeSignatureKey) -> Vec<NativeTypeParameterKey>;
+        fn signature_outer_type_parameters(key: NativeSignatureKey) -> Vec<NativeTypeParameterKey>;
+        fn signature_parameters(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> Vec<Parameter>;
+        fn signature_rest_pack(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
+        fn signature_declared_return_pack(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> ValuePack;
+        fn signature_return_cycle(key: NativeSignatureKey) -> ();
+        fn signature_return_type_too_deep(key: NativeSignatureKey) -> ();
+        fn type_declaration_call_signatures(key: NativeTypeDeclarationKey) -> Vec<NativeSignatureKey>;
         fn function_declared_scalar_contract(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn function_declared_scalar_contract_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn function_declared_scalar_contract_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;

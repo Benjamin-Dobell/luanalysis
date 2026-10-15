@@ -141,7 +141,7 @@ fn cross_file_alias_cycles_and_unused_invalid_members_report_the_owner_source() 
             let origin = &source[error.span.start..error.span.end];
             match error.code {
                 "TS2456" => assert!(matches!(origin, "First" | "Second")),
-                "LUA2001" => assert_eq!(origin, "Missing"),
+                "TS2304" => assert_eq!(origin, "Missing"),
                 other => panic!("unexpected {other}: {error:?}"),
             }
         }
@@ -150,7 +150,7 @@ fn cross_file_alias_cycles_and_unused_invalid_members_report_the_owner_source() 
         file.report
             .diagnostics
             .iter()
-            .any(|error| error.code == "LUA2001")
+            .any(|error| error.code == "TS2304")
     }));
 }
 

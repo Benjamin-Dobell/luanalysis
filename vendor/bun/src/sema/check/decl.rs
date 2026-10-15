@@ -4515,6 +4515,17 @@ impl<'p, 's> Checker<'p, 's> {
     #[inline(never)]
     fn sig_type_params_of_declaration(&mut self, sig: SigId) -> Vec<TypeId> {
         match self.types().sig(sig) {
+            SigData::NativeDeclarationSignature { declaration, mapper, .. } => {
+                let (declaration, mapper) = (*declaration, *mapper);
+                let provider = self.native_signature_provider_for(declaration);
+                provider.signature_type_parameters(self, declaration).into_iter().filter_map(|param| match self.types().map(mapper, param) {
+                    None => Some(param),
+                    Some(actual) => match (self.native_type_parameter_decl(param), self.native_type_parameter_decl(actual)) {
+                        (Some((declared, _)), Some((cloned, around))) if declared == cloned && around != MapperId::IDENTITY => Some(actual),
+                        _ => None,
+                    },
+                }).collect()
+            }
             SigData::Native { declaration, mapper }
             | SigData::NativeCaptured { declaration, mapper, .. }
             | SigData::NativeContextual { declaration, mapper, .. } => {
@@ -4613,6 +4624,11 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// Register a lazy function type without demanding its parameters or return type.
     pub fn native_function_type(&self, declaration: NativeFunctionId) -> Option<TypeId> {
+        let sig = self.native_function_implementation_signature(declaration)?;
+        Some(self.native_function_overload_type(sig))
+    }
+
+    pub fn native_function_implementation_signature(&self, declaration: NativeFunctionId) -> Option<SigId> {
         if !self.native_function_provider?.contains_function(declaration) {
             return None;
         }
@@ -4627,7 +4643,7 @@ impl<'p, 's> Checker<'p, 's> {
                 })
                 .collect()),
         });
-        Some(self.type_of_signature(sig, false))
+        Some(sig)
     }
 
     /// `getDefaultConstructSignatures`: the base signature that the default construct signature `sig` clones, instantiated with the
@@ -4874,6 +4890,18 @@ impl<'p, 's> Checker<'p, 's> {
     /// `sig_params` for a signature that was not queried recently.
     fn sig_params_not_recent(&mut self, sig: SigId) -> List<'p, SigParam> {
         let (file, func, mapper) = match self.types().sig(sig) {
+            SigData::NativeDeclarationSignature { declaration, mapper, .. } => {
+                if let Some(kept) = self.p.sig_params.get_ref(&self.task, &sig) { return self.cached_sig_params(sig, kept); }
+                let (declaration, mapper) = (*declaration, *mapper);
+                let scope = self.begin_scope();
+                let provider = self.native_signature_provider_for(declaration);
+                let params = provider.signature_parameters(self, declaration).into_iter().map(|param| SigParam { ty: self.instantiate(param.ty, mapper), ..param }).collect::<Vec<_>>();
+                if let Ok(stored) = self.end_scope_by_counters(scope) {
+                    let kept = self.p.sig_params.insert_ref(&self.task, sig, self.list(&params), stored);
+                    return self.cached_sig_params(sig, kept.1);
+                }
+                return List::Own(params);
+            }
             SigData::Native { declaration, mapper }
             | SigData::NativeCaptured { declaration, mapper, .. }
             | SigData::NativeContextual { declaration, mapper, .. } => {
@@ -5148,6 +5176,11 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub(super) fn signature_return_type(&mut self, sig: SigId) -> TypeId {
         match *self.types().sig(sig) {
+            SigData::NativeDeclarationSignature { declaration, mapper, .. } => self.resolve_return_type(sig, |c| {
+                let provider = c.native_signature_provider_for(declaration);
+                let declared = provider.signature_return_pack_result(c, declaration);
+                c.resolve_native_pack_result(declared, mapper)
+            }),
             SigData::Native { declaration, mapper } => self.resolve_return_type(sig, |c| {
                 let provider = c.native_provider_for(declaration);
                 if provider.has_result_pack(declaration) {
@@ -5323,6 +5356,9 @@ impl<'p, 's> Checker<'p, 's> {
             {
                 return self.native_pack_with_implicit_empty(contract).ty;
             }
+            if !self.found_cycle && let Some((declaration, _)) = self.sig_native_signature_decl(sig) {
+                self.native_signature_provider_for(declaration).signature_return_type_too_deep(declaration);
+            }
             if !self.found_cycle
                 && let Some((declaration, _)) = self.sig_native_decl(sig)
             {
@@ -5348,6 +5384,8 @@ impl<'p, 's> Checker<'p, 's> {
                 self.report_circular_return_type(Some(Query::ReturnOfSignature(sig)), file, func);
             } else if let Some((declaration, _)) = self.sig_native_decl(self.types().sig_origin(sig)) {
                 self.native_provider_for(declaration).circular_return_type(declaration);
+            } else if let Some((declaration, _)) = self.sig_native_signature_decl(self.types().sig_origin(sig)) {
+                self.native_signature_provider_for(declaration).circular_signature_return(declaration);
             }
             return (self.p.resolved_return_types).insert(&self.task, sig, TypeId::ANY, stored);
         }

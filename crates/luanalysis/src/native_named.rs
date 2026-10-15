@@ -100,6 +100,7 @@ pub(super) struct AnonymousMemberSource {
 pub(super) enum NativeTypeContext {
     Function(NativeFunctionKey),
     NamedType(NativeNamedKey),
+    Signature(luanalysis_engine::NativeSignatureKey),
 }
 
 #[derive(Clone, Debug)]

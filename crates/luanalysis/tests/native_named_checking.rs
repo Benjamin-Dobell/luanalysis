@@ -99,7 +99,7 @@ fn unused_bad_alias_targets_and_members_are_semantically_checked() {
             report
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.code == "LUA2001"
+                .any(|diagnostic| diagnostic.code == "TS2304"
                     && &source[diagnostic.span.start..diagnostic.span.end] == "Missing"),
             "{source}\n{:#?}",
             report.diagnostics

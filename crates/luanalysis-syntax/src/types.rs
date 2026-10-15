@@ -21,6 +21,11 @@ pub(crate) enum DeclarationItem {
         span: Span,
     },
     Field(FieldDeclaration),
+    Overload {
+        signature: Box<FunctionType>,
+        span: Span,
+        tag_span: Span,
+    },
 }
 
 /// Parse only documentation tags. Ordinary prose remains a retained comment.
@@ -76,6 +81,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     | "class"
                     | "module"
                     | "field"
+                    | "overload"
             ) {
                 diagnostics.push(Diagnostic {
                     span: Span::new(tag_offset, tag_offset + 1 + tag_len),
@@ -131,6 +137,18 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 let annotation_span = Span::new(tag_offset, types_offset + types.len());
                 let mut group = FunctionAnnotations::default();
                 match tag_name {
+                    "overload" => {
+                        let ty = parser.primary();
+                        if let TypeExprKind::Function(signature) = ty.kind {
+                            result.declarations.push(DeclarationItem::Overload {
+                                signature: Box::new(signature),
+                                span: annotation_span,
+                                tag_span: Span::new(tag_offset, tag_offset + 1 + tag_len),
+                            });
+                        } else {
+                            parser.diagnostics.push(Diagnostic { span: ty.span, message: "@overload requires a function type".into() });
+                        }
+                    }
                     "alias" | "shape" | "class" | "module" => {
                         if let Some(name) = parser.declaration_name("named type") {
                             let generics = parser.declaration_parameters();
@@ -249,6 +267,7 @@ fn type_depth(root: &TypeExpr) -> usize {
                 }
             }
             TypeExprKind::Function(function) => {
+                pending.extend(function.generics.iter().filter_map(|parameter| parameter.constraint.as_ref()).map(|ty| (ty, current + 1)));
                 pending.extend(
                     function
                         .params
@@ -287,6 +306,7 @@ pub(crate) fn merge_annotations(
     incoming: FunctionAnnotations,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    target.overloads.extend(incoming.overloads);
     for generic in incoming.generics {
         if target
             .generics
@@ -355,6 +375,7 @@ pub(crate) fn annotation_spans(group: &FunctionAnnotations) -> Vec<Span> {
         .chain(group.params.iter().map(|param| param.span))
         .chain(group.vararg.iter().map(|vararg| vararg.span))
         .chain(group.returns.iter().map(|returns| returns.span))
+        .chain(group.overloads.iter().map(|overload| overload.span))
         .chain(
             group
                 .type_annotation
@@ -964,15 +985,7 @@ impl TypeParser {
         self.pos += 1;
         let mut params = Vec::new();
         let mut vararg = None;
-        if self.symbol("<") {
-            self.error(
-                "generic function types are unsupported until generic inference is implemented"
-                    .to_owned(),
-            );
-            while !self.eof() && !self.symbol("(") {
-                self.pos += 1;
-            }
-        }
+        let generics = self.declaration_parameters();
         if self.take("(").is_some() {
             while !self.eof() && !self.symbol(")") {
                 let param_start = self.current().span;
@@ -1061,6 +1074,7 @@ impl TypeParser {
         let span = start.join(end);
         TypeExpr {
             kind: TypeExprKind::Function(FunctionType {
+                generics,
                 params,
                 vararg,
                 returns,

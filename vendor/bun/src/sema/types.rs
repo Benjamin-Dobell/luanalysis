@@ -34,6 +34,12 @@ pub struct NativeFunctionId {
     pub snapshot: u64,
     pub index: u32,
 }
+/// A written callable declaration, distinct from its optional runtime implementation.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeSignatureId {
+    pub snapshot: u64,
+    pub index: u32,
+}
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeTypeParamId {
     pub snapshot: u64,
@@ -901,6 +907,12 @@ impl SigParam {
 
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub enum SigData<'s> {
+    NativeDeclarationSignature {
+        declaration: NativeSignatureId,
+        mapper: MapperId,
+        /// Actual runtime implementation/capture capability, never a callable candidate.
+        implementation: Option<SigId>,
+    },
     /// A declaration resolved on demand by the checker's native function provider.
     Native {
         declaration: NativeFunctionId,
@@ -2502,6 +2514,7 @@ impl<'p, 's> Types<'p, 's> {
                 environment.iter().fold(self.mapper_record(*mapper).1, |flags, binding| flags | self.object_flags(binding.ty))
             }
             SigData::Native { mapper, .. }
+            | SigData::NativeDeclarationSignature { mapper, .. }
             | SigData::Decl { mapper, .. }
             | SigData::DefaultConstruct { mapper, .. }
             | SigData::Construct { mapper, .. } => self.mapper_record(*mapper).1,
@@ -3309,6 +3322,7 @@ has_no_references!(
     u64,
     i64,
     NativeFunctionId,
+    NativeSignatureId,
     NativeTypeDeclarationId,
     NativeTypeMemberId,
     NativeTypeParamId,
@@ -3488,6 +3502,7 @@ follow_struct!(SigParam {
     declaration
 });
 follow_enum!(SigData<'_> {
+    SigData::NativeDeclarationSignature { declaration, mapper, implementation } => (declaration, mapper, implementation),
     SigData::Native { declaration, mapper } => (declaration, mapper),
     SigData::NativeContextual { declaration, mapper, context, environment } => (declaration, mapper, context, environment),
     SigData::NativeCaptured { declaration, mapper, environment } => (declaration, mapper, environment),
@@ -3564,6 +3579,7 @@ clone_in_is_copy!(
     TypeId,
     SigId,
     NativeFunctionId,
+    NativeSignatureId,
     NativeTypeDeclarationId,
     NativeTypeMemberId,
     NativeObjectReference,
@@ -3767,6 +3783,7 @@ clone_in_struct!(Shape {
 });
 clone_in_struct!(NativeTableData { nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 clone_in_enum!(SigData {
+    NativeDeclarationSignature { declaration, mapper, implementation },
     Native { declaration, mapper },
     NativeContextual { declaration, mapper, context, environment },
     NativeCaptured { declaration, mapper, environment },
