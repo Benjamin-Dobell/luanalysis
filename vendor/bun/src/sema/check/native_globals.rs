@@ -95,6 +95,13 @@ impl NativeGlobalsCache {
     }
 }
 
+#[derive(Clone, Copy)]
+struct NativeGlobalDeclarationContext {
+    serial: u64,
+    incomplete_flow: bool,
+    cuts: u64,
+}
+
 impl<'p, 's> Checker<'p, 's> {
     /// The environment is an open Lua table, interned by its original environment identity.
     /// Creating it does not enter any declaration query, including its own `_G` binding.
@@ -257,7 +264,26 @@ impl<'p, 's> Checker<'p, 's> {
             self.report_native_global(error.clone());
             return Err(error);
         }
-        let result = compute(self, provider);
+        // A pure written declaration can be demanded while its consumer is
+        // traversing an incomplete loop. Its result remains usable in that
+        // original context without becoming a completed cached declaration.
+        let frame = self.frames.last().expect("entered global declaration query");
+        let is_declaration = |declaration| provider.contains_value_declaration(declaration)
+            && provider.value_declaration_header(declaration).role == NativeGlobalSourceRole::Declaration;
+        let declaration_only = match demand {
+            NativeGlobalsQuery::ValueDeclarationContract(declaration)
+            | NativeGlobalsQuery::ValueDeclaration(declaration) => is_declaration(declaration),
+            NativeGlobalsQuery::GlobalBinding(binding) => {
+                let declarations = provider.global_binding_declarations(binding);
+                !declarations.is_empty() && declarations.into_iter().all(is_declaration)
+            }
+        };
+        let context = (declaration_only && frame.tainted && !frame.circular).then_some(NativeGlobalDeclarationContext {
+            serial: frame.serial,
+            incomplete_flow: frame.incomplete_flow,
+            cuts: self.cuts(),
+        });
+        let (result, memoizable) = self.run_memoizable(|checker| compute(checker, provider));
         let left = self.leave(query);
         if self.left_a_cycle {
             let error = NativeGlobalQueryError::CircularQuery(demand);
@@ -267,6 +293,14 @@ impl<'p, 's> Checker<'p, 's> {
         }
         match left {
             Ok(stored) => self.native_globals_cache.store(demand, result.clone(), stored),
+            Err(_) if result.is_ok() && context.is_some_and(|context| {
+                memoizable.is_some() && self.cuts() == context.cuts
+                    && self.lowest_taint_since(context.serial) == usize::MAX
+                    && self.left_frame.as_ref().is_some_and(|frame| {
+                        frame.serial == context.serial && !frame.circular
+                            && frame.incomplete_flow == context.incomplete_flow
+                    })
+            }) => { self.left_frame.take(); },
             Err(open) => if let Ok(value) = result {
                 self.cache_provisionally(query, value.encode(), open);
                 let error = NativeGlobalQueryError::UnresolvedQuery(demand);
