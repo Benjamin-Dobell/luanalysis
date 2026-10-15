@@ -64,3 +64,31 @@ fn mixed_doc_runtime_declarations_are_explicitly_unsupported() {
     let report=check(source);
     assert!(report.diagnostics.iter().any(|error|error.code=="LUA2034"&&error.message.contains("mixes bodyless")),"{:#?}",report.diagnostics);
 }
+
+#[test]
+fn bodyless_parameter_defaults_rest_and_result_packs_use_native_queries() {
+    let source="---@param value? number\n---@vararg string\n---@return (number,string)\n---@function pack(value)\nlocal first,second=pack()\nlocal other,text=pack(1,'x','y')\n";
+    let report=clean(source);
+    assert_eq!(report.type_at(source.find("first,").unwrap()),Some("number"));
+    assert_eq!(report.type_at(source.find("second=").unwrap()),Some("string"));
+    let wrong=check(&format!("{source}pack(1,true)\n"));
+    assert!(wrong.diagnostics.iter().any(|error|matches!(error.code,"TS2345"|"TS2769")),"{:#?}",wrong.diagnostics);
+}
+
+#[test]
+fn bodyless_generic_scopes_are_local_to_the_original_header() {
+    let source="---@function identity<T>(value:T):T\n---@function unrelated(value:T):number\n";
+    let report=check(source);
+    let errors:Vec<_>=report.diagnostics.iter().filter(|error|error.code=="TS2304").collect();
+    assert_eq!(errors.len(),1,"{:#?}",report.diagnostics);
+    assert_eq!(&source[errors[0].span.start..errors[0].span.end],"T");
+    clean(&source.replace("unrelated(value:T)","unrelated(value:number)"));
+}
+
+#[test]
+fn invalid_owner_recovery_never_publishes_a_global_function() {
+    let source="---@function :broken(value:number):number\nlocal value=broken(1)\n";
+    let report=check(source);
+    assert!(report.diagnostics.iter().any(|error|error.code=="LUA1001"),"{:#?}",report.diagnostics);
+    assert!(report.diagnostics.iter().any(|error|error.code=="TS2304" && &source[error.span.start..error.span.end]=="broken"),"{:#?}",report.diagnostics);
+}
