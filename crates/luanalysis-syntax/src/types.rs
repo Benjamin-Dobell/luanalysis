@@ -892,7 +892,13 @@ impl TypeParser {
             }
             TokenKind::Symbol(symbol) if symbol == "(" => {
                 self.pos += 1;
+                // Parentheses own their delimiters. An outer parameter or
+                // generic argument comma cannot split a callback's returns
+                // inside this original parenthesized type.
+                let surrounding_comma_mode = self.comma_ends_type;
+                self.comma_ends_type = 0;
                 let inner = self.union();
+                self.comma_ends_type = surrounding_comma_mode;
                 let end = self.expect(")");
                 TypeExpr {
                     kind: TypeExprKind::Parenthesized(Box::new(inner)),

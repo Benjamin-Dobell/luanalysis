@@ -467,13 +467,13 @@ impl Parser<'_> {
             });
         }
         if self.keyword("return") {
-            self.unattached_annotations(&annotations);
             self.pos += 1;
             let next = &self.tokens[self.significant_index()];
             let empty = matches!(&next.kind, TokenKind::Eof)
-                || matches!(&next.kind, TokenKind::Keyword(word) if word == "end")
+                || matches!(&next.kind, TokenKind::Keyword(word) if matches!(word.as_str(), "end" | "elseif" | "else" | "until"))
                 || matches!(&next.kind, TokenKind::Symbol(symbol) if symbol == ";");
-            let values = if empty { Vec::new() } else { self.expr_list() };
+            let mut values = if empty { Vec::new() } else { self.expr_list() };
+            self.attach_function_annotations(&mut values, annotations);
             let end = values.last().map_or(start, |value| value.span);
             return Some(Stmt {
                 kind: StmtKind::Return(values),
@@ -1151,25 +1151,13 @@ impl Parser<'_> {
             }
         };
         let mut postfix_exceeded = false;
-        while self.significant_symbol(".")
+        while suffix_eligible && (self.significant_symbol(".")
             || self.significant_symbol("(")
             || self.significant_symbol("[")
-            || self.significant_symbol(":")
+            || self.significant_symbol(":"))
         {
             self.inner_trivia();
             let postfix_start = self.current().span;
-            if !suffix_eligible {
-                self.error(
-                    "Lua postfix access and calls require a name or parenthesized expression",
-                );
-                expr = Expr {
-                    kind: ExprKind::Error,
-                    span: expr.span,
-                };
-                built_depth = 1;
-                postfix_exceeded = true;
-                suffix_eligible = true;
-            }
             if self.symbol("[") {
                 self.pos += 1;
                 let (index, index_depth) = self.expr_with_depth();
