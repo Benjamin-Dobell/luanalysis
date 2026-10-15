@@ -1781,6 +1781,49 @@
       "patch": "vendor/patches/bun-sema-native-namespace-capture-lua-printing.patch",
       "reason": "Retain attested namespace contracts in deferred bodies, resolve proven immutable captured callees before local loop effects, and expose a structural Lua nil printer mode while preserving default TypeScript formatting through kernel 696582a.",
       "patch_sha256": "34c07c2ed6cda9fdb8a0f3538f7843277650e521516bbf9926a4d40530f689d7"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch",
+      "reason": "Keep host-policy member classification and zero-argument replay bounded, distinguish usable uncached native results from unfinished queries, conservatively finish unsupported projected provenance, and retain Lua nil exclusion and union-key validation through kernel b6a9fbf.",
+      "patch_sha256": "735753861df9c9f1b895bc423646d27e925494da8393c619693e8e44d96f03a3"
+    },
+    {
+      "path": "src/sema/check/native_aliases.rs",
+      "patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch",
+      "reason": "Keep host-policy member classification and zero-argument replay bounded, distinguish usable uncached native results from unfinished queries, conservatively finish unsupported projected provenance, and retain Lua nil exclusion and union-key validation through kernel b6a9fbf.",
+      "patch_sha256": "735753861df9c9f1b895bc423646d27e925494da8393c619693e8e44d96f03a3"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch",
+      "reason": "Keep host-policy member classification and zero-argument replay bounded, distinguish usable uncached native results from unfinished queries, conservatively finish unsupported projected provenance, and retain Lua nil exclusion and union-key validation through kernel b6a9fbf.",
+      "patch_sha256": "735753861df9c9f1b895bc423646d27e925494da8393c619693e8e44d96f03a3"
+    },
+    {
+      "path": "src/sema/check/native_flow_calls.rs",
+      "patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch",
+      "reason": "Keep host-policy member classification and zero-argument replay bounded, distinguish usable uncached native results from unfinished queries, conservatively finish unsupported projected provenance, and retain Lua nil exclusion and union-key validation through kernel b6a9fbf.",
+      "patch_sha256": "735753861df9c9f1b895bc423646d27e925494da8393c619693e8e44d96f03a3"
+    },
+    {
+      "path": "src/sema/check/native_query_context.rs",
+      "patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch",
+      "reason": "Keep host-policy member classification and zero-argument replay bounded, distinguish usable uncached native results from unfinished queries, conservatively finish unsupported projected provenance, and retain Lua nil exclusion and union-key validation through kernel b6a9fbf.",
+      "added": true,
+      "patch_sha256": "735753861df9c9f1b895bc423646d27e925494da8393c619693e8e44d96f03a3"
+    },
+    {
+      "path": "src/sema/check/native_standard_assumptions.rs",
+      "patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch",
+      "reason": "Keep host-policy member classification and zero-argument replay bounded, distinguish usable uncached native results from unfinished queries, conservatively finish unsupported projected provenance, and retain Lua nil exclusion and union-key validation through kernel b6a9fbf.",
+      "patch_sha256": "735753861df9c9f1b895bc423646d27e925494da8393c619693e8e44d96f03a3"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch",
+      "reason": "Keep host-policy member classification and zero-argument replay bounded, distinguish usable uncached native results from unfinished queries, conservatively finish unsupported projected provenance, and retain Lua nil exclusion and union-key validation through kernel b6a9fbf.",
+      "patch_sha256": "735753861df9c9f1b895bc423646d27e925494da8393c619693e8e44d96f03a3"
     }
   ],
   "source_additions": {
@@ -1793,7 +1836,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
     },
     "src/sema/check/native_aliases.rs": {
-      "extracted_sha256": "82a7bcaaf038bf4c772a37c406d453311bb076f1753cbdac1442c252d1233579",
+      "extracted_sha256": "6e8cd0d1beb68392081d9920a7fde6e86572e6f4b440c1043a7a2a8aa66e4da0",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_assertions.rs": {
@@ -1801,11 +1844,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "6e239bfa71995ceb6d6f430929022875f273f8cb6e7b0704d3e0a3625a130c0e",
+      "extracted_sha256": "aa3f758b836701d5f52080649b6c22cf2cc1e871700c296d8a0e0f4e26a3de74",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_flow_calls.rs": {
-      "extracted_sha256": "bc87bdf1edfa3b2ed7a13c201b7c78cd594ff5660220059a6af37e74b7221c66",
+      "extracted_sha256": "b58ce3afe6596c010de32ac8c6206ed241d4428c6113192eef1c385ddff48f67",
       "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
     },
     "src/sema/check/native_globals.rs": {
@@ -1832,6 +1875,10 @@
       "extracted_sha256": "17f1124e6fe2361a7ca2c40123239994a9a8f51557fb4b11e6f9245a9cd5ef96",
       "introduced_by_patch": "vendor/patches/bun-sema-native-module-queries.patch"
     },
+    "src/sema/check/native_query_context.rs": {
+      "extracted_sha256": "852845a44307f13ca1b5cde6b80e9eeb0af5a638aadb89f6b450ec6fec594cb1",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch"
+    },
     "src/sema/check/native_runtime.rs": {
       "extracted_sha256": "342eddd8d416a3dd997baa60622bbcf083fef98bd04973253e8cab4e4d9bc118",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
@@ -1845,11 +1892,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_standard_assumptions.rs": {
-      "extracted_sha256": "5d14432b53ca8cb8985166ce33ff816f4fc1cf015cb7470a5d0956a64793c5e5",
+      "extracted_sha256": "c7763de5a67439be0e3119b85ceb61f1db4b8d0e2e59ca5f76ff260d031b0b1a",
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "fe6bfd2e36dbd624012222bad673d6157d1acdebf3cd799ba6b43173a435e833",
+      "extracted_sha256": "5b83aec61a365fe897664442d334b71b1e40c3abc5706e72e15ec539094e2938",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2807,7 +2854,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "ea7fc6e7ebe5f5cf8f7397ed223b52b86fe64d56989eceae18708d4cdd43cdb7"
+      "extracted_sha256": "3b8228e59d6388ba0f369236145604d3081f81dc49dd3197358c5e2cbf2f3664"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",

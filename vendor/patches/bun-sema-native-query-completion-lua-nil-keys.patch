@@ -1,0 +1,298 @@
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index d99591f..5e5e66c 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -55,6 +55,7 @@ mod expr;
+ mod flow;
+ mod flow_walk;
+ pub mod native_flow;
++mod native_query_context;
+ pub mod native_aliases;
+ pub mod native_iterators;
+ pub mod native_packs;
+diff --git a/src/sema/check/native_aliases.rs b/src/sema/check/native_aliases.rs
+index 35dc145..d230bc8 100644
+--- a/src/sema/check/native_aliases.rs
++++ b/src/sema/check/native_aliases.rs
+@@ -158,8 +158,12 @@ impl Origin {
+ impl<'p, 's> Checker<'p, 's> {
+     pub(super) fn native_alias_execution_key(&self) -> u64 { self.native_alias_cache.frame() }
+     pub(super) fn native_alias_execution_depth(&self) -> usize { self.native_alias_cache.executions.len() }
++    /// Selects an original callee only within the caller-state replay capability.
+     pub(super) fn native_reached_callee(&mut self, provider: &dyn NativeFlowProvider, call: NativeValueKey, input: NativeFlowKey) -> NativeReachedCallee {
+         let Some(recipe) = provider.alias_call_source(call, input) else { return NativeReachedCallee::Unsupported };
++        // Formal/actual substitution is unsupported. Reject the original
++        // argument recipe before asking for physical callee provenance.
++        if !recipe.arguments.is_empty() { return NativeReachedCallee::Unsupported }
+         if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeReachedCallee::Unsupported }
+         let origins = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
+         if origins.uncertain { return NativeReachedCallee::Pending }
+@@ -994,6 +998,7 @@ impl<'p, 's> Checker<'p, 's> {
+         if let Some(result) = self.native_alias_cache.projected_references.get(&key) { return result.clone() }
+         let query = Query::NativeAliasProjectedReference(reference, at, path_id, epoch, frame);
+         if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
++        let context = self.native_query_context();
+         let begun = self.begin_memoizable();
+         let mut result = match provider.node(at) {
+             // An immutable captured cell preserves its table identity, not
+@@ -1023,7 +1028,7 @@ impl<'p, 's> Checker<'p, 's> {
+             // Heap contents may change across a call even when the base cell
+             // remains stable. Neither a loop site nor a captured activation is
+             // an identity proof for the projected object.
+-            Some(NativeFlowNode::Call { .. } | NativeFlowNode::Loop { .. }) => Origins::unknown(),
++            Some(NativeFlowNode::Call { .. } | NativeFlowNode::Loop { .. }) => Origins::unavailable(),
+             Some(NativeFlowNode::Unreachable | NativeFlowNode::Return { .. }) => Origins::non_table(),
+             _ => Origins::unknown(),
+         };
+@@ -1031,6 +1036,7 @@ impl<'p, 's> Checker<'p, 's> {
+         match self.leave(query) {
+             Ok(stored) if memoizable.is_some() && !result.uncertain && !self.is_stack_low() => self.native_alias_cache.projected_reference(key, result.clone(), stored),
+             Ok(_) if memoizable.is_some() => {},
++            Err(_) if self.native_complete_without_cache(context, memoizable.is_some()) => {},
+             _ => { result.unknown = true; result.uncertain = true; self.mark_tainted_from(0); },
+         }
+         result
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index 37c4de6..4fe7bba 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -312,6 +312,9 @@ pub trait NativeFlowProvider {
+     fn reference_member_path(&self, reference: NativeReferenceKey, member: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<Vec<NativeTableKey>> {
+         self.reference_member_key(reference, member, checker).map(|key| vec![key])
+     }
++    /// Existing canonical proper prefixes of one original member address.
++    /// This supplies no runtime alias relationship or inferred receiver type.
++    fn reference_proper_prefixes(&self, _: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> { None }
+     /// Original immutable predicate recipe for a verified assertion argument.
+     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
+     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
+@@ -1383,6 +1386,10 @@ impl<'s, 'p> Checker<'s, 'p> {
+ 
+     pub(super) fn native_runtime_type(&mut self, ty: TypeId, kind: &NativeRuntimeType, sense: bool) -> TypeId {
+         match kind {
++            // Lua has one nil value. JS `typeof x !== "undefined"` retains
++            // null, including a synthetic T & null branch for type parameters.
++            // Exclude both native nullish carriers through the shared worker.
++            NativeRuntimeType::Nil if !sense => return self.non_nullable(ty),
+             NativeRuntimeType::Table => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Table, sense),
+             NativeRuntimeType::Function => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Function, sense),
+             _ => {}
+@@ -1545,6 +1552,7 @@ impl<'s, 'p> Checker<'s, 'p> {
+             // its own in-progress loop is unavailable, not proof of no effect.
+             return NativeEffectResult::Pending;
+         }
++        let context = self.native_query_context();
+         let begun = self.begin_memoizable();
+         let effects = provider.call_effects(value, input, self);
+         let stored = self.end_memoizable(begun);
+@@ -1552,6 +1560,9 @@ impl<'s, 'p> Checker<'s, 'p> {
+             Ok(_) if stored.is_some() && !self.is_stack_low() => {
+                 self.flow_memo.native_state.call_effects.insert(key, effects);
+             }
++            Err(_) if self.native_complete_without_cache(context, stored.is_some()) => {
++                return NativeEffectResult::Complete(effects);
++            }
+             Err(open) => {
+                 let raw = self.flow_memo.native_state.effect_records.len() as u64;
+                 self.flow_memo.native_state.effect_records.push(effects);
+diff --git a/src/sema/check/native_flow_calls.rs b/src/sema/check/native_flow_calls.rs
+index 3f5e551..dd0f94c 100644
+--- a/src/sema/check/native_flow_calls.rs
++++ b/src/sema/check/native_flow_calls.rs
+@@ -131,9 +131,6 @@ impl<'p, 's> Checker<'p, 's> {
+             NativeReachedCallee::Pending => return CallState::Pending,
+             NativeReachedCallee::Unsupported => return CallState::Unsupported,
+         };
+-        // Formal/actual alias substitution is a separate capability. This
+-        // boundary never invents reference identities for argument bindings.
+-        if !recipe.arguments.is_empty() { return CallState::Unsupported }
+         let ty = provider.alias_callee_type(recipe.callee.value, recipe.callee.input, self);
+         let Some(signature) = self.native_implementation_signature(ty) else { return CallState::Unsupported };
+         if self.sig_native_decl(signature).is_none_or(|actual| actual.0 != function)
+diff --git a/src/sema/check/native_query_context.rs b/src/sema/check/native_query_context.rs
+new file mode 100644
+index 0000000..6caf54b
+--- /dev/null
++++ b/src/sema/check/native_query_context.rs
+@@ -0,0 +1,31 @@
++//! A result can be usable in this inference context without being cacheable.
++use super::Checker;
++
++#[derive(Clone, Copy)]
++pub(super) struct NativeQueryContext {
++    serial: u64,
++    inherited_taint: bool,
++}
++
++impl Checker<'_, '_> {
++    pub(super) fn native_query_context(&self) -> NativeQueryContext {
++        let frame = self.frames.last().expect("entered native query");
++        NativeQueryContext {
++            serial: frame.serial,
++            inherited_taint: frame.tainted && !frame.circular && !frame.incomplete_flow,
++        }
++    }
++
++    /// Consume only this finished query's sidecar. The caller gets no Stored
++    /// permission, and every enclosing frame and inference scope stays intact.
++    pub(super) fn native_complete_without_cache(&mut self, context: NativeQueryContext, memoizable: bool) -> bool {
++        if !context.inherited_taint || !memoizable
++            || self.lowest_taint_since(context.serial) != usize::MAX
++            || !self.left_frame.as_ref().is_some_and(|frame| {
++                frame.serial == context.serial && !frame.circular && !frame.incomplete_flow
++            })
++        { return false }
++        self.left_frame.take();
++        true
++    }
++}
+diff --git a/src/sema/check/native_standard_assumptions.rs b/src/sema/check/native_standard_assumptions.rs
+index 6dab4d0..c69b8e1 100644
+--- a/src/sema/check/native_standard_assumptions.rs
++++ b/src/sema/check/native_standard_assumptions.rs
+@@ -119,6 +119,7 @@ impl<'p, 's> Checker<'p, 's> {
+         if let Some(result) = self.native_alias_cache.standard_values.get(&key) { return result.clone() }
+         let query = Query::NativeStandardValue(value, input, key.2, key.3);
+         if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
++        let context = self.native_query_context();
+         let (mut result, completed) = self.run_memoizable(|checker| {
+             if let Some(member) = provider.value_alias_environment_member(value, input)
+                 && let NativeAliasInitial::GlobalValue(binding) = provider.reference_alias_initial(member.reference)
+@@ -141,8 +142,12 @@ impl<'p, 's> Checker<'p, 's> {
+                 _ => Origins::unavailable(),
+             }
+         });
+-        if self.leave(query).is_err() || completed.is_none() { result.uncertain = true; self.mark_tainted_from(0); }
+-        if !result.uncertain && !self.is_stack_low() { self.native_alias_cache.standard_values.insert(key, result.clone()); }
++        let cacheable = match self.leave(query) {
++            Ok(_) if completed.is_some() => true,
++            Err(_) if self.native_complete_without_cache(context, completed.is_some()) => false,
++            _ => { result.uncertain = true; self.mark_tainted_from(0); false },
++        };
++        if cacheable && !result.uncertain && !self.is_stack_low() { self.native_alias_cache.standard_values.insert(key, result.clone()); }
+         result
+     }
+ 
+@@ -179,7 +184,16 @@ impl<'p, 's> Checker<'p, 's> {
+             for row in rows {
+                 if !matches!(provider.node(row.at), Some(NativeFlowNode::Return { .. })) { return Origins::unavailable() }
+                 let Some(value) = row.values.first() else { result.non_table = true; continue };
+-                result.merge(checker.native_standard_value(provider, value.value, value.input));
++                let mut returned = checker.native_standard_value(provider, value.value, value.input);
++                // A fresh return belongs to this original call, not to every
++                // invocation of the constructor expression in the callee.
++                // Captured/argument allocations retain their original owner.
++                returned.tokens = returned.tokens.into_iter().map(|origin| {
++                    if origin.allocation_input().is_some_and(|allocated| allocated.graph == execution.entry.graph) {
++                        Origin::CallAllocation(call, recipe.execution_input, Box::new(origin))
++                    } else { origin }
++                }).collect();
++                result.merge(returned);
+             }
+             // Structural terminal shape is sufficient for these simple return
+             // recipes. More complex implicit exits stay ordinary; no typed
+@@ -196,9 +210,14 @@ impl<'p, 's> Checker<'p, 's> {
+         if let Some(result) = self.native_alias_cache.standard_references.get(&key) { return result.clone() }
+         let query = Query::NativeStandardReference(reference, at, key.2, key.3);
+         if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
++        let context = self.native_query_context();
+         let (mut result, completed) = self.run_memoizable(|checker| checker.native_standard_reference_worker(provider, reference, at));
+-        if self.leave(query).is_err() || completed.is_none() { result.uncertain = true; self.mark_tainted_from(0); }
+-        if !result.uncertain && !self.is_stack_low() { self.native_alias_cache.standard_references.insert(key, result.clone()); }
++        let cacheable = match self.leave(query) {
++            Ok(_) if completed.is_some() => true,
++            Err(_) if self.native_complete_without_cache(context, completed.is_some()) => false,
++            _ => { result.uncertain = true; self.mark_tainted_from(0); false },
++        };
++        if cacheable && !result.uncertain && !self.is_stack_low() { self.native_alias_cache.standard_references.insert(key, result.clone()); }
+         result
+     }
+ 
+@@ -254,8 +273,10 @@ impl<'p, 's> Checker<'p, 's> {
+                 // Always transfer an observed assignment before considering
+                 // unsupported dispatch. A later unknown operation cannot
+                 // restore the original standard value.
+-                let relation = if provider.reference_is_cell(reference) { provider.write_affects(reference, target, at) }
+-                    else { provider.write_affects_with_types(reference, target, at, self) };
++                let relation = match self.native_standard_write_relation(provider, reference, target, at, before) {
++                    Ok(relation) => relation,
++                    Err(()) => return Origins::unknown(),
++                };
+                 match relation {
+                     NativeWriteRelation::Exact => self.native_standard_value(provider, value, input),
+                     NativeWriteRelation::PossibleExact => {
+@@ -296,6 +317,46 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+     }
+ 
++    /// Operation classification uses original value recipes under the host
++    /// policy. It must not ask the physical alias/purity walker to prove every
++    /// unrelated heap store before classifying an ordinary member call.
++    fn native_standard_write_relation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, before: NativeFlowKey) -> Result<NativeWriteRelation, ()> {
++        let direct = provider.write_affects(reference, target, at);
++        if provider.reference_is_cell(reference) || provider.reference_is_cell(target) { return Ok(direct) }
++        let Some(prefixes) = provider.reference_proper_prefixes(reference) else {
++            return Ok(provider.write_affects_with_types(reference, target, at, self));
++        };
++        let Some(receiver) = provider.write_alias_receiver(at) else {
++            return Ok(provider.write_affects_with_types(reference, target, at, self));
++        };
++        let written = provider.write_member_key(reference, target, at, self).and_then(|key| key.normalize().ok());
++        let receiver = self.native_standard_value(provider, receiver.value, receiver.input);
++        if receiver.uncertain { return Err(()) }
++        let mut possible = None;
++        for prefix in prefixes {
++            let path = provider.reference_member_path(prefix, reference, self);
++            if let Some(path) = &path && written.is_some_and(|key| path.first().and_then(|key| key.normalize().ok()) != Some(key)) { continue }
++            let original = self.native_standard_reference(provider, prefix, before);
++            if original.uncertain { return Err(()) }
++            if !original.unknown && !receiver.unknown && original.tokens.is_disjoint(&receiver.tokens) { continue }
++            let same = !original.unknown && !receiver.unknown && !original.non_table && !receiver.non_table
++                && !original.maybe_nil && !receiver.maybe_nil && original.tokens.len() == 1 && original.tokens == receiver.tokens;
++            let relation = if path.as_ref().is_some_and(|path| path.len() == 1) { NativeWriteRelation::Exact }
++                else { NativeWriteRelation::Ancestor };
++            if same && written.is_some() && path.is_some() { return Ok(relation) }
++            // A completed unknown receiver is an unknown host effect. Preserve
++            // unrelated original addresses, but retain known alias alternatives
++            // and every direct possibly affected store conservatively.
++            if same || !original.tokens.is_disjoint(&receiver.tokens) || direct != NativeWriteRelation::Unaffected {
++                possible = Some(match relation {
++                    NativeWriteRelation::Exact => NativeWriteRelation::PossibleExact,
++                    _ => NativeWriteRelation::PossibleAncestor,
++                });
++            }
++        }
++        Ok(possible.unwrap_or(NativeWriteRelation::Unaffected))
++    }
++
+     pub fn native_flow_standard_call_continuation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
+         let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
+         if self.native_assumed_environment().is_none() { return self.native_alias_call_preservation(provider, reference, call, input) }
+@@ -383,7 +444,12 @@ impl<'p, 's> Checker<'p, 's> {
+                                 Ok(None) => provider.write_affects_with_types(reference, target, at, self),
+                                 Err(()) => return NativeCallPreservation::Pending,
+                             }
+-                        } else { provider.write_affects_with_types(reference, target, at, self) };
++                        } else {
++                            match self.native_standard_write_relation(provider, reference, target, at, before) {
++                                Ok(relation) => relation,
++                                Err(()) => return NativeCallPreservation::Pending,
++                            }
++                        };
+                     if matches!(relation, NativeWriteRelation::Exact | NativeWriteRelation::PossibleExact | NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor) {
+                         return NativeCallPreservation::Unknown;
+                     }
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+index eee9f68..a3997cd 100644
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -522,6 +522,9 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     pub(super) fn native_table_valid_key_type(&self, ty: TypeId) -> bool {
++        if let TypeData::Union(parts) = self.data(ty) {
++            return parts.iter().all(|&part| self.native_table_valid_key_type(part));
++        }
+         if let TypeData::Intersection(parts) = self.data(ty) {
+             return parts.iter().any(|&part| self.native_table_valid_key_type(part));
+         }

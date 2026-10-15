@@ -410,6 +410,16 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Retain attested namespace contracts in deferred bodies, resolve proven immutable captured callees before local loop effects, and expose a structural Lua nil printer mode while preserving default TypeScript formatting through kernel 696582a.",
 } for path in ["native_named.rs", "native_standard_assumptions.rs", "print.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch",
+    "reason": "Keep host-policy member classification and zero-argument replay bounded, distinguish usable uncached native results from unfinished queries, conservatively finish unsupported projected provenance, and retain Lua nil exclusion and union-key validation through kernel b6a9fbf.",
+    **({"added": True} if path == "native_query_context.rs" else {}),
+} for path in [
+    "mod.rs", "native_aliases.rs", "native_flow.rs", "native_flow_calls.rs",
+    "native_query_context.rs", "native_standard_assumptions.rs", "native_tables.rs",
+])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
