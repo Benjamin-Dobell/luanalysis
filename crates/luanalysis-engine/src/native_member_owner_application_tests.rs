@@ -101,6 +101,7 @@ struct Provider {
     functions: Vec<SignatureSource>,
     members: Vec<MemberSource>,
     reads: Cell<usize>,
+    member_reads: RefCell<Vec<NativeTypeMemberKey>>,
     errors: RefCell<Vec<NamedTypeError>>,
     owner_dependency: Option<OwnerDependency>,
     owner_pending: Cell<bool>,
@@ -145,6 +146,7 @@ impl Provider {
             functions: vec![],
             members: vec![],
             reads: Cell::new(0),
+            member_reads: RefCell::new(vec![]),
             errors: RefCell::new(vec![]),
             owner_dependency: None,
             owner_pending: Cell::new(false),
@@ -528,6 +530,7 @@ impl NativeTypeProvider for Provider {
             "pure heads use their original signature keys"
         );
         self.reads.set(self.reads.get() + 1);
+        self.member_reads.borrow_mut().push(key);
         source.value.clone()
     }
     fn type_member_signatures(&self, key: NativeTypeMemberKey) -> Option<Vec<NativeSignatureKey>> {
@@ -726,9 +729,12 @@ fn direct_indexer_store_context_maps_the_original_captured_key_before_matching()
         |provider, queries| {
             assert_eq!(queries.named_member_context(member(1)), Ok(Some(Type::String)));
             assert_eq!(queries.named_member_context(member(2)), Ok(None));
+            assert_eq!(&*provider.member_reads.borrow(), &[member(0)], "neither assignment RHS defines a written indexer contract");
             let numeric = queries.named_type_reference(declaration(0), &[Type::Number]).unwrap();
             assert_eq!(queries.table_lookup(&numeric, &TableKey::Literal(LuaKey::Integer(3))), Ok(Type::String));
-            assert_eq!(provider.reads.get(), 1, "the assignment RHS cannot define its written indexer contract");
+            // Indexer lookup materializes the schema, including the new field
+            // outside its number domain. The contract-governed store stays lazy.
+            assert_eq!(&*provider.member_reads.borrow(), &[member(0), member(2)]);
             assert!(provider.errors.borrow().is_empty(), "{:#?}", provider.errors.borrow());
         },
     );
