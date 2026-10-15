@@ -28,7 +28,7 @@ local function enter(object, unrelated)
 end
 "#;
 
-const ZONE_CONDITION: &str = r#"---@class HostObject : userdata
+const ZONE_CONDITION: &str = r#"---@class HostObject
 ---@field spawning boolean
 ---@field isSmoothMoving fun():boolean
 ---@field held_by_color nil|string
@@ -191,7 +191,10 @@ fn cli_checks_nonunion_storage_after_an_impossible_property_guard() {
     ));
     fs::create_dir_all(&directory).unwrap();
     let file = directory.join("main.lua");
-    fs::write(&file, RECORDS).unwrap();
+    // The API reduction needs no standard declarations. This CLI control adds
+    // the real host object's opaque runtime domain under the selected profile.
+    let source = format!("{RECORDS}{}", ZONE_CONDITION.replace("---@class HostObject\n", "---@class HostObject : userdata\n"));
+    fs::write(&file, &source).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
         .args(["check", "--lua-version", "5.2"])
         .arg(&file)
@@ -204,7 +207,7 @@ fn cli_checks_nonunion_storage_after_an_impossible_property_guard() {
     );
     fs::write(
         &file,
-        RECORDS.replace("record.child=42", "record.child='wrong'"),
+        source.replace("record.child=42", "record.child='wrong'"),
     )
     .unwrap();
     let wrong = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
@@ -216,7 +219,28 @@ fn cli_checks_nonunion_storage_after_an_impossible_property_guard() {
     let text = String::from_utf8(wrong.stderr).unwrap();
     assert!(text.contains("error[TS2322]"), "{text}");
     assert!(!text.contains("never"), "{text}");
-    fs::write(&file, RECORDS).unwrap();
+    fs::write(&file, &source).unwrap();
+    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        .args(["check", "--lua-version", "5.2"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert!(
+        corrected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&corrected.stderr)
+    );
+    fs::write(&file, source.replace("object.getPosition()", "object.getPosition('wrong')")).unwrap();
+    let wrong_argument = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        .args(["check", "--lua-version", "5.2"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    assert_eq!(wrong_argument.status.code(), Some(1));
+    let text = String::from_utf8(wrong_argument.stderr).unwrap();
+    assert!(text.contains("error[TS2554]"), "{text}");
+    assert!(!text.contains("never"), "{text}");
+    fs::write(&file, &source).unwrap();
     let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
         .args(["check", "--lua-version", "5.2"])
         .arg(&file)
