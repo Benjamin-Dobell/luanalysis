@@ -255,7 +255,8 @@ impl Checker<'_> {
             .map(|native| native.expression_key_for_span(span));
         let result =
             self.engine
-                .call_native_arguments_scalar(&callee, call, &arguments, &[], expected);
+                .call_native_arguments_scalar_in_frame(&callee, call, &arguments, &[], expected,
+                    luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         self.call_result(result, &callee, &origins, name.span, span)
     }
 
@@ -273,7 +274,8 @@ impl Checker<'_> {
             .map(|native| native.expression_key_for_span(span));
         let result = self
             .engine
-            .call_native_arguments(&callee, call, &arguments, &[], expected);
+            .call_native_arguments_in_frame(&callee, call, &arguments, &[], expected,
+                luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         self.pack_call_result(result, &callee, &origins, name.span, span)
     }
 

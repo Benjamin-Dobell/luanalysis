@@ -73,7 +73,7 @@ impl<'p, 's> Checker<'p, 's> {
             NativeCallArgument::Resolved(ty) => Arg::Resolved(ty),
             NativeCallArgument::Expression(expression) => {
                 assert!(self.contains_native_expression(expression));
-                Arg::Native(expression)
+                Arg::Native(self.native_argument_expression(expression))
             }
             NativeCallArgument::Expand(pack) => {
                 assert_eq!(index + 1, args.len(), "only the final native argument expands");
@@ -82,7 +82,7 @@ impl<'p, 's> Checker<'p, 's> {
             NativeCallArgument::ExpandExpression(expression) => {
                 assert_eq!(index + 1, args.len(), "only the final native argument expands");
                 assert!(self.contains_native_expression(expression));
-                Arg::NativePack(expression)
+                Arg::NativePack(self.native_argument_expression(expression))
             }
         }).collect()
     }
@@ -109,7 +109,7 @@ impl<'p, 's> Checker<'p, 's> {
     ) -> NativeResultPackCall {
         assert!(self.contains_native_expression(call));
         assert!(args.iter().all(|&arg| self.contains_native_expression(arg)));
-        let args: Vec<Arg> = args.iter().copied().map(Arg::Native).collect();
+        let args: Vec<Arg> = args.iter().copied().map(|expression| Arg::Native(self.native_argument_expression(expression))).collect();
         let resolved = self.resolve_native_arguments_with_result_pack(callee, &args, type_args, None, expected);
         self.result_pack_of_native_call(resolved)
     }

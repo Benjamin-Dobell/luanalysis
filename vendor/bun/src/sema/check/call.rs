@@ -67,12 +67,19 @@ impl crate::table::Packed for ResolvedCall {
 }
 
 #[derive(Copy, Clone)]
+pub(super) struct NativeArgumentExpression {
+    pub expression: NativeExpressionId,
+    contextual: Option<NativeFunctionContext>,
+    captured: Option<NativeCapturedFunctionContext>,
+}
+
+#[derive(Copy, Clone)]
 pub(super) enum Arg {
     /// An already checked value with no TS syntax node.
     Resolved(TypeId),
-    Native(NativeExpressionId),
+    Native(NativeArgumentExpression),
     ResolvedPack(NativeResultPack),
-    NativePack(NativeExpressionId),
+    NativePack(NativeArgumentExpression),
     Expr(ExprId),
     /// `createSyntheticExpression`: a type, and its label (`tupleNameSource`) or `NONE`. The last
     /// field is the node it is positioned at: the argument whose tuple it is an element of, the
@@ -220,6 +227,41 @@ enum SigParent {
 }
 
 impl<'p, 's> Checker<'p, 's> {
+    pub(super) fn native_argument_expression(&self, expression: NativeExpressionId) -> NativeArgumentExpression {
+        NativeArgumentExpression {
+            expression,
+            contextual: self.current_native_function_context(),
+            captured: self.current_native_captured_function(),
+        }
+    }
+
+    /// Original arguments execute in their caller's frame, including explicit
+    /// declaration-space absence. Inference/recheck scopes are independent.
+    pub fn with_native_function_frame<R>(
+        &mut self,
+        contextual: Option<NativeFunctionContext>,
+        captured: Option<NativeCapturedFunctionContext>,
+        work: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let outside_contextual = std::mem::replace(&mut self.native_function_contexts, contextual.into_iter().collect());
+        let outside_captured = std::mem::replace(&mut self.native_capture_contexts, captured.into_iter().collect());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
+        self.native_function_contexts = outside_contextual;
+        self.native_capture_contexts = outside_captured;
+        result.unwrap_or_else(|error| std::panic::resume_unwind(error))
+    }
+
+    /// Ordinary provider recipes are declaration-relative. Their result is
+    /// instantiated by the native signature worker after the callback returns.
+    pub(super) fn with_native_declaration_frame<R>(
+        &mut self,
+        declaration: NativeFunctionId,
+        work: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let signature = self.types().intern_sig(SigData::Native { declaration, mapper: MapperId::IDENTITY });
+        self.with_native_function_frame(None, Some(NativeCapturedFunctionContext { signature }), work)
+    }
+
     pub fn current_native_function_context(&self) -> Option<NativeFunctionContext> {
         self.native_function_contexts.last().copied()
     }
@@ -459,7 +501,7 @@ impl<'p, 's> Checker<'p, 's> {
     ) -> ResolvedTypeCall {
         assert!(self.contains_native_expression(call));
         assert!(arguments.iter().all(|&arg| self.contains_native_expression(arg)));
-        let args: Args = arguments.iter().copied().map(Arg::Native).collect();
+        let args: Args = arguments.iter().copied().map(|expression| Arg::Native(self.native_argument_expression(expression))).collect();
         self.resolve_native_arguments(callee, &args, type_args, expected_return)
     }
 
@@ -552,7 +594,7 @@ impl<'p, 's> Checker<'p, 's> {
         let is_single_non_generic = candidates.len() == 1 && self.sig_type_params(sig).is_empty();
         let has_context_sensitive = args.iter().any(|arg| match arg {
             Arg::Native(expression) | Arg::NativePack(expression) => self.native_function_provider
-                .is_some_and(|provider| provider.is_context_sensitive(*expression)),
+                .is_some_and(|provider| provider.is_context_sensitive(expression.expression)),
             _ => false,
         });
         let mut state = CallState {
@@ -3495,6 +3537,18 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub(super) fn check_native_argument(
         &mut self,
+        argument: NativeArgumentExpression,
+        expected: Option<TypeId>,
+        inference_context: Option<&mut Inference>,
+        mode: CheckMode,
+    ) -> TypeId {
+        self.with_native_function_frame(argument.contextual, argument.captured, |checker| {
+            checker.check_native_argument_in_frame(argument.expression, expected, inference_context, mode)
+        })
+    }
+
+    fn check_native_argument_in_frame(
+        &mut self,
         expression: NativeExpressionId,
         expected: Option<TypeId>,
         mut inference_context: Option<&mut Inference>,
@@ -3536,6 +3590,18 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub(super) fn check_native_argument_pack(
+        &mut self,
+        argument: NativeArgumentExpression,
+        expected: Option<NativeResultPack>,
+        inference_context: Option<&mut Inference>,
+        mode: CheckMode,
+    ) -> NativeResultPack {
+        self.with_native_function_frame(argument.contextual, argument.captured, |checker| {
+            checker.check_native_argument_pack_in_frame(argument.expression, expected, inference_context, mode)
+        })
+    }
+
+    fn check_native_argument_pack_in_frame(
         &mut self,
         expression: NativeExpressionId,
         expected: Option<NativeResultPack>,

@@ -4930,7 +4930,7 @@ impl<'p, 's> Checker<'p, 's> {
                         let context = NativeCapturedFunctionContext { signature: sig };
                         self.with_native_captured_function(context, |c| provider.parameters_in_capture(c, declaration, context))
                     }
-                    _ => provider.parameters(self, declaration),
+                    _ => self.with_native_declaration_frame(declaration, |c| provider.parameters(c, declaration)),
                 };
                 let params: Vec<SigParam> = params
                     .into_iter()
@@ -5130,7 +5130,7 @@ impl<'p, 's> Checker<'p, 's> {
             }
             SigData::Native { declaration, mapper } => {
                 let provider = self.native_provider_for(declaration);
-                let declared = provider.declared_scalar_return_type(self, declaration)?;
+                let declared = self.with_native_declaration_frame(declaration, |c| provider.declared_scalar_return_type(c, declaration))?;
                 Some(self.instantiate(declared, mapper))
             }
             SigData::NativeCaptured { declaration, mapper, .. } => {
@@ -5155,7 +5155,8 @@ impl<'p, 's> Checker<'p, 's> {
     pub fn sig_declared_result_pack_contract(&mut self, sig: SigId) -> Option<NativeResultPack> {
         let (result, mapper) = match *self.types().sig(sig) {
             SigData::Native { declaration, mapper } => {
-                (self.native_provider_for(declaration).declared_result_pack_contract(self, declaration)?, mapper)
+                let provider = self.native_provider_for(declaration);
+                (self.with_native_declaration_frame(declaration, |c| provider.declared_result_pack_contract(c, declaration))?, mapper)
             }
             SigData::NativeCaptured { declaration, mapper, .. } => {
                 let provider = self.native_provider_for(declaration);
@@ -5190,10 +5191,10 @@ impl<'p, 's> Checker<'p, 's> {
             SigData::Native { declaration, mapper } => self.resolve_return_type(sig, |c| {
                 let provider = c.native_provider_for(declaration);
                 if provider.has_result_pack(declaration) {
-                    let result = provider.return_pack_result(c, declaration);
+                    let result = c.with_native_declaration_frame(declaration, |c| provider.return_pack_result(c, declaration));
                     return c.resolve_native_pack_result(result, mapper);
                 }
-                let declared = provider.return_type(c, declaration);
+                let declared = c.with_native_declaration_frame(declaration, |c| provider.return_type(c, declaration));
                 c.instantiate(declared, mapper)
             }),
             SigData::NativeContextual { declaration, mapper, context, .. } => {

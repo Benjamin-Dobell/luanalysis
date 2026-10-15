@@ -129,6 +129,14 @@ pub struct ContextualFunctionContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidContextualFunctionContext(pub ContextualFunctionContext);
 
+/// Exact source caller frame. `None` is declaration space, not inheritance
+/// from an unrelated native query that happens to be active during reentry.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeCallerFrame {
+    pub contextual: Option<ContextualFunctionContext>,
+    pub captured: Option<CapturedFunctionContext>,
+}
+
 /// A capability for an exact type in one checker session. Its ordinal is not a
 /// backend type ID, and callers cannot construct or change its owner epoch.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -735,6 +743,24 @@ pub trait TypeQueries {
         type_arguments: &[Type],
         expected: Option<&ValuePack>,
     ) -> PackCallResult;
+    fn call_native_arguments_scalar_in_frame(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected_return: Option<&Type>,
+        caller: NativeCallerFrame,
+    ) -> CallResult;
+    fn call_native_arguments_in_frame(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected: Option<&ValuePack>,
+        caller: NativeCallerFrame,
+    ) -> PackCallResult;
     fn call_arguments_pack(
         &mut self,
         callee: &Type,
@@ -1166,6 +1192,38 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         expected: Option<&ValuePack>,
     ) -> PackCallResult {
         self.call_native_arguments_owned(callee, call, arguments, type_arguments, expected)
+    }
+    fn call_native_arguments_scalar_in_frame(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected_return: Option<&Type>,
+        caller: NativeCallerFrame,
+    ) -> CallResult {
+        let contextual = caller.contextual.as_ref().map(|context| self.handles.resolve_context(context));
+        let captured = caller.captured.as_ref().map(|context| self.handles.resolve_capture(context));
+        let handles = self.handles;
+        self.checker.with_native_function_frame(contextual, captured, |checker| {
+            SessionQueries { checker, handles }.call_native_arguments_scalar_owned(callee, call, arguments, type_arguments, expected_return)
+        })
+    }
+    fn call_native_arguments_in_frame(
+        &mut self,
+        callee: &Type,
+        call: Option<NativeExpressionKey>,
+        arguments: &[PackArgument],
+        type_arguments: &[Type],
+        expected: Option<&ValuePack>,
+        caller: NativeCallerFrame,
+    ) -> PackCallResult {
+        let contextual = caller.contextual.as_ref().map(|context| self.handles.resolve_context(context));
+        let captured = caller.captured.as_ref().map(|context| self.handles.resolve_capture(context));
+        let handles = self.handles;
+        self.checker.with_native_function_frame(contextual, captured, |checker| {
+            SessionQueries { checker, handles }.call_native_arguments_owned(callee, call, arguments, type_arguments, expected)
+        })
     }
     fn call_pack(
         &mut self,
@@ -2989,6 +3047,7 @@ mod tests {
         callback_modes: std::cell::RefCell<Vec<NativeCheckMode>>,
         captures: std::cell::RefCell<Vec<CapturedFunctionContext>>,
         parent_parameter_observations: std::cell::RefCell<Vec<Type>>,
+        argument_frames: std::cell::RefCell<Vec<NativeCallerFrame>>,
     }
     impl ContextualProvider {
         fn expression(node: u32) -> NativeExpressionKey {
@@ -3084,7 +3143,7 @@ mod tests {
             StaticGenericProvider.type_parameter_siblings(key)
         }
         fn contains_expression(&self, key: NativeExpressionKey) -> bool {
-            key.snapshot == 92 && key.node < 14
+            key.snapshot == 92 && key.node < 16
         }
         fn is_context_sensitive(&self, key: NativeExpressionKey) -> bool {
             matches!(key.node, 2 | 4 | 5 | 7 | 11 | 13)
@@ -3107,6 +3166,15 @@ mod tests {
             queries: &mut dyn TypeQueries,
         ) -> Type {
             match key.node {
+                14 | 15 => {
+                    let frame = NativeCallerFrame {
+                        contextual: queries.current_contextual_function(),
+                        captured: queries.current_captured_function(),
+                    };
+                    self.argument_frames.borrow_mut().push(frame);
+                    if key.node == 15 { return Type::NumberLiteral(42.0); }
+                    queries.captured_binding(&frame.captured.expect("original argument retains its caller"), Self::binding()).unwrap()
+                }
                 1 => Type::Number,
                 3 => Type::String,
                 12 => StaticGenericProvider::variable(0),
@@ -3252,6 +3320,42 @@ mod tests {
             self.captures.borrow_mut().push(*context);
             queries.captured_binding(context, Self::binding()).unwrap()
         }
+    }
+
+    #[test]
+    fn delayed_native_arguments_restore_caller_frames_for_scalar_pack_and_declaration_space() {
+        Engine::new().with_native_provider(ContextualProvider::default, |provider, queries| {
+            let mut frames = Vec::new();
+            for (function, expression, value) in [(0, 2, Type::Number), (2, 5, Type::String)] {
+                let raw = queries.captured_function(ContextualProvider::function(function), &[(ContextualProvider::binding(), value.clone())]);
+                let expected = StaticGenericProvider::callback(Some(value), Type::Any);
+                let value = queries.contextual_function_value(&raw, ContextualProvider::expression(expression), &expected, NativeCheckMode::empty());
+                let captured = queries.function_capture_context(&value).unwrap();
+                frames.push(NativeCallerFrame { contextual: queries.captured_function_context(&captured), captured: Some(captured) });
+            }
+            let caller = frames[0];
+            let foreign = frames[1];
+            let identity = Type::NativeFunction(StaticGenericProvider::function(0));
+            queries.with_captured_function(&foreign.captured.unwrap(), &mut |queries| {
+                queries.with_contextual_function(&foreign.contextual.unwrap(), &mut |queries| {
+                    let scalar = queries.call_native_arguments_scalar_in_frame(&identity, None, &[PackArgument::Expression(ContextualProvider::expression(14))], &[], None, caller);
+                    assert!(scalar.errors.is_empty(), "{scalar:?}");
+                    assert_eq!(scalar.return_type, Type::Number);
+                    let pack = queries.call_native_arguments_in_frame(&identity, None, &[PackArgument::ExpandExpression(ContextualProvider::expression(14))], &[], None, caller);
+                    assert!(pack.errors.is_empty(), "{pack:?}");
+                    assert_eq!(pack.return_type, Type::Number);
+                    let literal = queries.call_native_arguments_scalar_in_frame(&identity, None, &[PackArgument::Expression(ContextualProvider::expression(15))], &[], None, NativeCallerFrame::default());
+                    assert!(literal.errors.is_empty(), "{literal:?}");
+                    assert!(queries.is_assignable(&literal.return_type, &Type::Number));
+                    assert_eq!(queries.current_captured_function(), foreign.captured);
+                    assert_eq!(queries.current_contextual_function(), foreign.contextual);
+                });
+            });
+            let observed = provider.argument_frames.borrow();
+            assert!(observed.iter().any(|frame| frame.captured == caller.captured && frame.contextual == caller.contextual));
+            assert!(observed.iter().any(|frame| frame.captured.is_none() && frame.contextual.is_none()));
+            assert!(observed.iter().all(|frame| frame.captured != foreign.captured && frame.contextual != foreign.contextual));
+        });
     }
 
     #[test]
