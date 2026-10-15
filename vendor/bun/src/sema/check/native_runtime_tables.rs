@@ -1,7 +1,7 @@
 //! Original Lua allocation schemas and persistent structural value views.
 use super::*;
 use crate::types::{NativeResultPack, NativeRuntimeTableRef, NativeTableFieldOrigin};
-use super::native_flow::{NativeFlowKey, NativeFlowProvider};
+use crate::check::native_flow::{NativeFlowKey, NativeFlowProvider};
 
 impl<'p, 's> Checker<'p, 's> {
     pub(super) fn with_runtime_table_context<R>(&mut self, reference: NativeObjectReference, work: impl FnOnce(&mut Self) -> R) -> R {

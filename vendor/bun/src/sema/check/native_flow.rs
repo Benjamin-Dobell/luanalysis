@@ -505,6 +505,17 @@ fn numeric_first_entry(
 }
 
 impl NativeDomain<'_> {
+    fn numeric_store_transfer(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> Option<FlowType> {
+        if !checker.native_has_runtime_table(previous.ty) { return None; }
+        let (key, key_input) = self.provider.write_index_value(walk.reference, target, at)?;
+        let (result, completed) = checker.run_memoizable(|checker| {
+            let key = checker.native_flow_value(self.provider, key, key_input);
+            let value = checker.native_flow_value(self.provider, value, input);
+            checker.native_runtime_table_flow_numeric_write(self.provider, at, previous.ty, key, value)
+        });
+        let incomplete = completed.is_none() || matches!(result, Err(super::native_tables::NativeTableError::PendingContext));
+        Some(FlowType::new(result.unwrap_or(previous.ty), previous.incomplete || incomplete))
+    }
     fn auto_at_start(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey) -> Option<FlowType> {
         if walk.declared != TypeId::AUTO && !self.provider.reference_follows_creation(walk.reference) { return None; }
         let declaration = self.provider.reference_declaration(walk.reference)?;
@@ -926,17 +937,6 @@ impl FlowDomain for NativeDomain<'_> {
         FlowType::new(ty, previous.incomplete)
     }
 
-    fn numeric_store_transfer(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> Option<FlowType> {
-        if !checker.native_has_runtime_table(previous.ty) { return None; }
-        let (key, key_input) = self.provider.write_index_value(walk.reference, target, at)?;
-        let (result, completed) = checker.run_memoizable(|checker| {
-            let key = checker.native_flow_value(self.provider, key, key_input);
-            let value = checker.native_flow_value(self.provider, value, input);
-            checker.native_runtime_table_flow_numeric_write(self.provider, at, previous.ty, key, value)
-        });
-        let incomplete = completed.is_none() || matches!(result, Err(super::native_tables::NativeTableError::PendingContext));
-        Some(FlowType::new(result.unwrap_or(previous.ty), previous.incomplete || incomplete))
-    }
     fn empty_transfer(&self) -> NativeTransfer {
         NativeTransfer::Nothing
     }
