@@ -453,7 +453,7 @@ impl<'p, 's> Checker<'p, 's> {
         let query = Query::NativeAliasMetatableAbsence(value, input, before, epoch, frame);
         if !self.enter(query) { self.mark_tainted_from(0); return false }
         let begun = self.begin_memoizable();
-        let absent = self.native_alias_allocation_clear_since(provider, input, before);
+        let absent = self.native_alias_allocation_clear_since(provider, allocation, input, before);
         let stored = self.end_memoizable(begun);
         let left = self.leave(query);
         if stored.is_none() || left.is_err() { self.mark_tainted_from(0); return false }
@@ -461,7 +461,7 @@ impl<'p, 's> Checker<'p, 's> {
         absent
     }
 
-    fn native_alias_allocation_clear_since(&mut self, provider: &dyn NativeFlowProvider, input: NativeFlowKey, before: NativeFlowKey) -> bool {
+    fn native_alias_allocation_clear_since(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
         let graph = before.graph;
         let mut active = HashSet::new();
         let mut completed = HashSet::new();
@@ -483,7 +483,7 @@ impl<'p, 's> Checker<'p, 's> {
                     // A captured allocation is checked at the actual caller's
                     // input, under its parent execution capability. This is the
                     // only graph boundary; arbitrary foreign edges still fail.
-                    if !self.with_native_alias_parent(index, |checker| checker.native_alias_allocation_clear_since(provider, input, caller)) { return false }
+                    if !self.with_native_alias_parent(index, |checker| checker.native_alias_allocation_clear_since(provider, allocation, input, caller)) { return false }
                 },
                 NativeFlowNode::Write { before, .. } => {
                     // The earlier store must independently have a present raw
@@ -503,9 +503,17 @@ impl<'p, 's> Checker<'p, 's> {
                     if incoming.is_empty() || !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return false }
                     edges.extend(incoming);
                 },
-                // Even a genuine standard setmetatable call can preserve raw
-                // fields while installing __newindex on this exact allocation.
-                NativeFlowNode::Call { .. } | NativeFlowNode::Loop { .. }
+                NativeFlowNode::Call { before, value, input } => {
+                    // Preserve absence only when the original call cannot
+                    // change this allocation's metatable pointer. Raw-field
+                    // preservation alone would also admit setmetatable.
+                    match self.native_alias_metatable_call(provider, allocation, value, input) {
+                        AliasMetatableCall::Preserved => edges.push(before),
+                        AliasMetatableCall::Pending => { self.mark_tainted_from(0); return false },
+                        AliasMetatableCall::Replaced(_) | AliasMetatableCall::Unknown => return false,
+                    }
+                },
+                NativeFlowNode::Loop { .. }
                 | NativeFlowNode::IteratorStart { .. } | NativeFlowNode::Iteration { .. }
                 | NativeFlowNode::Return { .. }
                 | NativeFlowNode::Unreachable | NativeFlowNode::Unsupported(_) => return false,

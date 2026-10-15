@@ -42,7 +42,7 @@ fn a_callee_rhs_reads_the_callers_current_heap_value() {
 
 #[test]
 fn repeated_original_calls_keep_each_actual_entry_state_separate() {
-    let source = "local value={\n---@type number|string\ncurrent=1,\n}\nlocal function install() value.saved=value.current end\ninstall()\nlocal first=value.saved\nvalue.current='word'\ninstall()\nlocal second=value.saved\n---@type number\nlocal numeric=first\n---@type string\nlocal text=second\n";
+    let source = "local value={\n---@type number|string\ncurrent=1,\n}\nlocal function install() value.saved=value.current end\nvalue.current=1\ninstall()\nlocal first=value.saved\nvalue.current='word'\ninstall()\nlocal second=value.saved\n---@type number\nlocal numeric=first\n---@type string\nlocal text=second\n";
     clean(source);
     rejects_number(&source.replace("---@type string\nlocal text", "---@type number\nlocal text"));
     rejects_number(&source.replace("---@type number\nlocal numeric", "---@type string\nlocal numeric"));

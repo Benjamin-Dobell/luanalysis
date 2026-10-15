@@ -60,6 +60,10 @@ impl NativeFlowProvider for Calls {
         })
     }
     fn is_shared(&self, _: NativeFlowKey) -> bool { false }
+    fn function_alias_execution(&self, original: NativeFunctionKey, creation: NativeFlowKey) -> Option<NativeAliasExecution> {
+        (original == function() && creation == at(0, 2))
+            .then(|| NativeAliasExecution { entry: at(1, 0), terminals: vec![at(1, 1)] })
+    }
     fn reference_is_cell(&self, key: NativeReferenceKey) -> bool { key.reference == 0 || key.reference == 3 || key == reference(0, 1) }
     fn reference_declaration(&self, key: NativeReferenceKey) -> Option<NativeVariableDeclaration> {
         self.reference_is_cell(key).then(|| NativeVariableDeclaration { owner: graph(0), reference: reference(0, key.reference), writes: vec![] })
@@ -148,9 +152,11 @@ fn an_original_raw_installer_needs_no_missing_caller_member_reference() {
         // Its callee's `saved` reference has no caller counterpart.
         assert_eq!(provider.reference_in_graph(reference(1, 1), graph(0)), None);
         let initial = provider.initial(queries);
-        let result = queries.flow_type(provider, at(0, 4), reference(0, 0), &initial, &initial);
-        assert!(!result.incomplete);
-        assert_eq!(queries.table_lookup(&result.ty, &TableKey::Literal(key("saved"))), Ok(Type::Number));
-        assert!(!queries.is_native_call_execution(graph(1)));
+        for (point, expected) in [(at(0, 4), Type::Number), (at(0, 6), Type::String)] {
+            let result = queries.flow_type(provider, point, reference(0, 0), &initial, &initial);
+            assert!(!result.incomplete);
+            assert_eq!(queries.table_lookup(&result.ty, &TableKey::Literal(key("saved"))), Ok(expected));
+            assert!(!queries.is_native_call_execution(graph(1)));
+        }
     });
 }
