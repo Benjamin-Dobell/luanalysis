@@ -1021,7 +1021,13 @@ impl Checker<'_, '_> {
         }
         if boundary < args.len() || rest.is_some() {
             let expected = self.rest_type_at_position(&params, boundary, false);
-            let contextual = identity_context.and_then(|pack| self.native_pack_contextual_tail(pack, &prefix)).map_or(expected, |pack| pack.ty);
+            // A last Lua call argument is a result-pack demand even when its
+            // written contract has one result. Preserve the same expected
+            // metatable TYPE through that pack's first slot.
+            let contextual = if metatable && boundary == 1 {
+                prefix.first().copied().and_then(|target| self.native_metatable_argument_context(target))
+                    .map(|context| self.native_scalar_pack(context).ty).unwrap_or(expected)
+            } else { identity_context.and_then(|pack| self.native_pack_contextual_tail(pack, &prefix)).map_or(expected, |pack| pack.ty) };
             let actual = self.native_argument_sequence_type(args, boundary, contextual, None, check_mode);
             if !self.is_resolved_call_argument_applicable(actual, expected, relation) {
                 self.note_parameter_types_resolved(sig, &params, boundary);
