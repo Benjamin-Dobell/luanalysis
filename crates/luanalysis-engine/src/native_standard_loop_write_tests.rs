@@ -17,6 +17,7 @@ fn site() -> NativeIntrinsicSite { NativeIntrinsicSite { binding: binding(0), de
 struct LoopStore {
     key: Option<&'static [u8]>,
     pending_receiver: bool,
+    ordinary_receiver: bool,
 }
 
 impl NativeTypeProvider for LoopStore {
@@ -74,6 +75,7 @@ impl NativeFlowProvider for LoopStore {
             0 => NativeAliasValue::Reference { reference: reference(0), input },
             2 => NativeAliasValue::Reference { reference: reference(1), input },
             10 if self.pending_receiver => NativeAliasValue::Reference { reference: reference(1), input: at(1) },
+            10 if self.ordinary_receiver => NativeAliasValue::Unknown,
             10 => NativeAliasValue::Reference { reference: reference(3), input: at(0) },
             11 => NativeAliasValue::Unknown,
             _ => panic!("unexpected original value"),
@@ -100,7 +102,7 @@ impl NativeFlowProvider for LoopStore {
 #[test]
 fn a_frozen_environment_alias_store_invalidates_the_original_loop_operation_without_flowed_types() {
     for key in [Some(b"assert".as_slice()), None] {
-        Engine::new().with_native_provider(|| LoopStore { key, pending_receiver: false }, |source, queries| {
+        Engine::new().with_native_provider(|| LoopStore { key, pending_receiver: false, ordinary_receiver: false }, |source, queries| {
             assert_eq!(queries.flow_standard_operation(source, value(0), at(2)), NativeStandardOperation::Ordinary);
             // The host-policy loop walk supplies no strict runtime certificate.
             assert_eq!(queries.flow_alias_intrinsic(source, value(0), at(2)), NativeAliasIntrinsic::Unknown);
@@ -110,14 +112,24 @@ fn a_frozen_environment_alias_store_invalidates_the_original_loop_operation_with
 
 #[test]
 fn a_different_fixed_environment_key_preserves_the_original_loop_operation() {
-    Engine::new().with_native_provider(|| LoopStore { key: Some(b"other"), pending_receiver: false }, |source, queries| {
+    Engine::new().with_native_provider(|| LoopStore { key: Some(b"other"), pending_receiver: false, ordinary_receiver: false }, |source, queries| {
         assert_eq!(queries.flow_standard_operation(source, value(0), at(2)), NativeStandardOperation::Standard(site()));
     });
 }
 
 #[test]
 fn a_genuinely_reentered_loop_receiver_stays_pending() {
-    Engine::new().with_native_provider(|| LoopStore { key: Some(b"assert"), pending_receiver: true }, |source, queries| {
+    Engine::new().with_native_provider(|| LoopStore { key: Some(b"assert"), pending_receiver: true, ordinary_receiver: false }, |source, queries| {
         assert_eq!(queries.flow_standard_operation(source, value(0), at(2)), NativeStandardOperation::Pending);
     });
+}
+
+#[test]
+fn an_ordinary_loop_table_store_does_not_demand_a_global_purity_proof() {
+    for key in [Some(b"assert".as_slice()), None] {
+        Engine::new().with_native_provider(|| LoopStore { key, pending_receiver: false, ordinary_receiver: true }, |source, queries| {
+            assert_eq!(queries.flow_standard_operation(source, value(0), at(2)), NativeStandardOperation::Standard(site()));
+            assert_eq!(queries.flow_alias_intrinsic(source, value(0), at(2)), NativeAliasIntrinsic::Unknown);
+        });
+    }
 }

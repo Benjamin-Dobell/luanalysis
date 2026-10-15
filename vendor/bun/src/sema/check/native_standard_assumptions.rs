@@ -396,12 +396,18 @@ impl<'p, 's> Checker<'p, 's> {
         // The local loop substitution is never published as physical evidence.
         let receiver = self.native_standard_loop_value(provider, receiver.value, receiver.input, invariant, &mut HashSet::new());
         if receiver.uncertain { return Err(()) }
-        if receiver.unknown || receiver.non_table || receiver.tokens.len() != 1
-            || !receiver.tokens.contains(&Origin::Environment(binding.environment)) { return Ok(None) }
+        if !receiver.tokens.contains(&Origin::Environment(binding.environment)) {
+            // This host policy preserves standard bindings unless an original
+            // assignment identifies them. An ordinary parameter/table store
+            // need not prove global purity by flowing its receiver's type.
+            return Ok(Some(provider.write_affects(reference, target, at)));
+        }
+        let exact = !receiver.unknown && !receiver.non_table && receiver.tokens.len() == 1;
         let relation = match provider.write_member_key(reference, target, at, self) {
             Some(NativeTableKey::String(name)) => {
                 let written = self.native_globals_provider.and_then(|globals| globals.global_environment_binding(binding.environment, self.atoms().bytes(name)));
-                if written == Some(binding) { NativeWriteRelation::Exact } else { NativeWriteRelation::Unaffected }
+                if written != Some(binding) { NativeWriteRelation::Unaffected }
+                else if exact { NativeWriteRelation::Exact } else { NativeWriteRelation::PossibleExact }
             },
             Some(_) => NativeWriteRelation::Unaffected,
             None => NativeWriteRelation::PossibleExact,

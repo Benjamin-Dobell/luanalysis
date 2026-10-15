@@ -19,9 +19,12 @@ impl Fixture {
         Self(path)
     }
     fn check(&self) -> Output {
+        self.check_lua_version("5.4")
+    }
+    fn check_lua_version(&self, version: &str) -> Output {
         Command::new(env!("CARGO_BIN_EXE_luanalysis"))
             .current_dir(&self.0)
-            .args(["check", "--lua-version", "5.4", "--dump-types", "main.lua"])
+            .args(["check", "--lua-version", version, "--dump-types", "main.lua"])
             .output()
             .unwrap()
     }
@@ -133,4 +136,24 @@ fn unused_call_reachability_uses_written_never_without_inferring_an_unwritten_ef
     )
     .unwrap();
     pass(&fixture.check());
+}
+
+#[test]
+fn a_generic_sparse_array_store_preserves_type_policy_and_checks_the_body_result() {
+    let source = include_str!("fixtures/native_effects/json_sparse_fill.lua");
+    let fixture = Fixture::new(source);
+    let original_return = "return --[[---@type (T | ge_tts__JsonNull)[] ]] sparseArray";
+    let wrong = source.replace(original_return, "return 'wrong'");
+    assert_ne!(wrong, source);
+    let line = wrong.lines().position(|line| line.contains("return 'wrong'")).unwrap() + 1;
+    for version in ["5.2", "5.4"] {
+        pass(&fixture.check_lua_version(version));
+        fs::write(fixture.0.join("main.lua"), &wrong).unwrap();
+        let output = fixture.check_lua_version(version);
+        rejects(&output, "TS2322");
+        assert!(!text(&output).contains("LUA2041"), "{}", text(&output));
+        assert!(text(&output).contains(&format!("main.lua:{line}:12: error[TS2322]")), "{}", text(&output));
+        fs::write(fixture.0.join("main.lua"), source).unwrap();
+        pass(&fixture.check_lua_version(version));
+    }
 }
