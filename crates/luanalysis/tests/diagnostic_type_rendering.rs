@@ -85,7 +85,7 @@ fn api_errors_render_original_named_generic_union_function_and_table_types() {
     assert!(
         error(&report, "TS2345", "Receipt")
             .message
-            .contains("number")
+            .contains("'42'")
     );
     let generic = error(&report, "TS2345", "'T'");
     assert!(generic.message.contains("number"));
