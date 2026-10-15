@@ -9,7 +9,7 @@ fn declaration() -> NativeTypeDeclarationKey { NativeTypeDeclarationKey { snapsh
 fn expression() -> NativeExpressionKey { NativeExpressionKey { snapshot: 8702, node: 0 } }
 fn key(name: &str) -> LuaKey { LuaKey::String(name.as_bytes().to_vec()) }
 
-struct Calls;
+struct Calls { raw_dispatch: bool }
 impl Calls {
     fn initial(&self, queries: &mut dyn TypeQueries) -> Type {
         let table = queries.table_type(&TableType {
@@ -81,7 +81,14 @@ impl NativeFlowProvider for Calls {
         else if target == reference(1, 1) { Some(key("saved")) }
         else { None }
     }
-    fn alias_node_dispatch(&self, _: NativeFlowKey) -> NativeAliasDispatch { NativeAliasDispatch::NoDispatch }
+    fn alias_node_dispatch(&self, point: NativeFlowKey) -> NativeAliasDispatch {
+        if self.raw_dispatch && point == at(1, 1) {
+            NativeAliasDispatch::ReferenceRead(reference(1, 1))
+        } else { NativeAliasDispatch::NoDispatch }
+    }
+    fn write_alias_receiver(&self, point: NativeFlowKey) -> Option<NativeAliasReturnValue> {
+        (point == at(1, 1)).then(|| NativeAliasReturnValue { value: value(9), input: at(1, 0) })
+    }
     fn alias_call_source(&self, original: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> {
         matches!(original.index, 3 | 7).then(|| NativeAliasCall {
             callee: NativeAliasReturnValue { value: value(4), input }, arguments: Vec::new(), execution_input: input,
@@ -92,6 +99,7 @@ impl NativeFlowProvider for Calls {
             0 => NativeAliasValue::Allocation,
             1 => NativeAliasValue::Function { function: function(), creation: at(0, 2) },
             4 => NativeAliasValue::Reference { reference: reference(0, 1), input },
+            9 => NativeAliasValue::Reference { reference: reference(1, 0), input },
             _ => NativeAliasValue::NotTable,
         }
     }
@@ -121,7 +129,7 @@ impl NativeFlowProvider for Calls {
 
 #[test]
 fn repeated_original_installer_calls_use_each_incoming_view_and_restore_parent_queries() {
-    Engine::new().with_native_provider(|| Calls, |provider, queries| {
+    Engine::new().with_native_provider(|| Calls { raw_dispatch: false }, |provider, queries| {
         let initial = provider.initial(queries);
         for (point, expected) in [(at(0, 4), Type::Number), (at(0, 6), Type::String), (at(0, 4), Type::Number)] {
             let result = queries.flow_type(provider, point, reference(0, 0), &initial, &initial);
@@ -130,5 +138,19 @@ fn repeated_original_installer_calls_use_each_incoming_view_and_restore_parent_q
             assert!(!queries.is_native_call_execution(graph(1)));
             assert!(queries.current_captured_function().is_none());
         }
+    });
+}
+
+#[test]
+fn an_original_raw_installer_needs_no_missing_caller_member_reference() {
+    Engine::new().with_native_provider(|| Calls { raw_dispatch: true }, |provider, queries| {
+        // The fixture maps only the genuine caller root and unrelated cell.
+        // Its callee's `saved` reference has no caller counterpart.
+        assert_eq!(provider.reference_in_graph(reference(1, 1), graph(0)), None);
+        let initial = provider.initial(queries);
+        let result = queries.flow_type(provider, at(0, 4), reference(0, 0), &initial, &initial);
+        assert!(!result.incomplete);
+        assert_eq!(queries.table_lookup(&result.ty, &TableKey::Literal(key("saved"))), Ok(Type::Number));
+        assert!(!queries.is_native_call_execution(graph(1)));
     });
 }

@@ -240,7 +240,14 @@ impl<'p, 's> Checker<'p, 's> {
                 if reference.graph != at.graph { return false }
                 if provider.reference_is_cell(reference) { return true }
                 let origins = self.native_alias_reference(provider, reference, before);
-                if origins.uncertain { self.mark_tainted_from(0); return false }
+                if origins.uncertain {
+                    // A captured future slot may have no original spelling
+                    // in the caller. Its contents are unnecessary when the
+                    // independent allocation proof excludes __newindex.
+                    if self.native_alias_fresh_raw_write(provider, at, before) { return true }
+                    self.mark_tainted_from(0);
+                    return false;
+                }
                 if !origins.unknown && !origins.maybe_nil && (origins.non_table || !origins.tokens.is_empty()) { return true }
                 self.native_alias_fresh_raw_write(provider, at, before)
             },
