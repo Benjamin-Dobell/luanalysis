@@ -205,3 +205,145 @@ fn text_and_json_publish_the_declared_response_arity_at_the_original_spans() {
         );
     }
 }
+
+const ALIASES: &str = r#"---@alias Values<T> T[]
+
+---@alias Map<V> table<string,V>
+
+---@alias Wrapped<V> {value:V}
+
+---@type Values<number>
+local values=42
+---@type Map<number>
+local map=42
+---@type Wrapped<number>
+local wrapped=42
+"#;
+
+const CAPTURED_ALIASES: &str = r#"---@generic Outer
+---@param outer Outer
+local function nested(outer)
+    ---@alias Values<T> T[]
+
+    ---@alias Map<T> table<string,T>
+
+    ---@alias Wrapped<T> {value:T,captured:Outer}
+
+    ---@type Values<number>
+    local values=42
+    ---@type Map<number>
+    local map=42
+    ---@type Wrapped<number>
+    local wrapped=42
+end
+"#;
+
+fn alias_report(source: &str, expected: &[&str]) -> CheckReport {
+    let report = check(source);
+    assert_eq!(
+        report.diagnostics.len(),
+        expected.len(),
+        "{:#?}",
+        report.diagnostics
+    );
+    for (diagnostic, expected) in report.diagnostics.iter().zip(expected) {
+        assert_eq!(diagnostic.code, "TS2322");
+        assert_eq!(&source[diagnostic.span.start..diagnostic.span.end], "42");
+        assert_eq!(
+            diagnostic.message,
+            format!("Type '42' is not assignable to type '{expected}'.")
+        );
+    }
+    report
+}
+
+#[test]
+fn anonymous_alias_targets_keep_their_original_array_table_and_record_arguments() {
+    let report = alias_report(
+        ALIASES,
+        &["Values<number>", "Map<number>", "Wrapped<number>"],
+    );
+    let corrected = ALIASES
+        .replace("local values=42", "local values={1}")
+        .replace("local map=42", "local map={answer=1}")
+        .replace("local wrapped=42", "local wrapped={value=1}");
+    accepted(&corrected);
+
+    let fixture = Fixture::new();
+    for format in ["text", "json"] {
+        let output = fixture.run(ALIASES, format);
+        assert_eq!(output.status.code(), Some(1));
+        let text = String::from_utf8(if format == "json" {
+            output.stdout
+        } else {
+            output.stderr
+        })
+        .unwrap();
+        for diagnostic in &report.diagnostics {
+            assert!(text.contains(&diagnostic.message), "{text}");
+        }
+        let output = fixture.run(&corrected, format);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn nested_aliases_keep_genuine_outer_dependencies_without_unrelated_mapper_arguments() {
+    alias_report(
+        CAPTURED_ALIASES,
+        &["Values<number>", "Map<number>", "Wrapped<Outer, number>"],
+    );
+    let corrected = CAPTURED_ALIASES
+        .replace("local values=42", "local values={1}")
+        .replace("local map=42", "local map={answer=1}")
+        .replace("local wrapped=42", "local wrapped={value=1,captured=outer}");
+    accepted(&corrected);
+
+    let wrong = corrected.replace("\nend\n", "\n    wrapped.captured=42\nend\n");
+    let report = check(&wrong);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.code, "TS2322");
+    assert_eq!(&wrong[diagnostic.span.start..diagnostic.span.end], "42");
+    assert_eq!(
+        diagnostic.message,
+        "Type '42' is not assignable to type 'Outer'."
+    );
+    accepted(&wrong.replace("wrapped.captured=42", "wrapped.captured=outer"));
+}
+
+#[test]
+fn factory_class_operands_keep_their_semantically_distinct_captured_arguments() {
+    let source = "---@generic T\n---@param value T\nlocal function make(value)\n    ---@class Object\n    ---@field value T\n    local Object={value=value}\n    return Object\nend\nlocal numeric=make(1)\nlocal textual=make('word')\nnumeric=textual\n";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.code, "TS2322");
+    assert_eq!(
+        &source[diagnostic.span.start..diagnostic.span.end],
+        "textual"
+    );
+    assert_eq!(
+        diagnostic.message,
+        "Type 'def Object<string>' is not assignable to type 'def Object<number>'."
+    );
+    for (name, expected) in [
+        ("numeric", "def Object<number>"),
+        ("textual", "def Object<string>"),
+    ] {
+        assert_eq!(
+            report
+                .bindings
+                .iter()
+                .find(|binding| binding.name == name)
+                .unwrap()
+                .ty,
+            expected
+        );
+    }
+    accepted(&source.replace("numeric=textual", "numeric=make(2)"));
+}
