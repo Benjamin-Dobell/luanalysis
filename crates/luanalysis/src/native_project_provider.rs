@@ -316,8 +316,9 @@ macro_rules! dispatch {
 
 impl NativeTypeProvider for ProjectRegistry {
     fn signature_intrinsic(&self, signature: luanalysis_engine::NativeSignatureKey) -> Option<luanalysis_engine::NativeIntrinsicSite> {
-        let original = self.standard_environment.assert_operation?;
-        (original.signature == signature).then_some(luanalysis_engine::NativeIntrinsicSite {
+        let original = self.standard_environment.assert_operations.iter()
+            .find(|original| original.signature == signature)?;
+        Some(luanalysis_engine::NativeIntrinsicSite {
             binding: original.binding,
             declaration: original.declaration,
             kind: luanalysis_engine::NativeIntrinsicKind::Assert,

@@ -10,32 +10,53 @@ pub enum StandardEnvironmentProfile {
     LegacyMinimal,
     /// No declaration profile or implicit builtin fallback.
     None,
-    /// Reviewed Lua 5.4 declarations and original standard-value capabilities.
+    /// Complete Lua 5.4 declaration resources and original standard capabilities.
     Lua54,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StandardLibrarySource {
     Base,
+    Builtin,
+    Coroutine,
+    Debug,
+    Io,
     Math,
+    Os,
+    Package,
     Table,
     String,
+    Utf8,
 }
 impl StandardLibrarySource {
     fn name(self) -> &'static str {
         match self {
-            Self::Base => "base",
+            Self::Base => "global",
+            Self::Builtin => "builtin",
+            Self::Coroutine => "coroutine",
+            Self::Debug => "debug",
+            Self::Io => "io",
             Self::Math => "math",
+            Self::Os => "os",
+            Self::Package => "package",
             Self::Table => "table",
             Self::String => "string",
+            Self::Utf8 => "utf8",
         }
     }
     fn source(self) -> &'static str {
         match self {
-            Self::Base => include_str!("../stdlib/Lua54/base.def.lua"),
+            Self::Base => include_str!("../stdlib/Lua54/global.def.lua"),
+            Self::Builtin => include_str!("../stdlib/Lua54/builtin.def.lua"),
+            Self::Coroutine => include_str!("../stdlib/Lua54/coroutine.def.lua"),
+            Self::Debug => include_str!("../stdlib/Lua54/debug.def.lua"),
+            Self::Io => include_str!("../stdlib/Lua54/io.def.lua"),
             Self::Math => include_str!("../stdlib/Lua54/math.def.lua"),
+            Self::Os => include_str!("../stdlib/Lua54/os.def.lua"),
+            Self::Package => include_str!("../stdlib/Lua54/package.def.lua"),
             Self::Table => include_str!("../stdlib/Lua54/table.def.lua"),
             Self::String => include_str!("../stdlib/Lua54/string.def.lua"),
+            Self::Utf8 => include_str!("../stdlib/Lua54/utf8.def.lua"),
         }
     }
 }
@@ -56,9 +77,16 @@ impl StandardEnvironmentSelection {
         if profile == StandardEnvironmentProfile::Lua54 {
             for kind in [
                 StandardLibrarySource::Base,
+                StandardLibrarySource::Builtin,
+                StandardLibrarySource::Coroutine,
+                StandardLibrarySource::Debug,
+                StandardLibrarySource::Io,
                 StandardLibrarySource::Math,
+                StandardLibrarySource::Os,
+                StandardLibrarySource::Package,
                 StandardLibrarySource::Table,
                 StandardLibrarySource::String,
+                StandardLibrarySource::Utf8,
             ] {
                 let identity = format!(
                     "luanalysis.std.Lua54.{}@{}",

@@ -17,7 +17,7 @@ pub(crate) struct OriginalStandardFunction {
 pub(crate) struct ProjectStandardEnvironment {
     pub string_library: Option<NativeGlobalBindingKey>,
     pub type_operation: Option<OriginalStandardFunction>,
-    pub assert_operation: Option<OriginalStandardFunction>,
+    pub assert_operations: Vec<OriginalStandardFunction>,
     pub rejected_assert_declarations: Vec<NativeValueDeclarationKey>,
 }
 impl ProjectStandardEnvironment {
@@ -30,7 +30,7 @@ impl ProjectStandardEnvironment {
         let mut result = Self {
             string_library: None,
             type_operation: None,
-            assert_operation: None,
+            assert_operations: Vec::new(),
             rejected_assert_declarations: Vec::new(),
         };
         if profile != StandardEnvironmentProfile::Lua54 {
@@ -49,17 +49,17 @@ impl ProjectStandardEnvironment {
                 }
             }
             if kind == StandardLibrarySource::Base {
-                if let Some((capability, other_owners)) = source.original_standard_function("type")
+                if let Some((capabilities, other_owners)) = source.original_standard_function("type")
                 {
-                    if !type_replaced && other_owners.is_empty() {
-                        result.type_operation = Some(capability);
+                    if !type_replaced && other_owners.is_empty() && capabilities.len() == 1 {
+                        result.type_operation = capabilities.first().copied();
                     }
                 }
-                if let Some((capability, other_owners)) =
+                if let Some((capabilities, other_owners)) =
                     source.original_standard_function("assert")
                 {
                     if !assert_replaced && other_owners.is_empty() {
-                        result.assert_operation = Some(capability);
+                        result.assert_operations = capabilities;
                     }
                     result.rejected_assert_declarations.extend(other_owners);
                 }
@@ -73,7 +73,7 @@ impl NativeRegistry {
     fn original_standard_function(
         &self,
         name: &str,
-    ) -> Option<(OriginalStandardFunction, Vec<NativeValueDeclarationKey>)> {
+    ) -> Option<(Vec<OriginalStandardFunction>, Vec<NativeValueDeclarationKey>)> {
         let mut originals =
             self.globals.declarations.iter().filter(|declaration| {
                 declaration.namespace.is_none() && declaration.name.text == name
@@ -89,18 +89,16 @@ impl NativeRegistry {
             .into_iter()
             .filter(|key| *key != declaration.key)
             .collect();
-        let heads = self.function_overload_signatures(function);
-        let signature = match heads.as_slice() {
-            [head] => Some(*head),
-            [] => self.implementation_annotation_signature(function),
-            _ => None,
-        }?;
+        let mut heads = self.function_overload_signatures(function);
+        if heads.is_empty() {
+            heads.push(self.implementation_annotation_signature(function)?);
+        }
         Some((
-            OriginalStandardFunction {
+            heads.into_iter().map(|signature| OriginalStandardFunction {
                 binding,
                 declaration: declaration.key,
                 signature,
-            },
+            }).collect(),
             other_owners,
         ))
     }

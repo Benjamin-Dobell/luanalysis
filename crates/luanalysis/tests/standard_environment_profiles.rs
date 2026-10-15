@@ -86,7 +86,7 @@ fn selected_profile_registers_exact_original_declarations_without_runtime_member
         StandardEnvironmentProfile::Lua54,
     );
     clean(&report);
-    assert_eq!(report.standard_library_files.len(), 4);
+    assert_eq!(report.standard_library_files.len(), 11);
     assert_eq!(report.checked_file_count(), 1);
     assert_eq!(report.project.entries.len(), 1);
     assert!(report.project.dependencies.is_empty());
@@ -97,7 +97,10 @@ fn selected_profile_registers_exact_original_declarations_without_runtime_member
             SourceOrigin::DeclarationLibrary { .. }
         ));
         assert!(!report.project.entries.contains(id));
-        assert!(source.source.contains("Modified for standalone"));
+        let name = source.path.file_name().unwrap();
+        let original = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../vendor/luanalysis-stdlib/upstream/Lua54").join(name);
+        assert_eq!(source.source, fs::read_to_string(original).unwrap());
     }
 }
 
@@ -294,7 +297,7 @@ fn legacy_or_user_library_schemas_do_not_gain_standard_assert_pack_effects() {
     project
         .add_declaration_source(DeclarationSource {
             identity: "custom-assert".into(),
-            path: PathBuf::from("stdlib/Lua54/base.def.lua"),
+            path: PathBuf::from("stdlib/Lua54/global.def.lua"),
             source: "---@type fun<T>(value?:T,...:unknown):T\nfunction assert(value,...) end\n"
                 .into(),
         })
