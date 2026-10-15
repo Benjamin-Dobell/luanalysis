@@ -1896,6 +1896,42 @@
       "patch": "vendor/patches/bun-sema-native-opaque-runtime-domains.patch",
       "reason": "Classify Lua userdata/thread domains from selected original nominal roots and guarded ancestry without expanding members, preserve namespace table facets and pending predicate dependencies, and traverse actual intersection members through kernel 86e96a7.",
       "patch_sha256": "99af2844301f650cbd3c8fcf717c6cc5044d525867e6dbcda05e888bb90e0edf"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-iterator-packs-display-inference.patch",
+      "reason": "Separate hidden iterator arity, expose fixed written return cardinality, render original anonymous/container/generic contracts, infer full dictionary value domains, and retain reference types for unrelated predicates through kernel d389359.",
+      "patch_sha256": "c419b5467534b059d43ab708c9afabd4d999b5d296bb81550e10676de70fb1f5"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-iterator-packs-display-inference.patch",
+      "reason": "Separate hidden iterator arity, expose fixed written return cardinality, render original anonymous/container/generic contracts, infer full dictionary value domains, and retain reference types for unrelated predicates through kernel d389359.",
+      "patch_sha256": "c419b5467534b059d43ab708c9afabd4d999b5d296bb81550e10676de70fb1f5"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-iterator-packs-display-inference.patch",
+      "reason": "Separate hidden iterator arity, expose fixed written return cardinality, render original anonymous/container/generic contracts, infer full dictionary value domains, and retain reference types for unrelated predicates through kernel d389359.",
+      "patch_sha256": "c419b5467534b059d43ab708c9afabd4d999b5d296bb81550e10676de70fb1f5"
+    },
+    {
+      "path": "src/sema/check/native_iterators.rs",
+      "patch": "vendor/patches/bun-sema-native-iterator-packs-display-inference.patch",
+      "reason": "Separate hidden iterator arity, expose fixed written return cardinality, render original anonymous/container/generic contracts, infer full dictionary value domains, and retain reference types for unrelated predicates through kernel d389359.",
+      "patch_sha256": "c419b5467534b059d43ab708c9afabd4d999b5d296bb81550e10676de70fb1f5"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-native-iterator-packs-display-inference.patch",
+      "reason": "Separate hidden iterator arity, expose fixed written return cardinality, render original anonymous/container/generic contracts, infer full dictionary value domains, and retain reference types for unrelated predicates through kernel d389359.",
+      "patch_sha256": "c419b5467534b059d43ab708c9afabd4d999b5d296bb81550e10676de70fb1f5"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-iterator-packs-display-inference.patch",
+      "reason": "Separate hidden iterator arity, expose fixed written return cardinality, render original anonymous/container/generic contracts, infer full dictionary value domains, and retain reference types for unrelated predicates through kernel d389359.",
+      "patch_sha256": "c419b5467534b059d43ab708c9afabd4d999b5d296bb81550e10676de70fb1f5"
     }
   ],
   "source_additions": {
@@ -1916,7 +1952,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "8ad1e58a17be0b9ba8e75bc02f629a65453592382152eac469960a6f6549d285",
+      "extracted_sha256": "11ac1ad7fb81561c15e32690f644fb773c1999050ee9aff2c751910833fc150b",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_flow_calls.rs": {
@@ -1932,7 +1968,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch"
     },
     "src/sema/check/native_iterators.rs": {
-      "extracted_sha256": "134e9ea2976ff65fca3f86c16cda89e3d11290e30e62804cb9564e98f889c240",
+      "extracted_sha256": "c34794691ee2351c96934f6a90db9658b3b53301f65842ea564c82f004c8efcb",
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
@@ -1940,7 +1976,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "7cc125bac0dd5d74cdd1b2e018d8ec27698101e3ea6a500e14ec58cc7a580eaa",
+      "extracted_sha256": "2908815bfe71868ab18d68c51bf64efa606eed837acfbab2bcd9ac683ad114f7",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
@@ -2666,7 +2702,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "5e581c2e4bcc9a51754f6f919d961051544cbe08a537014322d85de3b79e8687"
+      "extracted_sha256": "fb91d9f52abd71e545b8e5c767ac00d1a92262b2e5972016f1442887a6dad77b"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -2891,7 +2927,7 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "5e8e56b8a771ea9fab74ae908595690b0d180d1c9c167214345e4258a54ed31a"
+      "extracted_sha256": "28a66ac78520509a4354a1bf9b0d61d1a900759c58e571799e0ccc255eba675c"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
@@ -2936,7 +2972,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "4575afadfbde0d16bc81f2f85cc40ba7d0c510e12d1e478f1e48b9fac0dd51bf"
+      "extracted_sha256": "f9501e397cd7cd9d5e9400f5ac82206c07089d9732dd1d1637abbbeeb573e398"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",

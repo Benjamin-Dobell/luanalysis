@@ -1,0 +1,275 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+index ebf7740..5c182ab 100644
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -154,6 +154,12 @@ pub(super) enum AllowMembers {
+     Yes,
+ }
+ 
++#[derive(Copy, Clone)]
++pub(super) enum NativeCallRole {
++    Explicit,
++    Iterator,
++}
++
+ #[derive(Copy, Clone)]
+ pub(super) enum CallSite {
+     Ts {
+@@ -166,6 +172,7 @@ pub(super) enum CallSite {
+         expected_return: Option<TypeId>,
+         expected_result_pack: Option<NativeResultPack>,
+         this_type: Option<TypeId>,
++        role: NativeCallRole,
+     },
+ }
+ 
+@@ -567,6 +574,22 @@ impl<'p, 's> Checker<'p, 's> {
+         type_args: &[TypeId],
+         expected_return: Option<TypeId>,
+         expected_result_pack: Option<NativeResultPack>,
++    ) -> ResolvedTypeCall {
++        self.resolve_native_arguments_with_role(callee, args, type_args, expected_return, expected_result_pack, NativeCallRole::Explicit)
++    }
++
++    pub(super) fn resolve_native_iterator_arguments(&mut self, callee: TypeId, args: &[Arg]) -> ResolvedTypeCall {
++        self.resolve_native_arguments_with_role(callee, args, &[], None, None, NativeCallRole::Iterator)
++    }
++
++    fn resolve_native_arguments_with_role(
++        &mut self,
++        callee: TypeId,
++        args: &[Arg],
++        type_args: &[TypeId],
++        expected_return: Option<TypeId>,
++        expected_result_pack: Option<NativeResultPack>,
++        role: NativeCallRole,
+     ) -> ResolvedTypeCall {
+         if self.is_any(callee) {
+             for &arg in args {
+@@ -627,7 +650,7 @@ impl<'p, 's> Checker<'p, 's> {
+             _ => false,
+         });
+         let mut state = CallState {
+-            site: CallSite::Native { expected_return, expected_result_pack, this_type: None },
++            site: CallSite::Native { expected_return, expected_result_pack, this_type: None, role },
+             type_args,
+             args,
+             candidates: SmallVec::from_slice(&candidates),
+@@ -1257,6 +1280,15 @@ impl<'p, 's> Checker<'p, 's> {
+     ) -> bool {
+         let args = s.args;
+         if matches!(s.site, CallSite::Native { .. }) {
++            if matches!(s.site, CallSite::Native { role: NativeCallRole::Iterator, .. })
++                && !params.last().is_some_and(|parameter| parameter.rest)
++                && args.len() > params.len()
++            {
++                // Lua supplies both hidden state/control values even when a
++                // fixed-parameter iterator ignores one or both. Keep the full
++                // argument list for inference and declared-parameter checks.
++                return self.has_correct_arity_for_count(params, matches!(params, List::Own(_)), params.len(), None, false);
++            }
+             if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(params).is_some() {
+                 // Intrinsic identity results need a contextual final demand.
+                 // Physical-count probing cannot publish an earlier untyped facet.
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+index 5591eea..ecea532 100644
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -402,6 +402,17 @@ impl<'p, 's> Checker<'p, 's> {
+             | (TypeData::NativeArray { .. }, TypeData::NativeArray { .. }) => {
+                 self.invoke_once(n, original_source, original_target, Self::infer_native_object_types);
+             }
++            (TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }, TypeData::NativeTable(_))
++                if n.priority & PRIORITY_NO_CONSTRAINTS == 0 =>
++            {
++                // A native table pattern needs the source's apparent bound,
++                // just as TS index inference does. Bare type-variable targets
++                // have already retained the original source identity above.
++                let apparent = self.apparent_type(source);
++                if apparent != source {
++                    self.infer_types(n, apparent, original_target);
++                }
++            }
+             // Two deferred references go through `invokeOnce`; otherwise inference might not
+             // terminate.
+             (TypeData::Ref { target: st, .. }, TypeData::Ref { target: tt, .. })
+@@ -537,22 +548,33 @@ impl<'p, 's> Checker<'p, 's> {
+                     }
+                 }
+                 for indexer in &target.indexers {
++                    let mut values = Vec::new();
+                     for actual in &source.indexers {
+                         if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
+-                        sources.extend([actual.key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+-                        targets.extend([indexer.key, indexer.value]);
++                        sources.push(actual.key);
++                        targets.push(indexer.key);
++                        values.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+                     }
+                     for actual in &source.fields {
+                         let key = self.native_table_key_type(actual.key);
+                         if !self.native_table_inference_key_matches(key, indexer.key) { continue }
+-                        sources.extend([key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+-                        targets.extend([indexer.key, indexer.value]);
++                        sources.push(key);
++                        targets.push(indexer.key);
++                        values.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+                     }
+                     for actual in &source.sequence_tails {
+                         if !self.native_table_inference_key_matches(TypeId::NUMBER, indexer.key)
+                             || !self.could_contain_type_variables(indexer.key) && !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
+-                        sources.extend([TypeId::NUMBER, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
+-                        targets.extend([indexer.key, indexer.value]);
++                        sources.push(TypeId::NUMBER);
++                        targets.push(indexer.key);
++                        values.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
++                    }
++                    if !values.is_empty() {
++                        // Index entries are alternatives, not competing guesses
++                        // for one common supertype. Match infer_from_index_types
++                        // by inferring from their combined present-value domain.
++                        sources.push(self.union(&values));
++                        targets.push(indexer.value);
+                     }
+                 }
+                 for tail in &target.sequence_tails {
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index 1db7408..066660e 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -1217,7 +1217,11 @@ impl<'s, 'p> Checker<'s, 'p> {
+                         !checker.native_narrow_predicate(provider, member, predicate, sense, subject, member).is_never()
+                     });
+                 }
+-                if self.native_predicate_possible(provider, predicate, sense) { ty } else { TypeId::NEVER }
++                // Reachability checks the whole predicate separately. An
++                // impossible operand about a different reference does not
++                // erase this reference's type inside an otherwise related
++                // compound condition (for example, object.flag && false).
++                ty
+             }
+             NativePredicate::Truthy { .. } => self.lua_truthiness_type(ty, sense),
+             NativePredicate::Equal { other, input, equals, .. } => { let other = self.native_flow_value(provider, *other, *input); self.native_equal_flow_type(ty, other, *equals == sense) },
+diff --git a/src/sema/check/native_iterators.rs b/src/sema/check/native_iterators.rs
+index 44a01dd..2f5b3bc 100644
+--- a/src/sema/check/native_iterators.rs
++++ b/src/sema/check/native_iterators.rs
+@@ -34,7 +34,7 @@ impl<'p, 's> Checker<'p, 's> {
+             let iterator = self.native_pack_slot(row, 0);
+             let state = self.native_pack_slot(row, 1);
+             let control = self.native_pack_slot(row, 2);
+-            let called = self.call_resolved_result_pack(iterator, &[state, control], &[], None);
++            let called = self.call_native_iterator_result_pack(iterator, state, control);
+             for error in called.errors {
+                 provider.iterator_error(at, stage, iterator, error, self);
+             }
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+index f4c3c8d..cc67cf4 100644
+--- a/src/sema/check/native_packs.rs
++++ b/src/sema/check/native_packs.rs
+@@ -99,6 +99,12 @@ impl<'p, 's> Checker<'p, 's> {
+         self.result_pack_of_native_call(resolved)
+     }
+ 
++    pub(super) fn call_native_iterator_result_pack(&mut self, callee: TypeId, state: TypeId, control: TypeId) -> NativeResultPackCall {
++        let args = [Arg::Resolved(state), Arg::Resolved(control)];
++        let resolved = self.resolve_native_iterator_arguments(callee, &args);
++        self.result_pack_of_native_call(resolved)
++    }
++
+     pub fn call_expression_result_pack(
+         &mut self,
+         callee: TypeId,
+@@ -471,6 +477,16 @@ impl<'p, 's> Checker<'p, 's> {
+         self.native_result_pack(&rows)
+     }
+ 
++    /// A single required physical row cannot be refined by inspecting an implementation.
++    /// Apply the same void/implicit-empty policy as return refinement before deciding this;
++    /// a nullable scalar, optional slot or variadic tail still needs its body cardinality.
++    pub fn native_return_pack_has_fixed_cardinality(&mut self, pack: NativeResultPack) -> bool {
++        let pack = self.native_declared_result_pack(pack);
++        let pack = self.native_pack_with_implicit_empty(pack);
++        let Some(rows) = self.native_pack_alternatives(pack) else { return false };
++        matches!(rows.as_slice(), [row] if row.tail.is_none() && row.fixed.iter().all(|slot| !slot.optional))
++    }
++
+     /// Keep the declared value types while refining only physical rows established by the body.
+     /// Invalid or still-symbolic body rows retain the contract for diagnostic recovery.
+     pub fn native_return_pack_with_cardinality(&mut self, declared: NativeResultPack, actual: NativeResultPack) -> NativeResultPack {
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+index e93e918..4a58148 100644
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1814,13 +1814,66 @@ impl<'p, 's> Printer<'_, 'p, 's> {
+             }
+             TypeData::NativeObject(reference) => {
+                 let reference = *reference;
+-                let name = self.c.native_type_declaration_provider
++                let header = self.c.native_type_declaration_provider
+                     .filter(|p| p.contains_type_declaration(reference.declaration))
+-                    .map(|p| p.type_declaration_header(self.c, reference.declaration).name)
+-                    .unwrap_or(Atom::NONE);
++                    .map(|p| p.type_declaration_header(self.c, reference.declaration));
++                if header.as_ref().is_some_and(|header|
++                    header.kind == super::native_named::NativeTypeDeclarationKind::Shape
++                    && header.object_form.is_some()
++                    && self.c.atoms().bytes(header.name).is_empty()) {
++                    if self.visited_types.contains(&ty) { return self.elided_information_placeholder(); }
++                    let depth = self.visited_types.len();
++                    self.visited_types.push(ty);
++                    let node = match self.c.native_object_schema_resolved(ty) {
++                        Ok(schema) => match self.c.data(schema) {
++                            TypeData::NativeTable(table) => {
++                                let form = header.as_ref().and_then(|header| header.object_form);
++                                if form == Some(super::native_named::NativeObjectDeclarationForm::Array)
++                                    && table.indexers.len() == 1 {
++                                    let indexer = table.indexers[0];
++                                    let element = self.type_to_node(indexer.value);
++                                    let array = cat!(element.emit(POSTFIX), b"[]");
++                                    if indexer.readonly { Node::new(cat!(b"readonly ", array), TYPE_OPERATOR) }
++                                    else { Node::new(array, POSTFIX) }
++                                } else if matches!(form, Some(super::native_named::NativeObjectDeclarationForm::Table { .. }))
++                                    && table.indexers.len() == 1
++                                    && !table.indexers[0].readonly && !table.indexers[0].sparse {
++                                    let indexer = table.indexers[0];
++                                    let key = self.type_to_node(indexer.key);
++                                    let value = self.type_to_node(indexer.value);
++                                    Node::simple(cat!(b"table", type_arguments_text(vec![key, value])))
++                                } else {
++                                    // This is a print-only structural view. The
++                                    // original declaration and relation keep
++                                    // their identity and mapped contracts.
++                                    let mut table = (**table).clone_in(self.c.arena);
++                                    table.nominal_origin = None;
++                                    table.definition_origin = None;
++                                    let display = self.c.intern(TypeData::NativeTable(self.c.boxed(table)));
++                                    self.type_to_node(display)
++                                }
++                            }
++                            _ => self.type_to_node(schema),
++                        },
++                        Err(_) => self.elided_information_placeholder(),
++                    };
++                    self.visited_types.truncate(depth);
++                    return node;
++                }
++                let name = header.as_ref().map(|header| header.name).unwrap_or(Atom::NONE);
+                 let mut text = self.text(name);
+-                let pairs = self.c.mapping_in_declaration_order(reference.mapper);
+-                let arguments: Vec<_> = pairs.iter().map(|pair| pair.1).collect();
++                // A mapper also carries incidental alias/call-site formals.
++                // Display only this declaration's original captures and own
++                // parameters. Keep the full mapper for every semantic demand.
++                let mut arguments = Vec::new();
++                if let Some(header) = header {
++                    for parameter in header.outer_parameters.into_iter().chain(header.parameters) {
++                        let Some(formal) = self.c.native_type_parameter(parameter) else {
++                            return self.elided_information_placeholder();
++                        };
++                        arguments.push(self.c.types().map(reference.mapper, formal).unwrap_or(formal));
++                    }
++                }
+                 if !arguments.is_empty() {
+                     let arguments = self.map_to_type_nodes(&arguments, false);
+                     text.extend(type_arguments_text(arguments));

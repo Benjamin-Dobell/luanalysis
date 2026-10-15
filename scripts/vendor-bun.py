@@ -435,6 +435,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Classify Lua userdata/thread domains from selected original nominal roots and guarded ancestry without expanding members, preserve namespace table facets and pending predicate dependencies, and traverse actual intersection members through kernel 86e96a7.",
 } for path in ["mod.rs", "native_flow.rs", "native_named.rs", "native_runtime.rs", "relate.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-iterator-packs-display-inference.patch",
+    "reason": "Separate hidden iterator arity, expose fixed written return cardinality, render original anonymous/container/generic contracts, infer full dictionary value domains, and retain reference types for unrelated predicates through kernel d389359.",
+} for path in ["call.rs", "infer.rs", "native_flow.rs", "native_iterators.rs", "native_packs.rs", "print.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
