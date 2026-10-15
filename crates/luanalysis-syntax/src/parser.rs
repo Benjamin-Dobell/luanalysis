@@ -29,6 +29,7 @@ pub fn parse(source: &str) -> File {
         diagnostics: lexed.diagnostics,
         pending_annotations: FunctionAnnotations::default(),
         type_declarations: Vec::new(),
+        function_declarations: Vec::new(),
         type_extensions: Vec::new(),
         expression_assertions: Vec::new(),
         overload_annotations: Vec::new(),
@@ -45,6 +46,7 @@ pub fn parse(source: &str) -> File {
         statements,
         expression_assertions: parser.expression_assertions,
         type_declarations: parser.type_declarations,
+        function_declarations: parser.function_declarations,
         type_extensions: parser.type_extensions,
         overload_annotations: parser.overload_annotations,
         documentation_references: parser.documentation_references,
@@ -62,6 +64,7 @@ struct Parser<'a> {
     diagnostics: Vec<Diagnostic>,
     pending_annotations: FunctionAnnotations,
     type_declarations: Vec<NamedTypeDeclaration>,
+    function_declarations: Vec<crate::DocFunctionDeclaration>,
     type_extensions: Vec<TypeExtension>,
     expression_assertions: Vec<crate::ExpressionAssertion>,
     overload_annotations: Vec<OverloadAnnotation>,
@@ -80,6 +83,8 @@ struct DocumentationGroup {
     extensions: Vec<usize>,
     record: Option<usize>,
     overloads: Vec<usize>,
+    functions: Vec<usize>,
+    active_function: Option<usize>,
 }
 
 fn documentation_gap_is_contiguous(gap: &str) -> bool {
@@ -186,6 +191,9 @@ impl Parser<'_> {
             }
             let before = self.pos;
             let group = self.documentation_group.take();
+            if let Some(group) = &group {
+                self.finish_documentation_functions(group);
+            }
             if let Some(stmt) = self.statement() {
                 if let Some(group) = group {
                     self.attach_type_group(group, stmt.span);
@@ -200,8 +208,43 @@ impl Parser<'_> {
         }
         let annotations = std::mem::take(&mut self.pending_annotations);
         self.unattached_annotations(&annotations);
-        self.documentation_group = None;
+        if let Some(group) = self.documentation_group.take() {
+            self.finish_documentation_functions(&group);
+        }
         statements
+    }
+
+    fn finish_documentation_functions(&mut self, group: &DocumentationGroup) {
+        let owners = group
+            .declarations
+            .iter()
+            .filter(|&&index| {
+                matches!(self.type_declarations[index].kind,
+                    NamedTypeDeclarationKind::Record {
+                        flavor: crate::NamedRecordKind::Class | crate::NamedRecordKind::Shape, ..
+                    })
+            })
+            .count();
+        for &index in &group.functions {
+            let declaration = &self.function_declarations[index];
+            if declaration.owner.is_some() {
+                continue;
+            }
+            let message = if owners > 1 {
+                Some("@function has multiple class or shape owners in its documentation group")
+            } else if declaration.method_colon.is_some() {
+                Some("@function implicit-self member requires an explicit or documentation-group owner")
+            } else {
+                None
+            };
+            if let Some(message) = message {
+                self.diagnostics.push(Diagnostic {
+                    origin: crate::DiagnosticOrigin::Annotation,
+                    span: declaration.name.span,
+                    message: message.into(),
+                });
+            }
+        }
     }
 
     fn attach_type_group(&mut self, group: DocumentationGroup, statement: Span) {
@@ -230,12 +273,17 @@ impl Parser<'_> {
             documentation_gap_is_contiguous(gap)
         });
         if !contiguous {
+            if let Some(group) = self.documentation_group.take() {
+                self.finish_documentation_functions(&group);
+            }
             self.documentation_group = Some(DocumentationGroup {
                 span: comment.span,
                 declarations: Vec::new(),
                 extensions: Vec::new(),
                 record: None,
                 overloads: Vec::new(),
+                functions: Vec::new(),
+                active_function: None,
             });
         }
         let group = self.documentation_group.as_mut().unwrap();
@@ -252,9 +300,52 @@ impl Parser<'_> {
                         id, signature, span, tag_span, group_span: group.span, named_candidates: Vec::new(),
                     });
                     group.overloads.push(index);
-                    documentation.functions.overloads.push(OverloadReference { id, span });
+                    let reference = OverloadReference { id, span };
+                    if let Some(index) = group.active_function {
+                        self.function_declarations[index].annotations.overloads.push(reference);
+                    } else {
+                        documentation.functions.overloads.push(reference);
+                    }
+                }
+                types::DeclarationItem::Function {
+                    name,
+                    explicit_owner,
+                    method_colon,
+                    signature,
+                    mut annotations,
+                    span,
+                    tag_span,
+                } => {
+                    let index = self.function_declarations.len();
+                    let id = crate::DocFunctionDeclarationId(
+                        index.try_into().expect("documentation function index fits u32"),
+                    );
+                    if types::annotation_spans(&self.pending_annotations)
+                        .iter()
+                        .all(|span| span.start >= group.span.start)
+                    {
+                        types::merge_annotations(
+                            &mut annotations,
+                            std::mem::take(&mut self.pending_annotations),
+                            &mut self.diagnostics,
+                        );
+                    }
+                    self.function_declarations.push(crate::DocFunctionDeclaration {
+                        id,
+                        name,
+                        owner: explicit_owner.map(crate::DocFunctionOwner::Explicit),
+                        method_colon,
+                        signature: *signature,
+                        annotations,
+                        span,
+                        tag_span,
+                        group_span: group.span,
+                    });
+                    group.functions.push(index);
+                    group.active_function = Some(index);
                 }
                 types::DeclarationItem::Named { name, generics, kind, span } => {
+                    group.active_function = None;
                     let index = self.type_declarations.len();
                     let record = matches!(kind, NamedTypeDeclarationKind::Record { .. });
                     self.type_declarations.push(NamedTypeDeclaration {
@@ -274,6 +365,7 @@ impl Parser<'_> {
                     }
                 }
                 types::DeclarationItem::Field(field) => {
+                    group.active_function = None;
                     let record = group.record.filter(|&index| {
                         field.explicit_owner.as_ref().is_none_or(|owner| {
                             owner.text == self.type_declarations[index].name.text
@@ -318,6 +410,30 @@ impl Parser<'_> {
         for &index in &group.overloads {
             self.overload_annotations[index].group_span = group.span;
             self.overload_annotations[index].named_candidates.clone_from(&named_candidates);
+        }
+        let owners: Vec<_> = group.declarations.iter().filter_map(|&index| {
+            matches!(self.type_declarations[index].kind,
+                NamedTypeDeclarationKind::Record {
+                    flavor: crate::NamedRecordKind::Class | crate::NamedRecordKind::Shape, ..
+                })
+                .then_some(self.type_declarations[index].id)
+        }).collect();
+        for &index in &group.functions {
+            let declaration = &mut self.function_declarations[index];
+            declaration.group_span = group.span;
+            if !matches!(declaration.owner, Some(crate::DocFunctionOwner::Explicit(_))) {
+                declaration.owner = match owners.as_slice() {
+                    [owner] => Some(crate::DocFunctionOwner::Contextual(*owner)),
+                    _ => None,
+                };
+            }
+        }
+        if let Some(index) = group.active_function {
+            types::merge_annotations(
+                &mut self.function_declarations[index].annotations,
+                std::mem::take(&mut documentation.functions),
+                &mut self.diagnostics,
+            );
         }
         documentation.functions
     }
@@ -412,6 +528,9 @@ impl Parser<'_> {
                         self.diagnostics.extend(diagnostics);
                         let outer = self.documentation_group.take();
                         let annotations = self.record_documentation(&comment, annotations);
+                        if let Some(group) = self.documentation_group.take() {
+                            self.finish_documentation_functions(&group);
+                        }
                         self.documentation_group = outer;
                         for span in types::annotation_spans(&annotations) {
                             self.diagnostics.push(Diagnostic {

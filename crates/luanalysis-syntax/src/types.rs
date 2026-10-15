@@ -22,6 +22,15 @@ pub(crate) enum DeclarationItem {
         span: Span,
     },
     Field(FieldDeclaration),
+    Function {
+        name: Name,
+        explicit_owner: Option<Name>,
+        method_colon: Option<Span>,
+        signature: Box<FunctionType>,
+        annotations: FunctionAnnotations,
+        span: Span,
+        tag_span: Span,
+    },
     Overload {
         signature: Box<FunctionType>,
         span: Span,
@@ -58,6 +67,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
         return (result, diagnostics);
     };
     let mut line_offset = 0;
+    let mut active_function = None;
     for line in body.split_inclusive('\n') {
         let trimmed = line.trim_start_matches([' ', '\t', '\r']);
         let stripped = trimmed
@@ -82,6 +92,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     | "class"
                     | "module"
                     | "field"
+                    | "function"
                     | "overload"
                     | "see"
             ) {
@@ -173,6 +184,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         }
                     }
                     "alias" | "shape" | "class" | "module" => {
+                        active_function = None;
                         if let Some(name) = parser.declaration_name("named type") {
                             let generics = parser.declaration_parameters();
                             let kind = if tag_name == "alias" {
@@ -202,9 +214,26 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         }
                     }
                     "field" => {
+                        active_function = None;
                         if let Some(field) = parser.field_declaration(annotation_span) {
                             result.declarations.push(DeclarationItem::Field(field));
                             parser.documentation_tail();
+                        }
+                    }
+                    "function" => {
+                        if let Some((name, explicit_owner, method_colon, signature)) =
+                            parser.function_declaration()
+                        {
+                            active_function = Some(result.declarations.len());
+                            result.declarations.push(DeclarationItem::Function {
+                                name,
+                                explicit_owner,
+                                method_colon,
+                                signature: Box::new(signature),
+                                annotations: std::mem::take(&mut result.functions),
+                                span: annotation_span,
+                                tag_span: Span::new(tag_offset, tag_offset + 1 + tag_len),
+                            });
                         }
                     }
                     "generic" => {
@@ -261,7 +290,13 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     ));
                 }
                 diagnostics.extend(parser.diagnostics);
-                merge_annotations(&mut result.functions, group, &mut diagnostics);
+                if let Some(DeclarationItem::Function { annotations, .. }) =
+                    active_function.map(|index| &mut result.declarations[index])
+                {
+                    merge_annotations(annotations, group, &mut diagnostics);
+                } else {
+                    merge_annotations(&mut result.functions, group, &mut diagnostics);
+                }
             }
         }
         line_offset += line.len();
@@ -508,9 +543,11 @@ impl TypeParser {
             }
             _ => None,
         };
-        let explicit_owner = if self.take("<").is_some() {
+        let mut deprecated_owner_span = None;
+        let mut explicit_owner = if let Some(open) = self.take("<") {
             let owner = self.declaration_name("field owner");
-            self.expect(">");
+            let close = self.expect(">");
+            deprecated_owner_span = Some(open.join(close));
             owner
         } else {
             None
@@ -520,7 +557,16 @@ impl TypeParser {
             self.expect("]");
             TypeFieldKey::Indexed(Box::new(ty))
         } else {
-            TypeFieldKey::Named(self.declaration_name("field")?)
+            let first = self.declaration_name("field")?;
+            if self.take(".").is_some() {
+                if explicit_owner.is_some() {
+                    self.error("@field cannot combine qualified and angle-bracket owners".into());
+                }
+                explicit_owner = Some(first);
+                TypeFieldKey::Named(self.declaration_name("field member")?)
+            } else {
+                TypeFieldKey::Named(first)
+            }
         };
         let ty = self.union();
         Some(FieldDeclaration {
@@ -528,8 +574,30 @@ impl TypeParser {
             ty,
             visibility,
             explicit_owner,
+            deprecated_owner_span,
             span,
         })
+    }
+
+    fn function_declaration(&mut self) -> Option<(Name, Option<Name>, Option<Span>, FunctionType)> {
+        let start = self.current().span;
+        let leading_colon = self.take(":");
+        let first = self.declaration_name("function")?;
+        let (name, owner, method_colon) = if leading_colon.is_some() {
+            (first, None, leading_colon)
+        } else if self.take(".").is_some() {
+            (self.declaration_name("function member")?, Some(first), None)
+        } else if let Some(colon) = self.take(":") {
+            let method_colon = Some(colon);
+            (self.declaration_name("function member")?, Some(first), method_colon)
+        } else {
+            (first, None, None)
+        };
+        let signature = self.function_type_tail(start);
+        if signature.parameters_span.is_none() {
+            self.error("@function requires a parenthesized parameter list".into());
+        }
+        Some((name, owner, method_colon, signature))
     }
 
     fn documentation_tail(&mut self) {
@@ -1026,6 +1094,14 @@ impl TypeParser {
     fn function_type(&mut self) -> TypeExpr {
         let start = self.current().span;
         self.pos += 1;
+        let signature = self.function_type_tail(start);
+        TypeExpr {
+            span: signature.span,
+            kind: TypeExprKind::Function(signature),
+        }
+    }
+
+    fn function_type_tail(&mut self, start: Span) -> FunctionType {
         let mut params = Vec::new();
         let mut vararg = None;
         let generics = self.declaration_parameters();
@@ -1117,16 +1193,13 @@ impl TypeParser {
             start
         };
         let span = start.join(end);
-        TypeExpr {
-            kind: TypeExprKind::Function(FunctionType {
-                generics,
-                parameters_span,
-                params,
-                vararg,
-                returns,
-                packs,
-                span,
-            }),
+        FunctionType {
+            generics,
+            parameters_span,
+            params,
+            vararg,
+            returns,
+            packs,
             span,
         }
     }
