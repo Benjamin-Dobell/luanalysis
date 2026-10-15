@@ -1472,7 +1472,8 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             }
             ValueRecipe::Evaluation(evaluation)=>self.sources.program.evaluation(*evaluation),
             ValueRecipe::Function(region) => return self.alias_function_value(*region, input),
-            ValueRecipe::Nil|ValueRecipe::NumericIteration=>return NativeAliasValue::NotTable,
+            ValueRecipe::Nil=>return NativeAliasValue::NotTable,
+            ValueRecipe::NumericIteration=>return NativeAliasValue::NonNilScalar,
             _=>return NativeAliasValue::Unknown,
         };
         let at=self.sources.flow_key(evaluation.input,input.graph.context);
@@ -1498,7 +1499,8 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             // A method evaluation's first operand is its receiver, not the
             // selected method. It cannot serve as an implementation origin.
             ExprKind::MethodCall {..}=>NativeAliasValue::Unknown,
-            ExprKind::Nil|ExprKind::Number(_)|ExprKind::String(_)|ExprKind::Boolean(_)=>NativeAliasValue::NotTable,
+            ExprKind::Nil=>NativeAliasValue::NotTable,
+            ExprKind::Number(_)|ExprKind::String(_)|ExprKind::Boolean(_)=>NativeAliasValue::NonNilScalar,
             _=>NativeAliasValue::Unknown,
         }
     }

@@ -19,7 +19,7 @@ fn standard() -> NativeIntrinsicSite {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Scenario { Single, Multiple, MetatableOnClass, MetatableBeforeClass, UnknownPass, ForeignAllocation, Loop }
+enum Scenario { Single, Multiple, MultipleReceivers, NonNilRawSlot, NilRawSlot, MetatableOnClass, MetatableBeforeClass, UnknownPass, ForeignAllocation, Loop }
 
 /// Original execution recipes for a factory with `local Class = {}` and
 /// function-literal field stores. Heap stores deliberately remain dispatch
@@ -58,7 +58,14 @@ impl Namespace {
         }
         source.local(1, 1);
         match scenario {
-            Scenario::MetatableOnClass => source.install_metatable(11),
+            Scenario::MetatableOnClass | Scenario::NonNilRawSlot | Scenario::NilRawSlot => source.install_metatable(11),
+            Scenario::MultipleReceivers => {
+                source.local(4, 2);
+                let before = source.current;
+                let left = source.push(NativeFlowNode::Write { before, target: reference(1, 5), value: value(13), input: before });
+                let right = source.push(NativeFlowNode::Write { before, target: reference(1, 5), value: value(12), input: before });
+                source.push(NativeFlowNode::Merge { edges: vec![left, right] });
+            },
             Scenario::UnknownPass => {
                 let barrier = source.push(NativeFlowNode::Pass { before: source.current });
                 source.unknown.insert(barrier);
@@ -73,7 +80,7 @@ impl Namespace {
             _ => {},
         }
         source.method(2);
-        if matches!(scenario, Scenario::Multiple) { source.method(3); }
+        if matches!(scenario, Scenario::Multiple | Scenario::MultipleReceivers) { source.method(3); }
         source.terminal = source.push(NativeFlowNode::Return { before: source.current });
         source
     }
@@ -167,7 +174,9 @@ impl NativeFlowProvider for Namespace {
             1 if matches!(self.scenario, Scenario::ForeignAllocation) => NativeAliasValue::Reference { reference: reference(2, 1), input: at(2, 1) },
             1 | 2 | 50 => NativeAliasValue::Allocation,
             10 => NativeAliasValue::Function { function: function(), creation: at(0, 0) },
-            11 | 12 => NativeAliasValue::Reference { reference: NativeReferenceKey { graph: input.graph, reference: if original.index == 11 { 1 } else { 4 } }, input },
+            11 | 12 | 13 => NativeAliasValue::Reference { reference: NativeReferenceKey { graph: input.graph, reference: match original.index { 11 if matches!(self.scenario, Scenario::MultipleReceivers) => 5, 11 | 13 => 1, _ => 4 } }, input },
+            40 => NativeAliasValue::NonNilScalar,
+            41 => NativeAliasValue::NotTable,
             // The method literal remains deliberately untracked. Its value
             // cannot be used as evidence that a missing target field is raw.
             _ => NativeAliasValue::Unknown,
@@ -196,11 +205,17 @@ impl NativeFlowProvider for Namespace {
         }
     }
     fn write_alias_receiver(&self, original: NativeFlowKey) -> Option<NativeAliasReturnValue> { self.receivers.get(&original).copied() }
+    fn value_alias_member_source(&self, original: NativeValueKey, input: NativeFlowKey, key: &LuaKey) -> Option<NativeAliasReturnValue> {
+        if original != value(1) || *key != LuaKey::String(b"first".to_vec()) { return None; }
+        let source = match self.scenario { Scenario::NonNilRawSlot => 40, Scenario::NilRawSlot => 41, _ => return None };
+        Some(NativeAliasReturnValue { value: value(source), input })
+    }
     fn reference_member_path(&self, original: NativeReferenceKey, member: NativeReferenceKey) -> Option<Vec<LuaKey>> {
-        if original.graph != member.graph || original.reference != 1 { return None; }
+        let owner = if matches!(self.scenario, Scenario::MultipleReceivers) { 5 } else { 1 };
+        if original.graph != member.graph || original.reference != owner { return None; }
         Some(vec![LuaKey::String(match member.reference { 2 => b"first".to_vec(), 3 => b"second".to_vec(), _ => return None })])
     }
-    fn reference_is_cell(&self, original: NativeReferenceKey) -> bool { matches!(original.reference, 1 | 4) }
+    fn reference_is_cell(&self, original: NativeReferenceKey) -> bool { matches!(original.reference, 1 | 4 | 5) }
     fn reference_declaration(&self, original: NativeReferenceKey) -> Option<NativeVariableDeclaration> {
         self.reference_is_cell(original).then_some(NativeVariableDeclaration { owner: original.graph, reference: original, writes: vec![] })
     }
@@ -213,7 +228,7 @@ impl NativeFlowProvider for Namespace {
     fn contains_reference(&self, original: NativeReferenceKey) -> bool {
         self.contains_graph(original.graph) && match original.graph.region {
             0 => original.reference == 0,
-            1 => original.reference < 5,
+            1 => original.reference < 6,
             2 => matches!(original.reference, 0 | 1),
             _ => false,
         }
@@ -275,5 +290,28 @@ fn missing_field_dispatch_proof_refuses_unknown_operations_foreign_allocations_a
                 assert_eq!(source.preserve(queries), expected, "{scenario:?}");
             });
         }
+    }
+}
+
+#[test]
+fn present_primitive_raw_slots_do_not_dispatch_but_nil_slots_still_do() {
+    for routed in [false, true] {
+        for scenario in [Scenario::NonNilRawSlot, Scenario::NilRawSlot] {
+            Engine::new().with_native_provider(move || Namespace::new(scenario, routed), |source, queries| {
+                let expected = if matches!(scenario, Scenario::NonNilRawSlot) { NativeCallPreservation::Preserved } else { NativeCallPreservation::Unknown };
+                assert_eq!(source.preserve(queries), expected, "{scenario:?}");
+            });
+        }
+    }
+}
+
+#[test]
+fn multiple_fresh_receivers_can_all_be_raw_without_becoming_one_object() {
+    for routed in [false, true] {
+        Engine::new().with_native_provider(move || Namespace::new(Scenario::MultipleReceivers, routed), |source, queries| {
+            assert_eq!(source.preserve(queries), NativeCallPreservation::Preserved);
+            let NativeFlowNode::Return { before } = source.node(source.terminal).unwrap() else { unreachable!() };
+            assert_eq!(queries.flow_alias_relation(source, reference(1, 1), before, value(11), before), NativeAliasRelation::Possible);
+        });
     }
 }

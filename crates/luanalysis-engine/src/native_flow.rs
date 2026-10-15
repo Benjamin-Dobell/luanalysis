@@ -18,6 +18,7 @@ pub enum NativeAliasValue {
     Function { function: super::NativeFunctionKey, creation: NativeFlowKey },
     Call { callee: NativeValueKey, input: NativeFlowKey },
     Projection { value: NativeValueKey, input: NativeFlowKey, index: usize },
+    NonNilScalar,
     NotTable,
     Unknown,
 }
@@ -159,6 +160,7 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
             NativeAliasValue::Function { function, creation } => C::Function { function: super::core_key(function), creation },
             NativeAliasValue::Call { callee, input } => C::Call { callee, input },
             NativeAliasValue::Projection { value, input, index } => C::Projection { value, input, index },
+            NativeAliasValue::NonNilScalar => C::NonNilScalar,
             NativeAliasValue::NotTable => C::NotTable,
             NativeAliasValue::Unknown => C::Unknown,
         }
