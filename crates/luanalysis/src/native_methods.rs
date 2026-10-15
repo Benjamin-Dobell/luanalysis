@@ -449,17 +449,19 @@ mod tests {
         assert_ne!(methods[0].function, methods[1].function);
     }
     #[test]
-    fn lexical_shadows_aliases_and_instance_extensions_do_not_invent_class_ownership() {
+    fn lexical_shadows_and_aliases_stay_unowned_but_written_local_contracts_select_the_class() {
         let native = registry(
             "---@class C\nlocal object={}\nlocal alias=object\nfunction alias:method() end\ndo local object={} function object:method() end end\n---@type C\nlocal instance\nfunction instance:method() end",
         );
-        assert_eq!(native.methods.sources().count(), 3);
-        assert!(
-            native
-                .methods
-                .sources()
-                .all(|method| method.class_owner.is_none())
-        );
+        let methods: Vec<_> = native.methods.sources().collect();
+        assert_eq!(methods.len(), 3);
+        let owner = native.named.candidates("C")[0];
+        for method in methods {
+            match &method.receiver.kind {
+                ExprKind::Name(name) if name.text == "instance" => assert_eq!(method.class_owner, Some(owner)),
+                _ => assert!(method.class_owner.is_none()),
+            }
+        }
     }
     #[test]
     fn semantic_self_keeps_written_arity_and_generic_shadowing_separate() {

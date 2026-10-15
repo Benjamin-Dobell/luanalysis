@@ -109,13 +109,14 @@ fn deferred_members_check_their_written_bodies_and_calls() {
 }
 
 #[test]
-fn an_owner_annotation_does_not_initialize_the_local_value() {
+fn an_explicit_nil_assignment_still_checks_the_written_local_contract() {
     let fixture = Fixture::new();
-    let early_read = SOURCE.replace(
-        "    local self\n",
-        "    local self\n    ---@type Zone\n    local early=self\n",
-    );
-    rejects_on_line(&fixture, &early_read, "TS2322", "local early=self");
+    // Frozen 3a7192f already accepted `---@type Zone; local value` followed
+    // by `---@type Zone; local checked=value`, without any member definitions.
+    // Definite assignment for that implicit nil is a pre-existing gap. This
+    // control checks an explicit incompatible write, not an uninitialized read.
+    let nil_write = SOURCE.replace("    local self\n", "    local self\n    self=nil\n");
+    rejects_on_line(&fixture, &nil_write, "TS2322", "self=nil");
     clean(&fixture, SOURCE);
 }
 
