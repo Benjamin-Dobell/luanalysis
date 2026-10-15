@@ -136,9 +136,10 @@ impl Checker<'_> {
         let (policy, recipe) = self.native?.module_import(span)?;
         let has_original_contract = self.native?.global_binding("require").is_some();
         if has_original_contract && !self.native?.flow.has_original_require_capability() {
-            // An unselected same-name declaration is an ordinary callable.
-            // Its signature cannot seed a standard module-loader operation.
-            return None;
+            // A source import candidate cannot borrow the selected loader's
+            // exports merely by copying its declaration text or display path.
+            self.error("LUA2036", callee.span, "Standard require cannot be assumed from an unselected loader declaration; custom loader effects require an explicit module contract.");
+            return Some(ValuePack::single(Type::Unknown));
         }
         if has_original_contract {
             let operation = self.flow_at.and_then(|at| {
