@@ -215,7 +215,16 @@ fn loader_mutations_inside_known_calls_prevent_source_imports_from_certifying_ex
     let source = format!(
         "local function replace_loader() package.path='custom/?.lua' end\nreplace_loader()\nrequire('helper')\n{FACTORY}"
     );
-    clean(&fixture.check(&source));
+    // The directly reached function explicitly changes the loader. The
+    // default assumption does not discard that observed current-scope write.
+    let refused = fixture.check(&source);
+    assert_eq!(refused.status.code(), Some(1), "{}", text(&refused));
+    assert!(text(&refused).contains("LUA2036"), "{}", text(&refused));
+    assert!(
+        !text(&refused).contains("Property 'read'"),
+        "{}",
+        text(&refused)
+    );
     no_owner(&fixture.check_strict(&source));
     clean(&fixture.check(&format!("require('helper')\n{FACTORY}")));
     clean(&fixture.check_strict(&format!("require('helper')\n{FACTORY}")));
@@ -224,6 +233,52 @@ fn loader_mutations_inside_known_calls_prevent_source_imports_from_certifying_ex
         let output = fixture.check_effects(&direct, strict);
         assert_eq!(output.status.code(), Some(1), "{}", text(&output));
         assert!(text(&output).contains("LUA2036"), "{}", text(&output));
+    }
+}
+
+#[test]
+fn a_blocked_import_does_not_apply_original_module_writes_to_saved_standard_values() {
+    let fixture = Fixture::new();
+    fixture.file(
+        "helper.lua",
+        &format!("{ORDINARY}setmetatable=ordinary\nreturn {{}}\n"),
+    );
+    for loader in ["require", "load"] {
+        let prefix = if loader == "load" {
+            "local load=require\n"
+        } else {
+            ""
+        };
+        let source = format!("{prefix}package.path='custom/?.lua'\n{loader}('helper')\n{FACTORY}");
+        let refused = fixture.check(&source);
+        assert_eq!(refused.status.code(), Some(1), "{}", text(&refused));
+        assert!(text(&refused).contains("LUA2036"), "{}", text(&refused));
+        // A refused source import cannot pretend its original file executed
+        // and replaced setmetatable while checking the following constructor.
+        assert!(
+            !text(&refused).contains("Property 'read'"),
+            "{}",
+            text(&refused)
+        );
+        let wrong = source.replace("local result = Static().read()", "local result = 'wrong'");
+        let rejected = fixture.check(&wrong);
+        assert!(text(&rejected).contains("TS2322"), "{}", text(&rejected));
+
+        // Restoring the loader activates the real module write, including
+        // when the caller holds the original require function in a local.
+        let reached = source.replace("package.path='custom/?.lua'\n", "");
+        let replaced = fixture.check(&reached);
+        no_owner(&replaced);
+        assert!(!text(&replaced).contains("LUA2036"), "{}", text(&replaced));
+
+        // A builtin value captured before that reached replacement still
+        // supplies the original operation independently of its global slot.
+        let saved = format!(
+            "local attach=setmetatable\n{}",
+            reached.replace("setmetatable(Static", "attach(Static")
+        );
+        clean(&fixture.check(&saved));
+        clean(&fixture.check_strict(&saved));
     }
 }
 
