@@ -435,7 +435,7 @@ pub(super) fn import_literal_key(checker: &Checker<'_, '_>, key: &LuaKey) -> Nat
     }
 }
 
-fn export_literal_key(checker: &Checker<'_, '_>, key: NativeTableKey) -> LuaKey {
+pub(super) fn export_literal_key(checker: &Checker<'_, '_>, key: NativeTableKey) -> LuaKey {
     match key {
         NativeTableKey::String(value) => LuaKey::String(checker.atoms().bytes(value).to_vec()),
         NativeTableKey::Integer(value) => LuaKey::Integer(value),

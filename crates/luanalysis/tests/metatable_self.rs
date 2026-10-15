@@ -167,3 +167,77 @@ fn a_known_standard_sibling_field_can_prove_owner_without_activating_constructor
     );
     clean(&fixture.check(&source));
 }
+
+#[test]
+fn a_generic_return_type_promise_cannot_attest_the_runtime_standard_value() {
+    let fixture = Fixture::new();
+    let identity = "---@generic T\n---@param value T\n---@return T\nlocal function identity(value) return value end\n";
+    let source = format!(
+        "{ORDINARY}{identity}---@type boolean\nlocal choose\nlocal attach=identity(choose and setmetatable or ordinary)\n{}",
+        FACTORY.replace("ATTACH", "attach")
+    );
+    let output = fixture.check(&source);
+    assert!(
+        text(&output).contains("Property 'identity'"),
+        "{}",
+        text(&output)
+    );
+    let member = FACTORY
+        .replace(
+            "local Vector = {}",
+            "local Vector = {attach = identity(choose and setmetatable or ordinary)}",
+        )
+        .replace("ATTACH", "Vector.attach");
+    let output = fixture.check(&format!(
+        "{ORDINARY}{identity}---@type boolean\nlocal choose\n{member}"
+    ));
+    assert!(
+        text(&output).contains("Property 'identity'"),
+        "{}",
+        text(&output)
+    );
+    clean(&fixture.check(&FACTORY.replace("ATTACH", "setmetatable")));
+}
+
+#[test]
+fn a_saved_sibling_tracks_actual_member_writes_through_table_aliases() {
+    let fixture = Fixture::new();
+    let source = format!(
+        "{ORDINARY}{}",
+        FACTORY
+            .replace(
+                "local Vector = {}",
+                "local Vector = {attach = setmetatable}\nlocal alias=Vector\nalias.attach=ordinary"
+            )
+            .replace("ATTACH", "Vector.attach")
+    );
+    let output = fixture.check(&source);
+    assert!(
+        text(&output).contains("Property 'identity'"),
+        "{}",
+        text(&output)
+    );
+    let restored = source.replace(
+        "alias.attach=ordinary",
+        "alias.attach=ordinary\nalias.attach=setmetatable",
+    );
+    clean(&fixture.check(&restored));
+}
+
+#[test]
+fn an_original_saved_value_survives_an_ordinary_call_that_replaces_the_global_slot() {
+    let fixture = Fixture::new();
+    let prefix = format!(
+        "{ORDINARY}local saved=setmetatable\nlocal function replace() setmetatable=ordinary end\nreplace()\n"
+    );
+    let output = fixture.check(&format!(
+        "{prefix}{}",
+        FACTORY.replace("ATTACH", "setmetatable")
+    ));
+    assert!(
+        text(&output).contains("Property 'identity'"),
+        "{}",
+        text(&output)
+    );
+    clean(&fixture.check(&format!("{prefix}{}", FACTORY.replace("ATTACH", "saved"))));
+}

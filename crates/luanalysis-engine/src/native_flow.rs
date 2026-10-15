@@ -27,6 +27,7 @@ pub trait NativeFlowProvider {
     /// Original written binding/member contract, independent of flow epoch.
     fn reference_written_contract(&self, _: NativeReferenceKey, _: &mut dyn TypeQueries) -> Option<Type> { None }
     fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> NativeAliasValue { NativeAliasValue::Unknown }
+    fn value_alias_member_source(&self, _: NativeValueKey, _: NativeFlowKey, _: &super::LuaKey) -> Option<NativeAliasReturnValue> { None }
     fn function_alias_returns(&self, _: super::NativeFunctionKey) -> Option<Vec<NativeAliasReturn>> { None }
     fn function_alias_exit(&self, _: super::NativeFunctionKey) -> Option<NativeFlowKey> { None }
     fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
@@ -98,6 +99,9 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
         Some(import_type(checker, self.handles, &contract))
     }
     fn value_alias_source(&self, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue { self.provider.value_alias_source(value, input) }
+    fn value_alias_member_source(&self, value: NativeValueKey, input: NativeFlowKey, key: bun_sema::types::NativeTableKey, checker: &Checker<'_, '_>) -> Option<NativeAliasReturnValue> {
+        self.provider.value_alias_member_source(value, input, &super::native_tables::export_literal_key(checker, key))
+    }
     fn function_alias_returns(&self, function: bun_sema::types::NativeFunctionId) -> Option<Vec<NativeAliasReturn>> { self.provider.function_alias_returns(super::source_key(function)) }
     fn function_alias_exit(&self, function: bun_sema::types::NativeFunctionId) -> Option<NativeFlowKey> { self.provider.function_alias_exit(super::source_key(function)) }
     fn reference_tracks_runtime_value(&self, reference: NativeReferenceKey) -> bool { self.provider.reference_tracks_runtime_value(reference) }

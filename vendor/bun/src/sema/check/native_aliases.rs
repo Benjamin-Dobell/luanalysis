@@ -144,7 +144,12 @@ impl<'p, 's> Checker<'p, 's> {
                     previous.merge(self.native_alias_value(provider, value, input, 0));
                     previous
                 }
-                NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor => Origins::unknown(),
+                NativeWriteRelation::Ancestor => {
+                    let projected = provider.reference_member_key(target, reference, self)
+                        .and_then(|key| provider.value_alias_member_source(value, input, key, self));
+                    projected.map_or_else(Origins::unknown, |value| self.native_alias_value(provider, value.value, value.input, 0))
+                },
+                NativeWriteRelation::PossibleAncestor => Origins::unknown(),
                 _ => self.native_alias_reference(provider, reference, before),
             },
             Some(NativeFlowNode::Call { before, .. }) => {

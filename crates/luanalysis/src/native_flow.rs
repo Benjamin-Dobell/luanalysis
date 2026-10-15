@@ -377,6 +377,8 @@ impl NativeFlowSources {
             for key in &members {
                 intern_reference(&mut result.references[region], &mut result.reference_indices[region],
                     &flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: vec![key.clone()] });
+                intern_reference(&mut result.references[region], &mut result.reference_indices[region],
+                    &flow::Reference { root: flow::ReferenceRoot::EnvironmentCell, path: vec![key.clone()] });
             }
         }
         result
@@ -386,6 +388,12 @@ impl NativeFlowSources {
         self.reference_key(graph, &flow::Reference {
             root: binding.map_or(flow::ReferenceRoot::EnvironmentCell, flow::ReferenceRoot::Binding),
             path: Vec::new(),
+        })
+    }
+    pub(super) fn original_global_member_reference(&self, graph: NativeGraphKey, name: &[u8]) -> Option<NativeReferenceKey> {
+        self.reference_key(graph, &flow::Reference {
+            root: flow::ReferenceRoot::EnvironmentCell,
+            path: vec![flow::Key::String(name.to_vec())],
         })
     }
     fn environment_candidate_paths(&self, reference: &flow::Reference) -> Vec<Vec<flow::Key>> {
@@ -1290,6 +1298,38 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             contract = queries.table_lookup(&contract, &luanalysis_engine::TableKey::Literal(key)).ok()?;
         }
         Some(contract)
+    }
+    fn value_alias_member_source(&self, value: NativeValueKey, input: NativeFlowKey, key: &luanalysis_engine::LuaKey) -> Option<luanalysis_engine::NativeAliasReturnValue> {
+        // String field identity is byte-exact. Numeric equivalence and sequence
+        // expansion need the native key/collision projection before they can
+        // establish a unique original value source.
+        let luanalysis_engine::LuaKey::String(_) = key else { return None; };
+        let mut evaluation = match self.sources.value(value)? {
+            ValueRecipe::Evaluation(evaluation) | ValueRecipe::PackElement { evaluation, index: 0 } => self.sources.program.evaluation(*evaluation),
+            _ => return None,
+        };
+        while matches!(self.sources.program.expression(evaluation.expression).expression.kind, ExprKind::Parenthesized(_)) {
+            evaluation = self.sources.program.evaluation(*evaluation.operands.first()?);
+        }
+        let ExprKind::Table(fields) = &self.sources.program.expression(evaluation.expression).expression.kind else { return None };
+        let mut selected = None;
+        for field in fields {
+            let field_key = match &field.kind {
+                luanalysis_syntax::TableFieldKind::Named(name) => luanalysis_engine::LuaKey::String(name.text.as_bytes().to_vec()),
+                luanalysis_syntax::TableFieldKind::Keyed(expression) => crate::native_tables::literal_key(expression)?,
+                luanalysis_syntax::TableFieldKind::Sequence { index } => luanalysis_engine::LuaKey::Integer((*index).try_into().ok()?),
+            };
+            if &field_key != key { continue; }
+            // Duplicate stores and expandable sequence values need the native
+            // collision/pack origin operation; no single source is invented.
+            if selected.is_some() || matches!(field.kind, luanalysis_syntax::TableFieldKind::Sequence { .. }) { return None; }
+            selected = Some(&field.value);
+        }
+        let selected = self.sources.evaluation_for_expression(selected?, input.graph)?;
+        Some(luanalysis_engine::NativeAliasReturnValue {
+            value: self.sources.evaluation_value(selected.id),
+            input: self.sources.flow_key(selected.input, input.graph.context),
+        })
     }
     fn value_alias_source(&self,value:NativeValueKey,input:NativeFlowKey)->luanalysis_engine::NativeAliasValue {
         use luanalysis_engine::NativeAliasValue;

@@ -283,6 +283,57 @@ impl NativeRegistry {
         if !genuine {
             return ContextualTypeOwner::Absent;
         }
+        if self.expressions.get(source.call).owner.is_some() {
+            // The named schema cache has no captured-parent component. Until
+            // that original owner application is part of its identity, no
+            // caller-specific activation may become a global class fact.
+            checker.error("LUA2042", self.expressions.get(source.call).expression.span,
+                "Contextual metatable ownership inside a function requires an owner application that retains its original capture facet.");
+            self.merge_flow_report(input, checker.check_mode, checker.report);
+            return ContextualTypeOwner::Absent;
+        }
+        let site = checker
+            .engine
+            .function_intrinsic(&value)
+            .expect("selected standard callee");
+        let name = self.project_globals.as_ref().and_then(|globals| {
+            globals
+                .bindings()
+                .into_iter()
+                .find_map(|(name, binding)| (binding == site.binding).then_some(name))
+        });
+        let entry = self.flow_entry(None, None);
+        let reference = name.as_ref().and_then(|name| {
+            self.flow
+                .original_global_member_reference(entry.graph, name)
+        });
+        let callee_evaluation = self
+            .flow
+            .evaluation_for_expression(callee, input.graph)
+            .expect("the original callee has its frozen evaluation");
+        let same_value = reference.is_some_and(|reference| {
+            let adapter = crate::native_flow::FlowAdapter {
+                sources: &self.flow,
+                values: self,
+            };
+            checker.engine.flow_alias_relation(
+                &adapter,
+                reference,
+                entry,
+                self.flow.evaluation_value(callee_evaluation.id),
+                self.flow
+                    .flow_key(callee_evaluation.input, input.graph.context),
+            ) == luanalysis_engine::NativeAliasRelation::Same
+        });
+        if !same_value {
+            // A generic result type can preserve a signature without proving
+            // which runtime function was returned. Only original value origins
+            // can establish the selected standard value.
+            checker.error("LUA2043", callee.span,
+                "Contextual metatable ownership requires the original standard runtime value; its callable type alone does not establish that value origin.");
+            self.merge_flow_report(input, checker.check_mode, checker.report);
+            return ContextualTypeOwner::Absent;
+        }
         let mut owner = None;
         if let Some(function) = source.call_function {
             if let Some(annotation) = &self.function(function).annotations.returns {
