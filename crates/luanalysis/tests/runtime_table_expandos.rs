@@ -156,6 +156,26 @@ fn deferred_plain_table_methods_use_the_original_prospective_structural_schema()
 }
 
 #[test]
+fn captured_constructor_fields_do_not_depend_on_later_store_receiver_discovery() {
+    // The uninvoked body must also check: this is a declaration-space field
+    // contract, independent of actual call-state replay or normal completion.
+    for invocation in ["", "install()\n"] {
+        let source = format!("local record={{current=1,saved=1,marker=0}}\nlocal function install()\n record.saved=record.current\n record.marker=1\n ---@type number\n local read=record.current\nend\n{invocation}");
+        clean(&source);
+    }
+}
+
+#[test]
+fn captured_constructor_reads_keep_the_original_bound_when_a_later_store_is_wrong() {
+    let source = "local record={current=1,saved=1,marker=0}\nlocal function install()\n record.saved=record.current\n record.current='wrong'\n record.marker=1\nend\n";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "'wrong'");
+    clean(&source.replace("'wrong'", "2"));
+}
+
+#[test]
 fn original_result_projections_preserve_shared_and_distinct_factory_allocations() {
     let shared = "local function pair() local value={} return value,value end\nlocal first,second=pair()\nfirst.item=1\nlocal shared=second.item\n";
     assert_eq!(

@@ -86,6 +86,26 @@ impl<'p, 's> Checker<'p, 's> {
         Ok(value)
     }
 
+    /// Constructor fields already anchor prospective reads. Discovering every
+    /// later store first would demand its receiver's earlier RHS, which can
+    /// itself read this same anchored field. Only a matching written member can
+    /// replace an inferred constructor field under the schema worker's policy.
+    pub(super) fn native_runtime_seed_read(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Result<Option<TypeId>, NativeNamedTypeError> {
+        let key = self.native_table_access(key).map_err(|error| NativeNamedTypeError::Table { declaration: reference.declaration, error })?;
+        let NativeTableAccessKey::Literal(literal) = key else { return Ok(None) };
+        let seed = self.native_runtime_table_seed(reference)?;
+        let seed = self.instantiate(seed, reference.mapper);
+        let TypeData::NativeTable(data) = self.data(seed) else { return Err(NativeNamedTypeError::InvalidDeclaration(reference.declaration)) };
+        let Some(field) = data.fields.iter().find(|field| field.key == literal) else { return Ok(None) };
+        let members = if field.origin == NativeTableFieldOrigin::Declared { Vec::new() }
+            else { self.native_object_written_fixed_members(reference, literal)? };
+        // Reuse the ordinary seed widening, optionality, mapper and written
+        // overlay rules. No partial object schema is published by this read.
+        let table = self.native_runtime_schema_resolved(reference, &members)?;
+        self.native_table_read(table, key).map(Some)
+            .map_err(|error| NativeNamedTypeError::Table { declaration: reference.declaration, error })
+    }
+
     pub(super) fn native_runtime_schema_resolved(&mut self, reference: NativeObjectReference, members: &[NativeObjectMember]) -> Result<TypeId, NativeNamedTypeError> {
         let declaration = reference.declaration;
         let seed = self.native_runtime_table_seed(reference)?;

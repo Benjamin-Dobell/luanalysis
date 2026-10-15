@@ -688,6 +688,75 @@ fn original_seed_fields_anchor_contracts_despite_incompatible_future_stores() {
 }
 
 #[test]
+fn constructor_literal_reads_do_not_discover_inferred_or_unrelated_written_receivers() {
+    for origin in [TableFieldOrigin::Inferred, TableFieldOrigin::Declared] {
+        Engine::new().with_native_provider(
+            || {
+                let mut provider = Provider::new();
+                provider.seed.fields.push(TableField {
+                    origin,
+                    ..TableField::new(key("value"), Type::NumberLiteral(1.0))
+                });
+                let mut optional = TableField::declared(key("optional"), Type::String);
+                optional.optional = true;
+                provider.seed.fields.push(optional);
+                provider.members[0].ty = Type::String;
+                provider.members.push(Member {
+                    name: "other", ty: Type::Boolean, origin: TableFieldOrigin::Declared, indexer: None,
+                });
+                provider.forbidden_receivers = vec![1, 2];
+                provider
+            },
+            |provider, queries| {
+                let table = provider.allocation(queries);
+                let schema = queries.runtime_table_schema(&table).unwrap();
+                let value = queries.table_lookup(&schema, &access("value")).unwrap();
+                assert_eq!(queries.inspect_type(&value), if origin == TableFieldOrigin::Declared { Type::NumberLiteral(1.0) } else { Type::Number });
+                let optional = queries.table_lookup(&schema, &access("optional")).unwrap();
+                assert!(queries.is_assignable(&Type::String, &optional));
+                assert!(queries.is_assignable(&Type::Nil, &optional));
+                assert!(provider.receiver_calls.borrow().is_empty());
+                assert_eq!(provider.member_calls.get(), 0);
+                assert_eq!(provider.seed_calls.get(), 1);
+                assert!(provider.errors.borrow().is_empty(), "{:#?}", provider.errors.borrow());
+            },
+        );
+    }
+}
+
+#[test]
+fn inferred_constructor_literal_reads_keep_matching_written_owner_overlays() {
+    for foreign_receiver in [false, true] {
+        Engine::new().with_native_provider(
+            || {
+                let mut provider = Provider::new();
+                provider.seed.fields.push(TableField::new(key("value"), Type::NumberLiteral(1.0)));
+                provider.members[0].origin = TableFieldOrigin::Declared;
+                provider.members[0].ty = Type::String;
+                provider.members.push(Member {
+                    name: "other", ty: Type::Boolean, origin: TableFieldOrigin::Declared, indexer: None,
+                });
+                provider.members.push(Member {
+                    name: "value", ty: Type::Boolean, origin: TableFieldOrigin::Inferred, indexer: None,
+                });
+                provider.forbidden_receivers = vec![2, 3];
+                provider.foreign_receiver = foreign_receiver;
+                provider
+            },
+            |provider, queries| {
+                let table = provider.allocation(queries);
+                let schema = queries.runtime_table_schema(&table).unwrap();
+                let value = queries.table_lookup(&schema, &access("value")).unwrap();
+                assert_eq!(queries.inspect_type(&value), if foreign_receiver { Type::Number } else { Type::String });
+                assert_eq!(*provider.receiver_calls.borrow(), vec![1], "a written override must still belong to this original allocation");
+                assert_eq!(provider.member_calls.get(), usize::from(!foreign_receiver));
+                assert!(provider.errors.borrow().is_empty(), "{:#?}", provider.errors.borrow());
+            },
+        );
+    }
+}
+
+#[test]
 fn stored_runtime_carriers_clear_freshness_without_losing_allocation_identity() {
     Engine::new().with_native_provider(Provider::new, |_, queries| {
         let actual = queries.table_type(&TableType {
