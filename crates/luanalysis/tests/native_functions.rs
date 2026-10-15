@@ -236,8 +236,8 @@ fn returned_closures_demand_copied_local_types_after_preceding_parameter_writes(
 }
 
 #[test]
-fn explicitly_nonreturning_calls_end_inferred_function_flow() {
-    let source = "---@return never\nlocal function spin() spin() end\nlocal function stopped() spin() end\nlocal value = stopped()";
+fn declarations_keep_zero_results_while_returned_nonreturning_calls_infer_never() {
+    let source = "---@return never\nlocal function spin() spin() end\nlocal function stopped() spin() end\nlocal value = stopped()\nlocal function forwarded() return spin() end\nlocal forwarded_value=forwarded()\n";
     let report = check(source);
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     assert_eq!(
@@ -247,8 +247,9 @@ fn explicitly_nonreturning_calls_end_inferred_function_flow() {
             .find(|binding| binding.name == "value")
             .unwrap()
             .ty,
-        "never"
+        "nil"
     );
+    assert_eq!(report.bindings.iter().find(|binding| binding.name == "forwarded_value").unwrap().ty, "never");
 }
 
 #[test]
