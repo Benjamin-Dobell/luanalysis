@@ -342,7 +342,7 @@ fn cli_profile_selection_original_error_correction_and_explicit_empty_mode_are_v
     let empty = fixture.cli(&["--no-stdlib", "main.lua"]);
     assert_eq!(empty.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&empty.stderr).contains("TS2304"));
-    let unsupported = fixture.cli(&["--lua-version", "5.1", "main.lua"]);
+    let unsupported = fixture.cli(&["--lua-version", "5.5", "main.lua"]);
     assert_eq!(unsupported.status.code(), Some(2));
 }
 
