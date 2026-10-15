@@ -347,7 +347,7 @@ impl NativeNamed {
             })
         }).collect();
         result.field_annotations.sort_by_key(|source| (source.field_span.start, source.field_span.end));
-        result.index_anonymous(&source, functions);
+        result.index_anonymous(file, &source, functions);
         let statements = source.statements;
         for declaration in &result.declarations {
             if let Some(span) = declaration.syntax.attachment {
@@ -407,6 +407,7 @@ impl NativeNamed {
 
     fn index_anonymous(
         &mut self,
+        file: &luanalysis_syntax::File,
         source: &SourceIndex<'_>,
         functions: &HashMap<(usize, usize), NativeFunctionKey>,
     ) {
@@ -460,6 +461,37 @@ impl NativeNamed {
                 documentation_contexts: member.documentation_contexts.clone(),
                 origin,
             });
+        }
+        // Documentation functions have no executable Function node. Retain
+        // their original annotation roots so the ordinary anonymous-head
+        // queries can resolve records, arrays and dictionaries in signatures.
+        // Signature scopes are attached separately using these same spans.
+        for declaration in &file.function_declarations {
+            let context = enclosing_function(declaration.span, functions);
+            let documentation_contexts = match &declaration.owner {
+                Some(luanalysis_syntax::DocFunctionOwner::Contextual(id)) => {
+                    self.key_for_syntax(*id).into_iter().collect()
+                }
+                _ => self.documentation_contexts_at(declaration.span),
+            };
+            let signature = &declaration.signature;
+            let annotations = &declaration.annotations;
+            let types = signature.generics.iter().filter_map(|parameter| parameter.constraint.as_ref())
+                .chain(signature.params.iter().filter_map(|parameter| parameter.ty.as_ref()))
+                .chain(signature.vararg.iter().map(|vararg| &vararg.ty))
+                .chain(signature.returns.iter())
+                .chain(annotations.generics.iter().filter_map(|parameter| parameter.constraint.as_ref()))
+                .chain(annotations.params.iter().map(|parameter| &parameter.ty))
+                .chain(annotations.vararg.iter().map(|vararg| &vararg.ty))
+                .chain(annotations.returns.iter().flat_map(|annotation| &annotation.types))
+                .chain(annotations.type_annotation.iter().flat_map(|annotation| &annotation.types));
+            for ty in types {
+                roots.push(Root {
+                    ty: ty.clone(), context,
+                    documentation_contexts: documentation_contexts.clone(),
+                    origin: AnonymousHeadOrigin::RuntimeAnnotation(declaration.span),
+                });
+            }
         }
         let mut statements: Vec<_> = source.statements.values().copied().collect();
         for source in &self.field_annotations {
@@ -632,6 +664,7 @@ impl NativeNamed {
                         pending.push(element)
                     }
                     TypeExprKind::Function(function) => {
+                        pending.extend(function.generics.iter().rev().filter_map(|parameter| parameter.constraint.as_ref()));
                         pending.extend(function.returns.iter().rev());
                         if let Some(vararg) = &function.vararg {
                             pending.push(&vararg.ty);

@@ -19,6 +19,7 @@ mod native_iterators;
 mod native_functions;
 mod native_named;
 mod native_members;
+mod native_doc_members;
 mod native_signatures;
 mod native_packs;
 mod native_return_annotations;
