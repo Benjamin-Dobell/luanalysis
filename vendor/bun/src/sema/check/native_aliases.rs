@@ -1028,7 +1028,7 @@ impl<'p, 's> Checker<'p, 's> {
             // Heap contents may change across a call even when the base cell
             // remains stable. Neither a loop site nor a captured activation is
             // an identity proof for the projected object.
-            Some(NativeFlowNode::Call { .. } | NativeFlowNode::Loop { .. }) => Origins::unknown(),
+            Some(NativeFlowNode::Call { .. } | NativeFlowNode::Loop { .. }) => Origins::unavailable(),
             Some(NativeFlowNode::Unreachable | NativeFlowNode::Return { .. }) => Origins::non_table(),
             _ => Origins::unknown(),
         };
