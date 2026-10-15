@@ -507,6 +507,60 @@ fn original_runtime_schemas_remain_structural_and_actual_views_do_not_gain_futur
 }
 
 #[test]
+fn original_seed_singletons_validate_later_stores_before_inference_widening() {
+    Engine::new().with_native_provider(
+        || {
+            let mut provider = Provider::new();
+            provider.seed.fields.push(TableField::declared(
+                key("value"),
+                Type::NumberLiteral(1.0),
+            ));
+            provider.seed.fresh = true;
+            provider.members[0].ty = Type::NumberLiteral(1.0);
+            provider
+        },
+        |provider, queries| {
+            let actual = queries.table_type(&provider.seed).unwrap();
+            let table = queries.runtime_table_value(declaration(0), &actual).unwrap();
+            let schema = queries.runtime_table_schema(&table).unwrap();
+            let value = queries.table_lookup(&schema, &access("value")).unwrap();
+            assert_eq!(queries.inspect_type(&value), Type::NumberLiteral(1.0));
+            assert!(queries.table_write(&table, &access("value"), &Type::NumberLiteral(1.0)).is_ok());
+            assert!(queries.table_write(&table, &access("value"), &Type::NumberLiteral(2.0)).is_err());
+            assert!(provider.errors.borrow().is_empty());
+        },
+    );
+}
+
+#[test]
+fn stored_runtime_carriers_clear_freshness_without_losing_allocation_identity() {
+    Engine::new().with_native_provider(Provider::new, |_, queries| {
+        let actual = queries.table_type(&TableType {
+            fields: vec![
+                TableField::new(key("value"), Type::NumberLiteral(1.0)),
+                TableField::new(key("extra"), Type::BooleanLiteral(true)),
+                TableField::declared(key("written"), Type::NumberLiteral(1.0)),
+            ],
+            fresh: true,
+            ..Default::default()
+        }).unwrap();
+        let table = queries.runtime_table_value(declaration(0), &actual).unwrap();
+        let target = queries.table_type(&TableType {
+            fields: vec![TableField::new(key("value"), Type::Number)],
+            ..Default::default()
+        }).unwrap();
+        assert!(!queries.is_assignable(&table, &target), "a direct constructor retains excess-property checking");
+        let stored = queries.widen(&table);
+        assert!(queries.is_assignable(&stored, &target), "a stored table permits structural extra properties");
+        assert_eq!(queries.runtime_table_declaration(&stored), Some(declaration(0)));
+        assert_eq!(queries.table_lookup(&stored, &access("value")), Ok(Type::Number));
+        let written = queries.table_lookup(&stored, &access("written")).unwrap();
+        assert_eq!(queries.inspect_type(&written), Type::NumberLiteral(1.0));
+        assert!(!queries.is_assignable(&Type::Number, &written));
+    });
+}
+
+#[test]
 fn repeated_inferred_stores_union_and_widen_but_written_contracts_remain_strict() {
     Engine::new().with_native_provider(
         || {

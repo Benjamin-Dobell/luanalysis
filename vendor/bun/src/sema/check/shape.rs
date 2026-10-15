@@ -3549,7 +3549,7 @@ impl<'p, 's> Checker<'p, 's> {
         match self.data(ty) {
             TypeData::NativeRuntimeTable(reference) => {
                 let reference = *reference;
-                let view = self.get_widened_type(reference.view);
+                let view = self.regular_type_of_resolved_object_literal(reference.view);
                 self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { view, ..reference }))
             }
             TypeData::NativeDefinition(reference) => {

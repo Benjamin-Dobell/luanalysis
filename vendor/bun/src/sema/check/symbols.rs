@@ -2129,6 +2129,11 @@ impl<'p, 's> Checker<'p, 's> {
                 self.native_array_of(element, *readonly)
             }
             TypeData::NativeTable(table) => self.native_table_widened(table),
+            TypeData::NativeRuntimeTable(reference) => {
+                let reference = *reference;
+                let view = self.get_widened_type_with_context(reference.view, context);
+                self.intern(TypeData::NativeRuntimeTable(crate::types::NativeRuntimeTableRef { view, ..reference }))
+            }
             TypeData::Ref {
                 target,
                 args: TypeArguments::Given(args),
