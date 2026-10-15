@@ -25,6 +25,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod named_provider;
 #[path = "native_shape_attachment.rs"]
 mod shape_attachment;
+#[path = "native_class_definitions.rs"]
+mod class_definitions;
+#[path = "native_assignment_context.rs"]
+mod assignment_context;
 #[path = "native_project_provider.rs"]
 pub(crate) mod project_provider;
 #[path = "native_globals.rs"]
@@ -62,6 +66,7 @@ pub(super) struct NativeRegistry {
     declarations: HashMap<BindingId, DeclarationSource>,
     pub(super) types: NativeTypes,
     named: NativeNamed,
+    class_definitions: class_definitions::NativeClassDefinitions,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
     globals: globals::NativeGlobals,
     project_globals: Option<std::rc::Rc<globals::ProjectGlobalIndex>>,
@@ -104,6 +109,7 @@ impl NativeRegistry {
             .collect();
         let named = NativeNamed::new(snapshot, &file, &bound, &source_function_keys)
             .expect("original named declaration metadata");
+        let class_definitions = class_definitions::NativeClassDefinitions::new(snapshot, &named);
         let signatures=super::native_signatures::NativeSignatures::new(snapshot,&file,&functions,&named);
         let mut types = NativeTypes::new_with_named(
             snapshot,
@@ -141,6 +147,7 @@ impl NativeRegistry {
             declarations,
             types,
             named,
+            class_definitions,
             project_names: None,
             globals,
             project_globals: None,
@@ -1517,17 +1524,13 @@ impl NativeRegistry {
             InitializerContext::LocalDeclarations(names) => {
                 let binding = names.first()
                     .and_then(|name| checker.bound.binding_at(name.span.start))?;
-                ValuePack::single(checker.shape_binding_constraint(binding, None, None)?)
+                let context = checker.shape_binding_constraint(binding, None, None)
+                    .or_else(|| checker.class_definition_initializer_context(binding))?;
+                ValuePack::single(context)
             }
             InitializerContext::Assignment(targets) => {
                 let fixed = targets.iter().map(|target| {
-                    let ty = match &target.kind {
-                        ExprKind::Name(name) => checker.bound.binding_at(name.span.start)
-                            .and_then(|binding| checker.resolve_local(binding))
-                            .filter(|binding| !binding.evolves_from_nil)
-                            .map(|binding| binding.constraint.clone()),
-                        _ => None,
-                    };
+                    let ty = checker.assignment_target_context(target);
                     luanalysis_engine::PackSlot::required(ty.unwrap_or(Type::Any))
                 }).collect();
                 ValuePack::Alternatives(vec![luanalysis_engine::PackAlternative { fixed, tail: None }])
@@ -1775,6 +1778,16 @@ impl NativeTypeProvider for NativeRegistry {
             declarations.extend(self.global_binding_declarations(*binding));
         }
         for key in declarations { self.global_error(key, &error); }
+    }
+    fn contains_class_definition(&self, key: luanalysis_engine::NativeClassDefinitionKey) -> bool {
+        self.class_definition_source(key).is_some_and(|source| {
+            self.class_definition_directive(source).ok().flatten().is_some()
+        })
+    }
+    fn class_definition_header(&self, key: luanalysis_engine::NativeClassDefinitionKey) -> luanalysis_engine::ClassDefinitionHeader {
+        let source = self.class_definition_source(key).expect("original class definition key");
+        let directive = self.class_definition_directive(source).expect("supported class definition").expect("attached class declaration");
+        luanalysis_engine::ClassDefinitionHeader { declaration: directive.declaration }
     }
     fn contains_signature(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signatures.contains(key)}
     fn signature_header(&self,key:luanalysis_engine::NativeSignatureKey)->luanalysis_engine::SignatureHeader{self.signatures.get(key).header}

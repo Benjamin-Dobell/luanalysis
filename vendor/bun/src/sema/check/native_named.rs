@@ -23,8 +23,9 @@
 
 use crate::atom::Atom;
 use crate::check::{Checker, Query};
-use crate::types::{CloneIn, MapperId, NativeFunctionId, NativeSignatureId, NativeTableKey, NativeTypeParamId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
+use crate::types::{CloneIn, MapperId, NativeFunctionId, NativeSignatureId, NativeTableKey, NativeTypeParamId, SigData, SigId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
 use super::native_tables::{NativeTableAccessKey, NativeTableError};
+use super::relate::{Relation, Relater, STATE_NONE};
 use super::task::Stored;
 use crate::util::FxHashMap;
 
@@ -41,6 +42,21 @@ pub struct NativeTypeDeclarationId {
 pub struct NativeTypeMemberId {
     pub snapshot: u64,
     pub index: u32,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeDefinitionId { pub snapshot: u64, pub index: u32 }
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeDefinitionHeader { pub declaration: NativeTypeDeclarationId }
+
+/// A definition value is an explicitly owned partial runtime table, not the full class schema.
+/// `view` is immutable checked value space; its identity retains contextual/captured facets.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeDefinitionRef {
+    pub owner: NativeDefinitionId,
+    pub class: NativeObjectReference,
+    pub view: TypeId,
 }
 
 /// Generic annotation scope. A named type does not borrow a fabricated function identity.
@@ -134,6 +150,10 @@ pub enum NativeTypeDeclarationQuery {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum NativeNamedTypeError {
+    InvalidDefinition(NativeDefinitionId),
+    DefinitionOwner { owner: NativeDefinitionId, expected: NativeTypeDeclarationId, actual: TypeId },
+    DefinitionInitializer { owner: NativeDefinitionId, actual: TypeId },
+    DefinitionField { owner: NativeDefinitionId, error: NativeTableError },
     InvalidDeclaration(NativeTypeDeclarationId),
     InvalidMember(NativeTypeMemberId),
     InvalidTypeParameter(NativeTypeParamId),
@@ -155,6 +175,8 @@ pub enum NativeNamedTypeError {
 /// is in declaration space, including member/indexer/bases queries. The backend owns resolving,
 /// substitution, recursive publication, inference, relation checks and semantic diagnostics.
 pub trait NativeTypeDeclarationProvider {
+    fn contains_class_definition(&self, _: NativeDefinitionId) -> bool { false }
+    fn class_definition_header(&self, _: NativeDefinitionId) -> NativeDefinitionHeader { panic!("class definition provider absent") }
     fn contains_type_declaration(&self, declaration: NativeTypeDeclarationId) -> bool;
     fn type_declaration_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeTypeDeclarationHeader;
 
@@ -417,6 +439,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// class descriptions retain the same fact so native key relations cannot erase it.
     pub(super) fn native_nominal_origin(&self, ty: TypeId) -> Option<NativeObjectReference> {
         match *self.data(ty) {
+            TypeData::NativeDefinition(reference) => Some(reference.class),
             TypeData::NativeObject(reference) => self.native_named_provider(reference.declaration).ok()
                 .filter(|p| p.type_declaration_header(self, reference.declaration).kind.is_nominal())
                 .map(|_| reference),
@@ -428,6 +451,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// Materialize a declaration-space description once per object mapper. Recursive member types
     /// only request the already-published head, so productive recursion does not recurse into fields.
     pub fn native_object_resolved(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+        if let TypeData::NativeDefinition(reference) = *self.data(ty) { return Ok(self.native_definition_resolved(reference)) }
         let TypeData::NativeObject(reference) = *self.data(ty) else { return Ok(ty) };
         if let Some(&known) = self.native_named_cache.objects.get(&ty) { return known }
         let native_query = NativeTypeDeclarationQuery::ObjectMembers(ty);
@@ -450,11 +474,33 @@ impl<'p, 's> Checker<'p, 's> {
     /// relations; exact Lua fields/keys still use the resolved table view.
     pub(super) fn native_object_relation_view(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
         let resolved = self.native_object_resolved(ty)?;
-        if let TypeData::NativeObject(reference) = self.data(ty)
-            && !self.native_named_provider(reference.declaration)?.type_declaration_call_signatures(reference.declaration).is_empty() {
-            return Ok(ty);
-        }
+        if self.native_object_has_call_signatures(ty) { return Ok(ty) }
         Ok(resolved)
+    }
+
+    /// A definition's call contract comes only from its explicitly attached class. Its actual
+    /// member view remains separate, including after materialization and mapper substitution.
+    fn native_object_call_reference(&self, ty: TypeId) -> Option<NativeObjectReference> {
+        match *self.data(ty) {
+            TypeData::NativeObject(reference) => Some(reference),
+            TypeData::NativeDefinition(reference) => Some(reference.class),
+            TypeData::NativeTable(ref table) => table.definition_origin.map(|reference| reference.class),
+            _ => None,
+        }
+    }
+
+    pub(super) fn native_object_has_call_signatures(&self, ty: TypeId) -> bool {
+        self.native_object_call_reference(ty).is_some_and(|reference| self.native_named_provider(reference.declaration)
+            .is_ok_and(|provider| !provider.type_declaration_call_signatures(reference.declaration).is_empty()))
+    }
+
+    pub(super) fn native_object_call_heads(&mut self, ty: TypeId) -> Vec<SigId> {
+        let Some(reference) = self.native_object_call_reference(ty) else { return Vec::new() };
+        let Ok(provider) = self.native_named_provider(reference.declaration) else { return Vec::new() };
+        provider.type_declaration_call_signatures(reference.declaration).into_iter().map(|declaration| {
+            self.native_signature_provider_for(declaration);
+            self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper: reference.mapper, implementation: None })
+        }).collect()
     }
 
     fn native_object_resolved_uncached(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {
@@ -520,5 +566,161 @@ impl<'p, 's> Checker<'p, 's> {
         let object = self.intern(TypeData::NativeObject(reference));
         let resolved = self.native_object_resolved(object).map_err(|_| NativeTableError::NotTable { ty: object })?;
         self.native_table_read(resolved, key)
+    }
+}
+
+impl<'p, 's> Checker<'p, 's> {
+    fn native_definition_class(&mut self, owner: NativeDefinitionId, class: TypeId) -> Result<NativeObjectReference, NativeNamedTypeError> {
+        let provider = self.native_type_declaration_provider.filter(|provider| provider.contains_class_definition(owner))
+            .ok_or(NativeNamedTypeError::InvalidDefinition(owner))?;
+        let expected = provider.class_definition_header(owner).declaration;
+        let valid = match *self.data(class) {
+            TypeData::NativeObject(reference) => reference.declaration == expected
+                && provider.contains_type_declaration(expected)
+                && provider.type_declaration_header(self, expected).kind == NativeTypeDeclarationKind::Class,
+            _ => false,
+        };
+        if !valid { return Err(NativeNamedTypeError::DefinitionOwner { owner, expected, actual: class }) }
+        let TypeData::NativeObject(reference) = *self.data(class) else { unreachable!() };
+        self.native_object_resolved(class)?;
+        Ok(reference)
+    }
+
+    /// Contextual guidance is structural and optional. It confers neither nominal origin nor a
+    /// definition value capability; only the checked value factory below does that.
+    pub fn native_definition_context(&mut self, owner: NativeDefinitionId, class: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+        self.native_definition_class(owner, class)?;
+        let schema = self.native_object_resolved(class)?;
+        let TypeData::NativeTable(data) = self.data(schema) else { unreachable!() };
+        let fields: Vec<_> = data.fields.iter().map(|field| NativeTableField { optional: true, ..*field }).collect();
+        let mut context = (**data).clone_in(self.arena);
+        context.nominal_origin = None;
+        context.definition_origin = None;
+        context.fields = self.list(&fields);
+        context.fresh = false;
+        Ok(self.intern(TypeData::NativeTable(self.boxed(context))))
+    }
+
+    pub fn native_definition_value(&mut self, owner: NativeDefinitionId, class: TypeId, actual: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+        let reference = self.native_definition_class(owner, class)?;
+        let TypeData::NativeTable(data) = self.data(actual) else {
+            return Err(NativeNamedTypeError::DefinitionInitializer { owner, actual });
+        };
+        if data.nominal_origin.is_some() || data.definition_origin.is_some() {
+            return Err(NativeNamedTypeError::DefinitionInitializer { owner, actual });
+        }
+        if let Some(error) = self.native_table_description_error(actual) {
+            return Err(NativeNamedTypeError::DefinitionField { owner, error });
+        }
+        let mut supplied = (**data).clone_in(self.arena);
+        supplied.fresh = false;
+        let supplied = self.intern(TypeData::NativeTable(self.boxed(supplied)));
+        let context = self.native_definition_context(owner, class)?;
+        let TypeData::NativeTable(supplied_data) = self.data(supplied) else { unreachable!() };
+        let TypeData::NativeTable(context_data) = self.data(context) else { unreachable!() };
+        // This operation checks supplied members, rather than assigning a whole object to a weak
+        // TS type. Inferred extras remain in the actual view even when no declared field is present.
+        let mut relation = Relater::new(Relation::Assignable, self.cycles);
+        if !self.native_tables_related::<false>(&mut relation, supplied_data, context_data, STATE_NONE).holds() {
+            return Err(NativeNamedTypeError::DefinitionField { owner, error: NativeTableError::ValueType { value: actual, expected: context } });
+        }
+        let schema = self.native_object_resolved(class)?;
+        let TypeData::NativeTable(declared) = self.data(schema) else { unreachable!() };
+        let TypeData::NativeTable(supplied) = self.data(supplied) else { unreachable!() };
+        // A dynamic constructor store may supply (or overwrite) a fixed declared member. The
+        // optional structural context alone cannot prove that candidate has the member's T.
+        for field in &declared.fields {
+            let literal = self.native_table_key_type(field.key);
+            for indexer in &supplied.indexers {
+                if !self.native_table_inference_key_matches(literal, indexer.key) { continue }
+                let value = if supplied.collision_candidates { self.without_undefined(indexer.value) } else { indexer.value };
+                if !self.is_assignable(value, field.value) {
+                    return Err(NativeNamedTypeError::DefinitionField { owner, error: NativeTableError::ValueType { value, expected: field.value } });
+                }
+            }
+            for tail in &supplied.sequence_tails {
+                if !Self::native_sequence_contains(tail.start, field.key) { continue }
+                let value = if supplied.collision_candidates { self.without_undefined(tail.value) } else { tail.value };
+                if !self.is_assignable(value, field.value) {
+                    return Err(NativeNamedTypeError::DefinitionField { owner, error: NativeTableError::ValueType { value, expected: field.value } });
+                }
+            }
+        }
+        let mut fields = supplied.fields.to_vec();
+        for field in &declared.fields {
+            if let Some(provided) = fields.iter_mut().find(|provided| provided.key == field.key) {
+                provided.readonly |= field.readonly;
+            } else {
+                fields.push(NativeTableField { optional: true, ..*field });
+            }
+        }
+        let mut indexers = supplied.indexers.to_vec();
+        indexers.extend(declared.indexers.iter().map(|indexer| NativeTableIndexer { sparse: true, ..*indexer }));
+        let view = self.native_table_with_context_and_sequence_policy(&fields, &indexers, &supplied.sequence_tails, NativeTableFlavor::Declared, false, None)
+            .map_err(|error| NativeNamedTypeError::DefinitionField { owner, error })?;
+        Ok(self.intern(TypeData::NativeDefinition(NativeDefinitionRef { owner, class: reference, view })))
+    }
+
+    fn native_definition_resolved(&self, reference: NativeDefinitionRef) -> TypeId {
+        let TypeData::NativeTable(view) = self.data(reference.view) else { unreachable!("definition has a native partial view") };
+        let mut data = (**view).clone_in(self.arena);
+        data.nominal_origin = Some(reference.class);
+        data.definition_origin = Some(reference);
+        self.intern(TypeData::NativeTable(self.boxed(data)))
+    }
+
+    pub(super) fn native_definition_ref(&self, ty: TypeId) -> Option<NativeDefinitionRef> {
+        match *self.data(ty) {
+            TypeData::NativeDefinition(reference) => Some(reference),
+            TypeData::NativeTable(ref table) => table.definition_origin,
+            _ => None,
+        }
+    }
+
+    /// Reads expose optional presence; writes use the original class member T, never T|nil.
+    pub(super) fn native_definition_write(&mut self, reference: NativeDefinitionRef, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
+        let key = self.native_table_access(key)?;
+        if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
+            for &part in self.parts(ty) { self.native_definition_write(reference, NativeTableAccessKey::Type(part), value)?; }
+            return Ok(());
+        }
+        let class = self.intern(TypeData::NativeObject(reference.class));
+        let schema = self.native_object_resolved(class).map_err(|_| NativeTableError::NotTable { ty: class })?;
+        let TypeData::NativeTable(data) = self.data(schema) else { unreachable!() };
+        if let NativeTableAccessKey::Literal(literal) = key
+            && let Some(field) = data.fields.iter().find(|field| field.key == literal) {
+            if field.readonly { return Err(NativeTableError::ReadOnly { key }) }
+            return if self.is_assignable(value, field.value) { Ok(()) }
+                else { Err(NativeTableError::ValueType { value, expected: field.value }) };
+        }
+        let key_type = match key { NativeTableAccessKey::Type(ty) => ty, NativeTableAccessKey::Literal(key) => self.native_table_key_type(key) };
+        for field in &data.fields {
+            if !self.native_table_inference_key_matches(self.native_table_key_type(field.key), key_type) { continue }
+            if field.readonly { return Err(NativeTableError::ReadOnly { key }) }
+            if !self.is_assignable(value, field.value) { return Err(NativeTableError::ValueType { value, expected: field.value }) }
+        }
+        let mut matched = false;
+        for indexer in &data.indexers {
+            if !self.is_assignable(key_type, indexer.key) { continue }
+            matched = true;
+            if indexer.readonly { return Err(NativeTableError::ReadOnly { key }) }
+            if !self.is_assignable(value, indexer.value) { return Err(NativeTableError::ValueType { value, expected: indexer.value }) }
+        }
+        if matched { return Ok(()) }
+        self.native_table_write(reference.view, key, value)
+    }
+
+    pub(super) fn native_definition_value_context(&mut self, reference: NativeDefinitionRef, key: NativeTableAccessKey) -> Option<TypeId> {
+        let key = self.native_table_access(key).ok()?;
+        let class = self.intern(TypeData::NativeObject(reference.class));
+        let schema = self.native_object_resolved(class).ok()?;
+        let TypeData::NativeTable(data) = self.data(schema) else { return None };
+        if let NativeTableAccessKey::Literal(literal) = key
+            && let Some(field) = data.fields.iter().find(|field| field.key == literal) { return Some(field.value) }
+        let key_type = match key { NativeTableAccessKey::Type(ty) => ty, NativeTableAccessKey::Literal(key) => self.native_table_key_type(key) };
+        let mut values: Vec<_> = data.fields.iter().filter(|field| self.native_table_inference_key_matches(self.native_table_key_type(field.key), key_type)).map(|field| field.value).collect();
+        values.extend(data.indexers.iter().filter(|indexer| self.is_assignable(key_type, indexer.key)).map(|indexer| indexer.value));
+        if !values.is_empty() { return Some(self.intersection(&values)) }
+        self.native_table_value_context(reference.view, key)
     }
 }

@@ -46,6 +46,7 @@ pub struct NativeTableSequenceTail {
 
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub struct NativeTableData<'s> {
+    pub definition_origin: Option<NativeDefinitionRef>,
     /// The original class declaration carried by a resolved native object. Ordinary table
     /// construction never supplies an origin; it cannot infer one from equal fields.
     pub nominal_origin: Option<NativeObjectReference>,
@@ -95,7 +96,7 @@ impl NativeTableKey {
 }
 
 impl<'p, 's> Checker<'p, 's> {
-    fn native_sequence_contains(start: i64, key: NativeTableKey) -> bool {
+    pub(super) fn native_sequence_contains(start: i64, key: NativeTableKey) -> bool {
         matches!(key, NativeTableKey::Integer(index) if index >= start)
     }
 
@@ -310,6 +311,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         sequence_tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            definition_origin: None,
             nominal_origin: None,
             fields: self.list(&fields), indexers: self.list(&indexers),
             sequence_tails: self.list(&sequence_tails), fresh, collision_candidates,
@@ -429,7 +431,7 @@ impl<'p, 's> Checker<'p, 's> {
             for field in &mut merged {
                 let key_type = self.native_table_key_type(field.key);
                 for indexer in &domains {
-                    if self.is_assignable(key_type, indexer.key) {
+                    if self.native_table_inference_key_matches(key_type, indexer.key) {
                         field.optional |= self.contains_undefined(indexer.value);
                         let present = self.without_undefined(indexer.value);
                         field.value = self.union_reduced(&[field.value, present]);
@@ -452,6 +454,7 @@ impl<'p, 's> Checker<'p, 's> {
         domains.sort_by_key(|indexer| indexer.key.0);
         tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            definition_origin: None,
             nominal_origin: None,
             fields: self.list(&merged),
             indexers: self.list(&domains),
@@ -523,7 +526,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
     }
 
-    fn native_table_access(&self, key: NativeTableAccessKey) -> Result<NativeTableAccessKey, NativeTableError> {
+    pub(super) fn native_table_access(&self, key: NativeTableAccessKey) -> Result<NativeTableAccessKey, NativeTableError> {
         match key {
             NativeTableAccessKey::Literal(key) => key.normalize().map(NativeTableAccessKey::Literal),
             NativeTableAccessKey::Type(ty) => {
@@ -546,6 +549,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub fn native_table_read(&mut self, table: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
         let table = self.native_runtime_carrier(table);
+        if let TypeData::NativeDefinition(reference) = *self.data(table) { return self.native_table_read(reference.view, key) }
         if let TypeData::NativeObject(reference) = *self.data(table) {
             return self.native_named_read(reference, key);
         }
@@ -615,6 +619,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub fn native_table_value_context(&mut self, expected: TypeId, key: NativeTableAccessKey) -> Option<TypeId> {
+        if let Some(reference) = self.native_definition_ref(expected) { return self.native_definition_value_context(reference, key) }
         if self.is_union(expected) {
             // Contextual object properties draw information from every member that declares the
             // key; an ordinary read still requires the key in every member.
@@ -644,6 +649,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub fn native_table_write(&mut self, table: TypeId, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
         let table = self.native_runtime_carrier(table);
+        if let Some(reference) = self.native_definition_ref(table) { return self.native_definition_write(reference, key, value) }
         let table = self.native_object_resolved(table).map_err(|_| NativeTableError::NotTable { ty: table })?;
         if let Some(error) = self.native_table_description_error(table) { return Err(error) }
         let key = self.native_table_access(key)?;
@@ -895,6 +901,7 @@ impl<'p, 's> Checker<'p, 's> {
             sparse: false,
         }).collect::<Vec<_>>();
         Some(NativeTableData {
+            definition_origin: None,
             nominal_origin: None,
             fields: self.list(&fields), indexers: self.list(&indexers),
             sequence_tails: self.list(&[]),
@@ -914,7 +921,9 @@ impl<'p, 's> Checker<'p, 's> {
         let sequence_tails = table.sequence_tails.iter().map(|tail| NativeTableSequenceTail {
             value: self.get_widened_type(tail.value), ..*tail
         }).collect::<Vec<_>>();
+        let definition_origin = table.definition_origin.map(|reference| NativeDefinitionRef { view: self.get_widened_type(reference.view), ..reference });
         self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            definition_origin,
             nominal_origin: table.nominal_origin,
             fields: self.list(&fields), indexers: self.list(&indexers),
             sequence_tails: self.list(&sequence_tails), fresh: false,

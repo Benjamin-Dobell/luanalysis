@@ -89,7 +89,7 @@ pub use crate::check::native_tables::{
     NativeTableAccessKey, NativeTableData, NativeTableField, NativeTableFlavor,
     NativeTableIndexer, NativeTableKey, NativeTableSequenceTail,
 };
-pub use crate::check::native_named::{NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
+pub use crate::check::native_named::{NativeDefinitionId, NativeDefinitionRef, NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
 /// An interned list of `IndexComponent`s.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ComponentsId(pub u32);
@@ -494,6 +494,7 @@ pub enum TypeData<'s> {
     NativeTable(ArenaBox<'s, NativeTableData<'s>>),
     NativeRuntimeTop { kind: NativeRuntimeKind, carrier: TypeId },
     NativeObject(NativeObjectReference),
+    NativeDefinition(NativeDefinitionRef),
     Anon {
         origin: Origin,
         mapper: MapperId,
@@ -2386,6 +2387,8 @@ impl<'p, 's> Types<'p, 's> {
             TypeData::NativeArray { element, .. } => self.object_flags(*element),
             TypeData::NativeObject(reference) => self.mapper_record(reference.mapper).1
                 .difference(ObjectFlags::PROPAGATING_FLAGS),
+            TypeData::NativeDefinition(reference) => self.object_flags(reference.view)
+                | self.mapper_record(reference.class.mapper).1.difference(ObjectFlags::PROPAGATING_FLAGS),
             TypeData::NativeTable(table) => {
                 let origin_flags = table.nominal_origin.map_or(ObjectFlags::empty(), |origin| self.mapper_record(origin.mapper).1);
                 let flags = table.fields.iter().fold(origin_flags, |flags, field| flags | self.object_flags(field.value));
@@ -3332,6 +3335,7 @@ has_no_references!(
     NativeFunctionId,
     NativeSignatureId,
     NativeTypeDeclarationId,
+    NativeDefinitionId,
     NativeTypeMemberId,
     NativeTypeParamId,
     NativeExpressionId,
@@ -3436,6 +3440,7 @@ follow_enum!(TypeData<'_> {
     TypeData::NativeTable(table) => (table),
     TypeData::NativeRuntimeTop { kind, carrier } => (kind, carrier),
     TypeData::NativeObject(reference) => (reference),
+    TypeData::NativeDefinition(reference) => (reference),
     TypeData::Anon { origin, mapper } => (origin, mapper),
     TypeData::Fns { decls, mapper } => (decls, mapper),
     TypeData::Synth(a) => (a),
@@ -3524,10 +3529,11 @@ follow_enum!(SigData<'_> {
 });
 follow_struct!(NativeCapturedBinding { declaration, ty });
 follow_struct!(NativeObjectReference { declaration, mapper });
+follow_struct!(NativeDefinitionRef { owner, class, view });
 follow_struct!(NativeTableField { key, value, optional, readonly });
 follow_struct!(NativeTableIndexer { key, value, readonly, sparse });
 follow_struct!(NativeTableSequenceTail { start, value, readonly });
-follow_struct!(NativeTableData<'_> { nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+follow_struct!(NativeTableData<'_> { definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 follow_struct!(NativeCapturedFunctionContext { signature });
 follow_struct!(NativeResultPack { ty });
 follow_enum!(NativeRuntimeKind {
@@ -3595,6 +3601,8 @@ clone_in_is_copy!(
     NativeFunctionId,
     NativeSignatureId,
     NativeTypeDeclarationId,
+    NativeDefinitionId,
+    NativeDefinitionRef,
     NativeTypeMemberId,
     NativeObjectReference,
     NativeTypeParamId,
@@ -3746,6 +3754,7 @@ clone_in_enum!(TypeData {
     NativeTable(table),
     NativeRuntimeTop { kind, carrier },
     NativeObject(reference),
+    NativeDefinition(reference),
     Anon { origin, mapper },
     Fns { decls, mapper },
     Synth(a),
@@ -3796,7 +3805,7 @@ clone_in_struct!(Shape {
     pattern_at,
     mapper
 });
-clone_in_struct!(NativeTableData { nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+clone_in_struct!(NativeTableData { definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 clone_in_enum!(SigData {
     NativeDeclarationSignature { declaration, mapper, implementation },
     Native { declaration, mapper },

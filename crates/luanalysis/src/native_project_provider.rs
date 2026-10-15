@@ -342,6 +342,12 @@ impl NativeTypeProvider for ProjectRegistry {
             owner.module_query_error(error);
         }
     }
+    fn contains_class_definition(&self, key: luanalysis_engine::NativeClassDefinitionKey) -> bool {
+        self.owner_if(key.snapshot).is_some_and(|source| source.contains_class_definition(key))
+    }
+    fn class_definition_header(&self, key: luanalysis_engine::NativeClassDefinitionKey) -> luanalysis_engine::ClassDefinitionHeader {
+        self.owner(key.snapshot).class_definition_header(key)
+    }
     fn contains_signature(&self,key:NativeSignatureKey)->bool {
         self.owner_if(key.snapshot).is_some_and(|owner|owner.contains_signature(key))
     }
@@ -416,6 +422,10 @@ impl NativeTypeProvider for ProjectRegistry {
     }
     fn type_declaration_error(&self, error: NamedTypeError) {
         let snapshot = match &error {
+            NamedTypeError::InvalidDefinition(owner)
+            | NamedTypeError::DefinitionOwner { owner, .. }
+            | NamedTypeError::DefinitionInitializer { owner, .. }
+            | NamedTypeError::DefinitionField { owner, .. } => owner.snapshot,
             NamedTypeError::InvalidDeclaration(key)
             | NamedTypeError::CircularAlias(key)
             | NamedTypeError::CircularBase(key)

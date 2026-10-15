@@ -686,6 +686,12 @@ impl<'p, 's> Checker<'p, 's> {
             return self.instantiate_deferred_type_reference(ty, mapper, None);
         }
         match self.data(ty) {
+            TypeData::NativeDefinition(reference) => {
+                let reference = *reference;
+                let class = NativeObjectReference { declaration: reference.class.declaration, mapper: self.compose(reference.class.mapper, mapper) };
+                let view = self.instantiate(reference.view, mapper);
+                self.intern(TypeData::NativeDefinition(NativeDefinitionRef { owner: reference.owner, class, view }))
+            }
             TypeData::NativeObject(reference) => {
                 let declaration = reference.declaration;
                 let mapper = self.compose(reference.mapper, mapper);
@@ -704,10 +710,15 @@ impl<'p, 's> Checker<'p, 's> {
                 let sequence_tails: Vec<NativeTableSequenceTail> = table.sequence_tails.iter().map(|tail| NativeTableSequenceTail {
                     value: self.instantiate(tail.value, mapper), ..*tail
                 }).collect();
+                let definition_origin = table.definition_origin.map(|reference| NativeDefinitionRef {
+                    owner: reference.owner, class: NativeObjectReference { declaration: reference.class.declaration, mapper: self.compose(reference.class.mapper, mapper) },
+                    view: self.instantiate(reference.view, mapper),
+                });
                 let nominal_origin = table.nominal_origin.map(|origin| NativeObjectReference {
                     declaration: origin.declaration, mapper: self.compose(origin.mapper, mapper),
                 });
                 self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+                    definition_origin,
                     nominal_origin,
                     fields: self.list(&fields),
                     indexers: self.list(&indexers),

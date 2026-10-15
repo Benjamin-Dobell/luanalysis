@@ -3203,6 +3203,10 @@ impl<'p, 's> Checker<'p, 's> {
                 TypeData::Template { types, .. } => left.extend_from_slice(types),
                 TypeData::NativeArray { element, .. } => left.push(*element),
                 TypeData::NativeObject(reference) => left.extend(values(reference.mapper)),
+                TypeData::NativeDefinition(reference) => {
+                    left.push(reference.view);
+                    left.extend(values(reference.class.mapper));
+                }
                 TypeData::NativeTable(table) => {
                     left.extend(table.fields.iter().map(|field| field.value));
                     for indexer in &table.indexers { left.extend([indexer.key, indexer.value]); }

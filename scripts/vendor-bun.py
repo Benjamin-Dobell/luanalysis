@@ -216,6 +216,16 @@ SOURCE_ADAPTATIONS.extend({
 } for path in ["mod.rs", "sink.rs", "native_signatures.rs", "native_globals.rs"])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
+    "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
+} for path in [
+    "types.rs", "check/native_named.rs", "check/native_tables.rs", "check/native_runtime.rs",
+    "check/instantiate.rs", "check/shape.rs", "check/relate.rs", "check/print.rs", "check/infer.rs",
+])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

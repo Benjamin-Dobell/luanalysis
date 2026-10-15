@@ -3,6 +3,9 @@
 use super::*;
 use std::cell::RefCell;
 
+#[path = "class_definition_tests.rs"]
+mod definitions;
+
 fn key(index: u32) -> NativeTypeDeclarationKey {
     NativeTypeDeclarationKey {
         snapshot: 91001,

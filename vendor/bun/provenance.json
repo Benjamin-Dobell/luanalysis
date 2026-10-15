@@ -959,6 +959,60 @@
       "reason": "Add environment-qualified global and original value-declaration queries with guarded raw contracts, deterministic identity checks, widened inferred introductions and declaration-only callable groups.",
       "added": true,
       "patch_sha256": "fc274123504fe27ecc1c11f91f00580e29ebd0593e89fd6f907d584206b3221f"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
+      "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
+      "patch_sha256": "97e184d7b7dcc6f4449c47260704f2c6328f6ae2670f0e4100eaf748ad951aa4"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
+      "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
+      "patch_sha256": "97e184d7b7dcc6f4449c47260704f2c6328f6ae2670f0e4100eaf748ad951aa4"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
+      "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
+      "patch_sha256": "97e184d7b7dcc6f4449c47260704f2c6328f6ae2670f0e4100eaf748ad951aa4"
+    },
+    {
+      "path": "src/sema/check/native_runtime.rs",
+      "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
+      "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
+      "patch_sha256": "97e184d7b7dcc6f4449c47260704f2c6328f6ae2670f0e4100eaf748ad951aa4"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
+      "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
+      "patch_sha256": "97e184d7b7dcc6f4449c47260704f2c6328f6ae2670f0e4100eaf748ad951aa4"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
+      "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
+      "patch_sha256": "97e184d7b7dcc6f4449c47260704f2c6328f6ae2670f0e4100eaf748ad951aa4"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
+      "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
+      "patch_sha256": "97e184d7b7dcc6f4449c47260704f2c6328f6ae2670f0e4100eaf748ad951aa4"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
+      "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
+      "patch_sha256": "97e184d7b7dcc6f4449c47260704f2c6328f6ae2670f0e4100eaf748ad951aa4"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
+      "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
+      "patch_sha256": "97e184d7b7dcc6f4449c47260704f2c6328f6ae2670f0e4100eaf748ad951aa4"
     }
   ],
   "source_additions": {
@@ -983,7 +1037,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "14cbc5cc1fc38b55f2ac45a256d53320e5629ace4cd6e3a4de161a7465c184a4",
+      "extracted_sha256": "b7127179fdc10f126df0354162c8dfaa8901ae232081389f76c7f980c408cab0",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -995,7 +1049,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-module-queries.patch"
     },
     "src/sema/check/native_runtime.rs": {
-      "extracted_sha256": "28d4b4ca43e7810b828715e33ebbfd0b2f0325413e907c109f667c134111ee6a",
+      "extracted_sha256": "bb166deb6ce755a3912a1d912ce4f7c6f41d4152da0d8941533749788483de25",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -1003,7 +1057,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "b7f74105f0df5bb4eabd052ca6e0509b317111ea998929f990415bb436b4eb95",
+      "extracted_sha256": "0f9863f7070407ee71ae0b9de75379d5341cc69e3ed4d2010a4aa399c2446157",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -1926,12 +1980,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "f8c82fb05cbca7cc96e3f721bc57e3851544f3bcd06097f85ffa2a109083c407"
+      "extracted_sha256": "90e92605b4fe81980050a03dd76ad61ac1953da1ad5821a1211a220fa07f12d3"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "c9ac7616d4db8d06699c3e435271f3b658a0e8e47e83da12d3fd089035ba855c"
+      "extracted_sha256": "a96c337ae3fb388954f38a86d1b03e33658c601d64b809914bd50d4c5e5fe268"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -1971,7 +2025,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "62adb4be65fb21735ee9f105b76ac737d39552e832b93f14aed5380c7135a9b3"
+      "extracted_sha256": "3ff7b53fabc905ca036421b8b18b434d46b362b43e6386f88609bd5da6abe5d3"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -1986,7 +2040,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "fa46a09c597430a70c0c8facd9b662f4b0120997862e0c168a2e09160803492f"
+      "extracted_sha256": "0694e9aff8cbe7e2e9962b4b8b7ce349bdce8fcaacc171170f005cfa12b47a4d"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -2041,7 +2095,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "0cb27d4eed55e65f63b13bf9e4df616f3293e72d7cc4174898684daaa084cee5"
+      "extracted_sha256": "bbadc030a63c511344883b1c2c26b0380dddae0f24693c2ff89ea3ea3e8ec35b"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -2166,7 +2220,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "3ffe12a70a8771f41b4ca844dd8ba20bded61a272e0850f68e5d045dd9571f7c"
+      "extracted_sha256": "7f904439d000c00abbe5ac5c8d38ca366a1e6f2640510524935c19048955bd9d"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

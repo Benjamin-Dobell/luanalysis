@@ -208,9 +208,8 @@ fn unknown_primitive_ambiguous_and_specialized_augmentation_owners_are_rejected(
 }
 
 #[test]
-fn class_runtime_module_base_and_visibility_semantics_stay_explicit_gates() {
+fn module_base_and_visibility_semantics_stay_explicit_gates() {
     for source in [
-        "---@class Nominal\nlocal Nominal={}\n",
         "---@module Module\n",
         "---@shape Derived:Base\n---@shape Base\n",
         "---@shape Private\n---@field private value number\n",

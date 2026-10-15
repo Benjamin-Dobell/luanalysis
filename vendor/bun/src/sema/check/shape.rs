@@ -1392,16 +1392,12 @@ impl<'p, 's> Checker<'p, 's> {
                     self.shape_memo(ty, |c| c.build_reverse_mapped_shape(ty, source, mapped, of));
                 Some((resolved, MapperId::IDENTITY))
             }
-            TypeData::NativeObject(reference) => {
-                let reference = *reference;
+            TypeData::NativeDefinition(_) | TypeData::NativeObject(_) => {
                 let shape = self.shape_memo(ty, |c| {
                     let resolved = match c.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return Shape::new_in(c.arena) };
                     let mut shape = c.members(resolved).map(|m| m.whole_shape().clone_in(c.arena)).unwrap_or_else(|| Shape::new_in(c.arena));
-                    if let Ok(provider) = c.native_named_provider(reference.declaration) {
-                        for declaration in provider.type_declaration_call_signatures(reference.declaration) {
-                            c.native_signature_provider_for(declaration);
-                            shape.call.push(c.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper: reference.mapper, implementation: None }));
-                        }
+                    if matches!(c.data(ty), TypeData::NativeObject(_)) {
+                        shape.call.extend(c.native_object_call_heads(ty));
                     }
                     shape
                 });
@@ -1425,6 +1421,7 @@ impl<'p, 's> Checker<'p, 's> {
                     for indexer in &table.indexers {
                         shape.index.push(IndexInfo::new(indexer.key, if indexer.sparse { c.optional(indexer.value) } else { indexer.value }, indexer.readonly));
                     }
+                    shape.call.extend(c.native_object_call_heads(ty));
                     shape
                 });
                 Some((shape, MapperId::IDENTITY))
@@ -3544,7 +3541,13 @@ impl<'p, 's> Checker<'p, 's> {
     /// `regular_type_of_object_literal` has returned.
     fn regular_type_of_resolved_object_literal(&mut self, ty: TypeId) -> TypeId {
         match self.data(ty) {
+            TypeData::NativeDefinition(reference) => {
+                let reference = *reference;
+                let view = self.get_widened_type(reference.view);
+                self.intern(TypeData::NativeDefinition(NativeDefinitionRef { view, ..reference }))
+            }
             TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+                definition_origin: table.definition_origin,
                 nominal_origin: table.nominal_origin,
                 fields: self.list(&table.fields), indexers: self.list(&table.indexers),
                 sequence_tails: self.list(&table.sequence_tails), fresh: false,
@@ -7489,7 +7492,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// The type of `ty.name`. `None`: there is no such property.
     pub fn type_of_property(&mut self, ty: TypeId, name: Atom) -> Option<TypeId> {
-        if matches!(self.data(ty), TypeData::NativeTable(_) | TypeData::NativeObject(_)) {
+        if matches!(self.data(ty), TypeData::NativeTable(_) | TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) {
             return self.native_table_read(ty, NativeTableAccessKey::Literal(NativeTableKey::String(name))).ok();
         }
         self.property_type(ty, ty, name, Access::Read)

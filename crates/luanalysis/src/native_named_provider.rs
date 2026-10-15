@@ -138,6 +138,9 @@ impl NativeRegistry {
                     }
                 }
                 TypeExprKind::Function(function) => {
+                    let context = self.signature_context_for_annotation(ty.span)
+                        .map(NativeTypeContext::Signature).or(context);
+                    pending.extend(function.generics.iter().filter_map(|parameter| parameter.constraint.as_ref()).map(|ty| (context, ty)));
                     let context=self.signature_key_for(function.span)
                         .map(NativeTypeContext::Signature).or(context);
                     pending.extend(function.generics.iter().filter_map(|parameter| parameter.constraint.as_ref()).map(|ty|(context,ty)));
@@ -200,6 +203,19 @@ impl NativeRegistry {
                                 pending.push((context, key));
                             }
                         }
+                    }
+                }
+                // Written callable heads are original annotation recipes too.
+                // Keep their own signature scopes while following named edges
+                // through this same visited worklist (including recursive heads).
+                for signature in self.signatures.named_heads(key) {
+                    let context = Some(NativeTypeContext::Signature(signature));
+                    let signature = &self.signatures.get(signature).signature;
+                    pending.extend(signature.generics.iter().filter_map(|parameter| parameter.constraint.as_ref()).map(|ty| (context, ty)));
+                    pending.extend(signature.params.iter().filter_map(|parameter| parameter.ty.as_ref()).map(|ty| (context, ty)));
+                    pending.extend(signature.returns.iter().map(|ty| (context, ty)));
+                    if let Some(vararg) = &signature.vararg {
+                        pending.push((context, &vararg.ty));
                     }
                 }
                 // Raw augmentation candidates are source binding facts.
@@ -308,6 +324,9 @@ impl NativeRegistry {
                     )
                 }
             };
+            for signature in self.signatures.named_heads(source.key) {
+                used.extend(self.signature_outer_keys(signature));
+            }
             return TypeDeclarationHeader {
                 kind,
                 name: source.syntax.name.text.clone(),
@@ -679,12 +698,11 @@ impl NativeRegistry {
     pub(crate) fn check_named_declarations(&self, queries: &mut dyn TypeQueries) {
         let mut seen = HashSet::new();
         for source in self.named.declarations() {
-            if matches!(source.syntax.kind, NamedTypeDeclarationKind::Record {
-                flavor: NamedRecordKind::Class, ..
-            }) && source.syntax.attachment.is_some_and(|span| !self.is_ambient_global_attachment(span)) {
+            if let Err(reason) = self.class_definition_directive(source)
+                && !source.syntax.attachment.is_some_and(|span| self.is_ambient_global_attachment(span)) {
                 self.report.borrow_mut().diagnostics.push(Diagnostic {
                     code: "LUA2031", span: source.syntax.name.span,
-                    message: format!("Runtime class declaration value '{}' requires explicit declaration-value ownership checking; standalone class annotations are supported in this slice.", source.syntax.name.text),
+                    message: format!("Class '{}' definition is unsupported: {reason}.", source.syntax.name.text),
                 });
             }
             if let Err(reason) = self.shape_attachment_directive(source)

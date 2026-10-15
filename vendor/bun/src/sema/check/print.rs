@@ -1800,6 +1800,11 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             .deferred(ty)
             .map(|reference| Identity::Node(reference.file, reference.node));
         match self.c.data(ty) {
+            TypeData::NativeDefinition(reference) => {
+                let class = self.c.intern(TypeData::NativeObject(reference.class));
+                let class = self.type_to_node(class);
+                Node::simple(cat!(b"def ", class.text))
+            }
             TypeData::NativeObject(reference) => {
                 let reference = *reference;
                 let name = self.c.native_type_declaration_provider
@@ -1820,6 +1825,10 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 crate::types::NativeRuntimeKind::Function => &b"function"[..],
             }),
             TypeData::NativeTable(table) => {
+                if let Some(reference) = table.definition_origin {
+                    let definition = self.c.intern(TypeData::NativeDefinition(reference));
+                    return self.type_to_node(definition);
+                }
                 if let Some(origin) = table.nominal_origin {
                     let reference = self.c.intern(TypeData::NativeObject(origin));
                     return self.type_to_node(reference);

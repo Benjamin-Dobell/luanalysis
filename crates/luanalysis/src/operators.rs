@@ -241,14 +241,9 @@ impl Checker<'_> {
     }
 
     fn length_operand(&mut self, ty: &Type) -> bool {
-        match ty {
-            Type::Any | Type::Never | Type::RuntimeTable | Type::Shape(_) | Type::FreshShape(_) | Type::Table(_) => true,
-            Type::Union(types) => types.iter().all(|ty| self.length_operand(ty)),
-            Type::Intersection(types) => types.iter().any(|ty| self.length_operand(ty)),
-            // A structural empty-object target also accepts non-table values in
-            // TS; it cannot be used as a test for the Lua table runtime tag.
-            _ => self.engine.is_assignable(ty, &Type::String),
-        }
+        // Query the canonical runtime domains, preserving opaque callable-table
+        // carriers. A public function-signature projection is not a Lua tag.
+        self.engine.is_assignable(ty, &Type::Union(vec![Type::String, Type::RuntimeTable]))
     }
 
     fn numeric_error(&mut self, code: &'static str, span: Span, op: BinaryOperator, ty: &Type) {

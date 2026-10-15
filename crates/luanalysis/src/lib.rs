@@ -720,6 +720,7 @@ impl Checker<'_> {
             ),
             ExprKind::Error => Type::Any,
         };
+        let ty = self.finish_class_definition_initializer(expr.span, ty);
         self.record_expression_type(expr.span, &ty);
         ty
     }
@@ -764,7 +765,10 @@ impl Checker<'_> {
         let expected = attached.map(luanalysis_engine::ValuePack::single).or_else(|| annotation.map(|annotation| {
             native_packs::AnnotationPack::annotation(annotation)
                 .lower(&mut |ty| self.annotation(ty))
-        }));
+        })).or_else(|| names.first()
+            .and_then(|name| self.bound.binding_at(name.span.start))
+            .and_then(|binding| self.class_definition_initializer_context(binding))
+            .map(luanalysis_engine::ValuePack::single));
         let automatic: Vec<_> = names.iter().enumerate()
             .map(|(index, _)| annotations.get(index).is_none() && automatic_nil_initializer(values, index))
             .collect();
@@ -828,18 +832,7 @@ impl Checker<'_> {
         // any assignment destination is committed.
         let expected: Vec<_> = targets
             .iter()
-            .map(|target| match &target.kind {
-                ExprKind::Name(name) => {
-                    if let Some(id) = self.bound.binding_at(name.span.start) {
-                        self.resolve_local(id)
-                            .filter(|binding| !binding.evolves_from_nil)
-                            .map(|binding| binding.constraint.clone())
-                    } else {
-                        self.global_read(name)
-                    }
-                },
-                _ => None,
-            })
+            .map(|target| self.assignment_target_context(target))
             .collect();
         let expected_pack =
             luanalysis_engine::ValuePack::Alternatives(vec![luanalysis_engine::PackAlternative {

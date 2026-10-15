@@ -58,9 +58,9 @@ fn raw_record_returns_cannot_satisfy_a_nominal_class_annotation() {
 }
 
 #[test]
-fn attached_class_declaration_values_remain_gated_even_with_an_explicit_type() {
+fn unsupported_class_definition_forms_remain_explicitly_gated() {
+    clean("---@class C\nlocal C={}\n");
     for source in [
-        "---@class C\nlocal C={}\n",
         "---@class C\n---@type C\nlocal C={}\n",
         "---@class C\nnamespace.C={}\n",
     ] {
@@ -71,7 +71,7 @@ fn attached_class_declaration_values_remain_gated_even_with_an_explicit_type() {
             .find(|diagnostic| diagnostic.code == "LUA2031")
             .unwrap_or_else(|| panic!("{source}\n{:#?}", report.diagnostics));
         assert_eq!(&source[diagnostic.span.start..diagnostic.span.end], "C");
-        assert!(diagnostic.message.contains("declaration-value ownership"));
+        assert!(diagnostic.message.contains("unsupported"));
     }
 }
 

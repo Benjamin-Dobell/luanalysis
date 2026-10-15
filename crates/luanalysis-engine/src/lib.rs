@@ -298,6 +298,8 @@ pub trait NativeTypeProvider {
     fn module_inferred_result_pack(&self, _: NativeModuleKey, _: &mut dyn TypeQueries) -> ValuePack { panic!("native project provider is not installed") }
     fn project_query_error(&self, _: NativeProjectError) {}
 
+    fn contains_class_definition(&self, _: NativeClassDefinitionKey) -> bool { false }
+    fn class_definition_header(&self, _: NativeClassDefinitionKey) -> ClassDefinitionHeader { panic!("class definition provider absent") }
     /// Raw written return annotation only. This hook must not inspect the body
     /// or demand its result count. Zero results project to Lua nil in scalar use.
     /// Context/capture variants also return declaration-space annotations; the
@@ -664,6 +666,8 @@ pub trait TypeQueries {
     fn module_value(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<Type, NativeProjectError>;
     fn require_pack(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<ValuePack, NativeProjectError>;
 
+    fn class_definition_context(&mut self, owner: NativeClassDefinitionKey, class_type: &Type) -> Result<Type, NamedTypeError>;
+    fn class_definition_value(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError>;
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool;
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type;
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack;
@@ -1612,6 +1616,12 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let ty = import_type(self.checker, self.handles, ty);
         String::from_utf8_lossy(&self.checker.type_to_string(ty)).into_owned()
     }
+    fn class_definition_context(&mut self, owner: NativeClassDefinitionKey, class_type: &Type) -> Result<Type, NamedTypeError> {
+        native_named::definition_context(self, owner, class_type)
+    }
+    fn class_definition_value(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
+        native_named::definition_value(self, owner, class_type, actual)
+    }
     fn named_type_reference(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Result<Type, NamedTypeError> {
         native_named::resolve(self, declaration, arguments)
     }
@@ -2554,7 +2564,7 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
             bun_sema::types::NativeRuntimeKind::Table => Type::RuntimeTable,
             bun_sema::types::NativeRuntimeKind::Function => Type::RuntimeFunction,
         },
-        TypeData::NativeObject(..) => handles.retain(ty),
+        TypeData::NativeObject(..) | TypeData::NativeDefinition(..) => handles.retain(ty),
         TypeData::NativeTable(_) => native_tables::export_table(checker, handles, ty)
             .map(Type::Table)
             .unwrap_or_else(|| handles.retain(ty)),

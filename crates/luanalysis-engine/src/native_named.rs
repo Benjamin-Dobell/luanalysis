@@ -6,6 +6,7 @@ use super::{
     export_type, import_type, source_parameter_key,
 };
 use bun_sema::check::native_named::{
+    NativeDefinitionHeader, NativeDefinitionId,
     NativeNamedTypeError, NativeObjectDeclarationForm, NativeTypeDeclarationHeader,
     NativeTypeDeclarationId, NativeTypeDeclarationKind, NativeTypeDeclarationOwner,
     NativeTypeDeclarationProvider, NativeTypeMemberHeader, NativeTypeMemberId,
@@ -23,6 +24,12 @@ pub struct NativeTypeMemberKey {
     pub snapshot: u64,
     pub index: u32,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NativeClassDefinitionKey { pub snapshot: u64, pub index: u32 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClassDefinitionHeader { pub declaration: NativeTypeDeclarationKey }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeDeclarationKind {
@@ -89,6 +96,10 @@ pub enum NamedTypeQuery {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum NamedTypeError {
+    InvalidDefinition(NativeClassDefinitionKey),
+    DefinitionOwner { owner: NativeClassDefinitionKey, expected: NativeTypeDeclarationKey, actual: Type },
+    DefinitionInitializer { owner: NativeClassDefinitionKey, actual: Type },
+    DefinitionField { owner: NativeClassDefinitionKey, error: TableError },
     InvalidDeclaration(NativeTypeDeclarationKey),
     InvalidMember(NativeTypeMemberKey),
     InvalidTypeParameter(NativeTypeParameterKey),
@@ -125,6 +136,23 @@ pub enum NamedTypeError {
     },
 }
 
+fn core_definition(key: NativeClassDefinitionKey) -> NativeDefinitionId { NativeDefinitionId { snapshot:key.snapshot,index:key.index } }
+fn source_definition(key: NativeDefinitionId) -> NativeClassDefinitionKey { NativeClassDefinitionKey {snapshot:key.snapshot,index:key.index} }
+
+pub(super) fn definition_context(queries: &mut SessionQueries<'_, '_, '_>, owner: NativeClassDefinitionKey, class: &Type) -> Result<Type, NamedTypeError> {
+    let class = import_type(queries.checker, queries.handles, class);
+    queries.checker.native_definition_context(core_definition(owner), class)
+        .map(|ty| export_type(queries.checker,queries.handles,ty))
+        .map_err(|error| export_error(queries.checker,queries.handles,error))
+}
+pub(super) fn definition_value(queries: &mut SessionQueries<'_, '_, '_>, owner: NativeClassDefinitionKey, class: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
+    let class = import_type(queries.checker, queries.handles, class);
+    let actual = import_type(queries.checker, queries.handles, actual);
+    queries.checker.native_definition_value(core_definition(owner), class, actual)
+        .map(|ty| export_type(queries.checker,queries.handles,ty))
+        .map_err(|error| export_error(queries.checker,queries.handles,error))
+}
+
 pub(super) fn core_declaration(key: NativeTypeDeclarationKey) -> NativeTypeDeclarationId {
     NativeTypeDeclarationId {
         snapshot: key.snapshot,
@@ -159,6 +187,12 @@ fn source_kind(kind: NativeTypeDeclarationKind) -> TypeDeclarationKind {
 }
 
 impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_, P> {
+    fn contains_class_definition(&self, key: NativeDefinitionId) -> bool {
+        self.provider.contains_class_definition(source_definition(key))
+    }
+    fn class_definition_header(&self, key: NativeDefinitionId) -> NativeDefinitionHeader {
+        NativeDefinitionHeader { declaration: core_declaration(self.provider.class_definition_header(source_definition(key)).declaration) }
+    }
     fn type_declaration_call_signatures(&self, key: NativeTypeDeclarationId) -> Vec<bun_sema::types::NativeSignatureId> {
         self.provider.type_declaration_call_signatures(source_declaration(key)).into_iter().map(super::core_signature_key).collect()
     }
@@ -375,6 +409,11 @@ pub(super) fn export_error(
 ) -> NamedTypeError {
     use bun_sema::check::native_named::NativeTypeDeclarationQuery as Q;
     match error {
+        NativeNamedTypeError::InvalidDefinition(owner) => NamedTypeError::InvalidDefinition(source_definition(owner)),
+        NativeNamedTypeError::DefinitionOwner { owner,expected,actual } => NamedTypeError::DefinitionOwner { owner:source_definition(owner),expected:source_declaration(expected),actual:export_type(checker,handles,actual) },
+        NativeNamedTypeError::DefinitionInitializer { owner,actual } => NamedTypeError::DefinitionInitializer { owner:source_definition(owner),actual:export_type(checker,handles,actual) },
+        NativeNamedTypeError::DefinitionField { owner,error } => NamedTypeError::DefinitionField { owner:source_definition(owner),error:super::native_tables::export_error(checker,handles,error) },
+
         NativeNamedTypeError::InvalidDeclaration(key) => {
             NamedTypeError::InvalidDeclaration(source_declaration(key))
         }

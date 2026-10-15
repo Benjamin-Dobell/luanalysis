@@ -341,6 +341,7 @@ pub(super) fn is_object_kind(data: &TypeData) -> bool {
             | TypeData::NativeTable(_)
             | TypeData::NativeRuntimeTop { .. }
             | TypeData::NativeObject(_)
+            | TypeData::NativeDefinition(_)
             | TypeData::Tuple { .. }
             | TypeData::Anon { .. }
             | TypeData::Fns { .. }
@@ -2751,6 +2752,11 @@ impl<'p, 's> Checker<'p, 's> {
                     return Ternary::TRUE;
                 }
                 td = self.data(target);
+                // Removing nullable constituents can expose a runtime category after its entry
+                // gate ran. Re-enter with the original source carrier before structural checks.
+                if matches!(td, TypeData::NativeRuntimeTop { .. }) {
+                    return self.is_related_to_ex::<REPORT>(r, source, target, recursion, state);
+                }
             }
         }
         let error_reporter = REPORT.then_some(&mut *r);
@@ -4250,6 +4256,12 @@ impl<'p, 's> Checker<'p, 's> {
     /// `data`: the `TypeData` of `t`.
     fn recursion_identity_as(&self, t: TypeId, data: &TypeData) -> RecursionId {
         match data {
+            TypeData::NativeDefinition(reference) => {
+                let declared = self.intern(TypeData::NativeObject(NativeObjectReference {
+                    declaration: reference.class.declaration, mapper: MapperId::IDENTITY,
+                }));
+                (8, declared.0, 0)
+            }
             TypeData::NativeObject(reference) => {
                 let declared = self.intern(TypeData::NativeObject(NativeObjectReference {
                     declaration: reference.declaration, mapper: MapperId::IDENTITY,
@@ -5263,8 +5275,9 @@ impl<'p, 's> Checker<'p, 's> {
     ) -> Ternary {
         let source = match self.native_object_relation_view(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
         let target = match self.native_object_relation_view(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
+        let native_call_contract = self.native_object_has_call_signatures(source) || self.native_object_has_call_signatures(target);
         let (sd, td) = (self.data(source), self.data(target));
-        if matches!(sd, TypeData::NativeObject(_)) && matches!(td, TypeData::NativeObject(_)) {
+        if matches!(sd, TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) && matches!(td, TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) {
             let Some(source_table) = self.native_table_object_description(source) else { return Ternary::FALSE };
             let Some(target_table) = self.native_table_object_description(target) else { return Ternary::FALSE };
             let result = self.native_tables_related::<REPORT>(r, &source_table, &target_table, state);
@@ -5310,7 +5323,8 @@ impl<'p, 's> Checker<'p, 's> {
         }
         match (sd, td) {
             (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
-                return self.native_tables_related::<REPORT>(r, source, target, state);
+                let result = self.native_tables_related::<REPORT>(r, source, target, state);
+                if !result.holds() || !native_call_contract { return result }
             }
             (TypeData::NativeTable(source), _) if is_object_kind(td) => {
                 let Some(target) = self.native_table_object_description(target) else { return Ternary::FALSE };

@@ -31,7 +31,7 @@ impl<'p, 's> Checker<'p, 's> {
             TypeData::NativeRuntimeTop { kind, .. } => Some(*kind),
             // A named table can also have call signatures. Its origin takes
             // precedence over structural callability in the Lua runtime.
-            TypeData::NativeObject(_) | TypeData::NativeTable(_) => Some(NativeRuntimeKind::Table),
+            TypeData::NativeDefinition(_) | TypeData::NativeObject(_) | TypeData::NativeTable(_) => Some(NativeRuntimeKind::Table),
             _ => {
                 let members = self.structured_members(ty)?;
                 Some(if members.call_signatures().is_empty() && members.construct_signatures().is_empty() {

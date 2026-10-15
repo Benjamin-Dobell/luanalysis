@@ -74,7 +74,6 @@ fn unsupported_features_cannot_silently_pass() {
     for source in [
         "local value = identity(42)",
         "local function identity(value) return value end",
-        "---@class Thing\nlocal Thing = {}",
     ] {
         assert!(!check(source).diagnostics.is_empty(), "{source}");
     }
