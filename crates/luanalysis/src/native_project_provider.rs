@@ -458,6 +458,9 @@ impl NativeTypeProvider for ProjectRegistry {
     fn contains_signature(&self,key:NativeSignatureKey)->bool {
         self.owner_if(key.snapshot).is_some_and(|owner|owner.contains_signature(key))
     }
+    fn function_lexical_parent(&self, key: NativeFunctionKey) -> Option<NativeFunctionKey> {
+        self.owner(key.snapshot).function_lexical_parent(key)
+    }
     fn contains_function(&self, key: NativeFunctionKey) -> bool {
         self.owner_if(key.snapshot)
             .is_some_and(|owner| owner.contains_function(key))

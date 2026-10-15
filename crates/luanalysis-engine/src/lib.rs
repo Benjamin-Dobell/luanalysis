@@ -563,6 +563,7 @@ pub trait NativeTypeProvider {
         self.function_inferred_return(key, queries)
     }
     fn contains_function(&self, key: NativeFunctionKey) -> bool;
+    fn function_lexical_parent(&self, _: NativeFunctionKey) -> Option<NativeFunctionKey> { None }
     fn function_parameters(
         &self,
         key: NativeFunctionKey,
@@ -2657,6 +2658,9 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     }
     fn contains_function(&self, key: NativeFunctionId) -> bool {
         self.provider.contains_function(source_key(key))
+    }
+    fn lexical_parent(&self, key: NativeFunctionId) -> Option<NativeFunctionId> {
+        self.provider.function_lexical_parent(source_key(key)).map(core_key)
     }
 
     fn parameters(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Vec<SigParam> {

@@ -161,6 +161,8 @@ pub trait NativeFunctionProvider {
     fn circular_signature_return(&self, _: NativeSignatureId) {}
     fn signature_return_type_too_deep(&self, _: NativeSignatureId) {}
     fn contains_function(&self, declaration: NativeFunctionId) -> bool;
+    /// Original lexical ownership only; no type or runtime capture inference.
+    fn lexical_parent(&self, _: NativeFunctionId) -> Option<NativeFunctionId> { None }
     fn parameters(&self, checker: &mut Checker<'_, '_>, declaration: NativeFunctionId) -> Vec<SigParam>;
     fn type_parameters(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Vec<TypeId> {
         Vec::new()

@@ -258,7 +258,28 @@ impl<'p, 's> Checker<'p, 's> {
         declaration: NativeFunctionId,
         work: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        let signature = self.types().intern_sig(SigData::Native { declaration, mapper: MapperId::IDENTITY });
+        let provider = self.native_function_provider.expect("native declaration frame requires its original provider");
+        let mut chain = Vec::new();
+        let mut current = Some(declaration);
+        let mut seen = std::collections::HashSet::new();
+        while let Some(owner) = current {
+            assert!(provider.contains_function(owner) && seen.insert(owner), "native declaration ownership is finite and original");
+            chain.push(owner);
+            current = provider.lexical_parent(owner);
+        }
+        let mut parent = None;
+        for declaration in chain.into_iter().rev() {
+            parent = Some(self.types().intern_sig(match parent {
+                Some(parent) => SigData::NativeCaptured {
+                    declaration,
+                    mapper: MapperId::IDENTITY,
+                    environment: self.list(&[]),
+                    lexical_parent: Some(parent),
+                },
+                None => SigData::Native { declaration, mapper: MapperId::IDENTITY },
+            }));
+        }
+        let signature = parent.expect("the canonical declaration frame includes its owner");
         self.with_native_function_frame(None, Some(NativeCapturedFunctionContext { signature }), work)
     }
 
@@ -328,8 +349,16 @@ impl<'p, 's> Checker<'p, 's> {
         Some(NativeCapturedFunctionContext { signature })
     }
 
-    pub fn native_captured_function_parent(&self, context: NativeCapturedFunctionContext) -> Option<NativeCapturedFunctionContext> {
+    pub fn native_captured_function_parent(&mut self, context: NativeCapturedFunctionContext) -> Option<NativeCapturedFunctionContext> {
         match *self.types().sig(context.signature) {
+            SigData::Native { declaration, mapper } => {
+                let provider = self.native_function_provider?;
+                let declaration = provider.lexical_parent(declaration)?;
+                assert!(provider.contains_function(declaration), "a canonical lexical parent is original");
+                let signature = self.types().intern_sig(SigData::Native { declaration, mapper: MapperId::IDENTITY });
+                let signature = self.instantiate_sig(signature, mapper);
+                Some(NativeCapturedFunctionContext { signature })
+            }
             SigData::NativeCaptured { lexical_parent, .. }
             | SigData::NativeContextual { lexical_parent, .. } => lexical_parent.map(|signature| NativeCapturedFunctionContext { signature }),
             SigData::WithReturn { sig, .. } | SigData::WithNativeResultPack { sig, .. } => {

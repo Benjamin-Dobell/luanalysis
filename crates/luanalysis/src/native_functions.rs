@@ -2318,6 +2318,9 @@ impl NativeTypeProvider for NativeRegistry {
     ) -> Type {
         self.inferred_return_in_context(key, context, queries)
     }
+    fn function_lexical_parent(&self, key: NativeFunctionKey) -> Option<NativeFunctionKey> {
+        self.flow.lexical_parent(key)
+    }
     fn contains_function(&self, key: NativeFunctionKey) -> bool {
         key.snapshot == self.snapshot && (key.index as usize) < self.functions.len()
     }

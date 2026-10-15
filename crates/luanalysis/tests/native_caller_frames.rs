@@ -137,3 +137,32 @@ local literal=make(7)()
     incompatible(&fixture.check(&source.replace("local n=number", "local n=string")));
     clean(&fixture.check(source));
 }
+
+#[test]
+fn canonical_member_body_recovers_sibling_helpers_through_original_constructor_ownership() {
+    let fixture = Fixture::new("");
+    let source = r#"
+---@class Example
+local Constructor={}
+setmetatable(Constructor,{__call=function()
+    local self=--[[---@type Example]] {}
+    ---@param value number
+    ---@return number
+    local function first(value) return value end
+    ---@param value number
+    ---@return number
+    function self.second(value) return first(value) end
+    return self
+end})
+---@type Example
+local instance
+---@type number
+local result=instance.second(42)
+"#;
+    clean(&fixture.check(source));
+    let rejected =
+        fixture.check(&source.replace("instance.second(42)", "instance.second('wrong')"));
+    assert_eq!(rejected.status.code(), Some(1), "{}", text(&rejected));
+    assert!(text(&rejected).contains("TS2345"), "{}", text(&rejected));
+    clean(&fixture.check(source));
+}
