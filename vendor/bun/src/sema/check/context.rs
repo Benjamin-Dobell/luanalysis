@@ -2571,20 +2571,22 @@ impl<'p, 's> Checker<'p, 's> {
                 });
                 self.is_resolving(Query::ReturnOfSignature(declared))
             }
-            SigData::NativeContextual { declaration, context, ref environment, .. } => {
+            SigData::NativeContextual { declaration, context, ref environment, lexical_parent, .. } => {
                 let declared = self.types().intern_sig(SigData::NativeContextual {
                     declaration,
                     mapper: MapperId::IDENTITY,
                     context,
                     environment: self.list(environment),
+                    lexical_parent,
                 });
                 self.is_resolving(Query::ReturnOfSignature(declared))
             }
-            SigData::NativeCaptured { declaration, ref environment, .. } => {
+            SigData::NativeCaptured { declaration, ref environment, lexical_parent, .. } => {
                 let declared = self.types().intern_sig(SigData::NativeCaptured {
                     declaration,
                     mapper: MapperId::IDENTITY,
                     environment: self.list(environment),
+                    lexical_parent,
                 });
                 self.is_resolving(Query::ReturnOfSignature(declared))
             }

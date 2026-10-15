@@ -821,6 +821,13 @@ pub trait TypeQueries {
     fn pack_allows_implicit_return(&mut self, pack: &ValuePack) -> bool;
     fn pack_with_implicit_empty(&mut self, pack: &ValuePack) -> ValuePack;
     fn captured_function_value(&mut self, context: &CapturedFunctionContext) -> Type;
+    /// Actual implementation capability, including an ordinary declaration-space function.
+    fn function_capture_context(&mut self, function: &Type) -> Option<CapturedFunctionContext>;
+    /// Exact lexical creation frame retained by this function value.
+    fn captured_function_parent(&mut self, context: &CapturedFunctionContext)
+    -> Option<CapturedFunctionContext>;
+    fn captured_function_context(&mut self, context: &CapturedFunctionContext)
+    -> Option<ContextualFunctionContext>;
     fn native_function_key(&mut self, function: &Type) -> Option<NativeFunctionKey>;
     fn instantiate_in_function(&mut self, function: &Type, declaration_type: &Type)
     -> Option<Type>;
@@ -834,6 +841,15 @@ pub trait TypeQueries {
         &mut self,
         function: NativeFunctionKey,
         bindings: &[(NativeBindingKey, Type)],
+    ) -> Type {
+        self.captured_function_with_parent(function, bindings, None)
+    }
+    /// `parent` must be attested against the original source's lexical owner.
+    fn captured_function_with_parent(
+        &mut self,
+        function: NativeFunctionKey,
+        bindings: &[(NativeBindingKey, Type)],
+        parent: Option<&CapturedFunctionContext>,
     ) -> Type;
     fn captured_binding(
         &mut self,
@@ -1291,6 +1307,30 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let ty = self.checker.native_captured_function_value(context);
         self.handles.retain(ty)
     }
+    fn function_capture_context(&mut self, function: &Type) -> Option<CapturedFunctionContext> {
+        let function = import_type(self.checker, self.handles, function);
+        self.checker
+            .native_function_capture_context(function)
+            .map(|context| self.handles.retain_capture(context))
+    }
+    fn captured_function_parent(
+        &mut self,
+        context: &CapturedFunctionContext,
+    ) -> Option<CapturedFunctionContext> {
+        let context = self.handles.resolve_capture(context);
+        self.checker
+            .native_captured_function_parent(context)
+            .map(|parent| self.handles.retain_capture(parent))
+    }
+    fn captured_function_context(
+        &mut self,
+        context: &CapturedFunctionContext,
+    ) -> Option<ContextualFunctionContext> {
+        let context = self.handles.resolve_capture(context);
+        self.checker
+            .native_captured_function_context(context)
+            .map(|context| self.handles.retain_context(context))
+    }
     fn native_function_key(&mut self, function: &Type) -> Option<NativeFunctionKey> {
         let function = import_type(self.checker, self.handles, function);
         let signature = self.checker.native_implementation_signature(function)?;
@@ -1326,10 +1366,11 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let ty = self.checker.instantiate_in_native_capture(context, ty);
         export_type(self.checker, self.handles, ty)
     }
-    fn captured_function(
+    fn captured_function_with_parent(
         &mut self,
         function: NativeFunctionKey,
         bindings: &[(NativeBindingKey, Type)],
+        parent: Option<&CapturedFunctionContext>,
     ) -> Type {
         import_type(self.checker, self.handles, &Type::NativeFunction(function));
         let mut environment = Vec::new();
@@ -1342,7 +1383,11 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         }
         let ty = self
             .checker
-            .native_captured_function(core_key(function), &environment)
+            .native_captured_function_with_parent(
+                core_key(function),
+                &environment,
+                parent.map(|parent| self.handles.resolve_capture(parent)),
+            )
             .unwrap_or_else(|| std::panic::panic_any(InvalidNativeFunctionKey(function)));
         self.handles.retain(ty)
     }
@@ -2924,6 +2969,7 @@ mod tests {
         base_parameters: std::cell::Cell<usize>,
         callback_modes: std::cell::RefCell<Vec<NativeCheckMode>>,
         captures: std::cell::RefCell<Vec<CapturedFunctionContext>>,
+        parent_parameter_observations: std::cell::RefCell<Vec<Type>>,
     }
     impl ContextualProvider {
         fn expression(node: u32) -> NativeExpressionKey {
@@ -3158,9 +3204,14 @@ mod tests {
         fn function_parameters_in_capture(
             &self,
             key: NativeFunctionKey,
-            _: &CapturedFunctionContext,
+            context: &CapturedFunctionContext,
             queries: &mut dyn TypeQueries,
         ) -> Vec<Parameter> {
+            if let Some(parent) = queries.captured_function_parent(context) {
+                if let Some(value) = queries.captured_binding(&parent, Self::binding()) {
+                    self.parent_parameter_observations.borrow_mut().push(value);
+                }
+            }
             if key.snapshot == 91 {
                 return StaticGenericProvider.function_parameters(key, queries);
             }
@@ -3239,6 +3290,150 @@ mod tests {
             assert_eq!(queries.current_captured_function(), None);
             assert_eq!(queries.current_contextual_function(), None);
             assert_eq!(provider.base_parameters.get(), 0);
+        });
+    }
+
+    #[test]
+    fn native_lexical_parent_capabilities_survive_empty_captures_and_contextual_wrapping() {
+        Engine::new().with_native_provider(ContextualProvider::default, |_, queries| {
+            let plain = queries
+                .function_capture_context(&Type::NativeFunction(ContextualProvider::function(5)))
+                .unwrap();
+            assert_eq!(queries.captured_function_parent(&plain), None);
+            assert_eq!(queries.captured_function_context(&plain), None);
+            let parent = queries.captured_function(
+                ContextualProvider::function(5),
+                &[(ContextualProvider::binding(), Type::String)],
+            );
+            let expected = StaticGenericProvider::callback(Some(Type::Number), Type::Any);
+            let parent = queries.contextual_function_value(
+                &parent,
+                ContextualProvider::expression(2),
+                &expected,
+                NativeCheckMode::CONTEXTUAL,
+            );
+            let parent = queries.function_capture_context(&parent).unwrap();
+            assert!(queries.captured_function_context(&parent).is_some());
+            let child = queries.captured_function_with_parent(
+                ContextualProvider::function(4),
+                &[],
+                Some(&parent),
+            );
+            let child_context = queries.function_capture_context(&child).unwrap();
+            assert_eq!(queries.captured_function_parent(&child_context), Some(parent));
+            let child = queries.contextual_function_value(
+                &child,
+                ContextualProvider::expression(2),
+                &StaticGenericProvider::callback(None, Type::Any),
+                NativeCheckMode::CONTEXTUAL,
+            );
+            let child_context = queries.function_capture_context(&child).unwrap();
+            assert_eq!(queries.captured_function_parent(&child_context), Some(parent));
+            assert_eq!(
+                queries.captured_binding(&parent, ContextualProvider::binding()),
+                Some(Type::String),
+            );
+            assert_eq!(queries.current_captured_function(), None);
+            assert_eq!(queries.current_contextual_function(), None);
+        });
+    }
+
+    #[test]
+    fn native_lexical_parent_instantiation_maps_each_ancestor_once() {
+        with_program(|program, handles| {
+            let provider = ContextualProvider::default();
+            let adapter = ProviderAdapter {
+                provider: &provider,
+                handles,
+            };
+            let mut checker = program.checker_with_native_provider(&adapter);
+            let second_binding = NativeBindingKey { snapshot: 92, index: 1 };
+            let mut queries = SessionQueries { checker: &mut checker, handles };
+            let parent = queries.captured_function(
+                ContextualProvider::function(5),
+                &[
+                    (ContextualProvider::binding(), StaticGenericProvider::variable(3)),
+                    (second_binding, StaticGenericProvider::variable(4)),
+                ],
+            );
+            let parent = queries.contextual_function_value(
+                &parent,
+                ContextualProvider::expression(2),
+                &StaticGenericProvider::callback(Some(StaticGenericProvider::variable(4)), Type::Any),
+                NativeCheckMode::CONTEXTUAL,
+            );
+            let original_parent = queries.function_capture_context(&parent).unwrap();
+            let child = queries.captured_function_with_parent(
+                ContextualProvider::function(4), &[], Some(&original_parent),
+            );
+            let raw = import_type(&mut checker, handles, &child);
+            let t = import_type(&mut checker, handles, &StaticGenericProvider::variable(3));
+            let u = import_type(&mut checker, handles, &StaticGenericProvider::variable(4));
+            let mapper = checker.types().mapper(vec![(t, u), (u, TypeId::NUMBER)]);
+            let mapped = checker.instantiate(raw, mapper);
+            let mapped = export_type(&mut checker, handles, mapped);
+            let mut queries = SessionQueries { checker: &mut checker, handles };
+            let child = queries.function_capture_context(&mapped).unwrap();
+            let parent = queries.captured_function_parent(&child).unwrap();
+            assert_ne!(parent, original_parent);
+            assert_eq!(
+                queries.captured_binding(&parent, ContextualProvider::binding()),
+                Some(StaticGenericProvider::variable(4)),
+                "the simultaneous T -> U, U -> number substitution must not map T twice",
+            );
+            assert_eq!(queries.captured_binding(&parent, second_binding), Some(Type::Number));
+            let contextual = queries.captured_function_context(&parent).unwrap();
+            assert_eq!(queries.contextual_parameter_type(&contextual, 0), Some(Type::Number));
+            assert_eq!(
+                queries.captured_binding(&original_parent, ContextualProvider::binding()),
+                Some(StaticGenericProvider::variable(3)),
+                "mapping a child must leave the original parent capability immutable",
+            );
+        });
+    }
+
+    #[test]
+    fn native_lexical_parent_survives_own_erasure_and_signature_target_reconstruction() {
+        with_program(|program, handles| {
+            let provider = ContextualProvider::default();
+            let adapter = ProviderAdapter { provider: &provider, handles };
+            let mut checker = program.checker_with_native_provider(&adapter);
+            let mut queries = SessionQueries { checker: &mut checker, handles };
+            let bindings = [
+                (ContextualProvider::binding(), StaticGenericProvider::variable(3)),
+                (NativeBindingKey { snapshot: 92, index: 1 }, StaticGenericProvider::variable(4)),
+            ];
+            let parent = queries.captured_function(ContextualProvider::function(4), &bindings);
+            let parent = queries.function_capture_context(&parent).unwrap();
+            let own_generic = queries.captured_function_with_parent(
+                StaticGenericProvider::function(4), &[], Some(&parent),
+            );
+            let own_generic = import_type(&mut checker, handles, &own_generic);
+            let signature = checker.native_implementation_signature(own_generic).unwrap();
+            let erased = checker.erased_sig(signature);
+            assert_ne!(erased, signature);
+            let erased_parent = checker.native_captured_function_parent(
+                NativeCapturedFunctionContext { signature: erased },
+            ).unwrap();
+            assert_eq!(erased_parent, handles.resolve_capture(&parent));
+            let child = SessionQueries { checker: &mut checker, handles }
+                .captured_function_with_parent(StaticGenericProvider::function(0), &bindings, Some(&parent));
+            let raw = import_type(&mut checker, handles, &child);
+            let own = import_type(&mut checker, handles, &StaticGenericProvider::variable(0));
+            let t = import_type(&mut checker, handles, &StaticGenericProvider::variable(3));
+            let u = import_type(&mut checker, handles, &StaticGenericProvider::variable(4));
+            let mapper = checker.types().mapper(vec![(own, TypeId::NUMBER), (t, u), (u, TypeId::NUMBER)]);
+            let mapped = checker.instantiate(raw, mapper);
+            let mapped = export_type(&mut checker, handles, mapped);
+            provider.parent_parameter_observations.borrow_mut().clear();
+            let expected = StaticGenericProvider::callback(Some(Type::String), Type::Any);
+            assert!(!SessionQueries { checker: &mut checker, handles }.is_assignable(&mapped, &expected));
+            let observations = provider.parent_parameter_observations.borrow();
+            assert!(observations.len() >= 2, "comparison must demand the instantiated signature and its generic target: {observations:?}");
+            assert!(
+                observations.iter().all(|value| *value == StaticGenericProvider::variable(4)),
+                "Signature.target must not reapply T -> U, U -> number to the already mapped parent: {observations:?}",
+            );
         });
     }
 

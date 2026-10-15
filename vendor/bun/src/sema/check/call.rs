@@ -279,19 +279,42 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_function_overload_type(context.signature)
     }
 
+    /// Extract the actual implementation capability without demanding its signature.
+    pub fn native_function_capture_context(&mut self, function: TypeId) -> Option<NativeCapturedFunctionContext> {
+        let signature = self.native_implementation_signature(function)?;
+        self.sig_native_decl(signature)?;
+        Some(NativeCapturedFunctionContext { signature })
+    }
+
+    pub fn native_captured_function_parent(&self, context: NativeCapturedFunctionContext) -> Option<NativeCapturedFunctionContext> {
+        match *self.types().sig(context.signature) {
+            SigData::NativeCaptured { lexical_parent, .. }
+            | SigData::NativeContextual { lexical_parent, .. } => lexical_parent.map(|signature| NativeCapturedFunctionContext { signature }),
+            SigData::WithReturn { sig, .. } | SigData::WithNativeResultPack { sig, .. } => {
+                self.native_captured_function_parent(NativeCapturedFunctionContext { signature: sig })
+            }
+            _ => None,
+        }
+    }
+
+    pub fn native_captured_function_context(&self, context: NativeCapturedFunctionContext) -> Option<NativeFunctionContext> {
+        self.sig_native_context(context.signature)
+    }
+
     /// Apply a signature substitution once to a written source type used inside its body.
     pub fn instantiate_in_native_capture(&mut self, context: NativeCapturedFunctionContext, ty: TypeId) -> TypeId {
-        let mapper = match self.types().sig(context.signature) {
-            SigData::NativeCaptured { mapper, .. }
-            | SigData::NativeContextual { mapper, .. } => *mapper,
-            _ => return ty,
-        };
+        let Some((_, mapper)) = self.sig_native_decl(context.signature) else { return ty; };
         self.instantiate(ty, mapper)
     }
 
     pub fn native_captured_function(&mut self, declaration: NativeFunctionId, environment: &[NativeCapturedBinding]) -> Option<TypeId> {
+        self.native_captured_function_with_parent(declaration, environment, None)
+    }
+
+    pub fn native_captured_function_with_parent(&mut self, declaration: NativeFunctionId, environment: &[NativeCapturedBinding], parent: Option<NativeCapturedFunctionContext>) -> Option<TypeId> {
         if !self.native_function_provider?.contains_function(declaration)
             || !environment.iter().all(|entry| self.contains_native_binding(entry.declaration))
+            || parent.is_some_and(|parent| self.sig_native_decl(parent.signature).is_none())
         {
             return None;
         }
@@ -327,6 +350,7 @@ impl<'p, 's> Checker<'p, 's> {
             declaration,
             mapper: self.types().mapper(outer),
             environment: self.list(&environment),
+            lexical_parent: parent.map(|parent| parent.signature),
         });
         Some(self.native_function_overload_type(sig))
     }
@@ -370,6 +394,8 @@ impl<'p, 's> Checker<'p, 's> {
             | SigData::NativeContextual { environment, .. } => self.list(environment),
             _ => ArenaBox::empty(),
         };
+        let lexical_parent = self.native_captured_function_parent(NativeCapturedFunctionContext { signature })
+            .map(|parent| parent.signature);
         if !self.contains_native_expression(expression)
             || !self.native_function_provider?.contains_function(declaration)
         {
@@ -403,6 +429,7 @@ impl<'p, 's> Checker<'p, 's> {
             mapper,
             context,
             environment,
+            lexical_parent,
         });
         Some(self.native_function_overload_type(sig))
     }

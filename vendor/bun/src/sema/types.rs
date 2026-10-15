@@ -934,6 +934,8 @@ pub enum SigData<'s> {
         declaration: NativeFunctionId,
         mapper: MapperId,
         environment: List<'s, NativeCapturedBinding>,
+        /// Exact lexical creation frame, attested by the original-source provider.
+        lexical_parent: Option<SigId>,
     },
     /// A native declaration checked under one contextual demand, with caches of its own.
     NativeContextual {
@@ -941,6 +943,7 @@ pub enum SigData<'s> {
         mapper: MapperId,
         context: NativeFunctionContext,
         environment: List<'s, NativeCapturedBinding>,
+        lexical_parent: Option<SigId>,
     },
     /// As declared, with `mapper` applied.
     Decl {
@@ -2523,11 +2526,17 @@ impl<'p, 's> Types<'p, 's> {
 
     pub fn sig_flags(&self, sig: SigId) -> ObjectFlags {
         match self.sig(sig) {
-            SigData::NativeContextual { mapper, context, environment, .. } => {
-                environment.iter().fold(self.mapper_record(*mapper).1 | self.sig_flags(context.expected), |flags, binding| flags | self.object_flags(binding.ty))
+            SigData::NativeContextual { mapper, context, environment, lexical_parent, .. } => {
+                // Instantiation must reach frame mappers, even though creation
+                // provenance is excluded from semantic dependency/inference walks.
+                let flags = self.mapper_record(*mapper).1 | self.sig_flags(context.expected)
+                    | lexical_parent.map_or(ObjectFlags::empty(), |parent| self.sig_flags(parent));
+                environment.iter().fold(flags, |flags, binding| flags | self.object_flags(binding.ty))
             }
-            SigData::NativeCaptured { mapper, environment, .. } => {
-                environment.iter().fold(self.mapper_record(*mapper).1, |flags, binding| flags | self.object_flags(binding.ty))
+            SigData::NativeCaptured { mapper, environment, lexical_parent, .. } => {
+                let flags = self.mapper_record(*mapper).1
+                    | lexical_parent.map_or(ObjectFlags::empty(), |parent| self.sig_flags(parent));
+                environment.iter().fold(flags, |flags, binding| flags | self.object_flags(binding.ty))
             }
             SigData::Native { mapper, .. }
             | SigData::NativeDeclarationSignature { mapper, .. }
@@ -3524,8 +3533,8 @@ follow_struct!(SigParam {
 follow_enum!(SigData<'_> {
     SigData::NativeDeclarationSignature { declaration, mapper, implementation } => (declaration, mapper, implementation),
     SigData::Native { declaration, mapper } => (declaration, mapper),
-    SigData::NativeContextual { declaration, mapper, context, environment } => (declaration, mapper, context, environment),
-    SigData::NativeCaptured { declaration, mapper, environment } => (declaration, mapper, environment),
+    SigData::NativeContextual { declaration, mapper, context, environment, lexical_parent } => (declaration, mapper, context, environment, lexical_parent),
+    SigData::NativeCaptured { declaration, mapper, environment, lexical_parent } => (declaration, mapper, environment, lexical_parent),
     SigData::Decl { file, func, mapper } => (file, func, mapper),
     SigData::DefaultConstruct { class, base, mapper } => (class, base, mapper),
     SigData::Construct { class, file, func, mapper } => (class, file, func, mapper),
@@ -3825,8 +3834,8 @@ clone_in_struct!(NativeTableData { environment_origin, definition_origin, nomina
 clone_in_enum!(SigData {
     NativeDeclarationSignature { declaration, mapper, implementation },
     Native { declaration, mapper },
-    NativeContextual { declaration, mapper, context, environment },
-    NativeCaptured { declaration, mapper, environment },
+    NativeContextual { declaration, mapper, context, environment, lexical_parent },
+    NativeCaptured { declaration, mapper, environment, lexical_parent },
     Decl { file, func, mapper },
     DefaultConstruct { class, base, mapper },
     Construct { class, file, func, mapper },

@@ -1131,6 +1131,16 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub fn instantiate_sig(&mut self, sig: SigId, mapper: MapperId) -> SigId {
+        self.instantiate_sig_with_native_parent(sig, mapper, true)
+    }
+
+    /// Signature.target reapplies only the child's stored outer mapping. Its
+    /// creation frame already contains that mapping and must remain unchanged.
+    pub(super) fn instantiate_sig_preserving_native_parent(&mut self, sig: SigId, mapper: MapperId) -> SigId {
+        self.instantiate_sig_with_native_parent(sig, mapper, false)
+    }
+
+    fn instantiate_sig_with_native_parent(&mut self, sig: SigId, mapper: MapperId, map_parent: bool) -> SigId {
         if mapper == MapperId::IDENTITY {
             return sig;
         }
@@ -1140,13 +1150,13 @@ impl<'p, 's> Checker<'p, 's> {
                 let own = *own;
                 let implementation = *implementation;
                 let declared = self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper: MapperId::IDENTITY, implementation: None });
-                SigData::NativeDeclarationSignature { declaration, mapper: self.native_signature_mapper(declared, own, mapper), implementation: implementation.map(|sig| self.instantiate_sig(sig, mapper)) }
+                SigData::NativeDeclarationSignature { declaration, mapper: self.native_signature_mapper(declared, own, mapper), implementation: implementation.map(|sig| self.instantiate_sig_with_native_parent(sig, mapper, map_parent)) }
             }
             SigData::Native { declaration, mapper: own } => SigData::Native {
                 declaration: *declaration,
                 mapper: self.native_sig_mapper(*declaration, *own, mapper),
             },
-            SigData::NativeContextual { declaration, mapper: own, context, environment } => {
+            SigData::NativeContextual { declaration, mapper: own, context, environment, lexical_parent } => {
                 SigData::NativeContextual {
                     declaration: *declaration,
                     mapper: self.native_sig_mapper(*declaration, *own, mapper),
@@ -1155,13 +1165,15 @@ impl<'p, 's> Checker<'p, 's> {
                         ..*context
                     },
                     environment: self.list(environment),
+                    lexical_parent: if map_parent { lexical_parent.map(|parent| self.instantiate_sig(parent, mapper)) } else { *lexical_parent },
                 }
             }
-            SigData::NativeCaptured { declaration, mapper: own, environment } => {
+            SigData::NativeCaptured { declaration, mapper: own, environment, lexical_parent } => {
                 SigData::NativeCaptured {
                     declaration: *declaration,
                     mapper: self.native_sig_mapper(*declaration, *own, mapper),
                     environment: self.list(environment),
+                    lexical_parent: if map_parent { lexical_parent.map(|parent| self.instantiate_sig(parent, mapper)) } else { *lexical_parent },
                 }
             }
             SigData::Decl {
@@ -1260,13 +1272,13 @@ impl<'p, 's> Checker<'p, 's> {
             // as the rest.
             SigData::WithNativeResultPack { sig: inner, pack } => {
                 SigData::WithNativeResultPack {
-                    sig: self.instantiate_sig(*inner, mapper),
+                    sig: self.instantiate_sig_with_native_parent(*inner, mapper, map_parent),
                     pack: self.instantiate_native_pack(*pack, mapper),
                 }
             }
             SigData::WithReturn { sig: inner, ret } => {
                 let (inner, ret) = (*inner, *ret);
-                let sig = self.instantiate_sig(inner, mapper);
+                let sig = self.instantiate_sig_with_native_parent(inner, mapper, map_parent);
                 // That mapper begins with the cloned type parameters.
                 let (old, new) = (self.sig_type_params(inner), self.sig_type_params(sig));
                 let mapper = if old.len() == new.len() && old != new {

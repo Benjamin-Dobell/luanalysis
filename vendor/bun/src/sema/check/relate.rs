@@ -6772,16 +6772,18 @@ impl<'p, 's> Checker<'p, 's> {
                 declaration,
                 mapper: extended(self, mapper),
             },
-            SigData::NativeContextual { declaration, mapper, context, ref environment } => SigData::NativeContextual {
+            SigData::NativeContextual { declaration, mapper, context, ref environment, lexical_parent } => SigData::NativeContextual {
                 declaration,
                 mapper: extended(self, mapper),
                 context,
                 environment: self.list(environment),
+                lexical_parent,
             },
-            SigData::NativeCaptured { declaration, mapper, ref environment } => SigData::NativeCaptured {
+            SigData::NativeCaptured { declaration, mapper, ref environment, lexical_parent } => SigData::NativeCaptured {
                 declaration,
                 mapper: extended(self, mapper),
                 environment: self.list(environment),
+                lexical_parent,
             },
             SigData::Decl { file, func, mapper } => SigData::Decl {
                 file,
@@ -6901,7 +6903,7 @@ impl<'p, 's> Checker<'p, 's> {
                 if own.iter().all(|&param| self.types().map(mapper, param).is_none()) { return (declared != sig).then_some(declared); }
                 let outer = self.types().mapping(mapper).iter().copied().filter(|pair| !own.contains(&pair.0)).collect();
                 let outer = self.types().mapper(outer);
-                Some(self.instantiate_sig(declared, outer))
+                Some(self.instantiate_sig_preserving_native_parent(declared, outer))
             }
             SigData::Native { declaration, mapper } => {
                 let declared = self.types().intern_sig(SigData::Native {
@@ -6918,12 +6920,13 @@ impl<'p, 's> Checker<'p, 's> {
                 let outer = self.types().mapper(outer);
                 Some(self.instantiate_sig(declared, outer))
             }
-            SigData::NativeContextual { declaration, mapper, context, ref environment } => {
+            SigData::NativeContextual { declaration, mapper, context, ref environment, lexical_parent } => {
                 let declared = self.types().intern_sig(SigData::NativeContextual {
                     declaration,
                     mapper: MapperId::IDENTITY,
                     context,
                     environment: self.list(environment),
+                    lexical_parent,
                 });
                 let own = self.sig_type_params(declared);
                 if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {
@@ -6933,13 +6936,14 @@ impl<'p, 's> Checker<'p, 's> {
                     .filter(|pair| !own.contains(&pair.0))
                     .collect();
                 let outer = self.types().mapper(outer);
-                Some(self.instantiate_sig(declared, outer))
+                Some(self.instantiate_sig_preserving_native_parent(declared, outer))
             }
-            SigData::NativeCaptured { declaration, mapper, ref environment } => {
+            SigData::NativeCaptured { declaration, mapper, ref environment, lexical_parent } => {
                 let declared = self.types().intern_sig(SigData::NativeCaptured {
                     declaration,
                     mapper: MapperId::IDENTITY,
                     environment: self.list(environment),
+                    lexical_parent,
                 });
                 let own = self.sig_type_params(declared);
                 if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {
@@ -6949,7 +6953,7 @@ impl<'p, 's> Checker<'p, 's> {
                     .filter(|pair| !own.contains(&pair.0))
                     .collect();
                 let outer = self.types().mapper(outer);
-                Some(self.instantiate_sig(declared, outer))
+                Some(self.instantiate_sig_preserving_native_parent(declared, outer))
             }
             // `cloneSignature` preserves the target.
             SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.sig_target(inner),
