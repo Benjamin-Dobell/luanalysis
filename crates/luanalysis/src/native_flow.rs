@@ -1269,6 +1269,11 @@ impl FlowAdapter<'_> {
 }
 
 impl NativeFlowProvider for FlowAdapter<'_> {
+    fn reference_is_cell(&self, reference: NativeReferenceKey) -> bool {
+        self.sources.source_reference(reference).is_some_and(|reference| {
+            matches!(reference.root, flow::ReferenceRoot::Binding(_)) && reference.path.is_empty()
+        })
+    }
     fn value_alias_source(&self,value:NativeValueKey,input:NativeFlowKey)->luanalysis_engine::NativeAliasValue {
         use luanalysis_engine::NativeAliasValue;
         let Some(recipe)=self.sources.value(value) else {return NativeAliasValue::Unknown};

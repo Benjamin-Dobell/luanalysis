@@ -94,7 +94,12 @@ impl<'p, 's> Checker<'p, 's> {
                 { self.native_alias_reference(provider, outer, creation.input) }
                 else { Origins::one(Origin::OpaqueReference(reference, at), true) }
             }
-            Some(NativeFlowNode::Write { before, target, value, input }) => match provider.write_affects_with_types(reference, target, at, self) {
+            Some(NativeFlowNode::Write { before, target, value, input }) => match if provider.reference_is_cell(reference) {
+                // Heap stores cannot rebind a lexical cell. Resolve only the
+                // cell's original assignments; classifying heap aliases here
+                // recursively asks for the identity we are already tracing.
+                provider.write_affects(reference, target, at)
+            } else { provider.write_affects_with_types(reference, target, at, self) } {
                 NativeWriteRelation::Exact => self.native_alias_value(provider, value, input, 0),
                 NativeWriteRelation::PossibleExact => {
                     let mut previous = self.native_alias_reference(provider, reference, before);

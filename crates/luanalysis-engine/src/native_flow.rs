@@ -22,6 +22,8 @@ pub struct NativeFlowResult {
 /// Immutable graph recipes and source-value demands. No graph join, loop
 /// iteration, or narrowing algorithm is performed by this interface.
 pub trait NativeFlowProvider {
+    /// Immutable source classification: a lexical cell, not a mutable heap slot.
+    fn reference_is_cell(&self, _: NativeReferenceKey) -> bool { false }
     fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> NativeAliasValue { NativeAliasValue::Unknown }
     fn function_alias_returns(&self, _: super::NativeFunctionKey) -> Option<Vec<NativeAliasReturn>> { None }
     fn function_alias_exit(&self, _: super::NativeFunctionKey) -> Option<NativeFlowKey> { None }
@@ -88,6 +90,7 @@ pub(super) struct FlowProviderAdapter<'a> {
 }
 
 impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
+    fn reference_is_cell(&self, reference: NativeReferenceKey) -> bool { self.provider.reference_is_cell(reference) }
     fn value_alias_source(&self, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue { self.provider.value_alias_source(value, input) }
     fn function_alias_returns(&self, function: bun_sema::types::NativeFunctionId) -> Option<Vec<NativeAliasReturn>> { self.provider.function_alias_returns(super::source_key(function)) }
     fn function_alias_exit(&self, function: bun_sema::types::NativeFunctionId) -> Option<NativeFlowKey> { self.provider.function_alias_exit(super::source_key(function)) }
