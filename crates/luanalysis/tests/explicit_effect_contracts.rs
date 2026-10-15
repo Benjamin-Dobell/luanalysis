@@ -120,7 +120,7 @@ replacement(42)
 }
 
 #[test]
-fn written_overload_effects_terminate_only_when_every_public_head_is_never() {
+fn written_overload_effects_keep_ordinary_branches_reachable() {
     let fixture = Fixture::new();
     let source = r#"---@shape EffectService
 ---@function EffectService.run(value:number): never
@@ -129,7 +129,7 @@ fn written_overload_effects_terminate_only_when_every_public_head_is_never() {
 ---@param service EffectService
 ---@return number
 local function use(service)
-    service.run(1)
+    service.run('word')
 end
 "#;
     rejected(fixture.check(source, None), "TS2355");
@@ -137,7 +137,7 @@ end
     clean(fixture.check(&all_never, None));
     let ordinary = source.replace("run(value:number): never", "run(value:number): number");
     rejected(fixture.check(&ordinary, None), "TS2355");
-    clean(fixture.check(&ordinary.replace("    service.run(1)\n", "    service.run(1)\n    return 42\n"), None));
+    clean(fixture.check(&ordinary.replace("    service.run('word')\n", "    service.run('word')\n    return 42\n"), None));
 }
 
 #[test]
