@@ -105,6 +105,7 @@ pub(super) struct NativeRegistry {
     pending_owner_observations: Cell<u64>,
     pending_owner_bodies: RefCell<HashSet<(NativeFunctionKey, Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
     report: RefCell<CheckReport>,
+    provisional_reports: RefCell<Vec<CheckReport>>,
 }
 
 #[path = "native_standard_environment.rs"]
@@ -238,6 +239,7 @@ impl NativeRegistry {
             pending_owner_observations: Cell::new(0),
             pending_owner_bodies: RefCell::new(HashSet::new()),
             report: RefCell::new(report),
+            provisional_reports: RefCell::new(Vec::new()),
         };
         registry.rebuild_original_members();
         registry.attach_documentation_signature_owners();
@@ -756,7 +758,29 @@ impl NativeRegistry {
     }
 
     pub(super) fn merge_report(&self, report: CheckReport) {
+        let mut provisional = self.provisional_reports.borrow_mut();
+        if let Some(current) = provisional.last_mut() {
+            current.append(report);
+            return;
+        }
+        drop(provisional);
         self.report.borrow_mut().append(report);
+    }
+
+    fn with_body_report<R>(&self, work: impl FnOnce() -> (R, bool)) -> R {
+        self.provisional_reports.borrow_mut().push(CheckReport::default());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+        let report = self.provisional_reports.borrow_mut().pop().expect("original body report scope");
+        match result {
+            Ok((result, complete)) => {
+                // Completed nested bodies own checked-body cache entries. Their
+                // diagnostics must survive even if an enclosing body remains
+                // provisional; never merge them into its staging buffer.
+                if complete { self.report.borrow_mut().append(report); }
+                result
+            }
+            Err(error) => std::panic::resume_unwind(error),
+        }
     }
 
     pub(super) fn take_report(&self) -> CheckReport {
@@ -1321,6 +1345,16 @@ impl NativeRegistry {
         contextual: Option<ContextualFunctionContext>,
         captured: Option<CapturedFunctionContext>,
     ) -> Type {
+        self.with_body_report(|| self.check_body_report(key, queries, contextual, captured))
+    }
+
+    fn check_body_report(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+        contextual: Option<ContextualFunctionContext>,
+        captured: Option<CapturedFunctionContext>,
+    ) -> (Type, bool) {
         let pending_before = self.pending_owner_observations.get();
         let function = self.function(key);
         let (parameters, mut declared_return) = if let Some(context) = contextual {
@@ -1407,7 +1441,7 @@ impl NativeRegistry {
         // validation; a later demand must check it in the completed context.
         if checker.incomplete_flow || self.pending_owner_observations.get() != pending_before {
             self.pending_owner_bodies.borrow_mut().insert((key, contextual, captured));
-            return result;
+            return (result, false);
         }
         self.pending_owner_bodies.borrow_mut().remove(&(key, contextual, captured));
         if let Some(context) = contextual {
@@ -1425,7 +1459,7 @@ impl NativeRegistry {
                 self.checked_bodies.borrow_mut().insert(key);
             }
         }
-        result
+        (result, true)
     }
 
     /// Demand every body for semantic diagnostics, including unused annotated
@@ -2840,6 +2874,55 @@ impl RegistryIndex<'_> {
         }
         self.statements(&function.body, Some(index));
         index
+    }
+}
+
+#[cfg(test)]
+mod body_report_tests {
+    use super::*;
+    use luanalysis_engine::Engine;
+
+    #[test]
+    fn provisional_parent_discards_metadata_but_retains_completed_child_diagnostics_and_cache() {
+        let source = "---@return number\nlocal function child() return 'wrong' end\n";
+        let file = luanalysis_syntax::parse(source);
+        let bound = bind::bind(&file);
+        Engine::new().with_native_provider(
+            move || NativeRegistry::new(file, bound),
+            |registry, queries| {
+                let child = registry.key(0);
+                let metadata = || CheckReport {
+                    diagnostics: vec![Diagnostic { code: "LUA2011", span: Span { start: 0, end: 1 }, message: "provisional parent metadata".into() }],
+                    pending_types: vec![(Span { start: 0, end: 1 }, Type::Number)],
+                    ..CheckReport::default()
+                };
+                registry.with_body_report(|| {
+                    registry.merge_report(metadata());
+                    registry.check_body(child, queries);
+                    registry.merge_report(metadata());
+                    ((), false)
+                });
+                assert!(registry.checked_bodies.borrow().contains(&child));
+                let committed = registry.take_report();
+                assert_eq!(committed.diagnostics.iter().filter(|error| error.code == "TS2322").count(), 1, "{:#?}", committed.diagnostics);
+                assert!(!committed.diagnostics.iter().any(|error| error.code == "LUA2011"));
+                assert!(!committed.pending_types.iter().any(|(span, _)| span.start == 0 && span.end == 1));
+                registry.with_body_report(|| {
+                    registry.merge_report(metadata());
+                    assert!(registry.checked_bodies.borrow().contains(&child));
+                    ((), false)
+                });
+                let retried = registry.take_report();
+                assert!(retried.diagnostics.is_empty());
+                assert!(retried.pending_types.is_empty());
+                registry.with_body_report(|| {
+                    registry.merge_report(metadata());
+                    ((), true)
+                });
+                assert_eq!(registry.take_report().diagnostics.len(), 1);
+                assert!(registry.provisional_reports.borrow().is_empty());
+            },
+        );
     }
 }
 

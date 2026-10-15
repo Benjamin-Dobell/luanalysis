@@ -82,6 +82,43 @@ local function ordinary(value, meta) return value end
 "#;
 
 #[test]
+fn provisional_constructor_metadata_does_not_keep_report_publication_alive() {
+    let fixture = Fixture::new();
+    let source = "---@class Static\n---@overload fun():Static\nlocal Static={}\nsetmetatable(Static,{\n ---@param class self\n ---@param unknown number\n ---@return self|nil\n __call=function(class)\n  ---@return number\n  local function child() return 'wrong' end\n  child()\n  return --[[---@type self]] {}\n end,\n})\n";
+    let invoke = |source: &str| {
+        fixture.file("main.lua", source);
+        let mut child = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+            .current_dir(&fixture.0)
+            .args(["check", "--lua-version", "5.4", "--module-root", ".", "main.lua"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if child.try_wait().unwrap().is_some() { break; }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!("report publication did not settle: {}", text(&output));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child.wait_with_output().unwrap()
+    };
+    // The original source looped forever while repeatedly publishing the same
+    // annotation error from a still-provisional constructor body.
+    let invalid = invoke(source);
+    assert_eq!(invalid.status.code(), Some(1), "{}", text(&invalid));
+    for code in ["LUA2011", "LUA2040", "LUA2041", "TS2322"] {
+        assert_eq!(text(&invalid).matches(&format!("error[{code}]")).count(), 1, "{}", text(&invalid));
+    }
+    let corrected = source.replace(" ---@param unknown number\n", "")
+        .replace("---@return self|nil", "---@return self")
+        .replace("return 'wrong'", "return 1");
+    clean(&invoke(&corrected));
+}
+
+#[test]
 fn exact_transitive_local_calls_preserve_standard_origin_but_real_writes_do_not() {
     let fixture = Fixture::new();
     let helpers =
