@@ -306,6 +306,9 @@ for key,value in iterator,nil,0 do end"#;
     let error = &report.diagnostics[0];
     assert_eq!(error.code, "TS2345");
     assert_eq!(&source[error.span.start..error.span.end], "iterator");
+    assert!(error.message.contains("'false'") && error.message.contains("'number'"), "{error:?}");
+    assert!(error.message.ends_with(" The previous first iterator result supplies the next control argument."), "{error:?}");
+    assert!(!error.message.contains("contextual type"), "{error:?}");
     accepted(&source.replace(
         "---@param control number",
         "---@param control number|boolean",

@@ -2064,8 +2064,8 @@ impl FlowValueQueries for NativeRegistry {
         let first_diagnostic = checker.report.diagnostics.len();
         checker.call_result(luanalysis_engine::CallResult { return_type: Type::Any, errors: vec![error] }, callee, &arguments, callee_origin, callee_origin);
         if feedback {
-            for diagnostic in checker.report.diagnostics.iter_mut().skip(first_diagnostic) {
-                diagnostic.message.push_str(" The previous first iterator result supplies the next control argument.");
+            for index in first_diagnostic..checker.report.diagnostics.len() {
+                checker.report.append_diagnostic_note(index, " The previous first iterator result supplies the next control argument.");
             }
         }
         self.merge_flow_report(at, checker.check_mode, checker.report);

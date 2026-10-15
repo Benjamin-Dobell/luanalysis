@@ -16,6 +16,7 @@ pub(crate) struct PendingDiagnostic {
     pub(crate) index: usize,
     template: String,
     operands: Vec<DiagnosticOperand>,
+    note: String,
 }
 
 impl CheckReport {
@@ -77,7 +78,21 @@ impl CheckReport {
             index,
             template,
             operands,
+            note: String::new(),
         });
+    }
+
+    pub(crate) fn append_diagnostic_note(&mut self, index: usize, note: &str) {
+        self.diagnostics[index].message.push_str(note);
+        if let Some(pending) = self
+            .pending_diagnostics
+            .iter_mut()
+            .find(|pending| pending.index == index)
+        {
+            // Notes are text, not a template: braces in an explanation must
+            // never become extra native type-operand slots.
+            pending.note.push_str(note);
+        }
     }
 
     pub(crate) fn render_diagnostics(&mut self, engine: &mut dyn TypeQueries) {
@@ -97,6 +112,7 @@ impl CheckReport {
                 message.push_str(&displayed);
                 message.push_str(suffix);
             }
+            message.push_str(&pending.note);
             self.diagnostics[pending.index].message = message;
         }
     }
@@ -165,6 +181,36 @@ mod tests {
     use luanalysis_engine::{Engine, LuaKey};
 
     #[test]
+    fn diagnostic_notes_survive_report_append_and_late_native_rendering() {
+        Engine::new().with_session(|queries| {
+            let span = Span { start: 3, end: 7 };
+            let mut report = CheckReport::default();
+            report.diagnostics.push(Diagnostic {
+                code: "LUA1001",
+                span,
+                message: "Existing error.".into(),
+            });
+            let mut staged = CheckReport::default();
+            staged.push_type_diagnostic("TS2345", span, "Expected '{}'.", &[&Type::Number]);
+            staged.append_diagnostic_note(0, " Note with literal {}.");
+            report.append(staged);
+            report.render_diagnostics(queries);
+            assert_eq!(
+                report.diagnostics[1].message,
+                "Expected 'number'. Note with literal {}."
+            );
+            assert_eq!(report.diagnostics[1].code, "TS2345");
+            assert_eq!(report.diagnostics[1].span, span);
+            report.append_diagnostic_note(1, " Published note.");
+            report.render_diagnostics(queries);
+            assert_eq!(
+                report.diagnostics[1].message,
+                "Expected 'number'. Note with literal {}. Published note."
+            );
+        });
+    }
+
+    #[test]
     fn retained_pack_operands_preserve_correlated_rows_optional_slots_and_variadic_tails() {
         use luanalysis_engine::{PackAlternative, PackSlot};
         Engine::new().with_session(|queries| {
@@ -208,7 +254,12 @@ mod tests {
             assert!(message.contains("(nil, boolean, string...)"), "{message}");
             assert!(message.contains(" | "), "{message}");
             let expected_text = message.split("Expected: ").nth(1).unwrap();
-            assert!(expected_text.contains("number") && expected_text.contains("string") && expected_text.contains('?'), "{message}");
+            assert!(
+                expected_text.contains("number")
+                    && expected_text.contains("string")
+                    && expected_text.contains('?'),
+                "{message}"
+            );
             assert!(
                 !message.contains("undefined") && !message.contains("SessionPack"),
                 "{message}"
