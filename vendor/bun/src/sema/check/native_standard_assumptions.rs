@@ -148,12 +148,17 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_standard_projected_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey, path: &[NativeTableKey]) -> Origins {
         let Some((&key, rest)) = path.split_first() else { return self.native_standard_value(provider, value, input) };
-        // Only original literal field recipes supply this projection. No raw
-        // dispatch/purity proof is launched to classify a language operation.
         if let Some(field) = provider.value_alias_member_source(value, input, key, self) {
             return self.native_standard_projected_value(provider, field.value, field.input, rest);
         }
-        Origins::unavailable()
+        // Copying an ordinary local table does not extend the environment
+        // assumption to its heap contents. Reuse the existing strict projected
+        // recipe worker: it can recover a reached literal field, but an
+        // intervening implicit getter still denies that member provenance.
+        match provider.value_alias_source(value, input) {
+            NativeAliasValue::Reference { .. } | NativeAliasValue::Projection { .. } => self.native_alias_projected_value(provider, value, input, 0, path),
+            _ => Origins::unavailable(),
+        }
     }
 
     fn native_standard_return(&mut self, provider: &dyn NativeFlowProvider, call: NativeValueKey, input: NativeFlowKey, callee: NativeValueKey, callee_input: NativeFlowKey) -> Origins {
