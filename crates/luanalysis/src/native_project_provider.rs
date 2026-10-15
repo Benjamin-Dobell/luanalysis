@@ -547,7 +547,11 @@ impl NativeTypeProvider for ProjectRegistry {
     fn type_declaration_members(&self, key: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> {
         let mut members = self.owner(key.snapshot).type_declaration_members(key);
         if self.owner(key.snapshot).runtime_schema_contains(key) {
-            for file in &self.files {if file.source.snapshot!=key.snapshot {members.extend(file.source.runtime_tables.members());}}
+            for file in &self.files {
+                if file.role == SourceRole::Implementation && file.source.snapshot != key.snapshot {
+                    members.extend(file.source.runtime_tables.members());
+                }
+            }
             return members;
         }
         // Applicability, aliases, specialized owners and canonical object

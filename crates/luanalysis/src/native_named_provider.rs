@@ -466,7 +466,11 @@ impl NativeRegistry {
         &self,
         key: NativeTypeDeclarationKey,
     ) -> Vec<NativeTypeMemberKey> {
-        if self.runtime_schema_contains(key) {return self.runtime_tables.members().collect();}
+        if self.runtime_schema_contains(key) {
+            return if self.source_role() == luanalysis_project::SourceRole::Implementation {
+                self.runtime_tables.members().collect()
+            } else {Vec::new()};
+        }
         let mut result = if let Some(source) = self.named.declaration(named_key(key)) {
             source
                 .members
