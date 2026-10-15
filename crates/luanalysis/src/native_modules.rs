@@ -8,7 +8,9 @@ use luanalysis_engine::{
     NativeLoaderPolicy, NativeModuleKey, NativeProjectError, Type, TypeQueries, ValuePack,
 };
 use luanalysis_syntax::{Expr, Span};
-use std::collections::HashMap;
+use luanalysis_project::FileId;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub(crate) enum ImportOutcome {
@@ -22,11 +24,15 @@ pub(crate) enum ImportOutcome {
 #[derive(Clone)]
 pub(crate) struct ImportRecipe {
     pub argument_span: Span,
+    pub target: Option<FileId>,
     pub outcome: ImportOutcome,
 }
 pub(crate) struct ProjectModuleIndex {
     pub policy: NativeLoaderPolicy,
     pub imports: HashMap<(u64, usize, usize), ImportRecipe>,
+    /// Checking roots and original targets whose callee/loader were proven.
+    /// This schedules source checks; native queries still own all inferred types.
+    pub required_files: RefCell<HashSet<FileId>>,
 }
 
 impl NativeRegistry {
@@ -169,6 +175,9 @@ impl Checker<'_> {
             if index == 0 {
                 self.compatible(&value, &Type::String, argument.span);
             }
+        }
+        if !self.incomplete_flow && let Some(target) = recipe.target {
+            self.native?.project_modules.as_ref()?.required_files.borrow_mut().insert(target);
         }
         let result:String=match recipe.outcome {
             ImportOutcome::Module(module)=>match self.engine.require_pack(module,policy) {

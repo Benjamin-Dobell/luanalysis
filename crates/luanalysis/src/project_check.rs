@@ -24,9 +24,9 @@ impl Default for ProjectCheckOptions {
     }
 }
 
-/// Extracts only calls resolved by the binder to the standard require
-/// intrinsic. Source roles, lexical shadowing and loader mutation remain
-/// explicit; comments and strings are never scanned for imports.
+/// Collects original static require candidates for source-host discovery.
+/// Native callee and loader provenance must still be proven before a candidate
+/// schedules module checking; comments and strings are never scanned for imports.
 pub fn static_require_requests(source: &SourceFile) -> Vec<RequireRequest> {
     if source.role == SourceRole::Declaration {
         return Vec::new();
@@ -137,10 +137,16 @@ pub fn check_project_with_options(
         }
     }
     let dependencies = project.dependencies.clone();
-    files.extend(Engine::new().with_native_provider(
+    let roots: Vec<_> = project.entries.iter().chain(&project.libraries).copied().collect();
+    let (checked, required) = Engine::new().with_native_provider(
         move || ProjectRegistry::new_with_environment_and_overloads(inputs, dependencies, options.loader_policy, selection.profile, options.overload_mode),
-        |registry, queries| registry.check(queries),
-    ));
+        |registry, queries| {
+            let reports = registry.check_roots(queries, &roots);
+            (reports, registry.required_files())
+        },
+    );
+    files.retain(|report| required.contains(&report.file));
+    files.extend(checked);
     files.sort_by_key(|file| file.file.index);
     ProjectCheckReport { project, files, standard_library_files, environment_errors }
 }

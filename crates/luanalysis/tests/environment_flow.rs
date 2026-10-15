@@ -88,6 +88,22 @@ fn replaced_alias_is_an_ordinary_call_and_does_not_publish_candidate_module_fail
 }
 
 #[test]
+fn rejected_existing_loader_candidate_is_checked_only_after_actual_require_proof() {
+    let fixture = Fixture::new();
+    fixture.file("poison.lua", "---@type number\nlocal invalid='wrong'\nreturn 42\n");
+    let replacement = "local loader=require\nloader=function(name) return 42 end\nlocal result=loader('poison')\n---@type number\nlocal checked=result\n";
+    clean(&fixture.check(replacement));
+
+    let proven = "local loader=require\nlocal result=loader('poison')\n---@type number\nlocal checked=result\n";
+    let invalid = fixture.check(proven);
+    assert!(text(&invalid).contains("poison.lua:2:15: error[TS2322]"), "{}", text(&invalid));
+    assert_eq!(invalid.status.code(), Some(1));
+
+    fixture.file("poison.lua", "---@type number\nlocal corrected=42\nreturn corrected\n");
+    clean(&fixture.check(proven));
+}
+
+#[test]
 fn nested_package_loader_mutation_through_an_environment_alias_is_guarded() {
     let fixture = Fixture::new();
     let invalid = fixture.check("local env=_G\nenv.package.loaded.module='cached'\nlocal value=require('module')\n");

@@ -181,6 +181,90 @@ fn unused_errors_in_required_modules_keep_their_original_owner_source() {
                     == "'wrong'")
     );
 }
+
+#[test]
+fn rejected_candidates_keep_source_identities_without_checking_their_transitive_bodies() {
+    let fixture = Fixture::new();
+    let candidate = fixture.file("candidate.lua", "local unused=require('poison')\nreturn 42\n");
+    let poison = fixture.file("poison.lua", "---@type number\nlocal unused='wrong'\nreturn 42\n");
+    let run = |source: &str| check_project_with_options(
+        fixture.project(fixture.file("main.lua", source)),
+        ProjectCheckOptions {
+            environment: luanalysis::standard_environment::StandardEnvironmentProfile::Lua54,
+            ..ProjectCheckOptions::default()
+        },
+    );
+    let rejected = run("local loader=require\nloader=function(name) return 42 end\nlocal value=loader('candidate')\n");
+    clean(&rejected);
+    assert_eq!(rejected.project.dependencies.len(), 2);
+    assert_eq!(rejected.checked_file_count(), 1);
+    for path in [&candidate, &poison] {
+        let original = rejected.project.file_by_path(path).unwrap();
+        assert!(rejected.file(original.id).is_none());
+    }
+
+    let proven = run("local value=require('candidate')\n");
+    assert!(proven.has_errors());
+    assert_eq!(proven.checked_file_count(), 3);
+    let original = proven.project.file_by_path(&poison).unwrap();
+    let report = proven.file(original.id).unwrap();
+    assert!(report.report.diagnostics.iter().any(|error| error.code == "TS2322"
+        && &original.source[error.span.start..error.span.end] == "'wrong'"));
+}
+
+#[test]
+fn invalid_candidate_syntax_is_published_only_after_the_original_target_is_required() {
+    let fixture = Fixture::new();
+    let broken = fixture.file("broken.lua", "local invalid=\n");
+    let run = |source: &str| check_project_with_options(
+        fixture.project(fixture.file("main.lua", source)),
+        ProjectCheckOptions {
+            environment: luanalysis::standard_environment::StandardEnvironmentProfile::Lua54,
+            ..ProjectCheckOptions::default()
+        },
+    );
+    let rejected = run("local loader=require\nloader=function(name) return 42 end\nlocal value=loader('broken')\n");
+    clean(&rejected);
+    let original = rejected.project.file_by_path(&broken).unwrap();
+    assert!(rejected.file(original.id).is_none());
+    assert_eq!(rejected.checked_file_count(), 1);
+
+    let proven = run("local value=require('broken')\n");
+    assert!(proven.has_errors());
+    let original = proven.project.file_by_path(&broken).unwrap();
+    assert!(proven.file(original.id).unwrap().report.diagnostics.iter().any(|error| error.code == "LUA1001"));
+    assert!(proven.file(proven.project.entries[0]).unwrap().report.diagnostics.iter().any(|error| error.code == "LUA2036"));
+    assert_eq!(proven.checked_file_count(), 2);
+}
+
+#[test]
+fn explicit_entries_and_implementation_libraries_remain_checking_roots() {
+    let fixture = Fixture::new();
+    let main = fixture.file("main.lua", "local loader=require\nloader=function(name) return 42 end\nlocal value=loader('candidate')\n");
+    let candidate = fixture.file("candidate.lua", "---@type number\nlocal ignored='candidate error'\nreturn 42\n");
+    let entry = fixture.file("entry.lua", "---@type number\nlocal invalid='entry error'\n");
+    let library = fixture.file("library.lua", "---@type number\nlocal invalid='library error'\n");
+    let project = Project::load_plan(
+        &Resolver::new(ProjectConfig::new([fixture.0.clone()])).unwrap(),
+        ProjectLoadPlan {
+            entries: vec![main, entry.clone()],
+            libraries: vec![luanalysis_project::ProjectInput::new(&library, luanalysis_project::SourceRole::Implementation)],
+        },
+        static_require_requests,
+    );
+    let report = check_project_with_options(project, ProjectCheckOptions {
+        environment: luanalysis::standard_environment::StandardEnvironmentProfile::Lua54,
+        ..ProjectCheckOptions::default()
+    });
+    assert_eq!(report.checked_file_count(), 3);
+    assert!(report.has_errors());
+    for path in [&entry, &library] {
+        let original = report.project.file_by_path(path).unwrap();
+        assert!(report.file(original.id).unwrap().report.diagnostics.iter().any(|error| error.code == "TS2322"));
+    }
+    let original = report.project.file_by_path(&candidate).unwrap();
+    assert!(report.file(original.id).is_none());
+}
 #[test]
 fn missing_dynamic_and_invalid_require_requests_fail_at_original_call_arguments() {
     let fixture = Fixture::new();

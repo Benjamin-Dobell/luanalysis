@@ -18,7 +18,7 @@ use luanalysis_engine::{
 };
 use luanalysis_project::{Dependency, DependencyOutcome, FileId, SourceRole};
 use luanalysis_syntax::File;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 pub(crate) struct RegistryInput {
@@ -52,6 +52,7 @@ pub(crate) struct ProjectRegistry {
     names: Rc<ProjectNamedIndex>,
     globals: Rc<super::globals::ProjectGlobalIndex>,
     standard_environment: super::standard::ProjectStandardEnvironment,
+    modules: Rc<ProjectModuleIndex>,
 }
 
 impl ProjectRegistry {
@@ -135,14 +136,14 @@ impl ProjectRegistry {
                 continue;
             }
             for call in file.source.module_calls() {
+                let dependency = dependencies.iter().find(|edge| {
+                    edge.from == file.id
+                        && edge.request.span.start == call.argument_span.start
+                        && edge.request.span.end == call.argument_span.end
+                });
                 let outcome = if let Some(outcome) = classify_unresolved(&call) {
                     outcome
                 } else {
-                    let dependency = dependencies.iter().find(|edge| {
-                        edge.from == file.id
-                            && edge.request.span.start == call.argument_span.start
-                            && edge.request.span.end == call.argument_span.end
-                    });
                     match dependency.map(|edge|&edge.outcome) {
                         Some(DependencyOutcome::Resolved(target))=>modules_by_file.get(target).copied().map_or(ImportOutcome::InvalidSource,ImportOutcome::Module),
                         Some(DependencyOutcome::Unresolved(error))=>ImportOutcome::Missing(error.to_string()),
@@ -157,12 +158,20 @@ impl ProjectRegistry {
                     (file.source.snapshot, call.span.start, call.span.end),
                     ImportRecipe {
                         argument_span: call.argument_span,
+                        target: dependency.and_then(|edge| match edge.outcome {
+                            DependencyOutcome::Resolved(target) => Some(target),
+                            _ => None,
+                        }),
                         outcome,
                     },
                 );
             }
         }
-        let modules = Rc::new(ProjectModuleIndex { policy, imports });
+        let modules = Rc::new(ProjectModuleIndex {
+            policy,
+            imports,
+            required_files: Default::default(),
+        });
         // The sparse legacy compatibility API has no original standard value
         // declarations. Keep its conservative historical policy isolated from
         // the selected native standard environment and its per-reference flow.
@@ -218,6 +227,7 @@ impl ProjectRegistry {
             names,
             globals,
             standard_environment,
+            modules,
         }
     }
 
@@ -232,34 +242,41 @@ impl ProjectRegistry {
             .expect("native source key belongs to this immutable project provider")
     }
 
-    pub(crate) fn check(&self, queries: &mut dyn TypeQueries) -> Vec<FileCheckReport> {
-        // Every identity/name exists before any declaration or body demand.
-        for file in &self.files {
-            file.source.check_named_declarations(queries);
-            file.source.check_global_declarations(queries);
-            file.source.check_module_requests(queries);
-        }
-        let mut reports = Vec::with_capacity(self.files.len());
-        for file in &self.files {
-            let mut report = CheckReport::default();
-            if file.role == SourceRole::Implementation {
-                let mut checker = file.source.checker(queries);
-                checker.flow_at = Some(file.source.flow_entry(None, None));
-                checker.statements(file.source.statements());
-                report = checker.report;
-                file.source.check_all_bodies(queries);
-            }
-            reports.push(FileCheckReport {
+    pub(crate) fn required_files(&self) -> HashSet<FileId> {
+        self.modules.required_files.borrow().clone()
+    }
+
+    pub(crate) fn check_roots(&self, queries: &mut dyn TypeQueries, roots: &[FileId]) -> Vec<FileCheckReport> {
+        // Candidate registration establishes every identity/name, but only
+        // explicit roots and proven original require targets schedule checks.
+        self.modules.required_files.borrow_mut().extend(roots.iter().copied());
+        let mut checked = HashSet::new();
+        let mut reports: Vec<_> = self.files.iter().map(|file| FileCheckReport {
                 file: file.id,
-                report,
-            });
-        }
+                report: CheckReport::default(),
+            }).collect();
         // Rendering can complete a deferred signature in any owner file. Drain
         // those source report queues before the arena ends; this schedules
         // report publication only and never iterates or joins inferred types.
         loop {
+            for (index, file) in self.files.iter().enumerate() {
+                if !self.modules.required_files.borrow().contains(&file.id) || !checked.insert(index) {
+                    continue;
+                }
+                file.source.check_named_declarations(queries);
+                file.source.check_global_declarations(queries);
+                file.source.check_module_requests(queries);
+                if file.role == SourceRole::Implementation {
+                    let mut checker = file.source.checker(queries);
+                    checker.flow_at = Some(file.source.flow_entry(None, None));
+                    checker.statements(file.source.statements());
+                    reports[index].report.append(checker.report);
+                    file.source.check_all_bodies(queries);
+                }
+            }
             let mut published = false;
-            for (file, report) in self.files.iter().zip(&mut reports) {
+            for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
+                if !checked.contains(&index) { continue; }
                 let pending = file.source.take_report();
                 published |= !pending.diagnostics.is_empty()
                     || !pending.bindings.is_empty()
@@ -271,11 +288,15 @@ impl ProjectRegistry {
                     || !report.report.pending_types.is_empty();
                 report.report.render(queries);
             }
-            if !published {
+            let unchecked = self.files.iter().enumerate().any(|(index, file)| {
+                !checked.contains(&index) && self.modules.required_files.borrow().contains(&file.id)
+            });
+            if !published && !unchecked {
                 break;
             }
         }
-        for (file, report) in self.files.iter().zip(&mut reports) {
+        for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
+            if !checked.contains(&index) { continue; }
             report.report.diagnostics.sort_by(|left, right| {
                 (left.span.start, left.span.end, left.code, &left.message).cmp(&(
                     right.span.start,
@@ -297,6 +318,7 @@ impl ProjectRegistry {
             report.report.types.dedup();
             report.report.bound = Some(file.source.bound().clone());
         }
+        reports.retain(|report| self.modules.required_files.borrow().contains(&report.file));
         reports
     }
 }
