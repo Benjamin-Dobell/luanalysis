@@ -1050,7 +1050,7 @@ mod dependency_tests {
 
     #[test]
     fn documentation_owner_preparation_invalidates_completed_anonymous_headers() {
-        let registry = registry("---@class Owner<T>\n---@function Owner.read():{value:T}\n");
+        let registry = registry("---@class Owner<T>\n\n---@function Owner.read():{value:T}\n");
         let owner = registry.named_candidates("Owner")[0];
         let owner = NativeNamedKey { snapshot: owner.snapshot, index: owner.index };
         let parameter = registry.types.own_parameters_in_context(NativeTypeContext::NamedType(owner))[0];
@@ -1060,6 +1060,9 @@ mod dependency_tests {
         let key = anonymous(source.key);
         let signature = registry.signature_context_for_annotation(source.syntax.span)
             .expect("return record retains its original signature context");
+        // This separate documentation block obtains T from the prepared
+        // method owner, rather than the class block's lexical type scope.
+        registry.types.attach_documentation_owner(signature, owner);
         let header = registry.named_declaration_header(key);
         assert_eq!(header.outer_parameters, vec![parameter]);
         registry.types.clear_documentation_owner(signature);
