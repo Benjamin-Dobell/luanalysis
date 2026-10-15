@@ -88,6 +88,19 @@ fn unrelated_required_properties_do_not_disprove_structural_aliases() {
 }
 
 #[test]
+fn structural_call_signatures_do_not_imply_a_physical_function_identity() {
+    Engine::new().with_session(|queries| {
+        let callable = Type::Function(FunctionType { params: vec![], returns: Box::new(Type::Number) });
+        let callable_child = record(queries, vec![("child", callable.clone()), ("stable", Type::Union(vec![Type::Number, Type::String]))]);
+        let table_child = record(queries, vec![("child", Type::RuntimeTable), ("stable", Type::Union(vec![Type::Number, Type::String]))]);
+        for bounds in [[Some(callable), Some(Type::RuntimeTable)], [Some(callable_child), Some(table_child)]] {
+            let source = Written { bounds, walks: Cell::new(0), forbid_walk: false };
+            assert_eq!(source.compare(queries), NativeAliasRelation::Possible, "a callable table can satisfy both written contracts");
+        }
+    });
+}
+
+#[test]
 fn original_union_discriminants_remain_comparable_across_frozen_epochs() {
     Engine::new().with_session(|queries| {
         let kind = Type::Union(vec![Type::StringLiteral(b"old".to_vec()), Type::StringLiteral(b"new".to_vec())]);

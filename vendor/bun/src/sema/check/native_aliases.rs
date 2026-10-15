@@ -68,15 +68,23 @@ impl Origin {
 impl<'p, 's> Checker<'p, 's> {
     pub fn native_flow_alias_relation(&mut self, provider: &dyn NativeFlowProvider, left: NativeReferenceKey, left_at: NativeFlowKey, right: NativeValueKey, right_at: NativeFlowKey) -> NativeAliasRelation {
         let left_contract = provider.reference_written_contract(left, self);
-        if left_contract.is_some_and(|contract| self.native_narrow_runtime_kind(contract, crate::types::NativeRuntimeKind::Table, true).is_never()) { return NativeAliasRelation::Different }
+        if left_contract.is_some_and(|contract| self.native_alias_written_non_table(contract)) { return NativeAliasRelation::Different }
         let right_contract = if let NativeAliasValue::Reference { reference, .. } = provider.value_alias_source(right, right_at) { provider.reference_written_contract(reference, self) } else { None };
-        if right_contract.is_some_and(|contract| self.native_narrow_runtime_kind(contract, crate::types::NativeRuntimeKind::Table, true).is_never()) { return NativeAliasRelation::Different }
+        if right_contract.is_some_and(|contract| self.native_alias_written_non_table(contract)) { return NativeAliasRelation::Different }
         if let (Some(left), Some(right)) = (left_contract, right_contract)
             && self.native_alias_written_disjoint(left, right, &mut HashSet::new())
         { return NativeAliasRelation::Different }
         let left = self.native_alias_reference(provider, left, left_at);
         let right = self.native_alias_value(provider, right, right_at, 0);
         left.relation(&right)
+    }
+
+    /// A structural call signature can describe a callable Lua table. Only
+    /// physical scalar domains and the explicit raw function top exclude tables.
+    fn native_alias_written_non_table(&self, ty: crate::types::TypeId) -> bool {
+        if self.is_union(ty) { return self.parts(ty).iter().all(|&part| self.native_alias_written_non_table(part)) }
+        if self.is_instantiable(ty) || self.is_intersection(ty) { return false }
+        ty.is_never() || self.is_primitive(ty) || matches!(self.data(ty), crate::types::TypeData::NativeRuntimeTop { kind: crate::types::NativeRuntimeKind::Function, .. })
     }
 
     /// Missing requirements do not make structural objects disjoint: one
@@ -88,8 +96,8 @@ impl<'p, 's> Checker<'p, 's> {
         if self.is_union(left) { return self.parts(left).iter().all(|&part| self.native_alias_written_disjoint(part, right, &mut seen.clone())) }
         if self.is_union(right) { return self.parts(right).iter().all(|&part| self.native_alias_written_disjoint(left, part, &mut seen.clone())) }
         if self.are_comparable(left, right) { return false }
-        if !self.is_object_type(left) || !self.is_object_type(right) { return true }
-        if let (Some(left), Some(right)) = (self.native_runtime_kind(left), self.native_runtime_kind(right))
+        if !self.is_object_type(left) || !self.is_object_type(right) { return self.native_alias_written_non_table(left) || self.native_alias_written_non_table(right) }
+        if let (crate::types::TypeData::NativeRuntimeTop { kind: left, .. }, crate::types::TypeData::NativeRuntimeTop { kind: right, .. }) = (self.data(left), self.data(right))
             && left != right { return true }
         for (contract, other) in [(left, right), (right, left)] {
             let Some(description) = self.native_table_object_description(contract) else { continue };

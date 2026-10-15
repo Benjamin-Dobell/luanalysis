@@ -53,6 +53,15 @@ fn compatible_written_child_contracts_do_not_hide_possible_self_aliases() {
 }
 
 #[test]
+fn structural_callable_fields_do_not_disprove_shared_table_aliases() {
+    let source = "---@class Callable\n---@overload fun():number\nlocal Callable={}\n---@param record {child:fun():number, stable:number|string}\n---@param other {child:table, stable:number|string}\nlocal function mutate(record,other)\n if type(record.stable)==\"number\" then\n  other.stable=\"changed\"\n  return record.stable+1\n end\n return 0\nend\nlocal shared={child=Callable,stable=1}\nlocal result=mutate(shared,shared)\n";
+    let report = check(source);
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2362"), "{:#?}", report.diagnostics);
+    assert!(report.diagnostics.iter().all(|error| error.code != "TS2345"), "the same callable-table child satisfies both public contracts: {:#?}", report.diagnostics);
+    clean(&source.replace("return record.stable+1", "return \"value: \"..record.stable"));
+}
+
+#[test]
 fn simultaneous_discriminant_mutation_preserves_aliasing_across_frozen_epochs() {
     let source = "---@param record {kind: 'old'|'new', stable: number|string}\n---@param key string\nlocal function mutate(record,key)\n---@type table<string, number|string>\nlocal alias=record\nif type(record.stable)==\"number\" then\nrecord.kind,alias[key]=\"new\",\"changed\"\nreturn record.stable+1\nend\nreturn 0\nend";
     let report = check(source);
