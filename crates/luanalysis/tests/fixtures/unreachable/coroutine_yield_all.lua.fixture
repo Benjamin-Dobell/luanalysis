@@ -1,0 +1,110 @@
+---@class ge_tts__Coroutine
+local Coroutine = {}
+
+---@param co thread
+---@param onError nil | fun(message: string): void
+local function resumeWithErrorHandling(co, onError)
+    local result, message = coroutine.resume(co)
+
+    if not result then
+        if onError then
+            (--[[---@not nil]] onError)(message)
+        else
+            error(message)
+        end
+    end
+end
+---@overload fun<T, R>(arr: T[], fn: (fun(resume: (fun(result: R): void), element: T, index: number): void), timeout: number, onError?: nil | (fun(message: string): void), incorrectResumptionErrorMessage?: nil | string): (true, R[]) | (false, table<number, R>)
+---@overload fun<T, R>(arr: T[], fn: (fun(resume: (fun(result: R): void), element: T, index: number): void), timeout?: nil, onError?: nil | (fun(message: string): void), incorrectResumptionErrorMessage?: nil | string): true, R[]
+---@overload fun<T>(arr: T[], fn: (fun(resume: (fun(): void), element: T, index: number): void), timeout?: nil | number, onError?: nil | (fun(message: string): void), incorrectResumptionErrorMessage?: nil | string): (true, nil[]) | (false, table<number, nil>)
+---@generic T
+---@generic R
+---@param arr T[]
+---@param fn fun(resume: (fun(result?: R): void), element: T, index: number): void
+---@param timeout? nil | number @Timeout in seconds (optional).
+---@param onError? nil | fun(message: string): void @A handler for any errors raised by the current coroutine after it has been resumed.
+---@param incorrectResumptionErrorMessage? nil | string
+---@return (true, (nil | R)[]) | (false, table<number, nil | R>) @true followed by fn result if resume was called before the timeout, or false if the (optional) timeout was reached.
+function Coroutine.yieldAll(arr, fn, timeout, onError, incorrectResumptionErrorMessage)
+    local co = coroutine.running()
+
+    local count = #arr
+
+    if count == 0 then
+        return true, {}
+    end
+
+    local resultCount = 0
+
+    local yielded = false
+
+    ---@type nil | boolean
+    local resumed
+
+    ---@type nil | number
+    local waitId
+
+    if timeout then
+        Wait.time(function()
+            if resumed then
+                return
+            end
+
+            waitId = nil
+            resumed = false
+            resumeWithErrorHandling(co, onError)
+        end, --[[---@not nil]] timeout)
+    end
+
+    ---@type table<number, true>
+    local elementsResumed = {}
+
+    ---@type table<number, nil | R>
+    local results = {}
+
+    for i, element in ipairs(arr) do
+        ---@type fun(userResult?: R): void
+        local resume = function(userResult)
+            if elementsResumed[i] then
+                return
+            end
+
+            elementsResumed[i] = true
+            results[i] = userResult
+            resultCount = resultCount + 1
+
+            if resultCount == count then
+                -- If resume is called synchronously in fn, then we haven't (and won't) yield. Thus, there's no suspended
+                -- coroutine to resume.
+                resumed = true
+
+                if yielded then
+                    resumeWithErrorHandling(co, onError)
+                end
+            end
+        end
+
+        fn(resume, element, i)
+    end
+
+    if not resumed then
+        yielded = true
+        coroutine.yield()
+    end
+
+    if waitId then
+        Wait.stop(--[[---@not nil]] waitId)
+    end
+
+    if resumed == nil then
+        error(incorrectResumptionErrorMessage)
+    end
+
+    if resumed then
+        return true, --[[---@type (nil | R)[] ]] results
+    end
+
+    return false, results
+end
+
+return Coroutine
