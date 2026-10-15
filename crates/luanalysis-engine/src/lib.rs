@@ -34,6 +34,8 @@ mod native_standard_call_certificate_tests;
 #[cfg(test)]
 mod native_query_context_tests;
 #[cfg(test)]
+mod native_global_query_context_tests;
+#[cfg(test)]
 mod native_standard_loop_write_tests;
 #[cfg(test)]
 mod native_fresh_namespace_tests;
