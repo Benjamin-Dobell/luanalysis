@@ -80,7 +80,7 @@ pub(super) struct NativeRegistry {
     declarations: HashMap<BindingId, DeclarationSource>,
     pub(super) types: NativeTypes,
     named: NativeNamed,
-    header_metadata: RefCell<named_provider::SourceHeaderMetadata>,
+    pub(super) header_metadata: RefCell<named_provider::SourceHeaderMetadata>,
     pub(super) members: super::native_members::NativeMembers,
     pub(super) doc_members: super::native_doc_members::NativeDocMembers,
     pub(super) runtime_tables: super::native_runtime_tables::NativeRuntimeTables,
