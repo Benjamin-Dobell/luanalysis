@@ -1824,11 +1824,53 @@
       "patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch",
       "reason": "Keep host-policy member classification and zero-argument replay bounded, distinguish usable uncached native results from unfinished queries, conservatively finish unsupported projected provenance, and retain Lua nil exclusion and union-key validation through kernel b6a9fbf.",
       "patch_sha256": "735753861df9c9f1b895bc423646d27e925494da8393c619693e8e44d96f03a3"
+    },
+    {
+      "path": "src/sema/check/flow_walk.rs",
+      "patch": "vendor/patches/bun-sema-native-flow-declaration-contracts.patch",
+      "reason": "Infer native runtime-table carrier domains, retain Comparable-only key overlap, distinguish dead references from correlated iterator frames, constrain parent member predicates, preserve pure declaration context and unresolved provisional status, and reuse guarded mapped written member/indexer contracts through kernel 07ad58d.",
+      "patch_sha256": "390d1fc7d6465e739cc0736a552e523cd191dff40e5f9e362e3f285217ccb09c"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-flow-declaration-contracts.patch",
+      "reason": "Infer native runtime-table carrier domains, retain Comparable-only key overlap, distinguish dead references from correlated iterator frames, constrain parent member predicates, preserve pure declaration context and unresolved provisional status, and reuse guarded mapped written member/indexer contracts through kernel 07ad58d.",
+      "patch_sha256": "390d1fc7d6465e739cc0736a552e523cd191dff40e5f9e362e3f285217ccb09c"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-flow-declaration-contracts.patch",
+      "reason": "Infer native runtime-table carrier domains, retain Comparable-only key overlap, distinguish dead references from correlated iterator frames, constrain parent member predicates, preserve pure declaration context and unresolved provisional status, and reuse guarded mapped written member/indexer contracts through kernel 07ad58d.",
+      "patch_sha256": "390d1fc7d6465e739cc0736a552e523cd191dff40e5f9e362e3f285217ccb09c"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-native-flow-declaration-contracts.patch",
+      "reason": "Infer native runtime-table carrier domains, retain Comparable-only key overlap, distinguish dead references from correlated iterator frames, constrain parent member predicates, preserve pure declaration context and unresolved provisional status, and reuse guarded mapped written member/indexer contracts through kernel 07ad58d.",
+      "patch_sha256": "390d1fc7d6465e739cc0736a552e523cd191dff40e5f9e362e3f285217ccb09c"
+    },
+    {
+      "path": "src/sema/check/native_iterators.rs",
+      "patch": "vendor/patches/bun-sema-native-flow-declaration-contracts.patch",
+      "reason": "Infer native runtime-table carrier domains, retain Comparable-only key overlap, distinguish dead references from correlated iterator frames, constrain parent member predicates, preserve pure declaration context and unresolved provisional status, and reuse guarded mapped written member/indexer contracts through kernel 07ad58d.",
+      "patch_sha256": "390d1fc7d6465e739cc0736a552e523cd191dff40e5f9e362e3f285217ccb09c"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-flow-declaration-contracts.patch",
+      "reason": "Infer native runtime-table carrier domains, retain Comparable-only key overlap, distinguish dead references from correlated iterator frames, constrain parent member predicates, preserve pure declaration context and unresolved provisional status, and reuse guarded mapped written member/indexer contracts through kernel 07ad58d.",
+      "patch_sha256": "390d1fc7d6465e739cc0736a552e523cd191dff40e5f9e362e3f285217ccb09c"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-flow-declaration-contracts.patch",
+      "reason": "Infer native runtime-table carrier domains, retain Comparable-only key overlap, distinguish dead references from correlated iterator frames, constrain parent member predicates, preserve pure declaration context and unresolved provisional status, and reuse guarded mapped written member/indexer contracts through kernel 07ad58d.",
+      "patch_sha256": "390d1fc7d6465e739cc0736a552e523cd191dff40e5f9e362e3f285217ccb09c"
     }
   ],
   "source_additions": {
     "src/sema/check/flow_walk.rs": {
-      "extracted_sha256": "b48fa1bf956390019e30c23969f567816346233bd5d50d210d42401bcacd2894",
+      "extracted_sha256": "fdeb4ab49d830a8949b96085808bc5d81f28a0797e10a3d6bcc8743e4854b524",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_alias_loops.rs": {
@@ -1844,7 +1886,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "aa3f758b836701d5f52080649b6c22cf2cc1e871700c296d8a0e0f4e26a3de74",
+      "extracted_sha256": "95b9feb77602185e003f8d53c42bfe5b9755be0e1e5246ce19940723c9be2790",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_flow_calls.rs": {
@@ -1852,7 +1894,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "c18c9df405d1285404bf7051f81dab7c95d74c0f48df2c3dc8c76447b9cf39ea",
+      "extracted_sha256": "6150ff8d9290fe5d50d72438fa90868389f770abf95cf84a68ab3380d8a35f87",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -1860,11 +1902,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch"
     },
     "src/sema/check/native_iterators.rs": {
-      "extracted_sha256": "02a1b75dc6fdf5747c6da51f7bcba961fd18db028921ce81f184d67488703d52",
+      "extracted_sha256": "134e9ea2976ff65fca3f86c16cda89e3d11290e30e62804cb9564e98f889c240",
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "20748bf73ba96bb91ccba9bc99440beae5c7b82693ad1826d7727ea39359f978",
+      "extracted_sha256": "c2fafe09177b9f950e4fc18c2cad9c19f42199447d884f7a0f2f9e07b53cf622",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1896,7 +1938,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "5b83aec61a365fe897664442d334b71b1e40c3abc5706e72e15ec539094e2938",
+      "extracted_sha256": "8c22d80d242cfeaee017a886f80b68d6f78bdadd3e16b8040231862c8b2bce0e",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2819,7 +2861,7 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "43b252f2329f571a291c2efca903793b5925e03155dda59075118c02f7e70ed9"
+      "extracted_sha256": "5e8e56b8a771ea9fab74ae908595690b0d180d1c9c167214345e4258a54ed31a"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",

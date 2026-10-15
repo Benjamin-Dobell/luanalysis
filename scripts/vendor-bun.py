@@ -420,6 +420,15 @@ SOURCE_ADAPTATIONS.extend({
     "native_query_context.rs", "native_standard_assumptions.rs", "native_tables.rs",
 ])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-flow-declaration-contracts.patch",
+    "reason": "Infer native runtime-table carrier domains, retain Comparable-only key overlap, distinguish dead references from correlated iterator frames, constrain parent member predicates, preserve pure declaration context and unresolved provisional status, and reuse guarded mapped written member/indexer contracts through kernel 07ad58d.",
+} for path in [
+    "flow_walk.rs", "infer.rs", "native_flow.rs", "native_globals.rs",
+    "native_iterators.rs", "native_named.rs", "native_tables.rs",
+])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
