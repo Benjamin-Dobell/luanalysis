@@ -49,6 +49,8 @@ pub(crate) mod modules;
 mod environment_paths;
 #[path = "native_alias_contracts.rs"]
 mod alias_contracts;
+#[path = "native_effect_contracts.rs"]
+mod effect_contracts;
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 
@@ -1899,6 +1901,32 @@ impl NativeRegistry {
         // builtin's source spelling for a function signature or infer a
         // module's result merely to classify an unused call.
         if self.module_import(expression.span).is_some() { return NativeCallEffects::None; }
+        if let ExprKind::Call { .. } = &expression.kind
+            && let Some(callee) = evaluation.operands.first().copied()
+        {
+            let callee = sources.program.evaluation(callee);
+            match queries.flow_alias_intrinsic(
+                &FlowAdapter { sources, values: self },
+                sources.evaluation_value(callee.id),
+                sources.flow_key(callee.input, input.graph.context),
+            ) {
+                luanalysis_engine::NativeAliasIntrinsic::Standard(site) => return match site.kind {
+                    luanalysis_engine::NativeIntrinsicKind::Assert => sources.assertion_call_effect(evaluation, input),
+                    _ => NativeCallEffects::None,
+                },
+                // The native alias query taints its dependent memo scopes;
+                // this provisional value cannot publish a completed effect.
+                luanalysis_engine::NativeAliasIntrinsic::Pending => return NativeCallEffects::None,
+                luanalysis_engine::NativeAliasIntrinsic::Unknown => {},
+            }
+        }
+        if let Some(callee) = self.original_effect_call_contract(expression, queries)
+            && let Some(returned) = queries.function_declared_scalar_return(&callee)
+        {
+            return if matches!(returned, Type::Never) {
+                NativeCallEffects::Never
+            } else { NativeCallEffects::None };
+        }
         let mut checker = self.checker_at_flow(input, queries);
         let callee = match &expression.kind {
             ExprKind::Call { callee, .. } => checker.expression(callee),
@@ -1911,16 +1939,6 @@ impl NativeRegistry {
             }
             _ => return NativeCallEffects::None,
         };
-        if let Some(intrinsic) = checker.engine.function_intrinsic(&callee) {
-            let effects = if checker.incomplete_flow { NativeCallEffects::None } else {
-                match intrinsic.kind {
-                    luanalysis_engine::NativeIntrinsicKind::Assert => sources.assertion_call_effect(evaluation, input),
-                    luanalysis_engine::NativeIntrinsicKind::Type | luanalysis_engine::NativeIntrinsicKind::Require | luanalysis_engine::NativeIntrinsicKind::SetMetatable => NativeCallEffects::None,
-                }
-            };
-            if !checker.incomplete_flow { self.merge_flow_report(input, checker.check_mode, checker.report); }
-            return effects;
-        }
         // Reachability must not demand the inferred result of an unused call:
         // that result can recursively depend on the current function. An
         // explicit nonreturning contract is sufficient for this flow effect.
