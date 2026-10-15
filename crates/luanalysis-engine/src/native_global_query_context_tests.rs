@@ -136,7 +136,13 @@ impl GlobalContexts {
         }
     }
     fn read_loop(&self, queries: &mut dyn TypeQueries, region: u32) -> NativeFlowResult {
-        queries.flow_type(self, at(region, 1), reference(region), &Type::Number, &Type::Number)
+        // Equal initial/declaration bounds absorb the first edge and let the
+        // flow walker skip the backedge entirely. A nil entry and number write
+        // must both be visited before this original loop can settle.
+        queries.flow_type(
+            self, at(region, 1), reference(region),
+            &Type::Union(vec![Type::Number, Type::Nil]), &Type::Nil,
+        )
     }
 }
 
@@ -182,7 +188,7 @@ impl NativeTypeProvider for GlobalContexts {
             }
             Inherited::Loop => {
                 let result = self.read_loop(queries, 0);
-                assert_eq!(result.ty, Type::Number);
+                assert_eq!(result.ty, queries.union_reduced(&[Type::Number, Type::Nil]));
             }
         }
         ValuePack::single(Type::Number)
@@ -219,7 +225,7 @@ impl NativeTypeProvider for GlobalContexts {
             Contract::PendingMember => self.pending_member(1, queries),
             Contract::FlowDependency if self.pending_dependency.get() => {
                 let result = self.read_loop(queries, 1);
-                assert_eq!(result.ty, Type::Number);
+                assert_eq!(result.ty, queries.union_reduced(&[Type::Number, Type::Nil]));
             }
             Contract::Recursive => {
                 assert!(matches!(queries.value_declaration_type(declaration()),
