@@ -1247,6 +1247,7 @@ fn intern_reference(
 
 pub(super) trait FlowValueQueries {
     fn alias_value_type(&self, sources:&NativeFlowSources, value:&ValueRecipe, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {self.flow_value_type(sources,value,input,queries)}
+    fn binding_has_written_contract(&self, _: BindingId) -> bool { false }
     fn written_binding_contract(&self, _: BindingId, _: &mut dyn TypeQueries) -> Option<Type> { None }
     fn original_alias_initial(&self, _: &flow::Reference) -> luanalysis_engine::NativeAliasInitial { luanalysis_engine::NativeAliasInitial::Opaque }
     fn original_alias_execution(&self, _: NativeFunctionKey, _: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasExecution> { None }

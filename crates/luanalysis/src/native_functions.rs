@@ -2020,6 +2020,9 @@ impl NativeRegistry {
 }
 
 impl FlowValueQueries for NativeRegistry {
+    fn binding_has_written_contract(&self, binding: BindingId) -> bool {
+        NativeRegistry::binding_has_written_contract(self, binding)
+    }
     fn alias_value_type(&self, sources:&NativeFlowSources, value:&ValueRecipe, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {
         self.with_flow_context(input, queries, &mut |queries| {
             self.flow_value_type_in_context(sources,value,input,queries,NativeCheckMode::TYPE_ONLY)
