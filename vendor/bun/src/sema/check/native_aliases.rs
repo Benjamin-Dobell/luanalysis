@@ -310,6 +310,9 @@ impl<'p, 's> Checker<'p, 's> {
                     AliasMetatableCall::Preserved => edges.push(before),
                     AliasMetatableCall::Replaced(metatable) => {
                         let key = NativeTableKey::String(self.atoms().intern(b"__newindex"));
+                        // The direct literal was not exposed before this
+                        // installation. Retrieving it afterward requires a
+                        // call; unsupported calls remain barriers below.
                         if !provider.value_alias_member_absent(metatable.value, metatable.input, key, self) { return false }
                     },
                     AliasMetatableCall::Pending => { self.mark_tainted_from(0); return false },

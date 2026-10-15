@@ -289,8 +289,9 @@ pub trait NativeFlowProvider {
     /// A unique original literal field at its frozen evaluation input. A
     /// structural property type cannot establish runtime value provenance.
     fn value_alias_member_source(&self, _: NativeValueKey, _: NativeFlowKey, _: NativeTableKey, _: &Checker<'_, '_>) -> Option<super::native_aliases::NativeAliasReturnValue> { None }
-    /// Complete original literal keys prove this raw field absent. Unsupported
-    /// recipes, dynamic keys, and structural types cannot supply this fact.
+    /// Complete keys of a directly evaluated literal prove this raw field
+    /// absent at construction. Aliases/paths to literals, dynamic keys, and
+    /// structural types cannot supply this fact.
     fn value_alias_member_absent(&self, _: NativeValueKey, _: NativeFlowKey, _: NativeTableKey, _: &Checker<'_, '_>) -> bool { false }
     /// Original receiver evaluation for a heap store, frozen before its RHS.
     fn write_alias_receiver(&self, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasReturnValue> { None }

@@ -59,6 +59,8 @@ pub trait NativeFlowProvider {
     fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> NativeAliasValue { NativeAliasValue::Unknown }
     fn value_alias_environment_member(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativeAliasEnvironmentMember> { None }
     fn value_alias_member_source(&self, _: NativeValueKey, _: NativeFlowKey, _: &super::LuaKey) -> Option<NativeAliasReturnValue> { None }
+    /// Raw absence in a directly evaluated original literal at construction;
+    /// aliases, dynamic keys, and inferred member views are unsupported.
     fn value_alias_member_absent(&self, _: NativeValueKey, _: NativeFlowKey, _: &super::LuaKey) -> bool { false }
     /// Original heap-store receiver and its own frozen evaluation input.
     fn write_alias_receiver(&self, _: NativeFlowKey) -> Option<NativeAliasReturnValue> { None }
