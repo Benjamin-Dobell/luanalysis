@@ -1344,6 +1344,12 @@
       "patch": "vendor/patches/bun-sema-native-void-callback-results.patch",
       "reason": "Preserve TypeScript void callback variance for native signatures with an empty declared result row, excluding Never and preserving ordinary physical result-pack assignment.",
       "patch_sha256": "f93ba6750f6779be0d3ceb40fd0cc86fe3170b67857f53451e7f354c1c53b4eb"
+    },
+    {
+      "path": "src/sema/check/native_intrinsics.rs",
+      "patch": "vendor/patches/bun-sema-setmetatable-provenance.patch",
+      "reason": "Carry selected original setmetatable value identity without replacing its declared call signature or adding assertion effects.",
+      "patch_sha256": "fefa4d64386abfce83a74066aedf760f927883372764088636d73feba334ceb8"
     }
   ],
   "source_additions": {
@@ -1364,7 +1370,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
-      "extracted_sha256": "961d1a8973aef6fbd79851e48bf89d241c88e74c9d009136617a9ca4e339e1a7",
+      "extracted_sha256": "cc8babf2df96a9a68634e3477b819bc7538df14c3319a31f7fa166eb1d067df0",
       "introduced_by_patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch"
     },
     "src/sema/check/native_iterators.rs": {

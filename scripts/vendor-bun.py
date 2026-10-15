@@ -309,6 +309,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Preserve TypeScript void callback variance for native signatures with an empty declared result row, excluding Never and preserving ordinary physical result-pack assignment.",
 } for path in ["native_packs.rs", "relate.rs"])
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_intrinsics.rs",
+    "patch": "vendor/patches/bun-sema-setmetatable-provenance.patch",
+    "reason": "Carry selected original setmetatable value identity without replacing its declared call signature or adding assertion effects.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
