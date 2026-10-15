@@ -1,4 +1,6 @@
 use crate::*;
+#[path = "native_alias_projected_tests.rs"]
+mod projected_tests;
 #[path = "native_alias_cell_tests.rs"]
 mod cell_tests;
 fn graph(region: u32) -> NativeGraphKey {

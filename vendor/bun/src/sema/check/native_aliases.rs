@@ -161,16 +161,10 @@ impl<'p, 's> Checker<'p, 's> {
                     previous
                 }
                 NativeWriteRelation::Ancestor => {
-                    let projected = provider.reference_member_path(target, reference, self)
-                        .filter(|path| !path.is_empty())
-                        .and_then(|path| {
-                            let mut projected = NativeAliasReturnValue { value, input };
-                            for key in path {
-                                projected = provider.value_alias_member_source(projected.value, projected.input, key, self)?;
-                            }
-                            Some(projected)
-                        });
-                    projected.map_or_else(Origins::unknown, |value| self.native_alias_value(provider, value.value, value.input, 0))
+                    match provider.reference_member_path(target, reference, self).filter(|path| !path.is_empty()) {
+                        Some(path) => self.native_alias_projected_value(provider, value, input, 0, &path),
+                        None => Origins::unknown(),
+                    }
                 },
                 NativeWriteRelation::PossibleAncestor => Origins::unknown(),
                 _ => self.native_alias_reference(provider, reference, before),
@@ -241,6 +235,121 @@ impl<'p, 's> Checker<'p, 's> {
             && memoizable.is_some() && !result.uncertain && !self.is_stack_low()
         { self.native_alias_cache.value(key, result.clone(), stored); }
         result
+    }
+
+    fn native_alias_projected_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey, column: usize, path: &[NativeTableKey]) -> Origins {
+        if path.is_empty() { return self.native_alias_value(provider, value, input, column) }
+        if value.snapshot != input.graph.snapshot || !provider.contains_graph(input.graph) || provider.node(input).is_none() { return Origins::unknown() }
+        let Some(path) = path.iter().map(|key| key.normalize().ok()).collect::<Option<Vec<_>>>() else { return Origins::unknown() };
+        let path_id = self.native_alias_cache.path(&path);
+        let epoch = self.flow_memo.native_state.effect_epoch;
+        let key = (value, input, column, path_id, epoch);
+        if let Some(result) = self.native_alias_cache.projected_values.get(&key) { return result.clone() }
+        let query = Query::NativeAliasProjectedValue(value, input, column, path_id, epoch);
+        if !self.enter(query) { return Origins::unknown() }
+        let begun = self.begin_memoizable();
+        let result = if column == 0 && let Some(field) = provider.value_alias_member_source(value, input, path[0], self) {
+            self.native_alias_projected_value(provider, field.value, field.input, 0, &path[1..])
+        } else {
+            match provider.value_alias_source(value, input) {
+                NativeAliasValue::Reference { reference, input } if column == 0 => self.native_alias_projected_reference(provider, reference, input, &path),
+                NativeAliasValue::Projection { value, input, index } => match index.checked_add(column) {
+                    Some(column) => self.native_alias_projected_value(provider, value, input, column, &path),
+                    None => Origins::unknown(),
+                },
+                NativeAliasValue::NotTable => Origins::non_table(),
+                NativeAliasValue::Reference { .. } | NativeAliasValue::Allocation if column != 0 => Origins::non_table(),
+                _ => Origins::unknown(),
+            }
+        };
+        let memoizable = self.end_memoizable(begun);
+        if let Ok(stored) = self.leave(query)
+            && memoizable.is_some() && !result.uncertain && !self.is_stack_low()
+        { self.native_alias_cache.projected_value(key, result.clone(), stored); }
+        result
+    }
+
+    fn native_alias_projected_reference(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey, path: &[NativeTableKey]) -> Origins {
+        if path.is_empty() { return self.native_alias_reference(provider, reference, at) }
+        if reference.graph != at.graph || !provider.contains_graph(at.graph) || !provider.contains_reference(reference) { return Origins::unknown() }
+        let path_id = self.native_alias_cache.path(path);
+        let epoch = self.flow_memo.native_state.effect_epoch;
+        let key = (reference, at, path_id, epoch);
+        if let Some(result) = self.native_alias_cache.projected_references.get(&key) { return result.clone() }
+        let query = Query::NativeAliasProjectedReference(reference, at, path_id, epoch);
+        if !self.enter(query) { return Origins::unknown() }
+        let begun = self.begin_memoizable();
+        let result = match provider.node(at) {
+            Some(NativeFlowNode::Start) => {
+                if let Some(declaration) = provider.reference_declaration(reference)
+                    && declaration.owner != reference.graph
+                    && let Some(creation) = provider.graph_creation(reference.graph)
+                    && provider.graph_creation(declaration.owner).is_none()
+                    && !declaration.writes.iter().any(|write| write.owner != declaration.owner || write.statement_end > creation.position)
+                    && let Some(outer) = provider.reference_in_graph(reference, creation.input.graph)
+                { self.native_alias_projected_reference(provider, outer, creation.input, path) }
+                else { Origins::unknown() }
+            },
+            Some(NativeFlowNode::Write { before, target, value, input }) => {
+                self.native_alias_projected_write(provider, reference, at, path, before, target, value, input)
+            },
+            Some(NativeFlowNode::Merge { edges }) => {
+                let mut origins = Origins::default();
+                for edge in edges { origins.merge(self.native_alias_projected_reference(provider, reference, edge, path)); }
+                origins
+            },
+            Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
+                | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => self.native_alias_projected_reference(provider, reference, before, path),
+            // Heap contents may change across a call even when the base cell
+            // remains stable. Neither a loop site nor a captured activation is
+            // an identity proof for the projected object.
+            Some(NativeFlowNode::Call { .. } | NativeFlowNode::Loop { .. }) => Origins::unknown(),
+            Some(NativeFlowNode::Unreachable | NativeFlowNode::Return { .. }) => Origins::non_table(),
+            _ => Origins::unknown(),
+        };
+        let memoizable = self.end_memoizable(begun);
+        if let Ok(stored) = self.leave(query)
+            && memoizable.is_some() && !result.uncertain && !self.is_stack_low()
+        { self.native_alias_cache.projected_reference(key, result.clone(), stored); }
+        result
+    }
+
+    fn native_alias_projected_write(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey, path: &[NativeTableKey], before: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey) -> Origins {
+        let cell_write = provider.reference_is_cell(target);
+        if cell_write || !provider.reference_is_cell(reference) {
+            let relation = if cell_write { provider.write_affects(reference, target, at) }
+                else { provider.write_affects_with_types(reference, target, at, self) };
+            match relation {
+                NativeWriteRelation::Exact => return self.native_alias_projected_value(provider, value, input, 0, path),
+                NativeWriteRelation::Ancestor => {
+                    let Some(mut suffix) = provider.reference_member_path(target, reference, self) else { return Origins::unknown() };
+                    suffix.extend_from_slice(path);
+                    return self.native_alias_projected_value(provider, value, input, 0, &suffix);
+                },
+                NativeWriteRelation::PossibleExact | NativeWriteRelation::PossibleAncestor => return Origins::unknown(),
+                _ => {},
+            }
+            if cell_write { return self.native_alias_projected_reference(provider, reference, before, path) }
+        }
+        let written = provider.write_member_key(reference, target, at, self).and_then(|key| key.normalize().ok());
+        if written.is_some_and(|key| !path.contains(&key)) {
+            return self.native_alias_projected_reference(provider, reference, before, path);
+        }
+        let Some(receiver) = provider.write_alias_receiver(at) else { return Origins::unknown() };
+        let receiver = self.native_alias_value(provider, receiver.value, receiver.input, 0);
+        // The backward graph walk finds the latest reached store. Within one
+        // store, an outer replacement changes the route to every deeper field,
+        // so examine original proper prefixes from the base outwards.
+        for length in 0..path.len() {
+            if written.is_some_and(|key| key != path[length]) { continue }
+            let prefix = self.native_alias_projected_reference(provider, reference, before, &path[..length]);
+            match prefix.relation(&receiver) {
+                NativeAliasRelation::Different => {},
+                NativeAliasRelation::Same if written.is_some() => return self.native_alias_projected_value(provider, value, input, 0, &path[length + 1..]),
+                NativeAliasRelation::Same | NativeAliasRelation::Possible => return Origins::unknown(),
+            }
+        }
+        self.native_alias_projected_reference(provider, reference, before, path)
     }
 
     fn native_alias_call(&mut self, provider: &dyn NativeFlowProvider, call: NativeValueKey, input: NativeFlowKey, column: usize, callee: NativeValueKey, callee_input: NativeFlowKey) -> Origins {

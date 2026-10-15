@@ -66,16 +66,129 @@ fn duplicate_and_dynamic_fields_cannot_fabricate_a_unique_constructor_origin() {
 }
 
 #[test]
-fn copied_rhs_projection_does_not_invent_a_source_reference_or_any() {
-    // A future native projected-reference query must make this valid source
-    // precise. Until then, an uncertain alias cannot prove member presence.
+fn copied_rhs_projection_uses_the_original_reference_without_inventing_a_spelling() {
     let source = "local original={child={}}\nlocal root=original\nlocal alias=root.child\nalias.value=1\n---@type number\nlocal result=root.child.value\n";
+    let report = check(source);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn copied_chains_keep_nested_fixed_suffixes_and_each_frozen_input() {
+    let source = "local original={middle={child={}}}\nlocal root=original\nlocal second=root\nlocal alias=second.middle.child\nalias.value=1\n---@type number\nlocal result=second.middle.child.value\n";
+    let report = check(source);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn a_copied_rhs_observes_the_latest_child_replacement_instead_of_replaying_the_seed() {
+    for source in [
+        "local original={child={}}\nlocal old=original.child\noriginal.child={}\nlocal root=original\nlocal alias=root.child\nalias.value=1\n---@type number\nlocal result=root.child.value\n",
+        "local original={child={}}\nlocal old=original.child\nlocal writer=original\nwriter.child={}\nlocal root=original\nlocal alias=root.child\nalias.value=1\n---@type number\nlocal result=root.child.value\n",
+        "local original={child={}}\nlocal root=original\nlocal old=root.child\noriginal.child={}\nlocal alias=root.child\nalias.value=1\n---@type number\nlocal result=root.child.value\n",
+    ] {
+        let report = check(source);
+        assert!(
+            report.diagnostics.is_empty(),
+            "{source}\n{:#?}",
+            report.diagnostics
+        );
+        let report = check(&format!("{source}---@type number\nlocal wrong=old.value\n"));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|error| matches!(error.code, "TS2322" | "TS2339")),
+            "{source}\n{:#?}",
+            report.diagnostics
+        );
+    }
+}
+
+#[test]
+fn rebinding_the_original_cell_does_not_change_a_previously_copied_table() {
+    let source = "local original={child={}}\nlocal root=original\noriginal={child={}}\nlocal alias=root.child\nalias.value=1\n---@type number\nlocal result=root.child.value\n";
+    let report = check(source);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    let report = check(&format!(
+        "{source}---@type number\nlocal wrong=original.child.value\n"
+    ));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|error| matches!(error.code, "TS2322" | "TS2339")),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_branch_selected_copy_cannot_prove_an_unconditional_store_to_one_alternative() {
+    let source = "---@param flag boolean\nlocal function update(flag)\nlocal left={child={}}\nlocal right={child={}}\nlocal selected\nif flag then selected=left else selected=right end\nlocal root=selected\nlocal alias=root.child\nalias.value=1\n---@type number\nlocal unproven=left.child.value\nend\n";
     let report = check(source);
     assert!(
         report
             .diagnostics
             .iter()
             .any(|error| error.code == "TS2322"),
+        "{:#?}",
+        report.diagnostics
+    );
+    let corrected = source.replace(
+        "local unproven=left.child.value",
+        "local unproven=1\nleft.child.value=2\n---@type number\nlocal proven=left.child.value",
+    );
+    let report = check(&corrected);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn an_intervening_call_can_change_projected_heap_values_while_base_cells_stay_stable() {
+    let source = "local original={child={}}\nlocal old=original.child\nlocal function replace() original.child={} end\nreplace()\nlocal root=original\nlocal alias=root.child\nalias.value=1\n---@type number\nlocal unproven=old.value\n";
+    let report = check(source);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|error| matches!(error.code, "TS2322" | "TS2339")),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_parallel_root_rebind_does_not_move_its_captured_child_store() {
+    let source = "local original={child={}}\nlocal root=original\nlocal old=root.child\noriginal,original.child={child={}},{}\nlocal alias=root.child\nalias.value=1\n---@type number\nlocal result=root.child.value\n";
+    let report = check(source);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    for rejected in ["old.value", "original.child.value"] {
+        let report = check(&format!(
+            "{source}---@type number\nlocal wrong={rejected}\n"
+        ));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|error| matches!(error.code, "TS2322" | "TS2339")),
+            "{rejected}\n{:#?}",
+            report.diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_rhs_call_keeps_its_child_receiver_at_the_original_frozen_input() {
+    let source = "local original={child={}}\nlocal root=original\nlocal old=root.child\nlocal function replace() original.child={} return 1 end\nroot.child.value=replace()\n---@type number\nlocal previous=old.value\n";
+    let report = check(source);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    let report = check(&format!(
+        "{source}---@type number\nlocal wrong=root.child.value\n"
+    ));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|error| matches!(error.code, "TS2322" | "TS2339")),
         "{:#?}",
         report.diagnostics
     );
