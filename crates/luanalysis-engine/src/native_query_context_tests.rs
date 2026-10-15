@@ -312,7 +312,7 @@ impl NativeFlowProvider for ContextQueries {
                 if self.pending_member.get() {
                     assert_eq!(actual, Err(TableError::PendingContext));
                 } else {
-                    assert_eq!(actual, Ok(Type::Number));
+                    assert_eq!(actual, Ok(Some(Type::Number)));
                 }
             }
             Effect::Recursive => {
