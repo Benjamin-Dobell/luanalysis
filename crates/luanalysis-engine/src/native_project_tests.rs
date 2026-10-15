@@ -215,10 +215,8 @@ fn module_values_discard_later_results_replace_only_nil_and_preserve_false() {
             (11, Type::Never),
             (12, Type::Any),
         ] {
-            assert_eq!(
-                queries.module_value(module(index), NativeLoaderPolicy::Lua54StandardFile),
-                Ok(expected)
-            );
+            let actual = queries.module_value(module(index), NativeLoaderPolicy::Lua54StandardFile).unwrap();
+            assert_eq!(queries.inspect_type(&actual), expected);
         }
         let optional = queries
             .module_value(module(4), NativeLoaderPolicy::Lua54StandardFile)

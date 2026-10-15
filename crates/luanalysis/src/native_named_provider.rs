@@ -738,6 +738,7 @@ impl NativeRegistry {
         });
     }
     pub(crate) fn check_named_declarations(&self, queries: &mut dyn TypeQueries) {
+        self.validate_return_annotations(queries);
         let mut seen = HashSet::new();
         for source in self.named.declarations() {
             if let Err(reason) = self.class_definition_directive(source)

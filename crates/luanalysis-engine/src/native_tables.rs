@@ -4,7 +4,7 @@
 //! assignability, freshness, and deletion rules. This module only translates
 //! owned descriptions to and from types in the current checker session.
 
-use super::{Checker, SessionQueries, Type, TypeHandles, ValuePack, export_type, import_type};
+use super::{Checker, SessionQueries, Type, TypeHandles, ValuePack, export_type, export_type_with_literal_policy, import_type};
 use bun_sema::check::native_tables::NativeTableError;
 use bun_sema::types::{
     NativeTableAccessKey, NativeTableField, NativeTableFlavor, NativeTableIndexer, NativeTableKey,
@@ -209,6 +209,7 @@ pub(super) fn export_table(
     checker: &mut Checker<'_, '_>,
     handles: &TypeHandles,
     ty: TypeId,
+    preserve_regular: bool,
 ) -> Option<TableType> {
     if checker.native_table_description_error(ty).is_some() {
         // A generic mapper can produce a domain that a written Lua table
@@ -233,7 +234,7 @@ pub(super) fn export_table(
             .into_iter()
             .map(|field| TableField {
                 key: export_literal_key(checker, field.key),
-                value: export_type(checker, handles, field.value),
+                value: export_type_with_literal_policy(checker, handles, field.value, preserve_regular),
                 optional: field.optional,
                 readonly: field.readonly,
             })
@@ -241,8 +242,8 @@ pub(super) fn export_table(
         indexers: indexers
             .into_iter()
             .map(|indexer| TableIndexer {
-                key: export_type(checker, handles, indexer.key),
-                value: export_type(checker, handles, indexer.value),
+                key: export_type_with_literal_policy(checker, handles, indexer.key, preserve_regular),
+                value: export_type_with_literal_policy(checker, handles, indexer.value, preserve_regular),
                 readonly: indexer.readonly,
                 sparse: indexer.sparse,
             })
@@ -251,7 +252,7 @@ pub(super) fn export_table(
             .into_iter()
             .map(|tail| TableSequenceTail {
                 start: tail.start,
-                value: export_type(checker, handles, tail.value),
+                value: export_type_with_literal_policy(checker, handles, tail.value, preserve_regular),
                 readonly: tail.readonly,
             })
             .collect(),
@@ -1246,10 +1247,8 @@ mod tests {
                 )
                 .unwrap();
             assert!(queries.is_assignable(&actual, &expected));
-            assert_eq!(
-                queries.table_lookup(&actual, &key),
-                Ok(Type::BooleanLiteral(true))
-            );
+            let field = queries.table_lookup(&actual, &key).unwrap();
+            assert_eq!(queries.inspect_type(&field), Type::BooleanLiteral(true));
         });
     }
 
@@ -1298,10 +1297,8 @@ mod tests {
                     &expected,
                 )
                 .unwrap();
-            assert_eq!(
-                queries.table_lookup(&mismatching, &literal(string_key("flag"))),
-                Ok(Type::BooleanLiteral(false))
-            );
+            let field = queries.table_lookup(&mismatching, &literal(string_key("flag"))).unwrap();
+            assert_eq!(queries.inspect_type(&field), Type::BooleanLiteral(false));
             assert!(!queries.is_assignable(&mismatching, &expected));
         });
     }

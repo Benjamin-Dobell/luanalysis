@@ -91,7 +91,7 @@ impl NativeRegistry {
                 })
                 .collect();
             let mut checker = self.checker_at_flow(at, queries);
-            returned.push(checker.expression_list_pack(&expressions, None));
+            returned.push(checker.return_expression_pack(&expressions, statement.span, None));
             if !checker.incomplete_flow {
                 self.merge_flow_report(at, checker.check_mode, checker.report);
             }

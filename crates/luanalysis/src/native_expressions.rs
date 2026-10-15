@@ -29,7 +29,7 @@ pub(super) struct NativeExpressions {
     final_contexts: RefCell<HashMap<NativeFunctionKey, Vec<ContextualFunctionContext>>>,
     final_captures: RefCell<HashMap<NativeFunctionKey, Vec<CapturedFunctionContext>>>,
     context_captures:
-        RefCell<HashMap<(NativeFunctionKey, ContextualFunctionContext), CapturedFunctionContext>>,
+        RefCell<HashMap<(NativeFunctionKey, ContextualFunctionContext), Vec<CapturedFunctionContext>>>,
 }
 impl NativeExpressions {
     pub(super) fn new(
@@ -202,15 +202,15 @@ impl NativeExpressions {
             .cloned()
             .unwrap_or_default()
     }
-    pub(super) fn capture_for_context(
+    pub(super) fn captures_for_context(
         &self,
         key: NativeFunctionKey,
         context: &ContextualFunctionContext,
-    ) -> Option<CapturedFunctionContext> {
+    ) -> Vec<CapturedFunctionContext> {
         self.context_captures
             .borrow()
             .get(&(key, *context))
-            .copied()
+            .cloned().unwrap_or_default()
     }
     pub(super) fn contextual_captures(
         &self,
@@ -219,7 +219,8 @@ impl NativeExpressions {
         self.context_captures
             .borrow()
             .iter()
-            .filter_map(|((function, _), capture)| (*function == key).then_some(*capture))
+            .filter(|((function, _), _)| *function == key)
+            .flat_map(|(_, captures)| captures.iter().copied())
             .collect()
     }
     fn retain_context_capture(
@@ -230,12 +231,11 @@ impl NativeExpressions {
     ) {
         if publishes(context.mode) {
             let mut contexts = self.context_captures.borrow_mut();
-            if let Some(existing) = contexts.insert((key, *context), *captured) {
-                assert_eq!(
-                    existing, *captured,
-                    "a selected native facet has one immutable capture environment"
-                );
-            }
+            // Native generic instantiation can preserve the contextual site
+            // while mapping its immutable capture environment. Both facets
+            // must retain their own source-flow and body-validation identity.
+            let captures = contexts.entry((key, *context)).or_default();
+            if !captures.contains(captured) { captures.push(*captured); }
         }
     }
     fn retain_capture(

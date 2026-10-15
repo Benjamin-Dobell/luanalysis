@@ -19,6 +19,7 @@ mod native_functions;
 mod native_named;
 mod native_signatures;
 mod native_packs;
+mod native_return_annotations;
 mod native_tables;
 mod native_types;
 mod operators;
@@ -559,15 +560,18 @@ impl Checker<'_> {
                 }
             }
             TypeExprKind::CompletionHint(_) => Type::Never,
-            TypeExprKind::Literal(literal) => match literal {
-                TypeLiteral::Boolean(value) => Type::BooleanLiteral(*value),
-                TypeLiteral::String(value) => Type::StringLiteral(value.clone()),
-                TypeLiteral::Number(spelling) => number(spelling)
-                    .map(Type::NumberLiteral)
-                    .unwrap_or_else(|| {
-                        self.error("LUA2002", ty.span, "invalid numeric literal type");
-                        self.engine.error_type()
-                    }),
+            TypeExprKind::Literal(literal) => {
+                let value = match literal {
+                    TypeLiteral::Boolean(value) => Type::BooleanLiteral(*value),
+                    TypeLiteral::String(value) => Type::StringLiteral(value.clone()),
+                    TypeLiteral::Number(spelling) => number(spelling)
+                        .map(Type::NumberLiteral)
+                        .unwrap_or_else(|| {
+                            self.error("LUA2002", ty.span, "invalid numeric literal type");
+                            self.engine.error_type()
+                        }),
+                };
+                self.engine.regular_type(&value)
             },
             TypeExprKind::Record(fields) => self.native_table_annotation(fields, ty.span),
             TypeExprKind::Parenthesized(ty) => self.annotation(ty),
@@ -728,13 +732,15 @@ impl Checker<'_> {
     fn compatible(&mut self, value: &Type, target: &Type, origin: Span) -> bool {
         let relation = self.engine.compare(value, target);
         if !relation.assignable {
+            let value = self.engine.format(value);
+            let target = self.engine.format(target);
             self.error(
                 "TS2322",
                 origin,
                 format!(
                     "Type '{}' is not assignable to type '{}'.",
-                    describe(value),
-                    describe(target)
+                    value,
+                    target
                 ),
             );
         }

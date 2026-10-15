@@ -33,6 +33,7 @@ pub fn parse(source: &str) -> File {
         expression_assertions: Vec::new(),
         overload_annotations: Vec::new(),
         documentation_references: Vec::new(),
+        return_annotations: Vec::new(),
         documentation_group: None,
         depth: 0,
         block_depth: 0,
@@ -47,6 +48,7 @@ pub fn parse(source: &str) -> File {
         type_extensions: parser.type_extensions,
         overload_annotations: parser.overload_annotations,
         documentation_references: parser.documentation_references,
+        return_annotations: parser.return_annotations,
         comments,
         diagnostics: parser.diagnostics,
         span: Span::new(0, source.len()),
@@ -64,6 +66,7 @@ struct Parser<'a> {
     expression_assertions: Vec<crate::ExpressionAssertion>,
     overload_annotations: Vec<OverloadAnnotation>,
     documentation_references: Vec<crate::DocumentationReference>,
+    return_annotations: Vec<crate::ReturnAnnotation>,
     documentation_group: Option<DocumentationGroup>,
     depth: usize,
     block_depth: usize,
@@ -473,11 +476,20 @@ impl Parser<'_> {
                 || matches!(&next.kind, TokenKind::Keyword(word) if matches!(word.as_str(), "end" | "elseif" | "else" | "until"))
                 || matches!(&next.kind, TokenKind::Symbol(symbol) if symbol == ";");
             let mut values = if empty { Vec::new() } else { self.expr_list() };
+            let mut annotations = annotations;
+            let function_contract = values.len() == 1
+                && function_initializer(&mut values[0]).is_some()
+                && annotations.type_annotation.as_ref().is_some_and(function_type_annotation);
+            let return_annotation = if function_contract { None } else { annotations.type_annotation.take() };
             self.attach_function_annotations(&mut values, annotations);
             let end = values.last().map_or(start, |value| value.span);
+            let statement = start.join(end);
+            if let Some(annotation) = return_annotation {
+                self.return_annotations.push(crate::ReturnAnnotation { statement, annotation });
+            }
             return Some(Stmt {
                 kind: StmtKind::Return(values),
-                span: start.join(end),
+                span: statement,
             });
         }
         if self.keyword("local") {

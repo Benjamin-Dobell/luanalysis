@@ -36,6 +36,8 @@ mod native_pack_signature_tests;
 mod native_scalar_contract_tests;
 mod native_tables;
 pub use native_tables::*;
+#[cfg(test)]
+mod regular_literal_tests;
 
 pub use bun_sema::check::CheckMode as NativeCheckMode;
 use bun_sema::check::{
@@ -864,6 +866,8 @@ pub trait TypeQueries {
     fn is_assignable(&mut self, source: &Type, target: &Type) -> bool;
     fn compare(&mut self, source: &Type, target: &Type) -> Relation;
     fn widen(&mut self, ty: &Type) -> Type;
+    /// The annotation form of a literal, using TypeScript's regular-literal worker.
+    fn regular_type(&mut self, ty: &Type) -> Type;
     fn union_reduced(&mut self, types: &[Type]) -> Type;
     fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type>;
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type;
@@ -970,21 +974,30 @@ impl Engine {
 
     /// Applies TypeScript's literal widening to a mutable initialized location.
     pub fn widen(&self, ty: &Type) -> Type {
-        self.with_session(|queries| queries.widen(ty))
+        self.with_session(|queries| {
+            let result = queries.widen(ty);
+            queries.inspect_type(&result)
+        })
     }
 
     pub fn property_type(&self, ty: &Type, name: &str) -> Option<Type> {
-        self.with_session(|queries| queries.property_type(ty, name))
+        self.with_session(|queries| queries.property_type(ty, name).map(|ty| queries.inspect_type(&ty)))
     }
 
     /// The native checker's assignment transfer for a declared location,
     /// including literal widening of automatic declarations.
     pub fn assignment_value(&self, declared: &Type, assigned: &Type) -> Type {
-        self.with_session(|queries| queries.assignment_value(declared, assigned))
+        self.with_session(|queries| {
+            let result = queries.assignment_value(declared, assigned);
+            queries.inspect_type(&result)
+        })
     }
 
     pub fn call(&self, callee: &Type, arguments: &[Type]) -> CallResult {
-        self.with_session(|queries| queries.call(callee, arguments))
+        self.with_session(|queries| {
+            let result = queries.call(callee, arguments);
+            describe_call_result(queries, result)
+        })
     }
 
     pub fn call_with_type_arguments(
@@ -995,7 +1008,8 @@ impl Engine {
         expected_return: Option<&Type>,
     ) -> CallResult {
         self.with_session(|queries| {
-            queries.call_with_type_arguments(callee, arguments, type_arguments, expected_return)
+            let result = queries.call_with_type_arguments(callee, arguments, type_arguments, expected_return);
+            describe_call_result(queries, result)
         })
     }
 
@@ -1006,6 +1020,17 @@ impl Engine {
     pub fn format(&self, ty: &Type) -> String {
         self.with_session(|queries| queries.format(ty))
     }
+}
+
+fn describe_call_result(queries: &mut dyn TypeQueries, mut result: CallResult) -> CallResult {
+    result.return_type = queries.inspect_type(&result.return_type);
+    for error in &mut result.errors {
+        if let CallError::Argument { source, target, .. } | CallError::TypeArgument { source, target, .. } = error {
+            *source = queries.inspect_type(source);
+            *target = queries.inspect_type(target);
+        }
+    }
+    result
 }
 
 struct SessionQueries<'a, 'p, 's> {
@@ -1455,13 +1480,13 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn inspect_type(&mut self, ty: &Type) -> Type {
         let id = import_type(self.checker, self.handles, ty);
         if matches!(self.checker.data(id), TypeData::NativeRuntimeTop { .. }) {
-            return export_type(self.checker, self.handles, id);
+            return export_type_with_literal_policy(self.checker, self.handles, id, false);
         }
         let signatures = self.checker.signatures(id, false);
         if signatures.len() == 1 {
-            Type::Function(export_signature(self.checker, self.handles, signatures[0]))
+            Type::Function(export_signature_with_literal_policy(self.checker, self.handles, signatures[0], false))
         } else {
-            export_type(self.checker, self.handles, id)
+            export_type_with_literal_policy(self.checker, self.handles, id, false)
         }
     }
     fn error_type(&mut self) -> Type { self.handles.retain(TypeId::ERROR) }
@@ -1549,6 +1574,11 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn widen(&mut self, ty: &Type) -> Type {
         let ty = import_type(self.checker, self.handles, ty);
         let ty = self.checker.widened(ty);
+        export_type(self.checker, self.handles, ty)
+    }
+    fn regular_type(&mut self, ty: &Type) -> Type {
+        let ty = import_type(self.checker, self.handles, ty);
+        let ty = self.checker.regular(ty);
         export_type(self.checker, self.handles, ty)
     }
 
@@ -2563,8 +2593,15 @@ fn import_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: &Type) 
 }
 
 fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId) -> Type {
+    export_type_with_literal_policy(checker, handles, ty, true)
+}
+
+fn export_type_with_literal_policy(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId, preserve_regular: bool) -> Type {
     if ty == TypeId::BOOLEAN {
         return Type::Boolean;
+    }
+    if preserve_regular && matches!(checker.data(ty), TypeData::BoolLit { fresh: false, .. } | TypeData::NumberLit { fresh: false, .. } | TypeData::StringLit { fresh: false, .. }) {
+        return handles.retain(ty);
     }
     match checker.data(ty) {
         TypeData::NativeRuntimeTop { kind, .. } => match kind {
@@ -2572,7 +2609,7 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
             bun_sema::types::NativeRuntimeKind::Function => Type::RuntimeFunction,
         },
         TypeData::NativeObject(..) | TypeData::NativeDefinition(..) => handles.retain(ty),
-        TypeData::NativeTable(_) => native_tables::export_table(checker, handles, ty)
+        TypeData::NativeTable(_) => native_tables::export_table(checker, handles, ty, preserve_regular)
             .map(Type::Table)
             .unwrap_or_else(|| handles.retain(ty)),
         TypeData::NativeTypeParam {
@@ -2609,7 +2646,7 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
             Type::Union(
                 types
                     .into_iter()
-                    .map(|ty| export_type(checker, handles, ty))
+                    .map(|ty| export_type_with_literal_policy(checker, handles, ty, preserve_regular))
                     .collect(),
             )
         }
@@ -2618,7 +2655,7 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
             Type::Intersection(
                 types
                     .into_iter()
-                    .map(|ty| export_type(checker, handles, ty))
+                    .map(|ty| export_type_with_literal_policy(checker, handles, ty, preserve_regular))
                     .collect(),
             )
         }
@@ -2645,7 +2682,7 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
                 }
                 Type::NativeFunction(key)
             } else {
-                Type::Function(export_signature(checker, handles, sig))
+                Type::Function(export_signature_with_literal_policy(checker, handles, sig, preserve_regular))
             }
         }
         TypeData::Synth(shape) => {
@@ -2670,7 +2707,7 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
                 .into_iter()
                 .map(|(name, ty, optional, readonly)| Property {
                     name,
-                    ty: export_type(checker, handles, ty),
+                    ty: export_type_with_literal_policy(checker, handles, ty, preserve_regular),
                     optional,
                     readonly,
                 })
@@ -2690,6 +2727,15 @@ fn export_signature(
     handles: &TypeHandles,
     sig: bun_sema::types::SigId,
 ) -> FunctionType {
+    export_signature_with_literal_policy(checker, handles, sig, true)
+}
+
+fn export_signature_with_literal_policy(
+    checker: &mut Checker<'_, '_>,
+    handles: &TypeHandles,
+    sig: bun_sema::types::SigId,
+    preserve_regular: bool,
+) -> FunctionType {
     let params = checker.sig_params(sig).into_vec();
     let returns = checker.sig_return(sig);
     FunctionType {
@@ -2697,11 +2743,11 @@ fn export_signature(
             .into_iter()
             .map(|param| Parameter {
                 name: String::from_utf8_lossy(checker.atoms().bytes(param.name)).into_owned(),
-                ty: export_type(checker, handles, param.ty),
+                ty: export_type_with_literal_policy(checker, handles, param.ty, preserve_regular),
                 optional: param.optional,
             })
             .collect(),
-        returns: Box::new(export_type(checker, handles, returns)),
+        returns: Box::new(export_type_with_literal_policy(checker, handles, returns, preserve_regular)),
     }
 }
 

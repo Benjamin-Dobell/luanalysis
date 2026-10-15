@@ -533,12 +533,12 @@ impl Checker<'_> {
 
     pub(super) fn return_statement(&mut self, values: &[Expr], span: Span) {
         let expected_pack = self.return_pack.clone();
-        let pack = self.expression_list_pack(values, expected_pack.as_ref());
+        let pack = self.return_expression_pack(values, span, expected_pack.as_ref());
         if let Some(expected) = expected_pack {
             if !self.engine.pack_assignable(&pack, &expected) {
                 self.error(
                     "TS2322",
-                    values.first().map_or(span, |value| value.span),
+                    self.return_contract_origin(span).unwrap_or_else(|| values.first().map_or(span, |value| value.span)),
                     "Lua result pack is not assignable to the declared result pack.",
                 );
             }
@@ -547,7 +547,7 @@ impl Checker<'_> {
             self.compatible(
                 &value,
                 &expected,
-                values.first().map_or(span, |value| value.span),
+                self.return_contract_origin(span).unwrap_or_else(|| values.first().map_or(span, |value| value.span)),
             );
         }
         self.return_values.push(self.engine.pack_slot(&pack, 0));

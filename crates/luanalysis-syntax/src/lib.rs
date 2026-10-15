@@ -73,6 +73,8 @@ pub struct File {
     /// Original documentation links. These do not introduce annotation types
     /// or runtime reads; the source identities remain available to editor hosts.
     pub documentation_references: Vec<DocumentationReference>,
+    /// Written contracts on original return lists, separate from function docs.
+    pub return_annotations: Vec<ReturnAnnotation>,
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
@@ -170,6 +172,12 @@ pub struct DocumentationReference {
     pub target: Name,
     pub member: Option<Name>,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReturnAnnotation {
+    pub statement: Span,
+    pub annotation: TypeAnnotation,
 }
 
 #[derive(Clone, Debug, PartialEq)]

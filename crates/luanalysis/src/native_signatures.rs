@@ -415,7 +415,10 @@ impl NativeSignatures {
                 &function.body,
             );
         }
-        for assertion in &file.expression_assertions {
+        for (span, annotation) in file.expression_assertions.iter()
+            .map(|assertion| (assertion.expression, &assertion.annotation))
+            .chain(file.return_annotations.iter().map(|source| (source.statement, &source.annotation)))
+        {
             // Assertions describe the expression at its creation/use site. A
             // function literal's own body scope must not become the parent of
             // the annotation applied to that literal.
@@ -423,8 +426,8 @@ impl NativeSignatures {
                 .iter()
                 .enumerate()
                 .filter(|(_, function)| {
-                    function.body_span.start <= assertion.expression.start
-                        && assertion.expression.end <= function.body_span.end
+                    function.body_span.start <= span.start
+                        && span.end <= function.body_span.end
                 })
                 .min_by_key(|(_, function)| function.body_span.end - function.body_span.start)
                 .map(|(index, _)| NativeFunctionKey {
@@ -433,7 +436,7 @@ impl NativeSignatures {
                 });
             let owner = enclosing.map_or(SignatureOwner::Standalone, SignatureOwner::Function);
             let context = enclosing.map(NativeTypeContext::Function);
-            for ty in &assertion.annotation.types {
+            for ty in &annotation.types {
                 result.visit_type(owner, context, None, ty);
             }
         }

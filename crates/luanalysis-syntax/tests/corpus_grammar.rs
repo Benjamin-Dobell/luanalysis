@@ -192,12 +192,9 @@ fn declaration_docs_before_a_returned_closure_keep_the_original_function() {
         "function(value) return value end"
     );
     assert_eq!(values[0].span, function.span);
-    assert!(
-        parse("local function invalid()\n---@type number\nreturn 1\nend\n")
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("not attached"))
-    );
+    let scalar = parse("local function valid()\n---@type number\nreturn 1\nend\n");
+    assert!(scalar.diagnostics.is_empty(), "{:#?}", scalar.diagnostics);
+    assert_eq!(scalar.return_annotations.len(), 1);
 }
 
 #[test]

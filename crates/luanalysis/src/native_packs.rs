@@ -180,6 +180,7 @@ pub(super) struct NativePacks {
     table_sequences: HashMap<(usize, usize), TableSequence>,
     initializer_lists: HashMap<SourcePackListKey, InitializerContext>,
     expression_initializers: HashMap<NativeExpressionKey, (SourcePackListKey, usize)>,
+    return_annotations: HashMap<(usize, usize), TypeAnnotation>,
 }
 
 impl NativePacks {
@@ -196,6 +197,9 @@ impl NativePacks {
             table_sequences: HashMap::new(),
             initializer_lists: HashMap::new(),
             expression_initializers: HashMap::new(),
+            return_annotations: file.return_annotations.iter().map(|source| {
+                ((source.statement.start, source.statement.end), source.annotation.clone())
+            }).collect(),
         };
         result.statements(&file.statements, None, functions, expression_key);
         result
@@ -213,6 +217,16 @@ impl NativePacks {
         self.list_spans
             .get(&(span.start, span.end))
             .map(|key| self.get(*key))
+    }
+
+    pub(super) fn return_annotation(&self, span: Span) -> Option<&TypeAnnotation> {
+        self.return_annotations.get(&(span.start, span.end))
+    }
+
+    pub(super) fn return_annotations(&self) -> impl Iterator<Item = (Option<NativeFunctionKey>, &TypeAnnotation)> {
+        self.lists.iter().filter_map(|list| {
+            self.return_annotation(list.span).map(|annotation| (list.owner, annotation))
+        })
     }
 
     pub(super) fn table_sequence(&self, span: Span) -> Option<&TableSequence> {

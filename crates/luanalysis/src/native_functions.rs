@@ -79,7 +79,7 @@ pub(super) struct NativeRegistry {
     /// Only completion of body diagnostics is cached here. Return-type cache,
     /// query recursion and cycle decisions belong entirely to the native core.
     checked_bodies: RefCell<HashSet<NativeFunctionKey>>,
-    checked_contextual_bodies: RefCell<HashSet<(NativeFunctionKey, ContextualFunctionContext)>>,
+    checked_contextual_bodies: RefCell<HashSet<(NativeFunctionKey, ContextualFunctionContext, Option<CapturedFunctionContext>)>>,
     checked_captured_bodies: RefCell<HashSet<(NativeFunctionKey, CapturedFunctionContext)>>,
     report: RefCell<CheckReport>,
 }
@@ -995,7 +995,7 @@ impl NativeRegistry {
                 })
                 .collect();
             let mut checker = self.checker_at_flow(at, queries);
-            returned.push(checker.expression_list_pack(&expressions, context.as_ref()));
+            returned.push(checker.return_expression_pack(&expressions, statement.span, context.as_ref()));
             if !checker.incomplete_flow {
                 self.merge_flow_report(at, checker.check_mode, checker.report);
             }
@@ -1216,7 +1216,7 @@ impl NativeRegistry {
             self.contextual_report(&context, checker.report);
             self.checked_contextual_bodies
                 .borrow_mut()
-                .insert((key, context));
+                .insert((key, context, captured));
         } else {
             self.merge_report(checker.report);
             if let Some(captured) = captured {
@@ -1248,13 +1248,11 @@ impl NativeRegistry {
                     queries.format(&facet);
                 }
                 for context in self.expressions.final_contexts(key) {
-                    let checked = self
-                        .checked_contextual_bodies
-                        .borrow()
-                        .contains(&(key, context));
-                    if !checked {
-                        if let Some(captured) = self.expressions.capture_for_context(key, &context)
-                        {
+                    let captures = self.expressions.captures_for_context(key, &context);
+                    let facets = if captures.is_empty() { vec![None] } else { captures.into_iter().map(Some).collect() };
+                    for captured in facets {
+                        if self.checked_contextual_bodies.borrow().contains(&(key, context, captured)) { continue; }
+                        if let Some(captured) = captured {
                             queries.with_captured_function(&captured, &mut |queries| {
                                 self.check_body_in_context(key, &context, queries);
                             });
@@ -1319,11 +1317,17 @@ impl NativeRegistry {
             for ty in &annotation.types {
                 self.function_annotation_parameter_dependencies(Some(key), ty, used);
             }
-        } else {
-            let mut statements = Vec::new();
-            source_statements(&function.body, &mut statements);
-            for statement in statements {
-                if let StmtKind::Return(values) = &statement.kind {
+        }
+        let mut statements = Vec::new();
+        source_statements(&function.body, &mut statements);
+        for statement in statements {
+            if let StmtKind::Return(values) = &statement.kind {
+                if let Some(annotation) = self.packs().return_annotation(statement.span) {
+                    for ty in &annotation.types {
+                        self.function_annotation_parameter_dependencies(Some(key), ty, used);
+                    }
+                }
+                if function.annotations.returns.is_none() {
                     for value in values {
                         self.value_type_dependencies(value, used, functions, bindings);
                     }
