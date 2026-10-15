@@ -457,7 +457,7 @@ impl NativeRegistry {
         let record = self.expressions().get(key);
         if let Some(function) = self.expressions().function_for(key) {
             if let Some(expected) = expected {
-                let value = self.source_function_value(self.function(function), mode, queries);
+                let value = self.build_source_function_value(self.function(function), mode, queries, false);
                 let ty = queries.contextual_function_value(&value, key, expected, mode);
                 self.expressions().retain_final(function, mode, &ty);
                 return ty;
@@ -483,7 +483,7 @@ impl NativeRegistry {
     ) -> Type {
         // The original declaration target is the contextual site. There is no
         // fabricated function expression or second runtime function identity.
-        let value = self.source_function_value(function, mode, queries);
+        let value = self.build_source_function_value(function, mode, queries, false);
         let value = queries.contextual_function_value(&value, self.expression_key(target), expected, mode);
         self.expressions().retain_final(self.key_for(function), mode, &value);
         value
@@ -494,6 +494,16 @@ impl NativeRegistry {
         function: &Function,
         mode: NativeCheckMode,
         queries: &mut dyn TypeQueries,
+    ) -> Type {
+        self.build_source_function_value(function, mode, queries, true)
+    }
+
+    fn build_source_function_value(
+        &self,
+        function: &Function,
+        mode: NativeCheckMode,
+        queries: &mut dyn TypeQueries,
+        publish_final: bool,
     ) -> Type {
         let key = self.key_for(function);
         let contextual = queries.current_contextual_function();
@@ -544,7 +554,12 @@ impl NativeRegistry {
             environment.push((source, value));
         }
         let value = queries.captured_function(key, &environment);
-        self.expressions().retain_final(key, mode, &value);
+        // A contextual caller wraps this original capture capability before
+        // selecting its final facet. The raw intermediate has no independent
+        // parameter contract and must not be checked as a second function.
+        if publish_final {
+            self.expressions().retain_final(key, mode, &value);
+        }
         value
     }
     pub(super) fn source_parameters_in_capture(

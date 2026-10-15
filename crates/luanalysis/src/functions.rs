@@ -565,7 +565,9 @@ impl Checker<'_> {
 
     pub(super) fn return_statement(&mut self, values: &[Expr], span: Span) {
         let expected_pack = self.return_pack.clone();
-        let pack = self.return_expression_pack(values, span, expected_pack.as_ref());
+        let context = expected_pack.clone().or_else(|| self.contextual_function
+            .map(|context| self.engine.contextual_return_pack(&context)));
+        let pack = self.return_expression_pack(values, span, context.as_ref());
         if let Some(expected) = expected_pack {
             if !self.engine.pack_assignable(&pack, &expected) {
                 self.error(
