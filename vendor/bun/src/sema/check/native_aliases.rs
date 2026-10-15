@@ -158,8 +158,12 @@ impl Origin {
 impl<'p, 's> Checker<'p, 's> {
     pub(super) fn native_alias_execution_key(&self) -> u64 { self.native_alias_cache.frame() }
     pub(super) fn native_alias_execution_depth(&self) -> usize { self.native_alias_cache.executions.len() }
+    /// Selects an original callee only within the caller-state replay capability.
     pub(super) fn native_reached_callee(&mut self, provider: &dyn NativeFlowProvider, call: NativeValueKey, input: NativeFlowKey) -> NativeReachedCallee {
         let Some(recipe) = provider.alias_call_source(call, input) else { return NativeReachedCallee::Unsupported };
+        // Formal/actual substitution is unsupported. Reject the original
+        // argument recipe before asking for physical callee provenance.
+        if !recipe.arguments.is_empty() { return NativeReachedCallee::Unsupported }
         if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeReachedCallee::Unsupported }
         let origins = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
         if origins.uncertain { return NativeReachedCallee::Pending }

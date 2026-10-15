@@ -131,9 +131,6 @@ impl<'p, 's> Checker<'p, 's> {
             NativeReachedCallee::Pending => return CallState::Pending,
             NativeReachedCallee::Unsupported => return CallState::Unsupported,
         };
-        // Formal/actual alias substitution is a separate capability. This
-        // boundary never invents reference identities for argument bindings.
-        if !recipe.arguments.is_empty() { return CallState::Unsupported }
         let ty = provider.alias_callee_type(recipe.callee.value, recipe.callee.input, self);
         let Some(signature) = self.native_implementation_signature(ty) else { return CallState::Unsupported };
         if self.sig_native_decl(signature).is_none_or(|actual| actual.0 != function)

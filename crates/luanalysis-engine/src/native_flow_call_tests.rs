@@ -9,7 +9,7 @@ fn declaration() -> NativeTypeDeclarationKey { NativeTypeDeclarationKey { snapsh
 fn expression() -> NativeExpressionKey { NativeExpressionKey { snapshot: 8702, node: 0 } }
 fn key(name: &str) -> LuaKey { LuaKey::String(name.as_bytes().to_vec()) }
 
-struct Calls { raw_dispatch: bool }
+struct Calls { raw_dispatch: bool, arguments: bool }
 impl Calls {
     fn initial(&self, queries: &mut dyn TypeQueries) -> Type {
         let table = queries.table_type(&TableType {
@@ -95,14 +95,19 @@ impl NativeFlowProvider for Calls {
     }
     fn alias_call_source(&self, original: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> {
         matches!(original.index, 3 | 7).then(|| NativeAliasCall {
-            callee: NativeAliasReturnValue { value: value(4), input }, arguments: Vec::new(), execution_input: input,
+            callee: NativeAliasReturnValue { value: value(4), input },
+            arguments: if self.arguments { vec![NativeAliasReturnValue { value: value(99), input }] } else { Vec::new() },
+            execution_input: input,
         })
     }
     fn value_alias_source(&self, original: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue {
         match original.index {
             0 => NativeAliasValue::Allocation,
             1 => NativeAliasValue::Function { function: function(), creation: at(0, 2) },
-            4 => NativeAliasValue::Reference { reference: reference(0, 1), input },
+            4 => {
+                assert!(!self.arguments, "unsupported argument substitution must not demand physical callee provenance");
+                NativeAliasValue::Reference { reference: reference(0, 1), input }
+            },
             9 => NativeAliasValue::Reference { reference: reference(1, 0), input },
             _ => NativeAliasValue::NotTable,
         }
@@ -133,7 +138,7 @@ impl NativeFlowProvider for Calls {
 
 #[test]
 fn repeated_original_installer_calls_use_each_incoming_view_and_restore_parent_queries() {
-    Engine::new().with_native_provider(|| Calls { raw_dispatch: false }, |provider, queries| {
+    Engine::new().with_native_provider(|| Calls { raw_dispatch: false, arguments: false }, |provider, queries| {
         let initial = provider.initial(queries);
         for (point, expected) in [(at(0, 4), Type::Number), (at(0, 6), Type::String), (at(0, 4), Type::Number)] {
             let result = queries.flow_type(provider, point, reference(0, 0), &initial, &initial);
@@ -147,7 +152,7 @@ fn repeated_original_installer_calls_use_each_incoming_view_and_restore_parent_q
 
 #[test]
 fn an_original_raw_installer_needs_no_missing_caller_member_reference() {
-    Engine::new().with_native_provider(|| Calls { raw_dispatch: true }, |provider, queries| {
+    Engine::new().with_native_provider(|| Calls { raw_dispatch: true, arguments: false }, |provider, queries| {
         // The fixture maps only the genuine caller root and unrelated cell.
         // Its callee's `saved` reference has no caller counterpart.
         assert_eq!(provider.reference_in_graph(reference(1, 1), graph(0)), None);
@@ -158,5 +163,18 @@ fn an_original_raw_installer_needs_no_missing_caller_member_reference() {
             assert_eq!(queries.table_lookup(&result.ty, &TableKey::Literal(key("saved"))), Ok(expected));
             assert!(!queries.is_native_call_execution(graph(1)));
         }
+    });
+}
+
+#[test]
+fn unsupported_argument_calls_keep_the_caller_view_without_demanding_physical_callee_provenance() {
+    Engine::new().with_native_provider(|| Calls { raw_dispatch: false, arguments: true }, |provider, queries| {
+        let initial = provider.initial(queries);
+        let result = queries.flow_type(provider, at(0, 4), reference(0, 0), &initial, &initial);
+        assert!(!result.incomplete);
+        assert_eq!(result.ty, initial);
+        assert_eq!(queries.table_lookup(&result.ty, &TableKey::Literal(key("current"))), Ok(Type::Number));
+        assert!(!queries.is_native_call_execution(graph(1)));
+        assert!(queries.current_captured_function().is_none());
     });
 }
