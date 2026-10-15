@@ -312,6 +312,8 @@ pub trait NativeTypeProvider {
     fn global_binding_declarations(&self, _: NativeGlobalBindingKey) -> Vec<NativeValueDeclarationKey> { Vec::new() }
     fn contains_value_declaration(&self, _: NativeValueDeclarationKey) -> bool { false }
     fn value_declaration_header(&self, _: NativeValueDeclarationKey) -> ValueDeclarationHeader { panic!("native global value provider is not installed") }
+    /// Pure original callable heads; no runtime function or initializer exists.
+    fn value_declaration_signatures(&self, _: NativeValueDeclarationKey) -> Option<Vec<NativeSignatureKey>> { None }
     fn value_declaration_contract(&self, _: NativeValueDeclarationKey, _: &mut dyn TypeQueries) -> Option<Type> { None }
     fn value_declaration_initializer(&self, _: NativeValueDeclarationKey, _: &mut dyn TypeQueries) -> Type { panic!("native global initializer provider is not installed") }
     fn global_query_error(&self, _: GlobalQueryError, _: &mut dyn TypeQueries) {}

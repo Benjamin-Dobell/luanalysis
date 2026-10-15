@@ -58,6 +58,14 @@ pub enum GlobalQueryError {
         binding: NativeGlobalBindingKey,
         declarations: Vec<NativeValueDeclarationKey>,
     },
+    MixedCallableDeclarations {
+        binding: NativeGlobalBindingKey,
+        declarations: Vec<NativeValueDeclarationKey>,
+    },
+    InvalidDeclarationSignatures {
+        declaration: NativeValueDeclarationKey,
+        signature: Option<crate::NativeSignatureKey>,
+    },
     CircularQuery(GlobalQuery),
     TooDeep(GlobalQuery),
     UnresolvedQuery(GlobalQuery),
@@ -137,6 +145,18 @@ fn error(error: core::NativeGlobalQueryError) -> GlobalQueryError {
             binding: binding(key),
             declarations: declarations.into_iter().map(declaration).collect(),
         },
+        core::NativeGlobalQueryError::MixedCallableDeclarations { binding: key, declarations } => {
+            GlobalQueryError::MixedCallableDeclarations {
+                binding: binding(key),
+                declarations: declarations.into_iter().map(declaration).collect(),
+            }
+        }
+        core::NativeGlobalQueryError::InvalidDeclarationSignatures { declaration: key, signature } => {
+            GlobalQueryError::InvalidDeclarationSignatures {
+                declaration: declaration(key),
+                signature: signature.map(crate::source_signature_key),
+            }
+        }
         core::NativeGlobalQueryError::CircularQuery(key) => {
             GlobalQueryError::CircularQuery(query(key))
         }
@@ -215,6 +235,10 @@ impl<P: NativeTypeProvider> core::NativeGlobalsProvider for ProviderAdapter<'_, 
         )?;
         Some(import_type(checker, self.handles, &value))
     }
+    fn value_declaration_signatures(&self, key: core::NativeValueDeclarationId) -> Option<Vec<bun_sema::types::NativeSignatureId>> {
+        self.provider.value_declaration_signatures(declaration(key))
+            .map(|heads| heads.into_iter().map(crate::core_signature_key).collect())
+    }
     fn value_declaration_initializer(
         &self,
         checker: &mut Checker<'_, '_>,
@@ -281,6 +305,10 @@ impl SessionQueries<'_, '_, '_> {
         Ok(self.handles.retain(value))
     }
 }
+
+#[cfg(test)]
+#[path = "native_globals_bodyless_tests.rs"]
+mod bodyless_tests;
 
 #[cfg(test)]
 mod tests {

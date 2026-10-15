@@ -3,7 +3,7 @@
 
 use super::{Checker, Query};
 use super::task::Stored;
-use crate::types::TypeId;
+use crate::types::{NativeSignatureId, TypeId};
 use crate::types::CloneIn;
 use crate::util::FxHashMap;
 
@@ -39,6 +39,8 @@ pub enum NativeGlobalQueryError {
     InvalidPrimitiveMemberNamespace { binding: NativeGlobalBindingId, kind: NativePrimitiveMemberKind },
     MissingDeclarationContract(NativeValueDeclarationId),
     ConflictingDeclarations { binding: NativeGlobalBindingId, declarations: Vec<NativeValueDeclarationId> },
+    MixedCallableDeclarations { binding: NativeGlobalBindingId, declarations: Vec<NativeValueDeclarationId> },
+    InvalidDeclarationSignatures { declaration: NativeValueDeclarationId, signature: Option<NativeSignatureId> },
     CircularQuery(NativeGlobalsQuery),
     TooDeep(NativeGlobalsQuery),
     UnresolvedQuery(NativeGlobalsQuery),
@@ -58,6 +60,9 @@ pub trait NativeGlobalsProvider {
     fn global_binding_declarations(&self, binding: NativeGlobalBindingId) -> Vec<NativeValueDeclarationId>;
     fn contains_value_declaration(&self, declaration: NativeValueDeclarationId) -> bool;
     fn value_declaration_header(&self, declaration: NativeValueDeclarationId) -> NativeValueDeclarationHeader;
+    /// Pure original callable heads, independent of any runtime function/body.
+    /// `Some` must be nonempty; `None` retains ordinary value declaration rules.
+    fn value_declaration_signatures(&self, _: NativeValueDeclarationId) -> Option<Vec<NativeSignatureId>> { None }
     /// Original annotation space; this must never inspect an ambient stub body.
     fn value_declaration_contract(&self, checker: &mut Checker<'_, '_>, declaration: NativeValueDeclarationId) -> Option<TypeId>;
     /// Executable source values only. The requesting checker owns every demand.
@@ -268,10 +273,23 @@ impl<'p, 's> Checker<'p, 's> {
     fn native_value_declaration_contract(&mut self, declaration: NativeValueDeclarationId) -> Result<Option<TypeId>, NativeGlobalQueryError> {
         self.native_globals_demand(NativeGlobalsQuery::ValueDeclarationContract(declaration), |checker, provider| {
             checker.native_globals_at_lexical_root(|checker| {
+                if let Some(signatures) = provider.value_declaration_signatures(declaration) {
+                    let ty = checker.native_global_declaration_signatures(declaration, &signatures)?;
+                    return Ok(NativeGlobalsValue::Type(ty));
+                }
                 Ok(provider.value_declaration_contract(checker, declaration)
                     .map_or(NativeGlobalsValue::NoContract, NativeGlobalsValue::Type))
             })
         }).map(|value| match value { NativeGlobalsValue::Type(ty) => Some(ty), NativeGlobalsValue::NoContract => None })
+    }
+
+    fn native_global_declaration_signatures(&mut self, declaration: NativeValueDeclarationId, signatures: &[NativeSignatureId]) -> Result<TypeId, NativeGlobalQueryError> {
+        if signatures.is_empty() {
+            return Err(NativeGlobalQueryError::InvalidDeclarationSignatures { declaration, signature: None });
+        }
+        self.native_signature_group_type(signatures).map_err(|signature| {
+            NativeGlobalQueryError::InvalidDeclarationSignatures { declaration, signature: Some(signature) }
+        })
     }
 
     pub fn native_value_declaration_type(&mut self, declaration: NativeValueDeclarationId) -> Result<TypeId, NativeGlobalQueryError> {
@@ -293,6 +311,34 @@ impl<'p, 's> Checker<'p, 's> {
             declarations.sort_unstable_by_key(|key| (key.snapshot, key.index));
             declarations.dedup();
             if declarations.is_empty() { return Err(NativeGlobalQueryError::InvalidBinding(binding)); }
+            let mut callable = Vec::new();
+            let mut ordinary = false;
+            for &declaration in &declarations {
+                if !provider.contains_value_declaration(declaration) {
+                    return Err(NativeGlobalQueryError::InvalidDeclaration(declaration));
+                }
+                if let Some(signatures) = provider.value_declaration_signatures(declaration) {
+                    callable.push((declaration, signatures));
+                } else {
+                    ordinary = true;
+                }
+            }
+            if !callable.is_empty() {
+                if ordinary {
+                    return Err(NativeGlobalQueryError::MixedCallableDeclarations { binding, declarations });
+                }
+                return checker.native_globals_at_lexical_root(|checker| {
+                    let mut signatures = Vec::new();
+                    for (declaration, heads) in callable {
+                        // Validate each original owner independently so errors
+                        // retain that declaration's source identity.
+                        checker.native_global_declaration_signatures(declaration, &heads)?;
+                        signatures.extend(heads);
+                    }
+                    let ty = checker.native_signature_group_type(&signatures).expect("validated original global heads");
+                    Ok(NativeGlobalsValue::Type(ty))
+                });
+            }
             let mut values = Vec::with_capacity(declarations.len());
             for &declaration in &declarations {
                 if let Some(contract) = checker.native_value_declaration_contract(declaration)? {
