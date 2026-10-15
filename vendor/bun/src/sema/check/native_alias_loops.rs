@@ -3,7 +3,7 @@
 //! metadata walk; normal alias/flow caches never receive speculative origins.
 use super::*;
 
-struct Invariant { reference: NativeReferenceKey, head: NativeFlowKey, seed: Origins }
+struct Invariant { reference: NativeReferenceKey, head: NativeFlowKey, entry: NativeFlowKey, seed: Origins }
 
 impl<'p, 's> Checker<'p, 's> {
     pub(super) fn native_alias_loop_reference(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, head: NativeFlowKey, edges: &[NativeFlowKey]) -> Origins {
@@ -19,7 +19,7 @@ impl<'p, 's> Checker<'p, 's> {
         if seed.unknown || seed.non_table || seed.maybe_nil || seed.tokens.len() != 1
             || !seed.tokens.iter().all(|origin| matches!(origin, Origin::Standard(_) | Origin::Environment(_)))
         { return Origins::unavailable() }
-        let invariant = Invariant { reference, head, seed };
+        let invariant = Invariant { reference, head, entry, seed };
         let mut work: Vec<_> = backedges.iter().map(|&at| (at, false)).collect();
         let mut active = HashSet::new();
         let mut completed = HashSet::new();
@@ -118,7 +118,18 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_loop_origin_reference(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey, invariant: &Invariant, active: &mut HashSet<(NativeReferenceKey, NativeFlowKey)>) -> Option<Origins> {
         if reference.graph != at.graph || !provider.contains_reference(reference) || active.len() >= 16_384 || self.is_stack_low() { return None }
-        if at == invariant.head { return (reference == invariant.reference).then(|| invariant.seed.clone()) }
+        if at == invariant.head {
+            if reference == invariant.reference { return Some(invariant.seed.clone()) }
+            // Reuse the original immutable-capture boundary: all writes to
+            // this outer lexical cell precede creation, with none from a
+            // nested activation. Its entry value is not a loop hypothesis.
+            let declaration = provider.reference_declaration(reference)?;
+            let creation = provider.graph_creation(reference.graph)?;
+            if declaration.owner != reference.graph && provider.graph_creation(declaration.owner).is_none()
+                && declaration.writes.iter().all(|write| write.owner == declaration.owner && write.statement_end <= creation.position)
+            { return Some(self.native_alias_reference(provider, reference, invariant.entry)) }
+            return None;
+        }
         if !active.insert((reference, at)) { return None }
         let result = match provider.node(at) {
             Some(NativeFlowNode::Start) => Some(self.native_alias_reference(provider, reference, at)),

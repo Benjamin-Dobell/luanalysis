@@ -95,7 +95,12 @@ fn restoring_a_callee_copy_cannot_hide_loop_mutation_of_the_original_standard_sl
         let output = fixture.check();
         rejects(&output, "TS2322");
         assert!(!text(&output).contains("LUA2041"), "{}", text(&output));
-        fs::write(fixture.0.join("main.lua"), source.replace(mutation, "")).unwrap();
+        let narrowed_line = source.lines().position(|line| line.contains("local narrowed=value")).unwrap() + 1;
+        assert!(text(&output).contains(&format!("main.lua:{narrowed_line}:18: error[TS2322]")), "{}", text(&output));
+        let corrected = if setup.contains("local function replace()") {
+            source.replace("local function replace() assert=ordinary end", "local function replace() end")
+        } else { source.replace(mutation, "") };
+        fs::write(fixture.0.join("main.lua"), corrected).unwrap();
         pass(&fixture.check());
     }
 }
