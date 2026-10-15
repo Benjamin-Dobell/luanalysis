@@ -117,6 +117,7 @@ impl NativeTypes {
     pub(super) fn metadata_revisions(&self) -> Vec<u64> {
         self.metadata_epochs.iter().map(|epoch| epoch.get()).collect()
     }
+    pub(super) fn own_metadata_revision(&self) -> u64 { self.metadata_epochs[0].get() }
     pub(super) fn new(snapshot: u64, recipes: Vec<TypeScopeRecipe>) -> Self {
         Self::new_with_named(snapshot, recipes, Vec::new())
     }

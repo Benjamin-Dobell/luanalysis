@@ -20,17 +20,25 @@ use std::collections::{HashMap, HashSet};
 /// No checker type, inferred result, mapper or query permission is retained.
 #[derive(Default)]
 pub(super) struct SourceHeaderMetadata {
+    generation: u64,
     scope_revisions: Vec<u64>,
     headers: HashMap<NativeTypeDeclarationKey, TypeDeclarationHeader>,
 }
 impl SourceHeaderMetadata {
-    pub(super) fn invalidate(&mut self) { self.headers.clear(); }
-    fn get(&mut self, revisions: &[u64], key: NativeTypeDeclarationKey) -> Option<TypeDeclarationHeader> {
+    pub(super) fn invalidate(&mut self) {
+        self.headers.clear();
+        self.generation = self.generation.checked_add(1).expect("original header metadata generation fits u64");
+    }
+    pub(super) fn generation(&self) -> u64 { self.generation }
+    pub(super) fn get(&mut self, revisions: &[u64], key: NativeTypeDeclarationKey) -> Option<TypeDeclarationHeader> {
         if self.scope_revisions != revisions {
             self.headers.clear();
             self.scope_revisions = revisions.to_vec();
         }
         self.headers.get(&key).cloned()
+    }
+    pub(super) fn insert(&mut self, key: NativeTypeDeclarationKey, header: TypeDeclarationHeader) {
+        self.headers.insert(key, header);
     }
 }
 

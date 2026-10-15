@@ -114,6 +114,9 @@ impl NativeRegistry {
     pub(super) fn invalidate_header_metadata(&self) {
         self.header_metadata.borrow_mut().invalidate();
     }
+    pub(super) fn header_metadata_revision(&self) -> (u64, u64) {
+        (self.types.own_metadata_revision(), self.header_metadata.borrow().generation())
+    }
 
     pub(super) fn new(file: File, bound: BoundFile) -> Self {
         let snapshot = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);

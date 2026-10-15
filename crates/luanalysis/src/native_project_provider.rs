@@ -18,6 +18,7 @@ use luanalysis_engine::{
 };
 use luanalysis_project::{Dependency, DependencyOutcome, FileId, SourceRole};
 use luanalysis_syntax::File;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -56,6 +57,7 @@ pub(crate) struct ProjectRegistry {
     globals: Rc<super::globals::ProjectGlobalIndex>,
     standard_environment: super::standard::ProjectStandardEnvironment,
     modules: Rc<ProjectModuleIndex>,
+    header_metadata: RefCell<super::named_provider::SourceHeaderMetadata>,
 }
 
 impl ProjectRegistry {
@@ -234,7 +236,46 @@ impl ProjectRegistry {
             globals,
             standard_environment,
             modules,
+            header_metadata: RefCell::new(super::named_provider::SourceHeaderMetadata::default()),
         }
+    }
+
+    fn header_metadata_revisions(&self) -> Vec<u64> {
+        // Every imported original scope belongs to one of these fixed source
+        // owners. Shared scope epochs and local documentation preparation
+        // generations therefore cover the complete merged metadata view.
+        self.files.iter().flat_map(|file| {
+            let (scope, local) = file.source.header_metadata_revision();
+            [scope, local]
+        }).collect()
+    }
+
+    fn declaration_header_metadata(&self, key: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
+        let owner = self.owner(key.snapshot);
+        let named = crate::native_named::NativeNamedKey { snapshot: key.snapshot, index: key.index };
+        if owner.named_metadata().declaration(named).is_none() { return owner.type_declaration_header(key); }
+        let revisions = self.header_metadata_revisions();
+        if let Some(header) = self.header_metadata.borrow_mut().get(&revisions, key) { return header; }
+        let header = self.declaration_header_metadata_uncached(key);
+        assert_eq!(self.header_metadata_revisions(), revisions,
+            "merged header discovery only reads original project metadata");
+        self.header_metadata.borrow_mut().insert(key, header.clone());
+        header
+    }
+
+    fn declaration_header_metadata_uncached(&self, key: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
+        let owner=self.owner(key.snapshot);
+        let mut header=owner.type_declaration_header(key);
+        let named=crate::native_named::NativeNamedKey {snapshot:key.snapshot,index:key.index};
+        if owner.named_metadata().declaration(named).is_none() {return header;}
+        let mut used=std::collections::HashSet::new();
+        for file in &self.files {
+            file.source.doc_members.dependencies(named,&mut used,|id|file.source.doc_signature_key(id),|signature|file.source.signature_outer_keys(signature));
+        }
+        header.outer_parameters.extend(owner.types.outer_parameters_in_context(crate::native_named::NativeTypeContext::NamedType(named),&used));
+        header.outer_parameters.sort_by_key(|key|(key.snapshot,key.index));
+        header.outer_parameters.dedup();
+        header
     }
 
     fn owner_if(&self, snapshot: u64) -> Option<&NativeRegistry> {
@@ -532,18 +573,7 @@ impl NativeTypeProvider for ProjectRegistry {
         self.owner(key.snapshot).type_member_signatures(key)
     }
     fn type_declaration_header(&self,key:NativeTypeDeclarationKey)->TypeDeclarationHeader {
-        let owner=self.owner(key.snapshot);
-        let mut header=owner.type_declaration_header(key);
-        let named=crate::native_named::NativeNamedKey {snapshot:key.snapshot,index:key.index};
-        if owner.named_metadata().declaration(named).is_none() {return header;}
-        let mut used=std::collections::HashSet::new();
-        for file in &self.files {
-            file.source.doc_members.dependencies(named,&mut used,|id|file.source.doc_signature_key(id),|signature|file.source.signature_outer_keys(signature));
-        }
-        header.outer_parameters.extend(owner.types.outer_parameters_in_context(crate::native_named::NativeTypeContext::NamedType(named),&used));
-        header.outer_parameters.sort_by_key(|key|(key.snapshot,key.index));
-        header.outer_parameters.dedup();
-        header
+        self.declaration_header_metadata(key)
     }
     fn type_declaration_owner_scope(&self, key: NativeTypeDeclarationKey) -> luanalysis_engine::OwnerScopeRecipe {
         self.owner(key.snapshot).named_owner_scope_recipe(key)
@@ -704,6 +734,48 @@ impl NativeTypeProvider for ProjectRegistry {
 mod tests {
     use super::*;
     use luanalysis_engine::Engine;
+
+    #[test]
+    fn merged_header_metadata_tracks_documentation_preparation_and_recovery() {
+        use crate::native_doc_members::DocOwnerScope;
+        use crate::native_named::{NativeNamedKey, NativeTypeContext};
+        use crate::native_types::TypeNameResolution;
+        let provider = ProjectRegistry::new(vec![
+            input(0, "---@generic T\nlocal function outer()\n---@class Owner\nend\n"),
+            input(1, "---@function Owner.read():T\n"),
+        ]);
+        let owner = provider.names.candidates("Owner")[0];
+        let named = NativeNamedKey { snapshot: owner.snapshot, index: owner.index };
+        let source = &provider.files[1].source;
+        let signature = source.doc_signature_key(source.file.function_declarations[0].id).unwrap();
+        let context = Some(NativeTypeContext::Signature(signature));
+        let TypeNameResolution::Parameter(parameter) = source.types.resolve_name_in_context(context, "T") else {
+            panic!("the imported original owner supplies its outer T");
+        };
+        assert!(provider.owner(owner.snapshot).type_declaration_header(owner).outer_parameters.is_empty(),
+            "only the other file's original documentation head introduces this dependency");
+        let header = provider.type_declaration_header(owner);
+        assert_eq!(header.outer_parameters, vec![parameter]);
+        assert_eq!(provider.type_declaration_header(owner), header);
+        assert_eq!(provider.declaration_header_metadata_uncached(owner), header);
+        let before = source.header_metadata_revision();
+        let doc = &source.doc_members.sources()[0];
+        doc.scope.set(DocOwnerScope::Failed);
+        source.invalidate_header_metadata();
+        let after = source.header_metadata_revision();
+        assert_eq!(after.0, before.0, "the original scope itself has not changed");
+        assert_ne!(after.1, before.1, "documentation applicability is independent metadata");
+        assert_eq!(source.types.resolve_name_in_context(context, "T"), TypeNameResolution::Parameter(parameter));
+        let absent = provider.type_declaration_header(owner);
+        assert!(absent.outer_parameters.is_empty());
+        assert_eq!(absent, provider.declaration_header_metadata_uncached(owner));
+        for state in [DocOwnerScope::Scoped(named), DocOwnerScope::Ready(named)] {
+            doc.scope.set(state);
+            source.invalidate_header_metadata();
+            assert_eq!(provider.type_declaration_header(owner), header);
+            assert_eq!(provider.declaration_header_metadata_uncached(owner), header);
+        }
+    }
 
     fn input(index: u32, source: &str) -> RegistryInput {
         let syntax = luanalysis_syntax::parse(source);
