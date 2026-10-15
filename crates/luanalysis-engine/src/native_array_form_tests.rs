@@ -367,3 +367,77 @@ fn retained_constructor_rows_follow_the_same_literal_context_as_stored_fields() 
         assert!(q.is_assignable(&inferred, &broad));
     });
 }
+
+#[test]
+fn array_assertions_compare_numeric_facets_without_allowing_packed_assignment() {
+    Engine::new().with_session(|q| {
+        let array = q.array_type(&Type::Number);
+        let packed = q
+            .table_type(&TableType {
+                fields: vec![TableField::declared(
+                    LuaKey::String(b"n".to_vec()),
+                    Type::Number,
+                )],
+                ..numeric_dictionary(Type::Number)
+            })
+            .unwrap();
+        assert!(q.assertion_overlap(&array, &packed));
+        assert!(q.assertion_overlap(&packed, &array));
+        assert!(!q.is_assignable(&array, &packed));
+        assert!(!q.is_assignable(&packed, &array));
+        let labelled = q
+            .table_type(&TableType {
+                fields: vec![TableField::declared(
+                    LuaKey::String(b"label".to_vec()),
+                    Type::String,
+                )],
+                ..numeric_dictionary(Type::Number)
+            })
+            .unwrap();
+        assert!(q.assertion_overlap(&array, &labelled));
+        assert!(!q.is_assignable(&labelled, &array));
+    });
+}
+
+#[test]
+fn array_assertions_still_check_elements_and_nonoverlapping_indexer_domains() {
+    Engine::new().with_session(|q| {
+        let array = q.array_type(&Type::Number);
+        for description in [
+            TableType {
+                fields: vec![TableField::declared(
+                    LuaKey::String(b"n".to_vec()),
+                    Type::Number,
+                )],
+                ..numeric_dictionary(Type::String)
+            },
+            TableType {
+                indexers: vec![TableIndexer::declared(Type::String, Type::Number)],
+                ..Default::default()
+            },
+            TableType {
+                indexers: vec![TableIndexer::declared(Type::Boolean, Type::Number)],
+                ..Default::default()
+            },
+            TableType {
+                indexers: vec![
+                    TableIndexer::declared(Type::Number, Type::Number),
+                    TableIndexer::declared(Type::String, Type::Boolean),
+                ],
+                ..Default::default()
+            },
+            TableType {
+                fields: vec![
+                    TableField::declared(LuaKey::Integer(1), Type::String),
+                    TableField::declared(LuaKey::String(b"n".to_vec()), Type::Number),
+                ],
+                ..numeric_dictionary(Type::Union(vec![Type::Number, Type::String]))
+            },
+        ] {
+            let other = q.table_type(&description).unwrap();
+            assert!(!q.assertion_overlap(&array, &other), "{description:?}");
+            assert!(!q.assertion_overlap(&other, &array), "{description:?}");
+            assert!(!q.is_assignable(&other, &array), "{description:?}");
+        }
+    });
+}

@@ -158,6 +158,15 @@ impl<'p, 's> Checker<'p, 's> {
         source.sequence_tails.iter().all(|tail| tail.start <= count + 1)
     }
 
+    /// Assertions can compare a structural numeric facet without promising
+    /// that the whole source is a sequence. Extra fixed properties do not
+    /// remove that overlap; disjoint indexer domains still do.
+    fn native_array_source_has_numeric_overlap(&mut self, source: &NativeTableData<'_>) -> bool {
+        source.nominal_origin.is_none() && source.definition_origin.is_none()
+            && source.environment_origin.is_none() && !source.indexers.is_empty()
+            && source.indexers.iter().all(|indexer| self.native_table_key_domains_overlap(TypeId::NUMBER, indexer.key))
+    }
+
     fn native_constructor_sequence(&mut self, fields: &[NativeTableField], indexers: &[NativeTableIndexer], tails: &[NativeTableSequenceTail], fresh: bool, expected: Option<TypeId>) -> Option<NativeResultPack> {
         if !indexers.is_empty() || tails.len() > 1
             || !fields.iter().any(|field| self.contains_undefined(field.value))
@@ -948,7 +957,8 @@ impl<'p, 's> Checker<'p, 's> {
         } else { source };
         let identity = r.relation == Relation::Identity;
         if identity && source.is_array != target.is_array
-            || target.is_array && !self.native_array_source_is_sequence(source) {
+            || target.is_array && !self.native_array_source_is_sequence(source)
+                && !(r.relation == Relation::Comparable && self.native_array_source_has_numeric_overlap(source)) {
             return Ternary::FALSE;
         }
         if let Some(target_origin) = target.nominal_origin {
@@ -1062,7 +1072,9 @@ impl<'p, 's> Checker<'p, 's> {
             // source index signature before inferring an index from properties.
             // A covering Lua domain follows that same rule; merely overlapping
             // domains still need their individual field/tail checks below.
-            if !identity && covering_domain { continue }
+            // Array assertion overlap also checks fixed numeric contradictions.
+            if !identity && covering_domain
+                && !(r.relation == Relation::Comparable && target.is_array) { continue }
             for actual in &source.fields {
                 let key = self.native_table_key_type(actual.key);
                 if !self.is_assignable(key, indexer.key) { continue }

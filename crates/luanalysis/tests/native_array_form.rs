@@ -809,7 +809,8 @@ fn contextual_nullable_literal_elements_keep_their_literal_and_reject_other_numb
     let source = "---@function take(values:(1|nil)[]):void\n\n---@type (1|nil)[]\nlocal values={nil,1}\ntake(values)\ntake({nil,1})\n";
     let wrong_local = source.replace("local values={nil,1}", "local values={nil,2}");
     let wrong_argument = source.replace("take({nil,1})", "take({nil,2})");
-    let inferred = "---@function take(values:(1|nil)[]):void\n\nlocal values={nil,1}\ntake(values)\n";
+    let inferred =
+        "---@function take(values:(1|nil)[]):void\n\nlocal values={nil,1}\ntake(values)\n";
     let corrected = inferred.replace("local values=", "---@type (1|nil)[]\nlocal values=");
     for (profile, _) in PROFILES {
         clean(&fixture.check(source, profile));
@@ -836,5 +837,292 @@ fn contextual_nullable_literal_elements_keep_their_literal_and_reject_other_numb
             "values",
         );
         clean(&fixture.check(&corrected, profile));
+    }
+}
+
+fn asserted_arrays_and_packed() -> String {
+    format!(
+        r#"{CONTAINERS}---@param array number[]
+---@param packed Packed<number>
+local function inspect(array,packed)
+    local assertedPacked=--[[---@type Packed<number>]] array
+    ---@type number
+    local count=assertedPacked.n
+    ---@type number
+    local packedElement=assertedPacked[1]
+    assertedPacked.n=2
+    assertedPacked[1]=3
+    local assertedArray=--[[---@type number[] ]] packed
+    ---@type number
+    local arrayElement=assertedArray[1]
+    assertedArray[1]=4
+end
+"#
+    )
+}
+
+#[test]
+fn array_and_packed_assertions_preserve_numeric_elements_and_the_packed_count_contract() {
+    let fixture = Fixture::new();
+    let source = asserted_arrays_and_packed();
+    for (profile, _) in PROFILES {
+        clean(&fixture.check(&source, profile));
+        for (original, wrong) in [
+            ("assertedPacked.n=2", "assertedPacked.n='wrong'"),
+            ("assertedPacked[1]=3", "assertedPacked[1]='wrong'"),
+            ("assertedArray[1]=4", "assertedArray[1]='wrong'"),
+        ] {
+            let rejected = source.replace(original, wrong);
+            error_at(
+                &fixture.check(&rejected, profile),
+                &rejected,
+                "TS2322",
+                wrong,
+                "'wrong'",
+            );
+            clean(&fixture.check(&source, profile));
+        }
+    }
+}
+
+#[test]
+fn generic_array_to_packed_assertions_keep_the_original_element_parameter() {
+    let fixture = Fixture::new();
+    let source = format!(
+        r#"{CONTAINERS}---@generic V
+---@param values V[]
+---@param value V
+---@return Packed<V>
+local function asPacked(values,value)
+    local packed=--[[---@type Packed<V>]] values
+    packed[1]=value
+    packed.n=1
+    return packed
+end
+local packed=asPacked({{1,2}},3)
+---@type number
+local element=packed[1]
+---@type number
+local count=packed.n
+"#
+    );
+    let wrong = source.replace("packed[1]=value", "packed[1]='wrong'");
+    for (profile, _) in PROFILES {
+        clean(&fixture.check(&source, profile));
+        error_at(
+            &fixture.check(&wrong, profile),
+            &wrong,
+            "TS2322",
+            "packed[1]='wrong'",
+            "'wrong'",
+        );
+        clean(&fixture.check(&source, profile));
+    }
+}
+
+#[test]
+fn packed_assertion_overlap_does_not_make_plain_array_assignment_valid() {
+    let fixture = Fixture::new();
+    let source = format!(
+        "{CONTAINERS}---@param packed Packed<number>\nlocal function inspect(packed)\n    ---@type number[]\n    local values=packed\nend\n"
+    );
+    let corrected = source.replace(
+        "local values=packed",
+        "local values=--[[---@type number[] ]] packed",
+    );
+    for (profile, _) in PROFILES {
+        error_at(
+            &fixture.check(&source, profile),
+            &source,
+            "TS2322",
+            "local values=packed",
+            "packed",
+        );
+        clean(&fixture.check(&corrected, profile));
+    }
+}
+
+#[test]
+fn array_packed_assertions_reject_incompatible_string_elements_in_both_directions() {
+    let fixture = Fixture::new();
+    for (parameter, assertion, correction) in [
+        (
+            "number[]",
+            "--[[---@type Packed<string>]] values",
+            "--[[---@type Packed<number>]] values",
+        ),
+        (
+            "Packed<string>",
+            "--[[---@type number[] ]] values",
+            "--[[---@type string[] ]] values",
+        ),
+    ] {
+        let statement = format!("local asserted={assertion}");
+        let source = format!(
+            "{CONTAINERS}---@param values {parameter}\nlocal function inspect(values)\n    {statement}\nend\n"
+        );
+        let corrected = source.replace(assertion, correction);
+        for (profile, _) in PROFILES {
+            error_at(
+                &fixture.check(&source, profile),
+                &source,
+                "TS2352",
+                &statement,
+                assertion,
+            );
+            clean(&fixture.check(&corrected, profile));
+        }
+    }
+}
+
+#[test]
+fn array_packed_assertion_overlap_preserves_nominal_element_class_identity() {
+    let fixture = Fixture::new();
+    let classes =
+        "---@class First\n---@field value number\n\n---@class Second\n---@field value number\n\n";
+    for (parameter, assertion, correction) in [
+        (
+            "First[]",
+            "--[[---@type Packed<Second>]] values",
+            "--[[---@type Packed<First>]] values",
+        ),
+        (
+            "Packed<Second>",
+            "--[[---@type First[] ]] values",
+            "--[[---@type Second[] ]] values",
+        ),
+    ] {
+        let statement = format!("local asserted={assertion}");
+        let source = format!(
+            "{CONTAINERS}{classes}---@param values {parameter}\nlocal function inspect(values)\n    {statement}\nend\n"
+        );
+        let corrected = source.replace(assertion, correction);
+        for (profile, _) in PROFILES {
+            error_at(
+                &fixture.check(&source, profile),
+                &source,
+                "TS2352",
+                &statement,
+                assertion,
+            );
+            clean(&fixture.check(&corrected, profile));
+        }
+    }
+}
+
+#[test]
+fn array_assertions_reject_disjoint_string_boolean_and_separate_mixed_key_domains() {
+    let fixture = Fixture::new();
+    for key in ["string", "boolean"] {
+        for (parameter, assertion, corrected_parameter, corrected_assertion) in [
+            (
+                format!("table<{key},number>"),
+                "--[[---@type number[] ]] values".to_owned(),
+                "table<number,number>".to_owned(),
+                "--[[---@type number[] ]] values".to_owned(),
+            ),
+            (
+                "number[]".to_owned(),
+                format!("--[[---@type table<{key},number>]] values"),
+                "number[]".to_owned(),
+                "--[[---@type table<number,number>]] values".to_owned(),
+            ),
+        ] {
+            let statement = format!("local asserted={assertion}");
+            let source = format!(
+                "---@param values {parameter}\nlocal function inspect(values)\n    {statement}\nend\n"
+            );
+            let corrected = source
+                .replace(
+                    &format!("---@param values {parameter}"),
+                    &format!("---@param values {corrected_parameter}"),
+                )
+                .replace(&assertion, &corrected_assertion);
+            for (profile, _) in PROFILES {
+                error_at(
+                    &fixture.check(&source, profile),
+                    &source,
+                    "TS2352",
+                    &statement,
+                    &assertion,
+                );
+                clean(&fixture.check(&corrected, profile));
+            }
+        }
+    }
+    let separate_domains = "---@shape SeparateDomains\n---@field [number] number\n---@field [string] number\n---@field n number\n\n";
+    for (parameter, assertion) in [
+        ("SeparateDomains", "--[[---@type number[] ]] values"),
+        ("number[]", "--[[---@type SeparateDomains]] values"),
+    ] {
+        let statement = format!("local asserted={assertion}");
+        let source = format!(
+            "{separate_domains}---@param values {parameter}\nlocal function inspect(values)\n    {statement}\nend\n"
+        );
+        let corrected = source.replace("---@field [string] number\n", "");
+        for (profile, _) in PROFILES {
+            error_at(
+                &fixture.check(&source, profile),
+                &source,
+                "TS2352",
+                &statement,
+                assertion,
+            );
+            clean(&fixture.check(&corrected, profile));
+        }
+    }
+}
+
+#[test]
+fn numeric_indexer_overlap_still_checks_required_concrete_element_values() {
+    let fixture = Fixture::new();
+    let assertion = "--[[---@type number[] ]] values";
+    let statement = format!("local asserted={assertion}");
+    let source = format!(
+        "---@shape NumericWithRequiredString\n---@field [number] number|string\n---@field [1] string\n---@field n number\n\n---@param values NumericWithRequiredString\nlocal function inspect(values)\n    {statement}\nend\n"
+    );
+    let corrected = source.replace(assertion, "--[[---@type (number|string)[] ]] values");
+    for (profile, _) in PROFILES {
+        error_at(
+            &fixture.check(&source, profile),
+            &source,
+            "TS2352",
+            &statement,
+            assertion,
+        );
+        clean(&fixture.check(&corrected, profile));
+    }
+}
+
+#[test]
+fn cli_reports_incompatible_array_packed_assertions_at_the_original_expression() {
+    let fixture = Fixture::new();
+    let assertion = "--[[---@type Packed<string>]] values";
+    let statement = format!("local packed={assertion}");
+    let source = format!(
+        "-- café\n{CONTAINERS}---@param values number[]\nlocal function inspect(values)\n    {statement}\nend\n"
+    );
+    let corrected = source.replace(assertion, "--[[---@type Packed<number>]] values");
+    let (start, end) = span(&source, &statement, assertion);
+    let range = format!("\"range\":{{\"start\":{start},\"end\":{end}}}");
+    for (profile, version) in PROFILES {
+        error_at(
+            &fixture.check(&source, profile),
+            &source,
+            "TS2352",
+            &statement,
+            assertion,
+        );
+        let rejected = cli_report(fixture.cli(&source, version), 1);
+        assert!(
+            rejected
+                .split("},{\"path\":")
+                .any(|diagnostic| diagnostic.contains("\"code\":\"TS2352\"")
+                    && diagnostic.contains(&range)),
+            "{rejected}"
+        );
+        clean(&fixture.check(&corrected, profile));
+        let corrected = cli_report(fixture.cli(&corrected, version), 0);
+        assert!(corrected.contains("\"diagnostics\":[]"), "{corrected}");
     }
 }
