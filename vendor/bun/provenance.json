@@ -1476,6 +1476,116 @@
       "patch": "vendor/patches/bun-sema-native-complete-provider-frames.patch",
       "reason": "Retain pure original lexical parent chains in canonical signature frames and isolate both contextual and captured capabilities for every native provider callback.",
       "patch_sha256": "5706a1522d2ab6ebed6260a216d1b752183949e8ab1464a89a57d17334ba52ec"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/native_aliases.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "added": true,
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/native_runtime.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "added": true,
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/native_signatures.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/symbols.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+      "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+      "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
     }
   ],
   "source_additions": {
@@ -1483,16 +1593,20 @@
       "extracted_sha256": "b48fa1bf956390019e30c23969f567816346233bd5d50d210d42401bcacd2894",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
+    "src/sema/check/native_aliases.rs": {
+      "extracted_sha256": "352671d4f04dd64bbca9cf38153a50d67b3ee33d55324b1c21923626008fe846",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
+    },
     "src/sema/check/native_assertions.rs": {
       "extracted_sha256": "11861085142542f1964d9cec8283910132fea857038e1451644b5cfa95c8bb08",
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "2f2f48b5046be844d3f79f26dafa951c1156add8f19ea06b0a64220fa15fa559",
+      "extracted_sha256": "0104306481593c0b2b9e7f522f58a11c8dc133266cf80edcee4c29dd66eb343a",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "2ba84502c603020bd871ba2617f18a0c7e0ca97b8f3e6221abd565fd730e40f1",
+      "extracted_sha256": "f71a05dc6d308fe3b9f78d71d0cbf8ba4d7268437043127f3ba4f524dc2b3d31",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -1504,7 +1618,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "76140f654485dcfb97fa49f204f3c46581ed26eee24bdabc302cea23a64b8d21",
+      "extracted_sha256": "c7e5e36a9ba29ec773686b4560565326b92324515039a12f698b883c319f4fca",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1516,15 +1630,19 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-module-queries.patch"
     },
     "src/sema/check/native_runtime.rs": {
-      "extracted_sha256": "fcb57210f797af6b9e5415500856c1fc38b3af20db435a94e09f6ab498d0c5ec",
+      "extracted_sha256": "342eddd8d416a3dd997baa60622bbcf083fef98bd04973253e8cab4e4d9bc118",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
+    "src/sema/check/native_runtime_tables.rs": {
+      "extracted_sha256": "0722314a9625ab59a662a88213bc85e80536eeb6d8de3081677c9a4094292a69",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
+    },
     "src/sema/check/native_signatures.rs": {
-      "extracted_sha256": "1c270382f1e5e7bff71cb1614bb1e2967417866fb830bf92a9d493a8f2542954",
+      "extracted_sha256": "fdfbefefc6809c47c8aacc3cc217c53ec32168a2e1ba223b66510e7e66cc01ef",
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "84bafdce097e3ec3006ebb831137befcbca81f446339c5d8439157f7e42ea514",
+      "extracted_sha256": "84dc5212954da3701d567c0769182a8c82bf071b18095a4f1004472ec4160fbe",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2237,7 +2355,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "0dd4702eb1dceb9b9e2bd79329307b8b54a970d8b93308ac6552a4893676495d"
+      "extracted_sha256": "0e54dbe327a4b95657abab5517d7dd506a2ec56ef6ecee05d0329940c6d7c4c5"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -2447,12 +2565,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "d44e40dbf788c8cf2a34a58db44c9c400dff277b9359e9d19142c91ee9b31e32"
+      "extracted_sha256": "712b4e21394c713e1f1b30aa45a7b8fc1dcc08e4b033793f11657b673be0aca6"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "511c192122ffd3adadde3bb7478b23952b8d783440658b9a65218ade468407d0"
+      "extracted_sha256": "cbc0c32bd9ee829fae4a9b97a5073108e8052de586b14ba8961c1fa7eaad73eb"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -2482,7 +2600,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "bbf404afe4a442fb4ad9f605676894f18eecdd0cf0b334860ebd31d668d867f8"
+      "extracted_sha256": "6a9880ad8e514c9d2252fe1cb356569ddf7217f85a0cdd4c589b721648139c72"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -2492,7 +2610,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "065599952b62727c8f58bb02ac64d4d1ea1c8cb300fc328b4f768c056e75c5f5"
+      "extracted_sha256": "52e9a0475c941046812716cb92570511c2e2c6ae7a0ef353ee2096232e1ece8d"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -2507,7 +2625,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "887a78a0d3b714eae415b70af39a00a02692f1dc60b6cd840ef835400de918c6"
+      "extracted_sha256": "2fe92fcc6de893d117224af7d30a69893918e035a0b2e8b7d6b1f1b453401382"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -2562,12 +2680,12 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "79adc8accb14ea53bed918757f5469f15eb3b57017c9d8d91a3ac3eb66478f08"
+      "extracted_sha256": "6ac29924687cf6b760a9e7793bbd749b04df03a6c9873d8e2107c6d4c218f1fd"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "fd7a5669e3e75d95a247aad0d6d9e579adc31232409b8a790be6d71e694bbf2b"
+      "extracted_sha256": "881680933adbf8ebf6d5a0f6ebc8c07dbcc2e801835377a53ddacc76fc4ea46c"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",
@@ -2582,7 +2700,7 @@
     "src/sema/check/symbols.rs": {
       "upstream": "src/sema/check/symbols.rs",
       "sha256": "ef1c369442929fa1f57e979c571a01d2d7aebbadba0d1f3f8d7e750ca080936b",
-      "extracted_sha256": "fe2c79ad762ee886e3d33707e44a839df16748809089a942a5d853542ee434c9"
+      "extracted_sha256": "d51c48bb789a9a77462386099a6e6b7d93f175c38e2ea2bddbc3637ac42841af"
     },
     "src/sema/check/task.rs": {
       "upstream": "src/sema/check/task.rs",
@@ -2687,7 +2805,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "72f689fae29dd4bd56fccb5c81833a29b1e5422eb63644282df50b5754873b9a"
+      "extracted_sha256": "964abeda8c46fee5f121f4242b839b455d744e73a843ad4d1ce35007ae9391b1"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

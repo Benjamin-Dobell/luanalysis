@@ -357,6 +357,19 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Retain pure original lexical parent chains in canonical signature frames and isolate both contextual and captured capabilities for every native provider callback.",
 } for path in ["call.rs", "decl.rs", "mod.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
+    "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
+    **({"added": True} if path in ["check/native_aliases.rs", "check/native_runtime_tables.rs"] else {}),
+} for path in [
+    "check/decl.rs", "check/infer.rs", "check/instantiate.rs", "check/mod.rs",
+    "check/native_aliases.rs", "check/native_flow.rs", "check/native_globals.rs",
+    "check/native_named.rs", "check/native_runtime.rs", "check/native_runtime_tables.rs",
+    "check/native_signatures.rs", "check/native_tables.rs", "check/print.rs",
+    "check/relate.rs", "check/shape.rs", "check/sink.rs", "check/symbols.rs", "types.rs",
+])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
