@@ -114,6 +114,61 @@ end
 "#;
 
 #[test]
+fn unrelated_dynamic_lookup_does_not_publish_prospective_store_receiver_diagnostics() {
+    let fixture = Fixture::new();
+    let source = include_str!("fixtures/native_effects/prospective_store_receiver.lua");
+    for profile in [StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua54] {
+        clean(&fixture.check(source, profile));
+        let static_lookup = source.replace("local label=labels[key]", "local label=labels['number']");
+        clean(&fixture.check(&static_lookup, profile));
+        let wrong = source.replace("next(other)", "next('wrong')");
+        let report = fixture.check(&wrong, profile);
+        let diagnostics: Vec<_> = report.files.iter().flat_map(|file| &file.report.diagnostics).collect();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].code, "TS2345", "{diagnostics:#?}");
+        assert_eq!(&wrong[diagnostics[0].span.start..diagnostics[0].span.end], "'wrong'");
+        clean(&fixture.check(source, profile));
+    }
+}
+
+#[test]
+fn prospective_receiver_queries_preserve_reached_nested_installers_and_body_errors() {
+    let fixture = Fixture::new();
+    let source = r#"---@generic T
+---@param value T
+local function make(value)
+    local result={}
+    local function install()
+        ---@return T
+        function result.callback() return value end
+    end
+    install()
+    return result
+end
+local labels={number='number',string='string'}
+---@param key 'number'|'string'
+local function unrelated(key) return labels[key] end
+local numeric=make(1)
+local text=make('word')
+---@type number
+local a=numeric.callback()
+---@type string
+local b=text.callback()
+"#;
+    for profile in [StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua54] {
+        clean(&fixture.check(source, profile));
+        let wrong = source.replace("return value end", "return 'wrong' end");
+        let report = fixture.check(&wrong, profile);
+        assert!(code(&report, "TS2322"), "{:#?}", report.files);
+        assert!(!code(&report, "LUA2041"), "{:#?}", report.files);
+        let wrong_result = source.replace("local b=text.callback()", "local b=numeric.callback()");
+        let report = fixture.check(&wrong_result, profile);
+        assert!(code(&report, "TS2322"), "{:#?}", report.files);
+        clean(&fixture.check(source, profile));
+    }
+}
+
+#[test]
 fn pairs_infers_the_original_open_table_key_and_value_domains() {
     let fixture = Fixture::new();
     let source = r#"

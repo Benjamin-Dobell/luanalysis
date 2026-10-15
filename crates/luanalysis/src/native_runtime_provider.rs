@@ -143,7 +143,9 @@ impl NativeRegistry {
             .iterator_sources()
             .value(source.receiver_value)
             .expect("original receiver value");
-        Some(self.flow_value_type(self.iterator_sources(), recipe, input, queries))
+        Some(self.with_prospective_store_report(|| {
+            self.flow_value_type(self.iterator_sources(), recipe, input, queries)
+        }))
     }
     pub(crate) fn runtime_member_header(
         &self,

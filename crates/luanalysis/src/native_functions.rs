@@ -791,6 +791,14 @@ impl NativeRegistry {
         }
     }
 
+    pub(crate) fn with_prospective_store_report<R>(&self, work: impl FnOnce() -> R) -> R {
+        // A prospective receiver query may walk another function's open loop
+        // feedback. Those expression diagnostics are not a checked body result.
+        // Reuse body staging so completed nested bodies still publish their
+        // own diagnostics and keep their checked-body cache entries.
+        self.with_body_report(|| (work(), false))
+    }
+
     pub(super) fn take_report(&self) -> CheckReport {
         std::mem::take(&mut *self.report.borrow_mut())
     }
@@ -2932,6 +2940,30 @@ impl RegistryIndex<'_> {
 mod body_report_tests {
     use super::*;
     use luanalysis_engine::Engine;
+
+    #[test]
+    fn prospective_store_report_keeps_completed_nested_body_errors_and_cache() {
+        let file = luanalysis_syntax::parse("---@return number\nlocal function child() return 'wrong' end\n");
+        let bound = bind::bind(&file);
+        Engine::new().with_native_provider(
+            move || NativeRegistry::new(file, bound),
+            |registry, queries| {
+                let child = registry.key(0);
+                registry.with_prospective_store_report(|| {
+                    registry.merge_report(CheckReport {
+                        diagnostics: vec![Diagnostic { code: "LUA2011", span: Span { start: 0, end: 1 }, message: "prospective receiver expression".into() }],
+                        ..CheckReport::default()
+                    });
+                    registry.check_body(child, queries);
+                });
+                assert!(registry.checked_bodies.borrow().contains(&child));
+                let report = registry.take_report();
+                assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+                assert_eq!(report.diagnostics[0].code, "TS2322");
+                assert!(registry.provisional_reports.borrow().is_empty());
+            },
+        );
+    }
 
     #[test]
     fn provisional_parent_discards_metadata_but_retains_completed_child_diagnostics_and_cache() {
