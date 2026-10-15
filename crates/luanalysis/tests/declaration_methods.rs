@@ -232,3 +232,36 @@ fn unattached_colon_declarations_remain_an_explicit_original_owner_error() {
         fail(&fixture.check(), "LUA2038");
     }
 }
+
+#[test]
+fn syntactically_empty_declaration_stubs_without_return_tags_have_no_results() {
+    let declarations = format!(
+        "{COLOR}---@param value number\nfunction Color:setRed(value) end\n---@param name string\n---@param value tts__Color\nfunction Color.Add(name,value) end\nfunction noResult() end\n---@return number\nfunction consumeNumber(value) return undefined_placeholder() end\n"
+    );
+    // Keep every written parameter explicit; only the absence of a return tag
+    // on a syntactically empty ambient body supplies the empty result contract.
+    let declarations = declarations.replace(
+        "---@return number\nfunction consumeNumber(value)",
+        "---@param value number\n---@return number\nfunction consumeNumber(value)",
+    );
+    let fixture = Fixture::new(
+        &declarations,
+        "---@type tts__Color\nlocal color\ncolor:setRed(42)\nColor.Add('red',color)\nnoResult()\n---@type nil\nlocal absent=color:setRed(42)\n",
+    );
+    pass(&fixture.check());
+    fixture.file("main.lua", "---@type tts__Color\nlocal color\n---@type number\nlocal wrong=color:setRed(42)\n");
+    fail(&fixture.check(), "TS2322");
+    fixture.file("main.lua", "---@type tts__Color\nlocal color\nconsumeNumber(color:setRed(42))\n");
+    fail(&fixture.check(), "TS2554");
+}
+
+#[test]
+fn nonempty_unannotated_ambient_results_are_not_inferred_from_placeholder_statements() {
+    for body in ["return 42", "unresolved_placeholder()", "do end", "return"] {
+        let declarations = format!("{COLOR}function Color:unknownResult() {body} end\n");
+        let fixture = Fixture::new(&declarations, "local independent=42\n");
+        let output = fixture.check();
+        fail(&output, "LUA2035");
+        assert!(!text(&output).contains("TS2304"), "{}", text(&output));
+    }
+}

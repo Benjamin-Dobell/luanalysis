@@ -7,7 +7,7 @@ use luanalysis_engine::{
     GlobalQuery, GlobalQueryError, GlobalSourceRole, GlobalValueKind, NativeEnvironmentKey,
     NativeExpressionKey, NativeFunctionKey, NativeGlobalBindingKey, NativeTypeDeclarationKey,
     NativeTypeProvider, NativeValueDeclarationKey, PackFunctionType, Type, TypeQueries,
-    ValueDeclarationHeader,
+    ValueDeclarationHeader, ValuePack,
 };
 use luanalysis_project::SourceRole;
 use luanalysis_syntax::{ExprKind, File, Name, Span, StmtKind, TypeExpr};
@@ -345,7 +345,11 @@ impl NativeRegistry {
                     return Some(ty);
                 }
                 let params = self.metadata(function, queries).0;
-                let raw_returns = self.declared_pack_contract(function, queries)?;
+                // Original empty declaration stubs without a return annotation
+                // have an empty result contract. This is a syntax convention,
+                // never an inferred return from executable placeholder code.
+                let raw_returns = self.declared_pack_contract(function, queries)
+                    .or_else(|| original.body.is_empty().then(ValuePack::empty))?;
                 let returns = queries.declared_result_pack(&raw_returns);
                 let returns = queries.pack_with_implicit_empty(&returns);
                 let rest = self.source_rest_pack(function, queries);
