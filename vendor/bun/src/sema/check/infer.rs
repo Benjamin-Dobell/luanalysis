@@ -550,6 +550,13 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 for indexer in &target.indexers {
                     let mut values = Vec::new();
+                    if target.is_array && let Some(pack) = source.constructor_sequence
+                        && let Some(rows) = self.native_pack_alternatives(pack) {
+                        for row in rows {
+                            values.extend(row.fixed.iter().map(|slot| slot.ty));
+                            values.extend(row.tail);
+                        }
+                    }
                     for actual in &source.indexers {
                         if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
                         sources.push(actual.key);
@@ -3249,6 +3256,7 @@ impl<'p, 's> Checker<'p, 's> {
                     left.extend(reference.schema.self_argument);
                 }
                 TypeData::NativeTable(table) => {
+                    left.extend(table.constructor_sequence.map(|pack| pack.ty));
                     left.extend(table.fields.iter().map(|field| field.value));
                     for indexer in &table.indexers { left.extend([indexer.key, indexer.value]); }
                     left.extend(table.sequence_tails.iter().map(|tail| tail.value));

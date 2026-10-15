@@ -2407,6 +2407,7 @@ impl<'p, 's> Types<'p, 's> {
                 let flags = table.fields.iter().fold(origin_flags, |flags, field| flags | self.object_flags(field.value));
                 let flags = table.indexers.iter().fold(flags, |flags, indexer| flags | self.object_flags(indexer.key) | self.object_flags(indexer.value));
                 let flags = table.sequence_tails.iter().fold(flags, |flags, tail| flags | self.object_flags(tail.value));
+                let flags = flags | table.constructor_sequence.map_or(ObjectFlags::empty(), |pack| self.object_flags(pack.ty));
                 if table.fresh { flags | ObjectFlags::CONTAINS_OBJECT_OR_ARRAY_LITERAL } else { flags }
             }
             TypeData::Anon {
@@ -3562,7 +3563,7 @@ follow_struct!(NativeTableIndexer { key, value, readonly, sparse, origin });
 follow_struct!(NativeTableSequenceTail { start, value, readonly, origin });
 follow_struct!(NativeEnvironmentId { snapshot, index });
 follow_struct!(NativeGlobalBindingId { environment, index });
-follow_struct!(NativeTableData<'_> { is_array, environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+follow_struct!(NativeTableData<'_> { is_array, constructor_sequence, environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 follow_struct!(NativeCapturedFunctionContext { signature });
 follow_struct!(NativeResultPack { ty });
 follow_enum!(NativeRuntimeKind {
@@ -3841,7 +3842,7 @@ clone_in_struct!(Shape {
     pattern_at,
     mapper
 });
-clone_in_struct!(NativeTableData { is_array, environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+clone_in_struct!(NativeTableData { is_array, constructor_sequence, environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 clone_in_enum!(SigData {
     NativeDeclarationSignature { declaration, mapper, implementation },
     Native { declaration, mapper },

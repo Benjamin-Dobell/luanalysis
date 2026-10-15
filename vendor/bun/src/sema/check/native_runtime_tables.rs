@@ -116,6 +116,7 @@ impl<'p, 's> Checker<'p, 's> {
         let seed_keys: Vec<_> = fields.iter().map(|field| field.key).collect();
         let mut indexers = data.indexers.to_vec();
         let mut tails = data.sequence_tails.to_vec();
+        let constructor_sequence = data.constructor_sequence.map(|pack| NativeResultPack { ty: self.get_widened_type(pack.ty) });
         for field in &mut fields {
             field.value = if field.origin == NativeTableFieldOrigin::Declared { self.regular(field.value) } else { self.widened(field.value) };
         }
@@ -175,10 +176,11 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let constructed = self.native_table(&fields, &indexers, NativeTableFlavor::Declared)
             .map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
-        if tails.is_empty() { return Ok(constructed) }
+        if tails.is_empty() && constructor_sequence.is_none() { return Ok(constructed) }
         let TypeData::NativeTable(table) = self.data(constructed) else { unreachable!() };
         let mut description = (**table).clone_in(self.arena);
         description.sequence_tails = self.list(&tails);
+        description.constructor_sequence = constructor_sequence;
         Ok(self.intern(TypeData::NativeTable(self.boxed(description))))
     }
 
@@ -291,6 +293,18 @@ impl<'p, 's> Checker<'p, 's> {
                 origin: if bound.is_some() { NativeTableFieldOrigin::Declared } else { NativeTableFieldOrigin::Inferred } });
         }
         description.fields = self.list(&fields);
+        if let (Some(pack), NativeTableKey::Integer(index)) = (description.constructor_sequence, key)
+            && index >= 1 && let Some(mut rows) = self.native_pack_alternatives(pack) {
+            let current = if optional { self.optional(reached) } else { reached };
+            for row in &mut rows {
+                if let Ok(offset) = usize::try_from(index - 1)
+                    && let Some(slot) = row.fixed.get_mut(offset) {
+                    slot.ty = current;
+                    slot.optional = false;
+                }
+            }
+            description.constructor_sequence = Some(self.native_result_pack(&rows));
+        }
         description.fresh = false;
         let view = self.intern(TypeData::NativeTable(self.boxed(description)));
         self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { view, ..reference }))

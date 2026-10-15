@@ -214,3 +214,129 @@ fn typescript_intrinsic_arrays_keep_readonly_and_element_relations() {
         assert!(checker.is_assignable(mutable, mutable));
     });
 }
+
+#[test]
+fn original_nil_slots_keep_sequence_types_without_changing_stored_fields() {
+    Engine::new().with_session(|q| {
+        let nullable = q.array_type(&Type::Union(vec![Type::Number, Type::Nil]));
+        let nonnullable = q.array_type(&Type::Number);
+        let source = q
+            .table_type(&TableType {
+                fields: vec![
+                    TableField::new(LuaKey::Integer(1), Type::Nil),
+                    TableField::new(LuaKey::Integer(2), Type::Number),
+                ],
+                fresh: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(matches!(source, Type::SessionType(_)));
+        let inspected = q.inspect_type(&source);
+        let widened = q.widen(&source);
+        for value in [&source, &inspected, &widened] {
+            assert!(q.is_assignable(value, &nullable), "{value:?}");
+            assert!(!q.is_assignable(value, &nonnullable), "{value:?}");
+            assert!(
+                q.table_lookup(value, &TableKey::Literal(LuaKey::Integer(1)))
+                    .is_err(),
+                "nil is absent storage"
+            );
+            assert_eq!(
+                q.table_lookup(value, &TableKey::Literal(LuaKey::Integer(2))),
+                Ok(Type::Number)
+            );
+        }
+        for fresh in [false, true] {
+            let gap = q
+                .table_type(&TableType {
+                    fields: vec![TableField::new(LuaKey::Integer(2), Type::Number)],
+                    fresh,
+                    ..Default::default()
+                })
+                .unwrap();
+            assert!(!q.is_assignable(&gap, &nullable));
+        }
+        let dictionary = q
+            .table_type(&numeric_dictionary(Type::Union(vec![
+                Type::Number,
+                Type::Nil,
+            ])))
+            .unwrap();
+        assert!(!q.is_assignable(&dictionary, &nullable));
+        let corrected = q
+            .table_type(&TableType {
+                fields: vec![
+                    TableField::new(LuaKey::Integer(1), Type::Number),
+                    TableField::new(LuaKey::Integer(2), Type::Number),
+                ],
+                fresh: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(q.is_assignable(&corrected, &nonnullable));
+    });
+}
+
+#[test]
+fn original_constructor_pack_maps_hidden_nil_and_generic_slots_before_export() {
+    with_program(|program, handles| {
+        let provider = Parameters;
+        let adapter = ProviderAdapter {
+            provider: &provider,
+            handles,
+        };
+        let mut checker = program.checker_with_native_provider(&adapter);
+        checker.set_native_type_declaration_provider(&adapter);
+        checker.enable_native_arrays();
+        let formal = checker
+            .native_type_parameter(core_parameter_key(parameter()))
+            .unwrap();
+        let raw = checker
+            .native_table(
+                &[
+                    bun_sema::types::NativeTableField {
+                        key: bun_sema::types::NativeTableKey::Integer(1),
+                        value: TypeId::UNDEFINED,
+                        optional: false,
+                        readonly: false,
+                        origin: bun_sema::types::NativeTableFieldOrigin::Inferred,
+                    },
+                    bun_sema::types::NativeTableField {
+                        key: bun_sema::types::NativeTableKey::Integer(2),
+                        value: formal,
+                        optional: false,
+                        readonly: false,
+                        origin: bun_sema::types::NativeTableFieldOrigin::Inferred,
+                    },
+                ],
+                &[],
+                bun_sema::types::NativeTableFlavor::Literal,
+            )
+            .unwrap();
+        let TypeData::NativeTable(table) = checker.data(raw) else {
+            panic!("constructor")
+        };
+        assert!(!table.is_array);
+        assert!(table.constructor_sequence.is_some());
+        let mapper = checker.mapper_from(&[formal], &[TypeId::NUMBER]);
+        let mapped = checker.instantiate(raw, mapper);
+        let TypeData::NativeTable(table) = checker.data(mapped) else {
+            panic!("mapped constructor")
+        };
+        let pack = table.constructor_sequence.unwrap();
+        assert_eq!(checker.native_pack_slot(pack, 0), TypeId::UNDEFINED);
+        assert_eq!(checker.native_pack_slot(pack, 1), TypeId::NUMBER);
+        let exported = export_type(&mut checker, handles, mapped);
+        assert!(matches!(exported, Type::SessionType(_)));
+        assert_eq!(import_type(&mut checker, handles, &exported), mapped);
+        let mut q = SessionQueries {
+            checker: &mut checker,
+            handles,
+        };
+        let nullable = q.array_type(&Type::Union(vec![Type::Number, Type::Nil]));
+        let nonnullable = q.array_type(&Type::Number);
+        let widened = q.widen(&exported);
+        assert!(q.is_assignable(&widened, &nullable));
+        assert!(!q.is_assignable(&widened, &nonnullable));
+    });
+}

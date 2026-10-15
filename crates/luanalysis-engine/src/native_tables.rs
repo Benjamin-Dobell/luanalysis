@@ -266,7 +266,7 @@ pub(super) fn export_table(
     };
     // Array form and declaration origins are exact backend capabilities; the
     // public structural TableType recipe cannot represent those contracts.
-    if table.is_array || table.nominal_origin.is_some() || table.environment_origin.is_some() { return None }
+    if table.is_array || table.constructor_sequence.is_some() || table.nominal_origin.is_some() || table.environment_origin.is_some() { return None }
     // Copy the immutable native descriptors before recursively exporting any
     // member. Recursion may demand further types from this same checker.
     let fields = table.fields.to_vec();

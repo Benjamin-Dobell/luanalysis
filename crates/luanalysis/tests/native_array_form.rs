@@ -459,3 +459,346 @@ fn cli_preserves_original_array_argument_ranges_and_accepts_dictionary_correctio
         assert!(corrected.contains("\"diagnostics\":[]"), "{corrected}");
     }
 }
+
+#[test]
+fn nullable_arrays_accept_original_dense_nil_slots_with_and_without_context() {
+    let fixture = Fixture::new();
+    let source = r#"---@function takeNullable(values:(number|nil)[]):void
+
+---@type (number|nil)[]
+local contextual={nil,1}
+takeNullable(contextual)
+
+---@class Holder
+local Holder={}
+---@type (number|nil)[]
+Holder.values={nil,1}
+takeNullable(Holder.values)
+
+local values={nil,1}
+takeNullable(values)
+takeNullable({nil,1})
+---@type number
+local retainedSecond=values[2]
+"#;
+    for (profile, _) in PROFILES {
+        clean(&fixture.check(source, profile));
+    }
+}
+
+#[test]
+fn generic_array_element_inference_keeps_nil_from_original_constructor_rows() {
+    let fixture = Fixture::new();
+    let source = r#"---@function elements<T>(values:T[]):T
+local values={nil,1}
+local element=elements(values)
+---@type number|nil
+local checked=element
+local direct=elements({nil,1})
+---@type number|nil
+local checkedDirect=direct
+"#;
+    for (profile, _) in PROFILES {
+        clean(&fixture.check(source, profile));
+        for (annotation, statement, expression) in [
+            (
+                "---@type number|nil\nlocal checked=element",
+                "local checked=element",
+                "element",
+            ),
+            (
+                "---@type number|nil\nlocal checkedDirect=direct",
+                "local checkedDirect=direct",
+                "direct",
+            ),
+        ] {
+            let wrong = source.replace(annotation, &annotation.replace("number|nil", "number"));
+            error_at(
+                &fixture.check(&wrong, profile),
+                &wrong,
+                "TS2322",
+                statement,
+                expression,
+            );
+            clean(&fixture.check(source, profile));
+        }
+    }
+}
+
+#[test]
+fn generic_array_identity_and_exported_returns_preserve_original_nullable_elements() {
+    let fixture = Fixture::new();
+    fixture.file(
+        "nullable_arrays.lua",
+        r#"---@generic T
+---@param values T[]
+---@return T[]
+local function identity(values) return values end
+
+local values={nil,1}
+return {identity=identity,values=values}
+"#,
+    );
+    let source = r#"---@function arrayIdentity<T>(values:T[]):T[]
+---@function takeNullable(values:(number|nil)[]):void
+local arrays=require('nullable_arrays')
+local values={nil,1}
+local mapped=arrayIdentity(values)
+takeNullable(mapped)
+---@type number|nil
+local localElement=mapped[1]
+local imported=arrays.identity(values)
+takeNullable(imported)
+---@type number|nil
+local importedElement=imported[1]
+local exported=arrays.identity(arrays.values)
+takeNullable(exported)
+---@type number|nil
+local exportedElement=exported[1]
+"#;
+    for (profile, _) in PROFILES {
+        clean(&fixture.check(source, profile));
+        for (annotation, statement, expression) in [
+            (
+                "---@type number|nil\nlocal localElement=mapped[1]",
+                "local localElement=mapped[1]",
+                "mapped[1]",
+            ),
+            (
+                "---@type number|nil\nlocal importedElement=imported[1]",
+                "local importedElement=imported[1]",
+                "imported[1]",
+            ),
+            (
+                "---@type number|nil\nlocal exportedElement=exported[1]",
+                "local exportedElement=exported[1]",
+                "exported[1]",
+            ),
+        ] {
+            let wrong = source.replace(annotation, &annotation.replace("number|nil", "number"));
+            error_at(
+                &fixture.check(&wrong, profile),
+                &wrong,
+                "TS2322",
+                statement,
+                expression,
+            );
+            clean(&fixture.check(source, profile));
+        }
+    }
+}
+
+#[test]
+fn constructor_rows_still_reject_nil_for_nonnullable_arrays_and_wrong_element_types() {
+    let fixture = Fixture::new();
+    for (source, corrected, statement, expression) in [
+        (
+            "---@type number[]\nlocal values={nil,1}\n",
+            "---@type (number|nil)[]\nlocal values={nil,1}\n",
+            "local values={nil,1}",
+            "{nil,1}",
+        ),
+        (
+            "---@class Holder\nlocal Holder={}\n---@type number[]\nHolder.values={nil,1}\n",
+            "---@class Holder\nlocal Holder={}\n---@type (number|nil)[]\nHolder.values={nil,1}\n",
+            "Holder.values={nil,1}",
+            "{nil,1}",
+        ),
+        (
+            "---@type (number|nil)[]\nlocal values={nil,'wrong'}\n",
+            "---@type (number|nil)[]\nlocal values={nil,1}\n",
+            "local values={nil,'wrong'}",
+            "{nil,'wrong'}",
+        ),
+        (
+            "---@class Holder\nlocal Holder={}\n---@type (number|nil)[]\nHolder.values={nil,'wrong'}\n",
+            "---@class Holder\nlocal Holder={}\n---@type (number|nil)[]\nHolder.values={nil,1}\n",
+            "Holder.values={nil,'wrong'}",
+            "{nil,'wrong'}",
+        ),
+    ] {
+        for (profile, _) in PROFILES {
+            error_at(
+                &fixture.check(source, profile),
+                source,
+                "TS2322",
+                statement,
+                expression,
+            );
+            clean(&fixture.check(corrected, profile));
+        }
+    }
+    for (annotation, literal, correction) in [
+        ("number[]", "{nil,1}", "{0,1}"),
+        ("(number|nil)[]", "{nil,'wrong'}", "{nil,1}"),
+    ] {
+        let call = format!("take({literal})");
+        let source = format!("---@function take(values:{annotation}):void\n{call}\n");
+        let corrected = source.replace(&call, &format!("take({correction})"));
+        for (profile, _) in PROFILES {
+            error_at(
+                &fixture.check(&source, profile),
+                &source,
+                "TS2345",
+                &call,
+                literal,
+            );
+            clean(&fixture.check(&corrected, profile));
+        }
+    }
+}
+
+#[test]
+fn nullable_array_elements_do_not_make_explicit_constructor_gaps_dense() {
+    let fixture = Fixture::new();
+    for (source, code, statement) in [
+        (
+            "---@function take(values:(number|nil)[]):void\ntake({[2]=1})\n",
+            "TS2345",
+            "take({[2]=1})",
+        ),
+        (
+            "---@type (number|nil)[]\nlocal values={[2]=1}\n",
+            "TS2322",
+            "local values={[2]=1}",
+        ),
+    ] {
+        let corrected = source.replace("{[2]=1}", "{nil,1}");
+        for (profile, _) in PROFILES {
+            error_at(
+                &fixture.check(source, profile),
+                source,
+                code,
+                statement,
+                "{[2]=1}",
+            );
+            clean(&fixture.check(&corrected, profile));
+        }
+    }
+}
+
+#[test]
+fn cli_rejects_original_nil_array_elements_at_original_ranges_and_accepts_correction() {
+    let fixture = Fixture::new();
+    let source = "-- café\n---@function take(values:number[]):void\ntake({nil,1})\n";
+    let corrected = source.replace("{nil,1}", "{0,1}");
+    let (start, end) = span(source, "take({nil,1})", "{nil,1}");
+    let range = format!("\"range\":{{\"start\":{start},\"end\":{end}}}");
+    for (profile, version) in PROFILES {
+        error_at(
+            &fixture.check(source, profile),
+            source,
+            "TS2345",
+            "take({nil,1})",
+            "{nil,1}",
+        );
+        let rejected = cli_report(fixture.cli(source, version), 1);
+        assert!(
+            rejected
+                .split("},{\"path\":")
+                .any(|diagnostic| diagnostic.contains("\"code\":\"TS2345\"")
+                    && diagnostic.contains(&range)),
+            "{rejected}"
+        );
+        clean(&fixture.check(&corrected, profile));
+        let corrected = cli_report(fixture.cli(&corrected, version), 0);
+        assert!(corrected.contains("\"diagnostics\":[]"), "{corrected}");
+    }
+}
+
+#[test]
+fn proven_writes_replace_original_nil_sequence_types_for_relation_and_inference() {
+    let fixture = Fixture::new();
+    let source = "---@function take(values:number[]):void\n---@function elements<T>(values:T[]):T\nlocal values={nil,1}\nvalues[1]=2\ntake(values)\n---@type number\nlocal current=elements(values)\n";
+    let wrong = source.replace("values[1]=2", "values[1]='wrong'").replace(
+        "---@type number\nlocal current",
+        "---@type string|number\nlocal current",
+    );
+    for (profile, _) in PROFILES {
+        clean(&fixture.check(source, profile));
+        error_at(
+            &fixture.check(&wrong, profile),
+            &wrong,
+            "TS2345",
+            "take(values)",
+            "values",
+        );
+        clean(&fixture.check(source, profile));
+    }
+}
+
+#[test]
+fn proven_deletion_uses_current_nil_instead_of_the_preceding_numeric_store() {
+    let fixture = Fixture::new();
+    let source = "---@function takeNullable(values:(number|nil)[]):void\n---@function takeNumber(values:number[]):void\n---@function elements<T>(values:T[]):T\nlocal values={nil,1}\nvalues[1]=2\nvalues[1]=nil\ntakeNullable(values)\n---@type number|nil\nlocal current=elements(values)\n";
+    let wrong_argument = source.replace("takeNullable(values)", "takeNumber(values)");
+    let wrong_result = source.replace(
+        "---@type number|nil\nlocal current",
+        "---@type number\nlocal current",
+    );
+    let restored = source
+        .replace("values[1]=nil", "values[1]=0")
+        .replace("takeNullable(values)", "takeNumber(values)");
+    for (profile, _) in PROFILES {
+        clean(&fixture.check(source, profile));
+        error_at(
+            &fixture.check(&wrong_argument, profile),
+            &wrong_argument,
+            "TS2345",
+            "takeNumber(values)",
+            "values",
+        );
+        error_at(
+            &fixture.check(&wrong_result, profile),
+            &wrong_result,
+            "TS2322",
+            "local current=elements(values)",
+            "elements(values)",
+        );
+        clean(&fixture.check(&restored, profile));
+    }
+}
+
+#[test]
+fn replacing_or_deleting_an_original_number_does_not_freeze_the_constructor_value() {
+    let fixture = Fixture::new();
+    for (value, annotation, statement, expression) in [
+        ("'wrong'", "number", "take(values)", "values"),
+        (
+            "nil",
+            "number",
+            "local current=elements(values)",
+            "elements(values)",
+        ),
+    ] {
+        let source = format!(
+            "---@function take(values:number[]):void\n---@function elements<T>(values:T[]):T\nlocal values={{nil,1}}\nvalues[1]=2\nvalues[2]={value}\n---@type {annotation}\nlocal current=elements(values)\n{}",
+            if value == "nil" { "" } else { "take(values)\n" }
+        );
+        let corrected = source.replace(&format!("values[2]={value}"), "values[2]=3");
+        for (profile, _) in PROFILES {
+            let report = fixture.check(&source, profile);
+            let diagnostics = &report
+                .file(report.project.entries[0])
+                .unwrap()
+                .report
+                .diagnostics;
+            // The original numeric constructor contract separately rejects the
+            // store. The current view must still retain its string/nil value.
+            let expected_count = if value == "nil" { 2 } else { 3 };
+            assert_eq!(
+                diagnostics.len(),
+                expected_count,
+                "{source}\n{diagnostics:#?}"
+            );
+            let (start, end) = span(&source, statement, expression);
+            assert!(
+                diagnostics.iter().any(|error| error.span.start == start
+                    && error.span.end == end
+                    && error.code == if value == "nil" { "TS2322" } else { "TS2345" }),
+                "{source}\n{diagnostics:#?}"
+            );
+            clean(&fixture.check(&corrected, profile));
+        }
+    }
+}

@@ -725,8 +725,10 @@ impl<'p, 's> Checker<'p, 's> {
                 let nominal_origin = table.nominal_origin.map(|origin| NativeObjectReference {
                     declaration: origin.declaration, mapper: self.compose(origin.mapper, mapper), self_argument: origin.self_argument.map(|ty| self.instantiate(ty, mapper)), runtime_context: origin.runtime_context,
                 });
+                let constructor_sequence = table.constructor_sequence.map(|pack| self.instantiate_native_pack(pack, mapper));
                 self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
                     is_array: table.is_array,
+                    constructor_sequence,
                     environment_origin: table.environment_origin,
                     definition_origin,
                     nominal_origin,

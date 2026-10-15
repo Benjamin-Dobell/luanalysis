@@ -3559,6 +3559,7 @@ impl<'p, 's> Checker<'p, 's> {
             }
             TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
                 is_array: table.is_array,
+                constructor_sequence: table.constructor_sequence,
                 environment_origin: table.environment_origin,
                 definition_origin: table.definition_origin,
                 nominal_origin: table.nominal_origin,
