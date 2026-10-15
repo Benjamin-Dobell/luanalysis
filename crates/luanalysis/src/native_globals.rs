@@ -374,6 +374,16 @@ impl NativeRegistry {
         let declaration=self.globals.declaration(key)?.documentation_function?;
         Some(vec![self.doc_signature_key(declaration).expect("valid original documentation function signature")])
     }
+    pub(super) fn global_function_signatures(&self,key:NativeValueDeclarationKey)->Option<Vec<NativeSignatureKey>> {
+        let declaration=self.globals.declaration(key)?;
+        if let Some(documentation)=declaration.documentation_function {
+            return Some(vec![self.doc_signature_key(documentation).expect("valid original documentation function signature")]);
+        }
+        let function=declaration.function?;
+        let heads=self.function_overload_signatures(function);
+        if !heads.is_empty() { return Some(heads); }
+        Some(vec![self.implementation_annotation_signature(function)?])
+    }
     /// One pure original declaration contract for global and local namespace
     /// members. Placeholder values and bodies never supply inferred evidence.
     pub(crate) fn ambient_function_contract(

@@ -86,6 +86,19 @@ pub(super) struct NativeFlowSources {
 }
 
 impl NativeFlowSources {
+    /// Project setup imports original global declaration names as canonical
+    /// addresses. It creates no expression, flow node, value or declaration.
+    pub(super) fn seed_original_global_reference_keys(&mut self, names: &[Vec<u8>]) {
+        for region in 0..self.references.len() {
+            for name in names {
+                let path = vec![flow::Key::String(name.clone())];
+                for root in [flow::ReferenceRoot::EnvironmentObject, flow::ReferenceRoot::EnvironmentCell] {
+                    intern_reference(&mut self.references[region], &mut self.reference_indices[region],
+                        &flow::Reference { root, path: path.clone() });
+                }
+            }
+        }
+    }
     pub(super) fn set_runtime_type_intrinsic_enabled(&mut self, enabled: bool) {
         self.runtime_type_intrinsic_enabled = enabled;
     }
@@ -374,6 +387,15 @@ impl NativeFlowSources {
                 &flow::Reference { root: flow::ReferenceRoot::EnvironmentCell, path: Vec::new() });
             intern_reference(&mut result.references[region], &mut result.reference_indices[region],
                 &flow::Reference { root: flow::ReferenceRoot::LoaderState, path: Vec::new() });
+            intern_reference(&mut result.references[region], &mut result.reference_indices[region],
+                &flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: Vec::new() });
+            if !result.environment_cell_written {
+                let original: Vec<_> = result.references[region].iter().filter(|reference| reference.root == flow::ReferenceRoot::EnvironmentCell)
+                    .map(|reference| flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: reference.path.clone() }).collect();
+                for reference in original {
+                    intern_reference(&mut result.references[region], &mut result.reference_indices[region], &reference);
+                }
+            }
             for key in &members {
                 intern_reference(&mut result.references[region], &mut result.reference_indices[region],
                     &flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: vec![key.clone()] });
@@ -388,12 +410,6 @@ impl NativeFlowSources {
         self.reference_key(graph, &flow::Reference {
             root: binding.map_or(flow::ReferenceRoot::EnvironmentCell, flow::ReferenceRoot::Binding),
             path: Vec::new(),
-        })
-    }
-    pub(super) fn original_global_member_reference(&self, graph: NativeGraphKey, name: &[u8]) -> Option<NativeReferenceKey> {
-        self.reference_key(graph, &flow::Reference {
-            root: flow::ReferenceRoot::EnvironmentCell,
-            path: vec![flow::Key::String(name.to_vec())],
         })
     }
     fn environment_candidate_paths(&self, reference: &flow::Reference) -> Vec<Vec<flow::Key>> {
@@ -1192,6 +1208,8 @@ fn intern_reference(
 pub(super) trait FlowValueQueries {
     fn alias_value_type(&self, sources:&NativeFlowSources, value:&ValueRecipe, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {self.flow_value_type(sources,value,input,queries)}
     fn written_binding_contract(&self, _: BindingId, _: &mut dyn TypeQueries) -> Option<Type> { None }
+    fn original_alias_initial(&self, _: &flow::Reference) -> luanalysis_engine::NativeAliasInitial { luanalysis_engine::NativeAliasInitial::Opaque }
+    fn original_alias_execution(&self, _: NativeFunctionKey, _: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasExecution> { None }
     fn environment_access_path(&self, expression: &Expr, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<Vec<flow::Key>>;
     fn original_type_operation(&self, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool;
     /// The environment named by a real lexical upvalue at an original flow input.
@@ -1236,6 +1254,20 @@ pub(super) struct FlowAdapter<'a> {
 }
 
 impl FlowAdapter<'_> {
+    fn alias_read_reference(&self, original: &flow::Reference, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
+        if original.root == flow::ReferenceRoot::EnvironmentCell && self.sources.environment_cell_is_immutable() {
+            self.sources.reference_key(graph, &flow::Reference {
+                root: flow::ReferenceRoot::EnvironmentObject, path: original.path.clone(),
+            })
+        } else { self.sources.reference_key(graph, original) }
+    }
+
+    fn alias_function_value(&self, region: u32, input: NativeFlowKey) -> luanalysis_engine::NativeAliasValue {
+        let graph = self.sources.graph(region, input.graph.context);
+        let Some(function) = self.sources.function_for_graph(graph) else { return luanalysis_engine::NativeAliasValue::Unknown; };
+        let Some(creation) = self.sources.graph_creation(graph) else { return luanalysis_engine::NativeAliasValue::Unknown; };
+        luanalysis_engine::NativeAliasValue::Function { function, creation: creation.input }
+    }
     /// Compare object origins at the two frozen epochs. Source paths select
     /// which original references to ask about; only the native alias query
     /// decides whether those reads denote the same allocation.
@@ -1287,6 +1319,78 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         self.sources.program.references.get(&evaluation.expression).is_some_and(|reference| {
             self.sources.environment_candidate_paths(reference).iter().any(Vec::is_empty)
         })
+    }
+    fn reference_alias_initial(&self, reference: NativeReferenceKey) -> luanalysis_engine::NativeAliasInitial {
+        self.sources.source_reference(reference).map_or(luanalysis_engine::NativeAliasInitial::Opaque,
+            |reference| self.values.original_alias_initial(reference))
+    }
+
+    fn function_alias_execution(&self, function: NativeFunctionKey, creation: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasExecution> {
+        self.values.original_alias_execution(function, creation)
+    }
+
+    fn alias_call_source(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasCall> {
+        let ValueRecipe::Evaluation(evaluation) = self.sources.value(value)? else { return None; };
+        let evaluation = self.sources.program.evaluation(*evaluation);
+        if !matches!(self.sources.program.expression(evaluation.expression).expression.kind, ExprKind::Call { .. }) { return None; }
+        let completed = self.sources.program.node(evaluation.completed);
+        if !matches!(completed.kind, flow::NodeKind::Call { evaluation: called, .. } if called == evaluation.id) { return None; }
+        let mut operands = evaluation.operands.iter();
+        let callee = self.sources.program.evaluation(*operands.next()?);
+        let callee = luanalysis_engine::NativeAliasReturnValue {
+            value: self.sources.evaluation_value(callee.id),
+            input: self.sources.flow_key(callee.input, input.graph.context),
+        };
+        let arguments = operands.map(|&operand| {
+            let source = self.sources.program.evaluation(operand);
+            luanalysis_engine::NativeAliasReturnValue {
+                value: self.sources.evaluation_value(source.id),
+                input: self.sources.flow_key(source.input, input.graph.context),
+            }
+        }).collect();
+        Some(luanalysis_engine::NativeAliasCall {
+            callee, arguments,
+            execution_input: self.sources.flow_key(*completed.antecedents.first()?, input.graph.context),
+        })
+    }
+
+    fn alias_node_dispatch(&self, at: NativeFlowKey) -> luanalysis_engine::NativeAliasDispatch {
+        use luanalysis_engine::NativeAliasDispatch::{NoDispatch, ReferenceRead, Unknown};
+        let Some(node) = self.sources.source_node(at) else { return Unknown; };
+        match &node.kind {
+            flow::NodeKind::Eval(evaluation) => {
+                let evaluation = self.sources.program.evaluation(*evaluation);
+                let expression = &self.sources.program.expression(evaluation.expression).expression;
+                match &expression.kind {
+                    ExprKind::Nil | ExprKind::Boolean(_) | ExprKind::Number(_) | ExprKind::String(_)
+                    | ExprKind::Table(_) | ExprKind::Function(_) | ExprKind::Vararg
+                    | ExprKind::Parenthesized(_)
+                    | ExprKind::Unary { op: luanalysis_syntax::UnaryOperator::Not, .. }
+                    | ExprKind::Binary { op: BinaryOperator::And | BinaryOperator::Or, .. } => NoDispatch,
+                    ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
+                        let Some(reference) = self.sources.program.references.get(&evaluation.expression) else { return Unknown; };
+                        if reference.path.is_empty() && matches!(reference.root, flow::ReferenceRoot::Binding(_) | flow::ReferenceRoot::EnvironmentCell) { return NoDispatch; }
+                        self.alias_read_reference(reference, at.graph).map_or(Unknown, ReferenceRead)
+                    },
+                    ExprKind::Unary { .. } if flow::numeric_literal(expression).is_some() => NoDispatch,
+                    ExprKind::Binary { left, right, .. }
+                        if flow::numeric_literal(left).is_some() && flow::numeric_literal(right).is_some() => NoDispatch,
+                    _ => Unknown,
+                }
+            },
+            flow::NodeKind::Write { address, .. } => {
+                if address.reference.path.is_empty() && matches!(address.reference.root, flow::ReferenceRoot::Binding(_) | flow::ReferenceRoot::EnvironmentCell) { return NoDispatch; }
+                self.alias_read_reference(&address.reference, at.graph).map_or(Unknown, ReferenceRead)
+            },
+            flow::NodeKind::IteratorStart { .. } | flow::NodeKind::Iteration { .. } => Unknown,
+            flow::NodeKind::Start | flow::NodeKind::CreateFunction { .. } | flow::NodeKind::Predicate { .. }
+            | flow::NodeKind::Merge | flow::NodeKind::Loop | flow::NodeKind::Call { .. }
+            | flow::NodeKind::Return { .. } | flow::NodeKind::Break | flow::NodeKind::Unreachable => NoDispatch,
+        }
+    }
+
+    fn alias_callee_type(&self, value:NativeValueKey, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {
+        self.alias_value_type(value, input, queries)
     }
     fn alias_value_type(&self, value:NativeValueKey, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {
         let recipe=self.sources.value(value).expect("original alias callee value");
@@ -1354,7 +1458,8 @@ impl NativeFlowProvider for FlowAdapter<'_> {
                 return NativeAliasValue::Projection {value:self.sources.evaluation_value(*evaluation),input:self.sources.flow_key(source.input,input.graph.context),index:*index};
             }
             ValueRecipe::Evaluation(evaluation)=>self.sources.program.evaluation(*evaluation),
-            ValueRecipe::Nil|ValueRecipe::Function(_)|ValueRecipe::NumericIteration=>return NativeAliasValue::NotTable,
+            ValueRecipe::Function(region) => return self.alias_function_value(*region, input),
+            ValueRecipe::Nil|ValueRecipe::NumericIteration=>return NativeAliasValue::NotTable,
             _=>return NativeAliasValue::Unknown,
         };
         let at=self.sources.flow_key(evaluation.input,input.graph.context);
@@ -1365,11 +1470,13 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             return NativeAliasValue::Projection {value:self.sources.evaluation_value(inner),input:self.sources.flow_key(source.input,input.graph.context),index:0};
         }
         if let Some(reference)=self.sources.program.references.get(&evaluation.expression)
-            && let Some(reference)=self.sources.reference_key(at.graph,reference)
+            && let Some(reference)=self.alias_read_reference(reference,at.graph)
         {return NativeAliasValue::Reference {reference,input:at};}
         let expression=&self.sources.program.expression(evaluation.expression).expression;
         match &expression.kind {
             ExprKind::Table(_)=>NativeAliasValue::Allocation,
+            ExprKind::Function(function) => self.sources.program.functions.get(&(function.span.start, function.span.end))
+                .map_or(NativeAliasValue::Unknown, |&region| self.alias_function_value(region, input)),
             ExprKind::Call {..}=> {
                 let Some(callee)=evaluation.operands.first().copied() else {return NativeAliasValue::Unknown};
                 let source=self.sources.program.evaluation(callee);
@@ -1378,7 +1485,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             // A method evaluation's first operand is its receiver, not the
             // selected method. It cannot serve as an implementation origin.
             ExprKind::MethodCall {..}=>NativeAliasValue::Unknown,
-            ExprKind::Nil|ExprKind::Number(_)|ExprKind::String(_)|ExprKind::Boolean(_)|ExprKind::Function(_)=>NativeAliasValue::NotTable,
+            ExprKind::Nil|ExprKind::Number(_)|ExprKind::String(_)|ExprKind::Boolean(_)=>NativeAliasValue::NotTable,
             _=>NativeAliasValue::Unknown,
         }
     }
@@ -1547,9 +1654,15 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         let target = flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path };
         self.sources.compare_write_references(query, &target, address, at)
     }
-    fn call_invalidates_reference(&self, reference: NativeReferenceKey, at: NativeFlowKey, _: &mut dyn TypeQueries) -> bool {
-        self.sources.source_reference(reference).is_some_and(|reference| reference.root == flow::ReferenceRoot::LoaderState)
-            && self.sources.source_node(at).is_some_and(|node| self.sources.loader_mutations.contains(&(node.span.start, node.span.end)))
+    fn call_invalidates_reference(&self, reference: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {
+        if !self.sources.source_reference(reference).is_some_and(|reference| reference.root == flow::ReferenceRoot::LoaderState) {
+            return false;
+        }
+        let Some(node) = self.sources.source_node(at) else { return true; };
+        if self.sources.loader_mutations.contains(&(node.span.start, node.span.end)) { return true; }
+        let Some(NativeFlowNode::Call { value, input, .. }) = self.sources.node(at) else { return true; };
+        queries.flow_call_preservation(self, reference, value, input)
+            != luanalysis_engine::NativeCallPreservation::Preserved
     }
     fn write_member_key(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<luanalysis_engine::LuaKey> {
         if reference.graph!=at.graph || target.graph!=at.graph {return None;}

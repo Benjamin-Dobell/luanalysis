@@ -35,6 +35,8 @@ mod assignment_context;
 mod methods;
 #[path = "native_metatables.rs"]
 mod metatables;
+#[path = "native_alias_facts.rs"]
+mod alias_facts;
 #[path = "native_project_provider.rs"]
 pub(crate) mod project_provider;
 #[path = "native_globals.rs"]
@@ -755,6 +757,9 @@ impl NativeRegistry {
     }
 
     pub(super) fn iterator_sources(&self) -> &NativeFlowSources { &self.flow }
+    pub(super) fn seed_original_global_reference_keys(&mut self, names: &[Vec<u8>]) {
+        self.flow.seed_original_global_reference_keys(names);
+    }
 
     pub(super) fn flow_sources(&self) -> &NativeFlowSources { &self.flow }
 
@@ -1903,6 +1908,12 @@ impl FlowValueQueries for NativeRegistry {
     fn written_binding_contract(&self, binding: BindingId, queries: &mut dyn TypeQueries) -> Option<Type> {
         self.original_written_binding_contract(binding, queries)
     }
+    fn original_alias_initial(&self, reference: &super::flow::Reference) -> luanalysis_engine::NativeAliasInitial {
+        self.source_alias_initial(reference)
+    }
+    fn original_alias_execution(&self, function: NativeFunctionKey, creation: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasExecution> {
+        self.source_alias_execution(function, creation)
+    }
     fn environment_access_path(&self, expression: &Expr, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<Vec<super::flow::Key>> { self.frozen_environment_path(expression, input, queries) }
     fn original_type_operation(&self, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {
         if self.legacy_builtin_policy == super::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility {
@@ -2061,6 +2072,7 @@ impl NativeTypeProvider for NativeRegistry {
         self.global_contract(key, queries)
     }
     fn value_declaration_signatures(&self,key:luanalysis_engine::NativeValueDeclarationKey)->Option<Vec<luanalysis_engine::NativeSignatureKey>> { self.global_declaration_signatures(key) }
+    fn value_declaration_function_signatures(&self,key:luanalysis_engine::NativeValueDeclarationKey)->Option<Vec<luanalysis_engine::NativeSignatureKey>> { self.global_function_signatures(key) }
     fn value_declaration_initializer(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Type {
         self.global_initializer(key, queries)
     }

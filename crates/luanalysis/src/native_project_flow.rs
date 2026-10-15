@@ -1,0 +1,175 @@
+//! Project-wide transport of original flow recipes. Cross-file execution keeps
+//! each source snapshot and graph intact; native queries own every proof.
+use super::ProjectRegistry;
+use crate::native_flow::FlowAdapter;
+use luanalysis_engine::{
+    CallError, LuaKey, NativeAliasCall, NativeAliasDispatch, NativeAliasExecution,
+    NativeAliasInitial, NativeAliasReturn, NativeAliasReturnValue, NativeAliasValue,
+    NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeFlowProvider,
+    NativeFunctionCreation, NativeFunctionKey, NativeGraphKey, NativeIteratorProjection,
+    NativeIteratorStage, NativePackProjection, NativePredicate, NativeReferenceKey, NativeValueKey,
+    NativeVariableDeclaration, NativeWriteRelation, Type, TypeQueries, ValuePack,
+};
+
+impl ProjectRegistry {
+    fn original_flow(&self, snapshot: u64) -> Option<FlowAdapter<'_>> {
+        let source = self.owner_if(snapshot)?;
+        Some(FlowAdapter {
+            sources: source.iterator_sources(),
+            values: source,
+        })
+    }
+}
+
+macro_rules! route {
+    ($(fn $name:ident($($argument:ident: $ty:ty),*) -> $result:ty { $snapshot:expr; $fallback:expr })*) => {
+        $(fn $name(&self, $($argument: $ty),*) -> $result {
+            let Some(source) = self.original_flow($snapshot) else { return $fallback; };
+            source.$name($($argument),*)
+        })*
+    };
+}
+
+impl NativeFlowProvider for ProjectRegistry {
+    route! {
+        fn alias_value_type(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { value.snapshot; queries.error_type() }
+        fn alias_environment_candidate(value: NativeValueKey, input: NativeFlowKey) -> bool { value.snapshot; false }
+        fn write_alias_receiver(at: NativeFlowKey) -> Option<NativeAliasReturnValue> { at.graph.snapshot; None }
+        fn reference_member_path(reference: NativeReferenceKey, member: NativeReferenceKey) -> Option<Vec<LuaKey>> { reference.graph.snapshot; None }
+        fn reference_alias_initial(reference: NativeReferenceKey) -> NativeAliasInitial { reference.graph.snapshot; NativeAliasInitial::Opaque }
+        fn alias_call_source(value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> { value.snapshot; None }
+        fn alias_node_dispatch(at: NativeFlowKey) -> NativeAliasDispatch { at.graph.snapshot; NativeAliasDispatch::Unknown }
+        fn function_alias_execution(function: NativeFunctionKey, creation: NativeFlowKey) -> Option<NativeAliasExecution> { function.snapshot; None }
+        fn reference_is_cell(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
+        fn reference_written_contract(reference: NativeReferenceKey, queries: &mut dyn TypeQueries) -> Option<Type> { reference.graph.snapshot; None }
+        fn value_alias_source(value: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue { value.snapshot; NativeAliasValue::Unknown }
+        fn value_alias_member_source(value: NativeValueKey, input: NativeFlowKey, key: &LuaKey) -> Option<NativeAliasReturnValue> { value.snapshot; None }
+        fn function_alias_returns(function: NativeFunctionKey) -> Option<Vec<NativeAliasReturn>> { function.snapshot; None }
+        fn function_alias_exit(function: NativeFunctionKey) -> Option<NativeFlowKey> { function.snapshot; None }
+        fn reference_tracks_runtime_value(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
+        fn reference_follows_creation(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
+        fn runtime_type_operation(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool { value.snapshot; false }
+        fn assertion_predicate(value: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> { value.snapshot; None }
+        fn reference_declaration(reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> { reference.graph.snapshot; None }
+        fn graph_creation(graph: NativeGraphKey) -> Option<NativeFunctionCreation> { graph.snapshot; None }
+        fn iterator_error(at: NativeFlowKey, stage: NativeIteratorStage, callee: &Type, error: CallError, queries: &mut dyn TypeQueries) -> () { at.graph.snapshot; () }
+        fn iterator_projection(reference: NativeReferenceKey) -> Option<NativeIteratorProjection> { reference.graph.snapshot; None }
+        fn pack_projection(reference: NativeReferenceKey) -> Option<NativePackProjection> { reference.graph.snapshot; None }
+        fn value_pack(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> ValuePack { value.snapshot; ValuePack::single(queries.error_type()) }
+        fn contains_graph(graph: NativeGraphKey) -> bool { graph.snapshot; false }
+        fn contains_reference(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
+        fn node(at: NativeFlowKey) -> Option<NativeFlowNode> { at.graph.snapshot; None }
+        fn is_shared(at: NativeFlowKey) -> bool { at.graph.snapshot; false }
+        fn write_affects(reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> NativeWriteRelation { at.graph.snapshot; NativeWriteRelation::PossibleAncestor }
+        fn write_affects_with_types(reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeWriteRelation { at.graph.snapshot; NativeWriteRelation::PossibleAncestor }
+        fn call_invalidates_reference(reference: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool { at.graph.snapshot; true }
+        fn write_member_key(reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<LuaKey> { at.graph.snapshot; None }
+        fn reference_member_key(reference: NativeReferenceKey, member: NativeReferenceKey) -> Option<LuaKey> { reference.graph.snapshot; None }
+        fn value_type(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { value.snapshot; queries.error_type() }
+        fn alias_callee_type(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { value.snapshot; queries.error_type() }
+        fn call_effects(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeCallEffects { value.snapshot; NativeCallEffects::Unsupported("foreign original flow value") }
+        fn flow_error(at: NativeFlowKey, error: NativeFlowError) -> () { at.graph.snapshot; () }
+    }
+
+    fn require_alias_execution(
+        &self,
+        value: NativeValueKey,
+        input: NativeFlowKey,
+    ) -> Option<Vec<NativeAliasExecution>> {
+        let source = self.owner_if(value.snapshot)?;
+        let crate::native_flow::ValueRecipe::Evaluation(evaluation) =
+            source.iterator_sources().value(value)?
+        else {
+            return None;
+        };
+        let evaluation = source.iterator_sources().program.evaluation(*evaluation);
+        let expression = &source
+            .iterator_sources()
+            .program
+            .expression(evaluation.expression)
+            .expression;
+        let (_, import) = source.module_import(expression.span)?;
+        let super::ImportOutcome::Module(module) = import.outcome else {
+            return None;
+        };
+        let target = self.owner_if(module.snapshot)?;
+        if target.source_role() != luanalysis_project::SourceRole::Implementation
+            || target.file.has_lua_syntax_errors()
+        {
+            return None;
+        }
+        let graph = target.iterator_sources().graph(0, 0);
+        let original = &target.iterator_sources().program.graphs[0];
+        let mut terminals: Vec<_> = original
+            .returns
+            .iter()
+            .map(|&at| target.iterator_sources().flow_key(at, graph.context))
+            .collect();
+        terminals.push(
+            target
+                .iterator_sources()
+                .flow_key(original.exit, graph.context),
+        );
+        // A source-host candidate is consumed only after the native worker
+        // proves the actual standard loader and its unchanged namespace.
+        let _ = input;
+        Some(vec![NativeAliasExecution {
+            entry: target
+                .iterator_sources()
+                .flow_key(original.entry, graph.context),
+            terminals,
+        }])
+    }
+
+    fn require_alias_loader_reference(
+        &self,
+        value: NativeValueKey,
+        input: NativeFlowKey,
+    ) -> Option<NativeReferenceKey> {
+        let source = self.owner_if(value.snapshot)?;
+        let crate::native_flow::ValueRecipe::Evaluation(evaluation) =
+            source.iterator_sources().value(value)?
+        else {
+            return None;
+        };
+        let expression = &source
+            .iterator_sources()
+            .program
+            .expression(
+                source
+                    .iterator_sources()
+                    .program
+                    .evaluation(*evaluation)
+                    .expression,
+            )
+            .expression;
+        source.module_import(expression.span)?;
+        source
+            .iterator_sources()
+            .contains_graph(input.graph)
+            .then(|| source.iterator_sources().loader_reference(input.graph))
+    }
+
+    fn reference_in_graph(
+        &self,
+        reference: NativeReferenceKey,
+        graph: NativeGraphKey,
+    ) -> Option<NativeReferenceKey> {
+        let source = self.original_flow(reference.graph.snapshot)?;
+        let target = self.original_flow(graph.snapshot)?;
+        let recipe = source.sources.source_reference(reference)?;
+        if reference.graph.snapshot != graph.snapshot
+            && !matches!(
+                recipe.root,
+                crate::flow::ReferenceRoot::EnvironmentObject
+                    | crate::flow::ReferenceRoot::LoaderState
+            )
+        {
+            // Binding IDs and lexical environment cells belong to their actual
+            // file/activation. Only this project's selected physical global
+            // environment object and loader-state sentinel are shared domains.
+            return None;
+        }
+        target.sources.reference_key(graph, recipe)
+    }
+}

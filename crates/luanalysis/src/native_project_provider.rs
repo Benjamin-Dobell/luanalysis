@@ -21,6 +21,9 @@ use luanalysis_syntax::File;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+#[path = "native_project_flow.rs"]
+mod flow_router;
+
 pub(crate) struct RegistryInput {
     pub id: FileId,
     pub role: SourceRole,
@@ -127,6 +130,8 @@ impl ProjectRegistry {
             index: 0,
         };
         let globals = Rc::new(super::globals::ProjectGlobalIndex::new(environment, &files.iter().map(|file| &file.source).collect::<Vec<_>>()));
+        let original_names: Vec<_> = globals.bindings().into_iter().map(|(name, _)| name).collect();
+        for file in &mut files { file.source.seed_original_global_reference_keys(&original_names); }
         let modules_by_file: HashMap<_, _> = files
             .iter()
             .map(|file| (file.id, file.source.module_key()))
@@ -345,6 +350,7 @@ macro_rules! dispatch {
 }
 
 impl NativeTypeProvider for ProjectRegistry {
+    fn project_flow_provider(&self) -> Option<&dyn luanalysis_engine::NativeFlowProvider> { Some(self) }
     fn global_environment_binding(&self, environment: luanalysis_engine::NativeEnvironmentKey, name: &[u8]) -> Option<luanalysis_engine::NativeGlobalBindingKey> {
         if environment != self.globals.environment { return None; }
         self.globals.binding(std::str::from_utf8(name).ok()?)
@@ -358,7 +364,10 @@ impl NativeTypeProvider for ProjectRegistry {
         let binding = self.globals.binding("_G")?;
         // Only selected bundled declaration ownership attests the initial
         // runtime self-reference. A user-written `_G` contract is ordinary.
-        self.globals.declarations(binding).iter().all(|owner| {
+        let owners = self.globals.declarations(binding);
+        let mut declarations = owners.iter().filter(|&&owner| self.globals.is_declaration_owner(owner));
+        let first = declarations.next()?;
+        std::iter::once(first).chain(declarations).all(|owner| {
             let file = &self.files[self.snapshots[&owner.snapshot]];
             file.role == SourceRole::Declaration && file.standard_library.is_some()
         }).then_some(binding)
@@ -398,6 +407,7 @@ impl NativeTypeProvider for ProjectRegistry {
         self.owner_if(key.snapshot).is_some_and(|owner| owner.contains_global_declaration(key))
     }
     fn value_declaration_signatures(&self,key:luanalysis_engine::NativeValueDeclarationKey)->Option<Vec<NativeSignatureKey>> { self.owner(key.snapshot).value_declaration_signatures(key) }
+    fn value_declaration_function_signatures(&self,key:luanalysis_engine::NativeValueDeclarationKey)->Option<Vec<NativeSignatureKey>> { self.owner(key.snapshot).value_declaration_function_signatures(key) }
     fn value_declaration_header(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> luanalysis_engine::ValueDeclarationHeader {
         self.owner(key.snapshot).global_header(key)
     }
