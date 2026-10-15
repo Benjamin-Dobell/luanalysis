@@ -2908,7 +2908,20 @@ impl<'p, 's> Checker<'p, 's> {
             }));
         let target = if implementation_declaration.is_some_and(|declaration| {
             self.native_function_provider.is_some_and(|provider| provider.calling_convention(declaration) == super::native_signatures::NativeCallingConvention::Lua)
-        }) { self.lua_overload_argument_signature(source, target) } else { target };
+        }) {
+            // Erasure maps a generic parameter to any for the ordinary TS
+            // comparison. That must not make a missing physical nil satisfy a
+            // written nonnullable generic implementation parameter.
+            let original_source = self.sig_params(implementation);
+            let original_target = self.sig_params(overload);
+            let fixed = original_source.len() - usize::from(original_source.last().is_some_and(|parameter| parameter.rest));
+            let minimum = self.min_argument_count(&original_target);
+            for index in minimum..fixed {
+                let expected = self.get_type_of_parameter(&original_source[index]);
+                if !self.is_assignable(TypeId::UNDEFINED, expected) { return false }
+            }
+            self.lua_overload_argument_signature(source, target)
+        } else { target };
         // `isSignatureAssignableTo`
         let mut r = Relater::new(Relation::Assignable, self.cycles);
         r.compares_types_assignable = true;

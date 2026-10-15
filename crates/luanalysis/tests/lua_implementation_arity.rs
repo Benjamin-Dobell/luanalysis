@@ -140,6 +140,48 @@ fn overload_parameter_types_never_retype_the_long_form_body() {
 }
 
 #[test]
+fn a_public_overload_does_not_annotate_an_untyped_implementation_parameter() {
+    let source = "---@overload fun(value:number):number\nlocal function untyped(value) return value end\nlocal result=untyped(1)\n";
+    let report = check(source);
+    let errors: Vec<_> = report
+        .diagnostics
+        .iter()
+        .filter(|error| error.code == "TS7006")
+        .collect();
+    assert_eq!(errors.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(&source[errors[0].span.start..errors[0].span.end], "value");
+    assert_eq!(
+        report.type_at(source.find("untyped(value)").unwrap() + "untyped(".len()),
+        Some("any")
+    );
+    let corrected = source.replacen(
+        "local function",
+        "---@param value number\nlocal function",
+        1,
+    );
+    clean(&corrected);
+    let rejected = format!("{corrected}untyped('wrong')\n");
+    assert!(
+        check(&rejected)
+            .diagnostics
+            .iter()
+            .any(|error| matches!(error.code, "TS2345" | "TS2769"))
+    );
+}
+
+#[test]
+fn an_erased_generic_implementation_parameter_does_not_imply_nil_admission() {
+    let source = "---@overload fun():string\n---@generic T:string\n---@param value T\n---@return string\nlocal function generic(value) return 'result' end\n";
+    assert!(
+        check(source)
+            .diagnostics
+            .iter()
+            .any(|error| error.code == "TS2394")
+    );
+    clean(&source.replace("---@param value T", "---@param value T|nil"));
+}
+
+#[test]
 fn public_rest_arguments_include_nil_when_the_fixed_implementation_slot_is_absent() {
     let source = "---@overload fun(...:number):string\n---@param value number|nil\n---@return string\nlocal function rest(value) return 'result' end\nrest()\nrest(1,2)\n";
     clean(source);
