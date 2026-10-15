@@ -1684,7 +1684,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn flow_standard_loader_state(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, reference: NativeReferenceKey) -> NativeFlowResult {
         let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
         let result = self.checker.native_flow_standard_loader_state(&adapter, at, reference);
-        NativeFlowResult { ty: export_type(self.checker, self.handles, result.ty), incomplete: result.incomplete, unresolved_auto: result.unresolved_auto }
+        // This query returns a boolean analysis state. Regular literal identity
+        // must not turn its true/false value into an opaque runtime type handle.
+        NativeFlowResult { ty: export_type_with_literal_policy(self.checker, self.handles, result.ty, false), incomplete: result.incomplete, unresolved_auto: result.unresolved_auto }
     }
     fn flow_capture_type(
         &mut self,
