@@ -1072,6 +1072,7 @@ enum Query {
     NativeCallPreserves(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
     NativeAliasLoaderState(native_flow::NativeReferenceKey, native_flow::NativeFlowKey),
     NativeAliasMetatableAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
+    NativeAliasCallableTable(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
     NativeGlobals(NativeGlobalsQuery),
     NativeProject(NativeProjectQuery),
@@ -1168,7 +1169,7 @@ impl Query {
             Query::ReturnOfSignature(_)
             | Query::NativeContextualTypeOwner(..)
             | Query::NativeFlowCallEffects(..)
-            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
+            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..) | Query::NativeAliasCallableTable(..)
             | Query::NativeAliasLoaderState(..)
             | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
             | Query::NativeNamed(_)
