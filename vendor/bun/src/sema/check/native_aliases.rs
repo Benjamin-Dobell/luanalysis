@@ -10,6 +10,9 @@ use super::native_globals::{NativeEnvironmentId, NativeGlobalBindingId, NativeGl
 use super::native_intrinsics::{NativeIntrinsicKind, NativeIntrinsicSite};
 use crate::types::NativeFunctionId;
 
+#[path = "native_alias_loops.rs"]
+mod loops;
+
 #[derive(Clone, Copy, Debug)]
 pub enum NativeAliasValue {
     Reference { reference: NativeReferenceKey, input: NativeFlowKey },
@@ -546,6 +549,10 @@ impl<'p, 's> Checker<'p, 's> {
         let Some(recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Unknown };
         if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeCallPreservation::Unknown }
         let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
+        self.native_alias_call_preservation_for_callee(provider, reference, call, input, recipe, callee)
+    }
+
+    fn native_alias_call_preservation_for_callee(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey, recipe: NativeAliasCall, callee: Origins) -> NativeCallPreservation {
         if callee.uncertain { return NativeCallPreservation::Pending }
         if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return NativeCallPreservation::Unknown }
         match callee.tokens.into_iter().next().unwrap() {
@@ -843,7 +850,7 @@ impl<'p, 's> Checker<'p, 's> {
             // This is a completed limit of the provenance proof, not an
             // unresolved query. The memo scope below still propagates any
             // actual recursive dependency as uncertain.
-            Some(NativeFlowNode::Loop { .. }) => Origins::unavailable(),
+            Some(NativeFlowNode::Loop { edges }) => self.native_alias_loop_reference(provider, reference, at, &edges),
             Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }) => {
                 if self.native_alias_stable_cell(provider, reference) || self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_reference(provider, reference, before) }
                 else { Origins::one(Origin::OpaqueReference(reference, at), true) }

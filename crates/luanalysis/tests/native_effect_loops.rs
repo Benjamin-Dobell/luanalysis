@@ -84,6 +84,23 @@ fn restoring_the_real_assert_before_each_loop_call_keeps_its_refinement() {
 }
 
 #[test]
+fn restoring_a_callee_copy_cannot_hide_loop_mutation_of_the_original_standard_slot() {
+    for (setup, mutation) in [
+        ("", "  assert=ordinary\n"),
+        ("local environment=_G\n", "  environment.assert=ordinary\n"),
+        ("local function replace() assert=ordinary end\n", "  replace()\n"),
+    ] {
+        let source = format!("{ORDINARY}{setup}---@param value number|nil\n---@param again boolean\nlocal function read(value,again)\n ---@type fun(value:any):any\n local guard=assert\n while again do\n  guard=assert\n  guard(value)\n  ---@type number\n  local narrowed=value\n{mutation}  value=nil\n end\nend\nread(42,true)\n");
+        let fixture = Fixture::new(&source);
+        let output = fixture.check();
+        rejects(&output, "TS2322");
+        assert!(!text(&output).contains("LUA2041"), "{}", text(&output));
+        fs::write(fixture.0.join("main.lua"), source.replace(mutation, "")).unwrap();
+        pass(&fixture.check());
+    }
+}
+
+#[test]
 fn a_same_shape_ordinary_function_has_no_assertion_effect() {
     let fixture = Fixture::new(&format!(
         "{ORDINARY}---@param value number|nil\nlocal function read(value)\n ordinary(value)\n ---@type number\n local narrowed=value\nend\nlocal result=read(42)\n"

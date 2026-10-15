@@ -222,7 +222,7 @@ impl NativeFlowProvider for StandardRecipes {
             20 => NativeAliasValue::Allocation,
             21..=23 => NativeAliasValue::NotTable,
             30..=32 => NativeAliasValue::Function { function: function(match original.index { 30 => 3, 31 => 1, _ => 2 }), creation: at(0, 0) },
-            100 | 101 | 102 | 104 | 105 => self.alias_call_source(original, input).map_or(NativeAliasValue::Unknown, |call| NativeAliasValue::Call { callee: call.callee.value, input: call.callee.input }),
+            100 | 101 | 102 | 104 | 105 | 106 => self.alias_call_source(original, input).map_or(NativeAliasValue::Unknown, |call| NativeAliasValue::Call { callee: call.callee.value, input: call.callee.input }),
             _ => NativeAliasValue::Unknown,
         }
     }
@@ -259,6 +259,7 @@ impl NativeFlowProvider for StandardRecipes {
                 NativeAliasReturnValue { value: value(4, 20), input: at(4, 0) },
                 NativeAliasReturnValue { value: value(4, 21), input: at(4, 0) },
             ]),
+            106 => (value(0, 50), input, vec![]),
             _ => return None,
         };
         Some(NativeAliasCall {
@@ -398,7 +399,8 @@ fn a_loop_provenance_barrier_is_completed_unknown_without_attesting_a_standard_o
     for routed in [false, true] {
         Engine::new().with_native_provider(move || {
             let mut source = StandardRecipes::new(routed);
-            source.nodes.insert(at(0, 11), NativeFlowNode::Loop { edges: vec![at(0, 1), at(0, 11)] });
+            source.nodes.insert(at(0, 11), NativeFlowNode::Loop { edges: vec![at(0, 1), at(0, 12)] });
+            source.nodes.insert(at(0, 12), NativeFlowNode::Call { before: at(0, 11), value: value(0, 103), input: at(0, 11) });
             source
         }, |source, queries| {
             for _ in 0..2 {
@@ -416,6 +418,30 @@ fn a_loop_provenance_barrier_is_completed_unknown_without_attesting_a_standard_o
             assert_eq!(queries.flow_alias_intrinsic(source, value(0, 67), at(0, 0)), NativeAliasIntrinsic::Pending);
             assert_eq!(queries.flow_alias_intrinsic(source, value(0, 0), at(0, 11)), NativeAliasIntrinsic::Unknown);
         });
+    }
+}
+
+#[test]
+fn original_loop_backedges_can_preserve_a_canonical_slot_through_restored_callee_copies() {
+    for routed in [false, true] {
+        for changed in 0..3 {
+            Engine::new().with_native_provider(move || {
+                let mut source = StandardRecipes::new(routed);
+                source.nodes.insert(at(0, 11), NativeFlowNode::Loop { edges: vec![at(0, 1), at(0, 15)] });
+                source.nodes.insert(at(0, 12), NativeFlowNode::Write { before: at(0, 11), target: reference(0, 1), value: value(0, 0), input: at(0, 11) });
+                source.nodes.insert(at(0, 13), NativeFlowNode::Call { before: at(0, 12), value: value(0, if changed == 2 { 103 } else { 106 }), input: at(0, 12) });
+                source.nodes.insert(at(0, 14), NativeFlowNode::Write { before: at(0, 13), target: reference(0, if changed == 1 { 0 } else { 1 }), value: value(0, 30), input: at(0, 13) });
+                source.nodes.insert(at(0, 15), NativeFlowNode::Pass { before: at(0, 14) });
+                source
+            }, |source, queries| {
+                let expected = if changed == 0 { StandardRecipes::selected() } else { NativeAliasIntrinsic::Unknown };
+                for _ in 0..2 {
+                    assert_eq!(queries.flow_alias_intrinsic(source, value(0, 0), at(0, 11)), expected);
+                }
+                assert_eq!(queries.flow_alias_intrinsic(source, value(0, 0), at(0, 0)), StandardRecipes::selected());
+                assert_eq!(queries.flow_alias_intrinsic(source, value(0, 67), at(0, 0)), NativeAliasIntrinsic::Pending);
+            });
+        }
     }
 }
 
