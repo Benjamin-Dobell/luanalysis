@@ -24,8 +24,7 @@ impl Fixture {
     fn check(&self) -> Output {
         Command::new(env!("CARGO_BIN_EXE_luanalysis"))
             .current_dir(&self.0)
-            .args(["check", "--dump-types", "--library"])
-            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib/Lua54"))
+            .args(["check", "--dump-types", "--lua-version", "5.4"])
             .arg("main.lua")
             .output()
             .unwrap()
