@@ -367,7 +367,8 @@ impl<'p, 's> Checker<'p, 's> {
             Some(NativeFlowNode::Start) => {
                 let declaration = provider.reference_declaration(reference);
                 let execution = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry == at);
-                if let Some(index) = execution.filter(|_| declaration.as_ref().is_none_or(|declaration| declaration.owner != at.graph)) {
+                let own_cell = provider.reference_is_cell(reference) && declaration.as_ref().is_some_and(|declaration| declaration.owner == at.graph);
+                if let Some(index) = execution.filter(|_| !own_cell) {
                     let frame = self.native_alias_cache.executions[index];
                     if let Some(caller) = provider.reference_in_graph(reference, frame.caller.graph) {
                         self.with_native_alias_parent(index, |checker| checker.native_alias_reference(provider, caller, frame.caller))

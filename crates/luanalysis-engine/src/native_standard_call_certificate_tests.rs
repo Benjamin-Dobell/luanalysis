@@ -271,6 +271,7 @@ impl NativeFlowProvider for StandardRecipes {
     }
     fn reference_declaration(&self, original: NativeReferenceKey) -> Option<NativeVariableDeclaration> {
         let (owner, writes) = match original.reference {
+            0 if original.graph == graph(4) => (graph(4), vec![]),
             1 => (graph(0), vec![NativeVariableWrite { owner: graph(2), statement_end: 1 }]),
             12 => (graph(0), vec![]),
             13 if original.graph == graph(1) => (graph(1), vec![]),
@@ -416,6 +417,8 @@ fn copied_standard_value_survives_a_pure_call_but_not_an_executed_captured_write
 fn imported_execution_inherits_the_caller_environment_instead_of_reseeding_standard_values() {
     for routed in [false, true] {
         Engine::new().with_native_provider(move || StandardRecipes::new(routed), |recipes, queries| {
+            assert_eq!(recipes.reference_declaration(reference(4, 0)).unwrap().owner, graph(4));
+            assert!(!recipes.reference_is_cell(reference(4, 0)));
             assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, 0), at(0, 1)), StandardRecipes::selected());
             assert_eq!(queries.flow_call_preservation(recipes, reference(0, 0), value(0, 104), at(0, 1)), NativeCallPreservation::Preserved);
             assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, 0), at(0, 4)), NativeAliasIntrinsic::Unknown);
