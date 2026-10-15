@@ -1050,24 +1050,35 @@ mod dependency_tests {
 
     #[test]
     fn documentation_owner_preparation_invalidates_completed_anonymous_headers() {
-        let registry = registry("---@class Owner<T>\n\n---@function Owner.read():{value:T}\n");
-        let owner = registry.named_candidates("Owner")[0];
+        // A local qualified owner is also an immutable signature parent. Use
+        // the valid cross-file preparation path so only the mutable attached
+        // owner supplies T to this consumer's original signature.
+        let owner_source = registry("---@class Owner<T>\n");
+        let mut registry = registry("---@function Owner.read():{value:T}\n");
+        registry.types.import_original_scopes(&owner_source.types.original_scopes());
+        let owner = owner_source.named_candidates("Owner")[0];
         let owner = NativeNamedKey { snapshot: owner.snapshot, index: owner.index };
-        let parameter = registry.types.own_parameters_in_context(NativeTypeContext::NamedType(owner))[0];
+        let parameter = owner_source.types.own_parameters_in_context(NativeTypeContext::NamedType(owner))[0];
         let source = registry.named.anonymous_heads().iter().find(|head| {
             matches!(head.syntax.kind, TypeExprKind::Record(_))
         }).expect("original written return record");
         let key = anonymous(source.key);
         let signature = registry.signature_context_for_annotation(source.syntax.span)
             .expect("return record retains its original signature context");
-        // This separate documentation block obtains T from the prepared
-        // method owner, rather than the class block's lexical type scope.
+        let context = Some(NativeTypeContext::Signature(signature));
+        assert_eq!(registry.types.resolve_name_in_context(context, "T"), TypeNameResolution::Missing);
+        assert!(registry.named_declaration_header(key).outer_parameters.is_empty());
         registry.types.attach_documentation_owner(signature, owner);
+        assert_eq!(registry.types.resolve_name_in_context(context, "T"), TypeNameResolution::Parameter(parameter));
         let header = registry.named_declaration_header(key);
         assert_eq!(header.outer_parameters, vec![parameter]);
         registry.types.clear_documentation_owner(signature);
-        assert!(registry.named_declaration_header(key).outer_parameters.is_empty());
+        assert_eq!(registry.types.resolve_name_in_context(context, "T"), TypeNameResolution::Missing);
+        let uncached = registry.named_declaration_header_uncached(key);
+        assert!(uncached.outer_parameters.is_empty());
+        assert_eq!(registry.named_declaration_header(key), uncached);
         registry.types.attach_documentation_owner(signature, owner);
+        assert_eq!(registry.types.resolve_name_in_context(context, "T"), TypeNameResolution::Parameter(parameter));
         assert_eq!(registry.named_declaration_header(key), header);
     }
 
