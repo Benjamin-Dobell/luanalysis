@@ -49,7 +49,7 @@ impl NativeRegistry {
                 }
                 let reference = sources.expression_reference(expression, input.graph)?;
                 if let Some(flow::Reference { root: flow::ReferenceRoot::Binding(binding), .. }) = sources.source_reference(reference)
-                    && self.shape_for_binding(*binding).is_some()
+                    && self.has_shape_attachment(*binding)
                 {
                     return None;
                 }

@@ -792,6 +792,9 @@ impl NativeRegistry {
     }
 
     pub(super) fn iterator_sources(&self) -> &NativeFlowSources { &self.flow }
+    pub(crate) fn has_shape_attachment(&self, binding: BindingId) -> bool {
+        self.shape_for_binding(binding).is_some()
+    }
     pub(super) fn seed_original_global_reference_keys(&mut self, names: &[Vec<u8>]) {
         self.flow.seed_original_global_reference_keys(names);
     }
