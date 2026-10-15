@@ -466,7 +466,7 @@ impl NativeRegistry {
             report.diagnostics.push(crate::Diagnostic {
                 code: "LUA2040",
                 span: self.expressions.get(source.call).expression.span,
-                message: "Contextual type ownership remained unresolved for this original call."
+                message: "Could not determine the class context for this call."
                     .into(),
             });
         }
@@ -475,7 +475,7 @@ impl NativeRegistry {
                 code: "LUA2041",
                 span: self.function(function).span,
                 message:
-                    "Function body validation remained provisional after contextual type checking."
+                    "Type checking could not finish for this function body."
                         .into(),
             });
         }
