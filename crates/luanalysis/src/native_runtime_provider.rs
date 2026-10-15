@@ -238,9 +238,11 @@ impl crate::Checker<'_> {
             && self.type_context.is_some()
             && let Some(reference) = self.reference(expression)
             && native.binding_function_owner(reference.binding) != self.type_context
-            && let Some(schema) = self.engine.runtime_table_schema(&actual)
         {
-            return schema;
+            if reference.path.is_empty()
+                && let Some(contract) = self.class_namespace_member_contract(reference.binding, &actual)
+            { return contract; }
+            if let Some(schema) = self.engine.runtime_table_schema(&actual) { return schema; }
         }
         actual
     }

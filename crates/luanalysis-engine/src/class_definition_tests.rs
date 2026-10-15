@@ -167,6 +167,47 @@ fn optional_initializer_context_is_structural_and_never_grants_origin() {
 }
 
 #[test]
+fn deferred_namespace_contract_requires_its_original_definition_and_keeps_actual_presence() {
+    Engine::new().with_native_provider(definitions, |_, q| {
+        let class = q.named_type_reference(key(2), &[]).unwrap();
+        let definition = q.class_definition_value(owner(2), &class, &empty()).unwrap();
+        let contract = q.class_definition_member_contract(owner(2), &definition).unwrap();
+        assert_eq!(q.property_type(&contract, "value"), Some(Type::Number));
+        let actual = q.property_type(&definition, "value").unwrap();
+        assert!(q.is_assignable(&Type::Nil, &actual), "selecting a deferred contract does not populate the actual definition");
+        assert!(q.class_definition_member_contract(owner(0), &definition).is_none(), "a reassigned namespace cannot borrow its previous owner's schema");
+        assert!(q.class_definition_member_contract(owner(2), &class).is_none());
+        assert!(q.class_definition_member_contract(owner(2), &empty()).is_none());
+        let context = q.class_definition_context(owner(2), &class).unwrap();
+        assert!(q.class_definition_member_contract(owner(2), &context).is_none(), "a structural initializer context has no definition capability");
+    });
+}
+
+#[test]
+fn deferred_namespace_contract_preserves_exact_generic_mapper_and_explicit_optional_members() {
+    Engine::new().with_native_provider(|| {
+        let mut p = definitions();
+        p.base.declarations[0] = Decl::class(0, vec![Type::NativeTypeParameter(parameter())]);
+        p.base.declarations[0].generic = true;
+        p.base.declarations[2].optional = true;
+        p
+    }, |_, q| {
+        for argument in [Type::Number, Type::String] {
+            let class = q.named_type_reference(key(0), &[argument.clone()]).unwrap();
+            let definition = q.class_definition_value(owner(0), &class, &empty()).unwrap();
+            let contract = q.class_definition_member_contract(owner(0), &definition).unwrap();
+            assert_eq!(q.property_type(&contract, "value"), Some(argument));
+        }
+        let class = q.named_type_reference(key(2), &[]).unwrap();
+        let definition = q.class_definition_value(owner(2), &class, &empty()).unwrap();
+        let contract = q.class_definition_member_contract(owner(2), &definition).unwrap();
+        let optional = q.property_type(&contract, "value").unwrap();
+        assert!(q.is_assignable(&Type::Number, &optional));
+        assert!(q.is_assignable(&Type::Nil, &optional), "explicitly optional contracts are not strengthened");
+    });
+}
+
+#[test]
 fn missing_reads_include_nil_but_known_writes_always_require_original_t() {
     Engine::new().with_native_provider(definitions, |_, q| {
         let class = q.named_type_reference(key(2), &[]).unwrap();

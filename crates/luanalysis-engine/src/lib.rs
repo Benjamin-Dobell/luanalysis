@@ -761,6 +761,7 @@ pub trait TypeQueries {
 
     fn class_definition_context(&mut self, owner: NativeClassDefinitionKey, class_type: &Type) -> Result<Type, NamedTypeError>;
     fn class_definition_value(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError>;
+    fn class_definition_member_contract(&mut self, owner: NativeClassDefinitionKey, actual: &Type) -> Option<Type>;
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool;
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type;
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack;
@@ -2003,6 +2004,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn class_definition_value(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
         native_named::definition_value(self, owner, class_type, actual)
+    }
+    fn class_definition_member_contract(&mut self, owner: NativeClassDefinitionKey, actual: &Type) -> Option<Type> {
+        native_named::definition_member_contract(self, owner, actual)
     }
     fn named_type_reference(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Result<Type, NamedTypeError> {
         native_named::resolve(self, declaration, arguments)

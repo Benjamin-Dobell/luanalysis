@@ -39,6 +39,50 @@ fn empty_definition_keeps_missing_instance_members_nullable() {
 }
 
 #[test]
+fn deferred_original_namespace_bodies_use_declared_methods_without_populating_chunk_reads() {
+    for methods in [
+        "---@return number\nfunction Namespace.value() return 1 end\n---@return number\nfunction Namespace.first() return Namespace.value() end\n",
+        "---@return number\nfunction Namespace.first() return Namespace.value() end\n---@return number\nfunction Namespace.value() return 1 end\n",
+    ] {
+        let source = format!("---@class Namespace\nlocal Namespace={{}}\nlocal before=Namespace.value\n{methods}local result=Namespace.first()\n");
+        let report = clean(&source);
+        assert!(ty(&report, "before").contains("nil"), "{}", ty(&report, "before"));
+        assert_eq!(ty(&report, "result"), "number");
+        rejects(&source.replace("local before=Namespace.value", "local before=Namespace.value()"), "TS2349");
+    }
+}
+
+#[test]
+fn deferred_namespace_policy_keeps_explicit_optional_calls_and_captured_self_partial() {
+    rejects("---@class Namespace\n---@field maybe nil | fun():number\nlocal Namespace={}\n---@return number\nfunction Namespace.read() return Namespace.maybe() end\n", "TS2349");
+    let source = "---@class Namespace\nlocal Namespace={}\nlocal self=Namespace\n---@return number\nlocal function early() return self.value() end\n---@return number\nfunction Namespace.value() return 1 end\nreturn early\n";
+    rejects(source, "TS2349");
+    let corrected = "---@class Namespace\nlocal Namespace={}\n---@return number\nfunction Namespace.value() return 1 end\nlocal self=Namespace\n---@return number\nlocal function early() return self.value() end\nreturn early\n";
+    clean(corrected);
+}
+
+#[test]
+fn cli_original_json_sparse_fill_uses_its_declared_namespace_function() {
+    let directory = std::env::temp_dir().join(format!("luanalysis-json-namespace-presence-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("main.lua");
+    let source = include_str!("fixtures/native_effects/json_sparse_fill.lua");
+    let invoke = |source: &str| {
+        std::fs::write(&path, source).unwrap();
+        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+            .current_dir(&directory).args(["check", "--lua-version", "5.4", "main.lua"]).output().unwrap()
+    };
+    let correct = invoke(source);
+    assert!(correct.status.success(), "{}", String::from_utf8_lossy(&correct.stderr));
+    let wrong = invoke(&source.replace("return NULL", "return 'wrong'"));
+    assert_eq!(wrong.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("TS2322"), "{}", String::from_utf8_lossy(&wrong.stderr));
+    let corrected = invoke(source);
+    assert!(corrected.status.success(), "{}", String::from_utf8_lossy(&corrected.stderr));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn supplied_known_fields_are_checked_without_fabricating_missing_fields() {
     let source =
         "---@class Point\n---@field x number\n---@field y number\nlocal point={x=\"wrong\"}";

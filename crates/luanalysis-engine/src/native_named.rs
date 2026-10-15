@@ -205,6 +205,12 @@ pub(super) fn definition_value(queries: &mut SessionQueries<'_, '_, '_>, owner: 
         .map_err(|error| export_error(queries.checker,queries.handles,error))
 }
 
+pub(super) fn definition_member_contract(queries: &mut SessionQueries<'_, '_, '_>, owner: NativeClassDefinitionKey, actual: &Type) -> Option<Type> {
+    let actual = import_type(queries.checker, queries.handles, actual);
+    queries.checker.native_definition_member_contract(core_definition(owner), actual)
+        .map(|ty| queries.handles.retain(ty))
+}
+
 pub(super) fn core_declaration(key: NativeTypeDeclarationKey) -> NativeTypeDeclarationId {
     NativeTypeDeclarationId {
         snapshot: key.snapshot,

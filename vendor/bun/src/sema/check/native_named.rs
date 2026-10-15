@@ -1615,6 +1615,14 @@ impl<'p, 's> Checker<'p, 's> {
         }
     }
 
+    /// A deferred body may use its original namespace's declared contract.
+    /// This preserves the exact checked class facet without turning an alias,
+    /// replacement definition or ordinary table into that namespace value.
+    pub fn native_definition_member_contract(&self, owner: NativeDefinitionId, actual: TypeId) -> Option<TypeId> {
+        let reference = self.native_definition_ref(actual)?;
+        (reference.owner == owner).then(|| self.intern(TypeData::NativeObject(reference.class)))
+    }
+
     /// A proven fixed store updates presence in an immutable actual view. It never reconstructs
     /// the full class instance or grants an ordinary table a declaration origin.
     pub fn native_definition_fixed_write(&mut self, table: TypeId, key: NativeTableKey, value: TypeId) -> Result<TypeId, NativeTableError> {

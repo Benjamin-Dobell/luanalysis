@@ -190,6 +190,10 @@ impl Checker<'_> {
             }
         }
     }
+    pub(crate) fn class_namespace_member_contract(&mut self, binding: BindingId, actual: &Type) -> Option<Type> {
+        let directive = self.native?.class_definition_for_binding(binding)?;
+        self.engine.class_definition_member_contract(directive.key, actual)
+    }
     pub(crate) fn finish_class_definition_initializer(&mut self, span: Span, actual: Type) -> Type {
         let Some(directive) = self
             .native
