@@ -246,6 +246,30 @@ fn saved_field_and_returned_loaders_check_original_module_exports() {
 }
 
 #[test]
+fn a_copied_holder_loader_store_controls_actual_module_activation() {
+    let fixture = Fixture::new();
+    let target = fixture.file("record.lua", "---@type number\nlocal invalid='wrong'\nreturn 9\n");
+    let source = "---@param name string\n---@return number\nlocal function ordinary(name) return 7 end\nlocal operations={loader=require}\nlocal copy=operations\ncopy.loader=ordinary\nlocal savedLoader=operations.loader\nlocal result=savedLoader('record')\n---@type number\nlocal accepted=result\n";
+    let run = |source: &str| check_project_with_options(
+        fixture.project(fixture.file("main.lua", source)),
+        ProjectCheckOptions {
+            environment: luanalysis::standard_environment::StandardEnvironmentProfile::Lua54,
+            ..ProjectCheckOptions::default()
+        },
+    );
+    let ordinary = run(source);
+    clean(&ordinary);
+    assert_eq!(ordinary.checked_file_count(), 1);
+    assert!(ordinary.file(ordinary.project.file_by_path(&target).unwrap().id).is_none());
+
+    let restored = run(&source.replace("copy.loader=ordinary", "copy.loader=ordinary\ncopy.loader=require"));
+    assert_eq!(restored.checked_file_count(), 2);
+    let original = restored.project.file_by_path(&target).unwrap();
+    assert!(restored.file(original.id).unwrap().report.diagnostics.iter().any(|error|
+        error.code == "TS2322" && &original.source[error.span.start..error.span.end] == "'wrong'"));
+}
+
+#[test]
 fn ordinary_value_candidates_do_not_check_target_bodies_or_publish_host_errors() {
     let fixture = Fixture::new();
     let candidate = fixture.file("candidate.lua", "type=nil\nlocal ignored=require('poison')\nreturn 42\n");

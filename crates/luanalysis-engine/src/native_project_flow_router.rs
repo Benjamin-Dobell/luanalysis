@@ -40,6 +40,9 @@ impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> 
     fn read_alias_receiver(&self, at: NativeFlowKey) -> Option<NativeAliasReturnValue> {
         self.project_flow_adapter().read_alias_receiver(at)
     }
+    fn reference_proper_prefixes(&self, reference: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> {
+        self.project_flow_adapter().reference_proper_prefixes(reference)
+    }
     fn reference_member_path(&self, reference: NativeReferenceKey, member: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<Vec<NativeTableKey>> {
         self.project_flow_adapter().reference_member_path(reference, member, checker)
     }

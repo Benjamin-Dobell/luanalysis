@@ -118,6 +118,8 @@ pub trait NativeFlowProvider {
     fn reference_member_path(&self, reference: NativeReferenceKey, member: NativeReferenceKey) -> Option<Vec<super::LuaKey>> {
         self.reference_member_key(reference, member).map(|key| vec![key])
     }
+    /// Existing canonical proper prefixes, independent of runtime identity.
+    fn reference_proper_prefixes(&self, _: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> { None }
     fn value_type(
         &self,
         value: NativeValueKey,
@@ -146,6 +148,7 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     }
     fn write_alias_receiver(&self, at: NativeFlowKey) -> Option<NativeAliasReturnValue> { self.provider.write_alias_receiver(at) }
     fn read_alias_receiver(&self, at: NativeFlowKey) -> Option<NativeAliasReturnValue> { self.provider.read_alias_receiver(at) }
+    fn reference_proper_prefixes(&self, reference: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> { self.provider.reference_proper_prefixes(reference) }
     fn reference_alias_initial(&self, reference: NativeReferenceKey) -> bun_sema::check::native_aliases::NativeAliasInitial {
         use bun_sema::check::native_aliases::NativeAliasInitial as C;
         match self.provider.reference_alias_initial(reference) {

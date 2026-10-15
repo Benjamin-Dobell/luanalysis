@@ -179,7 +179,16 @@ impl<'p, 's> Checker<'p, 's> {
             for row in rows {
                 if !matches!(provider.node(row.at), Some(NativeFlowNode::Return { .. })) { return Origins::unavailable() }
                 let Some(value) = row.values.first() else { result.non_table = true; continue };
-                result.merge(checker.native_standard_value(provider, value.value, value.input));
+                let mut returned = checker.native_standard_value(provider, value.value, value.input);
+                // A fresh return belongs to this original call, not to every
+                // invocation of the constructor expression in the callee.
+                // Captured/argument allocations retain their original owner.
+                returned.tokens = returned.tokens.into_iter().map(|origin| {
+                    if origin.allocation_input().is_some_and(|allocated| allocated.graph == execution.entry.graph) {
+                        Origin::CallAllocation(call, recipe.execution_input, Box::new(origin))
+                    } else { origin }
+                }).collect();
+                result.merge(returned);
             }
             // Structural terminal shape is sufficient for these simple return
             // recipes. More complex implicit exits stay ordinary; no typed
@@ -254,8 +263,10 @@ impl<'p, 's> Checker<'p, 's> {
                 // Always transfer an observed assignment before considering
                 // unsupported dispatch. A later unknown operation cannot
                 // restore the original standard value.
-                let relation = if provider.reference_is_cell(reference) { provider.write_affects(reference, target, at) }
-                    else { provider.write_affects_with_types(reference, target, at, self) };
+                let relation = match self.native_standard_write_relation(provider, reference, target, at, before) {
+                    Ok(relation) => relation,
+                    Err(()) => return Origins::unknown(),
+                };
                 match relation {
                     NativeWriteRelation::Exact => self.native_standard_value(provider, value, input),
                     NativeWriteRelation::PossibleExact => {
@@ -294,6 +305,46 @@ impl<'p, 's> Checker<'p, 's> {
             },
             _ => Origins::unavailable(),
         }
+    }
+
+    /// Operation classification uses original value recipes under the host
+    /// policy. It must not ask the physical alias/purity walker to prove every
+    /// unrelated heap store before classifying an ordinary member call.
+    fn native_standard_write_relation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, before: NativeFlowKey) -> Result<NativeWriteRelation, ()> {
+        let direct = provider.write_affects(reference, target, at);
+        if provider.reference_is_cell(reference) || provider.reference_is_cell(target) { return Ok(direct) }
+        let Some(prefixes) = provider.reference_proper_prefixes(reference) else {
+            return Ok(provider.write_affects_with_types(reference, target, at, self));
+        };
+        let Some(receiver) = provider.write_alias_receiver(at) else {
+            return Ok(provider.write_affects_with_types(reference, target, at, self));
+        };
+        let written = provider.write_member_key(reference, target, at, self).and_then(|key| key.normalize().ok());
+        let receiver = self.native_standard_value(provider, receiver.value, receiver.input);
+        if receiver.uncertain { return Err(()) }
+        let mut possible = None;
+        for prefix in prefixes {
+            let path = provider.reference_member_path(prefix, reference, self);
+            if let Some(path) = &path && written.is_some_and(|key| path.first().and_then(|key| key.normalize().ok()) != Some(key)) { continue }
+            let original = self.native_standard_reference(provider, prefix, before);
+            if original.uncertain { return Err(()) }
+            if !original.unknown && !receiver.unknown && original.tokens.is_disjoint(&receiver.tokens) { continue }
+            let same = !original.unknown && !receiver.unknown && !original.non_table && !receiver.non_table
+                && !original.maybe_nil && !receiver.maybe_nil && original.tokens.len() == 1 && original.tokens == receiver.tokens;
+            let relation = if path.as_ref().is_some_and(|path| path.len() == 1) { NativeWriteRelation::Exact }
+                else { NativeWriteRelation::Ancestor };
+            if same && written.is_some() && path.is_some() { return Ok(relation) }
+            // A completed unknown receiver is an unknown host effect. Preserve
+            // unrelated original addresses, but retain known alias alternatives
+            // and every direct possibly affected store conservatively.
+            if same || !original.tokens.is_disjoint(&receiver.tokens) || direct != NativeWriteRelation::Unaffected {
+                possible = Some(match relation {
+                    NativeWriteRelation::Exact => NativeWriteRelation::PossibleExact,
+                    _ => NativeWriteRelation::PossibleAncestor,
+                });
+            }
+        }
+        Ok(possible.unwrap_or(NativeWriteRelation::Unaffected))
     }
 
     pub fn native_flow_standard_call_continuation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
@@ -383,7 +434,12 @@ impl<'p, 's> Checker<'p, 's> {
                                 Ok(None) => provider.write_affects_with_types(reference, target, at, self),
                                 Err(()) => return NativeCallPreservation::Pending,
                             }
-                        } else { provider.write_affects_with_types(reference, target, at, self) };
+                        } else {
+                            match self.native_standard_write_relation(provider, reference, target, at, before) {
+                                Ok(relation) => relation,
+                                Err(()) => return NativeCallPreservation::Pending,
+                            }
+                        };
                     if matches!(relation, NativeWriteRelation::Exact | NativeWriteRelation::PossibleExact | NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor) {
                         return NativeCallPreservation::Unknown;
                     }

@@ -50,6 +50,7 @@ impl NativeFlowProvider for ProjectRegistry {
         fn write_alias_receiver(at: NativeFlowKey) -> Option<NativeAliasReturnValue> { at.graph.snapshot; None }
         fn read_alias_receiver(at: NativeFlowKey) -> Option<NativeAliasReturnValue> { at.graph.snapshot; None }
         fn reference_member_path(reference: NativeReferenceKey, member: NativeReferenceKey) -> Option<Vec<LuaKey>> { reference.graph.snapshot; None }
+        fn reference_proper_prefixes(reference: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> { reference.graph.snapshot; None }
         fn reference_alias_initial(reference: NativeReferenceKey) -> NativeAliasInitial { reference.graph.snapshot; NativeAliasInitial::Opaque }
         fn alias_call_source(value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> { value.snapshot; None }
         fn alias_node_dispatch(at: NativeFlowKey) -> NativeAliasDispatch { at.graph.snapshot; NativeAliasDispatch::Unknown }

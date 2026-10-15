@@ -312,6 +312,9 @@ pub trait NativeFlowProvider {
     fn reference_member_path(&self, reference: NativeReferenceKey, member: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<Vec<NativeTableKey>> {
         self.reference_member_key(reference, member, checker).map(|key| vec![key])
     }
+    /// Existing canonical proper prefixes of one original member address.
+    /// This supplies no runtime alias relationship or inferred receiver type.
+    fn reference_proper_prefixes(&self, _: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> { None }
     /// Original immutable predicate recipe for a verified assertion argument.
     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }

@@ -233,3 +233,108 @@ fn a_late_or_foreign_capture_store_cannot_use_the_creation_value() {
         });
     }
 }
+struct MemberStore { copied: bool, pending: bool, dynamic: bool }
+impl NativeTypeProvider for MemberStore {
+    fn assumed_standard_environment(&self) -> Option<NativeEnvironmentKey> { Some(environment()) }
+    fn contains_global_environment(&self, key: NativeEnvironmentKey) -> bool { key == environment() }
+    fn contains_global_binding(&self, key: NativeGlobalBindingKey) -> bool { key.environment == environment() && key.index < 2 }
+    fn global_environment_binding(&self, key: NativeEnvironmentKey, name: &[u8]) -> Option<NativeGlobalBindingKey> {
+        if key != environment() { return None }
+        match name { b"assert" => Some(binding(0)), b"_G" => Some(binding(1)), _ => None }
+    }
+    fn global_binding_declarations(&self, key: NativeGlobalBindingKey) -> Vec<NativeValueDeclarationKey> { if key == binding(0) { vec![declaration()] } else { Vec::new() } }
+    fn contains_value_declaration(&self, key: NativeValueDeclarationKey) -> bool { key == declaration() }
+    fn value_declaration_header(&self, _: NativeValueDeclarationKey) -> ValueDeclarationHeader { ValueDeclarationHeader { role: GlobalSourceRole::Declaration, kind: GlobalValueKind::Function } }
+    fn value_declaration_signatures(&self, _: NativeValueDeclarationKey) -> Option<Vec<NativeSignatureKey>> { Some(vec![signature()]) }
+    fn contains_signature(&self, key: NativeSignatureKey) -> bool { key == signature() }
+    fn signature_intrinsic(&self, key: NativeSignatureKey) -> Option<NativeIntrinsicSite> { (key == signature()).then_some(site()) }
+    fn contains_function(&self, _: NativeFunctionKey) -> bool { false }
+    fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> { panic!("member operation must not demand a body") }
+    fn function_declared_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> { panic!("member operation must not demand a body") }
+    fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type { panic!("member operation must not demand a body") }
+    fn return_cycle(&self, _: NativeFunctionKey) { panic!("member operation must not demand a body") }
+    fn return_type_too_deep(&self, _: NativeFunctionKey) { panic!("member operation must not demand a body") }
+}
+impl NativeFlowProvider for MemberStore {
+    fn contains_graph(&self, key: NativeGraphKey) -> bool { key == graph() }
+    fn contains_reference(&self, key: NativeReferenceKey) -> bool { key.graph == graph() && key.reference < 5 }
+    fn node(&self, key: NativeFlowKey) -> Option<NativeFlowNode> {
+        if key.graph != graph() { return None }
+        Some(match key.node {
+            0 => NativeFlowNode::Start,
+            1 => NativeFlowNode::Write { before: at(0), target: reference(1), value: value(10), input: at(0) },
+            2 => NativeFlowNode::Write { before: at(1), target: reference(2), value: value(11), input: at(1) },
+            3 => NativeFlowNode::Write { before: at(2), target: reference(3), value: value(12), input: at(2) },
+            4 => NativeFlowNode::Write { before: at(3), target: reference(4), value: value(13), input: at(3) },
+            5 => NativeFlowNode::Write { before: at(4), target: reference(4), value: value(12), input: at(4) },
+            _ => return None,
+        })
+    }
+    fn is_shared(&self, _: NativeFlowKey) -> bool { false }
+    fn reference_is_cell(&self, key: NativeReferenceKey) -> bool { matches!(key.reference, 1 | 2) }
+    fn reference_alias_initial(&self, key: NativeReferenceKey) -> NativeAliasInitial {
+        if key == reference(0) { NativeAliasInitial::GlobalValue(binding(0)) } else { NativeAliasInitial::Opaque }
+    }
+    fn value_alias_source(&self, key: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue {
+        match key.index {
+            0 => NativeAliasValue::Reference { reference: reference(3), input },
+            10 => NativeAliasValue::Allocation,
+            11 if self.pending => NativeAliasValue::Reference { reference: reference(2), input: at(2) },
+            11 if self.copied => NativeAliasValue::Reference { reference: reference(1), input },
+            11 => NativeAliasValue::Allocation,
+            12 => NativeAliasValue::Reference { reference: reference(0), input: at(0) },
+            13 => NativeAliasValue::Unknown,
+            21 => NativeAliasValue::Reference { reference: reference(1), input },
+            22 => NativeAliasValue::Reference { reference: reference(2), input },
+            _ => panic!("unexpected original member value"),
+        }
+    }
+    fn write_affects(&self, watched: NativeReferenceKey, target: NativeReferenceKey, _: NativeFlowKey) -> NativeWriteRelation {
+        if watched == target { NativeWriteRelation::Exact }
+        else if watched == reference(3) && target == reference(1) { NativeWriteRelation::Ancestor }
+        else { NativeWriteRelation::Unaffected }
+    }
+    fn write_affects_with_types(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> NativeWriteRelation { panic!("ordinary member writes must not start a physical heap proof") }
+    fn reference_proper_prefixes(&self, key: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> {
+        (key == reference(3)).then(|| vec![reference(1)])
+    }
+    fn reference_member_path(&self, root: NativeReferenceKey, member: NativeReferenceKey) -> Option<Vec<LuaKey>> {
+        (root == reference(1) && member == reference(3)).then(|| vec![LuaKey::String(b"guard".to_vec())])
+    }
+    fn write_alias_receiver(&self, key: NativeFlowKey) -> Option<NativeAliasReturnValue> {
+        let receiver = match key.node { 3 => 1, 4 | 5 => 2, _ => return None };
+        Some(NativeAliasReturnValue { value: value(20 + receiver), input: at(key.node - 1) })
+    }
+    fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, key: NativeFlowKey) -> Option<LuaKey> {
+        (key.node == 3 || matches!(key.node, 4 | 5) && !self.dynamic).then(|| LuaKey::String(b"guard".to_vec()))
+    }
+    fn value_type(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Type { panic!("ordinary member writes must not demand flowed types") }
+    fn call_effects(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> NativeCallEffects { panic!("ordinary member writes must not demand call effects") }
+    fn flow_error(&self, _: NativeFlowKey, error: NativeFlowError) { panic!("invalid original member graph: {error:?}") }
+}
+
+#[test]
+fn unrelated_dynamic_and_fixed_registry_stores_preserve_member_operations_without_raw_proofs() {
+    for dynamic in [false, true] {
+        Engine::new().with_native_provider(|| MemberStore { copied: false, pending: false, dynamic }, |source, queries| {
+            assert_eq!(queries.flow_standard_operation(source, value(0), at(4)), NativeStandardOperation::Standard(site()));
+        });
+    }
+}
+
+#[test]
+fn copied_receiver_stores_replace_the_member_operation_and_real_pending_stays_pending() {
+    for dynamic in [false, true] {
+        Engine::new().with_native_provider(|| MemberStore { copied: true, pending: false, dynamic }, |source, queries| {
+            assert_eq!(queries.flow_standard_operation(source, value(0), at(4)), NativeStandardOperation::Ordinary);
+            if !dynamic {
+                assert_eq!(queries.flow_standard_operation(source, value(0), at(5)), NativeStandardOperation::Standard(site()));
+            }
+        });
+    }
+    Engine::new().with_native_provider(|| MemberStore { copied: false, pending: true, dynamic: false }, |source, queries| {
+        for _ in 0..2 {
+            assert_eq!(queries.flow_standard_operation(source, value(0), at(4)), NativeStandardOperation::Pending);
+        }
+    });
+}

@@ -52,8 +52,51 @@ fn settled_body(output: &Output) {
     assert!(matches!(output.status.code(), Some(0) | Some(1)), "{}", text(output));
     assert!(!text(output).contains("LUA2041"), "{}", text(output));
 }
+fn rejects_checked_value(output: &Output, source: &str) {
+    rejects(output, "TS2322");
+    let (line, checked) = source.lines().enumerate().find(|(_, line)| line.contains("local checked=value")).unwrap();
+    let column = checked.rfind("value").unwrap() + 1;
+    assert!(text(output).contains(&format!("main.lua:{}:{column}: error[TS2322]", line + 1)), "{}", text(output));
+}
 const ORDINARY: &str =
     "---@param value any\n---@return any\nlocal function ordinary(value) return value end\n";
+
+#[test]
+fn an_instance_registry_store_does_not_make_an_ordinary_member_call_provisional() {
+    let source = "---@type table<string,table>\nlocal allInstances={}\n---@param value number|nil\n---@param instanceGuid string\nlocal function make(value,instanceGuid)\n local self={check=assert}\n allInstances[instanceGuid]=self\n self.check(value)\n ---@type number\n local checked=value\n return self\nend\nmake(42,'instance')\n";
+    let fixture = Fixture::new(source);
+    pass(&fixture.check());
+    fs::write(fixture.0.join("main.lua"), source.replace("---@type number\n local checked", "---@type string\n local checked")).unwrap();
+    rejects_checked_value(&fixture.check(), source);
+}
+
+#[test]
+fn copied_member_replacements_and_restoration_keep_the_actual_assert_operation() {
+    let source = "---@generic T\n---@param value T\n---@vararg unknown\n---@return T\nlocal function ordinary(value,...) return value end\n---@param value number|nil\nlocal function probe(value)\n local holder={check=assert}\n local copy=holder\n copy.check=ordinary\n holder.check(value)\n ---@type number\n local checked=value\nend\nprobe(42)\n";
+    let fixture = Fixture::new(source);
+    rejects_checked_value(&fixture.check(), source);
+    fs::write(fixture.0.join("main.lua"), source.replace("copy.check=ordinary", "copy.check=ordinary\n copy.check=assert")).unwrap();
+    pass(&fixture.check());
+}
+
+#[test]
+fn distinct_factory_results_do_not_share_member_replacements() {
+    let source = "---@generic T\n---@param value T\n---@vararg unknown\n---@return T\nlocal function ordinary(value,...) return value end\nlocal function fresh() return {} end\n---@param value number|nil\nlocal function probe(value)\n local holder=fresh()\n holder.check=assert\n local other=fresh()\n other.check=ordinary\n holder.check(value)\n ---@type number\n local checked=value\nend\nprobe(42)\n";
+    let fixture = Fixture::new(source);
+    pass(&fixture.check());
+    let copied = source.replace("local other=fresh()", "local other=holder");
+    fs::write(fixture.0.join("main.lua"), &copied).unwrap();
+    rejects_checked_value(&fixture.check(), &copied);
+}
+
+#[test]
+fn a_frozen_old_receiver_store_cannot_replace_a_rebound_holders_operation() {
+    let source = "---@generic T\n---@param value T\n---@vararg unknown\n---@return T\nlocal function ordinary(value,...) return value end\n---@param value number|nil\nlocal function probe(value)\n local holder={check=ordinary}\n local function replace()\n  holder={check=ordinary}\n  return assert\n end\n holder.check=replace()\n holder.check(value)\n ---@type number\n local checked=value\nend\nprobe(42)\n";
+    let fixture = Fixture::new(source);
+    rejects_checked_value(&fixture.check(), source);
+    fs::write(fixture.0.join("main.lua"), source.replace(" holder.check=replace()", " holder.check=replace()\n holder={check=assert}")).unwrap();
+    pass(&fixture.check());
+}
 
 #[test]
 fn a_later_assert_store_through_a_written_function_contract_keeps_runtime_identity() {

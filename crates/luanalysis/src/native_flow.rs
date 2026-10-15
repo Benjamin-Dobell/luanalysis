@@ -1780,6 +1780,13 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             flow::Key::Dynamic(_) => return None,
         })).collect()
     }
+    fn reference_proper_prefixes(&self, reference: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> {
+        let original = self.sources.source_reference(reference)?;
+        if !matches!(original.root, flow::ReferenceRoot::Binding(_) | flow::ReferenceRoot::Temporary(_)) || original.path.is_empty() { return None; }
+        (0..original.path.len()).map(|length| self.sources.reference_key(reference.graph, &flow::Reference {
+            root: original.root.clone(), path: original.path[..length].to_vec(),
+        })).collect()
+    }
     fn write_alias_receiver(&self, at: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasReturnValue> {
         let flow::NodeKind::Write { address, .. } = &self.sources.source_node(at)?.kind else { return None };
         let receiver = self.sources.program.evaluation(address.receiver?);
