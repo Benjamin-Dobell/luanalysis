@@ -6,6 +6,9 @@
 #[cfg(test)]
 #[path = "native_assertion_flow_tests.rs"]
 mod assertion_tests;
+#[cfg(test)]
+#[path = "native_dispatch_flow_tests.rs"]
+mod dispatch_tests;
 
 use super::{bind::BindingId, flow};
 use luanalysis_engine::{
@@ -1356,6 +1359,11 @@ impl NativeFlowProvider for FlowAdapter<'_> {
 
     fn alias_node_dispatch(&self, at: NativeFlowKey) -> luanalysis_engine::NativeAliasDispatch {
         use luanalysis_engine::NativeAliasDispatch::{NoDispatch, ReferenceRead, Unknown};
+        fn primitive_literal(mut expression: &Expr) -> bool {
+            while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
+            matches!(expression.kind, ExprKind::Nil | ExprKind::Boolean(_) | ExprKind::String(_))
+                || flow::numeric_literal(expression).is_some()
+        }
         let Some(node) = self.sources.source_node(at) else { return Unknown; };
         match &node.kind {
             flow::NodeKind::Eval(evaluation) => {
@@ -1373,6 +1381,11 @@ impl NativeFlowProvider for FlowAdapter<'_> {
                         self.alias_read_reference(reference, at.graph).map_or(Unknown, ReferenceRead)
                     },
                     ExprKind::Unary { .. } if flow::numeric_literal(expression).is_some() => NoDispatch,
+                    // Lua equality dispatches __eq only for two tables or two
+                    // full userdata. An original primitive literal rules that
+                    // out; operand evaluations keep their own effects/nodes.
+                    ExprKind::Binary { op: BinaryOperator::Equal | BinaryOperator::NotEqual, left, right }
+                        if primitive_literal(left) || primitive_literal(right) => NoDispatch,
                     ExprKind::Binary { left, right, .. }
                         if flow::numeric_literal(left).is_some() && flow::numeric_literal(right).is_some() => NoDispatch,
                     _ => Unknown,
