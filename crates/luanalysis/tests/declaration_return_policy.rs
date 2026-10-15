@@ -8,7 +8,7 @@ impl Fixture {
         fs::create_dir_all(&path).unwrap();
         Self(path)
     }
-    fn check(&self, source: &str) -> serde_json::Value {
+    fn check(&self, source: &str) -> String {
         fs::write(self.0.join("main.lua"), source).unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
             .current_dir(&self.0)
@@ -16,22 +16,26 @@ impl Fixture {
             .output().unwrap();
         assert!(matches!(output.status.code(), Some(0 | 1)), "{output:?}");
         assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
-        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        for diagnostic in report["diagnostics"].as_array().unwrap() {
-            assert!(!matches!(diagnostic["code"].as_str(), Some("LUA2040" | "LUA2041")), "{report}");
+        let report = String::from_utf8(output.stdout).unwrap();
+        assert!(report.starts_with("{\"formatVersion\":1,"), "{report}");
+        assert!(report.contains(&format!("\"exitCode\":{},", output.status.code().unwrap())), "{report}");
+        for code in ["LUA2040", "LUA2041"] {
+            assert!(!report.contains(&format!("\"code\":\"{code}\"")), "{report}");
         }
         report
     }
 }
 impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
-fn clean(report: &serde_json::Value) { assert!(report["diagnostics"].as_array().unwrap().is_empty(), "{report}"); }
-fn rejects_at(report: &serde_json::Value, source: &str, code: &str, token: &str) {
-    let diagnostics = report["diagnostics"].as_array().unwrap();
-    assert_eq!(diagnostics.len(), 1, "{report}");
+fn clean(report: &str) {
+    assert!(report.contains("\"success\":true,\"exitCode\":0,"), "{report}");
+    assert!(report.contains("\"diagnostics\":[]"), "{report}");
+}
+fn rejects_at(report: &str, source: &str, code: &str, token: &str) {
+    assert!(report.contains("\"success\":false,\"exitCode\":1,"), "{report}");
+    assert_eq!(report.matches("\"code\":").count(), 1, "{report}");
     let start = source.rfind(token).unwrap();
-    assert_eq!(diagnostics[0]["code"], code, "{report}");
-    assert_eq!(diagnostics[0]["range"]["start"], start, "{report}");
-    assert_eq!(diagnostics[0]["range"]["end"], start + token.len(), "{report}");
+    assert!(report.contains(&format!("\"code\":\"{code}\"")), "{report}");
+    assert!(report.contains(&format!("\"range\":{{\"start\":{start},\"end\":{}}}", start + token.len())), "{report}");
 }
 
 #[test]
