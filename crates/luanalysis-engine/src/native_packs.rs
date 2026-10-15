@@ -634,6 +634,35 @@ mod tests {
     }
 
     #[test]
+    fn native_void_callback_relations_ignore_results_without_weakening_pack_values() {
+        Engine::new().with_session(|queries| {
+            for target_pack in [ValuePack::empty(),ValuePack::single(Type::Void)] {
+                let target=queries.pack_function(&PackFunctionType {params:Vec::new(),rest:None,type_parameters:Vec::new(),returns:target_pack.clone()});
+                for actual_pack in [ValuePack::single(Type::Number),ValuePack::single(Type::String),fixed(vec![Type::Number,Type::String]),ValuePack::empty(),ValuePack::never()] {
+                    let source=queries.pack_function(&PackFunctionType {params:Vec::new(),rest:None,type_parameters:Vec::new(),returns:actual_pack.clone()});
+                    assert!(queries.is_assignable(&source,&target),"{actual_pack:?} -> {target_pack:?}");
+                }
+            }
+            assert!(!queries.pack_assignable(&ValuePack::single(Type::Number),&ValuePack::empty()));
+            assert!(!queries.pack_assignable(&fixed(vec![Type::Number,Type::String]),&ValuePack::single(Type::Number)));
+        });
+    }
+
+    #[test]
+    fn native_callback_ignored_results_preserve_never_nonvoid_and_parameter_contracts() {
+        Engine::new().with_session(|queries| {
+            let numeric=queries.pack_function(&PackFunctionType {params:Vec::new(),rest:None,type_parameters:Vec::new(),returns:ValuePack::single(Type::Number)});
+            for returns in [ValuePack::never(),ValuePack::single(Type::Nil),ValuePack::single(Type::String),fixed(vec![Type::Number,Type::String]),ValuePack::single(Type::Union(vec![Type::Void,Type::String]))] {
+                let target=queries.pack_function(&PackFunctionType {params:Vec::new(),rest:None,type_parameters:Vec::new(),returns:returns.clone()});
+                assert!(!queries.is_assignable(&numeric,&target),"number callback -> {returns:?}");
+            }
+            let source=queries.pack_function(&PackFunctionType {params:vec![Parameter {name:"value".into(),ty:Type::String,optional:false}],rest:None,type_parameters:Vec::new(),returns:ValuePack::single(Type::Number)});
+            let target=queries.pack_function(&PackFunctionType {params:vec![Parameter {name:"value".into(),ty:Type::Number,optional:false}],rest:None,type_parameters:Vec::new(),returns:ValuePack::empty()});
+            assert!(!queries.is_assignable(&source,&target));
+        });
+    }
+
+    #[test]
     fn native_result_pack_aggregation_keeps_contextual_discriminants_and_fallthrough_rows() {
         Engine::new().with_session(|queries| {
             let expected = ValuePack::Alternatives(vec![

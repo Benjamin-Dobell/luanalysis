@@ -7380,7 +7380,9 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let packed = self.sig_has_native_result_pack(target);
         let target_return = if packed {
-            self.sig_declared_result_pack_contract(target).unwrap_or_else(|| self.non_circular_result_pack_of_signature(target)).ty
+            let target_pack = self.sig_declared_result_pack_contract(target).unwrap_or_else(|| self.non_circular_result_pack_of_signature(target));
+            if self.native_pack_ignores_callback_results(target_pack) { return result; }
+            target_pack.ty
         } else { self.non_circular_return_type_of_signature(target) };
         if target_return == TypeId::VOID || target_return == TypeId::ANY {
             return result;

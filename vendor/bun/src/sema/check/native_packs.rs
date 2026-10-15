@@ -590,6 +590,16 @@ impl<'p, 's> Checker<'p, 's> {
         self.is_assignable(actual.ty, declared.ty)
     }
 
+    /// Callable targets with no observed results have TypeScript's void-return
+    /// variance. This does not change physical result-list assignability. Never
+    /// has no reachable rows and must not be mistaken for a zero-result row.
+    pub(super) fn native_pack_ignores_callback_results(&mut self, declared: NativeResultPack) -> bool {
+        let declared = self.native_declared_result_pack(declared);
+        self.native_pack_alternatives(declared).is_some_and(|rows| {
+            !rows.is_empty() && rows.iter().all(|row| row.fixed.is_empty() && row.tail.is_none())
+        })
+    }
+
     pub fn instantiate_native_pack(&mut self, pack: NativeResultPack, mapper: MapperId) -> NativeResultPack {
         NativeResultPack { ty: self.instantiate(pack.ty, mapper) }
     }
