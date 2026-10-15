@@ -4922,13 +4922,11 @@ impl<'p, 's> Checker<'p, 's> {
                 let params = match self.types().sig(sig) {
                     SigData::NativeContextual { context, .. } => {
                         let context = *context;
-                        self.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
-                            c.with_native_function_context(context, |c| provider.parameters_in_context(c, declaration, context))
-                        })
+                        self.with_native_function_frame(Some(context), Some(NativeCapturedFunctionContext { signature: sig }), |c| provider.parameters_in_context(c, declaration, context))
                     }
                     SigData::NativeCaptured { .. } => {
                         let context = NativeCapturedFunctionContext { signature: sig };
-                        self.with_native_captured_function(context, |c| provider.parameters_in_capture(c, declaration, context))
+                        self.with_native_function_frame(None, Some(context), |c| provider.parameters_in_capture(c, declaration, context))
                     }
                     _ => self.with_native_declaration_frame(declaration, |c| provider.parameters(c, declaration)),
                 };
@@ -5136,14 +5134,12 @@ impl<'p, 's> Checker<'p, 's> {
             SigData::NativeCaptured { declaration, mapper, .. } => {
                 let provider = self.native_provider_for(declaration);
                 let context = NativeCapturedFunctionContext { signature: sig };
-                let declared = self.with_native_captured_function(context, |c| provider.declared_scalar_return_type_in_capture(c, declaration, context))?;
+                let declared = self.with_native_function_frame(None, Some(context), |c| provider.declared_scalar_return_type_in_capture(c, declaration, context))?;
                 Some(self.resolve_native_type_result(declared, mapper))
             }
             SigData::NativeContextual { declaration, mapper, context, .. } => {
                 let provider = self.native_provider_for(declaration);
-                let declared = self.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
-                    c.with_native_function_context(context, |c| provider.declared_scalar_return_type_in_context(c, declaration, context))
-                })?;
+                let declared = self.with_native_function_frame(Some(context), Some(NativeCapturedFunctionContext { signature: sig }), |c| provider.declared_scalar_return_type_in_context(c, declaration, context))?;
                 Some(self.resolve_native_type_result(declared, mapper))
             }
             SigData::WithReturn { sig: inner, ret } if ret == TypeId::UNRESOLVED => self.sig_declared_scalar_return(inner),
@@ -5161,13 +5157,11 @@ impl<'p, 's> Checker<'p, 's> {
             SigData::NativeCaptured { declaration, mapper, .. } => {
                 let provider = self.native_provider_for(declaration);
                 let context = NativeCapturedFunctionContext { signature: sig };
-                (self.with_native_captured_function(context, |c| provider.declared_result_pack_contract_in_capture(c, declaration, context))?, mapper)
+                (self.with_native_function_frame(None, Some(context), |c| provider.declared_result_pack_contract_in_capture(c, declaration, context))?, mapper)
             }
             SigData::NativeContextual { declaration, mapper, context, .. } => {
                 let provider = self.native_provider_for(declaration);
-                (self.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
-                    c.with_native_function_context(context, |c| provider.declared_result_pack_contract_in_context(c, declaration, context))
-                })?, mapper)
+                (self.with_native_function_frame(Some(context), Some(NativeCapturedFunctionContext { signature: sig }), |c| provider.declared_result_pack_contract_in_context(c, declaration, context))?, mapper)
             }
             SigData::WithReturn { sig: inner, .. } => return self.sig_declared_result_pack_contract(inner),
             _ => return None,
@@ -5201,14 +5195,10 @@ impl<'p, 's> Checker<'p, 's> {
                 self.resolve_return_type(sig, |c| {
                     let provider = c.native_provider_for(declaration);
                     if provider.has_result_pack(declaration) {
-                        let result = c.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
-                            c.with_native_function_context(context, |c| provider.return_pack_result_in_context(c, declaration, context))
-                        });
+                        let result = c.with_native_function_frame(Some(context), Some(NativeCapturedFunctionContext { signature: sig }), |c| provider.return_pack_result_in_context(c, declaration, context));
                         return c.resolve_native_pack_result(result, mapper);
                     }
-                    let result = c.with_native_captured_function(NativeCapturedFunctionContext { signature: sig }, |c| {
-                        c.with_native_function_context(context, |c| provider.return_type_result_in_context(c, declaration, context))
-                    });
+                    let result = c.with_native_function_frame(Some(context), Some(NativeCapturedFunctionContext { signature: sig }), |c| provider.return_type_result_in_context(c, declaration, context));
                     c.resolve_native_type_result(result, mapper)
                 })
             }
@@ -5217,10 +5207,10 @@ impl<'p, 's> Checker<'p, 's> {
                     let provider = c.native_provider_for(declaration);
                     let context = NativeCapturedFunctionContext { signature: sig };
                     if provider.has_result_pack(declaration) {
-                        let result = c.with_native_captured_function(context, |c| provider.return_pack_result_in_capture(c, declaration, context));
+                        let result = c.with_native_function_frame(None, Some(context), |c| provider.return_pack_result_in_capture(c, declaration, context));
                         return c.resolve_native_pack_result(result, mapper);
                     }
-                    let result = c.with_native_captured_function(context, |c| provider.return_type_result_in_capture(c, declaration, context));
+                    let result = c.with_native_function_frame(None, Some(context), |c| provider.return_type_result_in_capture(c, declaration, context));
                     c.resolve_native_type_result(result, mapper)
                 })
             }

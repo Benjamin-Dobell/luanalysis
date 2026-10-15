@@ -3090,6 +3090,7 @@ mod tests {
         captures: std::cell::RefCell<Vec<CapturedFunctionContext>>,
         parent_parameter_observations: std::cell::RefCell<Vec<Type>>,
         argument_frames: std::cell::RefCell<Vec<NativeCallerFrame>>,
+        capture_frames: std::cell::RefCell<Vec<NativeCallerFrame>>,
     }
     impl ContextualProvider {
         fn expression(node: u32) -> NativeExpressionKey {
@@ -3336,6 +3337,10 @@ mod tests {
             context: &CapturedFunctionContext,
             queries: &mut dyn TypeQueries,
         ) -> Vec<Parameter> {
+            self.capture_frames.borrow_mut().push(NativeCallerFrame {
+                contextual: queries.current_contextual_function(),
+                captured: queries.current_captured_function(),
+            });
             if let Some(parent) = queries.captured_function_parent(context) {
                 if let Some(value) = queries.captured_binding(&parent, Self::binding()) {
                     self.parent_parameter_observations.borrow_mut().push(value);
@@ -3356,12 +3361,41 @@ mod tests {
             context: &CapturedFunctionContext,
             queries: &mut dyn TypeQueries,
         ) -> Type {
+            self.capture_frames.borrow_mut().push(NativeCallerFrame {
+                contextual: queries.current_contextual_function(),
+                captured: queries.current_captured_function(),
+            });
             assert_eq!(queries.current_captured_function(), Some(*context));
             let function = queries.captured_function_value(context);
             assert_eq!(queries.native_function_key(&function), Some(key));
             self.captures.borrow_mut().push(*context);
             queries.captured_binding(context, Self::binding()).unwrap()
         }
+    }
+
+    #[test]
+    fn captured_provider_callbacks_clear_foreign_context_and_restore_the_caller() {
+        Engine::new().with_native_provider(ContextualProvider::default, |provider, queries| {
+            let raw = queries.captured_function(ContextualProvider::function(4), &[(ContextualProvider::binding(), Type::Number)]);
+            let expected = StaticGenericProvider::callback(Some(Type::String), Type::String);
+            let foreign = queries.contextual_function(ContextualProvider::function(0), ContextualProvider::expression(2), &expected, NativeCheckMode::empty());
+            let foreign = queries.function_capture_context(&foreign).unwrap();
+            let contextual = queries.captured_function_context(&foreign).unwrap();
+            provider.capture_frames.borrow_mut().clear();
+            queries.with_captured_function(&foreign, &mut |queries| {
+                queries.with_contextual_function(&contextual, &mut |queries| {
+                    let result = queries.call(&raw, &[]);
+                    assert!(result.errors.is_empty(), "{result:?}");
+                    assert_eq!(result.return_type, Type::Number);
+                    assert_eq!(queries.current_captured_function(), Some(foreign));
+                    assert_eq!(queries.current_contextual_function(), Some(contextual));
+                });
+            });
+            let frames = provider.capture_frames.borrow();
+            assert!(!frames.is_empty());
+            assert!(frames.iter().all(|frame| frame.contextual.is_none()), "{frames:?}");
+            assert!(frames.iter().all(|frame| frame.captured != Some(foreign)), "{frames:?}");
+        });
     }
 
     #[test]
