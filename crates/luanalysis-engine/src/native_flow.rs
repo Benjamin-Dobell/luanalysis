@@ -43,6 +43,8 @@ pub trait NativeFlowProvider {
     fn alias_node_dispatch(&self, _: NativeFlowKey) -> NativeAliasDispatch { NativeAliasDispatch::Unknown }
     fn function_alias_execution(&self, _: super::NativeFunctionKey, _: NativeFlowKey) -> Option<NativeAliasExecution> { None }
     fn require_alias_execution(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<Vec<NativeAliasExecution>> { None }
+    fn require_alias_loader_reference(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativeReferenceKey> { None }
+    fn alias_callee_type(&self, value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { self.value_type(value, input, queries) }
     /// Immutable source classification: a lexical cell, not a mutable heap slot.
     fn reference_is_cell(&self, _: NativeReferenceKey) -> bool { false }
     /// Original written binding/member contract, independent of flow epoch.
@@ -138,6 +140,11 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     fn alias_node_dispatch(&self, at: NativeFlowKey) -> NativeAliasDispatch { self.provider.alias_node_dispatch(at) }
     fn function_alias_execution(&self, function: bun_sema::types::NativeFunctionId, creation: NativeFlowKey) -> Option<NativeAliasExecution> { self.provider.function_alias_execution(super::source_key(function), creation) }
     fn require_alias_execution(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<Vec<NativeAliasExecution>> { self.provider.require_alias_execution(value, input) }
+    fn require_alias_loader_reference(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeReferenceKey> { self.provider.require_alias_loader_reference(value, input) }
+    fn alias_callee_type(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> bun_sema::types::TypeId {
+        let value = self.provider.alias_callee_type(value, input, &mut SessionQueries { checker, handles: self.handles });
+        import_type(checker, self.handles, &value)
+    }
     fn reference_is_cell(&self, reference: NativeReferenceKey) -> bool { self.provider.reference_is_cell(reference) }
     fn reference_written_contract(&self, reference: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::TypeId> {
         let contract = self.provider.reference_written_contract(reference, &mut SessionQueries { checker, handles: self.handles })?;

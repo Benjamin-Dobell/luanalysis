@@ -28,6 +28,24 @@ impl<P: NativeTypeProvider> ProviderAdapter<'_, P> {
 }
 
 impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> {
+    fn alias_environment_candidate(&self, value: NativeValueKey, input: NativeFlowKey) -> bool {
+        self.project_flow_adapter().alias_environment_candidate(value, input)
+    }
+    fn alias_value_type(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> TypeId {
+        self.project_flow_adapter().alias_value_type(value, input, checker)
+    }
+    fn write_alias_receiver(&self, at: NativeFlowKey) -> Option<NativeAliasReturnValue> {
+        self.project_flow_adapter().write_alias_receiver(at)
+    }
+    fn reference_member_path(&self, reference: NativeReferenceKey, member: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<Vec<NativeTableKey>> {
+        self.project_flow_adapter().reference_member_path(reference, member, checker)
+    }
+    fn require_alias_loader_reference(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeReferenceKey> {
+        self.project_flow_adapter().require_alias_loader_reference(value, input)
+    }
+    fn alias_callee_type(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> TypeId {
+        self.project_flow_adapter().alias_callee_type(value, input, checker)
+    }
     fn reference_alias_initial(&self, reference: NativeReferenceKey) -> NativeAliasInitial {
         self.project_flow_adapter().reference_alias_initial(reference)
     }

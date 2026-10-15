@@ -51,7 +51,7 @@ pub enum NativeAliasIntrinsic { Standard(NativeIntrinsicSite), Unknown, Pending 
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Origin {
-    Function(NativeFunctionId, NativeFlowKey),
+    Function(NativeFunctionId, NativeFlowKey, u64),
     Standard(NativeIntrinsicSite),
     Environment(NativeEnvironmentId),
     Allocation(NativeValueKey, NativeFlowKey),
@@ -79,7 +79,7 @@ pub(super) struct NativeAliasCache {
     executions: Vec<AliasExecutionFrame>,
 }
 #[derive(Clone, Copy)]
-struct AliasExecutionFrame { id: u64, entry: NativeFlowKey, caller: NativeFlowKey, function: Option<(NativeFunctionId, NativeFlowKey)> }
+struct AliasExecutionFrame { id: u64, entry: NativeFlowKey, caller: NativeFlowKey, function: Option<(NativeFunctionId, NativeFlowKey, u64)> }
 impl NativeAliasCache {
     fn reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u64, u64), result: Origins, _: Stored) { self.references.insert(key, result); }
     fn value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u64, u64), result: Origins, _: Stored) { self.values.insert(key, result); }
@@ -167,7 +167,7 @@ impl<'p, 's> Checker<'p, 's> {
         result.unwrap_or_else(|error| std::panic::resume_unwind(error))
     }
 
-    fn with_native_alias_execution<R>(&mut self, call: NativeValueKey, caller: NativeFlowKey, execution: &NativeAliasExecution, function: Option<(NativeFunctionId, NativeFlowKey)>, work: impl FnOnce(&mut Self) -> R) -> R {
+    fn with_native_alias_execution<R>(&mut self, call: NativeValueKey, caller: NativeFlowKey, execution: &NativeAliasExecution, function: Option<(NativeFunctionId, NativeFlowKey, u64)>, work: impl FnOnce(&mut Self) -> R) -> R {
         let parent = self.native_alias_cache.frame();
         let next = self.native_alias_cache.execution_ids.len() as u64 + 1;
         let id = *self.native_alias_cache.execution_ids.entry((call, caller, execution.entry, parent)).or_insert(next);
@@ -219,6 +219,10 @@ impl<'p, 's> Checker<'p, 's> {
             Origin::Standard(site) => match site.kind {
                 NativeIntrinsicKind::Type | NativeIntrinsicKind::Assert | NativeIntrinsicKind::SetMetatable => NativeCallPreservation::Preserved,
                 NativeIntrinsicKind::Require => {
+                    let Some(loader) = provider.require_alias_loader_reference(call, input) else { return NativeCallPreservation::Unknown };
+                    let state = self.native_alias_loader_state(provider, loader, recipe.execution_input);
+                    if state.incomplete { return NativeCallPreservation::Pending }
+                    if state.ty != crate::types::TypeId::TRUE { return NativeCallPreservation::Unknown }
                     let Some(executions) = provider.require_alias_execution(call, input) else { return NativeCallPreservation::Unknown };
                     for execution in executions {
                         let result = self.native_alias_execution_preservation(provider, reference, call, &recipe, &execution, None);
@@ -227,16 +231,31 @@ impl<'p, 's> Checker<'p, 's> {
                     NativeCallPreservation::Preserved
                 },
             },
-            Origin::Function(function, creation) => {
-                if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation))) { return NativeCallPreservation::Pending }
+            Origin::Function(function, creation, activation) => {
+                if activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation) { return NativeCallPreservation::Unknown }
+                if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation, activation))) { return NativeCallPreservation::Pending }
                 let Some(execution) = provider.function_alias_execution(function, creation) else { return NativeCallPreservation::Unknown };
-                self.native_alias_execution_preservation(provider, reference, call, &recipe, &execution, Some((function, creation)))
+                self.native_alias_execution_preservation(provider, reference, call, &recipe, &execution, Some((function, creation, activation)))
             },
             _ => NativeCallPreservation::Unknown,
         }
     }
 
-    fn native_alias_execution_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, recipe: &NativeAliasCall, execution: &NativeAliasExecution, function: Option<(NativeFunctionId, NativeFlowKey)>) -> NativeCallPreservation {
+    fn native_alias_loader_state(&mut self, provider: &dyn NativeFlowProvider, loader: NativeReferenceKey, input: NativeFlowKey) -> NativeFlowResult {
+        use crate::types::TypeId;
+        let unknown = NativeFlowResult { ty: TypeId::FALSE, incomplete: false, unresolved_auto: false };
+        if loader.graph != input.graph || !provider.contains_reference(loader) || !provider.contains_graph(input.graph) || provider.node(input).is_none() { return unknown }
+        let initial = if let Some(index) = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry.graph == input.graph) {
+            let frame = self.native_alias_cache.executions[index];
+            let Some(parent) = provider.reference_in_graph(loader, frame.caller.graph) else { return unknown };
+            let parent = self.with_native_alias_parent(index, |checker| checker.native_alias_loader_state(provider, parent, frame.caller));
+            if parent.incomplete { return parent }
+            parent.ty
+        } else { TypeId::TRUE };
+        self.native_flow_type(provider, input, loader, TypeId::FALSE, initial)
+    }
+
+    fn native_alias_execution_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, recipe: &NativeAliasCall, execution: &NativeAliasExecution, function: Option<(NativeFunctionId, NativeFlowKey, u64)>) -> NativeCallPreservation {
         if !provider.contains_graph(execution.entry.graph) || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) || execution.terminals.is_empty() { return NativeCallPreservation::Unknown }
         let Some(watched) = provider.reference_in_graph(reference, execution.entry.graph) else { return NativeCallPreservation::Unknown };
         if !provider.contains_reference(watched) { return NativeCallPreservation::Unknown }
@@ -447,7 +466,8 @@ impl<'p, 's> Checker<'p, 's> {
             NativeAliasValue::Function { function, creation } => {
                 if column != 0 { Origins::non_table() }
                 else if self.native_function_provider.is_some_and(|provider| provider.contains_function(function)) && provider.contains_graph(creation.graph) && provider.node(creation).is_some() {
-                    Origins::one(Origin::Function(function, creation), false)
+                    let activation = self.native_alias_cache.executions.iter().rev().find(|frame| frame.entry.graph == creation.graph).map_or(0, |frame| frame.id);
+                    Origins::one(Origin::Function(function, creation, activation), false)
                 } else { Origins::unknown() }
             },
             NativeAliasValue::Projection { value, input, index } => match index.checked_add(column) {
@@ -598,8 +618,9 @@ impl<'p, 's> Checker<'p, 's> {
             }
             return opaque();
         }
-        let Origin::Function(function, creation) = origin else { return opaque() };
-        if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation))) { return Origins::unknown() }
+        let Origin::Function(function, creation, activation) = origin else { return opaque() };
+        if activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation) { return opaque() }
+        if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation, activation))) { return Origins::unknown() }
         let Some(execution) = provider.function_alias_execution(function, creation) else { return opaque() };
         if !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) || !provider.contains_graph(execution.entry.graph) { return opaque() }
         let Some(rows) = provider.function_alias_returns(function) else { return opaque() };
@@ -607,7 +628,7 @@ impl<'p, 's> Checker<'p, 's> {
         if exit.graph != execution.entry.graph || rows.iter().any(|row| row.at.graph != execution.entry.graph) { return opaque() }
         let query = Query::NativeAliasReturn(function, column);
         if !self.enter(query) { return Origins::unknown() }
-        let mut result = self.with_native_alias_execution(call, recipe.execution_input, &execution, Some((function, creation)), |checker| {
+        let mut result = self.with_native_alias_execution(call, recipe.execution_input, &execution, Some((function, creation, activation)), |checker| {
         let mut result = Origins::default();
         for row in rows {
             let Some(NativeFlowNode::Return { before }) = provider.node(row.at) else { result.unknown = true; result.uncertain = true; continue };

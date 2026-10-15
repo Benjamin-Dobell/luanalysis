@@ -259,6 +259,10 @@ pub trait NativeFlowProvider {
     fn alias_node_dispatch(&self, _: NativeFlowKey) -> super::native_aliases::NativeAliasDispatch { super::native_aliases::NativeAliasDispatch::Unknown }
     fn function_alias_execution(&self, _: crate::types::NativeFunctionId, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasExecution> { None }
     fn require_alias_execution(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<Vec<super::native_aliases::NativeAliasExecution>> { None }
+    fn require_alias_loader_reference(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativeReferenceKey> { None }
+    /// Inspect a callee for identity analysis without publishing speculative
+    /// source diagnostics; ordinary call checking remains a separate demand.
+    fn alias_callee_type(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> TypeId { self.value_type(value, input, checker) }
     /// A lexical variable cell, rather than a slot in a mutable heap object.
     fn reference_is_cell(&self, _: NativeReferenceKey) -> bool { false }
     /// An invariant original written bound, never an inferred or narrowed view.
