@@ -1632,6 +1632,28 @@ mod tests {
     }
 
     #[test]
+    fn generic_dictionary_key_overlap_is_comparable_without_becoming_assignable() {
+        Engine::new().with_native_provider(GenericTablePattern::default, |_, queries| {
+            let key = Type::NativeTypeParameter(GenericTablePattern::parameter(0));
+            let value = Type::NativeTypeParameter(GenericTablePattern::parameter(1));
+            let generic = queries.table_type(&dictionary(key.clone(), value.clone(), false)).unwrap();
+            let numeric = queries.table_type(&dictionary(Type::Number, value, false)).unwrap();
+            assert!(queries.assertion_overlap(&generic, &numeric));
+            assert!(queries.assertion_overlap(&numeric, &generic));
+            assert!(!queries.is_assignable(&generic, &numeric));
+            assert!(!queries.is_assignable(&numeric, &generic));
+
+            let numbers = queries.table_type(&dictionary(key, Type::Number, false)).unwrap();
+            let strings = queries.table_type(&dictionary(Type::Number, Type::String, false)).unwrap();
+            assert!(!queries.assertion_overlap(&numbers, &strings));
+            for key in [Type::String, Type::Boolean] {
+                let other = queries.table_type(&dictionary(key, Type::String, false)).unwrap();
+                assert!(!queries.assertion_overlap(&other, &strings));
+            }
+        });
+    }
+
+    #[test]
     fn native_dictionary_inference_reads_the_runtime_table_top_carrier() {
         Engine::new().with_native_provider(GenericTablePattern::default, |_, queries| {
             let function = Type::NativeFunction(GenericTablePattern::function());

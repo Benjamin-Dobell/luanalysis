@@ -938,6 +938,8 @@ impl<'p, 's> Checker<'p, 's> {
                 let matches = if identity {
                     actual.readonly == indexer.readonly && actual.sparse == indexer.sparse
                         && self.is_related_to_ex::<REPORT>(r, actual.key, indexer.key, REC_BOTH, state).holds()
+                } else if r.relation == Relation::Comparable {
+                    self.native_table_key_domains_overlap(actual.key, indexer.key)
                 } else {
                     self.is_assignable(actual.key, indexer.key) || self.is_assignable(indexer.key, actual.key)
                 };

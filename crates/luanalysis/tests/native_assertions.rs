@@ -15,6 +15,59 @@ fn ty(report: &CheckReport, name: &str) -> String {
         .clone()
 }
 #[test]
+fn generic_dictionary_assertions_use_possible_key_overlap_and_keep_value_contracts() {
+    let source = r#"---@shape Packed<T>
+---@field [number] T
+---@field n number
+
+---@generic K,V
+---@param tab table<K,V>
+---@return V[]
+local function array(tab) return --[[---@type V[] ]] tab end
+
+---@generic K,V
+---@param tab table<K,V>
+---@return Packed<V>
+local function packed(tab) return --[[---@type Packed<V>]] tab end
+
+---@generic K,V
+---@param tab V[]
+---@return table<K,V>
+local function dictionary(tab) return --[[---@type table<K,V>]] tab end
+"#;
+    accepted(source);
+
+    let wrong = r#"---@generic K
+---@param tab table<K,number>
+local function wrong(tab) return --[[---@type string[] ]] tab end
+"#;
+    let report = check(wrong);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2352");
+    assert_eq!(&wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "--[[---@type string[] ]] tab");
+}
+
+#[test]
+fn dictionary_assertion_overlap_does_not_coerce_distinct_lua_key_categories() {
+    for generic in ["", "---@generic K:string\n", "---@generic K:boolean\n"] {
+        let key = if generic.is_empty() { "string" } else { "K" };
+        let source = format!("{generic}---@param tab table<{key},number>\nlocal function wrong(tab) return --[[---@type number[] ]] tab end\n");
+        let report = check(&source);
+        assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(report.diagnostics[0].code, "TS2352");
+    }
+}
+
+#[test]
+fn possible_generic_dictionary_key_overlap_does_not_allow_ordinary_assignment() {
+    let source = "---@generic K,V\n---@param tab table<K,V>\nlocal function wrong(tab)\n---@type V[]\nlocal values=tab\nend\n";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "tab");
+}
+
+#[test]
 fn scalar_type_assertion_and_not_preserve_operand_checking() {
     let source = "---@param value number|string\nlocal function read(value)\n---@type number\nlocal cast=--[[---@type number]] value\n---@type number\nlocal excluded=--[[---@not string]] value\nreturn cast,excluded\nend\nread(42)";
     accepted(source);
