@@ -51,6 +51,23 @@ fn pass(output: &Output) {
 const FILE: &str = "---@class File\nlocal original = {}\n---@param count number\n---@return string\nfunction original:read(count) return missing_body(count) end\nfunction original:close() end\nreturn original\n";
 
 #[test]
+fn uninitialized_ambient_class_locals_own_inherited_dot_and_colon_contracts() {
+    // tts-types/Object.def.lua uses `local Object`, `local Container`, etc.
+    let declaration = "---@class Object\n---@field value number\nlocal Object\n---@param value number\nfunction Object.setValue(value) end\n---@class Container:Object\nlocal Container\n---@param label string\nfunction Container:setLabel(label) end\nreturn Container\n";
+    let fixture = Fixture::new(
+        declaration,
+        "---@type Container\nlocal container\ncontainer.setValue(42)\ncontainer:setLabel('ok')\n---@type number\nlocal value=container.value\n",
+    );
+    pass(&fixture.check());
+    fs::write(fixture.0.join("main.lua"), "---@type Container\nlocal container\ncontainer:setLabel(42)\n").unwrap();
+    let output = fixture.check();
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output));
+    assert!(text(&output).contains("main.lua:3:20: error[TS2345]"), "{}", text(&output));
+    fs::write(fixture.0.join("main.lua"), "---@type Container\nlocal container\ncontainer:setLabel('fixed')\n").unwrap();
+    pass(&fixture.check());
+}
+
+#[test]
 fn local_ambient_class_members_are_pure_original_contracts_with_real_receivers() {
     let fixture = Fixture::new(
         FILE,

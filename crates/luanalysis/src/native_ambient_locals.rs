@@ -1,5 +1,6 @@
 //! Original declaration-library local owners and terminal export statements.
-//! Empty tables identify declaration owners; no runtime value is constructed.
+//! Uninitialized locals and empty tables identify declaration owners; no
+//! runtime value is constructed.
 use super::NativeRegistry;
 use crate::native_named::{NativeNamedKey, RuntimeAttachmentKind};
 use luanalysis_engine::{NativeTypeDeclarationKey, TypeQueries};
@@ -45,6 +46,9 @@ impl NativeRegistry {
         let StmtKind::Local { values, .. } = &statement.kind else {
             return None;
         };
+        if values.is_empty() {
+            return Some(*key);
+        }
         let [value] = values.as_slice() else {
             return None;
         };
