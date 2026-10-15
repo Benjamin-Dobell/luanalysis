@@ -345,6 +345,7 @@ pub(super) fn is_object_kind(data: &TypeData) -> bool {
             | TypeData::NativeRuntimeTop { .. }
             | TypeData::NativeObject(_)
             | TypeData::NativeDefinition(_)
+            | TypeData::NativeRuntimeTable(_)
             | TypeData::Tuple { .. }
             | TypeData::Anon { .. }
             | TypeData::Fns { .. }
@@ -4319,13 +4320,13 @@ impl<'p, 's> Checker<'p, 's> {
         match data {
             TypeData::NativeDefinition(reference) => {
                 let declared = self.intern(TypeData::NativeObject(NativeObjectReference {
-                    declaration: reference.class.declaration, mapper: MapperId::IDENTITY, self_argument: None,
+                    declaration: reference.class.declaration, mapper: MapperId::IDENTITY, self_argument: None, runtime_context: reference.class.runtime_context,
                 }));
                 (8, declared.0, 0)
             }
             TypeData::NativeObject(reference) => {
                 let declared = self.intern(TypeData::NativeObject(NativeObjectReference {
-                    declaration: reference.declaration, mapper: MapperId::IDENTITY, self_argument: None,
+                    declaration: reference.declaration, mapper: MapperId::IDENTITY, self_argument: None, runtime_context: reference.runtime_context,
                 }));
                 (8, declared.0, 0)
             }

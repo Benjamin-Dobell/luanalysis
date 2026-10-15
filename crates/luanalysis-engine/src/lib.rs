@@ -22,6 +22,10 @@ pub use native_project::*;
 #[cfg(test)]
 mod native_project_tests;
 mod native_named;
+#[cfg(test)]
+mod native_runtime_table_tests;
+#[cfg(test)]
+mod native_alias_tests;
 pub use native_named::*;
 mod native_globals;
 pub use native_globals::*;
@@ -336,6 +340,10 @@ pub trait NativeTypeProvider {
     fn contains_class_definition(&self, _: NativeClassDefinitionKey) -> bool { false }
     fn type_declaration_self_parameter(&self, _: NativeTypeDeclarationKey) -> Option<NativeTypeParameterKey> { None }
     fn class_definition_header(&self, _: NativeClassDefinitionKey) -> ClassDefinitionHeader { panic!("class definition provider absent") }
+    fn runtime_table_constructor(&self, _: NativeTypeDeclarationKey) -> Option<NativeExpressionKey> { None }
+    fn runtime_table_constructor_owner(&self, _: NativeTypeDeclarationKey) -> Option<NativeFunctionKey> { None }
+    fn runtime_table_seed(&self, _: NativeTypeDeclarationKey, _: &mut dyn TypeQueries) -> Option<Type> { None }
+    fn runtime_store_receiver(&self, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Option<Type> { None }
     /// Raw written return annotation only. This hook must not inspect the body
     /// or demand its result count. Zero results project to Lua nil in scalar use.
     /// Context/capture variants also return declaration-space annotations; the
@@ -902,6 +910,7 @@ pub trait TypeQueries {
         mode: NativeCheckMode,
     ) -> Type;
     fn current_contextual_function(&mut self) -> Option<ContextualFunctionContext>;
+    fn flow_alias_relation(&mut self, provider: &dyn NativeFlowProvider, left: NativeReferenceKey, left_at: NativeFlowKey, right: NativeValueKey, right_at: NativeFlowKey) -> NativeAliasRelation;
     fn with_contextual_function(
         &mut self,
         context: &ContextualFunctionContext,
@@ -995,6 +1004,9 @@ pub trait TypeQueries {
     fn format(&mut self, ty: &Type) -> String;
     fn named_type_reference(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Result<Type, NamedTypeError>;
     fn named_object_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey>;
+    fn runtime_table_value(&mut self, declaration: NativeTypeDeclarationKey, actual: &Type) -> Result<Type, NamedTypeError>;
+    fn runtime_table_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey>;
+    fn runtime_table_schema(&mut self, ty: &Type) -> Option<Type>;
     fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
     fn named_receiver_type(&mut self, class: &Type, receiver: &Type) -> Result<Type, NamedTypeError>;
     fn named_member_context(&mut self, member: NativeTypeMemberKey) -> Result<Option<Type>, NamedTypeError>;
@@ -1548,6 +1560,10 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             unresolved_auto: result.unresolved_auto,
         }
     }
+    fn flow_alias_relation(&mut self, provider: &dyn NativeFlowProvider, left: NativeReferenceKey, left_at: NativeFlowKey, right: NativeValueKey, right_at: NativeFlowKey) -> NativeAliasRelation {
+        let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
+        self.checker.native_flow_alias_relation(&adapter, left, left_at, right, right_at)
+    }
     fn flow_capture_type(
         &mut self,
         provider: &dyn NativeFlowProvider,
@@ -1863,6 +1879,23 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             TypeData::NativeObject(reference) => Some(native_named::source_declaration(reference.declaration)),
             _ => None,
         }
+    }
+    fn runtime_table_value(&mut self, declaration: NativeTypeDeclarationKey, actual: &Type) -> Result<Type, NamedTypeError> {
+        let actual = import_type(self.checker, self.handles, actual);
+        let declaration = bun_sema::types::NativeTypeDeclarationId {snapshot:declaration.snapshot,index:declaration.index};
+        self.checker.native_runtime_table_value(declaration, actual)
+            .map(|ty| self.handles.retain(ty))
+            .map_err(|error| native_named::export_error(self.checker, self.handles, error))
+    }
+    fn runtime_table_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey> {
+        let ty = import_type(self.checker, self.handles, ty);
+        let schema = self.checker.native_runtime_table_schema(ty)?;
+        let TypeData::NativeObject(reference) = *self.checker.data(schema) else { unreachable!("runtime schema reference") };
+        Some(native_named::source_declaration(reference.declaration))
+    }
+    fn runtime_table_schema(&mut self, ty: &Type) -> Option<Type> {
+        let ty = import_type(self.checker, self.handles, ty);
+        self.checker.native_runtime_table_schema(ty).map(|ty| self.handles.retain(ty))
     }
     fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError> {
         native_named::declared(self, declaration, false)
@@ -2838,7 +2871,7 @@ fn export_type_with_literal_policy(checker: &mut Checker<'_, '_>, handles: &Type
             bun_sema::types::NativeRuntimeKind::Table => Type::RuntimeTable,
             bun_sema::types::NativeRuntimeKind::Function => Type::RuntimeFunction,
         },
-        TypeData::NativeObject(..) | TypeData::NativeDefinition(..) => handles.retain(ty),
+        TypeData::NativeObject(..) | TypeData::NativeDefinition(..) | TypeData::NativeRuntimeTable(..) => handles.retain(ty),
         TypeData::NativeTable(_) => native_tables::export_table(checker, handles, ty, preserve_regular)
             .map(Type::Table)
             .unwrap_or_else(|| handles.retain(ty)),

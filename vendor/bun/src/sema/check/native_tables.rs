@@ -608,6 +608,7 @@ impl<'p, 's> Checker<'p, 's> {
             && let Some(member) = self.native_primitive_property(table, name)
         { return member.ok_or(NativeTableError::MissingKey { key }); }
         let table = self.native_runtime_carrier(table);
+        if let Some(reference) = self.native_runtime_table_ref(table) { return self.native_runtime_table_read(reference, key) }
         if let Some(reference) = self.native_definition_ref(table) { return self.native_definition_member_read(reference, table, key) }
         if let TypeData::NativeObject(reference) = *self.data(table) {
             return self.native_named_read(reference, key);
@@ -698,12 +699,13 @@ impl<'p, 's> Checker<'p, 's> {
         if !matches!(key, NativeTableAccessKey::Literal(_)) { return false }
         if !matches!(error, NativeTableError::MissingKey { .. } | NativeTableError::KeyType { .. }) { return false }
         let table = self.native_runtime_carrier(table);
-        if matches!(self.data(table), TypeData::NativeTable(_) | TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) { return true }
+        if matches!(self.data(table), TypeData::NativeRuntimeTable(_) | TypeData::NativeTable(_) | TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) { return true }
         let base = self.base_constraint_or_type(table);
         base != table && self.native_table_absent_read(base, key, error)
     }
 
     pub fn native_table_value_context(&mut self, expected: TypeId, key: NativeTableAccessKey) -> Option<TypeId> {
+        if let Some(reference) = self.native_runtime_table_ref(expected) { return self.native_runtime_table_value_context(reference, key) }
         if let Some(reference) = self.native_definition_ref(expected) { return self.native_definition_value_context(reference, key) }
         if self.is_union(expected) {
             // Contextual object properties draw information from declarations;
@@ -734,6 +736,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub fn native_table_write(&mut self, table: TypeId, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
         let table = self.native_runtime_carrier(table);
+        if let Some(reference) = self.native_runtime_table_ref(table) { return self.native_runtime_table_write(reference, key, value) }
         if let Some(reference) = self.native_definition_ref(table) { return self.native_definition_write(reference, key, value) }
         let table = self.native_object_resolved(table).map_err(|_| NativeTableError::NotTable { ty: table })?;
         if let Some(error) = self.native_table_description_error(table) { return Err(error) }

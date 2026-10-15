@@ -1800,6 +1800,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             .deferred(ty)
             .map(|reference| Identity::Node(reference.file, reference.node));
         match self.c.data(ty) {
+            TypeData::NativeRuntimeTable(reference) => self.type_to_node(reference.view),
             TypeData::NativeDefinition(reference) => {
                 let class = self.c.intern(TypeData::NativeObject(reference.class));
                 let class = self.type_to_node(class);

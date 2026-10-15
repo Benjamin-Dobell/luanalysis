@@ -41,6 +41,9 @@ pub enum NativeWriteRelation {
     /// A single frozen literal child of the queried receiver. The provider supplies its key;
     /// the native transfer, rather than the source graph, owns the resulting value view.
     Descendant,
+    PossibleExact,
+    PossibleAncestor,
+    PossibleDescendant,
     Unaffected,
 }
 
@@ -246,6 +249,9 @@ pub struct NativeIteratorProjection {
 }
 
 pub trait NativeFlowProvider {
+    fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> super::native_aliases::NativeAliasValue { super::native_aliases::NativeAliasValue::Unknown }
+    fn function_alias_returns(&self, _: crate::types::NativeFunctionId) -> Option<Vec<super::native_aliases::NativeAliasReturn>> { None }
+    fn function_alias_exit(&self, _: crate::types::NativeFunctionId) -> Option<NativeFlowKey> { None }
     /// Value capabilities require the assigned runtime value rather than the
     /// declaration-shape reduction used by ordinary TS variable flow.
     fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
@@ -348,6 +354,7 @@ struct NativeDomain<'a> {
 }
 
 enum NativeTransfer {
+    PossibleWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, relation: NativeWriteRelation },
     IncompleteCall,
     DefinitionWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey },
     Predicate(NativePredicate, bool),
@@ -598,14 +605,16 @@ impl FlowDomain for NativeDomain<'_> {
         walk.initial
     }
     fn join(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, types: &[TypeId], initial: TypeId) -> TypeId {
-        if self.provider.reference_tracks_runtime_value(walk.reference) {
+        if self.provider.reference_tracks_runtime_value(walk.reference) || types.iter().any(|&ty| checker.native_has_runtime_table(ty)) {
             // Structural subtyping cannot remove an alternative runtime value:
             // an ordinary function may share assert's shape without its effect.
             checker.union_or_evolving_with(types, false)
         } else { checker.flow_join(types, initial) }
     }
-    fn starts_as_declared(&self, _: &mut Checker<'_, '_>, walk: &mut NativeWalk) -> bool {
-        walk.initial == walk.declared
+    fn starts_as_declared(&self, checker: &mut Checker<'_, '_>, walk: &mut NativeWalk) -> bool {
+        // A runtime table's initial view is one concrete continuation. It is
+        // not an absorbing declaration bound for sibling mutation branches.
+        walk.initial == walk.declared && !checker.native_has_runtime_table(walk.initial)
     }
     fn shared(&self, _: &Checker<'_, '_>, at: NativeFlowKey) -> bool {
         at.graph == self.graph && self.provider.is_shared(at)
@@ -659,12 +668,17 @@ impl FlowDomain for NativeDomain<'_> {
                 match self.provider.write_affects_with_types(walk.reference, target, at, checker) {
                     NativeWriteRelation::Exact => {
                         let assigned = checker.native_flow_value(self.provider, value, input);
-                        FlowStep::Value(if self.provider.reference_tracks_runtime_value(walk.reference) { assigned } else { checker.resolved_assignment_type(walk.declared, assigned) })
+                        FlowStep::Value(if self.provider.reference_tracks_runtime_value(walk.reference) || checker.native_has_runtime_table(assigned) { assigned } else { checker.resolved_assignment_type(walk.declared, assigned) })
                     }
                     NativeWriteRelation::Ancestor => FlowStep::Value(walk.declared),
                     NativeWriteRelation::Descendant => FlowStep::Follow {
                         before,
                         transfer: Some(NativeTransfer::DefinitionWrite { at, target, value, input }),
+                        count_passed: false,
+                    },
+                    relation @ (NativeWriteRelation::PossibleExact | NativeWriteRelation::PossibleAncestor | NativeWriteRelation::PossibleDescendant) => FlowStep::Follow {
+                        before,
+                        transfer: Some(NativeTransfer::PossibleWrite { at, target, value, input, relation }),
                         count_passed: false,
                     },
                     NativeWriteRelation::Unaffected => FlowStep::Follow {
@@ -768,6 +782,21 @@ impl FlowDomain for NativeDomain<'_> {
             return FlowType::new(previous.ty, true);
         }
         let ty = match transfer {
+            NativeTransfer::PossibleWrite { at, target, value, input, relation } => {
+                let assigned = match relation {
+                    NativeWriteRelation::PossibleExact => checker.native_flow_value(self.provider, value, input),
+                    NativeWriteRelation::PossibleDescendant => {
+                        if checker.native_definition_flow_target(previous.ty)
+                            && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
+                            let value = checker.native_flow_value(self.provider, value, input);
+                            checker.native_definition_flow_write(previous.ty, key, value)
+                        } else { previous.ty }
+                    }
+                    NativeWriteRelation::PossibleAncestor => checker.native_runtime_table_absent_view(walk.initial),
+                    _ => unreachable!("only possible writes enter this transfer"),
+                };
+                checker.union_or_evolving_with(&[previous.ty, assigned], false)
+            }
             NativeTransfer::IncompleteCall => unreachable!(),
             NativeTransfer::DefinitionWrite { at, target, value, input } => {
                 if checker.native_definition_flow_target(previous.ty)

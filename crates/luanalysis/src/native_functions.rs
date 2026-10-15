@@ -76,6 +76,7 @@ pub(super) struct NativeRegistry {
     named: NativeNamed,
     pub(super) members: super::native_members::NativeMembers,
     pub(super) doc_members: super::native_doc_members::NativeDocMembers,
+    pub(super) runtime_tables: super::native_runtime_tables::NativeRuntimeTables,
     class_definitions: class_definitions::NativeClassDefinitions,
     methods: methods::NativeMethods,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
@@ -167,6 +168,7 @@ impl NativeRegistry {
             expressions.key_for_span(expression.span)
         });
         let flow = NativeFlowSources::new(&file, &bound, snapshot, &function_spans);
+        let runtime_tables=super::native_runtime_tables::NativeRuntimeTables::new(&file,&expressions,&flow);
         let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
         let members = super::native_members::NativeMembers::new(snapshot, &named, Vec::new(), globals.member_namespace_end(named.next_member_index()));
         let doc_members = super::native_doc_members::NativeDocMembers::new(snapshot,&file,&named,members.namespace_end(),|name|named.candidates(name).iter().map(|key|luanalysis_engine::NativeTypeDeclarationKey {snapshot:key.snapshot,index:key.index}).collect());
@@ -195,6 +197,7 @@ impl NativeRegistry {
             named,
             members,
             doc_members,
+            runtime_tables,
             class_definitions,
             methods,
             project_names: None,
@@ -222,6 +225,7 @@ impl NativeRegistry {
     pub(super) fn bound(&self) -> &BoundFile {
         &self.bound
     }
+    pub(crate) fn binding_function_owner(&self,binding:BindingId)->Option<NativeFunctionKey> {self.flow.binding_function_owner(binding)}
 
     pub(crate) fn source_role(&self) -> luanalysis_project::SourceRole { self.source_role }
     pub(crate) fn set_overload_mode(&mut self, mode: crate::OverloadMode) {
@@ -257,6 +261,7 @@ impl NativeRegistry {
     }
     pub(super) fn rebuild_documentation_members(&mut self) {
         self.doc_members=super::native_doc_members::NativeDocMembers::new(self.snapshot,&self.file,&self.named,self.members.namespace_end(),|name|self.named_candidates(name));
+        self.runtime_tables.register_keys(self.snapshot,(self.named.declarations().len()+self.named.anonymous_heads().len()).try_into().expect("original declaration namespace fits u32"),self.doc_members.namespace_end());
     }
 
     pub(crate) fn set_legacy_builtin_policy(&mut self, policy: super::builtins::LegacyBuiltinPolicy) {
@@ -2064,6 +2069,10 @@ impl NativeTypeProvider for NativeRegistry {
     fn type_declaration_header(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> luanalysis_engine::TypeDeclarationHeader {
         self.named_declaration_header(key)
     }
+    fn runtime_table_constructor(&self,key:luanalysis_engine::NativeTypeDeclarationKey)->Option<NativeExpressionKey> {self.runtime_schema_constructor(key)}
+    fn runtime_table_constructor_owner(&self,key:luanalysis_engine::NativeTypeDeclarationKey)->Option<NativeFunctionKey> {self.runtime_tables.schema(key)?.owner}
+    fn runtime_table_seed(&self,key:luanalysis_engine::NativeTypeDeclarationKey,queries:&mut dyn TypeQueries)->Option<Type> {self.runtime_schema_seed(key,queries)}
+    fn runtime_store_receiver(&self,key:NativeFlowKey,queries:&mut dyn TypeQueries)->Option<Type> {self.runtime_store_receiver_type(key,queries)}
     fn type_declaration_owner_scope(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> luanalysis_engine::OwnerScopeRecipe {
         self.named_owner_scope_recipe(key)
     }
@@ -2077,6 +2086,7 @@ impl NativeTypeProvider for NativeRegistry {
         self.doc_members.signature_keys(key,|id|self.doc_signature_key(id))
     }
     fn type_member_origin(&self, key: luanalysis_engine::NativeTypeMemberKey) -> luanalysis_engine::TableFieldOrigin {
+        if let Some(source)=self.runtime_tables.member(key) {return if source.annotation.is_some() {luanalysis_engine::TableFieldOrigin::Declared} else {luanalysis_engine::TableFieldOrigin::Inferred};}
         self.original_member_origin(key).unwrap_or(luanalysis_engine::TableFieldOrigin::Declared)
     }
     fn type_member_is_assignment(&self, key: luanalysis_engine::NativeTypeMemberKey) -> bool {

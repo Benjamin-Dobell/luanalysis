@@ -19,6 +19,8 @@ mod native_iterators;
 mod native_functions;
 mod native_named;
 mod native_members;
+mod native_runtime_tables;
+mod native_runtime_provider;
 mod native_doc_members;
 mod native_signatures;
 mod native_packs;
@@ -721,6 +723,7 @@ impl Checker<'_> {
             ExprKind::Table(fields) => self.native_table_expression(fields, expr.span, expected),
             ExprKind::Field { base, name } => {
                 let receiver = self.expression(base);
+                let receiver = self.runtime_member_contract(base,receiver);
                 let ty = self.native_named_property_read(&receiver, name, base.span);
                 self.native_member_flow_type(expr, ty)
             }
@@ -748,6 +751,7 @@ impl Checker<'_> {
             } => self.binary_expression(*op, *op_span, left, right),
             ExprKind::Index { base, index } => {
                 let receiver = self.expression(base);
+                let receiver = self.runtime_member_contract(base,receiver);
                 let key = self.native_table_key(index);
                 let ty = self.native_table_read(&receiver, &key, index.span);
                 self.native_member_flow_type(expr, ty)
@@ -761,6 +765,7 @@ impl Checker<'_> {
             ),
             ExprKind::Error => Type::Any,
         };
+        let ty = self.finish_runtime_table_initializer(expr,expected,ty);
         let ty = self.finish_class_definition_initializer(expr.span, ty);
         self.record_expression_type(expr.span, &ty);
         ty

@@ -41,6 +41,7 @@ pub enum TypeDeclarationKind {
     Shape,
     Class,
     Module,
+    RuntimeTable,
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +96,7 @@ pub enum TypeMemberOwner {
         name: String,
         candidates: Vec<NativeTypeDeclarationKey>,
     },
+    RuntimeStore(super::NativeFlowKey),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeMemberHeader {
@@ -217,10 +219,23 @@ fn source_kind(kind: NativeTypeDeclarationKind) -> TypeDeclarationKind {
         NativeTypeDeclarationKind::Shape => TypeDeclarationKind::Shape,
         NativeTypeDeclarationKind::Class => TypeDeclarationKind::Class,
         NativeTypeDeclarationKind::Module => TypeDeclarationKind::Module,
+        NativeTypeDeclarationKind::RuntimeTable => TypeDeclarationKind::RuntimeTable,
     }
 }
 
 impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_, P> {
+    fn runtime_table_constructor(&self, key: NativeTypeDeclarationId) -> Option<bun_sema::types::NativeExpressionId> {
+        self.provider.runtime_table_constructor(source_declaration(key)).map(super::core_expression_key)
+    }
+    fn runtime_table_constructor_owner(&self, key: NativeTypeDeclarationId) -> Option<bun_sema::types::NativeFunctionId> {
+        self.provider.runtime_table_constructor_owner(source_declaration(key)).map(core_key)
+    }
+    fn runtime_table_seed(&self, checker: &mut Checker<'_, '_>, key: NativeTypeDeclarationId) -> Option<TypeId> {
+        self.provider.runtime_table_seed(source_declaration(key), &mut SessionQueries { checker, handles: self.handles }).map(|value| import_type(checker, self.handles, &value))
+    }
+    fn runtime_store_receiver(&self, checker: &mut Checker<'_, '_>, key: super::NativeFlowKey) -> Option<TypeId> {
+        self.provider.runtime_store_receiver(key, &mut SessionQueries { checker, handles: self.handles }).map(|value| import_type(checker, self.handles, &value))
+    }
     fn type_declaration_owner_scope(&self, _: &Checker<'_, '_>, key: NativeTypeDeclarationId) -> bun_sema::check::native_named::NativeOwnerScopeRecipe {
         use bun_sema::check::native_named::NativeOwnerScopeRecipe as Core;
         match self.provider.type_declaration_owner_scope(source_declaration(key)) {
@@ -230,6 +245,7 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
                 TypeDeclarationKind::Class => NativeTypeDeclarationKind::Class,
                 TypeDeclarationKind::Shape => NativeTypeDeclarationKind::Shape,
                 TypeDeclarationKind::Module => NativeTypeDeclarationKind::Module,
+                TypeDeclarationKind::RuntimeTable => NativeTypeDeclarationKind::RuntimeTable,
             }),
             OwnerScopeRecipe::AliasReference { candidates } => Core::AliasReference { candidates: candidates.into_iter().map(core_declaration).collect() },
             OwnerScopeRecipe::UnsupportedAlias => Core::UnsupportedAlias,
@@ -263,6 +279,7 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
                 TypeDeclarationKind::Shape => NativeTypeDeclarationKind::Shape,
                 TypeDeclarationKind::Class => NativeTypeDeclarationKind::Class,
                 TypeDeclarationKind::Module => NativeTypeDeclarationKind::Module,
+                TypeDeclarationKind::RuntimeTable => NativeTypeDeclarationKind::RuntimeTable,
             },
             name: checker.atoms().intern(header.name.as_bytes()),
             object_form: header.object_form.map(|form| match form {
@@ -319,6 +336,7 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
                         candidates: candidates.into_iter().map(core_declaration).collect(),
                     }
                 }
+                TypeMemberOwner::RuntimeStore(store) => NativeTypeMemberOwner::RuntimeStore(store),
             },
             key: match header.key {
                 TypeMemberKeyRecipe::Fixed(key) => CoreMemberKey::Fixed(match key {
@@ -555,8 +573,9 @@ pub(super) fn export_error(
             Q::MemberType(key) => NamedTypeQuery::Member(source_member(key)),
             Q::MemberContext(key) => NamedTypeQuery::MemberContext(source_member(key)),
             Q::IndexerKey(key) => NamedTypeQuery::Indexer(source_member(key)),
+            Q::RuntimeTableMember(_, key, indexer) => if indexer { NamedTypeQuery::Indexer(source_member(key)) } else { NamedTypeQuery::Member(source_member(key)) },
             Q::Bases(key) => NamedTypeQuery::Bases(source_declaration(key)),
-            Q::ObjectMembers(ty) | Q::ObjectValidation(ty) | Q::DefinitionContext(ty) => {
+            Q::ObjectMembers(ty) | Q::ObjectValidation(ty) | Q::DefinitionContext(ty) | Q::RuntimeTableSeed(ty) => {
                 let bun_sema::types::TypeData::NativeObject(reference) = checker.data(ty) else {
                     unreachable!("native object-members query owner")
                 };

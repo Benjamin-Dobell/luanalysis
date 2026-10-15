@@ -10,6 +10,7 @@ pub use core::{
     NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation, NativeIteratorProjection, NativeIteratorStage,
     NativeVariableDeclaration, NativeVariableWrite, NativeFunctionCreation,
 };
+pub use bun_sema::check::native_aliases::{NativeAliasValue, NativeAliasRelation, NativeAliasReturn, NativeAliasReturnValue};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeFlowResult {
@@ -21,6 +22,9 @@ pub struct NativeFlowResult {
 /// Immutable graph recipes and source-value demands. No graph join, loop
 /// iteration, or narrowing algorithm is performed by this interface.
 pub trait NativeFlowProvider {
+    fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> NativeAliasValue { NativeAliasValue::Unknown }
+    fn function_alias_returns(&self, _: super::NativeFunctionKey) -> Option<Vec<NativeAliasReturn>> { None }
+    fn function_alias_exit(&self, _: super::NativeFunctionKey) -> Option<NativeFlowKey> { None }
     fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
     fn reference_follows_creation(&self, _: NativeReferenceKey) -> bool { false }
     fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> bool { true }
@@ -84,6 +88,9 @@ pub(super) struct FlowProviderAdapter<'a> {
 }
 
 impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
+    fn value_alias_source(&self, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue { self.provider.value_alias_source(value, input) }
+    fn function_alias_returns(&self, function: bun_sema::types::NativeFunctionId) -> Option<Vec<NativeAliasReturn>> { self.provider.function_alias_returns(super::source_key(function)) }
+    fn function_alias_exit(&self, function: bun_sema::types::NativeFunctionId) -> Option<NativeFlowKey> { self.provider.function_alias_exit(super::source_key(function)) }
     fn reference_tracks_runtime_value(&self, reference: NativeReferenceKey) -> bool { self.provider.reference_tracks_runtime_value(reference) }
     fn reference_follows_creation(&self, reference: NativeReferenceKey) -> bool { self.provider.reference_follows_creation(reference) }
     fn runtime_type_operation(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> bool {

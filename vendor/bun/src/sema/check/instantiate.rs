@@ -686,9 +686,15 @@ impl<'p, 's> Checker<'p, 's> {
             return self.instantiate_deferred_type_reference(ty, mapper, None);
         }
         match self.data(ty) {
+            TypeData::NativeRuntimeTable(reference) => {
+                let reference = *reference;
+                let schema = NativeObjectReference { mapper: self.compose(reference.schema.mapper, mapper), self_argument: reference.schema.self_argument.map(|ty| self.instantiate(ty, mapper)), ..reference.schema };
+                let view = self.instantiate(reference.view, mapper);
+                self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view }))
+            }
             TypeData::NativeDefinition(reference) => {
                 let reference = *reference;
-                let class = NativeObjectReference { declaration: reference.class.declaration, mapper: self.compose(reference.class.mapper, mapper), self_argument: reference.class.self_argument.map(|ty| self.instantiate(ty, mapper)) };
+                let class = NativeObjectReference { declaration: reference.class.declaration, mapper: self.compose(reference.class.mapper, mapper), self_argument: reference.class.self_argument.map(|ty| self.instantiate(ty, mapper)), runtime_context: reference.class.runtime_context };
                 let view = self.instantiate(reference.view, mapper);
                 self.intern(TypeData::NativeDefinition(NativeDefinitionRef { owner: reference.owner, class, view }))
             }
@@ -696,7 +702,7 @@ impl<'p, 's> Checker<'p, 's> {
                 let reference = *reference;
                 let around = self.compose(reference.mapper, mapper);
                 let self_argument = reference.self_argument.map(|ty| self.instantiate(ty, mapper));
-                self.intern(TypeData::NativeObject(NativeObjectReference { declaration: reference.declaration, mapper: around, self_argument }))
+                self.intern(TypeData::NativeObject(NativeObjectReference { declaration: reference.declaration, mapper: around, self_argument, runtime_context: reference.runtime_context }))
             }
             TypeData::NativeTable(table) => {
                 let fields: Vec<NativeTableField> = table.fields.iter().map(|field| NativeTableField {
@@ -712,11 +718,11 @@ impl<'p, 's> Checker<'p, 's> {
                     value: self.instantiate(tail.value, mapper), ..*tail
                 }).collect();
                 let definition_origin = table.definition_origin.map(|reference| NativeDefinitionRef {
-                    owner: reference.owner, class: NativeObjectReference { declaration: reference.class.declaration, mapper: self.compose(reference.class.mapper, mapper), self_argument: reference.class.self_argument.map(|ty| self.instantiate(ty, mapper)) },
+                    owner: reference.owner, class: NativeObjectReference { declaration: reference.class.declaration, mapper: self.compose(reference.class.mapper, mapper), self_argument: reference.class.self_argument.map(|ty| self.instantiate(ty, mapper)), runtime_context: reference.class.runtime_context },
                     view: self.instantiate(reference.view, mapper),
                 });
                 let nominal_origin = table.nominal_origin.map(|origin| NativeObjectReference {
-                    declaration: origin.declaration, mapper: self.compose(origin.mapper, mapper), self_argument: origin.self_argument.map(|ty| self.instantiate(ty, mapper)),
+                    declaration: origin.declaration, mapper: self.compose(origin.mapper, mapper), self_argument: origin.self_argument.map(|ty| self.instantiate(ty, mapper)), runtime_context: origin.runtime_context,
                 });
                 self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
                     environment_origin: table.environment_origin,

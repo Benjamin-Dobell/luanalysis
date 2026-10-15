@@ -286,10 +286,11 @@ impl Checker<'_> {
         args: &[Expr],
     ) -> (Type, Vec<PackArgument>, Vec<Span>) {
         let receiver_type = self.expression(receiver);
+        let member_contract = self.runtime_member_contract(receiver,receiver_type.clone());
         let callee = if matches!(receiver_type, Type::Any) {
             Type::Any
         } else {
-            match self.engine.property_type_checked(&receiver_type, &name.text) {
+            match self.engine.property_type_checked(&member_contract, &name.text) {
             Ok(Some(callee)) => self.native.is_none().then(|| self.reference(receiver)).flatten()
                 .and_then(|mut reference| {
                     reference.path.push(name.text.clone());

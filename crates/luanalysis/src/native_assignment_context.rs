@@ -16,9 +16,13 @@ impl Checker<'_> {
         match &expression.kind {
             ExprKind::Name(name) => {
                 if let Some(binding) = self.bound.binding_at(name.span.start) {
-                    self.resolve_local(binding)
+                    let constraint = self.resolve_local(binding)
                         .filter(|binding| !binding.evolves_from_nil)
-                        .map(|binding| binding.constraint.clone())
+                        .map(|binding| binding.constraint.clone())?;
+                    // An inferred allocation schema describes that original
+                    // table. It is not a written contract for a later, distinct
+                    // constructor assigned to the same variable.
+                    self.engine.runtime_table_schema(&constraint).is_none().then_some(constraint)
                 } else {
                     if name.text == "_ENV" { return Some(Type::Unknown); }
                     self.global_read(name)

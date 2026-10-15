@@ -286,11 +286,11 @@ impl NativeRegistry {
         self.types.resolve_name_in_context(context, name)
     }
     pub(super) fn named_contains_declaration(&self, key: NativeTypeDeclarationKey) -> bool {
-        self.named.declaration(named_key(key)).is_some()
+        self.runtime_schema_contains(key) || self.named.declaration(named_key(key)).is_some()
             || self.named.anonymous_head(anonymous_key(key)).is_some()
     }
     pub(super) fn named_contains_member(&self, key: NativeTypeMemberKey) -> bool {
-        self.doc_members.get(key).is_some() || self.members.get(key).is_some() || self.namespace_contains_member(key)
+        self.runtime_tables.member(key).is_some() || self.doc_members.get(key).is_some() || self.members.get(key).is_some() || self.namespace_contains_member(key)
             || self.named.member(member_key(key)).is_some()
             || self
                 .named
@@ -318,6 +318,7 @@ impl NativeRegistry {
         &self,
         key: NativeTypeDeclarationKey,
     ) -> TypeDeclarationHeader {
+        if let Some(header)=self.runtime_schema_header(key) {return header;}
         if let Some(source) = self.named.declaration(named_key(key)) {
             let context = NativeTypeContext::NamedType(source.key);
             let mut used = HashSet::new();
@@ -404,6 +405,7 @@ impl NativeRegistry {
         }
     }
     pub(super) fn named_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
+        if let Some(header)=self.runtime_member_header(key) {return header;}
         if let Some(header)=self.doc_members.header(key) {return header;}
         if let Some(header) = self.original_member_header(key) { return header; }
         if let Some(header) = self.namespace_member_header(key) { return header; }
@@ -452,6 +454,7 @@ impl NativeRegistry {
         &self,
         key: NativeTypeDeclarationKey,
     ) -> Vec<NativeTypeMemberKey> {
+        if self.runtime_schema_contains(key) {return self.runtime_tables.members().collect();}
         let mut result = if let Some(source) = self.named.declaration(named_key(key)) {
             source
                 .members
@@ -524,6 +527,7 @@ impl NativeRegistry {
         key: NativeTypeMemberKey,
         queries: &mut dyn TypeQueries,
     ) -> Type {
+        if let Some(ty)=self.runtime_member_type(key,queries) {return ty;}
         if let Some(ty)=self.doc_members.ty(key,queries,|id|self.doc_signature_key(id)) {return ty;}
         if let Some(ty) = self.original_member_type(key, queries) { return ty; }
         if let Some(ty) = self.namespace_member_type(key, queries) { return ty; }
@@ -555,6 +559,7 @@ impl NativeRegistry {
         key: NativeTypeMemberKey,
         queries: &mut dyn TypeQueries,
     ) -> Type {
+        if let Some(ty)=self.runtime_member_index_key(key,queries) {return ty;}
         if let Some(ty) = self.original_member_indexer_key(key, queries) { return ty; }
         if let Some(source) = self.named.member(member_key(key)) {
             let TypeFieldKey::Indexed(ty) = &source.field.key else {
@@ -641,6 +646,7 @@ impl NativeRegistry {
             .collect()
     }
     fn named_origin(&self, key: NativeTypeDeclarationKey) -> Span {
+        if let Some(span)=self.runtime_declaration_origin(key) {return span;}
         self.named
             .declaration(named_key(key))
             .map(|source| source.syntax.name.span)
@@ -652,6 +658,7 @@ impl NativeRegistry {
             .unwrap_or(self.file.span)
     }
     fn named_member_origin(&self, key: NativeTypeMemberKey) -> Span {
+        if let Some(span)=self.runtime_member_origin(key) {return span;}
         if let Some(source)=self.doc_members.get(key) {return source.owner_span;}
         if let Some(span) = self.namespace_member_origin(key) { return span; }
         self.named

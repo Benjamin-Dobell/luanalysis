@@ -504,6 +504,12 @@ impl NativeTypeProvider for ProjectRegistry {
         }
         header
     }
+    fn runtime_table_constructor(&self,key:NativeTypeDeclarationKey)->Option<NativeExpressionKey> {self.owner(key.snapshot).runtime_table_constructor(key)}
+    fn runtime_table_constructor_owner(&self,key:NativeTypeDeclarationKey)->Option<NativeFunctionKey> {self.owner(key.snapshot).runtime_table_constructor_owner(key)}
+    fn runtime_table_seed(&self,key:NativeTypeDeclarationKey,queries:&mut dyn TypeQueries)->Option<Type> {self.owner(key.snapshot).runtime_table_seed(key,queries)}
+    fn runtime_store_receiver(&self,key:luanalysis_engine::NativeFlowKey,queries:&mut dyn TypeQueries)->Option<Type> {
+        self.files.iter().find(|file|file.source.iterator_sources().program.snapshot==key.graph.snapshot)?.source.runtime_store_receiver(key,queries)
+    }
     fn type_member_signatures(&self,key:NativeTypeMemberKey)->Option<Vec<NativeSignatureKey>> {
         self.owner(key.snapshot).type_member_signatures(key)
     }
@@ -532,6 +538,10 @@ impl NativeTypeProvider for ProjectRegistry {
     }
     fn type_declaration_members(&self, key: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> {
         let mut members = self.owner(key.snapshot).type_declaration_members(key);
+        if self.owner(key.snapshot).runtime_schema_contains(key) {
+            for file in &self.files {if file.source.snapshot!=key.snapshot {members.extend(file.source.runtime_tables.members());}}
+            return members;
+        }
         // Applicability, aliases, specialized owners and canonical object
         // ownership are resolved by the backend, not by source name matching.
         for file in &self.files {

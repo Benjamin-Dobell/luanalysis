@@ -174,6 +174,7 @@ impl NativeDocMembers {
                 DocOwnerScope::Unprepared => match &source.owner {
                 TypeMemberOwner::Declared(declaration) => *declaration == owner,
                 TypeMemberOwner::Reference { candidates, .. } => candidates.contains(&owner),
+                TypeMemberOwner::RuntimeStore(_) => false,
                 },
             };
             if applicable {

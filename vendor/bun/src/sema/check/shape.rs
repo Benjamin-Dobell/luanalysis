@@ -1392,7 +1392,7 @@ impl<'p, 's> Checker<'p, 's> {
                     self.shape_memo(ty, |c| c.build_reverse_mapped_shape(ty, source, mapped, of));
                 Some((resolved, MapperId::IDENTITY))
             }
-            TypeData::NativeDefinition(_) | TypeData::NativeObject(_) => {
+            TypeData::NativeRuntimeTable(_) | TypeData::NativeDefinition(_) | TypeData::NativeObject(_) => {
                 let shape = self.shape_memo(ty, |c| {
                     let resolved = match c.native_object_schema_resolved(ty) { Ok(ty) => ty, Err(_) => return Shape::new_in(c.arena) };
                     let mut shape = c.members(resolved).map(|m| m.whole_shape().clone_in(c.arena)).unwrap_or_else(|| Shape::new_in(c.arena));
@@ -3547,6 +3547,11 @@ impl<'p, 's> Checker<'p, 's> {
     /// `regular_type_of_object_literal` has returned.
     fn regular_type_of_resolved_object_literal(&mut self, ty: TypeId) -> TypeId {
         match self.data(ty) {
+            TypeData::NativeRuntimeTable(reference) => {
+                let reference = *reference;
+                let view = self.get_widened_type(reference.view);
+                self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { view, ..reference }))
+            }
             TypeData::NativeDefinition(reference) => {
                 let reference = *reference;
                 let view = self.get_widened_type(reference.view);

@@ -55,6 +55,7 @@ mod expr;
 mod flow;
 mod flow_walk;
 pub mod native_flow;
+pub mod native_aliases;
 pub mod native_iterators;
 pub mod native_packs;
 pub mod native_assertions;
@@ -1053,6 +1054,9 @@ struct Scope {
 /// A query that may be circular.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 enum Query {
+    NativeAlias(native_flow::NativeReferenceKey, native_flow::NativeFlowKey),
+    NativeAliasValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize),
+    NativeAliasReturn(crate::types::NativeFunctionId, usize),
     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
     NativeGlobals(NativeGlobalsQuery),
     NativeProject(NativeProjectQuery),
@@ -1148,6 +1152,7 @@ impl Query {
             Query::BaseConstructor(sym) => (sym.file, 13),
             Query::ReturnOfSignature(_)
             | Query::NativeFlowCallEffects(..)
+            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..)
             | Query::NativeNamed(_)
             | Query::NativeGlobals(_)
             | Query::NativeProject(_)

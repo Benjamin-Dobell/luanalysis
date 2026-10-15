@@ -3214,6 +3214,11 @@ impl<'p, 's> Checker<'p, 's> {
                     left.extend(values(reference.class.mapper));
                     left.extend(reference.class.self_argument);
                 }
+                TypeData::NativeRuntimeTable(reference) => {
+                    left.push(reference.view);
+                    left.extend(values(reference.schema.mapper));
+                    left.extend(reference.schema.self_argument);
+                }
                 TypeData::NativeTable(table) => {
                     left.extend(table.fields.iter().map(|field| field.value));
                     for indexer in &table.indexers { left.extend([indexer.key, indexer.value]); }

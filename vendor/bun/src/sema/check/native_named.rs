@@ -28,6 +28,8 @@ use super::native_tables::{NativeTableAccessKey, NativeTableError};
 use super::relate::{Relation, Relater, STATE_NONE};
 use super::task::Stored;
 use crate::util::FxHashMap;
+#[path = "native_runtime_tables.rs"]
+mod runtime_tables;
 
 /// Original named declaration, or an anonymous object annotation head registered by the source.
 /// File-local syntax ids must be mapped explicitly into this provider-owned namespace.
@@ -59,6 +61,20 @@ pub struct NativeDefinitionRef {
     pub view: TypeId,
 }
 
+/// Original Lua allocation schema and its distinct, immutable value view.
+/// This carrier is structural; the schema identity never creates nominality.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeRuntimeTableRef {
+    pub schema: NativeObjectReference,
+    pub view: TypeId,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeRuntimeTableContext {
+    pub contextual: Option<crate::types::NativeFunctionContext>,
+    pub captured: Option<crate::types::NativeCapturedFunctionContext>,
+}
+
 /// Generic annotation scope. A named type does not borrow a fabricated function identity.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum NativeTypeDeclarationOwner {
@@ -73,6 +89,7 @@ pub enum NativeTypeDeclarationKind {
     Shape,
     Class,
     Module,
+    RuntimeTable,
 }
 
 impl NativeTypeDeclarationKind {
@@ -126,6 +143,7 @@ pub enum NativeTypeMemberOwner {
     /// An explicit-owner augmentation supplies original name-binding candidates. Resolving aliases
     /// and validating the resulting object owner belongs to the backend declaration query.
     Reference { name: Atom, candidates: Vec<NativeTypeDeclarationId> },
+    RuntimeStore(super::native_flow::NativeFlowKey),
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -150,6 +168,8 @@ pub enum NativeTypeDeclarationQuery {
     ObjectMembers(TypeId),
     ObjectValidation(TypeId),
     DefinitionContext(TypeId),
+    RuntimeTableSeed(TypeId),
+    RuntimeTableMember(TypeId, NativeTypeMemberId, bool),
 }
 
 /// One original alias-head edge. The provider never follows the target alias.
@@ -195,6 +215,10 @@ pub enum NativeNamedTypeError {
 pub trait NativeTypeDeclarationProvider {
     fn contains_class_definition(&self, _: NativeDefinitionId) -> bool { false }
     fn class_definition_header(&self, _: NativeDefinitionId) -> NativeDefinitionHeader { panic!("class definition provider absent") }
+    fn runtime_table_constructor(&self, _: NativeTypeDeclarationId) -> Option<crate::types::NativeExpressionId> { None }
+    fn runtime_table_constructor_owner(&self, _: NativeTypeDeclarationId) -> Option<crate::types::NativeFunctionId> { None }
+    fn runtime_table_seed(&self, _: &mut Checker<'_, '_>, _: NativeTypeDeclarationId) -> Option<TypeId> { None }
+    fn runtime_store_receiver(&self, _: &mut Checker<'_, '_>, _: super::native_flow::NativeFlowKey) -> Option<TypeId> { None }
     fn contains_type_declaration(&self, declaration: NativeTypeDeclarationId) -> bool;
     fn type_declaration_self_parameter(&self, _: NativeTypeDeclarationId) -> Option<NativeTypeParamId> { None }
     fn type_declaration_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeTypeDeclarationHeader;
@@ -241,6 +265,7 @@ pub struct NativeObjectReference {
     pub declaration: NativeTypeDeclarationId,
     pub mapper: MapperId,
     pub self_argument: Option<TypeId>,
+    pub runtime_context: Option<NativeRuntimeTableContext>,
 }
 
 
@@ -361,6 +386,7 @@ impl<'p, 's> Checker<'p, 's> {
         let header = provider.type_member_header(self, member);
         let declaration = match header.owner {
             NativeTypeMemberOwner::Declared(owner) => owner,
+            NativeTypeMemberOwner::RuntimeStore(_) => return Ok(self.native_named_member_origin(member)?.0.declaration),
             NativeTypeMemberOwner::Reference { name, candidates } => match candidates.as_slice() {
                 [owner] => *owner,
                 [] => return Err(NativeNamedTypeError::UnknownOwner { member, name }),
@@ -394,8 +420,10 @@ impl<'p, 's> Checker<'p, 's> {
         let header = provider.type_declaration_header(self, declaration);
         let result = match header.kind {
             NativeTypeDeclarationKind::Alias => Ok(provider.type_alias_target(self, declaration)),
-            NativeTypeDeclarationKind::Shape | NativeTypeDeclarationKind::Class => {
-                if let Some(NativeObjectDeclarationForm::Table { type_argument_count }) = header.object_form
+            NativeTypeDeclarationKind::Shape | NativeTypeDeclarationKind::Class | NativeTypeDeclarationKind::RuntimeTable => {
+                if header.kind == NativeTypeDeclarationKind::RuntimeTable && provider.runtime_table_constructor(declaration).is_none() {
+                    Err(NativeNamedTypeError::InvalidDeclaration(declaration))
+                } else if let Some(NativeObjectDeclarationForm::Table { type_argument_count }) = header.object_form
                     && type_argument_count != 2 {
                     Err(NativeNamedTypeError::TypeArgumentArity { declaration, actual: type_argument_count, minimum: 2, maximum: 2 })
                 } else {
@@ -403,7 +431,7 @@ impl<'p, 's> Checker<'p, 's> {
                     .map(|&id| self.native_type_parameter(id).ok_or(NativeNamedTypeError::InvalidTypeParameter(id))).collect();
                 parameters.map(|parameters| {
                     let mapper = self.mapper_from(&parameters, &parameters);
-                    self.intern(TypeData::NativeObject(NativeObjectReference { declaration, mapper, self_argument: None }))
+                    self.intern(TypeData::NativeObject(NativeObjectReference { declaration, mapper, self_argument: None, runtime_context: None }))
                 })
                 }
             }
@@ -477,6 +505,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// initializer type. Keeping this query separate avoids a self-referential
     /// signature demand while preserving each inherited owner's mapper.
     pub fn native_named_member_context(&mut self, member: NativeTypeMemberId) -> Result<Option<TypeId>, NativeNamedTypeError> {
+        if self.native_type_declaration_provider.is_some_and(|provider| matches!(provider.type_member_header(self, member).owner, NativeTypeMemberOwner::RuntimeStore(_))) { return Ok(None) }
         if let Some(&known) = self.native_named_cache.member_contexts.get(&member) { return Ok(known) }
         let native_query = NativeTypeDeclarationQuery::MemberContext(member);
         let query = Query::NativeNamed(native_query);
@@ -579,18 +608,28 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 _ => return Err(NativeNamedTypeError::AmbiguousOwner { member, name: *name }),
             },
+            NativeTypeMemberOwner::RuntimeStore(store) => {
+                let receiver = provider.runtime_store_receiver(self, *store).ok_or(NativeNamedTypeError::InvalidMember(member))?;
+                self.native_runtime_table_ref(receiver).ok_or(NativeNamedTypeError::InvalidMember(member))?.schema
+            },
         };
         Ok((owner, header))
     }
 
     fn native_named_member_header(&mut self, reference: NativeObjectReference, member: NativeTypeMemberId) -> Result<Option<NativeTypeMemberHeader>, NativeNamedTypeError> {
+        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
+        let header = provider.type_member_header(self, member);
+        if let NativeTypeMemberOwner::RuntimeStore(store) = header.owner {
+            let receiver = self.with_runtime_table_context(reference, |checker| provider.runtime_store_receiver(checker, store)).ok_or(NativeNamedTypeError::InvalidMember(member))?;
+            return Ok(self.native_runtime_receiver_matches(receiver, reference).then_some(header));
+        }
         // Unrelated augmentation arguments must not be resolved while checking
         // another owner's constraints. Their original scope identity is enough.
-        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
         let metadata = provider.type_member_header(self, member);
         let candidate = match &metadata.owner {
             NativeTypeMemberOwner::Declared(owner) => Some(*owner),
             NativeTypeMemberOwner::Reference { candidates, .. } => match candidates.as_slice() { [owner] => Some(*owner), _ => None },
+            NativeTypeMemberOwner::RuntimeStore(_) => None,
         };
         if let Some(candidate) = candidate
             && !matches!(provider.type_declaration_owner_scope(self, candidate), NativeOwnerScopeRecipe::ResolvedHead)
@@ -872,6 +911,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// Materialize a declaration-space description once per object mapper. Recursive member types
     /// only request the already-published head, so productive recursion does not recurse into fields.
     pub fn native_object_resolved(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+        if let TypeData::NativeRuntimeTable(reference) = *self.data(ty) { return Ok(reference.view) }
         if let TypeData::NativeDefinition(reference) = *self.data(ty) { return Ok(self.native_definition_resolved(reference)) }
         let TypeData::NativeObject(reference) = *self.data(ty) else { return Ok(ty) };
         if let Some(&known) = self.native_named_cache.objects.get(&ty) { return known }
@@ -973,6 +1013,7 @@ impl<'p, 's> Checker<'p, 's> {
         let declaration = reference.declaration;
         let provider = self.native_named_provider(declaration)?;
         let header = provider.type_declaration_header(self, declaration);
+        if header.kind == NativeTypeDeclarationKind::RuntimeTable { return self.native_runtime_schema_resolved(reference, members) }
         for base in self.native_object_bases(reference)? {
             if validate { self.native_object_resolved(base)?; }
             else { self.native_object_schema_resolved(base)?; }
@@ -1087,6 +1128,11 @@ impl<'p, 's> Checker<'p, 's> {
     /// A literal field read demands just that field, preserving laziness across sibling members.
     /// Indexers and full structural operations use the ordinary NativeTable description worker.
     pub(super) fn native_named_read(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
+        if self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_header(self, reference.declaration).kind == NativeTypeDeclarationKind::RuntimeTable) {
+            let object = self.intern(TypeData::NativeObject(reference));
+            let resolved = self.native_object_resolved(object).map_err(|_| NativeTableError::NotTable { ty: object })?;
+            return self.native_table_read(resolved, key);
+        }
         if let NativeTableAccessKey::Literal(key) = key {
             let key = key.normalize()?;
             let members = self.native_object_members(reference).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
@@ -1297,12 +1343,13 @@ impl<'p, 's> Checker<'p, 's> {
     /// publication remain in the shared flow walker; an invalid store cannot prove presence.
     pub(super) fn native_definition_flow_target(&self, table: TypeId) -> bool {
         if self.is_union(table) { return self.parts(table).iter().any(|&part| self.native_definition_flow_target(part)) }
-        self.native_definition_ref(table).is_some()
+        self.native_definition_ref(table).is_some() || self.native_runtime_table_ref(table).is_some()
     }
 
     pub(super) fn native_definition_flow_write(&mut self, table: TypeId, key: NativeTableKey, value: TypeId) -> TypeId {
         if table.is_never() || self.is_error_type(table) { return table }
         if self.is_union(table) { return self.map_type(table, |c, part| c.native_definition_flow_write(part, key, value)) }
+        if self.native_runtime_table_ref(table).is_some() { return self.native_runtime_table_flow_write(table, key, value) }
         if self.native_definition_ref(table).is_none() { return table }
         self.native_definition_fixed_write(table, key, value).unwrap_or(table)
     }

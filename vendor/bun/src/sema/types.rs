@@ -89,7 +89,7 @@ pub use crate::check::native_tables::{
     NativeTableAccessKey, NativeTableData, NativeTableField, NativeTableFieldOrigin, NativeTableFlavor,
     NativeTableIndexer, NativeTableKey, NativeTableSequenceTail,
 };
-pub use crate::check::native_named::{NativeDefinitionId, NativeDefinitionRef, NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
+pub use crate::check::native_named::{NativeDefinitionId, NativeDefinitionRef, NativeRuntimeTableRef, NativeRuntimeTableContext, NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
 use crate::check::native_globals::{NativeEnvironmentId, NativeGlobalBindingId};
 /// An interned list of `IndexComponent`s.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -496,6 +496,7 @@ pub enum TypeData<'s> {
     NativeRuntimeTop { kind: NativeRuntimeKind, carrier: TypeId },
     NativeObject(NativeObjectReference),
     NativeDefinition(NativeDefinitionRef),
+    NativeRuntimeTable(NativeRuntimeTableRef),
     Anon {
         origin: Origin,
         mapper: MapperId,
@@ -2397,6 +2398,9 @@ impl<'p, 's> Types<'p, 's> {
             TypeData::NativeDefinition(reference) => self.object_flags(reference.view)
                 | (self.mapper_record(reference.class.mapper).1
                     | reference.class.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty))).difference(ObjectFlags::PROPAGATING_FLAGS),
+            TypeData::NativeRuntimeTable(reference) => self.object_flags(reference.view)
+                | (self.mapper_record(reference.schema.mapper).1
+                    | reference.schema.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty))).difference(ObjectFlags::PROPAGATING_FLAGS),
             TypeData::NativeTable(table) => {
                 let origin_flags = table.nominal_origin.map_or(ObjectFlags::empty(), |origin| self.mapper_record(origin.mapper).1 | origin.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty)));
                 let flags = table.fields.iter().fold(origin_flags, |flags, field| flags | self.object_flags(field.value));
@@ -3455,6 +3459,7 @@ follow_enum!(TypeData<'_> {
     TypeData::NativeRuntimeTop { kind, carrier } => (kind, carrier),
     TypeData::NativeObject(reference) => (reference),
     TypeData::NativeDefinition(reference) => (reference),
+    TypeData::NativeRuntimeTable(reference) => (reference),
     TypeData::Anon { origin, mapper } => (origin, mapper),
     TypeData::Fns { decls, mapper } => (decls, mapper),
     TypeData::Synth(a) => (a),
@@ -3543,8 +3548,10 @@ follow_enum!(SigData<'_> {
     SigData::WithNativeResultPack { sig, pack } => (sig, pack),
 });
 follow_struct!(NativeCapturedBinding { declaration, ty });
-follow_struct!(NativeObjectReference { declaration, mapper, self_argument });
+follow_struct!(NativeObjectReference { declaration, mapper, self_argument, runtime_context });
 follow_struct!(NativeDefinitionRef { owner, class, view });
+follow_struct!(NativeRuntimeTableRef { schema, view });
+follow_struct!(NativeRuntimeTableContext { contextual, captured });
 follow_enum!(NativeTableFieldOrigin {
     NativeTableFieldOrigin::Inferred => (),
     NativeTableFieldOrigin::Declared => (),
@@ -3626,6 +3633,8 @@ clone_in_is_copy!(
     NativeTypeDeclarationId,
     NativeDefinitionId,
     NativeDefinitionRef,
+    NativeRuntimeTableRef,
+    NativeRuntimeTableContext,
     NativeTypeMemberId,
     NativeObjectReference,
     NativeTypeParamId,
@@ -3779,6 +3788,7 @@ clone_in_enum!(TypeData {
     NativeRuntimeTop { kind, carrier },
     NativeObject(reference),
     NativeDefinition(reference),
+    NativeRuntimeTable(reference),
     Anon { origin, mapper },
     Fns { decls, mapper },
     Synth(a),
