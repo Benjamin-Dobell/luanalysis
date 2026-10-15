@@ -4,6 +4,7 @@
 use super::{Checker, Query};
 use super::task::Stored;
 use crate::types::TypeId;
+use crate::types::CloneIn;
 use crate::util::FxHashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -48,6 +49,11 @@ pub trait NativeGlobalsProvider {
     fn primitive_member_environment(&self) -> Option<NativeEnvironmentId> { None }
     fn primitive_member_binding(&self, _: NativeEnvironmentId, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingId> { None }
     fn contains_global_environment(&self, environment: NativeEnvironmentId) -> bool;
+    fn global_environment_binding(&self, _: NativeEnvironmentId, _: &[u8]) -> Option<NativeGlobalBindingId> { None }
+    /// The selected initial self-reference, attested by declaration provenance.
+    fn global_environment_self_binding(&self, _: NativeEnvironmentId) -> Option<NativeGlobalBindingId> { None }
+    /// Names and original identities only; obtaining a table never reads all contracts.
+    fn global_environment_bindings(&self, _: NativeEnvironmentId) -> Vec<(Vec<u8>, NativeGlobalBindingId)> { Vec::new() }
     fn contains_global_binding(&self, binding: NativeGlobalBindingId) -> bool;
     fn global_binding_declarations(&self, binding: NativeGlobalBindingId) -> Vec<NativeValueDeclarationId>;
     fn contains_value_declaration(&self, declaration: NativeValueDeclarationId) -> bool;
@@ -78,6 +84,76 @@ impl NativeGlobalsCache {
 }
 
 impl<'p, 's> Checker<'p, 's> {
+    /// The environment is an open Lua table, interned by its original environment identity.
+    /// Creating it does not enter any declaration query, including its own `_G` binding.
+    pub fn native_global_environment_type(&mut self, environment: NativeEnvironmentId) -> Result<TypeId, NativeGlobalQueryError> {
+        if !self.native_globals_provider.is_some_and(|provider| provider.contains_global_environment(environment)) {
+            let error = NativeGlobalQueryError::InvalidEnvironment(environment);
+            self.report_native_global(error.clone());
+            return Err(error);
+        }
+        let table = self.native_table(&[], &[crate::types::NativeTableIndexer {
+            key: TypeId::ANY, value: TypeId::ANY, readonly: false, sparse: true,
+            origin: crate::types::NativeTableFieldOrigin::Declared,
+        }], crate::types::NativeTableFlavor::Declared).expect("an environment has a valid open indexer");
+        let crate::types::TypeData::NativeTable(data) = self.data(table) else { unreachable!() };
+        let mut data = (**data).clone_in(self.arena);
+        data.environment_origin = Some(environment);
+        Ok(self.intern(crate::types::TypeData::NativeTable(self.boxed(data))))
+    }
+
+    pub(super) fn native_global_environment_member(&mut self, environment: NativeEnvironmentId, key: crate::types::NativeTableAccessKey) -> TypeId {
+        let Some(provider) = self.native_globals_provider else { return TypeId::ERROR };
+        let crate::types::NativeTableAccessKey::Literal(crate::types::NativeTableKey::String(name)) = key else { return TypeId::ANY };
+        let Some(binding) = provider.global_environment_binding(environment, self.atoms().bytes(name)) else { return TypeId::ANY };
+        if binding.environment != environment || !provider.contains_global_binding(binding) {
+            self.report_native_global(NativeGlobalQueryError::InvalidBinding(binding));
+            return TypeId::ERROR;
+        }
+        self.native_global_environment_binding_type(binding)
+    }
+
+    pub(super) fn native_global_environment_binding_type(&mut self, binding: NativeGlobalBindingId) -> TypeId {
+        let Some(provider) = self.native_globals_provider else { return TypeId::ERROR };
+        let environment = binding.environment;
+        if !provider.contains_global_environment(environment) || !provider.contains_global_binding(binding) {
+            self.report_native_global(NativeGlobalQueryError::InvalidBinding(binding));
+            return TypeId::ERROR;
+        }
+        if provider.global_environment_self_binding(environment) == Some(binding) {
+            return self.native_global_environment_type(environment).unwrap_or(TypeId::ERROR);
+        }
+        self.native_global_binding_type(binding).unwrap_or(TypeId::ERROR)
+    }
+
+    pub(super) fn native_global_environment_properties(&mut self, environment: NativeEnvironmentId) -> Vec<(crate::atom::Atom, NativeGlobalBindingId)> {
+        let Some(provider) = self.native_globals_provider else { return Vec::new() };
+        provider.global_environment_bindings(environment).into_iter().filter_map(|(name, binding)| {
+            if binding.environment != environment || !provider.contains_global_binding(binding) {
+                self.report_native_global(NativeGlobalQueryError::InvalidBinding(binding));
+                None
+            } else { Some((self.atoms().intern(&name), binding)) }
+        }).collect()
+    }
+
+    /// Full shape demand is explicit: preserve original global contracts in native inference
+    /// and structural relations, while ordinary property reads remain one-binding demands.
+    pub(super) fn native_global_environment_fields(&mut self, environment: NativeEnvironmentId) -> Vec<crate::types::NativeTableField> {
+        let Some(provider) = self.native_globals_provider else { return Vec::new() };
+        let mut fields = Vec::new();
+        for (name, binding) in provider.global_environment_bindings(environment) {
+            if binding.environment != environment {
+                self.report_native_global(NativeGlobalQueryError::InvalidBinding(binding));
+                continue;
+            }
+            let value = self.native_global_environment_binding_type(binding);
+            fields.push(crate::types::NativeTableField {
+                key: crate::types::NativeTableKey::String(self.atoms().intern(&name)), value,
+                optional: false, readonly: false, origin: crate::types::NativeTableFieldOrigin::Declared,
+            });
+        }
+        fields
+    }
     /// None is the ordinary backend property path. Some(None) is an authoritative
     /// absent Lua member and must not fall through to the TypeScript String library.
     pub(super) fn native_primitive_property(&mut self, ty: TypeId, name: crate::atom::Atom) -> Option<Option<TypeId>> {

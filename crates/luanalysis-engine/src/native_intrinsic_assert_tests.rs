@@ -68,6 +68,30 @@ struct Asserts {
     errors: RefCell<Vec<GlobalQueryError>>,
     written_symbolic_constraint: RefCell<Option<Type>>,
 }
+
+#[test]
+fn provenance_only_intrinsics_retain_original_identity_without_assert_result_effects() {
+    for kind in [NativeIntrinsicKind::Type, NativeIntrinsicKind::Require] {
+        Engine::new().with_native_provider(
+            || Asserts {
+                tag: Some(NativeIntrinsicSite { binding: binding(0), declaration: declaration(0), kind }),
+                ..Asserts::default()
+            },
+            |_, queries| {
+                let original = queries.global_binding_type(binding(0)).unwrap();
+                let site = queries.function_intrinsic(&original).unwrap();
+                assert_eq!(site.kind, kind);
+                let custom = queries.global_binding_type(binding(1)).unwrap();
+                assert_eq!(queries.function_intrinsic(&custom), None);
+                let mixed = Type::Union(vec![original.clone(), custom]);
+                assert_eq!(queries.function_intrinsic(&mixed), None);
+                let result = queries.call(&original, &[Type::BooleanLiteral(false)]);
+                assert!(result.errors.is_empty(), "{:?}", result.errors);
+                assert_ne!(result.return_type, Type::Never, "provenance cannot acquire assert(false)'s effect");
+            },
+        );
+    }
+}
 impl Default for Asserts {
     fn default() -> Self {
         Self {

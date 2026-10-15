@@ -158,6 +158,16 @@ impl<P: NativeTypeProvider> core::NativeGlobalsProvider for ProviderAdapter<'_, 
     fn contains_global_environment(&self, key: core::NativeEnvironmentId) -> bool {
         self.provider.contains_global_environment(environment(key))
     }
+    fn global_environment_binding(&self, key: core::NativeEnvironmentId, name: &[u8]) -> Option<core::NativeGlobalBindingId> {
+        self.provider.global_environment_binding(environment(key), name).map(core_binding)
+    }
+    fn global_environment_self_binding(&self, key: core::NativeEnvironmentId) -> Option<core::NativeGlobalBindingId> {
+        self.provider.global_environment_self_binding(environment(key)).map(core_binding)
+    }
+    fn global_environment_bindings(&self, key: core::NativeEnvironmentId) -> Vec<(Vec<u8>, core::NativeGlobalBindingId)> {
+        self.provider.global_environment_bindings(environment(key)).into_iter()
+            .map(|(name, key)| (name, core_binding(key))).collect()
+    }
     fn contains_global_binding(&self, key: core::NativeGlobalBindingId) -> bool {
         self.provider.contains_global_binding(binding(key))
     }
@@ -235,6 +245,21 @@ impl<P: NativeTypeProvider> core::NativeGlobalsProvider for ProviderAdapter<'_, 
 }
 
 impl SessionQueries<'_, '_, '_> {
+    pub(super) fn global_environment_origin_native(&mut self, ty: &Type) -> Option<NativeEnvironmentKey> {
+        let ty = import_type(self.checker, self.handles, ty);
+        let mut selected = None;
+        for &part in self.checker.parts(ty) {
+            let bun_sema::types::TypeData::NativeTable(table) = self.checker.data(part) else { return None };
+            let origin = table.environment_origin?;
+            if selected.is_some_and(|selected| selected != origin) { return None }
+            selected = Some(origin);
+        }
+        selected.map(environment)
+    }
+    pub(super) fn global_environment_type_native(&mut self, key: NativeEnvironmentKey) -> Result<Type, GlobalQueryError> {
+        let value = self.checker.native_global_environment_type(core_environment(key)).map_err(error)?;
+        Ok(self.handles.retain(value))
+    }
     pub(super) fn global_binding_type_native(
         &mut self,
         key: NativeGlobalBindingKey,
@@ -291,6 +316,7 @@ mod tests {
         initializers: Cell<usize>,
         errors: RefCell<Vec<GlobalQueryError>>,
         cycle: bool,
+        self_binding: Option<u32>,
     }
     impl Globals {
         fn new(contracts: Vec<Option<Type>>, owners: Vec<Vec<u32>>) -> Self {
@@ -303,6 +329,7 @@ mod tests {
                 initializers: Cell::new(0),
                 errors: RefCell::new(Vec::new()),
                 cycle: false,
+                self_binding: None,
             }
         }
     }
@@ -313,6 +340,19 @@ mod tests {
         fn contains_global_binding(&self, key: NativeGlobalBindingKey) -> bool {
             self.contains_global_environment(key.environment)
                 && (key.index as usize) < self.owners.len()
+        }
+        fn global_environment_binding(&self, key: NativeEnvironmentKey, name: &[u8]) -> Option<NativeGlobalBindingKey> {
+            let index = match name { b"first" => 0, b"second" => 1, b"_G" => 2, _ => return None };
+            let binding = NativeGlobalBindingKey { environment: key, index };
+            self.contains_global_binding(binding).then_some(binding)
+        }
+        fn global_environment_self_binding(&self, key: NativeEnvironmentKey) -> Option<NativeGlobalBindingKey> {
+            self.self_binding.map(|index| NativeGlobalBindingKey { environment: key, index })
+        }
+        fn global_environment_bindings(&self, key: NativeEnvironmentKey) -> Vec<(Vec<u8>, NativeGlobalBindingKey)> {
+            [b"first".as_slice(), b"second", b"_G"].into_iter().filter_map(|name| {
+                self.global_environment_binding(key, name).map(|binding| (name.to_vec(), binding))
+            }).collect()
         }
         fn global_binding_declarations(
             &self,
@@ -384,6 +424,120 @@ mod tests {
         fn return_type_too_deep(&self, _: NativeFunctionKey) {
             panic!("no runtime function")
         }
+    }
+
+    #[test]
+    fn environment_creation_and_selected_reads_are_lazy_and_retain_identity() {
+        Engine::new().with_native_provider(
+            || {
+                let mut provider = Globals::new(vec![Some(Type::Number), Some(Type::String), None], vec![vec![0], vec![1], vec![2]]);
+                provider.self_binding = Some(2);
+                provider
+            },
+            |provider, queries| {
+                let env = queries.global_environment_type(environment(0)).unwrap();
+                assert_eq!(queries.global_environment_origin(&env), Some(environment(0)));
+                assert_eq!(provider.reads.iter().map(Cell::get).collect::<Vec<_>>(), [0, 0, 0]);
+                assert_eq!(queries.format(&env), "global environment");
+                assert_eq!(queries.inspect_type(&env), env);
+                assert!(queries.is_assignable(&env, &Type::RuntimeTable));
+                assert!(!queries.is_assignable(&env, &Type::RuntimeFunction));
+                let first = queries.property_type(&env, "first").unwrap();
+                let original = queries.global_binding_type(binding(0, 0)).unwrap();
+                assert!(queries.is_assignable(&first, &original));
+                assert!(queries.is_assignable(&original, &first));
+                assert_eq!(provider.reads.iter().map(Cell::get).collect::<Vec<_>>(), [1, 0, 0]);
+                let self_ref = queries.property_type(&env, "_G").unwrap();
+                assert_eq!(self_ref, env);
+                let widened = queries.widen(&env);
+                assert_eq!(queries.global_environment_origin(&widened), Some(environment(0)));
+                assert_eq!(queries.property_type(&env, "unknown"), Some(Type::Any));
+                assert_eq!(queries.table_lookup(&env, &crate::TableKey::Type(Type::String)).unwrap(), Type::Any);
+                assert_eq!(provider.reads.iter().map(Cell::get).collect::<Vec<_>>(), [1, 0, 0]);
+                assert!(provider.errors.borrow().is_empty());
+            },
+        );
+    }
+
+    #[test]
+    fn environment_writes_and_structural_relations_check_original_global_contracts() {
+        Engine::new().with_native_provider(
+            || Globals::new(vec![Some(Type::Number), Some(Type::String)], vec![vec![0], vec![1]]),
+            |provider, queries| {
+                let env = queries.global_environment_type(environment(0)).unwrap();
+                let first = crate::TableKey::Literal(crate::LuaKey::String(b"first".to_vec()));
+                assert!(queries.table_write(&env, &first, &Type::Number).is_ok());
+                assert!(queries.table_write(&env, &first, &Type::String).is_err());
+                let number = Type::Shape(vec![crate::Property { name: "first".into(), ty: Type::Number, optional: false, readonly: false }]);
+                let string = Type::Shape(vec![crate::Property { name: "first".into(), ty: Type::String, optional: false, readonly: false }]);
+                assert!(queries.is_assignable(&env, &number));
+                assert!(!queries.is_assignable(&env, &string));
+                assert_eq!(provider.reads.iter().map(Cell::get).collect::<Vec<_>>(), [1, 0]);
+                let other = queries.global_environment_type(environment(1)).unwrap();
+                assert_ne!(env, other);
+                assert_eq!(queries.global_environment_origin(&Type::Union(vec![env, other])), None);
+            },
+        );
+    }
+
+    #[test]
+    fn environment_api_validates_identity_and_does_not_rebrand_a_user_self_named_contract() {
+        Engine::new().with_native_provider(
+            || Globals::new(vec![Some(Type::Number), Some(Type::String), Some(Type::Boolean)], vec![vec![0], vec![1], vec![2]]),
+            |provider, queries| {
+                let invalid = NativeEnvironmentKey { snapshot: SNAPSHOT + 1, index: 0 };
+                assert_eq!(queries.global_environment_type(invalid), Err(GlobalQueryError::InvalidEnvironment(invalid)));
+                let env = queries.global_environment_type(environment(0)).unwrap();
+                let custom = queries.property_type(&env, "_G").unwrap();
+                assert!(queries.is_assignable(&custom, &Type::Boolean));
+                assert_eq!(queries.global_environment_origin(&custom), None);
+                assert_eq!(provider.reads.iter().map(Cell::get).collect::<Vec<_>>(), [0, 0, 1]);
+            },
+        );
+    }
+
+    #[test]
+    fn an_explicit_open_index_contract_controls_native_table_assertion_overlap() {
+        Engine::new().with_session(|queries| {
+            let fields = vec![crate::TableField::declared(crate::LuaKey::String(b"answer".to_vec()), Type::Number)];
+            let source = queries.table_type(&crate::TableType {
+                fields: fields.clone(),
+                indexers: vec![crate::TableIndexer::declared(Type::Any, Type::Any)],
+                ..Default::default()
+            }).unwrap();
+            let handlers = queries.table_type(&crate::TableType {
+                indexers: vec![crate::TableIndexer::declared(Type::String, Type::Union(vec![Type::Nil, Type::RuntimeFunction]))],
+                ..Default::default()
+            }).unwrap();
+            assert!(queries.assertion_overlap(&source, &handlers));
+            assert!(queries.is_assignable(&source, &handlers));
+            let closed = queries.table_type(&crate::TableType { fields: fields.clone(), ..Default::default() }).unwrap();
+            assert!(!queries.assertion_overlap(&closed, &handlers));
+            let typed = queries.table_type(&crate::TableType {
+                fields,
+                indexers: vec![crate::TableIndexer::declared(Type::String, Type::Number)],
+                ..Default::default()
+            }).unwrap();
+            assert!(!queries.assertion_overlap(&typed, &handlers));
+        });
+    }
+
+    #[test]
+    fn environment_assertions_use_the_open_index_contract_without_demanding_all_globals() {
+        Engine::new().with_native_provider(
+            || Globals::new(vec![Some(Type::Number), Some(Type::String)], vec![vec![0], vec![1]]),
+            |provider, queries| {
+                let environment = queries.global_environment_type(environment(0)).unwrap();
+                let handlers = queries.table_type(&crate::TableType {
+                    indexers: vec![crate::TableIndexer::declared(Type::String, Type::Union(vec![Type::Nil, Type::RuntimeFunction]))],
+                    ..Default::default()
+                }).unwrap();
+                assert!(queries.assertion_overlap(&environment, &handlers));
+                assert!(queries.is_assignable(&environment, &handlers));
+                assert_eq!(provider.reads.iter().map(Cell::get).collect::<Vec<_>>(), [0, 0]);
+                assert_eq!(provider.initializers.get(), 0);
+            },
+        );
     }
 
     #[test]

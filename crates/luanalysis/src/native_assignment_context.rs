@@ -20,6 +20,7 @@ impl Checker<'_> {
                         .filter(|binding| !binding.evolves_from_nil)
                         .map(|binding| binding.constraint.clone())
                 } else {
+                    if name.text == "_ENV" { return Some(Type::Unknown); }
                     self.global_read(name)
                 }
             },

@@ -54,6 +54,7 @@ impl Checker<'_, '_> {
                 _ => self.place_of_symbol(sym),
             },
             PropSource::Type(_)
+            | PropSource::NativeGlobalBinding(_)
             | PropSource::Intersected(..)
             | PropSource::Mapped(..)
             | PropSource::Copy(..)
@@ -92,7 +93,7 @@ impl Checker<'_, '_> {
                 .declared_by_modifiers_property()
                 .iter()
                 .find_map(|part| self.place_of_first_prop_declaration_within(part, depth + 1)),
-            PropSource::Type(_) => None,
+            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) => None,
         }
     }
 

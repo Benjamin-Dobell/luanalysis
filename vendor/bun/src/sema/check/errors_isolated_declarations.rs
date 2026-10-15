@@ -1579,7 +1579,7 @@ impl<'p, 's> Checker<'p, 's> {
             PropSource::Mapped(..) => (prop.declared_by_modifiers_property().iter())
                 .map(|p| self.iso_declaration_count(p))
                 .sum(),
-            PropSource::Type(_) => 0,
+            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) => 0,
         }
     }
 

@@ -7461,7 +7461,7 @@ impl<'p, 's> Checker<'p, 's> {
                 })
             }
             // No `ValueDeclaration`.
-            PropSource::Type(_) | PropSource::Copy(_, _, false) | PropSource::ReverseMapped(..) => {
+            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) | PropSource::Copy(_, _, false) | PropSource::ReverseMapped(..) => {
                 return false;
             }
         };

@@ -886,6 +886,10 @@ impl Checker<'_> {
             match &target.kind {
                 ExprKind::Name(name) => {
                     let Some(id) = self.bound.binding_at(name.span.start) else {
+                        // The chunk's implicit environment is a real Lua
+                        // upvalue. Its initial selected object is not a written
+                        // shape constraint on later environment replacement.
+                        if name.text == "_ENV" { continue; }
                         if self.rejects_generic_global_write(name) { continue; }
                         if let Some(constraint) = self.global_read(name) {
                             self.compatible(&value, &constraint, origin);

@@ -55,6 +55,8 @@ pub struct NativeTableSequenceTail {
 
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub struct NativeTableData<'s> {
+    /// A selected original Lua environment, with member contracts demanded lazily.
+    pub environment_origin: Option<super::native_globals::NativeEnvironmentId>,
     pub definition_origin: Option<NativeDefinitionRef>,
     /// The original class declaration carried by a resolved native object. Ordinary table
     /// construction never supplies an origin; it cannot infer one from equal fields.
@@ -343,6 +345,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         sequence_tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            environment_origin: None,
             definition_origin: None,
             nominal_origin: None,
             fields: self.list(&fields), indexers: self.list(&indexers),
@@ -494,6 +497,7 @@ impl<'p, 's> Checker<'p, 's> {
         domains.sort_by_key(|indexer| indexer.key.0);
         tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            environment_origin: None,
             definition_origin: None,
             nominal_origin: None,
             fields: self.list(&merged),
@@ -634,6 +638,9 @@ impl<'p, 's> Checker<'p, 's> {
             }
             return Err(NativeTableError::NotTable { ty: table });
         };
+        if let Some(environment) = data.environment_origin {
+            return Ok(self.native_global_environment_member(environment, key));
+        }
         if let NativeTableAccessKey::Literal(literal) = key
             && let Some(field) = data.fields.iter().find(|field| field.key == literal)
         {
@@ -728,6 +735,10 @@ impl<'p, 's> Checker<'p, 's> {
             }
             return Err(NativeTableError::NotTable { ty: table });
         };
+        if let Some(environment) = data.environment_origin {
+            let expected = self.native_global_environment_member(environment, key);
+            return if self.is_assignable(value, expected) { Ok(()) } else { Err(NativeTableError::ValueType { value, expected }) };
+        }
         for tail in &data.sequence_tails {
             if tail.readonly && self.native_sequence_access_matches(tail.start, key) {
                 return Err(NativeTableError::ReadOnly { key });
@@ -791,6 +802,26 @@ impl<'p, 's> Checker<'p, 's> {
         target: &NativeTableData<'_>,
         state: u8,
     ) -> Ternary {
+        if r.relation == Relation::Identity && (source.environment_origin.is_some() || target.environment_origin.is_some()) {
+            return if source.environment_origin == target.environment_origin { Ternary::TRUE } else { Ternary::FALSE };
+        }
+        let mut target_description;
+        let target = if let Some(environment) = target.environment_origin {
+            target_description = target.clone_in(self.arena);
+            let fields = self.native_global_environment_fields(environment);
+            target_description.fields = self.list(&fields);
+            &target_description
+        } else { target };
+        let mut source_description;
+        let source = if let Some(environment) = source.environment_origin
+            && target.indexers.iter().any(|indexer| !self.is_any(indexer.value)
+                && !source.indexers.iter().any(|actual| self.is_assignable(indexer.key, actual.key)))
+        {
+            source_description = source.clone_in(self.arena);
+            let fields = self.native_global_environment_fields(environment);
+            source_description.fields = self.list(&fields);
+            &source_description
+        } else { source };
         let identity = r.relation == Relation::Identity;
         if let Some(target_origin) = target.nominal_origin {
             if source.nominal_origin.is_none_or(|source_origin| !self.native_nominal_reference_compatible(source_origin, target_origin, identity)) {
@@ -832,6 +863,14 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let mut result = Ternary::TRUE;
         for field in &target.fields {
+            if let Some(environment) = source.environment_origin {
+                let actual = self.native_global_environment_member(environment, NativeTableAccessKey::Literal(field.key));
+                let expected = if field.optional { self.optional(field.value) } else { field.value };
+                let related = self.is_related_to_ex::<REPORT>(r, actual, expected, REC_BOTH, state);
+                if !related.holds() { return related }
+                result &= related;
+                continue;
+            }
             let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) else {
                 let mut values = Vec::new();
                 for tail in &source.sequence_tails {
@@ -860,6 +899,7 @@ impl<'p, 's> Checker<'p, 's> {
         for indexer in &target.indexers {
             let expected = indexer.value;
             let mut matched = false;
+            let mut covering_domain = false;
             for actual in &source.indexers {
                 let matches = if identity {
                     actual.readonly == indexer.readonly && actual.sparse == indexer.sparse
@@ -875,8 +915,14 @@ impl<'p, 's> Checker<'p, 's> {
                 let related = self.is_related_to_ex::<REPORT>(r, value, expected, REC_BOTH, state);
                 if !related.holds() { return Ternary::FALSE }
                 result &= related;
+                covering_domain |= self.is_assignable(indexer.key, actual.key);
             }
             if identity && !matched { return Ternary::FALSE }
+            // TypeScript's typeRelatedToIndexInfo uses an applicable explicit
+            // source index signature before inferring an index from properties.
+            // A covering Lua domain follows that same rule; merely overlapping
+            // domains still need their individual field/tail checks below.
+            if !identity && covering_domain { continue }
             for actual in &source.fields {
                 let key = self.native_table_key_type(actual.key);
                 if !self.is_assignable(key, indexer.key) { continue }
@@ -958,6 +1004,7 @@ impl<'p, 's> Checker<'p, 's> {
             origin: if self.is_fresh_object_literal_type(ty) { NativeTableFieldOrigin::Inferred } else { NativeTableFieldOrigin::Declared },
         }).collect::<Vec<_>>();
         Some(NativeTableData {
+            environment_origin: None,
             definition_origin: None,
             nominal_origin: None,
             fields: self.list(&fields), indexers: self.list(&indexers),
@@ -980,6 +1027,7 @@ impl<'p, 's> Checker<'p, 's> {
         }).collect::<Vec<_>>();
         let definition_origin = table.definition_origin.map(|reference| NativeDefinitionRef { view: self.get_widened_type(reference.view), ..reference });
         self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            environment_origin: table.environment_origin,
             definition_origin,
             nominal_origin: table.nominal_origin,
             fields: self.list(&fields), indexers: self.list(&indexers),

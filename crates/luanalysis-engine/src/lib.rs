@@ -304,6 +304,9 @@ pub trait NativeTypeProvider {
     fn primitive_member_environment(&self) -> Option<NativeEnvironmentKey> { None }
     fn primitive_member_binding(&self, _: NativeEnvironmentKey, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingKey> { None }
     fn contains_global_environment(&self, _: NativeEnvironmentKey) -> bool { false }
+    fn global_environment_binding(&self, _: NativeEnvironmentKey, _: &[u8]) -> Option<NativeGlobalBindingKey> { None }
+    fn global_environment_self_binding(&self, _: NativeEnvironmentKey) -> Option<NativeGlobalBindingKey> { None }
+    fn global_environment_bindings(&self, _: NativeEnvironmentKey) -> Vec<(Vec<u8>, NativeGlobalBindingKey)> { Vec::new() }
     fn contains_global_binding(&self, _: NativeGlobalBindingKey) -> bool { false }
     fn global_binding_declarations(&self, _: NativeGlobalBindingKey) -> Vec<NativeValueDeclarationKey> { Vec::new() }
     fn contains_value_declaration(&self, _: NativeValueDeclarationKey) -> bool { false }
@@ -683,6 +686,8 @@ pub enum CallError {
 /// Queries available during one native checker session. All inputs and outputs
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
+    fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError>;
+    fn global_environment_origin(&mut self, environment: &Type) -> Option<NativeEnvironmentKey>;
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError>;
     fn value_declaration_type(&mut self, declaration: NativeValueDeclarationKey) -> Result<Type, GlobalQueryError>;
     fn module_result_pack(&mut self, key: NativeModuleKey) -> Result<ValuePack, NativeProjectError>;
@@ -1071,6 +1076,8 @@ struct SessionQueries<'a, 'p, 's> {
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError> { self.global_binding_type_native(binding) }
+    fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError> { self.global_environment_type_native(environment) }
+    fn global_environment_origin(&mut self, environment: &Type) -> Option<NativeEnvironmentKey> { self.global_environment_origin_native(environment) }
     fn value_declaration_type(&mut self, declaration: NativeValueDeclarationKey) -> Result<Type, GlobalQueryError> { self.value_declaration_type_native(declaration) }
     fn module_result_pack(&mut self, key: NativeModuleKey) -> Result<ValuePack, NativeProjectError> { self.module_result_pack_native(key) }
     fn module_value(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<Type, NativeProjectError> { self.module_value_native(key, policy) }
@@ -1527,6 +1534,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn inspect_type(&mut self, ty: &Type) -> Type {
         let id = import_type(self.checker, self.handles, ty);
+        if matches!(self.checker.data(id), TypeData::NativeTable(table) if table.environment_origin.is_some()) {
+            return self.handles.retain(id);
+        }
         if matches!(self.checker.data(id), TypeData::NativeRuntimeTop { .. }) {
             return export_type_with_literal_policy(self.checker, self.handles, id, false);
         }
@@ -2007,7 +2017,11 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
                 index: site.binding.index,
             },
             declaration: bun_sema::check::native_globals::NativeValueDeclarationId { snapshot: site.declaration.snapshot, index: site.declaration.index },
-            kind: match site.kind { NativeIntrinsicKind::Assert => bun_sema::check::native_intrinsics::NativeIntrinsicKind::Assert },
+            kind: match site.kind {
+                NativeIntrinsicKind::Assert => bun_sema::check::native_intrinsics::NativeIntrinsicKind::Assert,
+                NativeIntrinsicKind::Type => bun_sema::check::native_intrinsics::NativeIntrinsicKind::Type,
+                NativeIntrinsicKind::Require => bun_sema::check::native_intrinsics::NativeIntrinsicKind::Require,
+            },
         })
     }
     fn signature_header(&self, key: bun_sema::types::NativeSignatureId) -> bun_sema::check::native_signatures::NativeSignatureHeader { self.signature_header_core(key) }

@@ -39,6 +39,8 @@ pub(crate) mod project_provider;
 pub(crate) mod globals;
 #[path = "native_modules.rs"]
 pub(crate) mod modules;
+#[path = "native_environment_paths.rs"]
+mod environment_paths;
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 
@@ -575,6 +577,13 @@ impl NativeRegistry {
         } else {
             ordinary
         }
+    }
+    pub(super) fn flow_environment_member_type(&self, expression: &Expr, at: NativeFlowKey, initial: &Type, queries: &mut dyn TypeQueries) -> Option<NativeFlowResult> {
+        let reference = self.flow.environment_member_reference(at.graph, expression)?;
+        let key = self.flow.source_reference(reference)?.path.last();
+        let capability = matches!(key, Some(super::flow::Key::String(name)) if matches!(name.as_slice(), b"_G" | b"require" | b"type" | b"assert"));
+        let declared = if capability { Type::Unknown } else { initial.clone() };
+        Some(queries.flow_type(&FlowAdapter { sources: &self.flow, values: self }, at, reference, &declared, initial))
     }
 
     pub(super) fn checker_at_flow<'a>(
@@ -1760,6 +1769,7 @@ impl NativeRegistry {
             let effects = if checker.incomplete_flow { NativeCallEffects::None } else {
                 match intrinsic.kind {
                     luanalysis_engine::NativeIntrinsicKind::Assert => sources.assertion_call_effect(evaluation, input),
+                    luanalysis_engine::NativeIntrinsicKind::Type | luanalysis_engine::NativeIntrinsicKind::Require => NativeCallEffects::None,
                 }
             };
             if !checker.incomplete_flow { self.merge_flow_report(input, checker.check_mode, checker.report); }
@@ -1787,6 +1797,30 @@ impl NativeRegistry {
 }
 
 impl FlowValueQueries for NativeRegistry {
+    fn environment_access_path(&self, expression: &Expr, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<Vec<super::flow::Key>> { self.frozen_environment_path(expression, input, queries) }
+    fn original_type_operation(&self, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {
+        if self.legacy_builtin_policy == super::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility {
+            let ValueRecipe::Evaluation(value) = value else { return false; };
+            let expression = &self.flow.program.expression(self.flow.program.evaluation(*value).expression).expression;
+            let mut expression = expression;
+            while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
+            return matches!(expression.kind, ExprKind::Name(_)) && self.bound.standard_candidate_at(expression.span.start) == Some(super::bind::BuiltinIntrinsic::LuaType);
+        }
+        let callee = self.flow_value_type(&self.flow, value, input, queries);
+        queries.function_intrinsic(&callee).is_some_and(|site| site.kind == luanalysis_engine::NativeIntrinsicKind::Type)
+    }
+    fn environment_value(&self, binding: Option<BindingId>, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type {
+        let mut checker = self.checker_at_flow(input, queries);
+        let offset = binding.map_or_else(|| self.flow.source_node(input).map_or(self.file.span.start, |node| node.span.start), |binding| self.bound.declaration(binding).activation);
+        // Use the original lexical binding supplied by the source address;
+        // offsets at a store's epoch can precede its declaration activation.
+        if let Some(binding) = binding {
+            let Some(value) = checker.resolve_local(binding).cloned() else { return Type::Unknown; };
+            let Some(reference) = self.flow.environment_reference(input.graph, Some(binding)) else { return value.initial; };
+            return checker.engine.flow_type(&FlowAdapter { sources: &self.flow, values: self }, input, reference, &value.constraint, &value.initial).ty;
+        }
+        checker.environment_value(offset)
+    }
     fn report_iterator_error(
         &self,
         at: NativeFlowKey,

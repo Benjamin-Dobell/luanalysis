@@ -102,6 +102,7 @@ pub struct BoundFile {
     pub occurrences: Vec<NameOccurrence>,
     intrinsic_occurrences: Vec<IntrinsicOccurrence>,
     modified_module_environment: bool,
+    module_environment_mutations: Vec<Span>,
     modified_type_intrinsic: bool,
     modified_assert_intrinsic: bool,
     assert_intrinsic_mutations: Vec<Span>,
@@ -146,6 +147,17 @@ impl BoundFile {
     /// candidate, including at earlier occurrences. Loader and type-operation
     /// facts are independent; the checker still selects actual value identity.
     pub fn intrinsic_at(&self, byte_offset: usize) -> Option<BuiltinIntrinsic> {
+        let intrinsic = self.standard_candidate_at(byte_offset)?;
+        match intrinsic {
+            BuiltinIntrinsic::LuaRequire if self.modified_module_environment => None,
+            BuiltinIntrinsic::LuaType if self.modified_type_intrinsic => None,
+            intrinsic => Some(intrinsic),
+        }
+    }
+
+    /// Lexical candidate only. Runtime value identity is selected at the
+    /// original evaluation's native flow input, never from a whole-file flag.
+    pub fn standard_candidate_at(&self, byte_offset: usize) -> Option<BuiltinIntrinsic> {
         let after = self
             .intrinsic_occurrences
             .partition_point(|occurrence| occurrence.span.start <= byte_offset);
@@ -154,12 +166,25 @@ impl BoundFile {
             if byte_offset >= occurrence.span.end {
                 return None;
             }
-            match occurrence.intrinsic {
-                BuiltinIntrinsic::LuaRequire if self.modified_module_environment => None,
-                BuiltinIntrinsic::LuaType if self.modified_type_intrinsic => None,
-                intrinsic => Some(intrinsic),
-            }
+            Some(occurrence.intrinsic)
         })
+    }
+
+    /// The real lexical `_ENV` upvalue for an unresolved source name.
+    /// None denotes the chunk's implicit environment upvalue.
+    pub fn environment_binding_at(&self, byte_offset: usize) -> Option<BindingId> {
+        let mut scope = self.scope_at(byte_offset);
+        while let Some(current) = scope {
+            let node = self.scope(current);
+            if let Some(binding) = node.bindings.iter().rev().copied().find(|binding| {
+                let declaration = self.declaration(*binding);
+                declaration.name == "_ENV" && declaration.activation <= byte_offset
+            }) {
+                return Some(binding);
+            }
+            scope = node.parent;
+        }
+        None
     }
 
     /// Direct syntactic writes to the standard global module environment.
@@ -167,6 +192,7 @@ impl BoundFile {
     pub fn has_modified_module_environment(&self) -> bool {
         self.modified_module_environment
     }
+    pub fn module_environment_mutations(&self) -> &[Span] { &self.module_environment_mutations }
 
     /// Direct replacement of the initially standard `type` value. This is a
     /// lexical fact; the project still selects the actual environment identity.
@@ -209,6 +235,7 @@ pub fn bind(file: &File) -> BoundFile {
             occurrences: Vec::new(),
             intrinsic_occurrences: Vec::new(),
             modified_module_environment: false,
+            module_environment_mutations: Vec::new(),
             modified_type_intrinsic: false,
             modified_assert_intrinsic: false,
             assert_intrinsic_mutations: Vec::new(),
@@ -314,7 +341,7 @@ impl Binder {
             kind,
         });
         if matches!(kind, OccurrenceKind::Read | OccurrenceKind::Write) {
-            if let Some(binding) = binding {
+            if let Some(binding) = binding.or_else(|| self.resolve("_ENV")) {
                 let declaring_scope = self.file.declarations[binding.0].scope;
                 let mut capture_scope = scope;
                 while capture_scope != declaring_scope {
@@ -471,6 +498,7 @@ impl Binder {
     fn target(&mut self, expression: &Expr) {
         if self.modifies_module_environment(expression) {
             self.file.modified_module_environment = true;
+            self.file.module_environment_mutations.push(expression.span);
         }
         if self.modifies_standard_intrinsic(expression, "type") {
             self.file.modified_type_intrinsic = true;
@@ -608,6 +636,7 @@ impl Binder {
             ExprKind::Call { callee, args } => {
                 if self.call_modifies_module_environment(callee, args) {
                     self.file.modified_module_environment = true;
+                    self.file.module_environment_mutations.push(expression.span);
                 }
                 if self.call_modifies_standard_intrinsic(callee, args, "type") {
                     self.file.modified_type_intrinsic = true;
@@ -690,7 +719,7 @@ fn string_key(expression: &Expr) -> Option<&[u8]> {
     }
 }
 
-fn modifies_package(keys: &[Option<&[u8]>]) -> bool {
+pub(crate) fn modifies_package(keys: &[Option<&[u8]>]) -> bool {
     matches!(
         keys.first(),
         None | Some(None)

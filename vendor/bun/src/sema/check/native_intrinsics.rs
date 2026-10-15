@@ -7,7 +7,7 @@ use super::native_packs::{NativePackAlternative, NativePackSlot};
 use crate::types::{ElemFlags, NativeResultPack, SigId, TypeData, TypeId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NativeIntrinsicKind { Assert }
+pub enum NativeIntrinsicKind { Assert, Type, Require }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeIntrinsicSite {
@@ -20,6 +20,16 @@ impl<'p, 's> Checker<'p, 's> {
     /// Every public head must retain the same trusted original value identity.
     /// Signature-shaped values and ambiguous unions acquire no intrinsic effect.
     pub fn native_function_intrinsic(&mut self, function: TypeId) -> Option<NativeIntrinsicSite> {
+        if self.is_union(function) {
+            let parts = self.parts(function).to_vec();
+            let mut selected = None;
+            for part in parts {
+                let site = self.native_function_intrinsic(part)?;
+                if selected.is_some_and(|prior| prior != site) { return None }
+                selected = Some(site);
+            }
+            return selected;
+        }
         // A callable table or an uninstantiated parameter constrained by a
         // signature is not evidence of the original runtime function value.
         if self.native_runtime_kind(function) != Some(crate::types::NativeRuntimeKind::Function) { return None }
@@ -67,7 +77,8 @@ impl<'p, 's> Checker<'p, 's> {
     /// A copying operation can use its result context for otherwise unconstrained
     /// arguments. Precise instantiated parameter constraints remain authoritative.
     pub(super) fn native_intrinsic_argument_context(&mut self, signature: SigId, expected_scalar: Option<TypeId>, expected_pack: Option<NativeResultPack>) -> Option<NativeResultPack> {
-        let _site = self.native_intrinsic_site(signature)?;
+        let site = self.native_intrinsic_site(signature)?;
+        if site.kind != NativeIntrinsicKind::Assert { return None }
         let expected = expected_pack.or_else(|| expected_scalar.map(|ty| self.native_scalar_pack(ty)))?;
         let params = self.sig_params(signature);
         let declared = NativeResultPack { ty: self.rest_type_at_position(&params, 0, false) };
@@ -151,12 +162,14 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub(super) fn native_intrinsic_result_pack(&mut self, signature: SigId, args: &[Arg], expected_scalar: Option<TypeId>, expected_pack: Option<NativeResultPack>) -> Result<Option<NativeResultPack>, ResolvedTypeCallError> {
         let Some(site) = self.native_intrinsic_site(signature) else { return Ok(None) };
+        if site.kind != NativeIntrinsicKind::Assert { return Ok(None) }
         let params = self.sig_params(signature);
         let context = self.native_intrinsic_argument_context(signature, expected_scalar, expected_pack)
             .unwrap_or_else(|| NativeResultPack { ty: self.rest_type_at_position(&params, 0, false) });
         let pack = self.native_intrinsic_argument_pack(args, context).ok_or(ResolvedTypeCallError::UnsupportedRest)?;
         match site.kind {
             NativeIntrinsicKind::Assert => self.native_assert_pack(pack).map(Some).ok_or(ResolvedTypeCallError::UnsupportedRest),
+            NativeIntrinsicKind::Type | NativeIntrinsicKind::Require => Ok(None),
         }
     }
 }

@@ -484,6 +484,7 @@ impl Checker<'_, '_> {
                 }
             }
             PropSource::Type(_)
+            | PropSource::NativeGlobalBinding(_)
             | PropSource::Mapped(..)
             | PropSource::Copy(_, _, false)
             | PropSource::ReverseMapped(..) => SymFlags::PROPERTY,

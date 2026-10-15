@@ -15,6 +15,12 @@ use luanalysis_syntax::{
 impl Checker<'_> {
     pub(super) fn native_member_flow_type(&mut self, expression: &Expr, declared: Type) -> Type {
         if let (Some(native), Some(at)) = (self.native, self.flow_at) {
+            let receiver = match &expression.kind { ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => Some(base.as_ref()), _ => None };
+            if let Some(receiver) = receiver && self.environment_origin_of_expression(receiver).is_some()
+                && let Some(result) = native.flow_environment_member_type(expression, at, &declared, self.engine) {
+                self.incomplete_flow |= result.incomplete;
+                return result.ty;
+            }
             let result =
                 native.flow_reference_type(expression, at, &declared, &declared, self.engine);
             self.incomplete_flow |= result.incomplete;

@@ -21,6 +21,9 @@ pub struct NativeFlowResult {
 /// Immutable graph recipes and source-value demands. No graph join, loop
 /// iteration, or narrowing algorithm is performed by this interface.
 pub trait NativeFlowProvider {
+    fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
+    fn reference_follows_creation(&self, _: NativeReferenceKey) -> bool { false }
+    fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> bool { true }
     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
@@ -50,6 +53,11 @@ pub trait NativeFlowProvider {
         target: NativeReferenceKey,
         at: NativeFlowKey,
     ) -> NativeWriteRelation;
+    /// Resolve actual frozen receiver identity before comparing addresses.
+    fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, _: &mut dyn TypeQueries) -> NativeWriteRelation {
+        self.write_affects(reference, target, at)
+    }
+    fn call_invalidates_reference(&self, _: NativeReferenceKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> bool { false }
     /// Original fixed child key for a descendant write. Types and the actual
     /// persistent receiver update are evaluated by the native flow worker.
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> Option<super::LuaKey> { None }
@@ -74,6 +82,11 @@ pub(super) struct FlowProviderAdapter<'a> {
 }
 
 impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
+    fn reference_tracks_runtime_value(&self, reference: NativeReferenceKey) -> bool { self.provider.reference_tracks_runtime_value(reference) }
+    fn reference_follows_creation(&self, reference: NativeReferenceKey) -> bool { self.provider.reference_follows_creation(reference) }
+    fn runtime_type_operation(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> bool {
+        self.provider.runtime_type_operation(value, input, &mut SessionQueries { checker, handles: self.handles })
+    }
     fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
         self.provider.assertion_predicate(condition, input)
     }
@@ -125,6 +138,12 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
         at: NativeFlowKey,
     ) -> NativeWriteRelation {
         self.provider.write_affects(reference, target, at)
+    }
+    fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> NativeWriteRelation {
+        self.provider.write_affects_with_types(reference, target, at, &mut SessionQueries { checker, handles: self.handles })
+    }
+    fn call_invalidates_reference(&self, reference: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> bool {
+        self.provider.call_invalidates_reference(reference, at, &mut SessionQueries { checker, handles: self.handles })
     }
     fn write_member_key(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::NativeTableKey> {
         let key = self.provider.write_member_key(reference, target, at)?;

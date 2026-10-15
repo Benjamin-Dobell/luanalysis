@@ -512,7 +512,7 @@ impl<'c, 'p, 's> Services<'c, 'p, 's> {
                     self.push_declarations_of_prop(part, depth + 1, out);
                 }
             }
-            PropSource::Type(_) => {}
+            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) => {}
         }
     }
 

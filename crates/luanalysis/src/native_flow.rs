@@ -56,7 +56,12 @@ pub(super) struct NativeFlowSources {
     binding_owners: HashMap<BindingId, u32>,
     expression_evaluations: HashMap<(u32, usize, usize), flow::EvaluationId>,
     runtime_type_calls: HashSet<flow::SourceExpressionId>,
+    runtime_type_operations: HashMap<flow::EvaluationId, flow::EvaluationId>,
     runtime_type_intrinsic_enabled: bool,
+    loader_mutations: HashSet<(usize, usize)>,
+    original_require_capability: bool,
+    capability_bindings: HashSet<BindingId>,
+    environment_candidates: HashMap<BindingId, HashSet<Vec<flow::Key>>>,
     pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
     iterator_projections: HashMap<BindingId, (flow::IteratorId, usize)>,
     contexts: RefCell<HashMap<FlowContext, u64>>,
@@ -65,6 +70,19 @@ pub(super) struct NativeFlowSources {
 impl NativeFlowSources {
     pub(super) fn set_runtime_type_intrinsic_enabled(&mut self, enabled: bool) {
         self.runtime_type_intrinsic_enabled = enabled;
+    }
+    pub(super) fn set_original_require_capability(&mut self, enabled: bool) { self.original_require_capability = enabled; }
+    fn loader_address_invalidates(&self, address: &flow::CapturedAddress) -> bool {
+        if !self.loader_mutations.contains(&(address.span.start, address.span.end)) { return false; }
+        if self.original_require_capability && address.reference.root == flow::ReferenceRoot::EnvironmentCell {
+            match address.reference.path.as_slice() {
+                [] => return false,
+                [flow::Key::String(name)] if name == b"require" => return false,
+                [flow::Key::String(root), flow::Key::String(name)] if root == b"_G" && name == b"require" => return false,
+                _ => {}
+            }
+        }
+        true
     }
 
     pub(super) fn new(
@@ -86,7 +104,12 @@ impl NativeFlowSources {
             binding_owners: HashMap::new(),
             expression_evaluations: HashMap::new(),
             runtime_type_calls: HashSet::new(),
+            runtime_type_operations: HashMap::new(),
             runtime_type_intrinsic_enabled: false,
+            loader_mutations: bound.module_environment_mutations().iter().map(|span| (span.start, span.end)).collect(),
+            original_require_capability: false,
+            capability_bindings: HashSet::new(),
+            environment_candidates: HashMap::new(),
             pack_projections: HashMap::new(),
             iterator_projections: HashMap::new(),
             contexts: RefCell::new(HashMap::new()),
@@ -105,15 +128,12 @@ impl NativeFlowSources {
         for evaluation in &result.program.evaluations {
             let expression = &result.program.expression(evaluation.expression).expression;
             if let ExprKind::Call { callee, args } = &expression.kind {
-                let mut callee = callee.as_ref();
-                while let ExprKind::Parenthesized(inner) = &callee.kind {
-                    callee = inner;
-                }
-                if args.len() == 1
-                    && matches!(&callee.kind, ExprKind::Name(_))
-                    && bound.intrinsic_at(callee.span.start) == Some(crate::bind::BuiltinIntrinsic::LuaType)
-                {
+                let _ = callee;
+                if args.len() == 1 {
                     result.runtime_type_calls.insert(evaluation.expression);
+                    if let [callee, argument] = evaluation.operands.as_slice() {
+                        result.runtime_type_operations.insert(*argument, *callee);
+                    }
                 }
             }
             result.expression_evaluations.insert(
@@ -294,14 +314,111 @@ impl NativeFlowSources {
                 });
             }
         }
+        // Retain original candidates only. Native callee provenance still
+        // decides whether a value is an intrinsic after each actual write.
+        loop {
+            let before = result.capability_bindings.len() + result.environment_candidates.values().map(HashSet::len).sum::<usize>();
+            for graph in &result.program.graphs {
+                for node in &graph.nodes {
+                    let flow::NodeKind::Write { address, value: flow::ValueDemand::Evaluation(value), .. } = &node.kind else { continue; };
+                    let flow::ReferenceRoot::Binding(binding) = address.reference.root else { continue; };
+                    if !address.reference.path.is_empty() { continue; }
+                    let value = result.program.evaluation(*value);
+                    let Some(reference) = result.program.references.get(&value.expression) else { continue; };
+                    let paths = result.environment_candidate_paths(reference);
+                    for path in paths {
+                        if matches!(path.as_slice(), [flow::Key::String(name)] if matches!(name.as_slice(), b"require" | b"type" | b"assert")) { result.capability_bindings.insert(binding); }
+                        result.environment_candidates.entry(binding).or_default().insert(path);
+                    }
+                    let candidate = match (&reference.root, reference.path.as_slice()) {
+                        (flow::ReferenceRoot::EnvironmentCell, [flow::Key::String(name)]) => matches!(name.as_slice(), b"require" | b"type" | b"assert"),
+                        (flow::ReferenceRoot::Binding(parent), []) => result.capability_bindings.contains(parent),
+                        _ => false,
+                    };
+                    if candidate { result.capability_bindings.insert(binding); }
+                }
+            }
+            let after = result.capability_bindings.len() + result.environment_candidates.values().map(HashSet::len).sum::<usize>();
+            if before == after { break; }
+        }
+        // Environment member references are addresses of an actual table, not
+        // whichever local/global alias currently names it. Intern the source
+        // keys up front; native queries later prove each receiver's identity.
+        let members: Vec<_> = result.references.iter().flatten()
+            .filter_map(|reference| reference.path.last().cloned()).collect();
+        for region in 0..result.references.len() {
+            intern_reference(&mut result.references[region], &mut result.reference_indices[region],
+                &flow::Reference { root: flow::ReferenceRoot::EnvironmentCell, path: Vec::new() });
+            intern_reference(&mut result.references[region], &mut result.reference_indices[region],
+                &flow::Reference { root: flow::ReferenceRoot::LoaderState, path: Vec::new() });
+            for key in &members {
+                intern_reference(&mut result.references[region], &mut result.reference_indices[region],
+                    &flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: vec![key.clone()] });
+            }
+        }
         result
+    }
+
+    pub(super) fn environment_reference(&self, graph: NativeGraphKey, binding: Option<BindingId>) -> Option<NativeReferenceKey> {
+        self.reference_key(graph, &flow::Reference {
+            root: binding.map_or(flow::ReferenceRoot::EnvironmentCell, flow::ReferenceRoot::Binding),
+            path: Vec::new(),
+        })
+    }
+    fn environment_candidate_paths(&self, reference: &flow::Reference) -> Vec<Vec<flow::Key>> {
+        match &reference.root {
+            flow::ReferenceRoot::EnvironmentCell => {
+                // This finite candidate domain retains exactly the two keys
+                // needed to distinguish a global value from loader namespace
+                // descendants. Actual address comparison keeps the full path.
+                let path = match reference.path.as_slice() { [flow::Key::String(name), rest @ ..] if name == b"_G" => rest.iter().take(2).cloned().collect(), other => other.iter().take(2).cloned().collect() };
+                vec![path]
+            }
+            flow::ReferenceRoot::Binding(binding) => self.environment_candidates.get(binding).into_iter().flatten().map(|parent| parent.iter().chain(&reference.path).take(2).cloned().collect()).collect(),
+            _ => Vec::new(),
+        }
+    }
+    pub(super) fn loader_reference(&self, graph: NativeGraphKey) -> NativeReferenceKey {
+        self.reference_key(graph, &flow::Reference { root: flow::ReferenceRoot::LoaderState, path: Vec::new() }).expect("each original graph has its loader state")
+    }
+
+    pub(super) fn environment_member_reference(&self, graph: NativeGraphKey, expression: &Expr) -> Option<NativeReferenceKey> {
+        let source = self.expression_reference(expression, graph)?;
+        let source = self.source_reference(source)?;
+        self.reference_key(graph, &flow::Reference {
+            root: flow::ReferenceRoot::EnvironmentObject,
+            path: vec![source.path.last()?.clone()],
+        })
     }
 
     pub(super) fn reference_declaration(&self, reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> {
         let source = self.source_reference(reference)?;
+        if matches!(source.root, flow::ReferenceRoot::LoaderState | flow::ReferenceRoot::EnvironmentObject) {
+            let owner = self.graph(0, reference.graph.context);
+            let writes = self.program.graphs.iter().flat_map(|graph| graph.nodes.iter()).filter_map(|node| {
+                let flow::NodeKind::Write { address, .. } = &node.kind else { return None; };
+                let candidates = self.environment_candidate_paths(&address.reference);
+                let affects = if source.root == flow::ReferenceRoot::LoaderState {
+                    self.loader_address_invalidates(address) || candidates.iter().any(|path| match path.as_slice() {
+                        [flow::Key::Dynamic(_), ..] => true,
+                        [flow::Key::String(name)] if name == b"require" => !self.original_require_capability,
+                        [flow::Key::String(name), members @ ..] if name == b"package" => crate::bind::modifies_package(&members.iter().map(|key| match key { flow::Key::String(value) => Some(value.as_slice()), _ => None }).collect::<Vec<_>>()),
+                        _ => false,
+                    })
+                } else {
+                    candidates.iter().any(|path| matches!((path.as_slice(), source.path.first()), ([written], Some(query)) if written == query || matches!(written, flow::Key::Dynamic(_))))
+                };
+                affects.then_some(NativeVariableWrite { owner: self.graph(node.id.graph, reference.graph.context), statement_end: address.statement_end })
+            }).collect();
+            return Some(NativeVariableDeclaration { owner, reference: self.reference_key(owner, source)?, writes });
+        }
         if !source.path.is_empty() { return None; }
-        let flow::ReferenceRoot::Binding(binding) = source.root else { return None; };
-        let owner = self.graph(*self.binding_owners.get(&binding)?, reference.graph.context);
+        let owner_region = match source.root {
+            flow::ReferenceRoot::Binding(binding) => *self.binding_owners.get(&binding)?,
+            flow::ReferenceRoot::EnvironmentCell => 0,
+            _ => return None,
+        };
+        let owner = self.graph(owner_region, reference.graph.context);
         let writes = self.program.graphs.iter().flat_map(|graph| graph.nodes.iter()).filter_map(|node| {
             let flow::NodeKind::Write { address, .. } = &node.kind else { return None; };
             (address.reference.root == source.root && address.reference.path.is_empty()).then_some(NativeVariableWrite {
@@ -921,6 +1038,13 @@ impl NativeFlowSources {
         let flow::NodeKind::Write { address, .. } = &node.kind else {
             return NativeWriteRelation::Unaffected;
         };
+        if query.root == flow::ReferenceRoot::LoaderState {
+            return if self.loader_address_invalidates(address) { NativeWriteRelation::Ancestor } else { NativeWriteRelation::Unaffected };
+        }
+        self.compare_write_references(query, target, address, at)
+    }
+
+    fn compare_write_references(&self, query: &flow::Reference, target: &flow::Reference, address: &flow::CapturedAddress, at: NativeFlowKey) -> NativeWriteRelation {
         // All target addresses were captured before stores. A later/current
         // path to a replacement receiver cannot inherit a write to the old one.
         if !target.path.is_empty() && self.program.graphs[at.graph.region as usize].nodes.iter().any(|candidate| {
@@ -968,6 +1092,10 @@ fn intern_reference(
 }
 
 pub(super) trait FlowValueQueries {
+    fn environment_access_path(&self, expression: &Expr, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<Vec<flow::Key>>;
+    fn original_type_operation(&self, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool;
+    /// The environment named by a real lexical upvalue at an original flow input.
+    fn environment_value(&self, binding: Option<BindingId>, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type;
     fn report_iterator_error(
         &self,
         at: NativeFlowKey,
@@ -1008,6 +1136,24 @@ pub(super) struct FlowAdapter<'a> {
 }
 
 impl NativeFlowProvider for FlowAdapter<'_> {
+    fn reference_tracks_runtime_value(&self, reference: NativeReferenceKey) -> bool {
+        let Some(reference) = self.sources.source_reference(reference) else { return false; };
+        match (&reference.root, reference.path.as_slice()) {
+            (flow::ReferenceRoot::EnvironmentCell | flow::ReferenceRoot::LoaderState, []) => true,
+            (flow::ReferenceRoot::EnvironmentObject, [flow::Key::String(name)]) => matches!(name.as_slice(), b"_G" | b"require" | b"type" | b"assert"),
+            (flow::ReferenceRoot::Binding(binding), []) => self.sources.capability_bindings.contains(binding),
+            _ => false,
+        }
+    }
+    fn reference_follows_creation(&self, reference: NativeReferenceKey) -> bool {
+        self.sources.source_reference(reference).is_some_and(|reference| matches!(reference.root, flow::ReferenceRoot::EnvironmentCell | flow::ReferenceRoot::LoaderState | flow::ReferenceRoot::EnvironmentObject))
+    }
+    fn runtime_type_operation(&self, value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {
+        let Some(ValueRecipe::Evaluation(argument)) = self.sources.value(value) else { return false; };
+        let Some(callee) = self.sources.runtime_type_operations.get(argument).copied() else { return false; };
+        let evaluation = self.sources.program.evaluation(callee);
+        self.values.original_type_operation(&ValueRecipe::Evaluation(callee), self.sources.flow_key(evaluation.input, input.graph.context), queries)
+    }
     fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
         self.sources.assertion_predicate(condition, input)
     }
@@ -1074,6 +1220,51 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         at: NativeFlowKey,
     ) -> NativeWriteRelation {
         self.sources.write_affects(reference, target, at)
+    }
+    fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeWriteRelation {
+        let Some(query) = self.sources.source_reference(reference) else { return NativeWriteRelation::Unaffected; };
+        if query.root == flow::ReferenceRoot::LoaderState {
+            let ordinary = self.sources.write_affects(reference, target, at);
+            if ordinary != NativeWriteRelation::Unaffected { return ordinary; }
+        }
+        if !matches!(query.root, flow::ReferenceRoot::EnvironmentObject | flow::ReferenceRoot::LoaderState) {
+            return self.sources.write_affects(reference, target, at);
+        }
+        let Some(flow::Node { kind: flow::NodeKind::Write { address, .. }, .. }) = self.sources.source_node(at) else {
+            return NativeWriteRelation::Unaffected;
+        };
+        let input = self.sources.flow_key(address.epoch, at.graph.context);
+        let path = if let Some(receiver) = address.receiver {
+            let receiver = self.sources.program.evaluation(receiver);
+            let expression = &self.sources.program.expression(receiver.expression).expression;
+            self.values.environment_access_path(expression, self.sources.flow_key(receiver.input, at.graph.context), queries)
+        } else if address.reference.path.len() == 1 {
+            let binding = match address.reference.root {
+                flow::ReferenceRoot::EnvironmentCell => None,
+                flow::ReferenceRoot::Binding(binding) => Some(binding),
+                _ => return NativeWriteRelation::Unaffected,
+            };
+            let environment = self.values.environment_value(binding, input, queries);
+            queries.global_environment_origin(&environment).map(|_| Vec::new())
+        } else { None };
+        let Some(mut path) = path else { return NativeWriteRelation::Unaffected; };
+        let Some(key) = address.reference.path.last().cloned() else { return NativeWriteRelation::Unaffected; };
+        path.push(key);
+        if query.root == flow::ReferenceRoot::LoaderState {
+            let affects = match path.as_slice() {
+                [flow::Key::Dynamic(_), ..] => true,
+                [flow::Key::String(name)] if name == b"require" => !self.sources.original_require_capability,
+                [flow::Key::String(name), members @ ..] if name == b"package" => crate::bind::modifies_package(&members.iter().map(|key| match key { flow::Key::String(value) => Some(value.as_slice()), _ => None }).collect::<Vec<_>>()),
+                _ => false,
+            };
+            return if affects { NativeWriteRelation::Ancestor } else { NativeWriteRelation::Unaffected };
+        }
+        let target = flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path };
+        self.sources.compare_write_references(query, &target, address, at)
+    }
+    fn call_invalidates_reference(&self, reference: NativeReferenceKey, at: NativeFlowKey, _: &mut dyn TypeQueries) -> bool {
+        self.sources.source_reference(reference).is_some_and(|reference| reference.root == flow::ReferenceRoot::LoaderState)
+            && self.sources.source_node(at).is_some_and(|node| self.sources.loader_mutations.contains(&(node.span.start, node.span.end)))
     }
     fn write_member_key(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<luanalysis_engine::LuaKey> {
         if self.sources.write_affects(reference, target, at) != NativeWriteRelation::Descendant { return None; }

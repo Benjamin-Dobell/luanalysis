@@ -5,7 +5,7 @@ use crate::{CheckReport, Diagnostic};
 use crate::standard_environment::{StandardEnvironmentProfile, StandardEnvironmentSelection};
 use luanalysis_engine::{Engine, NativeLoaderPolicy};
 use luanalysis_project::{
-    DeclarationSourceError, DependencyOutcome, FileId, Project, RequireRequest, SourceFile, SourceRole,
+    DeclarationSourceError, FileId, Project, RequireRequest, SourceFile, SourceRole,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -85,11 +85,6 @@ impl ProjectCheckReport {
             || !self.project.entry_errors.is_empty()
             || !self.project.library_errors.is_empty()
             || !self.project.role_conflicts.is_empty()
-            || self
-                .project
-                .dependencies
-                .iter()
-                .any(|dependency| !matches!(dependency.outcome, DependencyOutcome::Resolved(_)))
     }
 }
 

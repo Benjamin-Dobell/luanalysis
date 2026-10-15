@@ -518,7 +518,7 @@ impl<'p, 's> Checker<'p, 's> {
         // A `nameType` is stored for a late-bound name (`lateBindMember`), for a computed name in an
         // object literal (`checkObjectLiteral`), and by a mapped type.
         let is_stored = match &prop.source {
-            PropSource::Type(_) => false,
+            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) => false,
             PropSource::Symbol(sym) => {
                 matches!(self.files().value_declaration(*sym), Some((file, Decl::Member(m)))
                     if matches!(self.hir(file)[m].key, PropKey::Computed(_)))

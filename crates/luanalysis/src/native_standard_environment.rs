@@ -18,19 +18,19 @@ pub(crate) struct ProjectStandardEnvironment {
     pub string_library: Option<NativeGlobalBindingKey>,
     pub type_operation: Option<OriginalStandardFunction>,
     pub assert_operations: Vec<OriginalStandardFunction>,
+    pub require_operation: Option<OriginalStandardFunction>,
     pub rejected_assert_declarations: Vec<NativeValueDeclarationKey>,
 }
 impl ProjectStandardEnvironment {
     pub(super) fn new<'a>(
         profile: StandardEnvironmentProfile,
         files: impl Iterator<Item = (StandardLibrarySource, &'a NativeRegistry)>,
-        type_replaced: bool,
-        assert_replaced: bool,
     ) -> Self {
         let mut result = Self {
             string_library: None,
             type_operation: None,
             assert_operations: Vec::new(),
+            require_operation: None,
             rejected_assert_declarations: Vec::new(),
         };
         if profile != StandardEnvironmentProfile::Lua54 {
@@ -39,6 +39,9 @@ impl ProjectStandardEnvironment {
         for (kind, source) in files {
             if source.source_role() != SourceRole::Declaration {
                 continue;
+            }
+            if let Some((capabilities, other_owners)) = source.original_standard_function("require") {
+                if other_owners.is_empty() && capabilities.len() == 1 { result.require_operation = capabilities.first().copied(); }
             }
             if kind == StandardLibrarySource::String {
                 let mut originals = source.globals.declarations.iter().filter(|declaration| {
@@ -51,14 +54,14 @@ impl ProjectStandardEnvironment {
             if kind == StandardLibrarySource::Base {
                 if let Some((capabilities, other_owners)) = source.original_standard_function("type")
                 {
-                    if !type_replaced && other_owners.is_empty() && capabilities.len() == 1 {
+                    if other_owners.is_empty() && capabilities.len() == 1 {
                         result.type_operation = capabilities.first().copied();
                     }
                 }
                 if let Some((capabilities, other_owners)) =
                     source.original_standard_function("assert")
                 {
-                    if !assert_replaced && other_owners.is_empty() {
+                    if other_owners.is_empty() {
                         result.assert_operations = capabilities;
                     }
                     result.rejected_assert_declarations.extend(other_owners);
@@ -116,17 +119,6 @@ impl NativeRegistry {
         );
         self.legacy_builtin_policy = crate::builtins::LegacyBuiltinPolicy::Disabled;
         self.flow.set_runtime_type_intrinsic_enabled(true);
-    }
-    pub(crate) fn reject_modified_standard_assert(&self) {
-        if self.source_role() != SourceRole::Implementation {
-            return;
-        }
-        for &span in self.bound.assert_intrinsic_mutations() {
-            self.report.borrow_mut().diagnostics.push(crate::Diagnostic {
-                code:"LUA2039",span,
-                message:"Replacing the selected standard assert value requires an original runtime value/effect contract; use an explicit custom environment until that policy is supported.".into(),
-            });
-        }
     }
     pub(crate) fn reject_untrusted_standard_assert(&self, key: NativeValueDeclarationKey) {
         if self.source_role() != SourceRole::Declaration { return; }

@@ -73,7 +73,7 @@ impl NativeGlobals {
                         };
                         let root = namespace.as_ref().map_or(&name, |target| &target.root);
                         if bound.binding_at(root.span.start).is_some()
-                            || matches!(root.text.as_str(), "_G" | "_ENV")
+                            || root.text == "_ENV"
                             || nonstandard_environment(bound, root.span.start)
                         {
                             result.unsupported.push(target.span);
@@ -132,7 +132,7 @@ impl NativeGlobals {
                     };
                     let root = namespace.as_ref().map_or(&name, |target| &target.root);
                     if bound.binding_at(root.span.start).is_some()
-                        || matches!(root.text.as_str(), "_G" | "_ENV")
+                        || root.text == "_ENV"
                         || nonstandard_environment(bound, root.span.start)
                     {
                         result.unsupported.push(target.span);
@@ -217,6 +217,9 @@ impl ProjectGlobalIndex {
 
     pub(super) fn binding(&self, name: &str) -> Option<NativeGlobalBindingKey> {
         self.names.get(name).copied()
+    }
+    pub(super) fn bindings(&self) -> Vec<(Vec<u8>, NativeGlobalBindingKey)> {
+        self.names.iter().map(|(name, key)| (name.as_bytes().to_vec(), *key)).collect()
     }
     pub(super) fn contains(&self, key: NativeGlobalBindingKey) -> bool {
         key.environment == self.environment && (key.index as usize) < self.declarations.len()
@@ -585,15 +588,57 @@ impl Checker<'_> {
     }
     pub(crate) fn global_read(&mut self, name: &Name) -> Option<Type> {
         let native = self.native?;
-        if name.text == "_G"
-            || name.text == "_ENV"
-            || nonstandard_environment(self.bound, name.span.start)
-        {
-            self.error("LUA2036", name.span, "Global lookup through an explicit or modified Lua environment requires environment-identity integration.");
-            return Some(Type::Any);
+        if native.project_globals.is_none() { return None; }
+        let environment = self.environment_value(name.span.start);
+        if name.text == "_ENV" { return Some(environment); }
+        if self.engine.global_environment_origin(&environment).is_some() {
+            let initial = {
+                let key = native.global_binding(&name.text)?;
+                // The original `_G` contract is a view of this actual object.
+                self.engine.property_type(&environment, &name.text)
+                    .unwrap_or_else(|| self.engine.global_binding_type(key).unwrap_or(Type::Unknown))
+            };
+            if let Some(at) = self.flow_at {
+                let expression = luanalysis_syntax::Expr { span: name.span, kind: ExprKind::Name(name.clone()) };
+                if let Some(reference) = native.flow.environment_member_reference(at.graph, &expression) {
+                    // Unknown is the native reset type for a value capability:
+                    // a computed write may replace it even if the declaration's
+                    // callable shape remains valid. Ordinary globals keep TS's
+                    // declaration-based transfer policy.
+                    let declared = if matches!(name.text.as_str(), "_G" | "type" | "assert" | "require") { Type::Unknown } else { initial.clone() };
+                    let result = self.engine.flow_type(&crate::native_flow::FlowAdapter { sources: &native.flow, values: native }, at, reference, &declared, &initial);
+                    self.incomplete_flow |= result.incomplete;
+                    return Some(result.ty);
+                }
+            }
+            return Some(initial);
         }
-        let key = native.global_binding(&name.text)?;
-        Some(self.engine.global_binding_type(key).unwrap_or(Type::Any))
+        Some(self.native_named_property_read(&environment, name, name.span))
+    }
+
+    pub(super) fn environment_value(&mut self, offset: usize) -> Type {
+        let Some(native) = self.native else { return Type::Unknown; };
+        let binding = self.bound.environment_binding_at(offset);
+        let (declared, initial) = if let Some(binding) = binding {
+            let Some(value) = self.resolve_local(binding).cloned() else { return Type::Unknown; };
+            (value.constraint, value.initial)
+        } else {
+            let Some(globals) = native.project_globals.as_ref() else { return Type::Unknown; };
+            (Type::Unknown, self.engine.global_environment_type(globals.environment).unwrap_or(Type::Unknown))
+        };
+        let Some(at) = self.flow_at else { return initial; };
+        let Some(reference) = native.flow.environment_reference(at.graph, binding) else { return initial; };
+        let result = self.engine.flow_type(&crate::native_flow::FlowAdapter { sources: &native.flow, values: native }, at, reference, &declared, &initial);
+        self.incomplete_flow |= result.incomplete;
+        result.ty
+    }
+
+    /// Static assertions do not change which runtime table a receiver names.
+    pub(crate) fn environment_origin_of_expression(&mut self, expression: &luanalysis_syntax::Expr) -> Option<NativeEnvironmentKey> {
+        let mut expression = expression;
+        while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
+        let value = self.expression_at_current_flow(expression, None);
+        self.engine.global_environment_origin(&value)
     }
 }
 

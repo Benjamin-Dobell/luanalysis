@@ -90,6 +90,7 @@ pub use crate::check::native_tables::{
     NativeTableIndexer, NativeTableKey, NativeTableSequenceTail,
 };
 pub use crate::check::native_named::{NativeDefinitionId, NativeDefinitionRef, NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
+use crate::check::native_globals::{NativeEnvironmentId, NativeGlobalBindingId};
 /// An interned list of `IndexComponent`s.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ComponentsId(pub u32);
@@ -614,6 +615,8 @@ bitflags::bitflags! {
 /// The origin of the type of a property.
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub enum PropSource<'s> {
+    /// A property of an original selected Lua environment; its contract is lazy.
+    NativeGlobalBinding(ArenaBox<'s, NativeGlobalBindingId>),
     /// Synthesized: it has no declaration.
     Type(TypeId),
     /// A property of an object literal.
@@ -3455,6 +3458,7 @@ follow_enum!(TypeData<'_> {
     TypeData::StringMapping { kind, ty } => (kind, ty),
 });
 follow_enum!(PropSource<'_> {
+    PropSource::NativeGlobalBinding(a) => (a),
     PropSource::Type(a) => (a),
     PropSource::Literal(a, b) => (a, b),
     PropSource::Symbol(a) => (a),
@@ -3539,7 +3543,9 @@ follow_enum!(NativeTableFieldOrigin {
 follow_struct!(NativeTableField { key, value, optional, readonly, origin });
 follow_struct!(NativeTableIndexer { key, value, readonly, sparse, origin });
 follow_struct!(NativeTableSequenceTail { start, value, readonly, origin });
-follow_struct!(NativeTableData<'_> { definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+follow_struct!(NativeEnvironmentId { snapshot, index });
+follow_struct!(NativeGlobalBindingId { environment, index });
+follow_struct!(NativeTableData<'_> { environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 follow_struct!(NativeCapturedFunctionContext { signature });
 follow_struct!(NativeResultPack { ty });
 follow_enum!(NativeRuntimeKind {
@@ -3596,6 +3602,8 @@ macro_rules! clone_in_is_copy {
     )*};
 }
 clone_in_is_copy!(
+    NativeEnvironmentId,
+    NativeGlobalBindingId,
     NativeRuntimeKind,
     bool,
     u8,
@@ -3774,6 +3782,7 @@ clone_in_enum!(TypeData {
     StringMapping { kind, ty },
 });
 clone_in_enum!(PropSource {
+    NativeGlobalBinding(a),
     Type(a),
     Literal(a, b),
     Symbol(a),
@@ -3812,7 +3821,7 @@ clone_in_struct!(Shape {
     pattern_at,
     mapper
 });
-clone_in_struct!(NativeTableData { definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+clone_in_struct!(NativeTableData { environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 clone_in_enum!(SigData {
     NativeDeclarationSignature { declaration, mapper, implementation },
     Native { declaration, mapper },

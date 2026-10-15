@@ -150,7 +150,7 @@ impl Checker<'_> {
         span: Span,
         expected: Option<&ValuePack>,
     ) -> ValuePack {
-        if let Some(pack) = self.native_require_pack(args, span) { return pack; }
+        if let Some(pack) = self.native_require_pack(callee, args, span) { return pack; }
         let callee_type = self.expression(callee);
         let arguments = self.call_arguments(args);
         let call = self
@@ -595,7 +595,7 @@ impl Checker<'_> {
         _discard: bool,
         expected: Option<&Type>,
     ) -> Type {
-        if let Some(pack) = self.native_require_pack(args, span) { return self.engine.pack_slot(&pack, 0); }
+        if let Some(pack) = self.native_require_pack(callee, args, span) { return self.engine.pack_slot(&pack, 0); }
         let callee_type = self.expression(callee);
         let arguments = self.call_arguments(args);
         let call = self

@@ -523,7 +523,10 @@ impl<'p, 's> Checker<'p, 's> {
                 let mut sources = Vec::new();
                 let mut targets = Vec::new();
                 for field in &target.fields {
-                    if let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) {
+                    if let Some(environment) = source.environment_origin {
+                        sources.push(self.native_global_environment_member(environment, NativeTableAccessKey::Literal(field.key)));
+                        targets.push(if field.optional { self.optional(field.value) } else { field.value });
+                    } else if let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) {
                         sources.push(if actual.optional { self.optional(actual.value) } else { actual.value });
                         targets.push(if field.optional { self.optional(field.value) } else { field.value });
                     }

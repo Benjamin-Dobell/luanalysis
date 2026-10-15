@@ -1825,6 +1825,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 crate::types::NativeRuntimeKind::Function => &b"function"[..],
             }),
             TypeData::NativeTable(table) => {
+                if table.environment_origin.is_some() { return Node::simple(b"global environment".to_vec()) }
                 if let Some(reference) = table.definition_origin {
                     let definition = self.c.intern(TypeData::NativeDefinition(reference));
                     return self.type_to_node(definition);
@@ -4679,7 +4680,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
     /// `links.nameType != nil`
     fn has_name_type(&mut self, prop: &Prop) -> bool {
         match &prop.source {
-            PropSource::Type(_) => false,
+            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) => false,
             // `checkObjectLiteral` takes it from the member the property is created from, whatever
             // else declares the name.
             PropSource::Literal(file, member) => {
@@ -4720,7 +4721,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             return false;
         }
         match &prop.source {
-            PropSource::Type(_) | PropSource::Intersected(..) | PropSource::ReverseMapped(..) => {
+            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) | PropSource::Intersected(..) | PropSource::ReverseMapped(..) => {
                 false
             }
             PropSource::Literal(..) | PropSource::Symbol(_) => self.has_name_type(prop),

@@ -112,18 +112,13 @@ impl ProjectRegistry {
             .iter()
             .map(|file| (file.id, file.source.module_key()))
             .collect();
-        let environment_modified = files.iter().any(|file| {
-            file.role == SourceRole::Implementation && file.source.module_environment_modified()
-        });
         let mut imports = HashMap::new();
         for file in &files {
             if file.role == SourceRole::Declaration {
                 continue;
             }
             for call in file.source.module_calls() {
-                let outcome = if environment_modified {
-                    ImportOutcome::ModifiedEnvironment
-                } else if let Some(outcome) = classify_unresolved(&call) {
+                let outcome = if let Some(outcome) = classify_unresolved(&call) {
                     outcome
                 } else {
                     let dependency = dependencies.iter().find(|edge| {
@@ -139,19 +134,8 @@ impl ProjectRegistry {
                         None=>ImportOutcome::Missing("Static require request was not resolved by this project's source host.".into()),
                     }
                 };
-                // Static resolution is a source-host obligation even when the
-                // original call is unreachable and creates no type demand.
-                if let ImportOutcome::Missing(message) = &outcome {
-                    file.source
-                        .report
-                        .borrow_mut()
-                        .diagnostics
-                        .push(Diagnostic {
-                            code: "TS2307",
-                            span: call.argument_span,
-                            message: message.clone(),
-                        });
-                }
+                // Source-host requests are candidates. Publish a missing module
+                // only after the original callee retains require provenance.
                 imports.insert(
                     (file.source.snapshot, call.span.start, call.span.end),
                     ImportRecipe {
@@ -162,13 +146,11 @@ impl ProjectRegistry {
             }
         }
         let modules = Rc::new(ProjectModuleIndex { policy, imports });
-        let type_replaced = files.iter().any(|file| {
-            file.role == SourceRole::Implementation && file.source.bound.has_modified_type_intrinsic()
-        });
-        let assert_replaced = files.iter().any(|file| {
-            file.role == SourceRole::Implementation && file.source.bound.has_modified_assert_intrinsic()
-        });
-        let legacy_builtins = if environment_profile != StandardEnvironmentProfile::LegacyMinimal || type_replaced {
+        // The sparse legacy compatibility API has no original standard value
+        // declarations. Keep its conservative historical policy isolated from
+        // the selected native standard environment and its per-reference flow.
+        let legacy_type_replaced = environment_profile == StandardEnvironmentProfile::LegacyMinimal && files.iter().any(|file| file.role == SourceRole::Implementation && file.source.bound.has_modified_type_intrinsic());
+        let legacy_builtins = if environment_profile != StandardEnvironmentProfile::LegacyMinimal || legacy_type_replaced {
             crate::builtins::LegacyBuiltinPolicy::Disabled
         } else {
             crate::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility
@@ -179,10 +161,9 @@ impl ProjectRegistry {
         let standard_environment = super::standard::ProjectStandardEnvironment::new(
             environment_profile,
             files.iter().filter_map(|file| file.standard_library.map(|kind| (kind, &file.source))),
-            type_replaced,
-            assert_replaced,
         );
         for file in &mut files {
+            file.source.flow.set_original_require_capability(standard_environment.require_operation.is_some());
             file.source.project_names = Some(Rc::clone(&names));
             file.source.project_modules = Some(Rc::clone(&modules));
             file.source.project_globals = Some(Rc::clone(&globals));
@@ -191,7 +172,6 @@ impl ProjectRegistry {
                 file.source.set_original_type_operation(capability);
             }
             if environment_profile == StandardEnvironmentProfile::Lua54 {
-                file.source.reject_modified_standard_assert();
                 for &declaration in &standard_environment.rejected_assert_declarations {
                     if declaration.snapshot == file.source.snapshot {
                         file.source.reject_untrusted_standard_assert(declaration);
@@ -240,6 +220,7 @@ impl ProjectRegistry {
         for file in &self.files {
             file.source.check_named_declarations(queries);
             file.source.check_global_declarations(queries);
+            file.source.check_module_requests(queries);
         }
         let mut reports = Vec::with_capacity(self.files.len());
         for file in &self.files {
@@ -315,14 +296,37 @@ macro_rules! dispatch {
 }
 
 impl NativeTypeProvider for ProjectRegistry {
+    fn global_environment_binding(&self, environment: luanalysis_engine::NativeEnvironmentKey, name: &[u8]) -> Option<luanalysis_engine::NativeGlobalBindingKey> {
+        if environment != self.globals.environment { return None; }
+        self.globals.binding(std::str::from_utf8(name).ok()?)
+    }
+    fn global_environment_bindings(&self, environment: luanalysis_engine::NativeEnvironmentKey) -> Vec<(Vec<u8>, luanalysis_engine::NativeGlobalBindingKey)> {
+        if environment != self.globals.environment { return Vec::new(); }
+        self.globals.bindings()
+    }
+    fn global_environment_self_binding(&self, environment: luanalysis_engine::NativeEnvironmentKey) -> Option<luanalysis_engine::NativeGlobalBindingKey> {
+        if environment != self.globals.environment { return None; }
+        let binding = self.globals.binding("_G")?;
+        // Only selected bundled declaration ownership attests the initial
+        // runtime self-reference. A user-written `_G` contract is ordinary.
+        self.globals.declarations(binding).iter().all(|owner| {
+            let file = &self.files[self.snapshots[&owner.snapshot]];
+            file.role == SourceRole::Declaration && file.standard_library.is_some()
+        }).then_some(binding)
+    }
     fn signature_intrinsic(&self, signature: luanalysis_engine::NativeSignatureKey) -> Option<luanalysis_engine::NativeIntrinsicSite> {
-        let original = self.standard_environment.assert_operations.iter()
-            .find(|original| original.signature == signature)?;
-        Some(luanalysis_engine::NativeIntrinsicSite {
-            binding: original.binding,
-            declaration: original.declaration,
-            kind: luanalysis_engine::NativeIntrinsicKind::Assert,
-        })
+        if let Some(original) = self.standard_environment.assert_operations.iter().find(|original| original.signature == signature) {
+            return Some(luanalysis_engine::NativeIntrinsicSite { binding: original.binding, declaration: original.declaration, kind: luanalysis_engine::NativeIntrinsicKind::Assert });
+        }
+        for (original, kind) in [
+            (self.standard_environment.type_operation, luanalysis_engine::NativeIntrinsicKind::Type),
+            (self.standard_environment.require_operation, luanalysis_engine::NativeIntrinsicKind::Require),
+        ] {
+            if let Some(original) = original && original.signature == signature {
+                return Some(luanalysis_engine::NativeIntrinsicSite { binding: original.binding, declaration: original.declaration, kind });
+            }
+        }
+        None
     }
     // The selected initial namespace is independent of current lexical names.
     fn primitive_member_environment(&self) -> Option<luanalysis_engine::NativeEnvironmentKey> {

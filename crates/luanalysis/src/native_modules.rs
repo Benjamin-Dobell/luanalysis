@@ -18,7 +18,6 @@ pub(crate) enum ImportOutcome {
     Dynamic,
     NonUtf8,
     Arity(usize),
-    ModifiedEnvironment,
 }
 #[derive(Clone)]
 pub(crate) struct ImportRecipe {
@@ -31,6 +30,17 @@ pub(crate) struct ProjectModuleIndex {
 }
 
 impl NativeRegistry {
+    pub(crate) fn check_module_requests(&self, queries: &mut dyn TypeQueries) {
+        for call in self.module_calls() {
+            if !self.module_import(call.span).is_some_and(|(_, recipe)| matches!(recipe.outcome, ImportOutcome::Missing(_))) { continue; }
+            let key = self.expression_key_for_span(call.span);
+            let expression = &self.expressions().get(key).expression;
+            let luanalysis_syntax::ExprKind::Call { callee, args } = &expression.kind else { continue; };
+            let mut checker = self.checker_for_expression(key, luanalysis_engine::NativeCheckMode::empty(), queries);
+            checker.native_require_pack(callee, args, expression.span);
+            if !checker.incomplete_flow { self.merge_report(checker.report); }
+        }
+    }
     pub(crate) fn has_module_index(&self) -> bool {
         self.project_modules.is_some()
     }
@@ -42,9 +52,6 @@ impl NativeRegistry {
     }
     pub(crate) fn module_calls(&self) -> Vec<RequireCall> {
         crate::module_requests::require_calls(&self.file, &self.bound)
-    }
-    pub(crate) fn module_environment_modified(&self) -> bool {
-        self.bound.has_modified_module_environment()
     }
     pub(crate) fn module_import(&self, span: Span) -> Option<(NativeLoaderPolicy, ImportRecipe)> {
         let modules = self.project_modules.as_ref()?;
@@ -119,8 +126,43 @@ impl NativeRegistry {
 }
 
 impl Checker<'_> {
-    pub(crate) fn native_require_pack(&mut self, args: &[Expr], span: Span) -> Option<ValuePack> {
+    pub(crate) fn native_require_pack(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Option<ValuePack> {
         let (policy, recipe) = self.native?.module_import(span)?;
+        let has_original_contract = self.native?.global_binding("require").is_some();
+        if has_original_contract {
+            let value = self.expression(callee);
+            let mut trusted = self.engine.function_intrinsic(&value)
+                .is_some_and(|site| site.kind == luanalysis_engine::NativeIntrinsicKind::Require);
+            let mut direct = callee;
+            while let luanalysis_syntax::ExprKind::Parenthesized(inner) = &direct.kind { direct = inner; }
+            let direct = matches!(&direct.kind, luanalysis_syntax::ExprKind::Name(name) if name.text == "require" && self.bound.binding_at(name.span.start).is_none());
+            if !trusted && direct && !self.bound.has_modified_module_environment()
+                && let Some(at) = self.flow_at
+            {
+                let native = self.native?;
+                if !self.engine.flow_reachable(&FlowAdapter { sources: &native.flow, values: native }, at)
+                    && let Some(key) = native.global_binding("require")
+                    && let Ok(original) = self.engine.global_binding_type(key)
+                {
+                    trusted = self.engine.function_intrinsic(&original).is_some_and(|site| site.kind == luanalysis_engine::NativeIntrinsicKind::Require);
+                }
+            }
+            if !trusted {
+                if !direct { return None; }
+                self.error("LUA2036", callee.span, "Standard require cannot be assumed for this runtime value after an environment write or custom loader replacement.");
+                return Some(ValuePack::single(Type::Unknown));
+            }
+        }
+        if let Some(at) = self.flow_at {
+            let native = self.native?;
+            let reference = native.flow.loader_reference(at.graph);
+            let result = self.engine.flow_type(&crate::native_flow::FlowAdapter { sources: &native.flow, values: native }, at, reference, &Type::BooleanLiteral(false), &Type::BooleanLiteral(true));
+            self.incomplete_flow |= result.incomplete;
+            if result.ty != Type::BooleanLiteral(true) {
+                self.error("LUA2036", callee.span, "Standard require cannot be assumed after a loader mutation on this control-flow path; custom loader effects require an explicit module contract.");
+                return Some(ValuePack::single(Type::Unknown));
+            }
+        }
         for (index, argument) in args.iter().enumerate() {
             let expected = (index == 0).then_some(Type::String);
             let value = self.expression_with_expected(argument, expected.as_ref());
@@ -144,7 +186,6 @@ impl Checker<'_> {
                 self.error("TS2554",recipe.argument_span,format!("Expected 1 argument, but got {actual}."));
                 return Some(ValuePack::single(Type::Unknown));
             },
-            ImportOutcome::ModifiedEnvironment=>"Standard require cannot be assumed after a global require/environment/package loader mutation.".into(),
         };
         self.error("LUA2036", recipe.argument_span, result);
         Some(ValuePack::single(Type::Unknown))

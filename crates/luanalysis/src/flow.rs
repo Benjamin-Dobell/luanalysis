@@ -46,6 +46,12 @@ pub enum ReferenceRoot {
     /// Lua's hidden iterator/state/control frame; body bindings cannot write it.
     Iterator(IteratorId),
     Global(String),
+    /// The real implicit `_ENV` upvalue owned by this Lua chunk.
+    EnvironmentCell,
+    /// The selected original environment table, independent of its aliases.
+    EnvironmentObject,
+    /// The standard file loader policy at one actual source continuation.
+    LoaderState,
     Temporary(SourceExpressionId),
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -598,13 +604,7 @@ impl Builder<'_> {
     }
     fn reference(&mut self, expr: &Expr) -> Reference {
         match &expr.kind {
-            ExprKind::Name(name) => Reference {
-                root: self.bound.binding_at(name.span.start).map_or_else(
-                    || ReferenceRoot::Global(name.text.clone()),
-                    ReferenceRoot::Binding,
-                ),
-                path: Vec::new(),
-            },
+            ExprKind::Name(name) => self.name_reference(name),
             ExprKind::Parenthesized(inner) => self.reference(inner),
             ExprKind::Field { base, name } => {
                 let mut reference = self.reference(base);
@@ -637,6 +637,16 @@ impl Builder<'_> {
                 path: Vec::new(),
             },
         }
+    }
+    fn name_reference(&self, name: &Name) -> Reference {
+        if let Some(binding) = self.bound.binding_at(name.span.start) {
+            return Reference { root: ReferenceRoot::Binding(binding), path: Vec::new() };
+        }
+        let root = self.bound.environment_binding_at(name.span.start)
+            .map_or(ReferenceRoot::EnvironmentCell, ReferenceRoot::Binding);
+        let path = if name.text == "_ENV" { Vec::new() }
+            else { vec![Key::String(name.text.as_bytes().to_vec())] };
+        Reference { root, path }
     }
     fn address(
         &mut self,
@@ -687,13 +697,7 @@ impl Builder<'_> {
         epoch: FlowId,
         statement_end: usize,
     ) -> CapturedAddress {
-        let reference = Reference {
-            root: self.bound.binding_at(name.span.start).map_or_else(
-                || ReferenceRoot::Global(name.text.clone()),
-                ReferenceRoot::Binding,
-            ),
-            path: Vec::new(),
-        };
+        let reference = self.name_reference(name);
         CapturedAddress {
             statement_end: self.extended_statement_end(context, &reference, statement_end),
             reference,

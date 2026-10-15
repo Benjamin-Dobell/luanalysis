@@ -264,7 +264,7 @@ pub(super) fn export_table(
         return None;
     };
     // A class description is a session capability, not a forgeable structural table recipe.
-    if table.nominal_origin.is_some() { return None }
+    if table.nominal_origin.is_some() || table.environment_origin.is_some() { return None }
     // Copy the immutable native descriptors before recursively exporting any
     // member. Recursion may demand further types from this same checker.
     let fields = table.fields.to_vec();

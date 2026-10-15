@@ -719,6 +719,7 @@ impl<'p, 's> Checker<'p, 's> {
                     declaration: origin.declaration, mapper: self.compose(origin.mapper, mapper), self_argument: origin.self_argument.map(|ty| self.instantiate(ty, mapper)),
                 });
                 self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+                    environment_origin: table.environment_origin,
                     definition_origin,
                     nominal_origin,
                     fields: self.list(&fields),

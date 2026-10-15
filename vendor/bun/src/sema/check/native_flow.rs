@@ -237,6 +237,11 @@ pub struct NativeIteratorProjection {
 }
 
 pub trait NativeFlowProvider {
+    /// Value capabilities require the assigned runtime value rather than the
+    /// declaration-shape reduction used by ordinary TS variable flow.
+    fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
+    fn reference_follows_creation(&self, _: NativeReferenceKey) -> bool { false }
+    fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { true }
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
     /// Original immutable predicate recipe for a verified assertion argument.
     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
@@ -263,6 +268,10 @@ pub trait NativeFlowProvider {
         target: NativeReferenceKey,
         at: NativeFlowKey,
     ) -> NativeWriteRelation;
+    fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, _: &mut Checker<'_, '_>) -> NativeWriteRelation {
+        self.write_affects(reference, target, at)
+    }
+    fn call_invalidates_reference(&self, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { false }
     fn value_type(
         &self,
         value: NativeValueKey,
@@ -385,7 +394,7 @@ fn numeric_first_entry(
 
 impl NativeDomain<'_> {
     fn auto_at_start(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey) -> Option<FlowType> {
-        if walk.declared != TypeId::AUTO { return None; }
+        if walk.declared != TypeId::AUTO && !self.provider.reference_follows_creation(walk.reference) { return None; }
         let declaration = self.provider.reference_declaration(walk.reference)?;
         let same_owner = |graph: NativeGraphKey| graph.snapshot == declaration.owner.snapshot && graph.region == declaration.owner.region;
         if same_owner(at.graph) { return None; }
@@ -393,13 +402,13 @@ impl NativeDomain<'_> {
             self.provider.flow_error(at, NativeFlowError::InvalidReference(declaration.reference));
             return Some(FlowType::new(TypeId::ERROR, false));
         }
-        let Some(creation) = self.provider.graph_creation(at.graph) else { return Some(FlowType::new(TypeId::AUTO, false)) };
+        let Some(creation) = self.provider.graph_creation(at.graph) else { return Some(FlowType::new(walk.declared, false)) };
         if declaration.writes.iter().any(|write| !same_owner(write.owner)) {
-            return Some(FlowType::new(TypeId::AUTO, false));
+            return Some(FlowType::new(walk.declared, false));
         }
         let last = declaration.writes.iter().map(|write| write.statement_end).max().unwrap_or(0);
         if !Checker::is_past_last_assignment_position(last, creation.position) {
-            return Some(FlowType::new(TypeId::AUTO, false));
+            return Some(FlowType::new(walk.declared, false));
         }
         if creation.input.graph.snapshot != at.graph.snapshot || !self.provider.contains_graph(creation.input.graph) {
             self.provider.flow_error(at, NativeFlowError::InvalidGraph(creation.input.graph));
@@ -518,6 +527,9 @@ impl NativeDomain<'_> {
             }
             NativePredicate::Equal { .. } => ReachStep::Follow(before),
             NativePredicate::RuntimeType { value, input, kind, equals, .. } => {
+                // A lexical `type` candidate is insufficient after a real
+                // environment write. Source providers prove the original call.
+                if !self.provider.runtime_type_operation(value, input, checker) { return ReachStep::Follow(before); }
                 let value = checker.native_flow_value(self.provider, value, input);
                 if checker.native_runtime_type(value, &kind, equals == sense).is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
             }
@@ -612,10 +624,10 @@ impl FlowDomain for NativeDomain<'_> {
                         .flow_error(at, NativeFlowError::InvalidReference(target));
                     return FlowStep::Value(TypeId::ERROR);
                 }
-                match self.provider.write_affects(walk.reference, target, at) {
+                match self.provider.write_affects_with_types(walk.reference, target, at, checker) {
                     NativeWriteRelation::Exact => {
                         let assigned = checker.native_flow_value(self.provider, value, input);
-                        FlowStep::Value(checker.resolved_assignment_type(walk.declared, assigned))
+                        FlowStep::Value(if self.provider.reference_tracks_runtime_value(walk.reference) { assigned } else { checker.resolved_assignment_type(walk.declared, assigned) })
                     }
                     NativeWriteRelation::Ancestor => FlowStep::Value(walk.declared),
                     NativeWriteRelation::Descendant => FlowStep::Follow {
@@ -683,6 +695,9 @@ impl FlowDomain for NativeDomain<'_> {
                 if !self.edge(at, before) || !self.edge(at, input) {
                     return FlowStep::Value(TypeId::ERROR);
                 }
+                if self.provider.call_invalidates_reference(walk.reference, at, checker) {
+                    return FlowStep::Value(walk.declared);
+                }
                 match checker.native_flow_call_effects(self.provider, value, input) {
                     NativeCallEffects::Never => FlowStep::Value(TypeId::UNREACHABLE_NEVER),
                     NativeCallEffects::Assert { condition, input } => match self.assertion_predicate(at, condition, input) {
@@ -743,8 +758,8 @@ impl FlowDomain for NativeDomain<'_> {
                 let other = checker.native_flow_value(self.provider, other, input);
                 checker.native_equal_flow_type(previous.ty, other, equals == sense)
             }
-            NativeTransfer::Predicate(NativePredicate::RuntimeType { kind, equals, .. }, sense) => {
-                checker.native_runtime_type(previous.ty, &kind, equals == sense)
+            NativeTransfer::Predicate(NativePredicate::RuntimeType { value, input, kind, equals, .. }, sense) => {
+                if self.provider.runtime_type_operation(value, input, checker) { checker.native_runtime_type(previous.ty, &kind, equals == sense) } else { previous.ty }
             }
             NativeTransfer::Predicate(NativePredicate::NumericIteration { .. }, _) => previous.ty,
             NativeTransfer::Predicate(NativePredicate::GenericIteration { .. }, _) => previous.ty,
@@ -986,7 +1001,7 @@ impl<'s, 'p> Checker<'s, 'p> {
             NativePredicate::Or(left, right) => if sense { self.native_predicate_possible(provider, left, true) || self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) && self.native_predicate_possible(provider, right, false) },
             NativePredicate::Not(inner) => self.native_predicate_possible(provider, inner, !sense),
             NativePredicate::Truthy { value, input, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.lua_truthiness_type(value, sense).is_never() },
-            NativePredicate::RuntimeType { value, input, kind, equals, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.native_runtime_type(value, kind, *equals == sense).is_never() },
+            NativePredicate::RuntimeType { value, input, kind, equals, .. } => { if !provider.runtime_type_operation(*value, *input, self) { return true; } let value = self.native_flow_value(provider, *value, *input); !self.native_runtime_type(value, kind, *equals == sense).is_never() },
             _ => true,
         }
     }
@@ -1009,7 +1024,7 @@ impl<'s, 'p> Checker<'s, 'p> {
             _ if predicate_subject(predicate) != Some(reference) => if self.native_predicate_possible(provider, predicate, sense) { ty } else { TypeId::NEVER },
             NativePredicate::Truthy { .. } => self.lua_truthiness_type(ty, sense),
             NativePredicate::Equal { other, input, equals, .. } => { let other = self.native_flow_value(provider, *other, *input); self.native_equal_flow_type(ty, other, *equals == sense) },
-            NativePredicate::RuntimeType { kind, equals, .. } => self.native_runtime_type(ty, kind, *equals == sense),
+            NativePredicate::RuntimeType { value, input, kind, equals, .. } => if provider.runtime_type_operation(*value, *input, self) { self.native_runtime_type(ty, kind, *equals == sense) } else { ty },
             _ => ty,
         }
     }
@@ -1046,7 +1061,7 @@ impl<'s, 'p> Checker<'s, 'p> {
                     let other = self.native_flow_value(provider, *other, *input);
                     self.native_equal_flow_type(value, other, *equals == sense)
                 }
-                NativePredicate::RuntimeType { kind, equals, .. } => self.native_runtime_type(value, kind, *equals == sense),
+                NativePredicate::RuntimeType { value: operation, input, kind, equals, .. } => if provider.runtime_type_operation(*operation, *input, self) { self.native_runtime_type(value, kind, *equals == sense) } else { value },
                 _ => value,
             };
             if value.is_never() { continue }

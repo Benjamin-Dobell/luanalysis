@@ -1406,6 +1406,11 @@ impl<'p, 's> Checker<'p, 's> {
             TypeData::NativeTable(table) => {
                 let shape = self.shape_memo(ty, |c| {
                     let mut shape = Shape::new_in(c.arena);
+                    if let Some(environment) = table.environment_origin {
+                        for (name, binding) in c.native_global_environment_properties(environment) {
+                            shape.props.push(Prop { name, flags: PropFlags::empty(), source: PropSource::NativeGlobalBinding(c.boxed(binding)), mapper: MapperId::IDENTITY, name_type: TypeId::UNRESOLVED });
+                        }
+                    }
                     for field in &table.fields {
                         if let NativeTableKey::String(name) = field.key {
                             shape.props.push(Prop {
@@ -3548,6 +3553,7 @@ impl<'p, 's> Checker<'p, 's> {
                 self.intern(TypeData::NativeDefinition(NativeDefinitionRef { view, ..reference }))
             }
             TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+                environment_origin: table.environment_origin,
                 definition_origin: table.definition_origin,
                 nominal_origin: table.nominal_origin,
                 fields: self.list(&table.fields), indexers: self.list(&table.indexers),
@@ -5245,6 +5251,7 @@ impl<'p, 's> Checker<'p, 's> {
         // `base` is `links.resolvedType` of the instantiated symbol: the mapper has been applied.
         let mut has_resolved_type = false;
         let base = match &prop.source {
+            PropSource::NativeGlobalBinding(binding) => self.native_global_environment_binding_type(**binding),
             PropSource::Type(t) | PropSource::Copy(t, ..) => *t,
             PropSource::ReverseMapped(of, _) => self.type_of_reverse_mapped_prop(*of, prop.name),
             // `getTypeOfMappedSymbol` instantiates the template with `prop.mapper` before it adjusts for optionality.
@@ -5771,7 +5778,7 @@ impl<'p, 's> Checker<'p, 's> {
                         matches!(decl, Decl::ExportsProperty(e) if self.is_readonly_assignment_declaration(file, e))
                     });
             }
-            PropSource::Type(_) | PropSource::Literal(..) => return false,
+            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) | PropSource::Literal(..) => return false,
             PropSource::Copy(_, declared, _)
             | PropSource::Intersected(_, declared)
             | PropSource::ReverseMapped(_, declared) => &declared[..],
@@ -6980,6 +6987,7 @@ impl<'p, 's> Checker<'p, 's> {
         match &prop.source {
             // `addMemberForKeyTypeWorker` links `Declarations` to a mapped property, never a `ValueDeclaration`.
             PropSource::Type(_)
+            | PropSource::NativeGlobalBinding(_)
             | PropSource::Mapped(..)
             | PropSource::Copy(_, _, false)
             | PropSource::ReverseMapped(..) => None,
