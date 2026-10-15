@@ -13,6 +13,15 @@ use luanalysis_engine::{
 
 impl ProjectRegistry {
     fn original_flow(&self, snapshot: u64) -> Option<FlowAdapter<'_>> {
+        // Graph/value/reference snapshots belong to flow::ProgramFlow, not
+        // the independently allocated native declaration namespace.
+        let source = &self.files[*self.flow_snapshots.get(&snapshot)?].source;
+        Some(FlowAdapter {
+            sources: source.iterator_sources(),
+            values: source,
+        })
+    }
+    fn original_function_flow(&self, snapshot: u64) -> Option<FlowAdapter<'_>> {
         let source = self.owner_if(snapshot)?;
         Some(FlowAdapter {
             sources: source.iterator_sources(),
@@ -22,9 +31,9 @@ impl ProjectRegistry {
 }
 
 macro_rules! route {
-    ($(fn $name:ident($($argument:ident: $ty:ty),*) -> $result:ty { $snapshot:expr; $fallback:expr })*) => {
+    ($domain:ident; $(fn $name:ident($($argument:ident: $ty:ty),*) -> $result:ty { $snapshot:expr; $fallback:expr })*) => {
         $(fn $name(&self, $($argument: $ty),*) -> $result {
-            let Some(source) = self.original_flow($snapshot) else { return $fallback; };
+            let Some(source) = self.$domain($snapshot) else { return $fallback; };
             source.$name($($argument),*)
         })*
     };
@@ -32,6 +41,7 @@ macro_rules! route {
 
 impl NativeFlowProvider for ProjectRegistry {
     route! {
+        original_flow;
         fn alias_value_type(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { value.snapshot; queries.error_type() }
         fn alias_environment_candidate(value: NativeValueKey, input: NativeFlowKey) -> bool { value.snapshot; false }
         fn write_alias_receiver(at: NativeFlowKey) -> Option<NativeAliasReturnValue> { at.graph.snapshot; None }
@@ -39,14 +49,11 @@ impl NativeFlowProvider for ProjectRegistry {
         fn reference_alias_initial(reference: NativeReferenceKey) -> NativeAliasInitial { reference.graph.snapshot; NativeAliasInitial::Opaque }
         fn alias_call_source(value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> { value.snapshot; None }
         fn alias_node_dispatch(at: NativeFlowKey) -> NativeAliasDispatch { at.graph.snapshot; NativeAliasDispatch::Unknown }
-        fn function_alias_execution(function: NativeFunctionKey, creation: NativeFlowKey) -> Option<NativeAliasExecution> { function.snapshot; None }
         fn reference_is_cell(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
         fn reference_written_contract(reference: NativeReferenceKey, queries: &mut dyn TypeQueries) -> Option<Type> { reference.graph.snapshot; None }
         fn value_alias_source(value: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue { value.snapshot; NativeAliasValue::Unknown }
         fn value_alias_environment_member(value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasEnvironmentMember> { value.snapshot; None }
         fn value_alias_member_source(value: NativeValueKey, input: NativeFlowKey, key: &LuaKey) -> Option<NativeAliasReturnValue> { value.snapshot; None }
-        fn function_alias_returns(function: NativeFunctionKey) -> Option<Vec<NativeAliasReturn>> { function.snapshot; None }
-        fn function_alias_exit(function: NativeFunctionKey) -> Option<NativeFlowKey> { function.snapshot; None }
         fn reference_tracks_runtime_value(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
         fn reference_follows_creation(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
         fn runtime_type_operation(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool { value.snapshot; false }
@@ -71,13 +78,19 @@ impl NativeFlowProvider for ProjectRegistry {
         fn call_effects(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeCallEffects { value.snapshot; NativeCallEffects::Unsupported("foreign original flow value") }
         fn flow_error(at: NativeFlowKey, error: NativeFlowError) -> () { at.graph.snapshot; () }
     }
+    route! {
+        original_function_flow;
+        fn function_alias_execution(function: NativeFunctionKey, creation: NativeFlowKey) -> Option<NativeAliasExecution> { function.snapshot; None }
+        fn function_alias_returns(function: NativeFunctionKey) -> Option<Vec<NativeAliasReturn>> { function.snapshot; None }
+        fn function_alias_exit(function: NativeFunctionKey) -> Option<NativeFlowKey> { function.snapshot; None }
+    }
 
     fn require_alias_execution(
         &self,
         value: NativeValueKey,
         input: NativeFlowKey,
     ) -> Option<Vec<NativeAliasExecution>> {
-        let source = self.owner_if(value.snapshot)?;
+        let source = self.original_flow(value.snapshot)?.values;
         let crate::native_flow::ValueRecipe::Evaluation(evaluation) =
             source.iterator_sources().value(value)?
         else {
@@ -127,7 +140,7 @@ impl NativeFlowProvider for ProjectRegistry {
         value: NativeValueKey,
         input: NativeFlowKey,
     ) -> Option<NativeReferenceKey> {
-        let source = self.owner_if(value.snapshot)?;
+        let source = self.original_flow(value.snapshot)?.values;
         let crate::native_flow::ValueRecipe::Evaluation(evaluation) =
             source.iterator_sources().value(value)?
         else {
@@ -172,5 +185,56 @@ impl NativeFlowProvider for ProjectRegistry {
             return None;
         }
         target.sources.reference_key(graph, recipe)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native_functions::project_provider::RegistryInput;
+    use luanalysis_engine::NativeTypeProvider;
+    use luanalysis_project::{FileId, SourceRole};
+
+    fn input(index: u32, source: &str) -> RegistryInput {
+        let syntax = luanalysis_syntax::parse(source);
+        assert!(syntax.diagnostics.is_empty());
+        let bound = crate::bind::bind(&syntax);
+        RegistryInput {
+            id: FileId { project: 778, index },
+            role: SourceRole::Implementation,
+            standard_library: None,
+            syntax,
+            bound,
+        }
+    }
+
+    #[test]
+    fn native_function_and_flow_keys_route_through_their_own_original_namespaces() {
+        let syntax = luanalysis_syntax::parse("local independent={}\n");
+        let bound = crate::bind::bind(&syntax);
+        let independent = crate::flow::build(&syntax, &bound);
+        let project = ProjectRegistry::new(vec![
+            input(0, "local function first() return {} end\n"),
+            input(1, "local function second() return {},{} end\n"),
+        ]);
+        for file in &project.files {
+            let source = &file.source;
+            let graph = source.iterator_sources().graph(0, 0);
+            assert_eq!(graph.snapshot, source.iterator_sources().program.snapshot);
+            assert_ne!(graph.snapshot, independent.snapshot);
+            assert!(project.contains_graph(graph));
+            let entry = source.iterator_sources().flow_key(source.iterator_sources().program.graphs[0].entry, 0);
+            assert!(matches!(project.node(entry), Some(NativeFlowNode::Start)));
+            let function = source.key_for(&source.functions[0]);
+            assert_eq!(function.snapshot, source.snapshot);
+            assert!(source.contains_function(function));
+            let body = source.iterator_sources().graph_for_function(function, None).unwrap();
+            let creation = source.iterator_sources().graph_creation(body).unwrap().input;
+            let execution = project.function_alias_execution(function, creation)
+                .expect("actual original function and creation graph belong to this source");
+            assert_eq!(execution.entry.graph, body);
+            assert!(project.function_alias_returns(function).is_some());
+            assert!(project.function_alias_exit(function).is_some());
+        }
     }
 }

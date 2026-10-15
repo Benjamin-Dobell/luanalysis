@@ -110,6 +110,22 @@ fn two_factory_calls_share_schema_but_do_not_share_actual_member_presence() {
     );
     assert_eq!(report.type_at(source.find("absent=").unwrap()), Some("nil"));
 }
+
+#[test]
+fn independent_flow_builds_do_not_change_factory_alias_presence() {
+    // Flow construction is a public original-source operation, independent of
+    // native declaration allocation. Their snapshot numbers need not align.
+    let syntax = luanalysis_syntax::parse("local original={}\n");
+    let bound = luanalysis::bind::bind(&syntax);
+    let original = luanalysis::flow::build(&syntax, &bound);
+    assert_eq!(original.graphs[0].entry.snapshot, original.snapshot);
+    let source = "local function fresh() return {} end\nlocal first=fresh()\nlocal second=fresh()\nfirst.item=1\nlocal populated=first.item\nlocal absent=second.item\n";
+    let report = clean(source);
+    assert_eq!(report.type_at(source.find("populated=").unwrap()), Some("number"));
+    assert_eq!(report.type_at(source.find("absent=").unwrap()), Some("nil"));
+    let shared = "local function pair() local value={} return value,value end\nlocal first,second=pair()\nfirst.item=1\nlocal shared=second.item\n";
+    assert_eq!(clean(shared).type_at(shared.find("shared=second").unwrap()), Some("number"));
+}
 #[test]
 fn written_structural_annotations_keep_existing_closed_member_contracts() {
     let source = "---@type {count:number}\nlocal value={count=1}\nvalue.extra='no'\n";

@@ -34,7 +34,8 @@ impl NativeRegistry {
         if self.source_role() == luanalysis_project::SourceRole::Declaration
             || self.file.has_lua_syntax_errors()
             || !self.contains_function(function)
-            || creation.graph.snapshot != self.snapshot
+            || creation.graph.snapshot != self.flow.program.snapshot
+            || !self.flow.contains_graph(creation.graph)
             || creation.graph.region != 0
             || creation.graph.context != 0
         {

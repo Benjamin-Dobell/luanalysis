@@ -53,6 +53,7 @@ struct FileRegistry {
 pub(crate) struct ProjectRegistry {
     files: Vec<FileRegistry>,
     snapshots: HashMap<u64, usize>,
+    flow_snapshots: HashMap<u64, usize>,
     names: Rc<ProjectNamedIndex>,
     globals: Rc<super::globals::ProjectGlobalIndex>,
     standard_environment: super::standard::ProjectStandardEnvironment,
@@ -92,6 +93,7 @@ impl ProjectRegistry {
         overload_mode: crate::OverloadMode,
     ) -> Self {
         let mut snapshots = HashMap::new();
+        let mut flow_snapshots = HashMap::new();
         let mut names = ProjectNamedIndex::default();
         let mut files: Vec<_> = inputs
             .into_iter()
@@ -101,6 +103,7 @@ impl ProjectRegistry {
                 source.set_overload_mode(overload_mode);
                 source.set_source_role(input.role);
                 assert!(snapshots.insert(source.snapshot, index).is_none());
+                assert!(flow_snapshots.insert(source.iterator_sources().program.snapshot, index).is_none());
                 for declaration in source.named.declarations() {
                     names
                         .names
@@ -232,6 +235,7 @@ impl ProjectRegistry {
         Self {
             files,
             snapshots,
+            flow_snapshots,
             names,
             globals,
             standard_environment,
