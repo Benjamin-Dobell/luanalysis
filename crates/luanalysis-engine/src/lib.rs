@@ -26,6 +26,8 @@ mod native_named;
 mod native_runtime_table_tests;
 #[cfg(test)]
 mod native_alias_tests;
+#[cfg(test)]
+mod native_alias_written_contract_tests;
 pub use native_named::*;
 mod native_globals;
 pub use native_globals::*;

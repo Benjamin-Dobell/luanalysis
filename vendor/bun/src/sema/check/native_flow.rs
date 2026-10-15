@@ -251,6 +251,8 @@ pub struct NativeIteratorProjection {
 pub trait NativeFlowProvider {
     /// A lexical variable cell, rather than a slot in a mutable heap object.
     fn reference_is_cell(&self, _: NativeReferenceKey) -> bool { false }
+    /// An invariant original written bound, never an inferred or narrowed view.
+    fn reference_written_contract(&self, _: NativeReferenceKey, _: &mut Checker<'_, '_>) -> Option<TypeId> { None }
     fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> super::native_aliases::NativeAliasValue { super::native_aliases::NativeAliasValue::Unknown }
     fn function_alias_returns(&self, _: crate::types::NativeFunctionId) -> Option<Vec<super::native_aliases::NativeAliasReturn>> { None }
     fn function_alias_exit(&self, _: crate::types::NativeFunctionId) -> Option<NativeFlowKey> { None }

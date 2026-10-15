@@ -43,6 +43,8 @@ pub(crate) mod globals;
 pub(crate) mod modules;
 #[path = "native_environment_paths.rs"]
 mod environment_paths;
+#[path = "native_alias_contracts.rs"]
+mod alias_contracts;
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 
@@ -1889,6 +1891,9 @@ impl NativeRegistry {
 }
 
 impl FlowValueQueries for NativeRegistry {
+    fn written_binding_contract(&self, binding: BindingId, queries: &mut dyn TypeQueries) -> Option<Type> {
+        self.original_written_binding_contract(binding, queries)
+    }
     fn environment_access_path(&self, expression: &Expr, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<Vec<super::flow::Key>> { self.frozen_environment_path(expression, input, queries) }
     fn original_type_operation(&self, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {
         if self.legacy_builtin_policy == super::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility {

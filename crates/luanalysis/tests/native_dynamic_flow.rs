@@ -45,6 +45,22 @@ fn dynamic_writes_preserve_unrelated_static_member_prefixes() {
 }
 
 #[test]
+fn compatible_written_child_contracts_do_not_hide_possible_self_aliases() {
+    let source = "---@param record {values: table<string, number|string|table>, stable: number|string}\n---@param key string\nlocal function mutate(record,key)\nif type(record.stable)==\"number\" then\nrecord.values[key]=\"changed\"\nreturn record.stable+1\nend\nreturn 0\nend";
+    let report = check(source);
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2362"), "{:#?}", report.diagnostics);
+    clean(&source.replace("return record.stable+1", "return \"value: \"..record.stable"));
+}
+
+#[test]
+fn simultaneous_discriminant_mutation_preserves_aliasing_across_frozen_epochs() {
+    let source = "---@param record {kind: 'old'|'new', stable: number|string}\n---@param key string\nlocal function mutate(record,key)\n---@type table<string, number|string>\nlocal alias=record\nif type(record.stable)==\"number\" then\nrecord.kind,alias[key]=\"new\",\"changed\"\nreturn record.stable+1\nend\nreturn 0\nend";
+    let report = check(source);
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2362"), "{:#?}", report.diagnostics);
+    clean(&source.replace("return record.stable+1", "return \"value: \"..record.stable"));
+}
+
+#[test]
 fn runtime_table_keys_do_not_poison_later_root_reads() {
     clean(
         "---@type table<{id: number}, string>\nlocal entries={}\nlocal first={id=1}\nlocal second={id=1}\nentries[first]=\"first\"\nentries[second]=\"second\"\n---@type string\nlocal read=entries[first]",

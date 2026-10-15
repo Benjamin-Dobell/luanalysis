@@ -67,9 +67,39 @@ impl Origin {
 
 impl<'p, 's> Checker<'p, 's> {
     pub fn native_flow_alias_relation(&mut self, provider: &dyn NativeFlowProvider, left: NativeReferenceKey, left_at: NativeFlowKey, right: NativeValueKey, right_at: NativeFlowKey) -> NativeAliasRelation {
+        let left_contract = provider.reference_written_contract(left, self);
+        if left_contract.is_some_and(|contract| self.native_narrow_runtime_kind(contract, crate::types::NativeRuntimeKind::Table, true).is_never()) { return NativeAliasRelation::Different }
+        let right_contract = if let NativeAliasValue::Reference { reference, .. } = provider.value_alias_source(right, right_at) { provider.reference_written_contract(reference, self) } else { None };
+        if right_contract.is_some_and(|contract| self.native_narrow_runtime_kind(contract, crate::types::NativeRuntimeKind::Table, true).is_never()) { return NativeAliasRelation::Different }
+        if let (Some(left), Some(right)) = (left_contract, right_contract)
+            && self.native_alias_written_disjoint(left, right, &mut HashSet::new())
+        { return NativeAliasRelation::Different }
         let left = self.native_alias_reference(provider, left, left_at);
         let right = self.native_alias_value(provider, right, right_at, 0);
         left.relation(&right)
+    }
+
+    /// Missing requirements do not make structural objects disjoint: one
+    /// physical object can have both sets of fields. A proof needs incompatible
+    /// runtime/scalar kinds, or conflicting bounds on a required common field.
+    fn native_alias_written_disjoint(&mut self, left: crate::types::TypeId, right: crate::types::TypeId, seen: &mut HashSet<(crate::types::TypeId, crate::types::TypeId)>) -> bool {
+        if left == right || !seen.insert((left, right)) { return false }
+        if self.is_instantiable(left) || self.is_instantiable(right) || self.is_intersection(left) || self.is_intersection(right) { return false }
+        if self.is_union(left) { return self.parts(left).iter().all(|&part| self.native_alias_written_disjoint(part, right, &mut seen.clone())) }
+        if self.is_union(right) { return self.parts(right).iter().all(|&part| self.native_alias_written_disjoint(left, part, &mut seen.clone())) }
+        if self.are_comparable(left, right) { return false }
+        if !self.is_object_type(left) || !self.is_object_type(right) { return true }
+        if let (Some(left), Some(right)) = (self.native_runtime_kind(left), self.native_runtime_kind(right))
+            && left != right { return true }
+        for (contract, other) in [(left, right), (right, left)] {
+            let Some(description) = self.native_table_object_description(contract) else { continue };
+            for field in &description.fields {
+                if field.optional || self.contains_undefined(field.value) { continue }
+                let Ok(other) = self.native_table_read(other, crate::types::NativeTableAccessKey::Literal(field.key)) else { continue };
+                if self.native_alias_written_disjoint(field.value, other, &mut seen.clone()) { return true }
+            }
+        }
+        false
     }
 
     fn native_alias_reference(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Origins {

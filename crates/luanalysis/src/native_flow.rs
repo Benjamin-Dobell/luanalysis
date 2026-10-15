@@ -1182,6 +1182,7 @@ fn intern_reference(
 }
 
 pub(super) trait FlowValueQueries {
+    fn written_binding_contract(&self, _: BindingId, _: &mut dyn TypeQueries) -> Option<Type> { None }
     fn environment_access_path(&self, expression: &Expr, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<Vec<flow::Key>>;
     fn original_type_operation(&self, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool;
     /// The environment named by a real lexical upvalue at an original flow input.
@@ -1273,6 +1274,22 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         self.sources.source_reference(reference).is_some_and(|reference| {
             matches!(reference.root, flow::ReferenceRoot::Binding(_)) && reference.path.is_empty()
         })
+    }
+    fn reference_written_contract(&self, reference: NativeReferenceKey, queries: &mut dyn TypeQueries) -> Option<Type> {
+        let source = self.sources.source_reference(reference)?;
+        let flow::ReferenceRoot::Binding(binding) = source.root else { return None };
+        let mut contract = self.values.written_binding_contract(binding, queries)?;
+        for key in &source.path {
+            let key = match key {
+                flow::Key::String(value) => luanalysis_engine::LuaKey::String(value.clone()),
+                flow::Key::Integer(value) => luanalysis_engine::LuaKey::Integer(*value),
+                flow::Key::Float(value) => luanalysis_engine::LuaKey::Number(f64::from_bits(*value)),
+                flow::Key::Boolean(value) => luanalysis_engine::LuaKey::Boolean(*value),
+                flow::Key::Dynamic(_) => return None,
+            };
+            contract = queries.table_lookup(&contract, &luanalysis_engine::TableKey::Literal(key)).ok()?;
+        }
+        Some(contract)
     }
     fn value_alias_source(&self,value:NativeValueKey,input:NativeFlowKey)->luanalysis_engine::NativeAliasValue {
         use luanalysis_engine::NativeAliasValue;
