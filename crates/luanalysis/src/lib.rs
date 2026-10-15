@@ -1444,14 +1444,13 @@ fn describe_native_function(
                     TypePrecedence::Union,
                 )
             }
-            _ => describe_native_pack(&rest, engine, stack, diagnostic)
-                .unwrap_or_else(|| "...".to_owned()),
+            _ => describe_native_pack(&rest, engine, stack, diagnostic),
         };
         parameters.push(format!("...: {text}"));
     }
     let returns = original
         .and_then(|ty| engine.function_result_pack(ty))
-        .and_then(|pack| describe_native_pack(&pack, engine, stack, diagnostic))
+        .map(|pack| describe_native_pack(&pack, engine, stack, diagnostic))
         .unwrap_or_else(|| describe_native_mode(&function.returns, engine, stack, diagnostic));
     format!("fun({}): {}", parameters.join(", "), returns)
 }
@@ -1461,55 +1460,62 @@ fn describe_native_pack(
     engine: &mut dyn TypeQueries,
     stack: &mut Vec<Type>,
     diagnostic: bool,
-) -> Option<String> {
-    let alternatives = engine.inspect_pack(pack)?;
+) -> String {
+    use luanalysis_engine::PackInspection;
+    let alternatives = match engine.inspect_pack_view(pack) {
+        PackInspection::Alternatives(rows) => rows,
+        PackInspection::Whole(ty) => {
+            return format!("{} result pack", describe_native_mode(&ty, engine, stack, diagnostic));
+        }
+        PackInspection::Symbolic(ty) => {
+            return format!("result pack {}", describe_native_mode(&ty, engine, stack, diagnostic));
+        }
+    };
     if alternatives.is_empty() {
-        return Some("never".to_owned());
+        return "never".to_owned();
     }
-    Some(
-        alternatives
-            .iter()
-            .map(|row| {
-                let tuple_slot =
-                    row.fixed.len() > 1 || row.tail.is_some() || alternatives.len() > 1;
-                let mut slots: Vec<_> = row
-                    .fixed
-                    .iter()
-                    .map(|slot| {
-                        let minimum = if slot.optional {
-                            TypePrecedence::Postfix
-                        } else if tuple_slot {
-                            TypePrecedence::Union
-                        } else {
-                            TypePrecedence::Function
-                        };
-                        let ty = describe_native_at_precedence(
-                            &slot.ty, engine, stack, diagnostic, minimum,
-                        );
-                        if slot.optional { format!("{ty}?") } else { ty }
-                    })
-                    .collect();
-                if let Some(tail) = &row.tail {
-                    slots.push(format!(
-                        "{}...",
-                        describe_native_at_precedence(
-                            tail,
-                            engine,
-                            stack,
-                            diagnostic,
-                            TypePrecedence::Postfix
-                        )
-                    ));
-                }
-                match slots.len() {
-                    0 => "void".to_owned(),
-                    1 if row.tail.is_none() => slots.remove(0),
-                    _ => format!("({})", slots.join(", ")),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" | "),
-    )
+    alternatives
+        .iter()
+        .map(|row| {
+            let tuple_slot =
+                row.fixed.len() > 1 || row.tail.is_some() || alternatives.len() > 1;
+            let mut slots: Vec<_> = row
+                .fixed
+                .iter()
+                .map(|slot| {
+                    let minimum = if slot.optional {
+                        TypePrecedence::Postfix
+                    } else if tuple_slot {
+                        TypePrecedence::Union
+                    } else {
+                        TypePrecedence::Function
+                    };
+                    let ty = describe_native_at_precedence(
+                        &slot.ty, engine, stack, diagnostic, minimum,
+                    );
+                    if slot.optional { format!("{ty}?") } else { ty }
+                })
+                .collect();
+            if let Some(tail) = &row.tail {
+                slots.push(format!(
+                    "{}...",
+                    describe_native_at_precedence(
+                        tail,
+                        engine,
+                        stack,
+                        diagnostic,
+                        TypePrecedence::Postfix
+                    )
+                ));
+            }
+            match slots.len() {
+                0 => "void".to_owned(),
+                1 if row.tail.is_none() => slots.remove(0),
+                _ => format!("({})", slots.join(", ")),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 /// One-based original-source line and Unicode scalar column for CLI output.

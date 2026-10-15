@@ -58,6 +58,16 @@ pub enum ValuePack {
     Session(SessionPackRef),
 }
 
+/// A display view of an exact native pack. Whole top types and symbolic
+/// variadics have no decomposable rows, but are not the same state. This view
+/// never substitutes a semantic pack or guesses its cardinality.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PackInspection {
+    Alternatives(Vec<PackAlternative>),
+    Whole(Type),
+    Symbolic(Type),
+}
+
 impl ValuePack {
     pub fn empty() -> Self {
         Self::Alternatives(vec![PackAlternative {
@@ -484,6 +494,16 @@ impl SessionQueries<'_, '_, '_> {
                 })
                 .collect(),
         )
+    }
+    pub(super) fn inspect_pack_view_native(&mut self, value: &ValuePack) -> PackInspection {
+        if let Some(rows) = self.inspect_pack_native(value) {
+            return PackInspection::Alternatives(rows);
+        }
+        let pack = import_pack(self.checker, self.handles, value);
+        let ty = self.checker.native_pack_type(pack);
+        let whole = self.checker.is_any(ty) || ty == bun_sema::types::TypeId::UNKNOWN;
+        let exact = self.handles.retain(ty);
+        if whole { PackInspection::Whole(exact) } else { PackInspection::Symbolic(exact) }
     }
     pub(super) fn pack_slot_native(&mut self, pack: &ValuePack, index: usize) -> Type {
         let pack = import_pack(self.checker, self.handles, pack);

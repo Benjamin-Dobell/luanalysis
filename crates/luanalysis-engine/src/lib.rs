@@ -16,6 +16,8 @@ mod native_opaque_runtime_tests;
 #[cfg(test)]
 mod native_array_form_tests;
 #[cfg(test)]
+mod native_pack_inspection_tests;
+#[cfg(test)]
 mod native_inheritance_tests;
 mod native_flow;
 mod native_project_flow_router;
@@ -893,6 +895,9 @@ pub trait TypeQueries {
     fn array_type(&mut self, element: &Type) -> Type;
     fn retain_pack(&mut self, pack: &ValuePack) -> ValuePack;
     fn inspect_pack(&mut self, pack: &ValuePack) -> Option<Vec<PackAlternative>>;
+    /// Display-only classification retains whole top/symbolic carriers when
+    /// ordinary row inspection is unavailable. Semantic operations use the pack.
+    fn inspect_pack_view(&mut self, pack: &ValuePack) -> PackInspection;
     fn pack_slot(&mut self, pack: &ValuePack, index: usize) -> Type;
     fn pack_contextual_slot(&mut self, pack: &ValuePack, index: usize) -> Option<Type>;
     fn adjust_pack(
@@ -1427,6 +1432,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn inspect_pack(&mut self, pack: &ValuePack) -> Option<Vec<PackAlternative>> {
         self.inspect_pack_native(pack)
+    }
+    fn inspect_pack_view(&mut self, pack: &ValuePack) -> PackInspection {
+        self.inspect_pack_view_native(pack)
     }
     fn pack_slot(&mut self, pack: &ValuePack, index: usize) -> Type {
         self.pack_slot_native(pack, index)

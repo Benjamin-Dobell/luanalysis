@@ -602,6 +602,17 @@ fn assert_retains_a_fixed_first_result_and_an_original_symbolic_variadic_tail() 
         });
         let input = checker.signature_rest_pack(pack_signature).unwrap();
         assert!(checker.native_pack_alternatives(input).is_none());
+        let original_type = checker.native_pack_type(input);
+        let retained = handles.retain_pack(&checker, input);
+        {
+            let mut q = SessionQueries { checker: &mut checker, handles };
+            let PackInspection::Symbolic(exact) = q.inspect_pack_view(&retained) else { panic!("original symbolic pack") };
+            assert_eq!(import_type(q.checker, handles, &exact), original_type);
+            let displayed = q.format(&exact);
+            assert!(displayed.contains("T2") && displayed.contains("...") && displayed.contains("number"), "{displayed}");
+            assert!(!displayed.contains("Session") && !displayed.contains("uninstantiated"), "{displayed}");
+            assert!(q.inspect_pack(&retained).is_none());
+        }
         let result = checker.call_native_arguments(
             callee,
             None,

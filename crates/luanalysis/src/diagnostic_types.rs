@@ -106,7 +106,6 @@ impl CheckReport {
                     DiagnosticOperand::Type(ty) => crate::describe_diagnostic_type(ty, engine),
                     DiagnosticOperand::Pack(pack) => {
                         crate::describe_native_pack(pack, engine, &mut Vec::new(), true)
-                            .unwrap_or_else(|| "<uninstantiated variadic result pack>".into())
                     }
                 };
                 message.push_str(&displayed);
@@ -185,6 +184,24 @@ mod tests {
             params: Vec::new(),
             returns: Box::new(returns),
         })
+    }
+
+    #[test]
+    fn whole_any_pack_is_rendered_from_its_exact_carrier_without_a_row_substitution() {
+        Engine::new().with_session(|queries| {
+            let actual = queries.call_pack(&Type::Any, &[], &[], None).return_pack;
+            let expected = ValuePack::never();
+            assert!(queries.inspect_pack(&actual).is_none());
+            assert!(!queries.pack_assignable(&actual, &expected));
+            let span = Span { start: 3, end: 9 };
+            let mut report = CheckReport::default();
+            report.push_pack_diagnostic("TS2322", span, "Actual: {}. Expected: {}.", &[&actual, &expected]);
+            report.render_diagnostics(queries);
+            assert_eq!(report.diagnostics[0].message, "Actual: any result pack. Expected: never.");
+            assert_eq!(report.diagnostics[0].span, span);
+            assert!(queries.inspect_pack(&actual).is_none());
+            assert!(!queries.pack_assignable(&actual, &expected));
+        });
     }
 
     #[test]
