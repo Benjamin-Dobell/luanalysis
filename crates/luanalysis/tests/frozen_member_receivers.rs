@@ -97,12 +97,15 @@ end
 #[test]
 fn asserted_environment_aliases_keep_runtime_origin_through_field_index_and_parentheses() {
     let fixture = Fixture::new();
-    for access in ["(alias).type", "((--[[---@type TypeView]] alias))['type']"] {
+    for access in [
+        "((--[[---@type TypeView]] alias)).type",
+        "((--[[---@type TypeView]] alias))['type']",
+    ] {
         let source = format!(
-            r#"---@class TypeView
+            r#"---@shape TypeView
 ---@field type fun(value: any): string
 {ORDINARY}
-local alias=--[[---@type TypeView]] _G
+local alias=_G
 local kind={access}
 ---@param value number|string
 local function use(value)
@@ -116,10 +119,7 @@ use('text')
         );
         clean(&fixture.check(&source));
 
-        let ordinary = source.replace(
-            "local alias=--[[---@type TypeView]] _G",
-            "local alias=--[[---@type TypeView]] {type=ordinary_type}",
-        );
+        let ordinary = source.replace("local alias=_G", "local alias={type=ordinary_type}");
         rejects_checked_value(&ordinary, &fixture.check(&ordinary));
         let corrected = ordinary.replace(
             "---@type number\n        local checked=value",
@@ -132,34 +132,25 @@ use('text')
 #[test]
 fn computed_member_read_freezes_global_receiver_before_key_rebinds_its_base_to_an_ordinary_table() {
     let fixture = Fixture::new();
-    let source = format!(
-        r#"{ORDINARY}
-local ordinary={{answer='ordinary',type=ordinary_type}}
+    let source = r#"local ordinary={answer='ordinary'}
 ---@type table
 local base=_G
----@return 'type'
+---@return 'answer'
 local function key()
     base=ordinary
-    return 'type'
+    return 'answer'
 end
-local kind=base[key()]
+local value=base[key()]
+---@type number
+local checked=value
 ---@type string
 local rebound=base.answer
----@param value number|string
-local function use(value)
-    if kind(value)=='number' then
-        ---@type number
-        local checked=value
-    end
-end
-use('text')
-"#
-    );
-    clean(&fixture.check(&source));
+"#;
+    clean(&fixture.check(source));
 
     let rejected = source.replace(
-        "---@type number\n        local checked=value",
-        "---@type string\n        local checked=value",
+        "---@type number\nlocal checked=value",
+        "---@type string\nlocal checked=value",
     );
     rejects_checked_value(&rejected, &fixture.check(&rejected));
 }
@@ -167,34 +158,25 @@ use('text')
 #[test]
 fn computed_member_read_keeps_ordinary_receiver_when_key_rebinds_its_base_to_global_environment() {
     let fixture = Fixture::new();
-    let source = format!(
-        r#"{ORDINARY}
-local ordinary={{answer='ordinary',type=ordinary_type}}
+    let source = r#"local ordinary={answer='ordinary'}
 ---@type table
 local base=ordinary
----@return 'type'
+---@return 'answer'
 local function key()
     base=_G
-    return 'type'
+    return 'answer'
 end
-local kind=base[key()]
+local value=base[key()]
+---@type string
+local checked=value
 ---@type number
 local rebound=base.answer
----@param value number|string
-local function use(value)
-    if kind(value)=='number' then
-        ---@type number|string
-        local checked=value
-    end
-end
-use('text')
-"#
-    );
-    clean(&fixture.check(&source));
+"#;
+    clean(&fixture.check(source));
 
     let rejected = source.replace(
-        "---@type number|string\n        local checked=value",
-        "---@type number\n        local checked=value",
+        "---@type string\nlocal checked=value",
+        "---@type number\nlocal checked=value",
     );
     rejects_checked_value(&rejected, &fixture.check(&rejected));
 }
