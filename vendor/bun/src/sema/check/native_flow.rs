@@ -249,11 +249,16 @@ pub struct NativeIteratorProjection {
 }
 
 pub trait NativeFlowProvider {
-    /// Inspect a callee for identity analysis without publishing speculative
+    /// Inspect a value for identity analysis without publishing speculative
     /// source diagnostics; ordinary call checking remains a separate demand.
     fn alias_value_type(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> TypeId { self.value_type(value, input, checker) }
     /// Candidate metadata only; native value origin must attest the object.
     fn alias_environment_candidate(&self, _: NativeValueKey, _: NativeFlowKey) -> bool { false }
+    fn reference_alias_initial(&self, _: NativeReferenceKey) -> super::native_aliases::NativeAliasInitial { super::native_aliases::NativeAliasInitial::Opaque }
+    fn alias_call_source(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasCall> { None }
+    fn alias_node_dispatch(&self, _: NativeFlowKey) -> super::native_aliases::NativeAliasDispatch { super::native_aliases::NativeAliasDispatch::Unknown }
+    fn function_alias_execution(&self, _: crate::types::NativeFunctionId, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasExecution> { None }
+    fn require_alias_execution(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<Vec<super::native_aliases::NativeAliasExecution>> { None }
     /// A lexical variable cell, rather than a slot in a mutable heap object.
     fn reference_is_cell(&self, _: NativeReferenceKey) -> bool { false }
     /// An invariant original written bound, never an inferred or narrowed view.

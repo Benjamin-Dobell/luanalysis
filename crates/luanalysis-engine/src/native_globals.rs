@@ -71,7 +71,7 @@ pub enum GlobalQueryError {
     UnresolvedQuery(GlobalQuery),
 }
 
-fn core_environment(key: NativeEnvironmentKey) -> core::NativeEnvironmentId {
+pub(super) fn core_environment(key: NativeEnvironmentKey) -> core::NativeEnvironmentId {
     core::NativeEnvironmentId {
         snapshot: key.snapshot,
         index: key.index,
@@ -83,7 +83,7 @@ fn environment(key: core::NativeEnvironmentId) -> NativeEnvironmentKey {
         index: key.index,
     }
 }
-fn core_binding(key: NativeGlobalBindingKey) -> core::NativeGlobalBindingId {
+pub(super) fn core_binding(key: NativeGlobalBindingKey) -> core::NativeGlobalBindingId {
     core::NativeGlobalBindingId {
         environment: core_environment(key.environment),
         index: key.index,

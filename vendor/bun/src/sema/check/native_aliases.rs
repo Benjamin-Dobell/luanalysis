@@ -6,11 +6,15 @@ use super::task::Stored;
 use crate::util::FxHashMap;
 use crate::types::NativeTableKey;
 use std::collections::HashSet;
+use super::native_globals::{NativeEnvironmentId, NativeGlobalBindingId, NativeGlobalSourceRole};
+use super::native_intrinsics::{NativeIntrinsicKind, NativeIntrinsicSite};
+use crate::types::NativeFunctionId;
 
 #[derive(Clone, Copy, Debug)]
 pub enum NativeAliasValue {
     Reference { reference: NativeReferenceKey, input: NativeFlowKey },
     Allocation,
+    Function { function: NativeFunctionId, creation: NativeFlowKey },
     Call { callee: NativeValueKey, input: NativeFlowKey },
     Projection { value: NativeValueKey, input: NativeFlowKey, index: usize },
     NotTable,
@@ -27,9 +31,29 @@ pub struct NativeAliasReturn {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeAliasRelation { Same, Different, Possible }
 
+#[derive(Clone, Copy, Debug)]
+pub enum NativeAliasInitial { Opaque, GlobalValue(NativeGlobalBindingId), Environment(NativeEnvironmentId) }
+#[derive(Clone, Debug)]
+pub struct NativeAliasExecution { pub entry: NativeFlowKey, pub terminals: Vec<NativeFlowKey> }
+#[derive(Clone, Debug)]
+pub struct NativeAliasCall {
+    pub callee: NativeAliasReturnValue,
+    pub arguments: Vec<NativeAliasReturnValue>,
+    /// Actual invocation starts after all operand evaluations.
+    pub execution_input: NativeFlowKey,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum NativeAliasDispatch { NoDispatch, ReferenceRead(NativeReferenceKey), Unknown }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeCallPreservation { Preserved, Unknown, Pending }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeAliasIntrinsic { Standard(NativeIntrinsicSite), Unknown, Pending }
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Origin {
-    Environment(super::native_globals::NativeEnvironmentId),
+    Function(NativeFunctionId, NativeFlowKey),
+    Standard(NativeIntrinsicSite),
+    Environment(NativeEnvironmentId),
     Allocation(NativeValueKey, NativeFlowKey),
     OpaqueReference(NativeReferenceKey, NativeFlowKey),
     OpaqueValue(NativeValueKey, NativeFlowKey, usize),
@@ -43,17 +67,22 @@ struct Origins { tokens: HashSet<Origin>, unknown: bool, non_table: bool, uncert
 /// dependencies. Flow epochs separate speculative effects from stable inputs.
 #[derive(Default)]
 pub(super) struct NativeAliasCache {
-    references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u64), Origins>,
-    values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u64), Origins>,
+    references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u64, u64), Origins>,
+    values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u64, u64), Origins>,
     // These are interned query paths, not identities of invented source nodes.
     paths: Vec<Vec<NativeTableKey>>,
     path_ids: FxHashMap<Vec<NativeTableKey>, u32>,
-    projected_references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u32, u64), Origins>,
-    projected_values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u32, u64), Origins>,
+    projected_references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u32, u64, u64), Origins>,
+    projected_values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u32, u64, u64), Origins>,
+    preservations: FxHashMap<(NativeReferenceKey, NativeValueKey, NativeFlowKey, u64, u64), NativeCallPreservation>,
+    execution_ids: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64), u64>,
+    executions: Vec<AliasExecutionFrame>,
 }
+#[derive(Clone, Copy)]
+struct AliasExecutionFrame { id: u64, entry: NativeFlowKey, caller: NativeFlowKey, function: Option<(NativeFunctionId, NativeFlowKey)> }
 impl NativeAliasCache {
-    fn reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u64), result: Origins, _: Stored) { self.references.insert(key, result); }
-    fn value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u64), result: Origins, _: Stored) { self.values.insert(key, result); }
+    fn reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u64, u64), result: Origins, _: Stored) { self.references.insert(key, result); }
+    fn value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u64, u64), result: Origins, _: Stored) { self.values.insert(key, result); }
     fn path(&mut self, path: &[NativeTableKey]) -> u32 {
         if let Some(&id) = self.path_ids.get(path) { return id }
         let id = self.paths.len().try_into().expect("native alias path identities fit u32");
@@ -61,8 +90,9 @@ impl NativeAliasCache {
         self.path_ids.insert(path.to_vec(), id);
         id
     }
-    fn projected_reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u32, u64), result: Origins, _: Stored) { self.projected_references.insert(key, result); }
-    fn projected_value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u32, u64), result: Origins, _: Stored) { self.projected_values.insert(key, result); }
+    fn projected_reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u32, u64, u64), result: Origins, _: Stored) { self.projected_references.insert(key, result); }
+    fn projected_value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u32, u64, u64), result: Origins, _: Stored) { self.projected_values.insert(key, result); }
+    fn frame(&self) -> u64 { self.executions.last().map_or(0, |frame| frame.id) }
 }
 impl Origins {
     fn unknown() -> Self { Self { unknown: true, uncertain: true, ..Self::default() } }
@@ -82,7 +112,181 @@ impl Origin {
 }
 
 impl<'p, 's> Checker<'p, 's> {
+    pub fn native_flow_alias_intrinsic(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasIntrinsic {
+        let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
+        let origins = self.native_alias_value(provider, value, input, 0);
+        if origins.uncertain { self.mark_tainted_from(0); return NativeAliasIntrinsic::Pending }
+        if origins.unknown || origins.non_table || origins.tokens.len() != 1 { return NativeAliasIntrinsic::Unknown }
+        match origins.tokens.into_iter().next().unwrap() {
+            Origin::Standard(site) => NativeAliasIntrinsic::Standard(site),
+            _ => NativeAliasIntrinsic::Unknown,
+        }
+    }
+
+    pub fn native_flow_call_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
+        let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
+        self.native_alias_call_preservation(provider, reference, call, input)
+    }
+
+    fn native_alias_initial(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Origins {
+        let opaque = || Origins::one(Origin::OpaqueReference(reference, at), true);
+        let Some(globals) = self.native_globals_provider else { return opaque() };
+        match provider.reference_alias_initial(reference) {
+            NativeAliasInitial::Opaque => opaque(),
+            NativeAliasInitial::Environment(environment) => {
+                if globals.contains_global_environment(environment) { Origins::one(Origin::Environment(environment), false) } else { opaque() }
+            },
+            NativeAliasInitial::GlobalValue(binding) => {
+                if !globals.contains_global_environment(binding.environment) || !globals.contains_global_binding(binding) { return opaque() }
+                if globals.global_environment_self_binding(binding.environment) == Some(binding) {
+                    return Origins::one(Origin::Environment(binding.environment), false);
+                }
+                let Some(functions) = self.native_function_provider else { return opaque() };
+                let declarations = globals.global_binding_declarations(binding);
+                if declarations.is_empty() { return opaque() }
+                let mut selected = None;
+                for declaration in declarations {
+                    if !globals.contains_value_declaration(declaration) || globals.value_declaration_header(declaration).role != NativeGlobalSourceRole::Declaration { return opaque() }
+                    let Some(heads) = globals.value_declaration_signatures(declaration).filter(|heads| !heads.is_empty()) else { return opaque() };
+                    for head in heads {
+                        if !functions.contains_signature(head) { return opaque() }
+                        let Some(site) = functions.signature_intrinsic(head) else { return opaque() };
+                        if site.binding != binding || site.declaration != declaration || selected.is_some_and(|prior| prior != site) { return opaque() }
+                        selected = Some(site);
+                    }
+                }
+                selected.map_or_else(opaque, |site| Origins::one(Origin::Standard(site), false))
+            },
+        }
+    }
+
+    fn with_native_alias_parent<R>(&mut self, index: usize, work: impl FnOnce(&mut Self) -> R) -> R {
+        let outside = self.native_alias_cache.executions.split_off(index);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
+        self.native_alias_cache.executions.extend(outside);
+        result.unwrap_or_else(|error| std::panic::resume_unwind(error))
+    }
+
+    fn with_native_alias_execution<R>(&mut self, call: NativeValueKey, caller: NativeFlowKey, execution: &NativeAliasExecution, function: Option<(NativeFunctionId, NativeFlowKey)>, work: impl FnOnce(&mut Self) -> R) -> R {
+        let parent = self.native_alias_cache.frame();
+        let next = self.native_alias_cache.execution_ids.len() as u64 + 1;
+        let id = *self.native_alias_cache.execution_ids.entry((call, caller, execution.entry, parent)).or_insert(next);
+        self.native_alias_cache.executions.push(AliasExecutionFrame { id, entry: execution.entry, caller, function });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
+        self.native_alias_cache.executions.pop();
+        result.unwrap_or_else(|error| std::panic::resume_unwind(error))
+    }
+
+    fn native_alias_dispatch_safe(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, before: NativeFlowKey) -> bool {
+        match provider.alias_node_dispatch(at) {
+            NativeAliasDispatch::NoDispatch => true,
+            NativeAliasDispatch::Unknown => false,
+            NativeAliasDispatch::ReferenceRead(reference) => {
+                if reference.graph != at.graph { return false }
+                if provider.reference_is_cell(reference) { return true }
+                let origins = self.native_alias_reference(provider, reference, before);
+                if origins.uncertain { self.mark_tainted_from(0); }
+                !origins.unknown && !origins.uncertain && !origins.non_table && !origins.tokens.is_empty()
+            },
+        }
+    }
+
+    fn native_alias_call_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
+        if !provider.contains_reference(reference) || !provider.contains_graph(input.graph) || provider.node(input).is_none() || call.snapshot != input.graph.snapshot || self.is_stack_low() { return NativeCallPreservation::Unknown }
+        let epoch = self.flow_memo.native_state.effect_epoch;
+        let frame = self.native_alias_cache.frame();
+        let key = (reference, call, input, epoch, frame);
+        if let Some(&result) = self.native_alias_cache.preservations.get(&key) { return result }
+        let query = Query::NativeCallPreserves(reference, call, input, epoch, frame);
+        if !self.enter(query) { self.mark_tainted_from(0); return NativeCallPreservation::Pending }
+        let begun = self.begin_memoizable();
+        let result = self.native_alias_call_preservation_uncached(provider, reference, call, input);
+        if result == NativeCallPreservation::Pending { self.mark_tainted_from(0); }
+        let stored = self.end_memoizable(begun);
+        let left = self.leave(query);
+        if stored.is_none() || left.is_err() { return NativeCallPreservation::Pending }
+        if !self.is_stack_low() { self.native_alias_cache.preservations.insert(key, result); }
+        result
+    }
+
+    fn native_alias_call_preservation_uncached(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
+        let Some(recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Unknown };
+        if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeCallPreservation::Unknown }
+        let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
+        if callee.uncertain { return NativeCallPreservation::Pending }
+        if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return NativeCallPreservation::Unknown }
+        match callee.tokens.into_iter().next().unwrap() {
+            Origin::Standard(site) => match site.kind {
+                NativeIntrinsicKind::Type | NativeIntrinsicKind::Assert | NativeIntrinsicKind::SetMetatable => NativeCallPreservation::Preserved,
+                NativeIntrinsicKind::Require => {
+                    let Some(executions) = provider.require_alias_execution(call, input) else { return NativeCallPreservation::Unknown };
+                    for execution in executions {
+                        let result = self.native_alias_execution_preservation(provider, reference, call, &recipe, &execution, None);
+                        if result != NativeCallPreservation::Preserved { return result }
+                    }
+                    NativeCallPreservation::Preserved
+                },
+            },
+            Origin::Function(function, creation) => {
+                if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation))) { return NativeCallPreservation::Pending }
+                let Some(execution) = provider.function_alias_execution(function, creation) else { return NativeCallPreservation::Unknown };
+                self.native_alias_execution_preservation(provider, reference, call, &recipe, &execution, Some((function, creation)))
+            },
+            _ => NativeCallPreservation::Unknown,
+        }
+    }
+
+    fn native_alias_execution_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, recipe: &NativeAliasCall, execution: &NativeAliasExecution, function: Option<(NativeFunctionId, NativeFlowKey)>) -> NativeCallPreservation {
+        if !provider.contains_graph(execution.entry.graph) || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) || execution.terminals.is_empty() { return NativeCallPreservation::Unknown }
+        let Some(watched) = provider.reference_in_graph(reference, execution.entry.graph) else { return NativeCallPreservation::Unknown };
+        if !provider.contains_reference(watched) { return NativeCallPreservation::Unknown }
+        self.with_native_alias_execution(call, recipe.execution_input, execution, function, |checker| {
+            let mut active = HashSet::new();
+            let mut completed = HashSet::new();
+            let mut work: Vec<_> = execution.terminals.iter().rev().map(|&at| (at, false)).collect();
+            let mut steps = 0usize;
+            while let Some((at, leaving)) = work.pop() {
+                steps += 1;
+                if steps > 16_384 || at.graph != execution.entry.graph || checker.is_stack_low() { return NativeCallPreservation::Unknown }
+                if leaving { active.remove(&at); completed.insert(at); continue }
+                if completed.contains(&at) { continue }
+                if !active.insert(at) { return NativeCallPreservation::Unknown }
+                let Some(node) = provider.node(at) else { return NativeCallPreservation::Unknown };
+                let mut edges = Vec::new();
+                match node {
+                    NativeFlowNode::Start if at == execution.entry => {},
+                    NativeFlowNode::Write { before, target, .. } => {
+                        if !checker.native_alias_dispatch_safe(provider, at, before) { return NativeCallPreservation::Unknown }
+                        let local = provider.reference_is_cell(target) && provider.reference_declaration(target).is_some_and(|declaration| declaration.owner == execution.entry.graph);
+                        if !local && provider.write_affects_with_types(watched, target, at, checker) != NativeWriteRelation::Unaffected { return NativeCallPreservation::Unknown }
+                        edges.push(before);
+                    },
+                    NativeFlowNode::Call { before, value, input } => {
+                        let result = checker.native_alias_call_preservation(provider, watched, value, input);
+                        if result != NativeCallPreservation::Preserved { return result }
+                        edges.push(before);
+                    },
+                    NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. } | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. } => {
+                        if !checker.native_alias_dispatch_safe(provider, at, before) { return NativeCallPreservation::Unknown }
+                        edges.push(before);
+                    },
+                    NativeFlowNode::Return { before } => edges.push(before),
+                    NativeFlowNode::Merge { edges: incoming } => {
+                        if !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return NativeCallPreservation::Unknown }
+                        edges.extend(incoming);
+                    },
+                    NativeFlowNode::Unreachable => {},
+                    _ => return NativeCallPreservation::Unknown,
+                }
+                work.push((at, true));
+                work.extend(edges.into_iter().rev().map(|edge| (edge, false)));
+            }
+            NativeCallPreservation::Preserved
+        })
+    }
+
     pub fn native_flow_alias_relation(&mut self, provider: &dyn NativeFlowProvider, left: NativeReferenceKey, left_at: NativeFlowKey, right: NativeValueKey, right_at: NativeFlowKey) -> NativeAliasRelation {
+        let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
         let left_contract = provider.reference_written_contract(left, self);
         if left_contract.is_some_and(|contract| self.native_alias_written_non_table(contract)) { return NativeAliasRelation::Different }
         let right_contract = if let NativeAliasValue::Reference { reference, .. } = provider.value_alias_source(right, right_at) { provider.reference_written_contract(reference, self) } else { None };
@@ -128,15 +332,22 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_alias_reference(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Origins {
         if reference.graph != at.graph || !provider.contains_graph(at.graph) || !provider.contains_reference(reference) { return Origins::unknown() }
-        let key = (reference, at, self.flow_memo.native_state.effect_epoch);
+        let frame = self.native_alias_cache.frame();
+        let key = (reference, at, self.flow_memo.native_state.effect_epoch, frame);
         if let Some(result) = self.native_alias_cache.references.get(&key) { return result.clone() }
-        let query = Query::NativeAlias(reference, at);
-        if !self.enter(query) { return Origins::unknown() }
+        let query = Query::NativeAlias(reference, at, frame);
+        if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
         let begun = self.begin_memoizable();
-        let result = match provider.node(at) {
+        let mut result = match provider.node(at) {
             Some(NativeFlowNode::Start) => {
                 let declaration = provider.reference_declaration(reference);
-                if let Some(declaration) = declaration
+                let execution = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry == at);
+                if let Some(index) = execution.filter(|_| declaration.as_ref().is_none_or(|declaration| declaration.owner != at.graph)) {
+                    let frame = self.native_alias_cache.executions[index];
+                    if let Some(caller) = provider.reference_in_graph(reference, frame.caller.graph) {
+                        self.with_native_alias_parent(index, |checker| checker.native_alias_reference(provider, caller, frame.caller))
+                    } else { Origins::unknown() }
+                } else if let Some(declaration) = declaration
                     && declaration.owner != reference.graph
                     && let Some(creation) = provider.graph_creation(reference.graph)
                     // A captured local from another function activation needs
@@ -146,8 +357,9 @@ impl<'p, 's> Checker<'p, 's> {
                     && !declaration.writes.iter().any(|write| write.owner != declaration.owner || write.statement_end > creation.position)
                     && let Some(outer) = provider.reference_in_graph(reference, creation.input.graph)
                 { self.native_alias_reference(provider, outer, creation.input) }
-                else { Origins::one(Origin::OpaqueReference(reference, at), true) }
+                else { self.native_alias_initial(provider, reference, at) }
             }
+            Some(NativeFlowNode::Write { before, .. }) if !self.native_alias_dispatch_safe(provider, at, before) => Origins::one(Origin::OpaqueReference(reference, at), true),
             Some(NativeFlowNode::Write { before, target, value, input }) => match if provider.reference_is_cell(reference) {
                 // Heap stores cannot rebind a lexical cell. Resolve only the
                 // cell's original assignments; classifying heap aliases here
@@ -169,11 +381,15 @@ impl<'p, 's> Checker<'p, 's> {
                 NativeWriteRelation::PossibleAncestor => Origins::unknown(),
                 _ => self.native_alias_reference(provider, reference, before),
             },
-            Some(NativeFlowNode::Call { before, .. }) => {
+            Some(NativeFlowNode::Call { before, value, input }) => {
                 let stable_cell = provider.reference_declaration(reference).is_some_and(|declaration| declaration.writes.iter().all(|write| write.owner == declaration.owner));
-                if stable_cell && !provider.call_invalidates_reference(reference, at, self) {
+                let preservation = if stable_cell && !provider.call_invalidates_reference(reference, at, self) {
+                    NativeCallPreservation::Preserved
+                } else { self.native_alias_call_preservation(provider, reference, value, input) };
+                if preservation == NativeCallPreservation::Preserved {
                     self.native_alias_reference(provider, reference, before)
-                } else { Origins::one(Origin::OpaqueReference(reference, at), true) }
+                } else if preservation == NativeCallPreservation::Pending { Origins::unknown() }
+                else { Origins::one(Origin::OpaqueReference(reference, at), true) }
             }
             Some(NativeFlowNode::Merge { edges }) => {
                 let mut origins = Origins::default();
@@ -184,23 +400,29 @@ impl<'p, 's> Checker<'p, 's> {
             // physical object. Never equate iterations through a cycle token.
             Some(NativeFlowNode::Loop { .. }) => Origins::unknown(),
             Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
-                | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => self.native_alias_reference(provider, reference, before),
+                | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => {
+                if self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_reference(provider, reference, before) }
+                else { Origins::one(Origin::OpaqueReference(reference, at), true) }
+            },
             Some(NativeFlowNode::Unreachable | NativeFlowNode::Return { .. }) => Origins::non_table(),
             _ => Origins::unknown(),
         };
         let memoizable = self.end_memoizable(begun);
-        if let Ok(stored) = self.leave(query)
-            && memoizable.is_some() && !result.uncertain && !self.is_stack_low()
-        { self.native_alias_cache.reference(key, result.clone(), stored); }
+        match self.leave(query) {
+            Ok(stored) if memoizable.is_some() && !result.uncertain && !self.is_stack_low() => self.native_alias_cache.reference(key, result.clone(), stored),
+            Ok(_) if memoizable.is_some() => {},
+            _ => { result.unknown = true; result.uncertain = true; self.mark_tainted_from(0); },
+        }
         result
     }
 
     fn native_alias_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey, column: usize) -> Origins {
         if value.snapshot != input.graph.snapshot || !provider.contains_graph(input.graph) || provider.node(input).is_none() { return Origins::unknown() }
-        let key = (value, input, column, self.flow_memo.native_state.effect_epoch);
+        let frame = self.native_alias_cache.frame();
+        let key = (value, input, column, self.flow_memo.native_state.effect_epoch, frame);
         if let Some(result) = self.native_alias_cache.values.get(&key) { return result.clone() }
-        let query = Query::NativeAliasValue(value, input, column);
-        if !self.enter(query) { return Origins::unknown() }
+        let query = Query::NativeAliasValue(value, input, column, frame);
+        if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
         let begun = self.begin_memoizable();
         let environment = if column == 0 && provider.alias_environment_candidate(value, input) {
             let (origin, complete) = self.run_memoizable(|checker| {
@@ -217,11 +439,17 @@ impl<'p, 's> Checker<'p, 's> {
             });
             if complete.is_some() && !self.is_stack_low() { origin } else { None }
         } else { None };
-        let result = if let Some(environment) = environment {
+        let mut result = if let Some(environment) = environment {
             Origins::one(Origin::Environment(environment), false)
         } else { match provider.value_alias_source(value, input) {
             NativeAliasValue::Reference { reference, input } => if column == 0 { self.native_alias_reference(provider, reference, input) } else { Origins::non_table() },
             NativeAliasValue::Allocation => if column == 0 { Origins::one(Origin::Allocation(value, input), false) } else { Origins::non_table() },
+            NativeAliasValue::Function { function, creation } => {
+                if column != 0 { Origins::non_table() }
+                else if self.native_function_provider.is_some_and(|provider| provider.contains_function(function)) && provider.contains_graph(creation.graph) && provider.node(creation).is_some() {
+                    Origins::one(Origin::Function(function, creation), false)
+                } else { Origins::unknown() }
+            },
             NativeAliasValue::Projection { value, input, index } => match index.checked_add(column) {
                 Some(index) => self.native_alias_value(provider, value, input, index),
                 None => Origins::unknown(),
@@ -231,9 +459,11 @@ impl<'p, 's> Checker<'p, 's> {
             NativeAliasValue::Unknown => Origins::one(Origin::OpaqueValue(value, input, column), true),
         } };
         let memoizable = self.end_memoizable(begun);
-        if let Ok(stored) = self.leave(query)
-            && memoizable.is_some() && !result.uncertain && !self.is_stack_low()
-        { self.native_alias_cache.value(key, result.clone(), stored); }
+        match self.leave(query) {
+            Ok(stored) if memoizable.is_some() && !result.uncertain && !self.is_stack_low() => self.native_alias_cache.value(key, result.clone(), stored),
+            Ok(_) if memoizable.is_some() => {},
+            _ => { result.unknown = true; result.uncertain = true; self.mark_tainted_from(0); },
+        }
         result
     }
 
@@ -243,9 +473,10 @@ impl<'p, 's> Checker<'p, 's> {
         let Some(path) = path.iter().map(|key| key.normalize().ok()).collect::<Option<Vec<_>>>() else { return Origins::unknown() };
         let path_id = self.native_alias_cache.path(&path);
         let epoch = self.flow_memo.native_state.effect_epoch;
-        let key = (value, input, column, path_id, epoch);
+        let frame = self.native_alias_cache.frame();
+        let key = (value, input, column, path_id, epoch, frame);
         if let Some(result) = self.native_alias_cache.projected_values.get(&key) { return result.clone() }
-        let query = Query::NativeAliasProjectedValue(value, input, column, path_id, epoch);
+        let query = Query::NativeAliasProjectedValue(value, input, column, path_id, epoch, frame);
         if !self.enter(query) { return Origins::unknown() }
         let begun = self.begin_memoizable();
         let result = if column == 0 && let Some(field) = provider.value_alias_member_source(value, input, path[0], self) {
@@ -274,9 +505,10 @@ impl<'p, 's> Checker<'p, 's> {
         if reference.graph != at.graph || !provider.contains_graph(at.graph) || !provider.contains_reference(reference) { return Origins::unknown() }
         let path_id = self.native_alias_cache.path(path);
         let epoch = self.flow_memo.native_state.effect_epoch;
-        let key = (reference, at, path_id, epoch);
+        let frame = self.native_alias_cache.frame();
+        let key = (reference, at, path_id, epoch, frame);
         if let Some(result) = self.native_alias_cache.projected_references.get(&key) { return result.clone() }
-        let query = Query::NativeAliasProjectedReference(reference, at, path_id, epoch);
+        let query = Query::NativeAliasProjectedReference(reference, at, path_id, epoch, frame);
         if !self.enter(query) { return Origins::unknown() }
         let begun = self.begin_memoizable();
         let result = match provider.node(at) {
@@ -354,22 +586,37 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_alias_call(&mut self, provider: &dyn NativeFlowProvider, call: NativeValueKey, input: NativeFlowKey, column: usize, callee: NativeValueKey, callee_input: NativeFlowKey) -> Origins {
         let opaque = || Origins::one(Origin::OpaqueValue(call, input, column), true);
-        let callee_type = provider.alias_value_type(callee, callee_input, self);
-        let Some(signature) = self.native_implementation_signature(callee_type) else { return opaque() };
-        let Some((function, _)) = self.sig_native_decl(signature) else { return opaque() };
+        let Some(recipe) = provider.alias_call_source(call, input) else { return opaque() };
+        if recipe.callee.value != callee || recipe.callee.input != callee_input || recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return opaque() }
+        let callee = self.native_alias_value(provider, callee, callee_input, 0);
+        if callee.uncertain { return Origins::unknown() }
+        if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return opaque() }
+        let origin = callee.tokens.into_iter().next().unwrap();
+        if let Origin::Standard(site) = origin {
+            if site.kind == NativeIntrinsicKind::SetMetatable {
+                return if column == 0 { recipe.arguments.first().map_or_else(opaque, |first| self.native_alias_value(provider, first.value, first.input, 0)) } else { Origins::non_table() };
+            }
+            return opaque();
+        }
+        let Origin::Function(function, creation) = origin else { return opaque() };
+        if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation))) { return Origins::unknown() }
+        let Some(execution) = provider.function_alias_execution(function, creation) else { return opaque() };
+        if !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) || !provider.contains_graph(execution.entry.graph) { return opaque() }
         let Some(rows) = provider.function_alias_returns(function) else { return opaque() };
         let Some(exit) = provider.function_alias_exit(function) else { return opaque() };
+        if exit.graph != execution.entry.graph || rows.iter().any(|row| row.at.graph != execution.entry.graph) { return opaque() }
         let query = Query::NativeAliasReturn(function, column);
         if !self.enter(query) { return Origins::unknown() }
+        let mut result = self.with_native_alias_execution(call, recipe.execution_input, &execution, Some((function, creation)), |checker| {
         let mut result = Origins::default();
         for row in rows {
             let Some(NativeFlowNode::Return { before }) = provider.node(row.at) else { result.unknown = true; result.uncertain = true; continue };
-            if !self.native_flow_reachable(provider, before) { continue; }
+            if !checker.native_flow_reachable(provider, before) { continue; }
             let selected = if column < row.values.len() { Some((row.values[column], 0)) }
                 else if row.expands_last { row.values.last().copied().map(|last| (last, column - row.values.len() + 1)) }
                 else { None };
             let Some((selected, offset)) = selected else { result.non_table = true; continue };
-            let origins = self.native_alias_value(provider, selected.value, selected.input, offset);
+            let origins = checker.native_alias_value(provider, selected.value, selected.input, offset);
             result.unknown |= origins.unknown;
             result.uncertain |= origins.uncertain;
             result.non_table |= origins.non_table;
@@ -382,13 +629,17 @@ impl<'p, 's> Checker<'p, 's> {
                     if allocated.graph == row.at.graph {
                         result.tokens.insert(Origin::CallAllocation(call, input, Box::new(origin)));
                     } else { result.tokens.insert(origin); }
+                } else if matches!(origin, Origin::Standard(_) | Origin::Environment(_)) {
+                    result.tokens.insert(origin);
                 } else {
                     result.tokens.insert(Origin::CallOpaque(call, input, Box::new(origin)));
                 }
             }
         }
-        if self.native_flow_reachable(provider, exit) { result.non_table = true; }
-        let _ = self.leave(query);
+        if checker.native_flow_reachable(provider, exit) { result.non_table = true; }
+        result
+        });
+        if self.leave(query).is_err() { result.unknown = true; result.uncertain = true; }
         result
     }
 }

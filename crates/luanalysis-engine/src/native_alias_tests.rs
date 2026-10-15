@@ -105,6 +105,29 @@ impl Source {
     }
 }
 impl NativeFlowProvider for Source {
+    fn alias_node_dispatch(&self, original: NativeFlowKey) -> NativeAliasDispatch {
+        if self.node(original).is_some() { NativeAliasDispatch::NoDispatch }
+        else { NativeAliasDispatch::Unknown }
+    }
+    fn alias_call_source(&self, original: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> {
+        let (callee, callee_input) = match original.index {
+            6 | 9 => (value(7), input),
+            14 => (value(15), input),
+            19 => (value(7), at(1, 0)),
+            _ => return None,
+        };
+        Some(NativeAliasCall {
+            callee: NativeAliasReturnValue { value: callee, input: callee_input },
+            arguments: vec![],
+            execution_input: input,
+        })
+    }
+    fn function_alias_execution(&self, original: NativeFunctionKey, creation: NativeFlowKey) -> Option<NativeAliasExecution> {
+        (original == function(0) && creation == at(0, 0)).then_some(NativeAliasExecution {
+            entry: at(1, 0),
+            terminals: vec![at(1, 2), at(1, 4), at(1, 3)],
+        })
+    }
     fn contains_graph(&self, original: NativeGraphKey) -> bool {
         original.snapshot == 7710 && original.region < 3 && original.context == 0
     }
@@ -161,15 +184,11 @@ impl NativeFlowProvider for Source {
     }
     fn value_type(
         &self,
-        original: NativeValueKey,
+        _: NativeValueKey,
         _: NativeFlowKey,
         _: &mut dyn TypeQueries,
     ) -> Type {
-        match original.index {
-            7 => Type::NativeFunction(function(0)),
-            15 => Type::NativeFunction(function(1)),
-            _ => Type::Nil,
-        }
+        panic!("original return provenance must not identify callees through expression types")
     }
     fn call_effects(
         &self,
@@ -251,7 +270,9 @@ impl NativeFlowProvider for Source {
                 reference: reference(0, 1),
                 input: at(0, 2),
             },
-            4 | 7 | 15 => NativeAliasValue::NotTable,
+            4 => NativeAliasValue::NotTable,
+            7 => NativeAliasValue::Function { function: function(0), creation: at(0, 0) },
+            15 => NativeAliasValue::Function { function: function(1), creation: at(0, 0) },
             6 | 9 => NativeAliasValue::Call {
                 callee: value(7),
                 input,
@@ -522,6 +543,10 @@ fn context_reference(context: u64) -> NativeReferenceKey {
     }
 }
 impl NativeFlowProvider for ContextSource {
+    fn alias_node_dispatch(&self, original: NativeFlowKey) -> NativeAliasDispatch {
+        if self.node(original).is_some() { NativeAliasDispatch::NoDispatch }
+        else { NativeAliasDispatch::Unknown }
+    }
     fn contains_graph(&self, key: NativeGraphKey) -> bool {
         key.snapshot == 7710 && key.region == 0 && key.context < 2
     }

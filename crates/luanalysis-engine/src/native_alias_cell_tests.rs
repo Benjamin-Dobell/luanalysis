@@ -21,6 +21,15 @@ impl Cells {
     }
 }
 impl NativeFlowProvider for Cells {
+    fn alias_node_dispatch(&self, original: NativeFlowKey) -> NativeAliasDispatch {
+        self.source.alias_node_dispatch(original)
+    }
+    fn alias_call_source(&self, original: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> {
+        self.source.alias_call_source(original, input)
+    }
+    fn function_alias_execution(&self, original: NativeFunctionKey, creation: NativeFlowKey) -> Option<NativeAliasExecution> {
+        self.source.function_alias_execution(original, creation)
+    }
     fn reference_is_cell(&self, original: NativeReferenceKey) -> bool {
         original.reference < 2
     }

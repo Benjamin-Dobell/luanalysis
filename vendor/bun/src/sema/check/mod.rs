@@ -145,6 +145,7 @@ pub enum NativeTypeResult {
 /// Language-specific declaration demands executed in the same checker and query scope.
 /// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
 pub trait NativeFunctionProvider {
+    fn project_flow_provider(&self) -> Option<&dyn native_flow::NativeFlowProvider> { None }
     fn contextual_type_owner(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId, _: native_flow::NativeFlowKey) -> native_named::NativeContextualTypeOwner { native_named::NativeContextualTypeOwner::Absent }
     fn calling_convention(&self, _: NativeFunctionId) -> native_signatures::NativeCallingConvention { native_signatures::NativeCallingConvention::TypeScript }
     /// Exact original method declaration syntax, not merely a callable property.
@@ -1059,11 +1060,12 @@ struct Scope {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 enum Query {
     NativeContextualTypeOwner(NativeFunctionId, native_flow::NativeFlowKey, u64),
-    NativeAlias(native_flow::NativeReferenceKey, native_flow::NativeFlowKey),
-    NativeAliasValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize),
-    NativeAliasProjectedReference(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u32, u64),
-    NativeAliasProjectedValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u32, u64),
+    NativeAlias(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u64),
+    NativeAliasValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u64),
+    NativeAliasProjectedReference(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u32, u64, u64),
+    NativeAliasProjectedValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u32, u64, u64),
     NativeAliasReturn(crate::types::NativeFunctionId, usize),
+    NativeCallPreserves(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
     NativeGlobals(NativeGlobalsQuery),
     NativeProject(NativeProjectQuery),
@@ -1160,7 +1162,7 @@ impl Query {
             Query::ReturnOfSignature(_)
             | Query::NativeContextualTypeOwner(..)
             | Query::NativeFlowCallEffects(..)
-            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..)
+            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..)
             | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
             | Query::NativeNamed(_)
             | Query::NativeGlobals(_)

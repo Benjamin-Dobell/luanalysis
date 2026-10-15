@@ -10,7 +10,21 @@ pub use core::{
     NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation, NativeIteratorProjection, NativeIteratorStage,
     NativeVariableDeclaration, NativeVariableWrite, NativeFunctionCreation,
 };
-pub use bun_sema::check::native_aliases::{NativeAliasValue, NativeAliasRelation, NativeAliasReturn, NativeAliasReturnValue};
+pub use bun_sema::check::native_aliases::{NativeAliasRelation, NativeAliasReturn, NativeAliasReturnValue, NativeAliasExecution, NativeAliasCall, NativeAliasDispatch, NativeCallPreservation};
+#[derive(Clone, Copy, Debug)]
+pub enum NativeAliasValue {
+    Reference { reference: NativeReferenceKey, input: NativeFlowKey },
+    Allocation,
+    Function { function: super::NativeFunctionKey, creation: NativeFlowKey },
+    Call { callee: NativeValueKey, input: NativeFlowKey },
+    Projection { value: NativeValueKey, input: NativeFlowKey, index: usize },
+    NotTable,
+    Unknown,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum NativeAliasInitial { Opaque, GlobalValue(super::NativeGlobalBindingKey), Environment(super::NativeEnvironmentKey) }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeAliasIntrinsic { Standard(super::NativeIntrinsicSite), Unknown, Pending }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeFlowResult {
@@ -24,6 +38,11 @@ pub struct NativeFlowResult {
 pub trait NativeFlowProvider {
     fn alias_value_type(&self, value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { self.value_type(value, input, queries) }
     fn alias_environment_candidate(&self, _: NativeValueKey, _: NativeFlowKey) -> bool { false }
+    fn reference_alias_initial(&self, _: NativeReferenceKey) -> NativeAliasInitial { NativeAliasInitial::Opaque }
+    fn alias_call_source(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativeAliasCall> { None }
+    fn alias_node_dispatch(&self, _: NativeFlowKey) -> NativeAliasDispatch { NativeAliasDispatch::Unknown }
+    fn function_alias_execution(&self, _: super::NativeFunctionKey, _: NativeFlowKey) -> Option<NativeAliasExecution> { None }
+    fn require_alias_execution(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<Vec<NativeAliasExecution>> { None }
     /// Immutable source classification: a lexical cell, not a mutable heap slot.
     fn reference_is_cell(&self, _: NativeReferenceKey) -> bool { false }
     /// Original written binding/member contract, independent of flow epoch.
@@ -107,12 +126,35 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
         import_type(checker, self.handles, &value)
     }
     fn write_alias_receiver(&self, at: NativeFlowKey) -> Option<NativeAliasReturnValue> { self.provider.write_alias_receiver(at) }
+    fn reference_alias_initial(&self, reference: NativeReferenceKey) -> bun_sema::check::native_aliases::NativeAliasInitial {
+        use bun_sema::check::native_aliases::NativeAliasInitial as C;
+        match self.provider.reference_alias_initial(reference) {
+            NativeAliasInitial::Opaque => C::Opaque,
+            NativeAliasInitial::GlobalValue(key) => C::GlobalValue(super::native_globals::core_binding(key)),
+            NativeAliasInitial::Environment(key) => C::Environment(super::native_globals::core_environment(key)),
+        }
+    }
+    fn alias_call_source(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> { self.provider.alias_call_source(value, input) }
+    fn alias_node_dispatch(&self, at: NativeFlowKey) -> NativeAliasDispatch { self.provider.alias_node_dispatch(at) }
+    fn function_alias_execution(&self, function: bun_sema::types::NativeFunctionId, creation: NativeFlowKey) -> Option<NativeAliasExecution> { self.provider.function_alias_execution(super::source_key(function), creation) }
+    fn require_alias_execution(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<Vec<NativeAliasExecution>> { self.provider.require_alias_execution(value, input) }
     fn reference_is_cell(&self, reference: NativeReferenceKey) -> bool { self.provider.reference_is_cell(reference) }
     fn reference_written_contract(&self, reference: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::TypeId> {
         let contract = self.provider.reference_written_contract(reference, &mut SessionQueries { checker, handles: self.handles })?;
         Some(import_type(checker, self.handles, &contract))
     }
-    fn value_alias_source(&self, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue { self.provider.value_alias_source(value, input) }
+    fn value_alias_source(&self, value: NativeValueKey, input: NativeFlowKey) -> bun_sema::check::native_aliases::NativeAliasValue {
+        use bun_sema::check::native_aliases::NativeAliasValue as C;
+        match self.provider.value_alias_source(value, input) {
+            NativeAliasValue::Reference { reference, input } => C::Reference { reference, input },
+            NativeAliasValue::Allocation => C::Allocation,
+            NativeAliasValue::Function { function, creation } => C::Function { function: super::core_key(function), creation },
+            NativeAliasValue::Call { callee, input } => C::Call { callee, input },
+            NativeAliasValue::Projection { value, input, index } => C::Projection { value, input, index },
+            NativeAliasValue::NotTable => C::NotTable,
+            NativeAliasValue::Unknown => C::Unknown,
+        }
+    }
     fn value_alias_member_source(&self, value: NativeValueKey, input: NativeFlowKey, key: bun_sema::types::NativeTableKey, checker: &Checker<'_, '_>) -> Option<NativeAliasReturnValue> {
         self.provider.value_alias_member_source(value, input, &super::native_tables::export_literal_key(checker, key))
     }
