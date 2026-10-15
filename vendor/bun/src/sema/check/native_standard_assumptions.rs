@@ -317,6 +317,13 @@ impl<'p, 's> Checker<'p, 's> {
                 (vec![execution], Some((target.function, target.creation, target.activation)), StandardScope { function: false, module: false, loader: scope.loader })
             },
             Origin::Standard(site) if site.kind == NativeIntrinsicKind::Require && scope.module => {
+                // An original import recipe is only a candidate execution.
+                // A reached loader replacement must not activate the former
+                // target module while classifying ordinary builtin operations.
+                let Some(loader) = provider.require_alias_loader_reference(call, input) else { return NativeCallPreservation::Preserved };
+                let state = self.native_standard_loader_state(provider, recipe.execution_input, loader);
+                if state.incomplete { return NativeCallPreservation::Pending }
+                if state.ty != crate::types::TypeId::TRUE { return NativeCallPreservation::Preserved }
                 let Some(executions) = provider.require_alias_execution(call, input) else { return NativeCallPreservation::Preserved };
                 (executions, None, StandardScope { function: scope.function, module: false, loader: scope.loader })
             },
