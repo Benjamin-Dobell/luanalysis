@@ -172,6 +172,7 @@ pub enum NativeTypeDeclarationQuery {
     DefinitionContext(TypeId),
     RuntimeTableSeed(TypeId),
     RuntimeTableMember(TypeId, NativeTypeMemberId, bool),
+    RuntimeTableWrittenContext(TypeId, NativeTableKey),
 }
 
 /// One original alias-head edge. The provider never follows the target alias.
@@ -1149,6 +1150,29 @@ impl<'p, 's> Checker<'p, 's> {
         if let Ok(stored) = self.leave(query) { if let Ok(members) = &result { self.native_named_cache.members(ty, members.clone(), stored); } }
         if let Err(error) = result { self.report_native_named(error) }
         result
+    }
+
+    /// Written value context needs only this key's declared recipes. Resolving
+    /// an inferred store's receiver here would let an initializer demand its
+    /// own prospective schema before its actual allocation is published.
+    fn native_object_written_fixed_members(&mut self, reference: NativeObjectReference, key: NativeTableKey) -> Result<Vec<NativeObjectMember>, NativeNamedTypeError> {
+        let provider = self.native_named_provider(reference.declaration)?;
+        let mut members = Vec::new();
+        for member in provider.type_declaration_members(reference.declaration) {
+            if provider.type_member_origin(member) != crate::types::NativeTableFieldOrigin::Declared { continue }
+            let metadata = provider.type_member_header(self, member);
+            if !matches!(metadata.key, NativeTypeMemberKey::Fixed(other) if other.normalize() == Ok(key)) { continue }
+            if self.native_named_member_header(reference, member)?.is_none() { continue }
+            members.push(NativeObjectMember { member, overloads: Vec::new(), owner: reference, via: None });
+        }
+        for (index, base) in self.native_object_bases(reference)?.into_iter().enumerate() {
+            if self.is_error_type(base) { continue }
+            let TypeData::NativeObject(owner) = *self.data(base) else { unreachable!() };
+            for member in self.native_object_written_fixed_members(owner, key)? {
+                members.push(NativeObjectMember { via: Some((index, base)), ..member });
+            }
+        }
+        Ok(members)
     }
 
     pub(super) fn native_nominal_reference_compatible(&mut self, source: NativeObjectReference, target: NativeObjectReference, identity: bool) -> bool {

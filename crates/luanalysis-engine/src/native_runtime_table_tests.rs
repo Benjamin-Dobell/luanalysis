@@ -79,6 +79,9 @@ struct Provider {
     seed: TableType,
     seed_calls: Cell<usize>,
     member_calls: Cell<usize>,
+    receiver_calls: RefCell<Vec<u32>>,
+    forbidden_receivers: Vec<u32>,
+    foreign_receiver: bool,
     generic: bool,
     faceted: bool,
     errors: RefCell<Vec<NamedTypeError>>,
@@ -95,6 +98,9 @@ impl Provider {
             seed: TableType::default(),
             seed_calls: Cell::new(0),
             member_calls: Cell::new(0),
+            receiver_calls: RefCell::new(Vec::new()),
+            forbidden_receivers: vec![],
+            foreign_receiver: false,
             generic: false,
             faceted: false,
             errors: RefCell::new(vec![]),
@@ -266,9 +272,15 @@ impl NativeTypeProvider for Provider {
     }
     fn runtime_store_receiver(
         &self,
-        _: NativeFlowKey,
+        store: NativeFlowKey,
         queries: &mut dyn TypeQueries,
     ) -> Option<Type> {
+        assert!(!self.forbidden_receivers.contains(&store.node), "context lookup demanded an irrelevant receiver at {store:?}");
+        self.receiver_calls.borrow_mut().push(store.node);
+        if self.foreign_receiver {
+            let actual = Self::empty(queries);
+            return Some(queries.runtime_table_value(declaration(1), &actual).unwrap());
+        }
         Some(self.allocation(queries))
     }
     fn contains_type_member(&self, original: NativeTypeMemberKey) -> bool {
@@ -313,6 +325,37 @@ impl NativeTypeProvider for Provider {
     }
     fn type_declaration_error(&self, error: NamedTypeError) {
         self.errors.borrow_mut().push(error);
+    }
+}
+
+#[test]
+fn written_context_filters_inferred_and_other_keys_before_receiver_discovery() {
+    for foreign_receiver in [false, true] {
+        Engine::new().with_native_provider(
+            || {
+                let mut provider = Provider::new();
+                provider.members[0].origin = TableFieldOrigin::Declared;
+                provider.members.push(Member {
+                    name: "value", ty: Type::String, origin: TableFieldOrigin::Inferred, indexer: None,
+                });
+                provider.members.push(Member {
+                    name: "other", ty: Type::Boolean, origin: TableFieldOrigin::Declared, indexer: None,
+                });
+                provider.forbidden_receivers = vec![2, 3];
+                provider.foreign_receiver = foreign_receiver;
+                provider
+            },
+            |provider, queries| {
+                let table = provider.allocation(queries);
+                let context = queries.table_value_context(&table, &access("value"));
+                assert_eq!(context.map(|value| queries.inspect_type(&value)), (!foreign_receiver).then_some(Type::Number));
+                assert_eq!(*provider.receiver_calls.borrow(), vec![1], "the matching written receiver still establishes actual ownership");
+                assert_eq!(provider.member_calls.get(), usize::from(!foreign_receiver));
+                assert_eq!(provider.seed_calls.get(), 0, "context does not materialize an evolving seed");
+                assert!(queries.table_value_context(&table, &access("absent")).is_none());
+                assert_eq!(*provider.receiver_calls.borrow(), vec![1]);
+            },
+        );
     }
 }
 

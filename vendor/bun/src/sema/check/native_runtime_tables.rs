@@ -202,20 +202,31 @@ impl<'p, 's> Checker<'p, 's> {
             if let TypeData::NativeTable(data) = self.data(reference.view)
                 && let Some(field) = data.fields.iter().find(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared)
             { return Some(field.value) }
-            let provider = self.native_named_provider(reference.schema.declaration).ok()?;
-            let mut values = Vec::new();
-            for origin in self.native_object_members(reference.schema).ok()? {
-                let metadata = provider.type_member_header(self, origin.member);
-                if provider.type_member_origin(origin.member) == NativeTableFieldOrigin::Declared
-                    && matches!(metadata.key, NativeTypeMemberKey::Fixed(other) if other.normalize() == Ok(key))
-                {
-                    let raw = self.native_runtime_member_demand(reference.schema, origin.member, false).ok()?;
-                    values.push(self.native_member_type(raw, reference.schema));
-                }
-            }
-            if !values.is_empty() { return Some(self.intersection(&values)) }
+            let object = self.intern(TypeData::NativeObject(reference.schema));
+            let query = Query::NativeNamed(NativeTypeDeclarationQuery::RuntimeTableWrittenContext(object, key));
+            if !self.enter(query) { self.mark_tainted_from(0); return None }
+            let (result, completed) = self.run_memoizable(|checker| checker.native_runtime_written_context(reference.schema, key));
+            let ended = self.leave(query);
+            if completed.is_none() || ended.is_err() { self.mark_tainted_from(0); return None }
+            return result.ok().flatten();
         }
         None
+    }
+
+    fn native_runtime_written_context(&mut self, reference: NativeObjectReference, key: NativeTableKey) -> Result<Option<TypeId>, NativeNamedTypeError> {
+        let provider = self.native_named_provider(reference.declaration)?;
+        let mut values = Vec::new();
+        for origin in self.native_object_written_fixed_members(reference, key)? {
+            if self.native_object_member_effective_origin(&origin)? != Some(NativeTableFieldOrigin::Declared) { continue }
+            let raw = if matches!(provider.type_member_header(self, origin.member).owner, NativeTypeMemberOwner::RuntimeStore(_)) {
+                self.native_runtime_member_demand(origin.owner, origin.member, false)?
+            } else {
+                let Some(value) = self.native_object_member_demand(&origin)? else { continue };
+                value
+            };
+            values.push(self.native_member_type(raw, origin.owner));
+        }
+        Ok(if values.is_empty() { None } else { Some(self.intersection(&values)) })
     }
 
     /// Flow transfers already hold an independently checked original store.
