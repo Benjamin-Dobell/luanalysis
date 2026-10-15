@@ -379,6 +379,7 @@ impl NativeRegistry {
                 context.mode
             });
         let ty = match annotation {
+            None if self.source_role() == luanalysis_project::SourceRole::Declaration => Type::Unknown,
             None => {
                 checker.error(
                     "TS7019",

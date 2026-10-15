@@ -566,7 +566,6 @@ impl NativeSignatures {
             }
             let complete = function.params.iter().all(|parameter| function.annotations.params.iter()
                 .any(|tag| tag.name.text == parameter.text))
-                && (function.vararg.is_none() || function.annotations.vararg.is_some())
                 && (function.annotations.returns.is_some() || function.body.is_empty());
             if !complete { continue; }
             let key = NativeSignatureKey { snapshot, index: result.recipes.len() as u32 };

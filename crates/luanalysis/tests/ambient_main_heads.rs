@@ -209,3 +209,24 @@ fn written_function_type_main_is_a_real_original_signature_beside_overload_heads
     fixture.file("main.lua", "local accepted=join('left','right')\n");
     pass(&fixture.check());
 }
+
+#[test]
+fn original_ambient_ellipsis_without_a_vararg_tag_is_an_unknown_tail() {
+    let fixture = Fixture::new(
+        "---@param prefix string\nfunction report(prefix,...) end\n---@overload fun(value:number):number\n---@param prefix string\nfunction dispatch(prefix,...) end\n",
+        "local original=report\nreport('message',42,false,{value='text'})\nreport('empty')\nlocal absent=report('message')\n---@type nil\nlocal checked=absent\n---@type number\nlocal count=dispatch(42)\ndispatch('message',false,42)\n",
+    );
+    let output = fixture.check();
+    pass(&output);
+    assert!(text(&output).contains("...: unknown"), "{}", text(&output));
+    fixture.file("main.lua", "report(42,'message')\n");
+    argument_failure(&fixture.check());
+    fixture.file("main.lua", "report('message',42)\n");
+    pass(&fixture.check());
+}
+
+#[test]
+fn runtime_ellipsis_without_a_vararg_tag_keeps_the_existing_implicit_any_error() {
+    let fixture = Fixture::new("", "local function report(...) end\nreport(42)\n");
+    fail(&fixture.check(), "TS7019");
+}
