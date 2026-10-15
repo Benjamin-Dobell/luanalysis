@@ -1819,7 +1819,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                     .map(|p| p.type_declaration_header(self.c, reference.declaration));
                 if header.as_ref().is_some_and(|header|
                     header.kind == super::native_named::NativeTypeDeclarationKind::Shape
-                    && header.object_form == Some(super::native_named::NativeObjectDeclarationForm::Record)
+                    && header.object_form.is_some()
                     && self.c.atoms().bytes(header.name).is_empty()) {
                     if self.visited_types.contains(&ty) { return self.elided_information_placeholder(); }
                     let depth = self.visited_types.len();
@@ -1827,14 +1827,31 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                     let node = match self.c.native_object_schema_resolved(ty) {
                         Ok(schema) => match self.c.data(schema) {
                             TypeData::NativeTable(table) => {
-                                // This is a print-only structural view. The
-                                // original declaration and relation keep their
-                                // stable identity and mapped member contracts.
-                                let mut table = (**table).clone_in(self.c.arena);
-                                table.nominal_origin = None;
-                                table.definition_origin = None;
-                                let display = self.c.intern(TypeData::NativeTable(self.c.boxed(table)));
-                                self.type_to_node(display)
+                                let form = header.as_ref().and_then(|header| header.object_form);
+                                if form == Some(super::native_named::NativeObjectDeclarationForm::Array)
+                                    && table.indexers.len() == 1 {
+                                    let indexer = table.indexers[0];
+                                    let element = self.type_to_node(indexer.value);
+                                    let array = cat!(element.emit(POSTFIX), b"[]");
+                                    if indexer.readonly { Node::new(cat!(b"readonly ", array), TYPE_OPERATOR) }
+                                    else { Node::new(array, POSTFIX) }
+                                } else if matches!(form, Some(super::native_named::NativeObjectDeclarationForm::Table { .. }))
+                                    && table.indexers.len() == 1
+                                    && !table.indexers[0].readonly && !table.indexers[0].sparse {
+                                    let indexer = table.indexers[0];
+                                    let key = self.type_to_node(indexer.key);
+                                    let value = self.type_to_node(indexer.value);
+                                    Node::simple(cat!(b"table", type_arguments_text(vec![key, value])))
+                                } else {
+                                    // This is a print-only structural view. The
+                                    // original declaration and relation keep
+                                    // their identity and mapped contracts.
+                                    let mut table = (**table).clone_in(self.c.arena);
+                                    table.nominal_origin = None;
+                                    table.definition_origin = None;
+                                    let display = self.c.intern(TypeData::NativeTable(self.c.boxed(table)));
+                                    self.type_to_node(display)
+                                }
                             }
                             _ => self.type_to_node(schema),
                         },

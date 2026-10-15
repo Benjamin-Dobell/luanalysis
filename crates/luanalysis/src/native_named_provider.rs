@@ -435,13 +435,9 @@ impl NativeRegistry {
                     .map(|named| named.syntax.name.text.clone()),
                 _ => None,
             })
-            .unwrap_or_else(|| match source.kind {
-                // An anonymous written record has no printable declaration
-                // name. Its original key still owns the exact same schema.
-                AnonymousHeadKind::Record => String::new(),
-                AnonymousHeadKind::Array => "array".into(),
-                AnonymousHeadKind::Table => "table".into(),
-            });
+            // Anonymous containers have no declaration name to print. Their
+            // original keys and form metadata still own the same schemas.
+            .unwrap_or_default();
         let object_form = match &source.syntax.kind {
             TypeExprKind::Record(_) => ObjectDeclarationForm::Record,
             TypeExprKind::Array { .. } => ObjectDeclarationForm::Array,
