@@ -47,6 +47,7 @@ fn run() -> i32 {
     let mut package_path = None;
     let mut environment = StandardEnvironmentProfile::LegacyMinimal;
     let mut overload_mode = luanalysis::OverloadMode::default();
+    let mut assume_unknown_standard_effects = true;
     let mut positional = false;
     while let Some(arg) = args.next() {
         if !positional && arg == "--" {
@@ -59,6 +60,10 @@ fn run() -> i32 {
         }
         if !positional && arg == "--legacy-overloads" {
             overload_mode = luanalysis::OverloadMode::LegacyExposeImplementation;
+            continue;
+        }
+        if !positional && arg == "--strict-standard-effects" {
+            assume_unknown_standard_effects = false;
             continue;
         }
         if !positional && arg == "--format" {
@@ -208,7 +213,7 @@ fn run() -> i32 {
         StandardEnvironmentProfile::Lua53 => NativeLoaderPolicy::Lua53StandardFile,
         StandardEnvironmentProfile::Lua54 | StandardEnvironmentProfile::LegacyMinimal | StandardEnvironmentProfile::None => NativeLoaderPolicy::Lua54StandardFile,
     };
-    let result = check_project_with_options(project, ProjectCheckOptions { environment, overload_mode, loader_policy });
+    let result = check_project_with_options(project, ProjectCheckOptions { environment, overload_mode, loader_policy, assume_unknown_standard_effects });
     let report = CliReport::from_project(&result, &display_paths, host_errors, dump);
     report.print(format);
     report.exit_code
@@ -254,4 +259,5 @@ fn help() {
     println!(
         "luanalysis check [--format text|json] [--dump-types] [--legacy-overloads] [--lua-version 5.0|5.1|5.2|5.3|5.4 | --no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--no-stdlib disables standard declarations and the legacy minimal type builtin.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
     );
+    println!("Selected standard profiles preserve reached builtin/environment bindings across unknown calls and property effects; known assignments still apply.\n--strict-standard-effects requires runtime-effect preservation proofs instead.");
 }

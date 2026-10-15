@@ -1926,19 +1926,19 @@ impl NativeRegistry {
             && let Some(callee) = evaluation.operands.first().copied()
         {
             let callee = sources.program.evaluation(callee);
-            match queries.flow_alias_intrinsic(
+            match queries.flow_standard_operation(
                 &FlowAdapter { sources, values: self },
                 sources.evaluation_value(callee.id),
                 sources.flow_key(callee.input, input.graph.context),
             ) {
-                luanalysis_engine::NativeAliasIntrinsic::Standard(site) => return match site.kind {
+                luanalysis_engine::NativeStandardOperation::Standard(site) => return match site.kind {
                     luanalysis_engine::NativeIntrinsicKind::Assert => sources.assertion_call_effect(evaluation, input),
                     _ => NativeCallEffects::None,
                 },
                 // The native alias query taints its dependent memo scopes;
                 // this provisional value cannot publish a completed effect.
-                luanalysis_engine::NativeAliasIntrinsic::Pending => return NativeCallEffects::None,
-                luanalysis_engine::NativeAliasIntrinsic::Unknown => {},
+                luanalysis_engine::NativeStandardOperation::Pending => return NativeCallEffects::None,
+                luanalysis_engine::NativeStandardOperation::Ordinary => {},
             }
         }
         if let Some(callee) = self.original_effect_call_contract(expression, queries) {
@@ -2012,11 +2012,11 @@ impl FlowValueQueries for NativeRegistry {
         // Runtime identity comes from its original value and frozen input,
         // including saved aliases and intervening replacements.
         self.with_flow_context(input, queries, &mut |queries| {
-            matches!(queries.flow_alias_intrinsic(
+            matches!(queries.flow_standard_operation(
                 &FlowAdapter { sources: &self.flow, values: self },
                 self.flow.evaluation_value(*evaluation),
                 input,
-            ), luanalysis_engine::NativeAliasIntrinsic::Standard(site)
+            ), luanalysis_engine::NativeStandardOperation::Standard(site)
                 if site.kind == luanalysis_engine::NativeIntrinsicKind::Type)
         })
     }

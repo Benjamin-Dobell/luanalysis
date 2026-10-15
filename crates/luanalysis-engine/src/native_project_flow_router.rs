@@ -60,6 +60,9 @@ impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> 
     fn alias_node_dispatch(&self, at: NativeFlowKey) -> NativeAliasDispatch {
         self.project_flow_adapter().alias_node_dispatch(at)
     }
+    fn known_standard_loader_write(&self, at: NativeFlowKey) -> bool {
+        self.project_flow_adapter().known_standard_loader_write(at)
+    }
 
     fn function_alias_execution(&self, function: NativeFunctionId, creation: NativeFlowKey) -> Option<NativeAliasExecution> {
         self.project_flow_adapter().function_alias_execution(function, creation)

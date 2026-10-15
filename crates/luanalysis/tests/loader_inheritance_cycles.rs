@@ -28,7 +28,7 @@ impl Fixture {
         let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
         command
             .current_dir(&self.0)
-            .args(["check", "--format", "json"]);
+            .args(["check", "--format", "json", "--strict-standard-effects"]);
         if lua54 {
             command.args(["--lua-version", "5.4"]);
         }

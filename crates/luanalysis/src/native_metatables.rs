@@ -280,21 +280,23 @@ impl NativeRegistry {
             sources: &self.flow,
             values: self,
         };
-        match checker.engine.flow_alias_intrinsic(
+        // This classifies contextual constructor metadata only. Raw heap,
+        // callable-table and metatable-absence workers use strict provenance.
+        match checker.engine.flow_standard_operation(
             &adapter,
             self.flow.evaluation_value(callee_evaluation.id),
             self.flow
                 .flow_key(callee_evaluation.input, input.graph.context),
         ) {
-            luanalysis_engine::NativeAliasIntrinsic::Standard(site)
+            luanalysis_engine::NativeStandardOperation::Standard(site)
                 if site.kind == NativeIntrinsicKind::SetMetatable => {}
-            luanalysis_engine::NativeAliasIntrinsic::Standard(_) => {
+            luanalysis_engine::NativeStandardOperation::Standard(_) => {
                 return ContextualTypeOwner::Absent;
             }
-            luanalysis_engine::NativeAliasIntrinsic::Pending => {
+            luanalysis_engine::NativeStandardOperation::Pending => {
                 return ContextualTypeOwner::Pending;
             }
-            luanalysis_engine::NativeAliasIntrinsic::Unknown => {
+            luanalysis_engine::NativeStandardOperation::Ordinary => {
                 // Ordinary functions also have no standard intrinsic. Missing
                 // provenance denies inferred ownership; it is not itself a
                 // program error. Real self assertions and member uses are

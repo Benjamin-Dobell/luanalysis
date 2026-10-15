@@ -1735,8 +1735,11 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         let Some(node) = self.sources.source_node(at) else { return true; };
         if self.sources.loader_mutations.contains(&(node.span.start, node.span.end)) { return true; }
         let Some(NativeFlowNode::Call { value, input, .. }) = self.sources.node(at) else { return true; };
-        queries.flow_standard_call_continuation(self, reference, value, input)
+        queries.flow_call_preservation(self, reference, value, input)
             != luanalysis_engine::NativeCallPreservation::Preserved
+    }
+    fn known_standard_loader_write(&self, at: NativeFlowKey) -> bool {
+        self.sources.source_node(at).is_some_and(|node| self.sources.loader_mutations.contains(&(node.span.start, node.span.end)))
     }
     fn write_member_key(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<luanalysis_engine::LuaKey> {
         if reference.graph!=at.graph || target.graph!=at.graph {return None;}

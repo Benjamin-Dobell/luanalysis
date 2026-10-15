@@ -13,6 +13,9 @@ pub struct ProjectCheckOptions {
     pub loader_policy: NativeLoaderPolicy,
     pub environment: StandardEnvironmentProfile,
     pub overload_mode: crate::OverloadMode,
+    /// Ordinary analysis preserves reached standard bindings across unknown
+    /// effects. False requests the stricter runtime-effect certificates.
+    pub assume_unknown_standard_effects: bool,
 }
 impl Default for ProjectCheckOptions {
     fn default() -> Self {
@@ -20,6 +23,7 @@ impl Default for ProjectCheckOptions {
             loader_policy: NativeLoaderPolicy::Lua54StandardFile,
             environment: StandardEnvironmentProfile::LegacyMinimal,
             overload_mode: crate::OverloadMode::default(),
+            assume_unknown_standard_effects: true,
         }
     }
 }
@@ -139,7 +143,11 @@ pub fn check_project_with_options(
     let dependencies = project.dependencies.clone();
     let roots: Vec<_> = project.entries.iter().chain(&project.libraries).copied().collect();
     let (checked, required) = Engine::new().with_native_provider(
-        move || ProjectRegistry::new_with_environment_and_overloads(inputs, dependencies, options.loader_policy, selection.profile, options.overload_mode),
+        move || {
+            let mut registry = ProjectRegistry::new_with_environment_and_overloads(inputs, dependencies, options.loader_policy, selection.profile, options.overload_mode);
+            registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
+            registry
+        },
         |registry, queries| {
             let reports = registry.check_roots(queries, &roots);
             (reports, registry.required_files())

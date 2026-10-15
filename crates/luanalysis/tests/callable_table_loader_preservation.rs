@@ -31,6 +31,7 @@ impl Fixture {
                 "json",
                 "--lua-version",
                 "5.4",
+                "--strict-standard-effects",
                 "--module-root",
                 ".",
                 "main.lua",

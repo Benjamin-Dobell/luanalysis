@@ -341,6 +341,8 @@ pub trait NativeFlowProvider {
         self.write_affects(reference, target, at)
     }
     fn call_invalidates_reference(&self, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { false }
+    /// Original explicit loader-mutating call metadata, without effect inference.
+    fn known_standard_loader_write(&self, _: NativeFlowKey) -> bool { false }
     fn value_type(
         &self,
         value: NativeValueKey,

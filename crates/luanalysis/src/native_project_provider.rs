@@ -62,6 +62,9 @@ pub(crate) struct ProjectRegistry {
 }
 
 impl ProjectRegistry {
+    pub(crate) fn set_standard_environment_assumptions(&mut self, enabled: bool) {
+        self.standard_environment.assume_unknown_effects &= enabled;
+    }
     #[cfg(test)]
     pub(crate) fn new(inputs: Vec<RegistryInput>) -> Self {
         Self::new_with_modules(inputs, Vec::new(), NativeLoaderPolicy::Lua54StandardFile)

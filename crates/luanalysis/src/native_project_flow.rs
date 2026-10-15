@@ -53,6 +53,7 @@ impl NativeFlowProvider for ProjectRegistry {
         fn reference_alias_initial(reference: NativeReferenceKey) -> NativeAliasInitial { reference.graph.snapshot; NativeAliasInitial::Opaque }
         fn alias_call_source(value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> { value.snapshot; None }
         fn alias_node_dispatch(at: NativeFlowKey) -> NativeAliasDispatch { at.graph.snapshot; NativeAliasDispatch::Unknown }
+        fn known_standard_loader_write(at: NativeFlowKey) -> bool { at.graph.snapshot; false }
         fn reference_is_cell(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
         fn reference_written_contract(reference: NativeReferenceKey, queries: &mut dyn TypeQueries) -> Option<Type> { reference.graph.snapshot; None }
         fn value_alias_source(value: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue { value.snapshot; NativeAliasValue::Unknown }

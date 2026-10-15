@@ -141,9 +141,25 @@ impl Checker<'_> {
             return None;
         }
         if has_original_contract {
-            let value = self.expression(callee);
-            let mut trusted = self.engine.function_intrinsic(&value)
-                .is_some_and(|site| site.kind == luanalysis_engine::NativeIntrinsicKind::Require);
+            let operation = self.flow_at.and_then(|at| {
+                let native = self.native?;
+                let evaluation = native.flow.evaluation_for_expression(callee, at.graph)?;
+                Some(self.engine.flow_standard_operation(
+                    &FlowAdapter { sources: &native.flow, values: native },
+                    native.flow.evaluation_value(evaluation.id),
+                    native.flow.flow_key(evaluation.input, at.graph.context),
+                ))
+            });
+            if matches!(operation, Some(luanalysis_engine::NativeStandardOperation::Pending)) {
+                self.incomplete_flow = true;
+                return Some(ValuePack::single(Type::Unknown));
+            }
+            let mut trusted = if let Some(operation) = operation {
+                matches!(operation, luanalysis_engine::NativeStandardOperation::Standard(site) if site.kind == luanalysis_engine::NativeIntrinsicKind::Require)
+            } else {
+                let value = self.expression(callee);
+                self.engine.function_intrinsic(&value).is_some_and(|site| site.kind == luanalysis_engine::NativeIntrinsicKind::Require)
+            };
             let mut direct = callee;
             while let luanalysis_syntax::ExprKind::Parenthesized(inner) = &direct.kind { direct = inner; }
             let direct = matches!(&direct.kind, luanalysis_syntax::ExprKind::Name(name) if name.text == "require" && self.bound.binding_at(name.span.start).is_none());
@@ -167,8 +183,9 @@ impl Checker<'_> {
         if let Some(at) = self.flow_at {
             let native = self.native?;
             let reference = native.flow.loader_reference(at.graph);
-            let result = self.engine.flow_type(&crate::native_flow::FlowAdapter { sources: &native.flow, values: native }, at, reference, &Type::BooleanLiteral(false), &Type::BooleanLiteral(true));
+            let result = self.engine.flow_standard_loader_state(&crate::native_flow::FlowAdapter { sources: &native.flow, values: native }, at, reference);
             self.incomplete_flow |= result.incomplete;
+            if result.incomplete { return Some(ValuePack::single(Type::Unknown)); }
             if result.ty != Type::BooleanLiteral(true) {
                 self.error("LUA2036", callee.span, "Standard require cannot be assumed after a loader mutation on this control-flow path; custom loader effects require an explicit module contract.");
                 return Some(ValuePack::single(Type::Unknown));

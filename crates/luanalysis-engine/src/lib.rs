@@ -963,6 +963,17 @@ pub trait TypeQueries {
     /// True only for the exact original graph/facet in active call-state replay.
     fn is_native_call_execution(&self, graph: NativeGraphKey) -> bool;
     fn flow_alias_intrinsic(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasIntrinsic;
+    fn flow_standard_operation(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeStandardOperation {
+        match self.flow_alias_intrinsic(provider, value, input) {
+            NativeAliasIntrinsic::Standard(site) => NativeStandardOperation::Standard(site),
+            NativeAliasIntrinsic::Unknown => NativeStandardOperation::Ordinary,
+            NativeAliasIntrinsic::Pending => NativeStandardOperation::Pending,
+        }
+    }
+    /// Host-policy loader state for ordinary module typing, never physical proof.
+    fn flow_standard_loader_state(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, reference: NativeReferenceKey) -> NativeFlowResult {
+        self.flow_type(provider, at, reference, &Type::BooleanLiteral(false), &Type::BooleanLiteral(true))
+    }
     fn with_contextual_function(
         &mut self,
         context: &ContextualFunctionContext,
@@ -1661,6 +1672,19 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             bun_sema::check::native_aliases::NativeAliasIntrinsic::Unknown => NativeAliasIntrinsic::Unknown,
             bun_sema::check::native_aliases::NativeAliasIntrinsic::Pending => NativeAliasIntrinsic::Pending,
         }
+    }
+    fn flow_standard_operation(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeStandardOperation {
+        let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
+        match self.checker.native_flow_standard_operation(&adapter, value, input) {
+            bun_sema::check::native_aliases::NativeStandardOperation::Standard(site) => NativeStandardOperation::Standard(native_signatures::source_intrinsic_site(site)),
+            bun_sema::check::native_aliases::NativeStandardOperation::Ordinary => NativeStandardOperation::Ordinary,
+            bun_sema::check::native_aliases::NativeStandardOperation::Pending => NativeStandardOperation::Pending,
+        }
+    }
+    fn flow_standard_loader_state(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, reference: NativeReferenceKey) -> NativeFlowResult {
+        let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
+        let result = self.checker.native_flow_standard_loader_state(&adapter, at, reference);
+        NativeFlowResult { ty: export_type(self.checker, self.handles, result.ty), incomplete: result.incomplete, unresolved_auto: result.unresolved_auto }
     }
     fn flow_capture_type(
         &mut self,

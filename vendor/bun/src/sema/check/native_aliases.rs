@@ -69,6 +69,10 @@ pub(super) enum NativeReachedCallee {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeAliasIntrinsic { Standard(NativeIntrinsicSite), Unknown, Pending }
+/// Ordinary language operation under the selected host policy. This is not
+/// runtime identity evidence for heap, call-preservation, or metatable proofs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeStandardOperation { Standard(NativeIntrinsicSite), Ordinary, Pending }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Origin {
@@ -91,6 +95,7 @@ struct Origins { tokens: HashSet<Origin>, unknown: bool, non_table: bool, uncert
 pub(super) struct NativeAliasCache {
     references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u64, u64), Origins>,
     standard_references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u64, u64), Origins>,
+    standard_loaders: FxHashMap<(NativeReferenceKey, NativeFlowKey, u64, u64), NativeFlowResult>,
     standard_values: FxHashMap<(NativeValueKey, NativeFlowKey, u64, u64), Origins>,
     values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u64, u64), Origins>,
     // These are interned query paths, not identities of invented source nodes.
@@ -173,9 +178,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
     pub fn native_flow_alias_intrinsic(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasIntrinsic {
         let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
-        let origins = if self.native_assumed_environment().is_some() {
-            self.native_standard_value(provider, value, input)
-        } else { self.native_alias_value(provider, value, input, 0) };
+        let origins = self.native_alias_value(provider, value, input, 0);
         if origins.uncertain { self.mark_tainted_from(0); return NativeAliasIntrinsic::Pending }
         if origins.unknown || origins.non_table || origins.tokens.len() != 1 { return NativeAliasIntrinsic::Unknown }
         match origins.tokens.into_iter().next().unwrap() {

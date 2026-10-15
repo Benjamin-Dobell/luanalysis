@@ -26,6 +26,9 @@ pub enum NativeAliasValue {
 pub enum NativeAliasInitial { Opaque, GlobalValue(super::NativeGlobalBindingKey), Environment(super::NativeEnvironmentKey) }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeAliasIntrinsic { Standard(super::NativeIntrinsicSite), Unknown, Pending }
+/// A policy-aware standard operation, distinct from physical value provenance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeStandardOperation { Standard(super::NativeIntrinsicSite), Ordinary, Pending }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeFlowResult {
@@ -105,6 +108,7 @@ pub trait NativeFlowProvider {
         self.write_affects(reference, target, at)
     }
     fn call_invalidates_reference(&self, _: NativeReferenceKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> bool { false }
+    fn known_standard_loader_write(&self, _: NativeFlowKey) -> bool { false }
     /// Original fixed child key for a descendant write. Types and the actual
     /// persistent receiver update are evaluated by the native flow worker.
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> Option<super::LuaKey> { None }
@@ -251,6 +255,7 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     fn call_invalidates_reference(&self, reference: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> bool {
         self.provider.call_invalidates_reference(reference, at, &mut SessionQueries { checker, handles: self.handles })
     }
+    fn known_standard_loader_write(&self, at: NativeFlowKey) -> bool { self.provider.known_standard_loader_write(at) }
     fn write_member_key(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::NativeTableKey> {
         let key = self.provider.write_member_key(reference, target, at)?;
         Some(super::native_tables::import_literal_key(checker, &key))
