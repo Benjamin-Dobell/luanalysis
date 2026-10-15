@@ -1,0 +1,22 @@
+function recordGuard(record: { tag: true; child: number }) {
+    if (!record.tag) {
+        record.child = 42;
+        record.child = 'wrong'; // TS2322, not a missing member on Never.
+    }
+}
+function indexedGuard(seen: Record<number, true>) {
+    if (!seen[1]) {
+        seen[1] = true;
+        seen[1] = false; // TS2322: the original indexer contract remains.
+    }
+}
+function nullableGuard(nullable: Record<number, true | undefined>) {
+    if (!nullable[1]) nullable[1] = true;
+}
+function discriminated(record: { tag: 'a'; a: number } | { tag: 'b'; b: string }) {
+    if (record.tag === 'a') {
+        if (record.tag === 'b') { // TS2367: contradictory discriminant.
+            record.a; // TS2339: the original union still narrows to Never.
+        }
+    }
+}

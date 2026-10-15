@@ -883,7 +883,7 @@ impl FlowDomain for NativeDomain<'_> {
             }
             NativeTransfer::Nothing => previous.ty,
             NativeTransfer::Predicate(_, _) if previous.ty.is_never() => previous.ty,
-            NativeTransfer::Predicate(ref predicate, sense) => checker.native_narrow_predicate(self.provider, previous.ty, predicate, sense, walk.reference),
+            NativeTransfer::Predicate(ref predicate, sense) => checker.native_narrow_predicate(self.provider, previous.ty, predicate, sense, walk.reference, walk.declared),
         };
         let _ = walk;
         FlowType::new(ty, previous.incomplete)
@@ -1151,24 +1151,30 @@ impl<'s, 'p> Checker<'s, 'p> {
         }
     }
 
-    fn native_narrow_predicate(&mut self, provider: &dyn NativeFlowProvider, ty: TypeId, predicate: &NativePredicate, sense: bool, reference: NativeReferenceKey) -> TypeId {
+    fn native_narrow_predicate(&mut self, provider: &dyn NativeFlowProvider, ty: TypeId, predicate: &NativePredicate, sense: bool, reference: NativeReferenceKey, declared: TypeId) -> TypeId {
         match predicate {
-            NativePredicate::Not(inner) => self.native_narrow_predicate(provider, ty, inner, !sense, reference),
+            NativePredicate::Not(inner) => self.native_narrow_predicate(provider, ty, inner, !sense, reference, declared),
             NativePredicate::And(left, right) | NativePredicate::Or(left, right) => {
                 let conjunction = matches!(predicate, NativePredicate::And(..));
                 if conjunction == sense {
-                    let left = self.native_narrow_predicate(provider, ty, left, sense, reference);
-                    self.native_narrow_predicate(provider, left, right, sense, reference)
+                    let left = self.native_narrow_predicate(provider, ty, left, sense, reference, declared);
+                    self.native_narrow_predicate(provider, left, right, sense, reference, declared)
                 } else {
-                    let bypass = self.native_narrow_predicate(provider, ty, left, sense, reference);
-                    let evaluated = self.native_narrow_predicate(provider, ty, left, !sense, reference);
-                    let evaluated = self.native_narrow_predicate(provider, evaluated, right, sense, reference);
+                    let bypass = self.native_narrow_predicate(provider, ty, left, sense, reference, declared);
+                    let evaluated = self.native_narrow_predicate(provider, ty, left, !sense, reference, declared);
+                    let evaluated = self.native_narrow_predicate(provider, evaluated, right, sense, reference, declared);
                     self.union_reduced(&[bypass, evaluated])
                 }
             }
             _ if predicate_subject(predicate) != Some(reference) => {
                 if let Some(subject) = predicate_subject(predicate)
                     && let Some(key) = provider.reference_member_key(reference, subject, self) {
+                    // Like getDiscriminantPropertyAccess, a member predicate
+                    // filters parent alternatives only for an original/current
+                    // union. A lone record is not Never merely because one of
+                    // its members has an impossible branch. Keep the original
+                    // union after an earlier predicate selected one constituent.
+                    if !self.is_union(declared) && !self.is_union(ty) { return ty; }
                     return self.filter(ty, |checker, part| {
                         let member = match checker.native_table_read(part, NativeTableAccessKey::Literal(key)) {
                             Ok(member) => member,
@@ -1177,7 +1183,7 @@ impl<'s, 'p> Checker<'s, 'p> {
                             // cannot prove that this receiver is unreachable.
                             Err(_) => return true,
                         };
-                        !checker.native_narrow_predicate(provider, member, predicate, sense, subject).is_never()
+                        !checker.native_narrow_predicate(provider, member, predicate, sense, subject, member).is_never()
                     });
                 }
                 if self.native_predicate_possible(provider, predicate, sense) { ty } else { TypeId::NEVER }
