@@ -12,7 +12,7 @@ use super::native_types::{NativeTypes, TypeNameResolution, TypeParameterRecipe, 
 use super::{Binding, CheckReport, Checker, Diagnostic, bind};
 use bind::{BindingId, BoundFile};
 use luanalysis_engine::{
-    CapturedFunctionContext, ContextualFunctionContext, NativeBindingKey, NativeCallEffects, NativeCheckMode,
+    CapturedFunctionContext, ContextualFunctionContext, NativeBindingKey, NativeCallEffects, NativeCallerFrame, NativeCheckMode,
     NativeExpressionKey, NativeFlowError, NativeFlowKey, NativeFlowResult, NativeFunctionKey,
     NativeTypeParameterKey, NativeTypeProvider, Parameter, Type, TypeQueries, ValuePack,
 };
@@ -693,23 +693,14 @@ impl NativeRegistry {
         queries: &mut dyn TypeQueries,
         work: &mut dyn FnMut(&mut dyn TypeQueries) -> R,
     ) -> R {
-        let contextual = self.flow.contextual(at.graph);
-        let captured = self.flow.captured(at.graph);
         let mut result = None;
-        let mut contextual_work = |queries: &mut dyn TypeQueries| {
-            if let Some(contextual) = contextual {
-                queries.with_contextual_function(&contextual, &mut |queries| {
-                    result = Some(work(queries));
-                });
-            } else {
-                result = Some(work(queries));
-            }
-        };
-        if let Some(captured) = captured {
-            queries.with_captured_function(&captured, &mut contextual_work);
-        } else {
-            contextual_work(queries);
-        }
+        // The frozen graph owns this callback's lexical frame. Explicit None
+        // selects its declaration space; it cannot mean the requesting caller's
+        // unrelated capture/context. The native scope restores both afterward.
+        queries.with_native_function_frame(NativeCallerFrame {
+            contextual: self.flow.contextual(at.graph),
+            captured: self.flow.captured(at.graph),
+        }, &mut |queries| { result = Some(work(queries)); });
         result.expect("the native flow capability scope executes its callback")
     }
 

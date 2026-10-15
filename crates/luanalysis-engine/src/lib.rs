@@ -926,6 +926,13 @@ pub trait TypeQueries {
         binding: NativeBindingKey,
     ) -> Option<Type>;
     fn current_captured_function(&mut self) -> Option<CapturedFunctionContext>;
+    /// Select both original source frame options, including declaration-space
+    /// absence. Frozen flow callbacks must not inherit an unrelated requester.
+    fn with_native_function_frame(
+        &mut self,
+        frame: NativeCallerFrame,
+        work: &mut dyn FnMut(&mut dyn TypeQueries),
+    );
     fn with_captured_function(
         &mut self,
         context: &CapturedFunctionContext,
@@ -1531,6 +1538,18 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         self.checker
             .current_native_captured_function()
             .map(|context| self.handles.retain_capture(context))
+    }
+    fn with_native_function_frame(
+        &mut self,
+        frame: NativeCallerFrame,
+        work: &mut dyn FnMut(&mut dyn TypeQueries),
+    ) {
+        let contextual = frame.contextual.as_ref().map(|context| self.handles.resolve_context(context));
+        let captured = frame.captured.as_ref().map(|context| self.handles.resolve_capture(context));
+        let handles = self.handles;
+        self.checker.with_native_function_frame(contextual, captured, |checker| {
+            work(&mut SessionQueries { checker, handles });
+        });
     }
     fn with_captured_function(
         &mut self,
