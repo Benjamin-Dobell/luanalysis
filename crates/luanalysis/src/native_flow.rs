@@ -1598,7 +1598,15 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         }
     }
     fn reference_follows_creation(&self, reference: NativeReferenceKey) -> bool {
-        self.sources.source_reference(reference).is_some_and(|reference| matches!(reference.root, flow::ReferenceRoot::EnvironmentCell | flow::ReferenceRoot::LoaderState | flow::ReferenceRoot::EnvironmentObject))
+        let Some(source) = self.sources.source_reference(reference) else { return false; };
+        match source.root {
+            flow::ReferenceRoot::EnvironmentCell | flow::ReferenceRoot::LoaderState | flow::ReferenceRoot::EnvironmentObject => true,
+            // Original cross-function binding identity is sufficient to request
+            // the native creation bridge. Its existing owner/write/last-position
+            // guards decide whether that closure may retain the narrowed value.
+            flow::ReferenceRoot::Binding(binding) if source.path.is_empty() => self.sources.binding_owners.get(&binding).is_some_and(|&owner| owner != reference.graph.region),
+            _ => false,
+        }
     }
     fn runtime_type_operation(&self, value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {
         let Some(ValueRecipe::Evaluation(argument)) = self.sources.value(value) else { return false; };
