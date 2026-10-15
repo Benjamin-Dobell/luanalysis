@@ -70,6 +70,8 @@ mod native_tables;
 pub use native_tables::*;
 #[cfg(test)]
 mod regular_literal_tests;
+#[cfg(test)]
+mod native_lua_print_tests;
 
 pub use bun_sema::check::CheckMode as NativeCheckMode;
 use bun_sema::check::{
@@ -1997,7 +1999,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
 
     fn format(&mut self, ty: &Type) -> String {
         let ty = import_type(self.checker, self.handles, ty);
-        String::from_utf8_lossy(&self.checker.type_to_string(ty)).into_owned()
+        String::from_utf8_lossy(&self.checker.native_type_to_string(ty)).into_owned()
     }
     fn class_definition_context(&mut self, owner: NativeClassDefinitionKey, class_type: &Type) -> Result<Type, NamedTypeError> {
         native_named::definition_context(self, owner, class_type)

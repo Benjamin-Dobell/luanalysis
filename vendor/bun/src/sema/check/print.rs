@@ -39,6 +39,7 @@ pub(super) const MULTILINE_OBJECT_LITERALS: u32 = 1 << 13;
 const FORBID_INDEXED_ACCESS_SYMBOL_REFERENCES: u32 = 1 << 14;
 pub(super) const WRITE_TYPE_PARAMETERS_IN_QUALIFIED_NAME: u32 = 1 << 15;
 pub(super) const WRITE_ARRAY_AS_GENERIC_TYPE: u32 = 1 << 16;
+const NATIVE_LUA_TYPES: u32 = 1 << 17;
 /// What `typeToString` hands `typeToStringEx`.
 pub(super) const TYPE_TO_STRING: u32 =
     ALLOW_UNIQUE_ES_SYMBOL_TYPE | USE_ALIAS_DEFINED_OUTSIDE_CURRENT_SCOPE;
@@ -135,6 +136,11 @@ impl Checker<'_, '_> {
     /// `typeToString`
     pub fn type_to_string(&mut self, ty: TypeId) -> Vec<u8> {
         self.printed(|c, out| c.write_type(out, ty, TYPE_TO_STRING))
+    }
+
+    /// The same printer with Lua's spelling for its native nil value.
+    pub fn native_type_to_string(&mut self, ty: TypeId) -> Vec<u8> {
+        self.printed(|c, out| c.write_type(out, ty, TYPE_TO_STRING | NATIVE_LUA_TYPES))
     }
 
     /// `TypeToTypeNode` with the flags of `typeWriterWalker.writeTypeOrSymbol`.
@@ -1698,7 +1704,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                     | Intrinsic::UniqueLiteral => (b"never", 5),
                     Intrinsic::Void => (b"void", 4),
                     Intrinsic::Undefined | Intrinsic::Missing | Intrinsic::UndefinedWidening => {
-                        (b"undefined", 9)
+                        if self.flags & NATIVE_LUA_TYPES != 0 { (b"nil", 3) } else { (b"undefined", 9) }
                     }
                     Intrinsic::Null | Intrinsic::NullWidening => (b"null", 4),
                     Intrinsic::String => (b"string", 6),

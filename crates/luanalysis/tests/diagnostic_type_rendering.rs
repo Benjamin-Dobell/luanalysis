@@ -82,11 +82,7 @@ fn api_errors_render_original_named_generic_union_function_and_table_types() {
             .message
             .contains("Receipt")
     );
-    assert!(
-        error(&report, "TS2345", "Receipt")
-            .message
-            .contains("'42'")
-    );
+    assert!(error(&report, "TS2345", "Receipt").message.contains("'42'"));
     let generic = error(&report, "TS2345", "'T'");
     assert!(generic.message.contains("number"));
     assert_eq!(&SOURCE[generic.span.start..generic.span.end], "value");
@@ -128,6 +124,47 @@ fn api_errors_render_original_named_generic_union_function_and_table_types() {
 }
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn named_generic_arguments_render_nil_and_preserve_the_undefined_string_literal() {
+    let source = "---@class Envelope<T>\n---@field value T\n\n---@type Envelope<nil>\nlocal nil_argument=42\n\n---@type Envelope<\"undefined\">\nlocal literal_argument=42\n";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 2, "{:#?}", report.diagnostics);
+    assert!(
+        error(&report, "TS2322", "Envelope<nil>")
+            .message
+            .contains("42")
+    );
+    assert!(
+        error(&report, "TS2322", "Envelope<\"undefined\">")
+            .message
+            .contains("42")
+    );
+    for diagnostic in &report.diagnostics {
+        no_placeholders(&diagnostic.message);
+    }
+
+    let directory = std::env::temp_dir().join(format!(
+        "luanalysis named nil {} {}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("main.lua");
+    fs::write(&file, source).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        .args(["check", "--no-stdlib"])
+        .arg(&file)
+        .output()
+        .unwrap();
+    fs::remove_dir_all(&directory).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("Envelope<nil>"), "{stderr}");
+    assert!(stderr.contains("Envelope<\"undefined\">"), "{stderr}");
+    assert!(!stderr.contains("Envelope<undefined>"), "{stderr}");
+}
+
 #[test]
 fn cli_json_errors_render_actual_types_and_keep_original_codes_and_ranges() {
     let directory = std::env::temp_dir().join(format!(
