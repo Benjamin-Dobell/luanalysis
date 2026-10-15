@@ -262,6 +262,25 @@ impl NativeRegistry {
     }
     pub(crate) fn binding_function_owner(&self,binding:BindingId)->Option<NativeFunctionKey> {self.flow.binding_function_owner(binding)}
 
+    /// Original annotation metadata only. Inferred runtime values retain their
+    /// own continuation/capture path instead of being read as written bounds.
+    pub(crate) fn binding_has_written_contract(&self, binding: BindingId) -> bool {
+        match self.declarations.get(&binding) {
+            Some(DeclarationSource::Local { annotation, initializer_assertion, .. }) => {
+                annotation.is_some() || initializer_assertion.is_some()
+            }
+            Some(DeclarationSource::Parameter { function, index }) => {
+                let function = &self.functions[*function as usize];
+                if function.annotations.type_annotation.is_some() { return true; }
+                let offset = usize::from(self.bound.implicit_receiver(function.span).is_some());
+                let name = if *index < offset { Some("self") }
+                    else { function.params.get(*index - offset).map(|parameter| parameter.text.as_str()) };
+                name.is_some_and(|name| function.annotations.params.iter().any(|tag| tag.name.text == name))
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn source_role(&self) -> luanalysis_project::SourceRole { self.source_role }
     pub(crate) fn set_overload_mode(&mut self, mode: crate::OverloadMode) {
         self.overload_mode = mode;

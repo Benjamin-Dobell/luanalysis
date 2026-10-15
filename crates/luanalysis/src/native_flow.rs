@@ -1601,10 +1601,11 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         let Some(source) = self.sources.source_reference(reference) else { return false; };
         match source.root {
             flow::ReferenceRoot::EnvironmentCell | flow::ReferenceRoot::LoaderState | flow::ReferenceRoot::EnvironmentObject => true,
-            // Original cross-function binding identity is sufficient to request
-            // the native creation bridge. Its existing owner/write/last-position
-            // guards decide whether that closure may retain the narrowed value.
-            flow::ReferenceRoot::Binding(binding) if source.path.is_empty() => self.sources.binding_owners.get(&binding).is_some_and(|&owner| owner != reference.graph.region),
+            // A captured written contract may request the native creation
+            // bridge; its owner/write/last-position guards remain authoritative.
+            // Inferred runtime objects keep their existing continuation path.
+            flow::ReferenceRoot::Binding(binding) if source.path.is_empty() => self.values.binding_has_written_contract(binding)
+                && self.sources.binding_owners.get(&binding).is_some_and(|&owner| owner != reference.graph.region),
             _ => false,
         }
     }
