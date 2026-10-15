@@ -1,0 +1,200 @@
+use std::{
+    fs,
+    path::PathBuf,
+    process::{Command, Output},
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static NEXT: AtomicU64 = AtomicU64::new(0);
+
+struct Fixture(PathBuf);
+
+impl Fixture {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "luanalysis frozen member receivers {} {}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("api.def.lua"), "---@type number\nanswer=nil\n").unwrap();
+        Self(path)
+    }
+
+    fn check(&self, source: &str) -> Output {
+        fs::write(self.0.join("main.lua"), source).unwrap();
+        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+            .current_dir(&self.0)
+            .args([
+                "check",
+                "--lua-version",
+                "5.4",
+                "--library",
+                "api.def.lua",
+                "--format",
+                "json",
+                "main.lua",
+            ])
+            .output()
+            .unwrap()
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn json(output: &Output, expected_exit: i32) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(expected_exit),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stderr.is_empty(), "{stderr}");
+    assert!(stdout.starts_with("{\"formatVersion\":1,"), "{stdout}");
+    assert!(
+        stdout.contains(&format!("\"exitCode\":{expected_exit}")),
+        "{stdout}"
+    );
+    stdout.into_owned()
+}
+
+fn clean(output: &Output) {
+    let report = json(output, 0);
+    assert!(report.contains("\"diagnostics\":[]"), "{report}");
+}
+
+fn rejects_checked_value(source: &str, output: &Output) {
+    let report = json(output, 1);
+    let marker = "local checked=value";
+    let start = source.find(marker).expect("original checked assignment") + "local checked=".len();
+    let end = start + "value".len();
+    assert!(report.contains("\"code\":\"TS2322\""), "{report}");
+    assert!(
+        report.contains(&format!("\"range\":{{\"start\":{start},\"end\":{end}}}")),
+        "the rejected assignment must be the refinement control, not an unrelated setup error:\n{report}"
+    );
+    for unexpected in ["TS2304", "TS2339", "LUA2036"] {
+        assert!(
+            !report.contains(&format!("\"code\":\"{unexpected}\"")),
+            "{report}"
+        );
+    }
+}
+
+const ORDINARY: &str = r#"
+---@param value any
+---@return string
+local function ordinary_type(value)
+    return 'number'
+end
+"#;
+
+#[test]
+fn asserted_environment_aliases_keep_runtime_origin_through_field_index_and_parentheses() {
+    let fixture = Fixture::new();
+    for access in ["(alias).type", "((--[[---@type TypeView]] alias))['type']"] {
+        let source = format!(
+            r#"---@class TypeView
+---@field type fun(value: any): string
+{ORDINARY}
+local alias=--[[---@type TypeView]] _G
+local kind={access}
+---@param value number|string
+local function use(value)
+    if kind(value)=='number' then
+        ---@type number
+        local checked=value
+    end
+end
+use('text')
+"#
+        );
+        clean(&fixture.check(&source));
+
+        let ordinary = source.replace(
+            "local alias=--[[---@type TypeView]] _G",
+            "local alias=--[[---@type TypeView]] {type=ordinary_type}",
+        );
+        rejects_checked_value(&ordinary, &fixture.check(&ordinary));
+        let corrected = ordinary.replace(
+            "---@type number\n        local checked=value",
+            "---@type number|string\n        local checked=value",
+        );
+        clean(&fixture.check(&corrected));
+    }
+}
+
+#[test]
+fn computed_member_read_freezes_global_receiver_before_key_rebinds_its_base_to_an_ordinary_table() {
+    let fixture = Fixture::new();
+    let source = format!(
+        r#"{ORDINARY}
+local ordinary={{answer='ordinary',type=ordinary_type}}
+---@type table
+local base=_G
+---@return 'type'
+local function key()
+    base=ordinary
+    return 'type'
+end
+local kind=base[key()]
+---@type string
+local rebound=base.answer
+---@param value number|string
+local function use(value)
+    if kind(value)=='number' then
+        ---@type number
+        local checked=value
+    end
+end
+use('text')
+"#
+    );
+    clean(&fixture.check(&source));
+
+    let rejected = source.replace(
+        "---@type number\n        local checked=value",
+        "---@type string\n        local checked=value",
+    );
+    rejects_checked_value(&rejected, &fixture.check(&rejected));
+}
+
+#[test]
+fn computed_member_read_keeps_ordinary_receiver_when_key_rebinds_its_base_to_global_environment() {
+    let fixture = Fixture::new();
+    let source = format!(
+        r#"{ORDINARY}
+local ordinary={{answer='ordinary',type=ordinary_type}}
+---@type table
+local base=ordinary
+---@return 'type'
+local function key()
+    base=_G
+    return 'type'
+end
+local kind=base[key()]
+---@type number
+local rebound=base.answer
+---@param value number|string
+local function use(value)
+    if kind(value)=='number' then
+        ---@type number|string
+        local checked=value
+    end
+end
+use('text')
+"#
+    );
+    clean(&fixture.check(&source));
+
+    let rejected = source.replace(
+        "---@type number|string\n        local checked=value",
+        "---@type number\n        local checked=value",
+    );
+    rejects_checked_value(&rejected, &fixture.check(&rejected));
+}
