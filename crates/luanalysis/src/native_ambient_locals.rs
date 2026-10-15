@@ -3,7 +3,7 @@
 //! runtime value is constructed.
 use super::NativeRegistry;
 use crate::native_named::{NativeNamedKey, RuntimeAttachmentKind};
-use luanalysis_engine::{NativeTypeDeclarationKey, TypeQueries};
+use luanalysis_engine::{NativeTypeDeclarationKey, Type, TypeQueries};
 use luanalysis_project::SourceRole;
 use luanalysis_syntax::{
     Expr, ExprKind, NamedRecordKind, NamedTypeDeclarationKind, Span, StmtKind,
@@ -61,6 +61,22 @@ impl NativeRegistry {
 
     pub(super) fn is_ambient_local_attachment(&self, span: Span) -> bool {
         self.ambient_local_owner(span).is_some()
+    }
+
+    pub(super) fn ambient_local_alias_contract(&self, expression: &Expr, queries: &mut dyn TypeQueries) -> Option<Type> {
+        let name = match &expression.kind {
+            ExprKind::Parenthesized(inner) => return self.ambient_local_alias_contract(inner, queries),
+            ExprKind::Name(name) => name,
+            _ => return None,
+        };
+        let binding = self.bound().binding_at(name.span.start)?;
+        let owner = self.named_metadata().declarations().iter().find_map(|source| {
+            let span = source.syntax.attachment?;
+            let owner = self.ambient_local_owner(span)?;
+            let RuntimeAttachmentKind::Local { bindings } = &self.named_metadata().attachment(span)?.kind else { return None };
+            bindings.contains(&binding).then_some(owner)
+        })?;
+        queries.named_declared_type(NativeTypeDeclarationKey { snapshot: owner.snapshot, index: owner.index }).ok()
     }
 
     fn check_ambient_export_value(&self, value: &Expr, queries: &mut dyn TypeQueries) -> bool {

@@ -68,6 +68,21 @@ fn uninitialized_ambient_class_locals_own_inherited_dot_and_colon_contracts() {
 }
 
 #[test]
+fn original_ambient_local_owners_can_be_exported_as_global_aliases_before_a_lexical_shadow() {
+    // tts-types/WebRequest.def.lua exports GlobalWebRequest, then shadows its
+    // global spelling with a different local class for request instances.
+    let declaration = "---@class RequestApi\nlocal original={}\napi=original\n---@class Request\nlocal api={}\n---@return string\nfunction api.getResponse() end\n---@param url string\n---@return Request\nfunction original.get(url) end\n";
+    let fixture = Fixture::new(declaration, "local request=api.get('https://example.test')\n---@type string\nlocal response=request.getResponse()\n");
+    pass(&fixture.check());
+    fs::write(fixture.0.join("main.lua"), "local request=api.get(42)\n").unwrap();
+    let output = fixture.check();
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output));
+    assert!(text(&output).contains("main.lua:1:23: error[TS2345]"), "{}", text(&output));
+    fs::write(fixture.0.join("main.lua"), "local request=api.get('fixed')\n").unwrap();
+    pass(&fixture.check());
+}
+
+#[test]
 fn local_ambient_class_members_are_pure_original_contracts_with_real_receivers() {
     let fixture = Fixture::new(
         FILE,

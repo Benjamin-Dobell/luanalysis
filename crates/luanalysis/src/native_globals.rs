@@ -333,7 +333,9 @@ impl NativeRegistry {
         }
         if self.source_role() == SourceRole::Declaration {
             return source.initializer.and_then(|expression| {
-                data::literal_contract(&self.expressions.get(expression).expression)
+                let expression = &self.expressions.get(expression).expression;
+                self.ambient_local_alias_contract(expression, queries)
+                    .or_else(|| data::literal_contract(expression))
             });
         }
         None
