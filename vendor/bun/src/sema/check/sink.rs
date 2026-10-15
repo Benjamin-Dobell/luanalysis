@@ -266,6 +266,7 @@ fn is_task_independent(q: Query) -> bool {
         | Query::WriteType(..)
         | Query::Comparison(_) => true,
         Query::NativeGlobals(_)
+        | Query::NativeFlowCallEffects(..)
         | Query::ReturnOfSignature(_)
         | Query::Shape(_)
         | Query::Properties(_)

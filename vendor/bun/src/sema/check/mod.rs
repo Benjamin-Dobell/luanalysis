@@ -265,6 +265,9 @@ struct Provisional {
     /// a request for members got those in place (32), which (1) does not include, `anySignature` was read (64).
     moved: u8,
     serial: u64,
+    /// Original native loop queries can outlive every TS query frame. Their
+    /// frozen backedge namespace, rather than a removed frame, owns the memo.
+    native_effect_epoch: Option<u64>,
 }
 
 /// Calls `$each!` with the names of the `Buffered` fields of `Program`, in the order in which a
@@ -1046,6 +1049,7 @@ struct Scope {
 /// A query that may be circular.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 enum Query {
+    NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
     NativeGlobals(NativeGlobalsQuery),
     NativeProject(NativeProjectQuery),
     NativeNamed(NativeTypeDeclarationQuery),
@@ -1139,6 +1143,7 @@ impl Query {
             Query::Bases(sym) => (sym.file, 12),
             Query::BaseConstructor(sym) => (sym.file, 13),
             Query::ReturnOfSignature(_)
+            | Query::NativeFlowCallEffects(..)
             | Query::NativeNamed(_)
             | Query::NativeGlobals(_)
             | Query::NativeProject(_)
@@ -3482,16 +3487,14 @@ impl<'p, 's> Checker<'p, 's> {
         // below the resolution (`is_flow_loop_visible`): its result is no more short-lived than that of any other
         // non-cacheable frame. It is asked for from where the loop is not visible either, where a result that follows from a
         // loop is no hit: every use would compute it again, and uses in uses cost uses ^ depth.
-        let flow = frame.incomplete_flow
-            && (self.flow_loops.last())
-                .is_some_and(|innermost| self.is_flow_loop_visible(innermost.5));
+        let innermost_loop = self.innermost_visible_flow_loop_depth();
+        let flow = frame.incomplete_flow && innermost_loop.is_some();
         // tsgo computes it again, and then finds in `flowLoopCache` the loop of which this
         // computation saw the types collected so far.
         if flow && self.is_flow_loop_cached_since(frame.serial) {
             return;
         }
         let scope = if flow {
-            let innermost_loop = self.flow_loops.last().map(|in_progress| in_progress.5);
             let outermost = self.frames.iter().position(|frame| frame.incomplete_flow);
             (outermost.zip(innermost_loop))
                 .map(|(outermost, innermost_loop)| outermost.max(innermost_loop))
@@ -3530,9 +3533,38 @@ impl<'p, 's> Checker<'p, 's> {
                         | since(self.members_in_place_hit_at) << 5
                         | since(self.any_signature_read_at) << 6,
                     serial: scope.serial,
+                    native_effect_epoch: None,
                 },
             );
+        } else if flow && !frame.circular
+            && let Query::NativeFlowCallEffects(_, _, epoch) = q
+            && let Some(depth) = self.flow_memo.native_state.loops.last().map(|frame| frame.depth)
+            && self.is_flow_loop_visible(depth)
+        {
+            let since = |at: u64| u8::from(at >= frame.serial);
+            self.provisional.insert(q, Provisional {
+                raw,
+                depth: depth as u32,
+                from: depth as u32,
+                height: self.stack.len() as u32,
+                moved: since(self.cycle_at) | since(self.limit_at) << 1 | 4
+                    | since(self.refused_at) << 3 | since(self.members_in_place_hit_at) << 5
+                    | since(self.any_signature_read_at) << 6,
+                serial: 0,
+                native_effect_epoch: Some(epoch),
+            });
         }
+    }
+
+    /// Both original-source domains use the same provisional-query lifetime.
+    /// A native graph loop is not represented on the TypeScript `flow_loops`
+    /// stack, but its incomplete type has exactly the same owning frame.
+    fn innermost_visible_flow_loop_depth(&self) -> Option<usize> {
+        self.flow_loops.last().map(|frame| frame.5)
+            .into_iter()
+            .chain(self.flow_memo.native_state.loops.last().map(|frame| frame.depth))
+            .filter(|&depth| self.is_flow_loop_visible(depth))
+            .max()
     }
 
     /// Whether `mark_cycle_from` refuses a cycle whose head is `stack[from - 1]` because of `eager`.
@@ -3552,7 +3584,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     #[inline(never)]
     fn provisional_hit(&mut self, q: Query) -> Option<u64> {
-        if self.stack.is_empty() {
+        if self.stack.is_empty() && self.flow_memo.native_state.loops.is_empty() {
             // `clear` costs O(capacity).
             if self.provisional.capacity() > 1024 {
                 self.provisional = FxHashMap::default();
@@ -3561,8 +3593,17 @@ impl<'p, 's> Checker<'p, 's> {
             return None;
         }
         let entry = *self.provisional.get(&q)?;
+        if self.stack.is_empty() && entry.native_effect_epoch.is_none() {
+            self.provisional.remove(&q);
+            return None;
+        }
         let depth = entry.depth as usize;
-        if self.frames.get(depth).map(|frame| frame.serial) != Some(entry.serial) {
+        let valid_owner = match entry.native_effect_epoch {
+            Some(epoch) => self.flow_memo.native_state.effect_epoch == epoch
+                && self.flow_memo.native_state.loops.last().is_some_and(|frame| frame.depth == depth),
+            None => self.frames.get(depth).map(|frame| frame.serial) == Some(entry.serial),
+        };
+        if !valid_owner {
             self.provisional.remove(&q);
             return None;
         }
@@ -3591,7 +3632,12 @@ impl<'p, 's> Checker<'p, 's> {
         match (entry.from, entry.moved & 4) {
             (u32::MAX, _) => {}
             (from, 0) => self.mark_tainted_from(from as usize),
-            (from, _) => self.taint_from(from as usize),
+            (from, _) => {
+                self.taint_from(from as usize);
+                if entry.native_effect_epoch.is_some() && from as usize >= self.frames.len() {
+                    self.note_cycle();
+                }
+            }
         }
         if entry.moved & 1 != 0 {
             self.note_cycle();

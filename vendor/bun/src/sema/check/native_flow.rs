@@ -175,6 +175,15 @@ pub enum NativeCallEffects {
     Unsupported(&'static str),
 }
 
+#[derive(Clone, Copy)]
+enum NativeEffectResult {
+    Complete(NativeCallEffects),
+    Incomplete { _effects: NativeCallEffects },
+    /// An active query depends on the loop approximation being computed. The
+    /// caller retains its antecedent facts but cannot publish a final result.
+    Pending,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeFlowError {
     InvalidGraph(NativeGraphKey),
@@ -294,6 +303,7 @@ pub(super) struct NativeLoopFrame {
     key: LoopKey,
     ty: TypeId,
     pub depth: usize,
+    outer_effect_epoch: u64,
 }
 
 /// Checker/task-owned native tables. The graph key includes source snapshot and
@@ -304,11 +314,23 @@ pub(super) struct NativeFlowState {
     pub loops: Vec<NativeLoopFrame>,
     value_types: FxHashMap<ValueContext, TypeId>,
     pack_types: FxHashMap<ValueContext, NativeResultPack>,
-    call_effects: FxHashMap<ValueContext, NativeCallEffects>,
+    call_effects: FxHashMap<(ValueContext, u64), NativeCallEffects>,
+    // Provisional query handles name actual effect records, never TypeIds.
+    effect_records: Vec<NativeCallEffects>,
+    pub(super) effect_epoch: u64,
+    next_effect_epoch: u64,
     reachable: FxHashMap<NativeFlowKey, bool>,
     latest_reachable: Option<(NativeFlowKey, bool)>,
     disabled: FxHashMap<NativeGraphKey, ()>,
     capture_graphs: Vec<NativeGraphKey>,
+}
+
+impl NativeFlowState {
+    fn fresh_effect_epoch(&mut self) {
+        self.next_effect_epoch = self.next_effect_epoch.checked_add(1)
+            .expect("native effect epoch overflow");
+        self.effect_epoch = self.next_effect_epoch;
+    }
 }
 
 struct NativeWalk {
@@ -324,6 +346,7 @@ struct NativeDomain<'a> {
 }
 
 enum NativeTransfer {
+    IncompleteCall,
     DefinitionWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey },
     Predicate(NativePredicate, bool),
     PackPredicate { predicate: NativePredicate, sense: bool, group: NativeReferenceKey },
@@ -699,18 +722,23 @@ impl FlowDomain for NativeDomain<'_> {
                     return FlowStep::Value(walk.declared);
                 }
                 match checker.native_flow_call_effects(self.provider, value, input) {
-                    NativeCallEffects::Never => FlowStep::Value(TypeId::UNREACHABLE_NEVER),
-                    NativeCallEffects::Assert { condition, input } => match self.assertion_predicate(at, condition, input) {
+                    NativeEffectResult::Pending | NativeEffectResult::Incomplete { .. } => FlowStep::Follow {
+                        before,
+                        transfer: Some(NativeTransfer::IncompleteCall),
+                        count_passed: false,
+                    },
+                    NativeEffectResult::Complete(NativeCallEffects::Never) => FlowStep::Value(TypeId::UNREACHABLE_NEVER),
+                    NativeEffectResult::Complete(NativeCallEffects::Assert { condition, input }) => match self.assertion_predicate(at, condition, input) {
                         Ok(Some(predicate)) => self.predicate_flow_step(at, before, predicate, true, walk),
                         Ok(None) => FlowStep::Follow { before, transfer: None, count_passed: false },
                         Err(()) => FlowStep::Value(TypeId::ERROR),
                     },
-                    NativeCallEffects::None => FlowStep::Follow {
+                    NativeEffectResult::Complete(NativeCallEffects::None) => FlowStep::Follow {
                         before,
                         transfer: None,
                         count_passed: false,
                     },
-                    NativeCallEffects::Unsupported(feature) => {
+                    NativeEffectResult::Complete(NativeCallEffects::Unsupported(feature)) => {
                         self.provider
                             .flow_error(at, NativeFlowError::Unsupported(feature));
                         FlowStep::Value(TypeId::ERROR)
@@ -727,7 +755,11 @@ impl FlowDomain for NativeDomain<'_> {
         transfer: NativeTransfer,
         previous: FlowType,
     ) -> FlowType {
+        if matches!(transfer, NativeTransfer::IncompleteCall) {
+            return FlowType::new(previous.ty, true);
+        }
         let ty = match transfer {
+            NativeTransfer::IncompleteCall => unreachable!(),
             NativeTransfer::DefinitionWrite { at, target, value, input } => {
                 if checker.native_definition_flow_target(previous.ty)
                     && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
@@ -827,15 +859,22 @@ impl FlowDomain for NativeDomain<'_> {
             key: (node, walk.reference, walk.declared, initial),
             ty,
             depth: checker.stack.len(),
+            outer_effect_epoch: checker.flow_memo.native_state.effect_epoch,
         });
+        checker.flow_memo.native_state.fresh_effect_epoch();
     }
     fn update_loop(&self, checker: &mut Checker<'_, '_>, ty: TypeId) {
         if let Some(frame) = checker.flow_memo.native_state.loops.last_mut() {
-            frame.ty = ty;
+            if frame.ty != ty {
+                frame.ty = ty;
+                checker.flow_memo.native_state.fresh_effect_epoch();
+            }
         }
     }
     fn pop_loop(&self, checker: &mut Checker<'_, '_>) {
-        checker.flow_memo.native_state.loops.pop();
+        if let Some(frame) = checker.flow_memo.native_state.loops.pop() {
+            checker.flow_memo.native_state.effect_epoch = frame.outer_effect_epoch;
+        }
     }
     fn save_loop(
         &self,
@@ -886,10 +925,13 @@ impl FlowDomain for NativeDomain<'_> {
         let cache = std::mem::take(&mut checker.flow_memo.native_state.value_types);
         let calls = std::mem::take(&mut checker.flow_memo.native_state.call_effects);
         let packs = std::mem::take(&mut checker.flow_memo.native_state.pack_types);
+        let epoch = checker.flow_memo.native_state.effect_epoch;
+        checker.flow_memo.native_state.fresh_effect_epoch();
         let result = work(checker);
         checker.flow_memo.native_state.value_types = cache;
         checker.flow_memo.native_state.call_effects = calls;
         checker.flow_memo.native_state.pack_types = packs;
+        checker.flow_memo.native_state.effect_epoch = epoch;
         result
     }
 }
@@ -965,14 +1007,15 @@ impl ReachDomain for NativeDomain<'_> {
                     return ReachStep::Value(false);
                 }
                 match checker.native_flow_call_effects(self.provider, value, input) {
-                    NativeCallEffects::None => ReachStep::Follow(before),
-                    NativeCallEffects::Never => ReachStep::Value(false),
-                    NativeCallEffects::Assert { condition, input } => match self.assertion_predicate(at, condition, input) {
+                    NativeEffectResult::Pending | NativeEffectResult::Incomplete { .. } => ReachStep::Follow(before),
+                    NativeEffectResult::Complete(NativeCallEffects::None) => ReachStep::Follow(before),
+                    NativeEffectResult::Complete(NativeCallEffects::Never) => ReachStep::Value(false),
+                    NativeEffectResult::Complete(NativeCallEffects::Assert { condition, input }) => match self.assertion_predicate(at, condition, input) {
                         Ok(Some(predicate)) => self.predicate_reach_step(checker, at, before, predicate, true),
                         Ok(None) => ReachStep::Follow(before),
                         Err(()) => ReachStep::Value(false),
                     },
-                    NativeCallEffects::Unsupported(feature) => {
+                    NativeEffectResult::Complete(NativeCallEffects::Unsupported(feature)) => {
                         self.provider
                             .flow_error(at, NativeFlowError::Unsupported(feature));
                         ReachStep::Value(false)
@@ -1304,26 +1347,43 @@ impl<'s, 'p> Checker<'s, 'p> {
         provider: &dyn NativeFlowProvider,
         value: NativeValueKey,
         input: NativeFlowKey,
-    ) -> NativeCallEffects {
-        let key = (value, input);
+    ) -> NativeEffectResult {
+        let epoch = self.flow_memo.native_state.effect_epoch;
+        let key = ((value, input), epoch);
         if value.snapshot != input.graph.snapshot
             || !provider.contains_graph(input.graph)
             || provider.node(input).is_none()
         {
             provider.flow_error(input, NativeFlowError::InvalidValue(value));
-            return NativeCallEffects::Unsupported("invalid frozen call context");
+            return NativeEffectResult::Complete(NativeCallEffects::Unsupported("invalid frozen call context"));
         }
         if let Some(&cached) = self.flow_memo.native_state.call_effects.get(&key) {
-            return cached;
+            return NativeEffectResult::Complete(cached);
         }
-        let (effects, stored) =
-            self.run_memoizable(|checker| provider.call_effects(value, input, checker));
-        if stored.is_some() && !self.is_stack_low() {
-            self.flow_memo
-                .native_state
-                .call_effects
-                .insert(key, effects);
+        let query = super::Query::NativeFlowCallEffects(value, input, epoch);
+        if let Some(raw) = self.provisional(query) {
+            return NativeEffectResult::Incomplete { _effects: self.flow_memo.native_state.effect_records[raw as usize] };
         }
-        effects
+        if !self.enter(query) {
+            // `enter` has tainted the dependent queries. An effect that needs
+            // its own in-progress loop is unavailable, not proof of no effect.
+            return NativeEffectResult::Pending;
+        }
+        let begun = self.begin_memoizable();
+        let effects = provider.call_effects(value, input, self);
+        let stored = self.end_memoizable(begun);
+        match self.leave(query) {
+            Ok(_) if stored.is_some() && !self.is_stack_low() => {
+                self.flow_memo.native_state.call_effects.insert(key, effects);
+            }
+            Err(open) => {
+                let raw = self.flow_memo.native_state.effect_records.len() as u64;
+                self.flow_memo.native_state.effect_records.push(effects);
+                self.cache_provisionally(query, raw, open);
+                return NativeEffectResult::Incomplete { _effects: effects };
+            }
+            _ => return NativeEffectResult::Incomplete { _effects: effects },
+        }
+        NativeEffectResult::Complete(effects)
     }
 }

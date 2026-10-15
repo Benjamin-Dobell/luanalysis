@@ -8133,6 +8133,7 @@ impl<'p, 's> Checker<'p, 's> {
         self.rechecks_at = rechecks_at;
         // Valid until the first check ends. A hit taints what computing it again would.
         let entry = Provisional {
+            native_effect_epoch: None,
             raw: u64::from(ty.0),
             depth: first as u32,
             from: first as u32 + 1,

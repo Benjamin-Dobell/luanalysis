@@ -690,3 +690,201 @@ mod tests {
         });
     }
 }
+#[cfg(test)]
+mod effect_query_tests {
+    use super::*;
+    use crate::Engine;
+    use std::cell::{Cell, RefCell};
+
+    #[derive(Default)]
+    struct EffectsLoop {
+        nested: bool,
+        effects: Cell<usize>,
+        incomplete_reads: Cell<usize>,
+        errors: RefCell<Vec<NativeFlowError>>,
+    }
+    impl EffectsLoop {
+        fn graph() -> NativeGraphKey {
+            NativeGraphKey {
+                snapshot: 44_001,
+                region: 0,
+                context: 0,
+            }
+        }
+        fn at(node: u32) -> NativeFlowKey {
+            NativeFlowKey {
+                graph: Self::graph(),
+                node,
+            }
+        }
+        fn reference() -> NativeReferenceKey {
+            NativeReferenceKey {
+                graph: Self::graph(),
+                reference: 0,
+            }
+        }
+        fn value(index: u32) -> NativeValueKey {
+            NativeValueKey {
+                snapshot: 44_001,
+                index,
+            }
+        }
+        fn declared() -> Type {
+            Type::Union(vec![Type::Number, Type::Nil])
+        }
+        fn read(&self, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeFlowResult {
+            queries.flow_type(self, at, Self::reference(), &Self::declared(), &Type::Nil)
+        }
+    }
+    impl NativeFlowProvider for EffectsLoop {
+        fn contains_graph(&self, key: NativeGraphKey) -> bool {
+            key.snapshot == Self::graph().snapshot && key.context == 0 && key.region < 2
+        }
+        fn contains_reference(&self, key: NativeReferenceKey) -> bool {
+            self.contains_graph(key.graph) && key.reference == 0
+        }
+        fn node(&self, at: NativeFlowKey) -> Option<NativeFlowNode> {
+            if !self.contains_graph(at.graph) {
+                return None;
+            }
+            if at.graph.region == 1 {
+                let node = |node| NativeFlowKey { graph: at.graph, node };
+                let reference = NativeReferenceKey { graph: at.graph, reference: 0 };
+                return Some(match at.node {
+                    0 => NativeFlowNode::Start,
+                    1 => NativeFlowNode::Write { before: node(0), target: reference, value: Self::value(0), input: node(0) },
+                    2 => NativeFlowNode::Loop { edges: vec![node(1), node(3)] },
+                    3 => NativeFlowNode::Write { before: node(2), target: reference, value: Self::value(1), input: node(2) },
+                    _ => return None,
+                });
+            }
+            Some(match at.node {
+                0 => NativeFlowNode::Start,
+                1 => NativeFlowNode::Write {
+                    before: Self::at(0),
+                    target: Self::reference(),
+                    value: Self::value(0),
+                    input: Self::at(0),
+                },
+                2 => NativeFlowNode::Loop {
+                    edges: vec![Self::at(1), Self::at(4)],
+                },
+                3 => NativeFlowNode::Call {
+                    before: Self::at(2),
+                    value: Self::value(2),
+                    input: Self::at(2),
+                },
+                4 => NativeFlowNode::Write {
+                    before: Self::at(3),
+                    target: Self::reference(),
+                    value: Self::value(1),
+                    input: Self::at(3),
+                },
+                _ => return None,
+            })
+        }
+        fn is_shared(&self, at: NativeFlowKey) -> bool {
+            at.node == 2
+        }
+        fn write_affects(
+            &self,
+            reference: NativeReferenceKey,
+            target: NativeReferenceKey,
+            _: NativeFlowKey,
+        ) -> NativeWriteRelation {
+            if reference == target {
+                NativeWriteRelation::Exact
+            } else {
+                NativeWriteRelation::Unaffected
+            }
+        }
+        fn value_type(
+            &self,
+            value: NativeValueKey,
+            input: NativeFlowKey,
+            queries: &mut dyn TypeQueries,
+        ) -> Type {
+            if input.graph.region == 1 {
+                return if value.index == 0 { Type::Number } else { Type::Nil };
+            }
+            match value.index {
+                0 => Type::Number,
+                1 => {
+                    let before = self.effects.get();
+                    if self.nested {
+                        let graph = NativeGraphKey { region: 1, ..Self::graph() };
+                        let result = queries.flow_type(
+                            self,
+                            NativeFlowKey { graph, node: 2 },
+                            NativeReferenceKey { graph, reference: 0 },
+                            &Self::declared(),
+                            &Type::Nil,
+                        );
+                        assert_eq!(result.ty, queries.union_reduced(&[Type::Number, Type::Nil]));
+                    }
+                    for _ in 0..8 {
+                        assert!(queries.flow_reachable(self, Self::at(3)));
+                    }
+                    assert_eq!(
+                        self.effects.get(),
+                        before,
+                        "the same incomplete effect should be reused within its native loop epoch"
+                    );
+                    Type::Nil
+                }
+                _ => panic!("a call's result is not needed to classify effects"),
+            }
+        }
+        fn call_effects(
+            &self,
+            _: NativeValueKey,
+            input: NativeFlowKey,
+            queries: &mut dyn TypeQueries,
+        ) -> NativeCallEffects {
+            self.effects.set(self.effects.get() + 1);
+            let value = self.read(input, queries);
+            if value.incomplete {
+                self.incomplete_reads.set(self.incomplete_reads.get() + 1);
+            }
+            if value.ty == Type::Number {
+                NativeCallEffects::Never
+            } else {
+                NativeCallEffects::None
+            }
+        }
+        fn flow_error(&self, _: NativeFlowKey, error: NativeFlowError) {
+            self.errors.borrow_mut().push(error);
+        }
+    }
+
+    #[test]
+    fn loop_owned_effect_provisionals_reuse_without_a_typescript_query_frame() {
+        check_loop(false);
+    }
+
+    #[test]
+    fn nested_loop_queries_restore_the_outer_effect_provisional_owner() {
+        check_loop(true);
+    }
+
+    fn check_loop(nested: bool) {
+        Engine::new().with_session(|queries| {
+            let graph = EffectsLoop { nested, ..EffectsLoop::default() };
+            let result = graph.read(EffectsLoop::at(2), queries);
+            let expected = queries.union_reduced(&[Type::Number, Type::Nil]);
+            assert_eq!(result.ty, expected);
+            assert!(graph.incomplete_reads.get() > 0);
+            assert!(
+                graph.errors.borrow().is_empty(),
+                "{:?}",
+                graph.errors.borrow()
+            );
+            // The provisional Never seen before the nil backedge cannot become
+            // a permanent unreachable call after the loop has settled.
+            assert!(queries.flow_reachable(&graph, EffectsLoop::at(3)));
+            let completed = graph.effects.get();
+            assert!(queries.flow_reachable(&graph, EffectsLoop::at(3)));
+            assert_eq!(graph.effects.get(), completed);
+        });
+    }
+}
