@@ -36,6 +36,8 @@ struct Provider {
     roots: bool,
     metadata_only: bool,
     ready: Cell<bool>,
+    refuse: Cell<bool>,
+    base_demands: Cell<usize>,
     errors: RefCell<Vec<NamedTypeError>>,
 }
 impl Provider {
@@ -44,6 +46,8 @@ impl Provider {
             roots: true,
             metadata_only,
             ready: Cell::new(false),
+            refuse: Cell::new(false),
+            base_demands: Cell::new(0),
             errors: RefCell::new(Vec::new()),
         }
     }
@@ -59,11 +63,13 @@ impl NativeTypeProvider for Provider {
         }))
     }
     fn contains_type_declaration(&self, key: NativeTypeDeclarationKey) -> bool {
-        key.snapshot == SNAPSHOT && key.index < 9
+        key.snapshot == SNAPSHOT && (key.index < 9 || (100..2010).contains(&key.index))
     }
     fn type_declaration_header(&self, key: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
         TypeDeclarationHeader {
-            kind: if key.index == 7 {
+            kind: if key.index >= 100 {
+                TypeDeclarationKind::Alias
+            } else if key.index == 7 {
                 TypeDeclarationKind::Shape
             } else {
                 TypeDeclarationKind::Class
@@ -75,7 +81,7 @@ impl NativeTypeProvider for Provider {
                 4 => "userdata".into(),
                 _ => format!("Class{}", key.index),
             },
-            object_form: Some(ObjectDeclarationForm::Record),
+            object_form: (key.index < 100).then_some(ObjectDeclarationForm::Record),
             parameters: if key.index == 2 {
                 vec![parameter()]
             } else {
@@ -93,12 +99,36 @@ impl NativeTypeProvider for Provider {
             2 | 3 | 6 => vec![reference(0)],
             5 => vec![reference(5)],
             8 => {
+                self.base_demands.set(self.base_demands.get() + 1);
+                if self.refuse.get() {
+                    // Distinct alias declarations force a genuine native query
+                    // refusal; the callback still returns a fallback base.
+                    let _ = queries.named_type_reference(declaration(100), &[]);
+                    return vec![reference(0)];
+                }
+                if self.ready.get() {
+                    return vec![reference(1)];
+                }
                 // An actually unfinished provider dependency must taint the
                 // category query even though its provisional base is known.
                 let _ = queries.property_type_checked(&reference(7), "pending");
                 vec![reference(0)]
             }
             _ => Vec::new(),
+        }
+    }
+    fn type_alias_target(
+        &self,
+        key: NativeTypeDeclarationKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        assert!((100..2010).contains(&key.index));
+        if key.index == 2009 {
+            Type::Number
+        } else {
+            queries
+                .named_type_reference(declaration(key.index + 1), &[])
+                .unwrap_or(Type::Number)
         }
     }
     fn type_declaration_members(&self, key: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> {
@@ -443,7 +473,9 @@ fn opaque_root_absence_and_cyclic_or_pending_bases_are_not_guessed() {
                 value: Type::Unknown,
                 kind: NativeRuntimeType::Userdata,
             };
-            assert_eq!(graph.narrowed(queries, true).ty, Type::Unknown);
+            for _ in 0..3 {
+                assert_eq!(graph.narrowed(queries, true).ty, Type::Unknown);
+            }
         },
     );
     Engine::new().with_native_provider(
@@ -454,12 +486,14 @@ fn opaque_root_absence_and_cyclic_or_pending_bases_are_not_guessed() {
                 value: reference(5),
                 kind: NativeRuntimeType::Userdata,
             };
-            let result = graph.narrowed(queries, true);
-            assert_ne!(
-                result.ty,
-                Type::Never,
-                "a cyclic declaration is not a proved non-userdata arm"
-            );
+            for _ in 0..3 {
+                let result = graph.narrowed(queries, true);
+                assert_ne!(
+                    result.ty,
+                    Type::Never,
+                    "a cyclic declaration is not a proved non-userdata arm"
+                );
+            }
             assert!(
                 provider
                     .errors
@@ -475,24 +509,75 @@ fn opaque_root_absence_and_cyclic_or_pending_bases_are_not_guessed() {
             let graph = Graph {
                 context: 9,
                 value: reference(8),
-                kind: NativeRuntimeType::Userdata,
+                kind: NativeRuntimeType::Thread,
             };
+            let original = queries.named_type_reference(declaration(8), &[]).unwrap();
+            for _ in 0..3 {
+                let result = graph.narrowed(queries, true);
+                assert!(
+                    result.incomplete,
+                    "unfinished base dependency remains Pending"
+                );
+                assert_eq!(
+                    result.ty, original,
+                    "the provisional userdata base cannot exclude a possible thread"
+                );
+            }
             assert!(
-                graph.narrowed(queries, true).incomplete,
-                "unfinished base dependency remains Pending"
+                provider.base_demands.get() >= 3,
+                "pending bases must not enter a completed cache"
             );
             provider.ready.set(true);
+            let result = graph.narrowed(queries, true);
+            assert!(!result.incomplete);
+            assert_eq!(result.ty, original);
+            let before = provider.base_demands.get();
+            assert!(!graph.narrowed(queries, true).incomplete);
+            assert_eq!(
+                provider.base_demands.get(),
+                before,
+                "completed bases can use their normal cache"
+            );
+        },
+    );
+}
+
+#[test]
+fn refused_domain_dependencies_never_publish_the_callback_fallback() {
+    Engine::new().with_native_provider(
+        || {
+            let provider = Provider::new(false);
+            provider.refuse.set(true);
+            provider
+        },
+        |provider, queries| {
             let graph = Graph {
                 context: 10,
                 value: reference(8),
-                kind: NativeRuntimeType::Userdata,
+                kind: NativeRuntimeType::Thread,
             };
+            let original = queries.named_type_reference(declaration(8), &[]).unwrap();
+            for _ in 0..2 {
+                let result = graph.narrowed(queries, true);
+                assert!(result.incomplete);
+                assert_eq!(
+                    result.ty, original,
+                    "refused aliases cannot attest the fallback userdata base"
+                );
+            }
+            assert!(
+                provider
+                    .errors
+                    .borrow()
+                    .iter()
+                    .any(|error| matches!(error, NamedTypeError::TooDeep(_))),
+                "the finite original alias chain must actually reach native refusal"
+            );
+            provider.refuse.set(false);
+            provider.ready.set(true);
             let result = graph.narrowed(queries, true);
             assert!(!result.incomplete);
-            assert_eq!(
-                result.ty,
-                queries.named_type_reference(declaration(8), &[]).unwrap()
-            );
+            assert_eq!(result.ty, original);
         },
     );
 }
