@@ -229,7 +229,9 @@ mod tests {
                 assert_eq!(report.diagnostics[0].span, span);
                 assert_eq!(crate::describe(&ty), expected);
             }
-            let retained = queries.regular_type(&callable);
+            let mut signatures = queries.call_signature_types(&callable);
+            assert_eq!(signatures.len(), 1);
+            let retained = signatures.pop().unwrap();
             assert!(matches!(retained, Type::SessionType(_)));
             let callable_text = crate::describe_diagnostic_type(&retained, queries);
             let union = Type::Union(vec![retained, Type::String]);
@@ -248,6 +250,13 @@ mod tests {
             let union = queries.regular_type(&Type::Union(vec![Type::Number, Type::String]));
             let union_text = crate::describe_diagnostic_type(&union, queries);
             let callable = callback(Type::Number);
+            // Native tuple normalization includes nil in an optional slot's
+            // value type, independently of its optional-cardinality flag.
+            let optional_union = queries.union_reduced(&[Type::Nil, union.clone()]);
+            let optional_union_text = crate::describe_diagnostic_type(&optional_union, queries);
+            let optional_callable = queries.union_reduced(&[Type::Nil, callable.clone()]);
+            let optional_callable_text =
+                crate::describe_diagnostic_type(&optional_callable, queries);
             let cases = [
                 (
                     vec![PackSlot {
@@ -255,7 +264,7 @@ mod tests {
                         optional: true,
                     }],
                     None,
-                    format!("({union_text})?"),
+                    format!("({optional_union_text})?"),
                 ),
                 (
                     Vec::new(),
@@ -268,7 +277,7 @@ mod tests {
                         optional: true,
                     }],
                     None,
-                    "(fun(): number)?".into(),
+                    format!("({optional_callable_text})?"),
                 ),
                 (
                     Vec::new(),
@@ -285,19 +294,27 @@ mod tests {
                 ),
             ];
             for (fixed, tail, expected) in cases {
+                let optional_slot = fixed.first().is_some_and(|slot| slot.optional);
                 let original = ValuePack::Alternatives(vec![PackAlternative { fixed, tail }]);
                 let retained = queries.retain_pack(&original);
                 assert!(matches!(retained, ValuePack::Session(_)));
                 for pack in [original, retained] {
+                    if optional_slot {
+                        let rows = queries
+                            .inspect_pack(&pack)
+                            .expect("normalized optional row");
+                        assert_eq!(rows.len(), 1);
+                        assert_eq!(rows[0].fixed.len(), 1);
+                        assert!(rows[0].fixed[0].optional);
+                        assert!(queries.is_assignable(&Type::Nil, &rows[0].fixed[0].ty));
+                    }
+                    let span = Span { start: 1, end: 4 };
                     let mut report = CheckReport::default();
-                    report.push_pack_diagnostic(
-                        "TS2322",
-                        Span { start: 1, end: 4 },
-                        "Pack '{}'.",
-                        &[&pack],
-                    );
+                    report.push_pack_diagnostic("TS2322", span, "Pack '{}'.", &[&pack]);
                     report.render_diagnostics(queries);
                     assert_eq!(report.diagnostics[0].message, format!("Pack '{expected}'."));
+                    assert_eq!(report.diagnostics[0].code, "TS2322");
+                    assert_eq!(report.diagnostics[0].span, span);
                 }
             }
         });
