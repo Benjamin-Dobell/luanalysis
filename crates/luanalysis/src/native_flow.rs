@@ -43,10 +43,21 @@ struct FlowContext {
     captured: Option<CapturedFunctionContext>,
 }
 
+/// Exact native signature capabilities from one lexical creation chain.
+/// These are provenance handles; type resolution and substitution stay native.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct SignatureFrame {
+    pub function: NativeFunctionKey,
+    pub contextual: Option<ContextualFunctionContext>,
+    pub captured: CapturedFunctionContext,
+}
+
 #[derive(Default)]
 struct FlowContexts {
     by_context: HashMap<FlowContext, u64>,
     by_id: Vec<FlowContext>,
+    ancestry: HashMap<CapturedFunctionContext, Vec<SignatureFrame>>,
+    contextual_owners: HashMap<ContextualFunctionContext, NativeFunctionKey>,
 }
 
 pub(super) struct NativeFlowSources {
@@ -562,6 +573,39 @@ impl NativeFlowSources {
             .find_map(|(key, region)| (*region == graph.region).then_some(*key))
     }
 
+    pub(super) fn lexical_parent(&self, function: NativeFunctionKey) -> Option<NativeFunctionKey> {
+        let region = *self.functions.get(&function)?;
+        let creation = self.program.graphs[region as usize].creation?;
+        self.function_for_graph(self.graph(creation.input.graph, 0))
+    }
+
+    pub(super) fn retain_signature_ancestry(&self, frames: Vec<SignatureFrame>) {
+        let Some(first) = frames.first() else { return };
+        let mut contexts = self.contexts.borrow_mut();
+        for frame in &frames {
+            if let Some(contextual) = frame.contextual {
+                if let Some(previous) = contexts.contextual_owners.insert(contextual, frame.function) {
+                    assert_eq!(previous, frame.function,
+                        "a contextual capability has one original owner");
+                }
+            }
+        }
+        if let Some(previous) = contexts.ancestry.insert(first.captured, frames.clone()) {
+            assert_eq!(previous, frames,
+                "a native capture has immutable lexical provenance");
+        }
+    }
+
+    pub(super) fn retain_contextual_owner(
+        &self,
+        context: ContextualFunctionContext,
+        function: NativeFunctionKey,
+    ) {
+        let previous = self.contexts.borrow_mut().contextual_owners.insert(context, function);
+        assert!(previous.is_none_or(|previous| previous == function),
+            "a contextual capability has one original owner");
+    }
+
     pub(super) fn evaluation_for_expression(
         &self,
         expression: &Expr,
@@ -615,19 +659,29 @@ impl NativeFlowSources {
         if graph.context == 0 {
             return None;
         }
-        self.contexts.borrow().by_id.get(usize::try_from(graph.context).ok()?.checked_sub(1)?)?.contextual
+        let owner = self.function_for_graph(graph)?;
+        let contexts = self.contexts.borrow();
+        let context = contexts.by_id.get(usize::try_from(graph.context).ok()?.checked_sub(1)?)?;
+        if let Some(captured) = context.captured {
+            if let Some(frames) = contexts.ancestry.get(&captured) {
+                return frames.iter().find(|frame| frame.function == owner)?.contextual;
+            }
+        }
+        context.contextual.filter(|contextual| contexts.contextual_owners.get(contextual) == Some(&owner))
     }
 
     pub(super) fn captured(&self, graph: NativeGraphKey) -> Option<CapturedFunctionContext> {
-        self.contexts.borrow().by_id.get(usize::try_from(graph.context).ok()?.checked_sub(1)?)?.captured
+        let owner = self.function_for_graph(graph)?;
+        let contexts = self.contexts.borrow();
+        let context = contexts.by_id.get(usize::try_from(graph.context).ok()?.checked_sub(1)?)?;
+        let captured = context.captured?;
+        contexts.ancestry.get(&captured)?.iter().find(|frame| frame.function == owner).map(|frame| frame.captured)
     }
 
     pub(super) fn contains_graph(&self, graph: NativeGraphKey) -> bool {
         graph.snapshot == self.program.snapshot
             && (graph.region as usize) < self.program.graphs.len()
-            && (graph.context == 0
-                || self.contextual(graph).is_some()
-                || self.captured(graph).is_some())
+            && (graph.context == 0 || self.contexts.borrow().by_id.get(graph.context as usize - 1).is_some())
     }
 
     pub(super) fn source_node(&self, key: NativeFlowKey) -> Option<&flow::Node> {

@@ -736,6 +736,8 @@ impl NativeRegistry {
 
     pub(super) fn iterator_sources(&self) -> &NativeFlowSources { &self.flow }
 
+    pub(super) fn flow_sources(&self) -> &NativeFlowSources { &self.flow }
+
     pub(super) fn publish_binding(&self, binding: BindingId, value: &Binding) {
         if matches!(self.declarations.get(&binding), Some(DeclarationSource::GenericLoop)) { return; }
         let mut captured = value.clone();

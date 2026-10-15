@@ -431,6 +431,65 @@ pub(super) fn publishes(mode: NativeCheckMode) -> bool {
 }
 
 impl NativeRegistry {
+    fn retain_capture_ancestry(
+        &self,
+        context: &CapturedFunctionContext,
+        queries: &mut dyn TypeQueries,
+    ) {
+        let mut frames = Vec::new();
+        let mut current = Some(*context);
+        let mut expected_owner = None;
+        while let Some(captured) = current {
+            assert!(
+                !frames.iter().any(|frame: &crate::native_flow::SignatureFrame| frame.captured == captured),
+                "native lexical signature ancestry is finite"
+            );
+            let value = queries.captured_function_value(&captured);
+            let function = queries.native_function_key(&value)
+                .expect("a source capture has an original function");
+            if let Some(expected) = expected_owner {
+                assert_eq!(function, expected,
+                    "native lexical provenance follows the original source parent");
+            }
+            frames.push(crate::native_flow::SignatureFrame {
+                function,
+                contextual: queries.captured_function_context(&captured),
+                captured,
+            });
+            current = queries.captured_function_parent(&captured);
+            expected_owner = self.flow_sources().lexical_parent(function);
+            assert!(current.is_none() || expected_owner.is_some(),
+                "a top-level function has no lexical function parent");
+        }
+        self.flow_sources().retain_signature_ancestry(frames);
+    }
+
+    fn lexical_parent_capture(
+        &self,
+        function: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<CapturedFunctionContext> {
+        let parent = self.flow_sources().lexical_parent(function)?;
+        let mut current = queries.current_captured_function();
+        let mut seen = HashSet::new();
+        while let Some(captured) = current {
+            assert!(seen.insert(captured),
+                "native lexical signature ancestry is finite");
+            let value = queries.captured_function_value(&captured);
+            if queries.native_function_key(&value) == Some(parent) {
+                return Some(captured);
+            }
+            current = queries.captured_function_parent(&captured);
+        }
+        // Ordinary declaration-space demands have no contextual or capture
+        // mapper yet. The original parent's native signature is their frame;
+        // native instantiation maps the complete parent chain later.
+        assert!(queries.current_captured_function().is_none()
+                && queries.current_contextual_function().is_none(),
+            "an active native function frame must retain its original lexical parent");
+        queries.function_capture_context(&Type::NativeFunction(parent))
+    }
+
     pub(super) fn source_binding_key(&self, binding: crate::bind::BindingId) -> NativeBindingKey {
         assert!(
             binding.0 < self.bound().declarations.len(),
@@ -508,6 +567,7 @@ impl NativeRegistry {
         let key = self.key_for(function);
         let contextual = queries.current_contextual_function();
         let captured = queries.current_captured_function();
+        let lexical_parent = self.lexical_parent_capture(key, queries);
         let bindings = self
             .bound()
             .scopes
@@ -517,10 +577,10 @@ impl NativeRegistry {
             })
             .map(|scope| scope.captures.clone())
             .unwrap_or_default();
-        if bindings.is_empty() {
+        if bindings.is_empty() && lexical_parent.is_none() {
             return Type::NativeFunction(key);
         }
-        if contextual.is_none() && captured.is_none() && !bindings.iter().any(|binding| self.binding_is_automatic(*binding)) {
+        if lexical_parent.is_none() && contextual.is_none() && captured.is_none() && !bindings.iter().any(|binding| self.binding_is_automatic(*binding)) {
             return Type::NativeFunction(key);
         }
         let mut environment = Vec::with_capacity(bindings.len());
@@ -553,7 +613,7 @@ impl NativeRegistry {
             };
             environment.push((source, value));
         }
-        let value = queries.captured_function(key, &environment);
+        let value = queries.captured_function_with_parent(key, &environment, lexical_parent.as_ref());
         // A contextual caller wraps this original capture capability before
         // selecting its final facet. The raw intermediate has no independent
         // parameter contract and must not be checked as a second function.
@@ -584,6 +644,7 @@ impl NativeRegistry {
         context: &CapturedFunctionContext,
         queries: &mut dyn TypeQueries,
     ) -> (Vec<Parameter>, Option<Type>) {
+        self.retain_capture_ancestry(context, queries);
         let mode = queries
             .current_contextual_function()
             .map_or_else(NativeCheckMode::empty, |context| context.mode);
@@ -624,6 +685,7 @@ impl NativeRegistry {
         queries: &mut dyn TypeQueries,
     ) -> (Vec<Parameter>, Option<Type>) {
         self.expressions().retain_context(key, context);
+        self.flow_sources().retain_contextual_owner(*context, key);
         let mut checker = self.checker(queries);
         checker.type_context = Some(key);
         checker.contextual_function = Some(*context);
@@ -633,6 +695,7 @@ impl NativeRegistry {
             // facet. Bind final validation to the source declaration that
             // actually owns this capture capability.
             if checker.engine.native_function_key(&value) == Some(key) {
+                self.retain_capture_ancestry(&captured, checker.engine);
                 self.expressions()
                     .retain_capture(key, &captured, context.mode);
                 self.expressions()
