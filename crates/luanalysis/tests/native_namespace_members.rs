@@ -118,18 +118,16 @@ fn namespace_member_requires_an_original_unambiguous_attached_owner() {
 }
 
 #[test]
-fn reviewed_namespace_contracts_spell_every_public_overload_head_explicitly() {
+fn original_namespace_main_contract_is_public_beside_overload_tags() {
     let fixture = Fixture::new();
     let original = "---@class std__Math\nmath = {}\n---@overload fun(y:number):number\n---@param y number\n---@param x number\n---@return number\nfunction math.atan(y, x) return 0 end\n";
     fixture.file("math.def.lua", original);
     fixture.file("main.lua", "local result = math.atan(1, 2)\n");
+    pass(&fixture.check());
+    fixture.file("main.lua", "local rejected = math.atan(1, 'wrong')\n");
     let output = fixture.check();
     assert_eq!(output.status.code(), Some(1), "{}", text(&output));
-    assert!(text(&output).contains("TS2554"), "{}", text(&output));
-    let reviewed = original.replace(
-        "---@overload fun(y:number):number",
-        "---@overload fun(y:number):number\n---@overload fun(y:number,x:number):number",
-    );
-    fixture.file("math.def.lua", &reviewed);
+    assert!(text(&output).contains("TS2345"), "{}", text(&output));
+    fixture.file("main.lua", "local corrected = math.atan(1, 2)\n");
     pass(&fixture.check());
 }

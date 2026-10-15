@@ -52,7 +52,9 @@ fn original_ambient_overloads_reject_jointly_invalid_arguments_in_both_head_orde
         let fixture = Fixture::new();
         fs::write(
             fixture.0.join("api.def.lua"),
-            format!("{headers}function parse(...) end\n"),
+            // A nonempty unannotated placeholder supplies no additional public
+            // main contract; only these actual written heads are candidates.
+            format!("{headers}function parse(...) unresolved_placeholder() end\n"),
         )
         .unwrap();
         for source in ["local result = parse(42,16)", "local result = parse({},16)"] {

@@ -550,6 +550,14 @@ impl NativeSignatures {
             }
         }
         for (index, function) in functions.iter().enumerate() {
+            // Declaration-library bodies are opaque placeholders. An inner
+            // function's tags cannot become additional public declarations.
+            if functions.iter().any(|outer| outer.span != function.span
+                && outer.body_span.start <= function.span.start
+                && function.span.end <= outer.body_span.end)
+            {
+                continue;
+            }
             let owner = NativeFunctionKey { snapshot, index: index as u32 };
             if let Some(annotation) = function.annotations.type_annotation.as_ref() {
                 if let [ty] = annotation.types.as_slice() {

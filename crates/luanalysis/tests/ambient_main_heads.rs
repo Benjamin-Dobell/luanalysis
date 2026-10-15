@@ -230,3 +230,12 @@ fn runtime_ellipsis_without_a_vararg_tag_keeps_the_existing_implicit_any_error()
     let fixture = Fixture::new("", "local function report(...) end\nreport(42)\n");
     fail(&fixture.check(), "TS7019");
 }
+
+#[test]
+fn nested_placeholder_functions_do_not_become_public_ambient_main_declarations() {
+    let fixture = Fixture::new(
+        "---@param value number\n---@return string\nfunction render(value)\n---@return MissingBodyType\nlocal function placeholder() return unknown_body_value end\nreturn placeholder()\nend\n",
+        "---@type string\nlocal value=render(42)\n",
+    );
+    pass(&fixture.check());
+}

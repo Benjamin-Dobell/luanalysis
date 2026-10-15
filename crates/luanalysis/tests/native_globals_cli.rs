@@ -400,10 +400,12 @@ fn ambient_signature_local_generics_shadow_function_tags_with_original_owners() 
 }
 
 #[test]
-fn ambient_public_heads_do_not_expose_a_private_parameter_or_return_fallback() {
+fn ambient_public_heads_include_the_original_fully_written_main_contract() {
     let fixture = Fixture::new();
     fixture.file("api.def.lua", "---@overload fun(value:number):number\n---@overload fun(value:string):string\n---@param value boolean\n---@return boolean\nfunction echo(value) return unresolved_placeholder(value) end\n");
-    fixture.file("main.lua", "local rejected = echo(true)\n");
+    fixture.file("main.lua", "---@type boolean\nlocal accepted = echo(true)\n");
+    pass(&fixture.check(&["api.def.lua"]));
+    fixture.file("main.lua", "local rejected = echo({})\n");
     let output = fixture.check(&["api.def.lua"]);
     assert_eq!(output.status.code(), Some(1), "{}", text(&output));
     assert!(
@@ -413,6 +415,8 @@ fn ambient_public_heads_do_not_expose_a_private_parameter_or_return_fallback() {
     );
     assert!(!text(&output).contains("TS2394"), "{}", text(&output));
     assert!(!text(&output).contains("TS2304"), "{}", text(&output));
+    fixture.file("main.lua", "---@type number\nlocal rejected = echo(true)\n");
+    fail(&fixture.check(&["api.def.lua"]), "TS2322");
     fixture.file("main.lua", "---@type number\nlocal corrected = echo(42)\n");
     pass(&fixture.check(&["api.def.lua"]));
 }
