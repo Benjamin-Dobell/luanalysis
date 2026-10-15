@@ -55,6 +55,9 @@ pub struct NativeTableSequenceTail {
 
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub struct NativeTableData<'s> {
+    /// A written Lua sequence contract (`T[]`), rather than a numeric dictionary.
+    /// This is structural syntax information, independent of nominal class identity.
+    pub is_array: bool,
     /// A selected original Lua environment, with member contracts demanded lazily.
     pub environment_origin: Option<super::native_globals::NativeEnvironmentId>,
     pub definition_origin: Option<NativeDefinitionRef>,
@@ -108,6 +111,41 @@ impl NativeTableKey {
 }
 
 impl<'p, 's> Checker<'p, 's> {
+    /// Lua arrays have no JS members, but their sequence contract must survive
+    /// structural materialization, inference and mapper substitution.
+    pub fn native_array_table(&mut self, element: TypeId, readonly: bool) -> Result<TypeId, NativeTableError> {
+        let table = self.native_table(&[], &[NativeTableIndexer {
+            key: TypeId::NUMBER, value: element, readonly, sparse: false,
+            origin: NativeTableFieldOrigin::Declared,
+        }], NativeTableFlavor::Declared)?;
+        let TypeData::NativeTable(table) = self.data(table) else { unreachable!() };
+        let mut table = (**table).clone_in(self.arena);
+        table.is_array = true;
+        Ok(self.intern(TypeData::NativeTable(self.boxed(table))))
+    }
+
+    /// Admission to a Lua array is a sequence question, not vacuous numeric
+    /// index-signature compatibility. Values still use the shared relation and
+    /// inference workers after this metadata-only check.
+    pub(super) fn native_array_source_is_sequence(&self, source: &NativeTableData<'_>) -> bool {
+        if source.nominal_origin.is_some() || source.definition_origin.is_some() || source.environment_origin.is_some() {
+            return false;
+        }
+        if source.is_array { return true }
+        if !source.indexers.is_empty() { return false }
+        let mut count = 0i64;
+        let mut maximum = 0i64;
+        for field in &source.fields {
+            if field.optional && field.value.is_never() { continue }
+            let NativeTableKey::Integer(index) = field.key else { return false };
+            if field.optional || index < 1 { return false }
+            count += 1;
+            maximum = maximum.max(index);
+        }
+        if count != maximum { return false }
+        source.sequence_tails.iter().all(|tail| tail.start <= count + 1)
+    }
+
     pub(super) fn native_sequence_contains(start: i64, key: NativeTableKey) -> bool {
         matches!(key, NativeTableKey::Integer(index) if index >= start)
     }
@@ -346,6 +384,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         sequence_tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            is_array: false,
             environment_origin: None,
             definition_origin: None,
             nominal_origin: None,
@@ -498,6 +537,7 @@ impl<'p, 's> Checker<'p, 's> {
         domains.sort_by_key(|indexer| indexer.key.0);
         tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            is_array: false,
             environment_origin: None,
             definition_origin: None,
             nominal_origin: None,
@@ -853,6 +893,10 @@ impl<'p, 's> Checker<'p, 's> {
             &source_description
         } else { source };
         let identity = r.relation == Relation::Identity;
+        if identity && source.is_array != target.is_array
+            || target.is_array && !self.native_array_source_is_sequence(source) {
+            return Ternary::FALSE;
+        }
         if let Some(target_origin) = target.nominal_origin {
             if source.nominal_origin.is_none_or(|source_origin| !self.native_nominal_reference_compatible(source_origin, target_origin, identity)) {
                 return Ternary::FALSE;
@@ -1040,6 +1084,7 @@ impl<'p, 's> Checker<'p, 's> {
             origin: if self.is_fresh_object_literal_type(ty) { NativeTableFieldOrigin::Inferred } else { NativeTableFieldOrigin::Declared },
         }).collect::<Vec<_>>();
         Some(NativeTableData {
+            is_array: false,
             environment_origin: None,
             definition_origin: None,
             nominal_origin: None,
@@ -1063,6 +1108,7 @@ impl<'p, 's> Checker<'p, 's> {
         }).collect::<Vec<_>>();
         let definition_origin = table.definition_origin.map(|reference| NativeDefinitionRef { view: self.get_widened_type(reference.view), ..reference });
         self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+            is_array: table.is_array,
             environment_origin: table.environment_origin,
             definition_origin,
             nominal_origin: table.nominal_origin,

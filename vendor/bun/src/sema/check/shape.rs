@@ -3558,6 +3558,7 @@ impl<'p, 's> Checker<'p, 's> {
                 self.intern(TypeData::NativeDefinition(NativeDefinitionRef { view, ..reference }))
             }
             TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
+                is_array: table.is_array,
                 environment_origin: table.environment_origin,
                 definition_origin: table.definition_origin,
                 nominal_origin: table.nominal_origin,

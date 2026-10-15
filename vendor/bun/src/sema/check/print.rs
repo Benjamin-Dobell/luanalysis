@@ -1894,6 +1894,13 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                     let reference = self.c.intern(TypeData::NativeObject(origin));
                     return self.type_to_node(reference);
                 }
+                if table.is_array && table.indexers.len() == 1 {
+                    let indexer = table.indexers[0];
+                    let element = self.type_to_node(indexer.value);
+                    let array = cat!(element.emit(POSTFIX), b"[]");
+                    return if indexer.readonly { Node::new(cat!(b"readonly ", array), TYPE_OPERATOR) }
+                        else { Node::new(array, POSTFIX) };
+                }
                 let mut members = Vec::new();
                 for field in &table.fields {
                     let key = match field.key {

@@ -536,6 +536,7 @@ impl<'p, 's> Checker<'p, 's> {
         let target = match self.native_object_schema_resolved(target) { Ok(ty) => ty, Err(_) => return };
         match (self.data(source), self.data(target)) {
             (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
+                if target.is_array && !self.native_array_source_is_sequence(source) { return }
                 let mut sources = Vec::new();
                 let mut targets = Vec::new();
                 for field in &target.fields {

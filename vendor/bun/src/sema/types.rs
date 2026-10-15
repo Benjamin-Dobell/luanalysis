@@ -3841,7 +3841,7 @@ clone_in_struct!(Shape {
     pattern_at,
     mapper
 });
-clone_in_struct!(NativeTableData { environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+clone_in_struct!(NativeTableData { is_array, environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 clone_in_enum!(SigData {
     NativeDeclarationSignature { declaration, mapper, implementation },
     Native { declaration, mapper },

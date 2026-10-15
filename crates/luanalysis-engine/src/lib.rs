@@ -14,6 +14,8 @@ mod native_runtime_primitive_tests;
 #[cfg(test)]
 mod native_opaque_runtime_tests;
 #[cfg(test)]
+mod native_array_form_tests;
+#[cfg(test)]
 mod native_inheritance_tests;
 mod native_flow;
 mod native_project_flow_router;

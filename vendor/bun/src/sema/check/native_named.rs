@@ -7,7 +7,7 @@
 //! Raw member annotations remain in declaration space and are substituted once for an object
 //! mapper. Literal member reads request only the selected field. Full structural demands build
 //! ordinary NativeTable descriptions, preserving Lua numeric, boolean and typed key domains.
-//! Source array heads also describe Lua numeric tables; intrinsic NativeArray remains available
+//! Source array heads retain their structural sequence form; intrinsic NativeArray remains available
 //! to the existing rest/tuple normalization workers. Generic applications use fill_type_args,
 //! mapper_from and type_alias_instantiation, including the ordinary instantiation cache.
 //!
@@ -1447,7 +1447,9 @@ impl<'p, 's> Checker<'p, 's> {
                 return Err(NativeNamedTypeError::InvalidDeclaration(declaration));
             }
         }
-        let table = self.native_table(&fields, &indexers, NativeTableFlavor::Declared)
+        let table = if header.object_form == Some(NativeObjectDeclarationForm::Array) {
+            self.native_array_table(indexers[0].value, indexers[0].readonly)
+        } else { self.native_table(&fields, &indexers, NativeTableFlavor::Declared) }
             .map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
         if header.kind != NativeTypeDeclarationKind::Class { return Ok(table) }
         let TypeData::NativeTable(data) = self.data(table) else { unreachable!() };

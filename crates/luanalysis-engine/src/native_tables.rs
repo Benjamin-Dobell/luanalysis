@@ -264,8 +264,9 @@ pub(super) fn export_table(
     let TypeData::NativeTable(table) = checker.data(ty) else {
         return None;
     };
-    // A class description is a session capability, not a forgeable structural table recipe.
-    if table.nominal_origin.is_some() || table.environment_origin.is_some() { return None }
+    // Array form and declaration origins are exact backend capabilities; the
+    // public structural TableType recipe cannot represent those contracts.
+    if table.is_array || table.nominal_origin.is_some() || table.environment_origin.is_some() { return None }
     // Copy the immutable native descriptors before recursively exporting any
     // member. Recursion may demand further types from this same checker.
     let fields = table.fields.to_vec();
@@ -310,11 +311,10 @@ pub(super) fn export_table(
 
 impl SessionQueries<'_, '_, '_> {
     pub(super) fn array_type_native(&mut self, element: &Type) -> Type {
-        self.table_type_native(&TableType {
-            indexers: vec![TableIndexer::new(Type::Number, element.clone())],
-            ..Default::default()
-        })
-        .unwrap_or_else(|error| std::panic::panic_any(error))
+        let element = import_type(self.checker, self.handles, element);
+        let ty = self.checker.native_array_table(element, false)
+            .unwrap_or_else(|error| std::panic::panic_any(error));
+        export_type(self.checker, self.handles, ty)
     }
 
     pub(super) fn table_type_native(&mut self, table: &TableType) -> Result<Type, TableError> {
@@ -1019,14 +1019,14 @@ mod tests {
     }
 
     #[test]
-    fn lua_array_annotations_are_numeric_tables_without_js_properties_or_key_coercion() {
+    fn lua_arrays_preserve_sequence_contracts_without_js_properties_or_key_coercion() {
         Engine::new().with_session(|queries| {
             let array = queries.array_type(&Type::Number);
             let dictionary = queries
                 .table_type(&dictionary(Type::Number, Type::Number, false))
                 .unwrap();
             assert!(queries.is_assignable(&array, &dictionary));
-            assert!(queries.is_assignable(&dictionary, &array));
+            assert!(!queries.is_assignable(&dictionary, &array));
             assert_eq!(
                 queries.table_lookup(&array, &literal(LuaKey::Integer(2))),
                 Ok(Type::Number)
@@ -1042,7 +1042,7 @@ mod tests {
                 .table_type(&TableType {
                     fields: vec![
                         TableField::new(LuaKey::Integer(1), Type::Number),
-                        TableField::new(LuaKey::Integer(3), Type::Number),
+                        TableField::new(LuaKey::Integer(2), Type::Number),
                     ],
                     fresh: true,
                     ..Default::default()
