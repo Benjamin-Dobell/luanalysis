@@ -15,6 +15,7 @@ pub(crate) struct OriginalStandardFunction {
 }
 
 pub(crate) struct ProjectStandardEnvironment {
+    pub assume_unknown_effects: bool,
     pub string_library: Option<NativeGlobalBindingKey>,
     pub type_operation: Option<OriginalStandardFunction>,
     pub assert_operations: Vec<OriginalStandardFunction>,
@@ -28,6 +29,7 @@ impl ProjectStandardEnvironment {
         files: impl Iterator<Item = (StandardLibrarySource, &'a NativeRegistry)>,
     ) -> Self {
         let mut result = Self {
+            assume_unknown_effects: matches!(profile, StandardEnvironmentProfile::LegacyMinimal | StandardEnvironmentProfile::Lua54),
             string_library: None,
             type_operation: None,
             assert_operations: Vec::new(),

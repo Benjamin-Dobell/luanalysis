@@ -339,6 +339,9 @@ pub trait NativeTypeProvider {
     /// The initial standard-library environment whose primitive metatables are selected.
     /// This is independent of the current lexical or global variable named `string`.
     fn primitive_member_environment(&self) -> Option<NativeEnvironmentKey> { None }
+    /// Standard bindings survive unsupported effects under this host policy.
+    /// Explicit/proven writes and incomplete queries still take precedence.
+    fn assumed_standard_environment(&self) -> Option<NativeEnvironmentKey> { None }
     fn primitive_member_binding(&self, _: NativeEnvironmentKey, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingKey> { None }
     fn contains_global_environment(&self, _: NativeEnvironmentKey) -> bool { false }
     fn global_environment_binding(&self, _: NativeEnvironmentKey, _: &[u8]) -> Option<NativeGlobalBindingKey> { None }

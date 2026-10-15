@@ -47,6 +47,10 @@ pub enum NativeGlobalQueryError {
 }
 
 pub trait NativeGlobalsProvider {
+    /// Host-selected ordinary analysis policy. Unknown effects preserve the
+    /// reached standard binding state; this supplies no heap identity or
+    /// purity certificate and never overrides an observed assignment.
+    fn assumed_standard_environment(&self) -> Option<NativeEnvironmentId> { None }
     /// Frozen initial-library capability, never a lookup of the current variable spelling.
     fn primitive_member_environment(&self) -> Option<NativeEnvironmentId> { None }
     fn primitive_member_binding(&self, _: NativeEnvironmentId, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingId> { None }

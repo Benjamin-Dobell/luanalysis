@@ -168,6 +168,9 @@ fn error(error: core::NativeGlobalQueryError) -> GlobalQueryError {
 }
 
 impl<P: NativeTypeProvider> core::NativeGlobalsProvider for ProviderAdapter<'_, P> {
+    fn assumed_standard_environment(&self) -> Option<core::NativeEnvironmentId> {
+        self.provider.assumed_standard_environment().map(core_environment)
+    }
     fn primitive_member_environment(&self) -> Option<core::NativeEnvironmentId> {
         self.provider.primitive_member_environment().map(core_environment)
     }

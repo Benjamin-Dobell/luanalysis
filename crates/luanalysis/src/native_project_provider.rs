@@ -395,6 +395,9 @@ macro_rules! dispatch {
 }
 
 impl NativeTypeProvider for ProjectRegistry {
+    fn assumed_standard_environment(&self) -> Option<luanalysis_engine::NativeEnvironmentKey> {
+        self.standard_environment.assume_unknown_effects.then_some(self.globals.environment)
+    }
     fn project_flow_provider(&self) -> Option<&dyn luanalysis_engine::NativeFlowProvider> { Some(self) }
     fn global_environment_binding(&self, environment: luanalysis_engine::NativeEnvironmentKey, name: &[u8]) -> Option<luanalysis_engine::NativeGlobalBindingKey> {
         if environment != self.globals.environment { return None; }
