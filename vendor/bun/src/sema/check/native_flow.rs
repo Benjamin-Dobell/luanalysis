@@ -364,6 +364,13 @@ pub trait NativeFlowProvider {
 type ValueContext = (NativeValueKey, NativeFlowKey);
 type LoopKey = (NativeFlowKey, NativeReferenceKey, TypeId, TypeId);
 
+#[derive(Clone, Copy)]
+struct NativeEffectRecord {
+    effects: NativeCallEffects,
+    computed_since: u64,
+    owner: Option<LoopKey>,
+}
+
 pub(super) struct NativeLoopFrame {
     key: LoopKey,
     ty: TypeId,
@@ -382,7 +389,7 @@ pub(super) struct NativeFlowState {
     call_effects: FxHashMap<(ValueContext, u64), NativeCallEffects>,
     pub(super) contextual_owners: FxHashMap<(NativeFunctionId, NativeFlowKey, u64), Option<TypeId>>,
     // Provisional query handles name actual effect records, never TypeIds.
-    effect_records: Vec<NativeCallEffects>,
+    effect_records: Vec<NativeEffectRecord>,
     pub(super) effect_epoch: u64,
     next_effect_epoch: u64,
     reachable: FxHashMap<NativeFlowKey, bool>,
@@ -1540,14 +1547,29 @@ impl<'s, 'p> Checker<'s, 'p> {
             return NativeEffectResult::Complete(cached);
         }
         let query = super::Query::NativeFlowCallEffects(value, input, epoch);
+        // A source callback can finish the native loop that made this effect
+        // provisional while its enclosing signature query remains open. That
+        // query frame alone cannot extend the old effect's lifetime. Keep an
+        // unfinished original owner through unrelated nested publications, but
+        // demand the effect again once its own feedback has completed.
+        let expired = self.provisional.get(&query).is_some_and(|entry| {
+            let record = self.flow_memo.native_state.effect_records[entry.raw as usize];
+            let owner_active = record.owner.is_some_and(|owner| {
+                self.flow_memo.native_state.loops.iter().any(|frame| frame.key == owner)
+            });
+            !owner_active && self.is_flow_loop_cached_since(record.computed_since)
+        });
+        if expired { self.provisional.remove(&query); }
         if let Some(raw) = self.provisional(query) {
-            return NativeEffectResult::Incomplete { _effects: self.flow_memo.native_state.effect_records[raw as usize] };
+            return NativeEffectResult::Incomplete { _effects: self.flow_memo.native_state.effect_records[raw as usize].effects };
         }
         if !self.enter(query) {
             // `enter` has tainted the dependent queries. An effect that needs
             // its own in-progress loop is unavailable, not proof of no effect.
             return NativeEffectResult::Pending;
         }
+        let computed_since = self.work;
+        let owner = self.flow_memo.native_state.loops.last().map(|frame| frame.key);
         let begun = self.begin_memoizable();
         let effects = provider.call_effects(value, input, self);
         let stored = self.end_memoizable(begun);
@@ -1557,7 +1579,7 @@ impl<'s, 'p> Checker<'s, 'p> {
             }
             Err(open) => {
                 let raw = self.flow_memo.native_state.effect_records.len() as u64;
-                self.flow_memo.native_state.effect_records.push(effects);
+                self.flow_memo.native_state.effect_records.push(NativeEffectRecord { effects, computed_since, owner });
                 self.cache_provisionally(query, raw, open);
                 return NativeEffectResult::Incomplete { _effects: effects };
             }
