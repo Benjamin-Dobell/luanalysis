@@ -192,3 +192,52 @@ impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> 
     }
 
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{NativeFunctionKey, Parameter, Type, TypeHandles, TypeQueries};
+
+    fn original(node: u32) -> NativeFlowKey {
+        NativeFlowKey { graph: NativeGraphKey { snapshot: 9821, region: 3, context: 7 }, node }
+    }
+    struct Recipes;
+    impl NativeTypeProvider for Recipes {
+        fn project_flow_provider(&self) -> Option<&dyn crate::NativeFlowProvider> { Some(self) }
+        fn contains_function(&self, _: NativeFunctionKey) -> bool { false }
+        fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> { panic!("metadata cannot request parameters") }
+        fn function_declared_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> { panic!("metadata cannot request a return contract") }
+        fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type { panic!("metadata cannot infer a return type") }
+        fn return_cycle(&self, _: NativeFunctionKey) { panic!("metadata cannot infer a return type") }
+        fn return_type_too_deep(&self, _: NativeFunctionKey) { panic!("metadata cannot infer a return type") }
+    }
+    impl crate::NativeFlowProvider for Recipes {
+        fn read_alias_receiver(&self, at: NativeFlowKey) -> Option<NativeAliasReturnValue> {
+            (at == original(9)).then_some(NativeAliasReturnValue {
+                value: NativeValueKey { snapshot: 9821, index: 4 }, input: original(2),
+            })
+        }
+        fn contains_graph(&self, graph: NativeGraphKey) -> bool { graph == original(0).graph }
+        fn contains_reference(&self, _: NativeReferenceKey) -> bool { false }
+        fn node(&self, _: NativeFlowKey) -> Option<NativeFlowNode> { None }
+        fn is_shared(&self, _: NativeFlowKey) -> bool { false }
+        fn write_affects(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> NativeWriteRelation { NativeWriteRelation::Unaffected }
+        fn value_type(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Type { panic!("receiver metadata cannot request a value type") }
+        fn call_effects(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> NativeCallEffects { panic!("receiver metadata cannot inspect call effects") }
+        fn flow_error(&self, _: NativeFlowKey, _: NativeFlowError) { panic!("original metadata is valid") }
+    }
+
+    #[test]
+    fn installed_project_core_provider_retains_original_read_receiver_metadata() {
+        let provider = Recipes;
+        let handles = TypeHandles::new();
+        let adapter = ProviderAdapter { provider: &provider, handles: &handles };
+        // This is the same core-provider capability selected by call-state
+        // replay, including both project and owned-value facade adapters.
+        let core = bun_sema::check::NativeFunctionProvider::project_flow_provider(&adapter).unwrap();
+        let receiver = core.read_alias_receiver(original(9)).expect("project routing must not fall back to absent metadata");
+        assert_eq!(receiver.value, NativeValueKey { snapshot: 9821, index: 4 });
+        assert_eq!(receiver.input, original(2));
+        assert!(core.read_alias_receiver(original(8)).is_none());
+    }
+}
