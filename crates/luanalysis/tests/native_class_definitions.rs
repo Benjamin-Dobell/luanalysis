@@ -201,14 +201,12 @@ fn generic_constructor_collisions_retain_value_and_deletion_candidates() {
 }
 
 #[test]
-fn explicit_type_generic_multiple_nonlocal_and_nonliteral_definition_forms_stay_gated() {
+fn explicit_type_generic_multiple_and_nonlocal_definition_forms_stay_gated() {
     for source in [
         "---@class C\n---@type C\nlocal value={}",
         "---@class C<T>\n---@field value T\nlocal value={}",
         "---@class C\nlocal a,b={},{}",
         "---@class C\nnamespace.value={}",
-        "local function make() return {} end\n---@class C\nlocal value=make()",
-        "---@class C\nlocal value=nil",
     ] {
         let report = rejects(source, "LUA2031");
         assert!(

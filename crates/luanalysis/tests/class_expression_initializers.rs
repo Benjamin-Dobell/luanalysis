@@ -16,6 +16,7 @@ fn class_expression_initializers_validate_actual_tables_and_preserve_nominal_ide
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     for invalid in [
         source.replace("identity({value=42})", "identity(42)"),
+        source.replace("identity({value=42})", "nil"),
         source.replace("identity({value=42})", "identity({value='wrong'})"),
         source.replace("consume(definition)", "consume({value=42})"),
         source.replace(
