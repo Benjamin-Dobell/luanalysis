@@ -222,7 +222,10 @@ fn reached_direct_dynamic_and_sibling_replacements_are_not_reset_to_standard_con
         error_on(&rejected, &source, "TS2349", "assert(true,'checked')", "assert");
     }
     let source = "---@param event string\nlocal function replace(event)\n(--[[---@type table]] _G)[event]=42\nassert(true,'checked')\nend\n";
-    let rejected = report(fixture.check(source, true, None), 1);
+    // An unproven dynamic key is an unknown effect under the ordinary policy;
+    // the strict physical proof must still reject its possible replacement.
+    clean(fixture.check(source, true, None));
+    let rejected = report(fixture.check_options(source, true, None, true), 1);
     error_on(&rejected, source, "TS2349", "assert(true,'checked')", "assert");
 }
 
@@ -245,9 +248,10 @@ fn builtin_to_builtin_replacement_uses_the_replacements_original_public_heads() 
 #[test]
 fn an_ordinary_standard_view_does_not_relax_strict_physical_capability_checks() {
     let fixture = Fixture::new();
-    clean(fixture.check(EVENT_MANAGER_VIEW, true, None));
-    let strict = report(fixture.check_options(EVENT_MANAGER_VIEW, true, None, true), 1);
-    error_on(&strict, EVENT_MANAGER_VIEW, "TS2349", "assert(true,'checked')", "assert");
+    let source = EVENT_MANAGER_VIEW.replace("    assert(true,'checked')", "    hostEffect()\n    assert(true,'checked')");
+    clean(fixture.check(&source, true, None));
+    let strict = report(fixture.check_options(&source, true, None, true), 1);
+    error_on(&strict, &source, "TS2349", "assert(true,'checked')", "assert");
 }
 
 #[test]
