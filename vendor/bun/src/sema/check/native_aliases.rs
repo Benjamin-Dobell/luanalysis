@@ -347,6 +347,25 @@ impl<'p, 's> Checker<'p, 's> {
         use crate::types::TypeId;
         let unknown = NativeFlowResult { ty: TypeId::FALSE, incomplete: false, unresolved_auto: false };
         if loader.graph != input.graph || !provider.contains_reference(loader) || !provider.contains_graph(input.graph) || provider.node(input).is_none() { return unknown }
+        // Cyclic module execution can create fresh alias-execution frames for
+        // the same original loader input. Guard that original dependency,
+        // rather than treating every new execution frame as independent work.
+        let query = Query::NativeAliasLoaderState(loader, input);
+        if !self.enter(query) {
+            self.mark_tainted_from(0);
+            return NativeFlowResult { incomplete: true, ..unknown };
+        }
+        let (mut result, completed) = self.run_memoizable(|checker| checker.native_alias_loader_state_worker(provider, loader, input));
+        if self.leave(query).is_err() || completed.is_none() || result.incomplete {
+            self.mark_tainted_from(0);
+            result.incomplete = true;
+        }
+        result
+    }
+
+    fn native_alias_loader_state_worker(&mut self, provider: &dyn NativeFlowProvider, loader: NativeReferenceKey, input: NativeFlowKey) -> NativeFlowResult {
+        use crate::types::TypeId;
+        let unknown = NativeFlowResult { ty: TypeId::FALSE, incomplete: false, unresolved_auto: false };
         let initial = if let Some(index) = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry.graph == input.graph) {
             let frame = self.native_alias_cache.executions[index];
             let Some(parent) = provider.reference_in_graph(loader, frame.caller.graph) else { return unknown };
