@@ -451,6 +451,8 @@ fn module_fallback_keeps_nested_stack_refusal_distinct_from_ordinary_pending() {
         fn is_shared(&self, _: NativeFlowKey) -> bool { false }
         fn write_affects(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> NativeWriteRelation { NativeWriteRelation::Unaffected }
         fn value_type(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> TypeId { panic!("budget refusal precedes source type demands") }
+        fn call_effects(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> flow::NativeCallEffects { panic!("budget refusal precedes call effects") }
+        fn flow_error(&self, _: NativeFlowKey, _: flow::NativeFlowError) { panic!("module demand owns the limit diagnostic") }
     }
     #[derive(Default)]
     struct Probe { errors: RefCell<Vec<project::NativeProjectError>> }
