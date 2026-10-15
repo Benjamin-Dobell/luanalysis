@@ -331,10 +331,7 @@ impl NativeRegistry {
                 let implementation = queries.signature_type(main);
                 for &head in heads {
                     if !queries.signature_implementation_compatible(head, &implementation) {
-                        self.merge_report(super::CheckReport { diagnostics: vec![Diagnostic {
-                            code: "TS2394", span: self.signatures.get(head).span,
-                            message: "This overload signature is not compatible with its implementation signature.".into(),
-                        }], ..Default::default() });
+                        self.report_signature_incompatibility(head, &implementation, queries);
                     }
                 }
             }
@@ -353,14 +350,27 @@ impl NativeRegistry {
                     .expect("an actual runtime declaration has a private implementation signature");
                 for &head in heads {
                     if !queries.signature_implementation_compatible(head, &implementation) {
-                        self.merge_report(super::CheckReport {diagnostics:vec![Diagnostic {
-                            code:"TS2394",span:self.signatures.get(head).span,
-                            message:"This overload signature is not compatible with its implementation signature.".into(),
-                        }],..Default::default()});
+                        self.report_signature_incompatibility(head, &implementation, queries);
                     }
                 }
             }
         }
+    }
+    fn report_signature_incompatibility(
+        &self,
+        head: NativeSignatureKey,
+        implementation: &Type,
+        queries: &mut dyn TypeQueries,
+    ) {
+        let overload = queries.signature_type(head);
+        let mut report = super::CheckReport::default();
+        report.push_type_diagnostic(
+            "TS2394",
+            self.signatures.get(head).span,
+            "Overload signature '{}' is not compatible with implementation signature '{}'.",
+            &[&overload, implementation],
+        );
+        self.merge_report(report);
     }
     pub(super) fn signature_parameters_keys(
         &self,

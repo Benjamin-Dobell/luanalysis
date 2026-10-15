@@ -145,6 +145,103 @@ fn a_callable_union_member_groups_its_own_nullable_return_type() {
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+const OVERLOAD: &str = "-- Unicode: λ\r\n---@shape Receipt<T>\r\n---@field value T\r\n\r\n---@overload fun(value:Receipt<number[]>):Receipt<number[]>\r\n---@param value Receipt<string[]>\r\n---@return Receipt<string[]>\r\nlocal function exchange(value) return value end\r\n";
+
+fn assert_overload_message(message: &str) {
+    assert_eq!(
+        message,
+        "Overload signature 'fun(value: Receipt<number[]>): Receipt<number[]>' is not compatible with implementation signature 'fun(value: Receipt<string[]>): Receipt<string[]>'."
+    );
+    no_placeholders(message);
+}
+
+#[test]
+fn incompatible_overloads_render_public_and_private_signatures_at_the_original_head() {
+    let report = check(OVERLOAD);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    let diagnostic = &report.diagnostics[0];
+    assert_eq!(diagnostic.code, "TS2394");
+    assert_eq!(
+        &OVERLOAD[diagnostic.span.start..diagnostic.span.end],
+        "@overload fun(value:Receipt<number[]>):Receipt<number[]>"
+    );
+    assert_overload_message(&diagnostic.message);
+    assert!(
+        check(&OVERLOAD.replace("Receipt<string[]>", "Receipt<number[]>"))
+            .diagnostics
+            .is_empty()
+    );
+}
+
+#[test]
+fn text_and_json_render_ambient_implementation_contracts_without_checking_placeholder_bodies() {
+    let directory = std::env::temp_dir().join(format!(
+        "luanalysis overload diagnostics {} {}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&directory).unwrap();
+    let library = directory.join("signatures.def.lua");
+    let file = directory.join("main.lua");
+    fs::write(&file, "").unwrap();
+    let source = OVERLOAD
+        .replace("local function exchange", "function exchange")
+        .replace("return value end", "return missing_body(value) end");
+    let diagnostic = &check(OVERLOAD).diagnostics[0];
+    for format in ["text", "json"] {
+        let run = || {
+            Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+                .args(["check", "--no-stdlib", "--format", format, "--library"])
+                .arg(&library)
+                .arg(&file)
+                .output()
+                .unwrap()
+        };
+        fs::write(&library, &source).unwrap();
+        let output = run();
+        assert_eq!(output.status.code(), Some(1));
+        let text = String::from_utf8(if format == "json" {
+            assert!(output.stderr.is_empty());
+            output.stdout
+        } else {
+            output.stderr
+        })
+        .unwrap();
+        assert!(text.contains(&diagnostic.message), "{text}");
+        assert!(!text.contains("missing_body"), "{text}");
+        if format == "json" {
+            assert_eq!(text.matches("\"code\":\"TS2394\"").count(), 1, "{text}");
+            assert!(
+                text.contains(&format!(
+                    "\"range\":{{\"start\":{},\"end\":{}}}",
+                    diagnostic.span.start, diagnostic.span.end
+                )),
+                "{text}"
+            );
+        } else {
+            assert_eq!(text.matches("error[").count(), 1, "{text}");
+            assert!(
+                text.contains("signatures.def.lua:5:4: error[TS2394]"),
+                "{text}"
+            );
+        }
+        fs::write(
+            &library,
+            source.replace("Receipt<string[]>", "Receipt<number[]>"),
+        )
+        .unwrap();
+        let corrected = run();
+        assert_eq!(
+            corrected.status.code(),
+            Some(0),
+            "{}{}",
+            String::from_utf8_lossy(&corrected.stdout),
+            String::from_utf8_lossy(&corrected.stderr)
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
 #[test]
 fn named_generic_arguments_render_nil_and_preserve_the_undefined_string_literal() {
     let source = "---@class Envelope<T>\n---@field value T\n\n---@type Envelope<nil>\nlocal nil_argument=42\n\n---@type Envelope<\"undefined\">\nlocal literal_argument=42\n";
