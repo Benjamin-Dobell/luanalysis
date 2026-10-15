@@ -36,9 +36,10 @@ fn original_coroutine_callback_checks_dead_stores_and_calls_against_written_type
             "TS2322",
         ),
         (
-            SOURCE.replace(
-                "resumeWithErrorHandling(co, onError)",
-                "resumeWithErrorHandling(42, onError)",
+            SOURCE.replacen(
+                "                    resumeWithErrorHandling(co, onError)",
+                "                    resumeWithErrorHandling(42, onError)",
+                1,
             ),
             "TS2345",
         ),
