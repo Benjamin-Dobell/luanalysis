@@ -359,6 +359,9 @@ impl NativeRegistry {
             return queries.named_declared_type(declaration).ok();
         }
         if self.source_role() == SourceRole::Declaration {
+            if let Some(contract) = self.plain_namespace_contract(source, queries) {
+                return Some(contract);
+            }
             return source.initializer.and_then(|expression| {
                 let expression = &self.expressions.get(expression).expression;
                 self.ambient_local_alias_contract(expression, queries)

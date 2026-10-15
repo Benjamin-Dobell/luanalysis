@@ -1,10 +1,10 @@
-//! Original namespace member identities linked to actual declaration attachments.
+//! Original namespace member identities and pure declaration-root contracts.
 //! This index performs no type expansion, alias solving, or stub-body inference.
 use super::{GlobalDeclarationSource, NativeRegistry};
 use crate::Diagnostic;
 use luanalysis_engine::{
     LuaKey, NativeTypeDeclarationKey, NativeTypeMemberKey, Type, TypeMemberHeader,
-    TypeMemberKeyRecipe, TypeMemberOwner, TypeMemberVisibility, TypeQueries,
+    TypeMemberKeyRecipe, TypeMemberOwner, TypeMemberVisibility, TypeQueries, TableField, TableType,
 };
 use luanalysis_project::SourceRole;
 use luanalysis_syntax::{Expr, ExprKind, Name, Span};
@@ -90,6 +90,70 @@ impl NativeRegistry {
             _ => Err("namespace root has multiple original attached declaration owners"),
         }
     }
+    fn plain_namespace_root(
+        &self,
+        source: &GlobalDeclarationSource,
+    ) -> Result<&GlobalDeclarationSource, &'static str> {
+        if self.source_role() != SourceRole::Declaration {
+            return Err("namespace declarations require declaration source role");
+        }
+        let target = source.namespace.as_ref().expect("original dotted target");
+        if target.path.len() != 1 {
+            return Err("nested namespace paths require explicit intermediate owner contracts");
+        }
+        let mut roots = self.globals.declarations.iter().filter(|candidate| {
+            candidate.namespace.is_none() && candidate.name.text == target.root.text
+        });
+        let root = roots.next().ok_or("namespace has no original root declaration")?;
+        if roots.next().is_some() {
+            return Err("namespace has multiple original root declarations");
+        }
+        if root.annotation.is_some()
+            || self.named.declarations().iter().any(|named| named.syntax.attachment == Some(root.statement))
+            || !root.initializer.is_some_and(|key| empty_table(&self.expressions.get(key).expression))
+        {
+            return Err("plain namespace root requires an original unannotated empty-table declaration");
+        }
+        if source.function.is_some_and(|key| self.implicit_receiver(self.function(key)).is_some()) {
+            return Err("colon namespace declarations require an original named receiver contract");
+        }
+        Ok(root)
+    }
+    pub(super) fn plain_namespace_contract(
+        &self,
+        root: &GlobalDeclarationSource,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        if root.namespace.is_some() { return None; }
+        let members: Vec<_> = self.globals.declarations.iter().filter(|source| {
+            source.namespace.as_ref().is_some_and(|target| target.root.text == root.name.text)
+                && self.plain_namespace_root(source).is_ok_and(|owner| owner.key == root.key)
+        }).collect();
+        if members.is_empty() { return None; }
+        let mut fields = Vec::with_capacity(members.len());
+        for source in members {
+            let value = match queries.value_declaration_type(source.key) {
+                Ok(value) => value,
+                // The guarded value query has already reported the original
+                // failed contract. Do not replace it with an open table or any.
+                Err(_) => return Some(Type::Unknown),
+            };
+            fields.push(TableField::declared(
+                LuaKey::String(source.name.text.as_bytes().to_vec()), value,
+            ));
+        }
+        Some(match queries.table_type(&TableType { fields, ..Default::default() }) {
+            Ok(table) => table,
+            Err(error) => {
+                self.report.borrow_mut().diagnostics.push(Diagnostic {
+                    code: "LUA2038",
+                    span: root.name.span,
+                    message: format!("Namespace has an invalid declared member schema: {error:?}."),
+                });
+                Type::Unknown
+            }
+        })
+    }
     pub(crate) fn namespace_contains_member(&self, key: NativeTypeMemberKey) -> bool {
         self.namespace_source(key)
             .is_some_and(|source| self.namespace_owner(source).is_ok())
@@ -141,7 +205,9 @@ impl NativeRegistry {
         source: &GlobalDeclarationSource,
         queries: &mut dyn TypeQueries,
     ) {
-        if let Err(reason) = self.namespace_owner(source) {
+        if self.namespace_owner(source).is_err()
+            && let Err(reason) = self.plain_namespace_root(source)
+        {
             self.report.borrow_mut().diagnostics.push(Diagnostic {
                 code: "LUA2038",
                 span: source.namespace.as_ref().unwrap().span,
@@ -153,10 +219,48 @@ impl NativeRegistry {
     }
 }
 
+fn empty_table(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::Table(fields) => fields.is_empty(),
+        ExprKind::Parenthesized(inner) => empty_table(inner),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use luanalysis_engine::{Engine, GlobalValueKind, NativeFunctionKey, NativeTypeProvider};
+
+    #[test]
+    fn plain_namespace_schemas_query_original_member_values_without_named_declarations() {
+        let source = "Api={}\n---@param value number\n---@return string\nfunction Api.read(value) return unresolved_placeholder(value) end\nApi.label=''\n";
+        let file = luanalysis_syntax::parse(source);
+        assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
+        let bound = crate::bind::bind(&file);
+        Engine::new().with_native_provider(
+            move || {
+                let mut registry = NativeRegistry::new(file, bound);
+                registry.set_source_role(SourceRole::Declaration);
+                registry
+            },
+            |registry, queries| {
+                assert!(registry.named.declarations().is_empty());
+                let root = &registry.globals.declarations[0];
+                let member = &registry.globals.declarations[1];
+                assert_ne!(root.key, member.key);
+                assert!(member.function.is_some());
+                assert_eq!(registry.plain_namespace_root(member).unwrap().key, root.key);
+                let table = queries.value_declaration_type(root.key).unwrap();
+                let callable = queries.property_type(&table, "read").unwrap();
+                assert!(queries.call(&callable, &[Type::Number]).errors.is_empty());
+                assert!(!queries.call(&callable, &[Type::String]).errors.is_empty());
+                let label = queries.property_type(&table, "label").unwrap();
+                assert_eq!(queries.format(&label), "string");
+                assert!(registry.take_report().diagnostics.is_empty());
+            },
+        );
+    }
 
     #[test]
     fn namespace_and_constructor_member_recipes_have_disjoint_original_keys() {

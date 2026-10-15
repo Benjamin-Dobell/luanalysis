@@ -123,3 +123,56 @@ fn namespace_data_requires_an_original_owner_and_does_not_publish_a_global_membe
     fixture.file("main.lua", "local valid = 1\n");
     fail(&fixture.check(), "LUA2038");
 }
+
+#[test]
+fn plain_empty_table_namespaces_use_original_function_and_data_contracts() {
+    let declarations = "Api = {}\n---@param value string\n---@return number,string\nfunction Api.lookup(value) return undefined_placeholder(value) end\nApi.label = ''\n";
+    let fixture = Fixture::new(declarations,
+        "local count,label=Api.lookup('value')\n---@type number\nlocal numeric=count\n---@type string\nlocal textual=label\nApi.label='changed'\n");
+    pass(&fixture.check());
+    fixture.file("main.lua", "local value=Api.lookup(42)\n");
+    fail(&fixture.check(), "main.lua:1:24: error[TS2345]");
+    fixture.file("main.lua", "Api.label=42\n");
+    fail(&fixture.check(), "main.lua:1:11: error[TS2322]");
+    fixture.file("main.lua", "local count=Api.lookup('corrected')\nApi.label='corrected'\n");
+    pass(&fixture.check());
+}
+
+#[test]
+fn plain_namespace_generic_heads_keep_result_packs_and_literal_data_contracts() {
+    let fixture = Fixture::new(
+        "Api={}\n---@generic T\n---@param value T\n---@return T,T\nfunction Api.copy(value) return undefined_placeholder(value) end\n---@type 'fixed'\nApi.mode=nil\n",
+        "local one,two=Api.copy('text')\n---@type string\nlocal checked=two\nApi.mode='fixed'\n",
+    );
+    pass(&fixture.check());
+    fixture.file("main.lua", "Api.mode='wrong'\n");
+    fail(&fixture.check(), "TS2322");
+    fixture.file("main.lua", "local missing=Api.unknown\n");
+    fail(&fixture.check(), "TS2339");
+}
+
+#[test]
+fn plain_namespace_contract_errors_keep_the_original_member_without_inferring_placeholders() {
+    let fixture = Fixture::new("Api={}\nApi.value=undefined_placeholder()\n", "local valid=42\n");
+    let invalid = fixture.check();
+    fail(&invalid, "library.def.lua:2:5: error[LUA2035]");
+    assert!(!text(&invalid).contains("TS2304"), "{}", text(&invalid));
+    fixture.file("library.def.lua", "Api={}\n---@type string\nApi.value=undefined_placeholder()\n");
+    fixture.file("main.lua", "---@type string\nlocal value=Api.value\n");
+    pass(&fixture.check());
+}
+
+#[test]
+fn plain_namespace_duplicate_members_and_unsupported_roots_fail_explicitly() {
+    for declarations in [
+        "Api={}\nApi.value=''\nApi.value=42\n",
+        "Api={}\nApi={}\nApi.value=''\n",
+        "Api={existing=42}\nApi.value=''\n",
+        "---@type table\nApi={}\nApi.value=''\n",
+        "Api={}\nApi.nested={}\nfunction Api.nested.read() end\n",
+        "Api={}\nfunction Api:read() end\n",
+    ] {
+        let fixture = Fixture::new(declarations, "local valid=42\n");
+        fail(&fixture.check(), "LUA2038");
+    }
+}
