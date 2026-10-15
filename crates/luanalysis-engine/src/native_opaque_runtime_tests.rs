@@ -53,6 +53,24 @@ impl Provider {
     }
 }
 impl NativeTypeProvider for Provider {
+    fn contains_function(&self, _: NativeFunctionKey) -> bool {
+        false
+    }
+    fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> {
+        panic!("runtime ancestry must not demand function parameters")
+    }
+    fn function_declared_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> {
+        panic!("runtime ancestry must not demand function returns")
+    }
+    fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type {
+        panic!("runtime ancestry must not infer function bodies")
+    }
+    fn return_cycle(&self, _: NativeFunctionKey) {
+        panic!("runtime ancestry must not enter a function return cycle")
+    }
+    fn return_type_too_deep(&self, _: NativeFunctionKey) {
+        panic!("runtime ancestry must not enter function return inference")
+    }
     fn runtime_type_declaration(
         &self,
         kind: NativeOpaqueRuntimeKind,
