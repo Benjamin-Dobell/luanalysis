@@ -66,12 +66,10 @@ fn argument_failure(output: &Output) {
     );
 }
 
-// These are byte-for-byte declaration excerpts from the preserved originals,
-// rather than another set of rewritten standard-library contracts.
-const ORIGINAL_GLOBAL: &str =
-    include_str!("../../../vendor/luanalysis-stdlib/upstream/Lua54/global.def.lua");
-const ORIGINAL_TABLE: &str =
-    include_str!("../../../vendor/luanalysis-stdlib/upstream/Lua54/table.def.lua");
+// These excerpts come from the active declaration resources, where every
+// intended public form is spelled by an original explicit overload head.
+const ACTIVE_GLOBAL: &str = include_str!("../stdlib/Lua54/global.def.lua");
+const ACTIVE_TABLE: &str = include_str!("../stdlib/Lua54/table.def.lua");
 fn excerpt<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let from = source.find(start).expect("original declaration start");
     let to = source[from..].find(end).expect("original declaration end") + from + end.len();
@@ -79,15 +77,15 @@ fn excerpt<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 }
 fn tonumber() -> &'static str {
     excerpt(
-        ORIGINAL_GLOBAL,
+        ACTIVE_GLOBAL,
         "---@overload fun(e: number | string): nil | number",
         "function tonumber(e, base) end",
     )
 }
 fn concat() -> String {
-    let owner = excerpt(ORIGINAL_TABLE, "---@class std__Table", "table = {}");
+    let owner = excerpt(ACTIVE_TABLE, "---@class std__Table", "table = {}");
     let method = excerpt(
-        ORIGINAL_TABLE,
+        ACTIVE_TABLE,
         "---@overload fun(list:string[]|number[]|(string|number)[]):string",
         "function table.concat(list, sep, i, j) end",
     );
@@ -95,7 +93,7 @@ fn concat() -> String {
 }
 
 #[test]
-fn original_tonumber_exposes_one_argument_overload_and_written_two_argument_main() {
+fn active_tonumber_resource_exposes_both_explicit_public_arities() {
     let fixture = Fixture::new(
         tonumber(),
         "---@type number|nil\nlocal one=tonumber('42')\n---@type number|nil\nlocal numeric=tonumber(42)\n---@type number|nil\nlocal two=tonumber('ff',16)\n",
@@ -108,7 +106,7 @@ fn original_tonumber_exposes_one_argument_overload_and_written_two_argument_main
 }
 
 #[test]
-fn original_table_concat_exposes_all_four_written_arities_without_resource_changes() {
+fn active_table_concat_resource_exposes_all_four_explicit_public_arities() {
     let fixture = Fixture::new(
         &concat(),
         "---@param values string[]\nlocal function check(values)\n---@type string\nlocal a=table.concat(values)\n---@type string\nlocal b=table.concat(values,',')\n---@type string\nlocal c=table.concat(values,',',1)\n---@type string\nlocal d=table.concat(values,',',1,2)\nend\n",
@@ -121,11 +119,18 @@ fn original_table_concat_exposes_all_four_written_arities_without_resource_chang
 }
 
 #[test]
-fn generic_written_main_keeps_its_original_type_parameter_owner_beside_an_overload() {
+fn generic_written_main_stays_private_until_its_public_head_is_explicit() {
+    let private = "---@overload fun(value:number):number\n---@generic T\n---@param first T\n---@param second? T\n---@return T\nfunction choose(first,second) return nonexistent_placeholder() end\n";
     let fixture = Fixture::new(
-        "---@overload fun(value:number):number\n---@generic T\n---@param first T\n---@param second T\n---@return T\nfunction choose(first,second) return nonexistent_placeholder() end\n",
+        private,
         "---@type number\nlocal one=choose(42)\n---@type string\nlocal two=choose('left','right')\n---@type boolean\nlocal three=choose(true,false)\n",
     );
+    fail(&fixture.check(), "TS2554");
+    let declarations = private.replace(
+        "---@generic T",
+        "---@overload fun<T>(first:T,second:T):T\n---@generic T",
+    );
+    fixture.file("api.def.lua", &declarations);
     pass(&fixture.check());
     fixture.file(
         "main.lua",
@@ -140,9 +145,9 @@ fn generic_written_main_keeps_its_original_type_parameter_owner_beside_an_overlo
 }
 
 #[test]
-fn colon_written_main_and_overload_share_one_receiver_with_explicit_self_contract() {
+fn explicit_colon_heads_share_one_receiver_with_a_compatible_private_self_contract() {
     let fixture = Fixture::new(
-        "---@class Color\n---@field r number\nColor={}\n---@overload fun():string\n---@param self Color\n---@param alpha boolean\n---@return string\nfunction Color:toHex(alpha) return unresolved_placeholder(self,alpha) end\n",
+        "---@class Color\n---@field r number\nColor={}\n---@overload fun():string\n---@overload fun(alpha:boolean):string\n---@param self Color\n---@param alpha? boolean\n---@return string\nfunction Color:toHex(alpha) return unresolved_placeholder(self,alpha) end\n",
         "---@type Color\nlocal color\n---@type string\nlocal a=color:toHex()\n---@type string\nlocal b=color:toHex(true)\n---@type string\nlocal c=color.toHex(color)\n---@type string\nlocal d=color.toHex(color,false)\n",
     );
     pass(&fixture.check());
@@ -198,10 +203,19 @@ fn runtime_implementation_remains_hidden_even_when_its_main_contract_is_fully_wr
 }
 
 #[test]
-fn written_function_type_main_is_a_real_original_signature_beside_overload_heads() {
+fn written_function_type_main_stays_private_and_only_covers_explicit_public_heads() {
+    let private = "---@overload fun(value:number):number\n---@type fun(first:number|string,second?:string):number|string\nfunction join(first,second) return undefined_placeholder(first,second) end\n";
     let fixture = Fixture::new(
-        "---@overload fun(value:number):number\n---@type fun(first:string,second:string):string\nfunction join(first,second) return undefined_placeholder(first,second) end\n",
+        private,
         "---@type number\nlocal one=join(42)\n---@type string\nlocal two=join('left','right')\n",
+    );
+    fail(&fixture.check(), "TS2554");
+    fixture.file(
+        "api.def.lua",
+        &private.replace(
+            "---@type",
+            "---@overload fun(first:string,second:string):string\n---@type",
+        ),
     );
     pass(&fixture.check());
     fixture.file("main.lua", "local rejected=join('left',false)\n");
@@ -213,12 +227,19 @@ fn written_function_type_main_is_a_real_original_signature_beside_overload_heads
 #[test]
 fn original_ambient_ellipsis_without_a_vararg_tag_is_an_unknown_tail() {
     let fixture = Fixture::new(
-        "---@param prefix string\nfunction report(prefix,...) end\n---@overload fun(value:number):number\n---@param prefix string\nfunction dispatch(prefix,...) end\n",
-        "local original=report\nreport('message',42,false,{value='text'})\nreport('empty')\nlocal absent=report('message')\n---@type nil\nlocal checked=absent\n---@type number\nlocal count=dispatch(42)\ndispatch('message',false,42)\n",
+        "---@param prefix string\nfunction report(prefix,...) end\n---@overload fun(value:number):number\n---@param prefix number|string\n---@return number\nfunction dispatch(prefix,...) return missing_placeholder(...) end\n",
+        "local original=report\nreport('message',42,false,{value='text'})\nreport('empty')\nlocal absent=report('message')\n---@type nil\nlocal checked=absent\n---@type number\nlocal count=dispatch(42)\n",
     );
     let output = fixture.check();
     pass(&output);
     assert!(text(&output).contains("...: unknown"), "{}", text(&output));
+    fixture.file("main.lua", "dispatch('message',false,42)\n");
+    fail(&fixture.check(), "TS2554");
+    fixture.file(
+        "api.def.lua",
+        "---@param prefix string\nfunction report(prefix,...) end\n---@overload fun(value:number):number\n---@overload fun(prefix:string,...:unknown):number\n---@param prefix number|string\n---@return number\nfunction dispatch(prefix,...) return missing_placeholder(...) end\n",
+    );
+    pass(&fixture.check());
     fixture.file("main.lua", "report(42,'message')\n");
     argument_failure(&fixture.check());
     fixture.file("main.lua", "report('message',42)\n");

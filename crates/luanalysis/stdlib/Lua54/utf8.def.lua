@@ -45,9 +45,10 @@ function utf8.codes(s) end
 --- 1  and for `j` is `i`. It raises an error if it meets any invalid byte
 --- sequence.
 ---@overload fun(s:string):number
+---@overload fun(s:string,i:number,j:number):number
 ---@param s string
----@param i number
----@param j number
+---@param i? number
+---@param j? number
 ---@return number
 function utf8.codepoint (s, i, j) end
 
@@ -57,9 +58,10 @@ function utf8.codepoint (s, i, j) end
 --- `j` is -1. If it finds any invalid byte sequence, returns a false value
 --- plus the position of the first invalid byte.
 ---@overload fun(s:string):number
+---@overload fun(s:string,i:number,j:number):number
 ---@param s string
----@param i number
----@param j number
+---@param i? number
+---@param j? number
 ---@return number
 function utf8.len(s, i, j) end
 
@@ -76,8 +78,9 @@ function utf8.len(s, i, j) end
 ---
 --- This function assumes that `s` is a valid UTF-8 string.
 ---@overload fun(s:string):number
+---@overload fun(s:string,n:number,i:number):number
 ---@param s string
----@param n number
----@param i number
+---@param n? number
+---@param i? number
 ---@return number
 function utf8.offset (s, n, i) end

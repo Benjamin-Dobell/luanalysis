@@ -11,7 +11,6 @@
 -- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 -- License for the specific language governing permissions and limitations under
 -- the License.
--- Modified for standalone Luanalysis; see README.md and the replay patch.
 
 ---@class std__Math
 ---@field huge number @The float value `HUGE_VAL`, a value larger than any other numeric value.
@@ -46,8 +45,9 @@ function math.asin(x) return 0 end
 --- The default value for `x` is 1, so that the call `math.atan(y)`` returns the
 --- arc tangent of `y`.
 ---@overload fun(y:number):number
+---@overload fun(y:number,x:number):number
 ---@param y number
----@param x number
+---@param x? number
 ---@return number
 function math.atan(y, x) return 0 end
 
@@ -93,8 +93,9 @@ function math.fmod(x, y) end
 --- Returns the logarithm of `x` in the given base. The default for `base` is
 --- *e* (so that the function returns the natural logarithm of `x`).
 ---@overload fun(x:number):number
+---@overload fun(x:number,base:number):number
 ---@param x number
----@param base number
+---@param base? number
 ---@return number
 function math.log(x, base) end
 
@@ -135,8 +136,9 @@ function math.rad(x) end
 --- .random`(1,n).
 ---@overload fun():number
 ---@overload fun(n: number):number
----@param m number
----@param n number
+---@overload fun(m:number,n:number):number
+---@param m? number
+---@param n? number
 ---@return number
 function math.random(m, n) end
 
@@ -157,8 +159,9 @@ function math.random(m, n) end
 --- program), you should call math.randomseed with explicit arguments.
 ---@overload fun(): number, number
 ---@overload fun(x: number): number, number
----@param x number
----@param y number
+---@overload fun(x:number,y:number):number, number
+---@param x? number
+---@param y? number
 ---@return number, number
 function math.randomseed(x, y) end
 

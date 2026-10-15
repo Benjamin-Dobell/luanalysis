@@ -70,8 +70,9 @@ function os.clock() end
 ---@overload fun(format: string): string | std__Date
 ---@overload fun(format: "%c", time: number): string
 ---@overload fun(format: "!*t" | "*t", time: number): std__Date
----@param format string
----@param time number
+---@overload fun(format:string,time:number):string | std__Date
+---@param format? string
+---@param time? number
 ---@return string | std__Date
 function os.date(format, time) end
 
@@ -98,7 +99,8 @@ function os.difftime(t2, t1) end
 --- When called without a command, `os.execute` returns a boolean that is true
 --- if a shell is available.
 ---@overload fun():string|number
----@param command string
+---@overload fun(command:string):string|number
+---@param command? string
 ---@return string|number
 function os.execute(command) end
 
@@ -112,8 +114,9 @@ function os.execute(command) end
 --- exiting.
 ---@overload fun(): void
 ---@overload fun(code: boolean | number): void
----@param code boolean | number
----@param close boolean
+---@overload fun(code:boolean | number,close:boolean):void
+---@param code? boolean | number
+---@param close? boolean
 ---@return void @Never returns
 function os.exit(code, close) end
 
@@ -159,8 +162,9 @@ function os.rename(oldname, newname) end
 --- This function may be not thread safe because of its reliance on C function
 --- `setlocale`.
 ---@overload fun(locale:string):string|nil
+---@overload fun(locale:string,category:string):string|nil
 ---@param locale string
----@param category string
+---@param category? string
 ---@return string|nil
 function os.setlocale(locale, category) end
 
@@ -187,7 +191,8 @@ function os.setlocale(locale, category) end
 --- documented in the `os.date` function, so that they represent the same time
 --- as before the call but with values inside their valid ranges.
 ---@overload fun():number
----@param table table
+---@overload fun(table:table):number
+---@param table? table
 ---@return number
 function os.time(table) end
 

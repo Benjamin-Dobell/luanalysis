@@ -101,15 +101,7 @@ fn code(report: &ProjectCheckReport, code: &str) -> bool {
 const TYPE_GUARD: &str = "---@param value number|string\nlocal function check(value)\nif type(value)=='number' then\n---@type number\nlocal numeric=value\nend\nend\n";
 
 #[test]
-fn bundled_lua54_resources_match_exact_pristine_import_and_documented_patch_replay() {
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/stdlib-lua54.sh");
-    let output = Command::new("bash").arg(script).arg("--verify").output().unwrap();
-    assert!(output.status.success(), "{}{}",
-        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-}
-
-#[test]
-fn selected_profile_registers_exact_replayed_declarations_without_runtime_membership_or_count_noise()
+fn selected_profile_registers_active_declarations_without_runtime_membership_or_count_noise()
  {
     let fixture = Fixture::new();
     let report = fixture.check(
@@ -121,6 +113,7 @@ fn selected_profile_registers_exact_replayed_declarations_without_runtime_member
     assert_eq!(report.checked_file_count(), 1);
     assert_eq!(report.project.entries.len(), 1);
     assert!(report.project.dependencies.is_empty());
+    let mut names = Vec::new();
     for id in &report.standard_library_files {
         let source = report.source(*id).unwrap();
         assert!(matches!(
@@ -129,9 +122,12 @@ fn selected_profile_registers_exact_replayed_declarations_without_runtime_member
         ));
         assert!(!report.project.entries.contains(id));
         let name = source.path.file_name().unwrap();
-        let replayed = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib/Lua54").join(name);
-        assert_eq!(source.source, fs::read_to_string(replayed).unwrap());
+        names.push(name.to_str().unwrap());
+        let active = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib/Lua54").join(name);
+        assert_eq!(source.source, fs::read_to_string(active).unwrap());
     }
+    names.sort_unstable();
+    assert_eq!(names, ["builtin.def.lua", "coroutine.def.lua", "debug.def.lua", "global.def.lua", "io.def.lua", "math.def.lua", "os.def.lua", "package.def.lua", "string.def.lua", "table.def.lua", "utf8.def.lua"]);
 }
 
 #[test]

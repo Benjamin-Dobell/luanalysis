@@ -118,7 +118,7 @@ fn ambient_local_argument_errors_keep_original_utf8_crlf_ranges_then_accept_corr
 
 #[test]
 fn local_ambient_overloads_and_polymorphic_self_keep_original_signature_owners() {
-    let declaration = "---@class File\nlocal original={}\n---@overload fun(count:number):number\n---@param count string\n---@return string\nfunction original:read(count) end\n---@return self\nfunction original:copy() end\nreturn original\n";
+    let declaration = "---@class File\nlocal original={}\n---@overload fun(count:number):number\n---@overload fun(count:string):string\n---@param count number|string\n---@return number|string\nfunction original:read(count) end\n---@return self\nfunction original:copy() end\nreturn original\n";
     let fixture = Fixture::new(
         declaration,
         "---@type File\nlocal file\n---@type number\nlocal numeric=file:read(2)\n---@type string\nlocal textual=file:read('all')\n---@type File\nlocal copy=file:copy()\n",
@@ -162,12 +162,30 @@ fn runtime_local_classes_keep_checked_initializers_and_ambient_placeholders_cann
 }
 
 #[test]
-fn unmodified_original_io_library_exposes_local_file_methods() {
-    let original = include_str!("../../../vendor/luanalysis-stdlib/upstream/Lua54/io.def.lua");
+fn active_io_library_exposes_local_file_methods() {
     let fixture = Fixture::new(
-        original,
+        include_str!("../stdlib/Lua54/io.def.lua"),
         "local handle=io.open('example.txt')\nlocal lines=handle:lines()\nhandle:close()\n---@type fun():any\nlocal iterator=lines\n",
     );
+    pass(&fixture.check());
+}
+
+#[test]
+fn ambient_local_private_parameters_must_accept_missing_public_arguments() {
+    let declaration = "---@class File\nlocal original={}\n---@overload fun():string\n---@param count number\n---@return string\nfunction original:read(count) return unresolved_placeholder(count) end\nreturn original\n";
+    let fixture = Fixture::new(
+        declaration,
+        "---@type File\nlocal file\n---@type string\nlocal value=file:read()\n",
+    );
+    let invalid = fixture.check();
+    assert_eq!(invalid.status.code(), Some(1), "{}", text(&invalid));
+    assert!(text(&invalid).contains("TS2394"), "{}", text(&invalid));
+    assert!(!text(&invalid).contains("TS2304"), "{}", text(&invalid));
+    fs::write(
+        fixture.0.join("library.def.lua"),
+        declaration.replace("---@param count number", "---@param count? number"),
+    )
+    .unwrap();
     pass(&fixture.check());
 }
 

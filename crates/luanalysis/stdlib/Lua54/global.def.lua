@@ -11,7 +11,6 @@
 -- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 -- License for the specific language governing permissions and limitations under
 -- the License.
--- Modified for standalone Luanalysis; see README.md and the replay patch.
 
 ---
 --- Calls error if the value of its argument `v` is false (i.e., **nil** or
@@ -21,7 +20,7 @@
 ---@overload fun<T>(v: T, ...: unknown): T
 ---@generic T
 ---@param v T
----@param message string
+---@param message? string | unknown
 ---@return T
 function assert(v, message) end
 
@@ -69,7 +68,8 @@ function collectgarbage(opt, arg) end
 --- `dofile` propagates the error to its caller (that is, `dofile` does not run
 --- in protected mode).
 ---@overload fun():table
----@param filename string
+---@overload fun(filename:string):table
+---@param filename? string
 ---@return table
 function dofile(filename) end
 
@@ -84,8 +84,9 @@ function dofile(filename) end
 --- addition of error position information to the message.
 ---
 ---@overload fun(message: any): never
----@param message string
----@param level number
+---@overload fun(message:string,level:number):never
+---@param message string | any
+---@param level? number
 ---@return never
 function error(message, level) end
 
@@ -147,10 +148,11 @@ function ipairs(t) end
 ---@overload fun(chunk: string | (fun(): nil | string)): function | (nil, string)
 ---@overload fun(chunk: string | (fun(): nil | string), chunkname: string): function | (nil, string)
 ---@overload fun(chunk: string | (fun(): nil | string), chunkname: string, mode: "b" | "t" | "bt"): function | (nil, string)
+---@overload fun(chunk:string | (fun(): nil | string),chunkname:string,mode:"b" | "t" | "bt",env:table):function | (nil, string)
 ---@param chunk string | (fun(): nil | string)
----@param chunkname string
----@param mode "b" | "t" | "bt"
----@param env table
+---@param chunkname? string
+---@param mode? "b" | "t" | "bt"
+---@param env? table
 ---@return function | (nil, string)
 function load(chunk, chunkname, mode, env) end
 
@@ -160,9 +162,10 @@ function load(chunk, chunkname, mode, env) end
 ---@overload fun(): function | (nil, string)
 ---@overload fun(filename: string): function | (nil, string)
 ---@overload fun(filename: string, mode: "b" | "t" | "bt"): function | (nil, string)
----@param filename string
----@param mode "b" | "t" | "bt"
----@param env table
+---@overload fun(filename:string,mode:"b" | "t" | "bt",env:table):function | (nil, string)
+---@param filename? string
+---@param mode? "b" | "t" | "bt"
+---@param env? table
 ---@return function | (nil, string)
 function loadfile(filename, mode, env) end
 
@@ -184,9 +187,10 @@ function loadfile(filename, mode, env) end
 --- any value to a non-existent field in the table. You may however modify
 --- existing fields. In particular, you may set existing fields to nil.
 ---@overload fun<K, V>(table: table<K, V>): nil | (K, V)
+---@overload fun<K,V>(table:table<K, V>,index:K):nil | (K, V)
 ---@generic K, V
 ---@param table table<K, V>
----@param index K
+---@param index? K
 ---@return nil | (K, V)
 function next(table, index) end
 
@@ -214,10 +218,11 @@ function pairs(t) end
 --- `pcall` also returns all results from the call, after this first result. In
 --- case of any error, `pcall` returns **false** plus the error message.
 ---@overload fun(f: (fun: void), ...: any): true | (false, any)
+---@overload fun<T>(f:(fun: T),...:any):(true, T) | (false, any)
 ---@generic T
----@param f fun: T
+---@param f (fun: T) | (fun: void)
 ---@vararg any
----@return (true, T) | (false, any)
+---@return true | (true, T) | (false, any)
 function pcall(f, ...) end
 
 ---
@@ -293,8 +298,9 @@ function setmetatable(table, metatable) end
 --- the string `e` is not a valid numeral in the given base, the function
 --- returns **nil**.
 ---@overload fun(e: number | string): nil | number
----@param e string
----@param base number
+---@overload fun(e:string,base:number):nil | number
+---@param e string | number
+---@param base? number
 ---@return nil | number
 function tonumber(e, base) end
 
@@ -329,9 +335,10 @@ _VERSION = "Lua 5.4"
 --- This function is similar to `pcall`, except that it sets a new message
 --- handler `msgh`.
 ---@overload fun(f: (fun: void), msgh: fun(message: any): any, ...: any): true | (false, any)
+---@overload fun<T>(f:(fun: T),msgh:(fun(message: any): any),...:any):(true, T) | (false, any)
 ---@generic T
----@param f fun: T
+---@param f (fun: T) | (fun: void)
 ---@param msgh fun(message: any): any
 ---@vararg any
----@return (true, T) | (false, any)
+---@return true | (true, T) | (false, any)
 function xpcall(f, msgh, ...) end

@@ -1,5 +1,2 @@
 # Unified patches retain the required space prefix on blank context lines.
 vendor/patches/*.patch -whitespace
-# Preserve the exact bytes of imported upstream declaration sources.
-vendor/luanalysis-stdlib/upstream/** -whitespace
-vendor/luanalysis-stdlib/patches/*.patch -whitespace

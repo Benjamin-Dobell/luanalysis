@@ -400,10 +400,26 @@ fn ambient_signature_local_generics_shadow_function_tags_with_original_owners() 
 }
 
 #[test]
-fn ambient_public_heads_include_the_original_fully_written_main_contract() {
+fn ambient_public_heads_require_explicit_signatures_and_keep_the_main_contract_private() {
     let fixture = Fixture::new();
-    fixture.file("api.def.lua", "---@overload fun(value:number):number\n---@overload fun(value:string):string\n---@param value boolean\n---@return boolean\nfunction echo(value) return unresolved_placeholder(value) end\n");
+    let private = "---@overload fun(value:number):number\n---@overload fun(value:string):string\n---@param value number|string|boolean\n---@return number|string|boolean\nfunction echo(value) return unresolved_placeholder(value) end\n";
+    fixture.file("api.def.lua", private);
     fixture.file("main.lua", "---@type boolean\nlocal accepted = echo(true)\n");
+    let private_only = fixture.check(&["api.def.lua"]);
+    assert_eq!(private_only.status.code(), Some(1), "{}", text(&private_only));
+    assert!(
+        text(&private_only).contains("TS2345") || text(&private_only).contains("TS2769"),
+        "{}",
+        text(&private_only)
+    );
+    assert!(!text(&private_only).contains("TS2394"), "{}", text(&private_only));
+    fixture.file(
+        "api.def.lua",
+        &private.replace(
+            "---@param",
+            "---@overload fun(value:boolean):boolean\n---@param",
+        ),
+    );
     pass(&fixture.check(&["api.def.lua"]));
     fixture.file("main.lua", "local rejected = echo({})\n");
     let output = fixture.check(&["api.def.lua"]);

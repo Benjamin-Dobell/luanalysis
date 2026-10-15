@@ -154,10 +154,11 @@ package.searchers = {}
 --- (after closing the file), or **nil** plus an error message if none succeeds.
 --- (This error message lists all file names it tried to open.)
 ---@overload fun(name:string, path:string):string
+---@overload fun(name:string,path:string,sep:string,rep:string):string
 ---@param name string
 ---@param path string
----@param sep string
----@param rep string
+---@param sep? string
+---@param rep? string
 ---@return string
 function package.searchpath(name, path, sep, rep) end
 
