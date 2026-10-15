@@ -11,6 +11,65 @@ fn corrected() -> String {
     REQUIRED.replace("fun(result:R)", "fun(result?:R)")
 }
 
+const PROTOCOL: &str = r#"---@overload fun<R>(fn:fun(resume:fun(value:R):void):void):false|(true,R)
+---@overload fun(fn:fun(resume:fun():void):void):false|(true,nil)
+---@generic R
+---@param fn fun(resume:fun(value?:R):void):void
+---@return false|(true,nil|R)
+local function run(fn)
+---@type nil|R
+local result
+---@type fun(value?:R):void
+local resume=function(value) result=value end
+fn(resume)
+return true,result
+end
+local ok,value=run(
+---@param resume fun(value:number):void
+function(resume) resume(42) end)
+if ok then
+---@type number
+local checked=value
+end
+local ok_empty,empty=run(
+---@param resume fun():void
+function(resume) resume() end)
+if ok_empty then
+---@type nil
+local checked=empty
+end
+"#;
+
+#[test]
+fn private_nil_capable_storage_preserves_distinct_typed_and_result_free_public_rows() {
+    let report = check(PROTOCOL);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn private_nil_admission_does_not_allow_typed_public_resume_omission_or_wrong_payloads() {
+    for call in ["resume()", "resume('wrong')"] {
+        let source = PROTOCOL.replace("resume(42)", call);
+        let report = check(&source);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|error| matches!(error.code, "TS2554" | "TS2345")),
+            "{call}\n{:#?}",
+            report.diagnostics
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .all(|error| error.code != "TS2394"),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+}
+
 #[test]
 fn a_required_resume_argument_cannot_implement_a_result_free_public_callback() {
     let report = check(REQUIRED);
