@@ -198,7 +198,9 @@ impl NativeFlowProvider for Namespace {
         if let Some(&target) = self.method_targets.get(&original) { return NativeAliasDispatch::ReferenceRead(target); }
         if self.unknown.contains(&original) { return NativeAliasDispatch::Unknown; }
         match self.node(original) {
-            Some(NativeFlowNode::Start | NativeFlowNode::Pass { .. } | NativeFlowNode::Return { .. }
+            // Original control-flow merges execute no Lua operation. Match the
+            // source adapter instead of introducing an implicit dispatch here.
+            Some(NativeFlowNode::Start | NativeFlowNode::Pass { .. } | NativeFlowNode::Merge { .. } | NativeFlowNode::Return { .. }
                 | NativeFlowNode::Loop { .. }) => NativeAliasDispatch::NoDispatch,
             Some(NativeFlowNode::Write { target, .. }) if self.reference_is_cell(target) => NativeAliasDispatch::NoDispatch,
             _ => NativeAliasDispatch::Unknown,
