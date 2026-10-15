@@ -1,0 +1,1228 @@
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+index 45f2d37..3c85c05 100644
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -3216,6 +3216,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 }
+                 TypeData::NativeRuntimeTable(reference) => {
+                     left.push(reference.view);
++                    left.extend(reference.bounds);
+                     left.extend(values(reference.schema.mapper));
+                     left.extend(reference.schema.self_argument);
+                 }
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+index 97c95c5..568116f 100644
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -690,7 +690,8 @@ impl<'p, 's> Checker<'p, 's> {
+                 let reference = *reference;
+                 let schema = NativeObjectReference { mapper: self.compose(reference.schema.mapper, mapper), self_argument: reference.schema.self_argument.map(|ty| self.instantiate(ty, mapper)), ..reference.schema };
+                 let view = self.instantiate(reference.view, mapper);
+-                self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view }))
++                let bounds = reference.bounds.map(|bounds| self.instantiate(bounds, mapper));
++                self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view, bounds }))
+             }
+             TypeData::NativeDefinition(reference) => {
+                 let reference = *reference;
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index e4aea3f..2c1a698 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -146,6 +146,8 @@ pub enum NativeTypeResult {
+ /// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
+ pub trait NativeFunctionProvider {
+     fn project_flow_provider(&self) -> Option<&dyn native_flow::NativeFlowProvider> { None }
++    /// Original normal-completion graph under the exact selected callee frame.
++    fn function_flow_execution(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId, _: native_flow::NativeFlowKey) -> Option<native_aliases::NativeAliasExecution> { None }
+     fn contextual_type_owner(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId, _: native_flow::NativeFlowKey) -> native_named::NativeContextualTypeOwner { native_named::NativeContextualTypeOwner::Absent }
+     fn calling_convention(&self, _: NativeFunctionId) -> native_signatures::NativeCallingConvention { native_signatures::NativeCallingConvention::TypeScript }
+     /// Exact original method declaration syntax, not merely a callable property.
+@@ -1073,7 +1075,10 @@ enum Query {
+     NativeAliasLoaderState(native_flow::NativeReferenceKey, native_flow::NativeFlowKey),
+     NativeAliasMetatableAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
+     NativeAliasCallableTable(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
++    NativeAliasNewIndexAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
++    NativeAliasMetatableCall(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
+     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
++    NativeFlowCallState(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, TypeId, SigId, u64, u64),
+     NativeGlobals(NativeGlobalsQuery),
+     NativeProject(NativeProjectQuery),
+     NativeNamed(NativeTypeDeclarationQuery),
+@@ -1168,9 +1173,10 @@ impl Query {
+             Query::BaseConstructor(sym) => (sym.file, 13),
+             Query::ReturnOfSignature(_)
+             | Query::NativeContextualTypeOwner(..)
+-            | Query::NativeFlowCallEffects(..)
++            | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallState(..)
+             | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..) | Query::NativeAliasCallableTable(..)
+             | Query::NativeAliasLoaderState(..)
++            | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
+             | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
+             | Query::NativeNamed(_)
+             | Query::NativeGlobals(_)
+diff --git a/src/sema/check/native_alias_loops.rs b/src/sema/check/native_alias_loops.rs
+new file mode 100644
+index 0000000..bd6b5ce
+--- /dev/null
++++ b/src/sema/check/native_alias_loops.rs
+@@ -0,0 +1,166 @@
++//! An original canonical value can survive a loop without identifying any
++//! repeated allocation site. The induction hypothesis stays in this local
++//! metadata walk; normal alias/flow caches never receive speculative origins.
++use super::*;
++
++struct Invariant { reference: NativeReferenceKey, head: NativeFlowKey, entry: NativeFlowKey, seed: Origins }
++
++impl<'p, 's> Checker<'p, 's> {
++    pub(super) fn native_alias_loop_reference(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, head: NativeFlowKey, edges: &[NativeFlowKey]) -> Origins {
++        let Some((&entry, backedges)) = edges.split_first() else { return Origins::unavailable() };
++        // This first certificate is for original environment roots/slots.
++        // Do not demand unrelated captured/local provenance to discover that
++        // the loop capability does not cover its allocation identity.
++        if matches!(provider.reference_alias_initial(reference), NativeAliasInitial::Opaque) { return Origins::unavailable() }
++        let seed = self.native_alias_reference(provider, reference, entry);
++        if seed.uncertain { return seed }
++        // Canonical runtime roots have an identity independent of an
++        // allocation/closure site. Other provenance remains unsupported here.
++        if seed.unknown || seed.non_table || seed.maybe_nil || seed.tokens.len() != 1
++            || !seed.tokens.iter().all(|origin| matches!(origin, Origin::Standard(_) | Origin::Environment(_)))
++        { return Origins::unavailable() }
++        let invariant = Invariant { reference, head, entry, seed };
++        let mut work: Vec<_> = backedges.iter().map(|&at| (at, false)).collect();
++        let mut active = HashSet::new();
++        let mut completed = HashSet::new();
++        let mut steps = 0usize;
++        while let Some((at, leaving)) = work.pop() {
++            steps += 1;
++            if steps > 16_384 || at.graph != head.graph || self.is_stack_low() { return Origins::unavailable() }
++            if at == head { continue }
++            if leaving { active.remove(&at); completed.insert(at); continue }
++            if completed.contains(&at) { continue }
++            if !active.insert(at) { return Origins::unavailable() }
++            let before = match provider.node(at) {
++                Some(NativeFlowNode::Write { before, target, .. })
++                    if provider.reference_is_cell(target)
++                        && provider.write_affects(reference, target, at) == NativeWriteRelation::Unaffected
++                        && Self::native_loop_dispatch_safe(provider, at, &invariant) => before,
++                Some(NativeFlowNode::Call { before, value, input }) => {
++                    if self.native_loop_call_preservation(provider, reference, value, input, &invariant, &mut HashSet::new()) != NativeCallPreservation::Preserved { return Origins::unavailable() }
++                    before
++                },
++                Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
++                    | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. })
++                    if Self::native_loop_dispatch_safe(provider, at, &invariant) => before,
++                Some(NativeFlowNode::Merge { edges }) if Self::native_loop_dispatch_safe(provider, at, &invariant) => {
++                    work.push((at, true));
++                    work.extend(edges.into_iter().map(|edge| (edge, false)));
++                    continue;
++                },
++                _ => return Origins::unavailable(),
++            };
++            work.push((at, true));
++            work.push((before, false));
++        }
++        invariant.seed
++    }
++
++    fn native_loop_dispatch_safe(provider: &dyn NativeFlowProvider, at: NativeFlowKey, invariant: &Invariant) -> bool {
++        match provider.alias_node_dispatch(at) {
++            NativeAliasDispatch::NoDispatch => true,
++            NativeAliasDispatch::ReferenceRead(reference) => reference.graph == at.graph && provider.contains_reference(reference)
++                && (provider.reference_is_cell(reference) || reference == invariant.reference),
++            NativeAliasDispatch::Unknown => false,
++        }
++    }
++
++    fn native_loop_call_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey, invariant: &Invariant, active: &mut HashSet<(NativeReferenceKey, NativeFlowKey)>) -> NativeCallPreservation {
++        let Some(recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Unknown };
++        if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeCallPreservation::Unknown }
++        let Some(callee) = self.native_loop_origin_value(provider, recipe.callee.value, recipe.callee.input, invariant, active) else { return NativeCallPreservation::Unknown };
++        if callee.uncertain { return NativeCallPreservation::Pending }
++        if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return NativeCallPreservation::Unknown }
++        // Imported execution, callable-table dispatch, and nested calls need
++        // a more general invariant proof. Do not launch a cyclic identity
++        // demand merely to discover that this certificate lacks it.
++        match callee.tokens.iter().next().unwrap() {
++            Origin::Standard(site) if site.kind != NativeIntrinsicKind::Require => {},
++            Origin::Function(function, creation, _) if Self::native_loop_pure_execution(provider, *function, *creation) => {},
++            _ => return NativeCallPreservation::Unknown,
++        }
++        self.native_alias_call_preservation_for_callee(provider, reference, call, input, recipe, callee)
++    }
++
++    fn native_loop_pure_execution(provider: &dyn NativeFlowProvider, function: NativeFunctionId, creation: NativeFlowKey) -> bool {
++        let Some(execution) = provider.function_alias_execution(function, creation) else { return false };
++        if execution.terminals.is_empty() || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) { return false }
++        let mut work = execution.terminals;
++        let mut visited = HashSet::new();
++        while let Some(at) = work.pop() {
++            if at.graph != execution.entry.graph || visited.len() >= 16_384 { return false }
++            if !visited.insert(at) { continue }
++            match provider.node(at) {
++                Some(NativeFlowNode::Start) if at == execution.entry => {},
++                Some(NativeFlowNode::Write { before, target, .. }) if provider.reference_is_cell(target)
++                    && provider.reference_declaration(target).is_some_and(|declaration| declaration.owner == execution.entry.graph)
++                    && matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) => work.push(before),
++                Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. })
++                    if matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) => work.push(before),
++                Some(NativeFlowNode::Return { before }) => work.push(before),
++                Some(NativeFlowNode::Merge { edges }) if matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) => work.extend(edges),
++                Some(NativeFlowNode::Unreachable) => {},
++                _ => return false,
++            }
++        }
++        true
++    }
++
++    fn native_loop_origin_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey, invariant: &Invariant, active: &mut HashSet<(NativeReferenceKey, NativeFlowKey)>) -> Option<Origins> {
++        if value.snapshot != input.graph.snapshot || provider.node(input).is_none() || self.is_stack_low() { return None }
++        match provider.value_alias_source(value, input) {
++            NativeAliasValue::Reference { reference, input } => self.native_loop_origin_reference(provider, reference, input, invariant, active),
++            NativeAliasValue::Function { .. } => Some(self.native_alias_value(provider, value, input, 0)),
++            NativeAliasValue::Projection { value, input, index: 0 } => self.native_loop_origin_value(provider, value, input, invariant, active),
++            _ => None,
++        }
++    }
++
++    fn native_loop_origin_reference(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey, invariant: &Invariant, active: &mut HashSet<(NativeReferenceKey, NativeFlowKey)>) -> Option<Origins> {
++        if reference.graph != at.graph || !provider.contains_reference(reference) || active.len() >= 16_384 || self.is_stack_low() { return None }
++        if at == invariant.head {
++            if reference == invariant.reference { return Some(invariant.seed.clone()) }
++            // Reuse the original immutable-capture boundary: all writes to
++            // this outer lexical cell precede creation, with none from a
++            // nested activation. Its entry value is not a loop hypothesis.
++            let declaration = provider.reference_declaration(reference)?;
++            let creation = provider.graph_creation(reference.graph)?;
++            if declaration.owner != reference.graph && provider.graph_creation(declaration.owner).is_none()
++                && declaration.writes.iter().all(|write| write.owner == declaration.owner && write.statement_end <= creation.position)
++            { return Some(self.native_alias_reference(provider, reference, invariant.entry)) }
++            return None;
++        }
++        if !active.insert((reference, at)) { return None }
++        let result = match provider.node(at) {
++            Some(NativeFlowNode::Start) => Some(self.native_alias_reference(provider, reference, at)),
++            Some(NativeFlowNode::Write { before, target, value, input })
++                if provider.reference_is_cell(target) && Self::native_loop_dispatch_safe(provider, at, invariant) => {
++                match provider.write_affects(reference, target, at) {
++                    NativeWriteRelation::Exact => self.native_loop_origin_value(provider, value, input, invariant, active),
++                    NativeWriteRelation::Unaffected => self.native_loop_origin_reference(provider, reference, before, invariant, active),
++                    _ => None,
++                }
++            },
++            Some(NativeFlowNode::Call { before, value, input }) => {
++                if self.native_loop_call_preservation(provider, reference, value, input, invariant, active) == NativeCallPreservation::Preserved {
++                    self.native_loop_origin_reference(provider, reference, before, invariant, active)
++                } else { None }
++            },
++            Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
++                | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. })
++                if Self::native_loop_dispatch_safe(provider, at, invariant) => self.native_loop_origin_reference(provider, reference, before, invariant, active),
++            Some(NativeFlowNode::Merge { edges }) => {
++                let mut origins = Origins::default();
++                let mut complete = true;
++                for edge in edges {
++                    if let Some(origin) = self.native_loop_origin_reference(provider, reference, edge, invariant, active) { origins.merge(origin) }
++                    else { complete = false; break }
++                }
++                complete.then_some(origins)
++            },
++            _ => None,
++        };
++        active.remove(&(reference, at));
++        result
++    }
++}
+diff --git a/src/sema/check/native_aliases.rs b/src/sema/check/native_aliases.rs
+index 377afd9..e26689b 100644
+--- a/src/sema/check/native_aliases.rs
++++ b/src/sema/check/native_aliases.rs
+@@ -10,6 +10,9 @@ use super::native_globals::{NativeEnvironmentId, NativeGlobalBindingId, NativeGl
+ use super::native_intrinsics::{NativeIntrinsicKind, NativeIntrinsicSite};
+ use crate::types::NativeFunctionId;
+ 
++#[path = "native_alias_loops.rs"]
++mod loops;
++
+ #[derive(Clone, Copy, Debug)]
+ pub enum NativeAliasValue {
+     Reference { reference: NativeReferenceKey, input: NativeFlowKey },
+@@ -57,6 +60,11 @@ pub struct NativeAliasCall {
+ pub enum NativeAliasDispatch { NoDispatch, ReferenceRead(NativeReferenceKey), Unknown }
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum NativeCallPreservation { Preserved, Unknown, Pending }
++pub(super) enum NativeReachedCallee {
++    Function { function: NativeFunctionId, creation: NativeFlowKey, activation: u64, call: NativeAliasCall },
++    Unsupported,
++    Pending,
++}
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum NativeAliasIntrinsic { Standard(NativeIntrinsicSite), Unknown, Pending }
+ 
+@@ -88,6 +96,7 @@ pub(super) struct NativeAliasCache {
+     projected_values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u32, u64, u64), Origins>,
+     preservations: FxHashMap<(NativeReferenceKey, NativeValueKey, NativeFlowKey, u64, u64), NativeCallPreservation>,
+     metatable_absence: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), bool>,
++    newindex_absence: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), bool>,
+     execution_ids: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64), u64>,
+     executions: Vec<AliasExecutionFrame>,
+ }
+@@ -100,6 +109,8 @@ struct AliasCallableTable {
+     creation: NativeFlowKey,
+     activation: u64,
+ }
++#[derive(Clone, Copy)]
++enum AliasMetatableCall { Preserved, Replaced(NativeAliasReturnValue), Unknown, Pending }
+ impl NativeAliasCache {
+     fn reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u64, u64), result: Origins, _: Stored) { self.references.insert(key, result); }
+     fn value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u64, u64), result: Origins, _: Stored) { self.values.insert(key, result); }
+@@ -136,6 +147,23 @@ impl Origin {
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
++    pub(super) fn native_alias_execution_key(&self) -> u64 { self.native_alias_cache.frame() }
++    pub(super) fn native_alias_execution_depth(&self) -> usize { self.native_alias_cache.executions.len() }
++    pub(super) fn native_reached_callee(&mut self, provider: &dyn NativeFlowProvider, call: NativeValueKey, input: NativeFlowKey) -> NativeReachedCallee {
++        let Some(recipe) = provider.alias_call_source(call, input) else { return NativeReachedCallee::Unsupported };
++        if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeReachedCallee::Unsupported }
++        let origins = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
++        if origins.uncertain { return NativeReachedCallee::Pending }
++        if origins.unknown || origins.non_table || origins.tokens.len() != 1 { return NativeReachedCallee::Unsupported }
++        let Origin::Function(function, creation, activation) = origins.tokens.into_iter().next().unwrap() else { return NativeReachedCallee::Unsupported };
++        // The first transfer capability covers only a closure invoked in its
++        // actual creating activation. Escaped closures need a separate proof.
++        if creation.graph != recipe.execution_input.graph
++            || activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation)
++        { return NativeReachedCallee::Unsupported }
++        if self.native_alias_cache.executions.iter().any(|frame| frame.function.is_some_and(|active| active.0 == function)) { return NativeReachedCallee::Pending }
++        NativeReachedCallee::Function { function, creation, activation, call: recipe }
++    }
+     fn native_alias_stable_cell(&self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey) -> bool {
+         provider.reference_is_cell(reference) && provider.reference_declaration(reference).is_some_and(|declaration| declaration.writes.iter().all(|write| write.owner == declaration.owner))
+     }
+@@ -190,14 +218,14 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+     }
+ 
+-    fn with_native_alias_parent<R>(&mut self, index: usize, work: impl FnOnce(&mut Self) -> R) -> R {
++    pub(super) fn with_native_alias_parent<R>(&mut self, index: usize, work: impl FnOnce(&mut Self) -> R) -> R {
+         let outside = self.native_alias_cache.executions.split_off(index);
+         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
+         self.native_alias_cache.executions.extend(outside);
+         result.unwrap_or_else(|error| std::panic::resume_unwind(error))
+     }
+ 
+-    fn with_native_alias_execution<R>(&mut self, call: NativeValueKey, caller: NativeFlowKey, execution: &NativeAliasExecution, function: Option<(NativeFunctionId, NativeFlowKey, u64)>, work: impl FnOnce(&mut Self) -> R) -> R {
++    pub(super) fn with_native_alias_execution<R>(&mut self, call: NativeValueKey, caller: NativeFlowKey, execution: &NativeAliasExecution, function: Option<(NativeFunctionId, NativeFlowKey, u64)>, work: impl FnOnce(&mut Self) -> R) -> R {
+         let parent = self.native_alias_cache.frame();
+         let next = self.native_alias_cache.execution_ids.len() as u64 + 1;
+         let id = *self.native_alias_cache.execution_ids.entry((call, caller, execution.entry, parent)).or_insert(next);
+@@ -207,7 +235,7 @@ impl<'p, 's> Checker<'p, 's> {
+         result.unwrap_or_else(|error| std::panic::resume_unwind(error))
+     }
+ 
+-    fn native_alias_dispatch_safe(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, before: NativeFlowKey) -> bool {
++    pub(super) fn native_alias_dispatch_safe(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, before: NativeFlowKey) -> bool {
+         match provider.alias_node_dispatch(at) {
+             NativeAliasDispatch::NoDispatch => true,
+             NativeAliasDispatch::Unknown => false,
+@@ -215,13 +243,35 @@ impl<'p, 's> Checker<'p, 's> {
+                 if reference.graph != at.graph { return false }
+                 if provider.reference_is_cell(reference) { return true }
+                 let origins = self.native_alias_reference(provider, reference, before);
+-                if origins.uncertain { self.mark_tainted_from(0); return false }
++                if origins.uncertain {
++                    // A captured future slot may have no original spelling
++                    // in the caller. Its contents are unnecessary when the
++                    // independent allocation proof excludes __newindex.
++                    if self.native_alias_fresh_raw_write(provider, at, before)
++                        || self.native_alias_fresh_raw_read(provider, at, before) { return true }
++                    self.mark_tainted_from(0);
++                    return false;
++                }
+                 if !origins.unknown && !origins.maybe_nil && (origins.non_table || !origins.tokens.is_empty()) { return true }
+                 self.native_alias_fresh_raw_write(provider, at, before)
++                    || self.native_alias_fresh_raw_read(provider, at, before)
+             },
+         }
+     }
+ 
++    /// The read uses its original evaluated receiver, including when a later
++    /// computed key rebinds that receiver's source variable. Only absence of a
++    /// metatable proves a missing raw slot cannot invoke __index; absence of
++    /// __newindex is a different capability used exclusively for writes.
++    fn native_alias_fresh_raw_read(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, before: NativeFlowKey) -> bool {
++        let Some(receiver) = provider.read_alias_receiver(at) else { return false };
++        if receiver.input.graph != before.graph { return false }
++        let origins = self.native_alias_value(provider, receiver.value, receiver.input, 0);
++        if origins.uncertain { self.mark_tainted_from(0); return false }
++        if origins.unknown || origins.non_table || origins.tokens.is_empty() { return false }
++        origins.tokens.iter().all(|allocation| self.native_alias_allocation_without_metatable(provider, allocation, before))
++    }
++
+     /// A literal Lua allocation starts without a metatable. Prove that its
+     /// current write cannot invoke __newindex using original execution facts,
+     /// not the receiver's structural type or allocation age alone.
+@@ -235,12 +285,170 @@ impl<'p, 's> Checker<'p, 's> {
+         // Several reached allocations do not identify one receiver. They can
+         // nevertheless all be metatable-free, proving only that the store has
+         // no implicit dispatch; alias relations retain their alternatives.
+-        origins.tokens.iter().all(|allocation| self.native_alias_allocation_without_metatable(provider, allocation, before))
++        origins.tokens.iter().all(|allocation| {
++            self.native_alias_allocation_without_metatable(provider, allocation, before)
++                || self.native_alias_allocation_without_newindex(provider, allocation, before)
++        })
++    }
++
++    /// A reached literal metatable can lack __newindex while still supplying
++    /// __call. Keep this distinct from absence of a metatable altogether.
++    fn native_alias_allocation_without_newindex(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, before: NativeFlowKey) -> bool {
++        let Origin::Allocation(value, input) = allocation else { return false };
++        if !provider.contains_graph(before.graph) || provider.node(*input).is_none() { return false }
++        let epoch = self.flow_memo.native_state.effect_epoch;
++        let frame = self.native_alias_cache.frame();
++        let key = (*value, *input, before, epoch, frame);
++        if let Some(&absent) = self.native_alias_cache.newindex_absence.get(&key) { return absent }
++        let query = Query::NativeAliasNewIndexAbsence(*value, *input, before, epoch, frame);
++        if !self.enter(query) { self.mark_tainted_from(0); return false }
++        let (absent, completed) = self.run_memoizable(|checker| checker.native_alias_newindex_absent_worker(provider, allocation, *input, before));
++        if self.leave(query).is_err() || completed.is_none() { self.mark_tainted_from(0); return false }
++        if !self.is_stack_low() { self.native_alias_cache.newindex_absence.insert(key, absent); }
++        absent
++    }
++
++    fn native_alias_newindex_absent_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
++        let mut active = HashSet::new();
++        let mut completed = HashSet::new();
++        let mut work = vec![(before, false)];
++        let mut steps = 0usize;
++        while let Some((at, leaving)) = work.pop() {
++            steps += 1;
++            if steps > 16_384 || at.graph != before.graph || self.is_stack_low() { return false }
++            if at == input { continue }
++            if leaving { active.remove(&at); completed.insert(at); continue }
++            if completed.contains(&at) { continue }
++            if !active.insert(at) { return false }
++            let mut edges = Vec::new();
++            match provider.node(at) {
++                Some(NativeFlowNode::Start) => {
++                    let Some(index) = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry == at) else { return false };
++                    let caller = self.native_alias_cache.executions[index].caller;
++                    if !self.with_native_alias_parent(index, |checker| checker.native_alias_allocation_without_newindex(provider, allocation, caller)) { return false }
++                },
++                Some(NativeFlowNode::Write { before, .. } | NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }) => {
++                    if !self.native_alias_dispatch_safe(provider, at, before) { return false }
++                    edges.push(before);
++                },
++                Some(NativeFlowNode::Call { before, value, input }) => match self.native_alias_metatable_call(provider, allocation, value, input) {
++                    AliasMetatableCall::Preserved => edges.push(before),
++                    AliasMetatableCall::Replaced(metatable) => {
++                        let key = NativeTableKey::String(self.atoms().intern(b"__newindex"));
++                        // The direct literal was not exposed before this
++                        // installation. Retrieving it afterward requires a
++                        // call; unsupported calls remain barriers below.
++                        if !provider.value_alias_member_absent(metatable.value, metatable.input, key, self) { return false }
++                    },
++                    AliasMetatableCall::Pending => { self.mark_tainted_from(0); return false },
++                    AliasMetatableCall::Unknown => return false,
++                },
++                Some(NativeFlowNode::Merge { edges: incoming }) => {
++                    if incoming.is_empty() || !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return false }
++                    edges.extend(incoming);
++                },
++                _ => return false,
++            }
++            work.push((at, true));
++            work.extend(edges.into_iter().rev().map(|edge| (edge, false)));
++        }
++        true
++    }
++
++    fn native_alias_metatable_call(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, call: NativeValueKey, input: NativeFlowKey) -> AliasMetatableCall {
++        let Origin::Allocation(value, allocated) = allocation else { return AliasMetatableCall::Unknown };
++        let query = Query::NativeAliasMetatableCall(*value, *allocated, call, input, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
++        if !self.enter(query) { self.mark_tainted_from(0); return AliasMetatableCall::Pending }
++        let (result, completed) = self.run_memoizable(|checker| checker.native_alias_metatable_call_worker(provider, allocation, call, input));
++        if self.leave(query).is_err() || completed.is_none() || matches!(result, AliasMetatableCall::Pending) {
++            self.mark_tainted_from(0);
++            return AliasMetatableCall::Pending;
++        }
++        result
++    }
++
++    fn native_alias_metatable_call_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, call: NativeValueKey, input: NativeFlowKey) -> AliasMetatableCall {
++        let Some(mut recipe) = provider.alias_call_source(call, input) else { return AliasMetatableCall::Unknown };
++        if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return AliasMetatableCall::Unknown }
++        let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
++        if callee.uncertain { return AliasMetatableCall::Pending }
++        if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return AliasMetatableCall::Unknown }
++        let (function, creation, activation) = match callee.tokens.into_iter().next().unwrap() {
++            Origin::Standard(site) => return match site.kind {
++                NativeIntrinsicKind::Type | NativeIntrinsicKind::Assert => AliasMetatableCall::Preserved,
++                NativeIntrinsicKind::SetMetatable => {
++                    let Some(receiver) = recipe.arguments.first() else { return AliasMetatableCall::Unknown };
++                    let receiver = self.native_alias_value(provider, receiver.value, receiver.input, 0);
++                    if receiver.uncertain { return AliasMetatableCall::Pending }
++                    if receiver.unknown || receiver.non_table || receiver.tokens.is_empty() { return AliasMetatableCall::Unknown }
++                    if !receiver.tokens.contains(allocation) { AliasMetatableCall::Preserved }
++                    else if receiver.tokens.len() == 1 {
++                        recipe.arguments.get(1).copied().map_or(AliasMetatableCall::Unknown, AliasMetatableCall::Replaced)
++                    } else { AliasMetatableCall::Unknown }
++                },
++                NativeIntrinsicKind::Require => AliasMetatableCall::Unknown,
++            },
++            Origin::Function(function, creation, activation) => (function, creation, activation),
++            target @ Origin::Allocation(..) => {
++                let callable = match self.native_alias_callable_table(provider, &target, recipe.execution_input) {
++                    Ok(Some(callable)) => callable,
++                    Ok(None) => return AliasMetatableCall::Unknown,
++                    Err(()) => return AliasMetatableCall::Pending,
++                };
++                let receiver = recipe.callee;
++                recipe.callee = callable.callee;
++                recipe.arguments.insert(0, receiver);
++                (callable.function, callable.creation, callable.activation)
++            },
++            _ => return AliasMetatableCall::Unknown,
++        };
++        if activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation) { return AliasMetatableCall::Unknown }
++        if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation, activation))) { return AliasMetatableCall::Pending }
++        let Some(execution) = provider.function_alias_execution(function, creation) else { return AliasMetatableCall::Unknown };
++        if !provider.contains_graph(execution.entry.graph) || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) || execution.terminals.is_empty() { return AliasMetatableCall::Unknown }
++        self.with_native_alias_execution(call, recipe.execution_input, &execution, Some((function, creation, activation)), |checker| {
++            let mut active = HashSet::new();
++            let mut completed = HashSet::new();
++            let mut work: Vec<_> = execution.terminals.iter().rev().map(|&at| (at, false)).collect();
++            let mut steps = 0usize;
++            while let Some((at, leaving)) = work.pop() {
++                steps += 1;
++                if steps > 16_384 || at.graph != execution.entry.graph || checker.is_stack_low() { return AliasMetatableCall::Unknown }
++                if leaving { active.remove(&at); completed.insert(at); continue }
++                if completed.contains(&at) { continue }
++                if !active.insert(at) { return AliasMetatableCall::Unknown }
++                let mut edges = Vec::new();
++                match provider.node(at) {
++                    Some(NativeFlowNode::Start) if at == execution.entry => {},
++                    Some(NativeFlowNode::Write { before, .. } | NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }) => {
++                        if !checker.native_alias_dispatch_safe(provider, at, before) { return AliasMetatableCall::Unknown }
++                        edges.push(before);
++                    },
++                    Some(NativeFlowNode::Call { before, value, input }) => match checker.native_alias_metatable_call(provider, allocation, value, input) {
++                        AliasMetatableCall::Preserved => edges.push(before),
++                        AliasMetatableCall::Pending => return AliasMetatableCall::Pending,
++                        // Object-identity preservation does not attest an
++                        // unchanged metatable, even for standard setmetatable.
++                        AliasMetatableCall::Replaced(_) | AliasMetatableCall::Unknown => return AliasMetatableCall::Unknown,
++                    },
++                    Some(NativeFlowNode::Return { before }) => edges.push(before),
++                    Some(NativeFlowNode::Merge { edges: incoming }) => {
++                        if !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return AliasMetatableCall::Unknown }
++                        edges.extend(incoming);
++                    },
++                    Some(NativeFlowNode::Unreachable) => {},
++                    _ => return AliasMetatableCall::Unknown,
++                }
++                work.push((at, true));
++                work.extend(edges.into_iter().rev().map(|edge| (edge, false)));
++            }
++            AliasMetatableCall::Preserved
++        })
+     }
+ 
+     fn native_alias_allocation_without_metatable(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, before: NativeFlowKey) -> bool {
+         let (value, input) = match allocation { Origin::Allocation(value, input) => (*value, *input), _ => return false };
+-        if input.graph != before.graph || !provider.contains_graph(before.graph) || provider.node(input).is_none() { return false }
++        if !provider.contains_graph(before.graph) || !provider.contains_graph(input.graph) || provider.node(input).is_none() { return false }
+         let epoch = self.flow_memo.native_state.effect_epoch;
+         let frame = self.native_alias_cache.frame();
+         let key = (value, input, before, epoch, frame);
+@@ -248,7 +456,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let query = Query::NativeAliasMetatableAbsence(value, input, before, epoch, frame);
+         if !self.enter(query) { self.mark_tainted_from(0); return false }
+         let begun = self.begin_memoizable();
+-        let absent = self.native_alias_allocation_clear_since(provider, input, before);
++        let absent = self.native_alias_allocation_clear_since(provider, allocation, input, before);
+         let stored = self.end_memoizable(begun);
+         let left = self.leave(query);
+         if stored.is_none() || left.is_err() { self.mark_tainted_from(0); return false }
+@@ -256,14 +464,15 @@ impl<'p, 's> Checker<'p, 's> {
+         absent
+     }
+ 
+-    fn native_alias_allocation_clear_since(&mut self, provider: &dyn NativeFlowProvider, input: NativeFlowKey, before: NativeFlowKey) -> bool {
++    fn native_alias_allocation_clear_since(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
++        let graph = before.graph;
+         let mut active = HashSet::new();
+         let mut completed = HashSet::new();
+         let mut work = vec![(before, false)];
+         let mut steps = 0usize;
+         while let Some((at, leaving)) = work.pop() {
+             steps += 1;
+-            if steps > 16_384 || at.graph != input.graph || self.is_stack_low() { return false }
++            if steps > 16_384 || at.graph != graph || self.is_stack_low() { return false }
+             if at == input { continue }
+             if leaving { active.remove(&at); completed.insert(at); continue }
+             if completed.contains(&at) { continue }
+@@ -271,6 +480,14 @@ impl<'p, 's> Checker<'p, 's> {
+             let Some(node) = provider.node(at) else { return false };
+             let mut edges = Vec::new();
+             match node {
++                NativeFlowNode::Start => {
++                    let Some(index) = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry == at) else { return false };
++                    let caller = self.native_alias_cache.executions[index].caller;
++                    // A captured allocation is checked at the actual caller's
++                    // input, under its parent execution capability. This is the
++                    // only graph boundary; arbitrary foreign edges still fail.
++                    if !self.with_native_alias_parent(index, |checker| checker.native_alias_allocation_clear_since(provider, allocation, input, caller)) { return false }
++                },
+                 NativeFlowNode::Write { before, .. } => {
+                     // The earlier store must independently have a present raw
+                     // slot or metatable-free receivers at its own earlier input.
+@@ -289,11 +506,19 @@ impl<'p, 's> Checker<'p, 's> {
+                     if incoming.is_empty() || !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return false }
+                     edges.extend(incoming);
+                 },
+-                // Even a genuine standard setmetatable call can preserve raw
+-                // fields while installing __newindex on this exact allocation.
+-                NativeFlowNode::Call { .. } | NativeFlowNode::Loop { .. }
++                NativeFlowNode::Call { before, value, input } => {
++                    // Preserve absence only when the original call cannot
++                    // change this allocation's metatable pointer. Raw-field
++                    // preservation alone would also admit setmetatable.
++                    match self.native_alias_metatable_call(provider, allocation, value, input) {
++                        AliasMetatableCall::Preserved => edges.push(before),
++                        AliasMetatableCall::Pending => { self.mark_tainted_from(0); return false },
++                        AliasMetatableCall::Replaced(_) | AliasMetatableCall::Unknown => return false,
++                    }
++                },
++                NativeFlowNode::Loop { .. }
+                 | NativeFlowNode::IteratorStart { .. } | NativeFlowNode::Iteration { .. }
+-                | NativeFlowNode::Start | NativeFlowNode::Return { .. }
++                | NativeFlowNode::Return { .. }
+                 | NativeFlowNode::Unreachable | NativeFlowNode::Unsupported(_) => return false,
+             }
+             work.push((at, true));
+@@ -324,6 +549,10 @@ impl<'p, 's> Checker<'p, 's> {
+         let Some(recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Unknown };
+         if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeCallPreservation::Unknown }
+         let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
++        self.native_alias_call_preservation_for_callee(provider, reference, call, input, recipe, callee)
++    }
++
++    fn native_alias_call_preservation_for_callee(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey, recipe: NativeAliasCall, callee: Origins) -> NativeCallPreservation {
+         if callee.uncertain { return NativeCallPreservation::Pending }
+         if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return NativeCallPreservation::Unknown }
+         match callee.tokens.into_iter().next().unwrap() {
+@@ -618,7 +847,10 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+             // A static allocation site on a backedge can denote another
+             // physical object. Never equate iterations through a cycle token.
+-            Some(NativeFlowNode::Loop { .. }) => Origins::unknown(),
++            // This is a completed limit of the provenance proof, not an
++            // unresolved query. The memo scope below still propagates any
++            // actual recursive dependency as uncertain.
++            Some(NativeFlowNode::Loop { edges }) => self.native_alias_loop_reference(provider, reference, at, &edges),
+             Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }) => {
+                 if self.native_alias_stable_cell(provider, reference) || self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_reference(provider, reference, before) }
+                 else { Origins::one(Origin::OpaqueReference(reference, at), true) }
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index e7de97a..d8c5065 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -5,6 +5,8 @@
+ use super::flow_walk::{FlowDomain, FlowStep, FlowType, ReachDomain, ReachStep, WalkState};
+ use super::*;
+ use crate::types::TypeId;
++#[path = "native_flow_calls.rs"]
++mod calls;
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+ pub struct NativeGraphKey {
+@@ -230,9 +232,9 @@ pub struct NativeFunctionCreation {
+     pub position: usize,
+ }
+ 
+-/// Original immutable sibling projections of one physical Lua result list.
+-/// The provider establishes source identity/immutability; the checker narrows
+-/// the complete result pack through the shared flow traversal.
++/// Original sibling projections of one physical Lua result list. The provider
++/// establishes source identity; reached writes invalidate the binding relation
++/// and the checker narrows the complete pack through shared flow traversal.
+ #[derive(Clone, Copy, Debug)]
+ pub struct NativePackProjection {
+     pub group: NativeReferenceKey,
+@@ -241,6 +243,19 @@ pub struct NativePackProjection {
+     pub index: usize,
+ }
+ 
++/// A physical scalar read, frozen before later expressions in its Lua list.
++#[derive(Clone, Copy, Debug)]
++pub struct NativeFrozenReference {
++    pub reference: NativeReferenceKey,
++    pub input: NativeFlowKey,
++}
++
++#[derive(Clone, Copy, Debug)]
++pub struct NativeFlowPackResult {
++    pub pack: NativeResultPack,
++    pub incomplete: bool,
++}
++
+ #[derive(Clone, Copy, Debug)]
+ pub struct NativeIteratorProjection {
+     pub frame: NativeReferenceKey,
+@@ -274,8 +289,14 @@ pub trait NativeFlowProvider {
+     /// A unique original literal field at its frozen evaluation input. A
+     /// structural property type cannot establish runtime value provenance.
+     fn value_alias_member_source(&self, _: NativeValueKey, _: NativeFlowKey, _: NativeTableKey, _: &Checker<'_, '_>) -> Option<super::native_aliases::NativeAliasReturnValue> { None }
++    /// Complete keys of a directly evaluated literal prove this raw field
++    /// absent at construction. Aliases/paths to literals, dynamic keys, and
++    /// structural types cannot supply this fact.
++    fn value_alias_member_absent(&self, _: NativeValueKey, _: NativeFlowKey, _: NativeTableKey, _: &Checker<'_, '_>) -> bool { false }
+     /// Original receiver evaluation for a heap store, frozen before its RHS.
+     fn write_alias_receiver(&self, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasReturnValue> { None }
++    /// Original field/index receiver, frozen before an index key is evaluated.
++    fn read_alias_receiver(&self, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasReturnValue> { None }
+     fn function_alias_returns(&self, _: crate::types::NativeFunctionId) -> Option<Vec<super::native_aliases::NativeAliasReturn>> { None }
+     fn function_alias_exit(&self, _: crate::types::NativeFunctionId) -> Option<NativeFlowKey> { None }
+     /// Value capabilities require the assigned runtime value rather than the
+@@ -363,6 +384,7 @@ pub(super) struct NativeFlowState {
+     latest_reachable: Option<(NativeFlowKey, bool)>,
+     disabled: FxHashMap<NativeGraphKey, ()>,
+     capture_graphs: Vec<NativeGraphKey>,
++    call_executions: Vec<calls::NativeCallStateFrame>,
+ }
+ 
+ impl NativeFlowState {
+@@ -386,6 +408,7 @@ struct NativeDomain<'a> {
+ }
+ 
+ enum NativeTransfer {
++    Call { value: NativeValueKey, input: NativeFlowKey },
+     PossibleWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, relation: NativeWriteRelation },
+     IncompleteCall,
+     DefinitionWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey },
+@@ -661,7 +684,7 @@ impl FlowDomain for NativeDomain<'_> {
+             return FlowStep::Value(TypeId::ERROR);
+         };
+         match node {
+-            NativeFlowNode::Start => match self.auto_at_start(checker, walk, at) {
++            NativeFlowNode::Start => match checker.native_call_entry(self.provider, at, walk).or_else(|| self.auto_at_start(checker, walk, at)) {
+                 Some(result) => FlowStep::Complete(result),
+                 None => FlowStep::Initial,
+             },
+@@ -800,7 +823,7 @@ impl FlowDomain for NativeDomain<'_> {
+                     },
+                     NativeEffectResult::Complete(NativeCallEffects::None) => FlowStep::Follow {
+                         before,
+-                        transfer: None,
++                        transfer: Some(NativeTransfer::Call { value, input }),
+                         count_passed: false,
+                     },
+                     NativeEffectResult::Complete(NativeCallEffects::Unsupported(feature)) => {
+@@ -824,6 +847,7 @@ impl FlowDomain for NativeDomain<'_> {
+             return FlowType::new(previous.ty, true);
+         }
+         let ty = match transfer {
++            NativeTransfer::Call { value, input } => return checker.native_call_state_transfer(self.provider, walk, value, input, previous),
+             NativeTransfer::PossibleWrite { at, target, value, input, relation } => {
+                 let assigned = match relation {
+                     NativeWriteRelation::PossibleExact => checker.native_flow_value(self.provider, value, input),
+@@ -1097,6 +1121,9 @@ impl ReachDomain for NativeDomain<'_> {
+ }
+ 
+ impl<'s, 'p> Checker<'s, 'p> {
++    pub fn is_native_call_execution(&self, graph: NativeGraphKey) -> bool {
++        self.flow_memo.native_state.call_executions.last().is_some_and(|frame| frame.entry.graph == graph)
++    }
+     /// Original runtime capabilities must not lose a structurally redundant
+     /// alternative before intrinsic provenance is classified.
+     pub fn native_runtime_value_union(&mut self, types: &[TypeId]) -> TypeId {
+@@ -1210,8 +1237,8 @@ impl<'s, 'p> Checker<'s, 'p> {
+         if !self.is_union(initial.ty) {
+             return NativeFlowResult { ty: ordinary, incomplete: false, unresolved_auto: false };
+         }
+-        let result = self.native_flow_type(provider, at, projection.group, initial.ty, initial.ty);
+-        let ty = if result.ty == initial.ty {
++        let result = self.native_flow_type(provider, at, projection.group, TypeId::UNKNOWN, initial.ty);
++        let ty = if result.ty == initial.ty || self.native_pack_alternatives(NativeResultPack { ty: result.ty }).is_none() {
+             ordinary
+         } else {
+             let projected = self.native_pack_slot(NativeResultPack { ty: result.ty }, projection.index);
+@@ -1224,6 +1251,62 @@ impl<'s, 'p> Checker<'s, 'p> {
+         NativeFlowResult { ty, incomplete: result.incomplete, unresolved_auto: false }
+     }
+ 
++    /// Reassemble scalar reads from one surviving original result list. The
++    /// ordinary list remains authoritative when the source relation was lost.
++    pub fn native_flow_correlated_pack(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        ordinary: NativeResultPack,
++        elements: &[Option<NativeFrozenReference>],
++    ) -> NativeFlowPackResult {
++        let fallback = |incomplete| NativeFlowPackResult { pack: ordinary, incomplete };
++        let Some(ordinary_rows) = self.native_pack_alternatives(ordinary) else { return fallback(false) };
++        let [ordinary_row] = ordinary_rows.as_slice() else { return fallback(false) };
++        if ordinary_row.tail.is_some() || ordinary_row.fixed.len() != elements.len() {
++            return fallback(false);
++        }
++        let projections: Vec<_> = elements.iter().map(|element| {
++            element.and_then(|element| provider.pack_projection(element.reference).map(|projection| (element, projection)))
++        }).collect();
++        let mut participating = projections.iter().flatten();
++        let Some((first, source)) = participating.next().copied() else { return fallback(false) };
++        let Some((mut last, _)) = participating.next().copied() else { return fallback(false) };
++        for &(element, projection) in projections.iter().flatten() {
++            if element.reference.graph != source.group.graph || element.input.graph != source.group.graph
++                || projection.group != source.group || projection.value != source.value || projection.input != source.input
++            {
++                return fallback(false);
++            }
++            last = element;
++        }
++        if first.input.graph != source.input.graph || !provider.contains_reference(source.group) {
++            return fallback(false);
++        }
++        let (result, stored) = self.run_memoizable(|checker| {
++            let initial = checker.native_flow_pack_value(provider, source.value, source.input);
++            // UNKNOWN is the invalidated relation, never the original rows.
++            let group = checker.native_flow_type(provider, last.input, source.group, TypeId::UNKNOWN, initial.ty);
++            if group.incomplete { return fallback(true); }
++            let Some(rows) = checker.native_pack_alternatives(NativeResultPack { ty: group.ty }) else { return fallback(false) };
++            let views: Vec<_> = projections.iter().map(|projection| {
++                projection.and_then(|(element, _)| provider.reference_written_contract(element.reference, checker))
++            }).collect();
++            let mut reconstructed = Vec::with_capacity(rows.len());
++            for row in rows {
++                let row = checker.native_result_pack(&[row]);
++                let fixed = ordinary_row.fixed.iter().enumerate().map(|(index, ordinary)| {
++                    let Some((_, projection)) = projections[index] else { return *ordinary };
++                    let ty = checker.native_pack_slot(row, projection.index);
++                    let ty = views[index].map_or(ty, |bound| checker.resolved_assignment_type(bound, ty));
++                    super::native_packs::NativePackSlot { ty, optional: false }
++                }).collect();
++                reconstructed.push(super::native_packs::NativePackAlternative { fixed, tail: None });
++            }
++            NativeFlowPackResult { pack: checker.native_result_pack(&reconstructed), incomplete: false }
++        });
++        if stored.is_none() { fallback(true) } else { result }
++    }
++
+     fn native_flow_pack_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeResultPack {
+         if value.snapshot != input.graph.snapshot || !provider.contains_graph(input.graph) || provider.node(input).is_none() {
+             provider.flow_error(input, NativeFlowError::InvalidValue(value));
+diff --git a/src/sema/check/native_flow_calls.rs b/src/sema/check/native_flow_calls.rs
+new file mode 100644
+index 0000000..3f5e551
+--- /dev/null
++++ b/src/sema/check/native_flow_calls.rs
+@@ -0,0 +1,232 @@
++//! Reached caller state through a proved original zero-argument invocation.
++//! Graph recipes remain immutable; all state and entry bridges are checker-local.
++use super::*;
++use crate::check::native_aliases::{NativeAliasExecution, NativeCallPreservation, NativeReachedCallee};
++use std::collections::HashSet;
++
++#[derive(Default)]
++struct CallCaches {
++    loops: FxHashMap<LoopKey, TypeId>,
++    values: FxHashMap<ValueContext, TypeId>,
++    packs: FxHashMap<ValueContext, NativeResultPack>,
++    effects: FxHashMap<(ValueContext, u64), NativeCallEffects>,
++    reachable: FxHashMap<NativeFlowKey, bool>,
++    latest: Option<(NativeFlowKey, bool)>,
++    disabled: FxHashMap<NativeGraphKey, ()>,
++    owners: FxHashMap<(NativeFunctionId, NativeFlowKey, u64), Option<TypeId>>,
++}
++
++pub(super) struct NativeCallStateFrame {
++    pub(super) entry: NativeFlowKey,
++    caller: NativeFlowKey,
++    watched: NativeReferenceKey,
++    previous: FlowType,
++    contextual: Option<NativeFunctionContext>,
++    captured: Option<NativeCapturedFunctionContext>,
++    outside: Option<CallCaches>,
++    outside_epoch: u64,
++    alias_depth: usize,
++    unsupported: bool,
++}
++
++enum CallState { Unsupported, Pending, Value(FlowType) }
++
++impl<'p, 's> Checker<'p, 's> {
++    fn take_call_caches(&mut self) -> CallCaches {
++        let state = &mut self.flow_memo.native_state;
++        CallCaches {
++            loops: std::mem::take(&mut state.loop_types),
++            values: std::mem::take(&mut state.value_types),
++            packs: std::mem::take(&mut state.pack_types),
++            effects: std::mem::take(&mut state.call_effects),
++            reachable: std::mem::take(&mut state.reachable),
++            latest: state.latest_reachable.take(),
++            disabled: std::mem::take(&mut state.disabled),
++            owners: std::mem::take(&mut state.contextual_owners),
++        }
++    }
++
++    fn restore_call_caches(&mut self, cache: CallCaches) {
++        let state = &mut self.flow_memo.native_state;
++        state.loop_types = cache.loops;
++        state.value_types = cache.values;
++        state.pack_types = cache.packs;
++        state.call_effects = cache.effects;
++        state.reachable = cache.reachable;
++        state.latest_reachable = cache.latest;
++        state.disabled = cache.disabled;
++        state.contextual_owners = cache.owners;
++    }
++
++    fn with_call_parent<R>(&mut self, index: usize, work: impl FnOnce(&mut Self) -> R) -> R {
++        let mut outside = self.flow_memo.native_state.call_executions.split_off(index);
++        let parent = outside[0].outside.take().expect("call entry owns its caller caches");
++        let epoch = self.flow_memo.native_state.effect_epoch;
++        let current = self.take_call_caches();
++        self.restore_call_caches(parent);
++        self.flow_memo.native_state.effect_epoch = outside[0].outside_epoch;
++        let contextual = outside[0].contextual;
++        let captured = outside[0].captured;
++        let alias_depth = outside[0].alias_depth;
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            self.with_native_alias_parent(alias_depth, |checker| {
++                checker.with_native_function_frame(contextual, captured, work)
++            })
++        }));
++        outside[0].outside = Some(self.take_call_caches());
++        self.restore_call_caches(current);
++        self.flow_memo.native_state.effect_epoch = epoch;
++        self.flow_memo.native_state.call_executions.extend(outside);
++        result.unwrap_or_else(|error| std::panic::resume_unwind(error))
++    }
++
++    pub(super) fn native_call_entry(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, walk: &NativeWalk) -> Option<FlowType> {
++        let index = self.flow_memo.native_state.call_executions.iter().rposition(|frame| frame.entry == at)?;
++        let frame = &self.flow_memo.native_state.call_executions[index];
++        let watched = frame.watched;
++        let previous = frame.previous;
++        let caller = frame.caller;
++        if provider.reference_declaration(walk.reference).is_some_and(|declaration| declaration.owner == at.graph) {
++            return None;
++        }
++        if walk.reference == watched { return Some(previous) }
++        // Descendant reads use the actual incoming view, even if that spelling
++        // never existed in the caller's original reference table.
++        if let Some(path) = provider.reference_member_path(watched, walk.reference, self) {
++            let mut ty = previous.ty;
++            for key in path {
++                match self.native_table_read(ty, crate::types::NativeTableAccessKey::Literal(key)) {
++                    Ok(value) => ty = value,
++                    Err(_) => {
++                        self.flow_memo.native_state.call_executions[index].unsupported = true;
++                        return Some(FlowType::new(TypeId::ERROR, false));
++                    }
++                }
++            }
++            return Some(FlowType::new(ty, previous.incomplete));
++        }
++        let Some(reference) = provider.reference_in_graph(walk.reference, caller.graph) else {
++            self.flow_memo.native_state.call_executions[index].unsupported = true;
++            return Some(FlowType::new(walk.initial, true));
++        };
++        let declared = walk.declared;
++        let initial = walk.initial;
++        let result = self.with_call_parent(index, |checker| checker.native_flow_capture_type(provider, caller, reference, declared, initial));
++        Some(FlowType::new(result.ty, result.incomplete))
++    }
++
++    pub(super) fn native_call_state_transfer(&mut self, provider: &dyn NativeFlowProvider, walk: &NativeWalk, call: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> FlowType {
++        if previous.incomplete || !(self.native_has_runtime_table(previous.ty) || self.native_definition_flow_target(previous.ty)) { return previous }
++        match self.native_call_state(provider, walk, call, input, previous) {
++            CallState::Value(result) => result,
++            CallState::Unsupported => previous,
++            CallState::Pending => { self.mark_tainted_from(0); FlowType::new(previous.ty, true) },
++        }
++    }
++
++    fn native_call_state(&mut self, provider: &dyn NativeFlowProvider, walk: &NativeWalk, call: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> CallState {
++        let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
++        let (function, creation, activation, recipe) = match self.native_reached_callee(provider, call, input) {
++            NativeReachedCallee::Function { function, creation, activation, call } => (function, creation, activation, call),
++            NativeReachedCallee::Pending => return CallState::Pending,
++            NativeReachedCallee::Unsupported => return CallState::Unsupported,
++        };
++        // Formal/actual alias substitution is a separate capability. This
++        // boundary never invents reference identities for argument bindings.
++        if !recipe.arguments.is_empty() { return CallState::Unsupported }
++        let ty = provider.alias_callee_type(recipe.callee.value, recipe.callee.input, self);
++        let Some(signature) = self.native_implementation_signature(ty) else { return CallState::Unsupported };
++        if self.sig_native_decl(signature).is_none_or(|actual| actual.0 != function)
++            || !self.sig_type_params(signature).is_empty() || !self.sig_params(signature).is_empty()
++        { return CallState::Unsupported }
++        let epoch = self.flow_memo.native_state.effect_epoch;
++        let query = Query::NativeFlowCallState(walk.reference, call, input, previous.ty, signature, epoch, self.native_alias_execution_key());
++        if !self.enter(query) { self.mark_tainted_from(0); return CallState::Pending }
++        let begun = self.begin_memoizable();
++        let contextual = self.current_native_function_context();
++        let captured = self.current_native_captured_function();
++        let selected = NativeCapturedFunctionContext { signature };
++        let callee_contextual = self.sig_native_context(signature);
++        let result = self.with_native_function_frame(callee_contextual, Some(selected), |checker| {
++            let Some(functions) = checker.native_function_provider else { return CallState::Unsupported };
++            let Some(execution) = functions.function_flow_execution(checker, function, creation) else { return CallState::Unsupported };
++            if !provider.contains_graph(execution.entry.graph) || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start))
++                || execution.terminals.is_empty() || execution.terminals.iter().any(|terminal| terminal.graph != execution.entry.graph)
++            { return CallState::Unsupported }
++            let Some(watched) = provider.reference_in_graph(walk.reference, execution.entry.graph) else { return CallState::Unsupported };
++            if !provider.contains_reference(watched) { return CallState::Unsupported }
++            let outside = checker.take_call_caches();
++            let outside_epoch = checker.flow_memo.native_state.effect_epoch;
++            checker.flow_memo.native_state.fresh_effect_epoch();
++            let alias_depth = checker.native_alias_execution_depth();
++            checker.with_native_alias_execution(call, recipe.execution_input, &execution, Some((function, creation, activation)), |checker| {
++                checker.flow_memo.native_state.call_executions.push(NativeCallStateFrame {
++                    entry: execution.entry, caller: recipe.execution_input, watched,
++                    previous, contextual, captured, outside: Some(outside), outside_epoch, alias_depth, unsupported: false,
++                });
++                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                    checker.native_call_replay(provider, &execution, watched, walk.declared, previous)
++                }));
++                let frame = checker.flow_memo.native_state.call_executions.pop().expect("actual call-state entry scope");
++                checker.restore_call_caches(frame.outside.expect("actual caller cache scope"));
++                checker.flow_memo.native_state.effect_epoch = frame.outside_epoch;
++                let result = result.unwrap_or_else(|error| std::panic::resume_unwind(error));
++                if frame.unsupported { CallState::Unsupported } else { result }
++            })
++        });
++        let complete = self.end_memoizable(begun);
++        let left = self.leave(query);
++        if complete.is_none() || left.is_err() { return CallState::Pending }
++        result
++    }
++
++    fn native_call_replay(&mut self, provider: &dyn NativeFlowProvider, execution: &NativeAliasExecution, watched: NativeReferenceKey, declared: TypeId, previous: FlowType) -> CallState {
++        match self.native_call_replay_safe(provider, execution, watched) {
++            NativeCallPreservation::Pending => return CallState::Pending,
++            NativeCallPreservation::Unknown => return CallState::Unsupported,
++            NativeCallPreservation::Preserved => {},
++        }
++        let mut values = Vec::new();
++        for &terminal in &execution.terminals {
++            if self.native_flow_definitely_unreachable(provider, terminal) { continue }
++            let result = self.native_flow_capture_type(provider, terminal, watched, declared, previous.ty);
++            if result.incomplete { return CallState::Pending }
++            values.push(result.ty);
++        }
++        if values.is_empty() { return CallState::Unsupported }
++        CallState::Value(FlowType::new(self.union_or_evolving_with(&values, false), false))
++    }
++
++    fn native_call_replay_safe(&mut self, provider: &dyn NativeFlowProvider, execution: &NativeAliasExecution, watched: NativeReferenceKey) -> NativeCallPreservation {
++        let mut pending: Vec<_> = execution.terminals.iter().rev().map(|&at| (at, false)).collect();
++        let mut active = HashSet::new();
++        let mut completed = HashSet::new();
++        while let Some((at, leaving)) = pending.pop() {
++            if leaving { active.remove(&at); completed.insert(at); continue }
++            if completed.contains(&at) { continue }
++            if at.graph != execution.entry.graph || self.is_stack_low() { return NativeCallPreservation::Unknown }
++            if self.native_flow_definitely_unreachable(provider, at) { continue }
++            if !active.insert(at) { self.mark_tainted_from(0); return NativeCallPreservation::Pending }
++            let Some(node) = provider.node(at) else { return NativeCallPreservation::Unknown };
++            let edges = match node {
++                NativeFlowNode::Start if at == execution.entry => Vec::new(),
++                NativeFlowNode::Write { before, .. } | NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. } => {
++                    if !self.native_alias_dispatch_safe(provider, at, before) { return NativeCallPreservation::Unknown }
++                    vec![before]
++                },
++                NativeFlowNode::Call { before, value, input } => {
++                    match self.native_flow_call_preservation(provider, watched, value, input) {
++                        NativeCallPreservation::Preserved => vec![before],
++                        other => return other,
++                    }
++                },
++                NativeFlowNode::Merge { edges } if matches!(provider.alias_node_dispatch(at), super::super::native_aliases::NativeAliasDispatch::NoDispatch) => edges,
++                NativeFlowNode::Unreachable => Vec::new(),
++                _ => return NativeCallPreservation::Unknown,
++            };
++            pending.push((at, true));
++            pending.extend(edges.into_iter().rev().map(|edge| (edge, false)));
++        }
++        NativeCallPreservation::Preserved
++    }
++}
+diff --git a/src/sema/check/native_globals.rs b/src/sema/check/native_globals.rs
+index 7a02304..b1a5ee7 100644
+--- a/src/sema/check/native_globals.rs
++++ b/src/sema/check/native_globals.rs
+@@ -47,6 +47,10 @@ pub enum NativeGlobalQueryError {
+ }
+ 
+ pub trait NativeGlobalsProvider {
++    /// Host-selected ordinary analysis policy. Unknown effects preserve the
++    /// reached standard binding state; this supplies no heap identity or
++    /// purity certificate and never overrides an observed assignment.
++    fn assumed_standard_environment(&self) -> Option<NativeEnvironmentId> { None }
+     /// Frozen initial-library capability, never a lookup of the current variable spelling.
+     fn primitive_member_environment(&self) -> Option<NativeEnvironmentId> { None }
+     fn primitive_member_binding(&self, _: NativeEnvironmentId, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingId> { None }
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 6fbf5da..82813b1 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -67,6 +67,9 @@ pub struct NativeDefinitionRef {
+ pub struct NativeRuntimeTableRef {
+     pub schema: NativeObjectReference,
+     pub view: TypeId,
++    /// The original checked constructor keeps written storage bounds even
++    /// when the reached view narrows or deletes their current values.
++    pub bounds: Option<TypeId>,
+ }
+ 
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+@@ -1413,7 +1416,9 @@ impl<'p, 's> Checker<'p, 's> {
+     /// Indexers and full structural operations use the ordinary NativeTable description worker.
+     pub(super) fn native_named_read(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
+         if self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_header(self, reference.declaration).kind == NativeTypeDeclarationKind::RuntimeTable) {
++            let key = self.native_table_access(key)?;
+             let object = self.intern(TypeData::NativeObject(reference));
++            if let Some(value) = self.native_runtime_seed_read(reference, key).map_err(|error| error.table_error(object))? { return Ok(value) }
+             let resolved = self.native_object_resolved(object).map_err(|error| error.table_error(object))?;
+             return self.native_table_read(resolved, key);
+         }
+diff --git a/src/sema/check/native_runtime_tables.rs b/src/sema/check/native_runtime_tables.rs
+index 4f4561f..6a79204 100644
+--- a/src/sema/check/native_runtime_tables.rs
++++ b/src/sema/check/native_runtime_tables.rs
+@@ -49,7 +49,8 @@ impl<'p, 's> Checker<'p, 's> {
+         if !matches!(self.data(view), TypeData::NativeTable(_)) {
+             return Err(NativeNamedTypeError::InvalidDeclaration(declaration));
+         }
+-        Ok(self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view })))
++        let bounds = self.native_runtime_table_ref(actual).map_or(Some(view), |reference| reference.bounds);
++        Ok(self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view, bounds })))
+     }
+ 
+     fn native_runtime_table_seed(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {
+@@ -86,6 +87,26 @@ impl<'p, 's> Checker<'p, 's> {
+         Ok(value)
+     }
+ 
++    /// Constructor fields already anchor prospective reads. Discovering every
++    /// later store first would demand its receiver's earlier RHS, which can
++    /// itself read this same anchored field. Only a matching written member can
++    /// replace an inferred constructor field under the schema worker's policy.
++    pub(super) fn native_runtime_seed_read(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Result<Option<TypeId>, NativeNamedTypeError> {
++        let key = self.native_table_access(key).map_err(|error| NativeNamedTypeError::Table { declaration: reference.declaration, error })?;
++        let NativeTableAccessKey::Literal(literal) = key else { return Ok(None) };
++        let seed = self.native_runtime_table_seed(reference)?;
++        let seed = self.instantiate(seed, reference.mapper);
++        let TypeData::NativeTable(data) = self.data(seed) else { return Err(NativeNamedTypeError::InvalidDeclaration(reference.declaration)) };
++        let Some(field) = data.fields.iter().find(|field| field.key == literal) else { return Ok(None) };
++        let members = if field.origin == NativeTableFieldOrigin::Declared { Vec::new() }
++            else { self.native_object_written_fixed_members(reference, literal)? };
++        // Reuse the ordinary seed widening, optionality, mapper and written
++        // overlay rules. No partial object schema is published by this read.
++        let table = self.native_runtime_schema_resolved(reference, &members)?;
++        self.native_table_read(table, key).map(Some)
++            .map_err(|error| NativeNamedTypeError::Table { declaration: reference.declaration, error })
++    }
++
+     pub(super) fn native_runtime_schema_resolved(&mut self, reference: NativeObjectReference, members: &[NativeObjectMember]) -> Result<TypeId, NativeNamedTypeError> {
+         let declaration = reference.declaration;
+         let seed = self.native_runtime_table_seed(reference)?;
+@@ -199,9 +220,22 @@ impl<'p, 's> Checker<'p, 's> {
+     pub(in crate::check) fn native_runtime_table_value_context(&mut self, reference: NativeRuntimeTableRef, key: NativeTableAccessKey) -> Option<TypeId> {
+         let key = self.native_table_access(key).ok()?;
+         if let NativeTableAccessKey::Literal(key) = key {
+-            if let TypeData::NativeTable(data) = self.data(reference.view)
++            if let Some(bounds) = reference.bounds
++                && let TypeData::NativeTable(data) = self.data(bounds)
+                 && let Some(field) = data.fields.iter().find(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared)
+             { return Some(field.value) }
++            if let TypeData::NativeTable(data) = self.data(reference.view)
++                && data.fields.iter().any(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared)
++            {
++                // The reached value may have been narrowed or deleted by an
++                // earlier store. Its origin retains the written constructor
++                // recipe, whose invariant bound supplies RHS context instead.
++                let seed = self.native_runtime_table_seed(reference.schema).ok()?;
++                let seed = self.instantiate(seed, reference.schema.mapper);
++                if let TypeData::NativeTable(data) = self.data(seed)
++                    && let Some(field) = data.fields.iter().find(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared)
++                { return Some(field.value) }
++            }
+             let object = self.intern(TypeData::NativeObject(reference.schema));
+             let query = Query::NativeNamed(NativeTypeDeclarationQuery::RuntimeTableWrittenContext(object, key));
+             if !self.enter(query) { self.mark_tainted_from(0); return None }
+@@ -240,11 +274,21 @@ impl<'p, 's> Checker<'p, 's> {
+         let mut fields = data.fields.to_vec();
+         let optional = self.contains_undefined(value);
+         let present = self.without_undefined(value);
++        let bound = reference.bounds.and_then(|bounds| match self.data(bounds) {
++            TypeData::NativeTable(data) => data.fields.iter().find(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared).map(|field| (field.value, field.readonly)),
++            _ => None,
++        });
++        let reached = bound.map_or(present, |(bound, _)| self.resolved_assignment_type(bound, present));
+         if let Some(field) = fields.iter_mut().find(|field| field.key == key) {
+-            field.value = if field.origin == NativeTableFieldOrigin::Declared { self.resolved_assignment_type(field.value, present) } else { present };
++            // Validation uses the original schema. Narrow against the original
++            // written constructor bound, never the previous reached value.
++            // This also retains regular singleton literals without retaining
++            // fresh literals beyond a written broad number/string bound.
++            field.value = reached;
+             field.optional = optional;
+         } else {
+-            fields.push(NativeTableField { key, value: present, optional, readonly: false, origin: NativeTableFieldOrigin::Inferred });
++            fields.push(NativeTableField { key, value: reached, optional, readonly: bound.is_some_and(|(_, readonly)| readonly),
++                origin: if bound.is_some() { NativeTableFieldOrigin::Declared } else { NativeTableFieldOrigin::Inferred } });
+         }
+         description.fields = self.list(&fields);
+         description.fresh = false;
+@@ -258,9 +302,10 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+     pub(in crate::check) fn native_runtime_table_absent_view(&mut self, ty: TypeId) -> TypeId {
+         if self.is_union(ty) { return self.map_type(ty, |checker, part| checker.native_runtime_table_absent_view(part)) }
++        let bounds = self.native_runtime_table_ref(ty).and_then(|reference| reference.bounds);
+         let Some(schema) = self.native_runtime_table_schema(ty) else { return ty };
+         let TypeData::NativeObject(schema) = *self.data(schema) else { unreachable!("runtime schema") };
+         let view = self.native_table(&[], &[], NativeTableFlavor::Declared).expect("empty original value view");
+-        self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view }))
++        self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view, bounds }))
+     }
+ }
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+index fe31343..12b2769 100644
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -270,9 +270,10 @@ fn is_task_independent(q: Query) -> bool {
+         | Query::Comparison(_) => true,
+         Query::NativeGlobals(_)
+         | Query::NativeContextualTypeOwner(..)
+-        | Query::NativeFlowCallEffects(..)
++        | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallState(..)
+         | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
+         | Query::NativeAliasLoaderState(..) | Query::NativeAliasCallableTable(..)
++        | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
+         | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
+         | Query::ReturnOfSignature(_)
+         | Query::Shape(_)
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+index f2b4917..7ed22f2 100644
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -2400,6 +2400,7 @@ impl<'p, 's> Types<'p, 's> {
+                     | reference.class.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty))).difference(ObjectFlags::PROPAGATING_FLAGS),
+             TypeData::NativeRuntimeTable(reference) => self.object_flags(reference.view)
+                 | (self.mapper_record(reference.schema.mapper).1
++                    | reference.bounds.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty))
+                     | reference.schema.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty))).difference(ObjectFlags::PROPAGATING_FLAGS),
+             TypeData::NativeTable(table) => {
+                 let origin_flags = table.nominal_origin.map_or(ObjectFlags::empty(), |origin| self.mapper_record(origin.mapper).1 | origin.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty)));
+@@ -3550,7 +3551,7 @@ follow_enum!(SigData<'_> {
+ follow_struct!(NativeCapturedBinding { declaration, ty });
+ follow_struct!(NativeObjectReference { declaration, mapper, self_argument, runtime_context });
+ follow_struct!(NativeDefinitionRef { owner, class, view });
+-follow_struct!(NativeRuntimeTableRef { schema, view });
++follow_struct!(NativeRuntimeTableRef { schema, view, bounds });
+ follow_struct!(NativeRuntimeTableContext { contextual, captured });
+ follow_enum!(NativeTableFieldOrigin {
+     NativeTableFieldOrigin::Inferred => (),

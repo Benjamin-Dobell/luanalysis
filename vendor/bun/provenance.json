@@ -1628,6 +1628,80 @@
       "patch": "vendor/patches/bun-sema-native-raw-slots-callable-loader.patch",
       "reason": "Retain original non-nil scalar raw-slot presence and all fresh receiver alternatives, guard cyclic loader inheritance, and prove reached literal __call execution through kernel e21b3cd.",
       "patch_sha256": "113297fea07fc6e0a0ec14e1c7bce25cb8a23ea95e69252f5fd18e17146de54b"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/native_alias_loops.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "added": true,
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/native_aliases.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/native_flow_calls.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "added": true,
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+      "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+      "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
     }
   ],
   "source_additions": {
@@ -1635,8 +1709,12 @@
       "extracted_sha256": "b48fa1bf956390019e30c23969f567816346233bd5d50d210d42401bcacd2894",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
+    "src/sema/check/native_alias_loops.rs": {
+      "extracted_sha256": "00e1c322adfaf54a4ce5d593cc83bdd436d75442fce42b6e9eda5361b7f796d4",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
+    },
     "src/sema/check/native_aliases.rs": {
-      "extracted_sha256": "7c32f703002ecabd2bf78f314fa9411fb03637553e8363068a770fd139680be9",
+      "extracted_sha256": "16b80c4c6d35a8246c698ca7f0668910feee3d003cc9f0857198f4053fd0662a",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_assertions.rs": {
@@ -1644,11 +1722,15 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "e51a222c27ce0b6ca29b890ab5e073d7c15a7559cda9429bd62b89d7b9c3d7dc",
+      "extracted_sha256": "d6c38d02f92acfb51f75b093614091df8040d8a0fffe2ea36a9e290a73775ca4",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
+    "src/sema/check/native_flow_calls.rs": {
+      "extracted_sha256": "bc87bdf1edfa3b2ed7a13c201b7c78cd594ff5660220059a6af37e74b7221c66",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
+    },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "f71a05dc6d308fe3b9f78d71d0cbf8ba4d7268437043127f3ba4f524dc2b3d31",
+      "extracted_sha256": "4acb62aca5482f3094cf2cb61b5dd0b4091c1267deb00a4b6bdd3cbca54426da",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -1660,7 +1742,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "c7e5e36a9ba29ec773686b4560565326b92324515039a12f698b883c319f4fca",
+      "extracted_sha256": "be46d86b4e2b64d8dcb6812712e7340f26ed3422abb37f24413ffa72ae0f7cce",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1676,7 +1758,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "0722314a9625ab59a662a88213bc85e80536eeb6d8de3081677c9a4094292a69",
+      "extracted_sha256": "64106d9ecd5f6b5934e2de32f2879d50ac02f86450e5383afd3436c102d006d9",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -2607,12 +2689,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "712b4e21394c713e1f1b30aa45a7b8fc1dcc08e4b033793f11657b673be0aca6"
+      "extracted_sha256": "43b252f2329f571a291c2efca903793b5925e03155dda59075118c02f7e70ed9"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "cbc0c32bd9ee829fae4a9b97a5073108e8052de586b14ba8961c1fa7eaad73eb"
+      "extracted_sha256": "667b3c47296cfeaa37204fe3137a94d99e221cc49b9f83dd28a3700a14ebedc5"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -2642,7 +2724,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "875df423b67a2aa5f923d2a5c46147eddae79df4bc9723c8725f8e21b201db83"
+      "extracted_sha256": "46b357992cdf2f6771324d508603aa0acd00fdd369f8cdf65e03475372ea0ab2"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -2727,7 +2809,7 @@
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "344a0e0a94ca35fca0e54893dd339ffad8f9737df3758a06556944413427e412"
+      "extracted_sha256": "3c4afc917b32c8e5f7fd20545548d1534c0c3b29d755f5832a542c4334455c3d"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",
@@ -2847,7 +2929,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "964abeda8c46fee5f121f4242b839b455d744e73a843ad4d1ce35007ae9391b1"
+      "extracted_sha256": "3332af7133ddc2eb1efc11c8b0d5a09a1c43d0d43fa3d359ee8ce71ccb2702be"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

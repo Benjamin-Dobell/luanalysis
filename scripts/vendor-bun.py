@@ -382,6 +382,18 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Retain original non-nil scalar raw-slot presence and all fresh receiver alternatives, guard cyclic loader inheritance, and prove reached literal __call execution through kernel e21b3cd.",
 } for path in ["mod.rs", "native_aliases.rs", "sink.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
+    "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
+    **({"added": True} if path in ["check/native_alias_loops.rs", "check/native_flow_calls.rs"] else {}),
+} for path in [
+    "check/infer.rs", "check/instantiate.rs", "check/mod.rs", "check/native_alias_loops.rs",
+    "check/native_aliases.rs", "check/native_flow.rs", "check/native_flow_calls.rs",
+    "check/native_globals.rs", "check/native_named.rs", "check/native_runtime_tables.rs",
+    "check/sink.rs", "types.rs",
+])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
