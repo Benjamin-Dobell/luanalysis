@@ -18,17 +18,6 @@ value = 1,
 one = 1,
 inferred = 1,
 }
-
-#[test]
-fn a_written_broad_union_narrows_to_its_primitive_arm_not_a_fresh_literal() {
-    let source = "local record={\n---@type number|string\nvalue=1,\n}\nrecord.value=1\nlocal copied=record.value\n";
-    let report = accepted(source);
-    assert_eq!(binding(&report, "copied"), "number");
-    let wrong = format!("{source}---@type 1\nlocal singleton=record.value\n");
-    let report = check(&wrong);
-    assert!(report.diagnostics.iter().any(|error| error.code == "TS2322"), "{:#?}", report.diagnostics);
-    accepted(&wrong.replace("---@type 1", "---@type number"));
-}
 record.value = 2
 record.one = 1
 record.inferred = 2
@@ -47,6 +36,17 @@ local copied = record.one
     let diagnostic = report.diagnostics.iter().find(|error| error.code == "TS2322").unwrap();
     assert_eq!(&bad[diagnostic.span.start..diagnostic.span.end], "\"wrong\"");
     accepted(&bad.replace("\"wrong\"", "1"));
+}
+
+#[test]
+fn a_written_broad_union_narrows_to_its_primitive_arm_not_a_fresh_literal() {
+    let source = "local record={\n---@type number|string\nvalue=1,\n}\nrecord.value=1\nlocal copied=record.value\n";
+    let report = accepted(source);
+    assert_eq!(binding(&report, "copied"), "number");
+    let wrong = format!("{source}---@type 1\nlocal singleton=record.value\n");
+    let report = check(&wrong);
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2322"), "{:#?}", report.diagnostics);
+    accepted(&wrong.replace("---@type 1", "---@type number"));
 }
 
 #[test]

@@ -125,6 +125,7 @@ fn written_overload_effects_terminate_only_when_every_public_head_is_never() {
     let source = r#"---@shape EffectService
 ---@function EffectService.run(value:number): never
 ---@function EffectService.run(value:string): nil
+
 ---@param service EffectService
 ---@return number
 local function use(service)
@@ -145,6 +146,7 @@ fn written_multihead_member_calls_keep_selected_captured_bodies_checked() {
     let source = r#"---@shape CapturedEffectService
 ---@function CapturedEffectService.run(value:number): true
 ---@function CapturedEffectService.run(value:string): true
+
 ---@param service CapturedEffectService
 local function factory(service)
     return function()
