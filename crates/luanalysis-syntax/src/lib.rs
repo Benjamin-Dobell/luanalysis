@@ -9,6 +9,9 @@
 mod lexer;
 mod parser;
 mod types;
+mod completion_metadata;
+#[cfg(test)]
+mod completion_metadata_tests;
 
 pub use lexer::{Lexed, Token, TokenKind, lex};
 pub use parser::parse;
@@ -410,6 +413,8 @@ pub struct TypeExpr {
 pub enum TypeExprKind {
     Named(String),
     Literal(TypeLiteral),
+    /// Suggested editor text; it contributes no values to its union type.
+    CompletionHint(String),
     Union(Vec<TypeExpr>),
     Record(Vec<TypeField>),
     Parenthesized(Box<TypeExpr>),
@@ -424,6 +429,32 @@ pub enum TypeExprKind {
         args_span: Span,
     },
     Error,
+}
+
+impl TypeExpr {
+    /// The original value-bearing node after dropping only completion metadata.
+    /// Parentheses remain visible to syntax-sensitive overload ordering.
+    pub fn value_syntax(&self) -> &Self {
+        let mut current = self;
+        while let TypeExprKind::Union(parts) = &current.kind {
+            if !parts.iter().any(Self::is_completion_only) { break; }
+            let mut values = parts.iter().filter(|part| !part.is_completion_only());
+            let Some(value) = values.next() else { break };
+            if values.next().is_some() { break; }
+            current = value;
+        }
+        current
+    }
+
+    /// Syntax-only classification for metadata that needs a companion type.
+    pub fn is_completion_only(&self) -> bool {
+        match &self.kind {
+            TypeExprKind::CompletionHint(_) => true,
+            TypeExprKind::Parenthesized(inner) => inner.is_completion_only(),
+            TypeExprKind::Union(parts) => parts.iter().all(Self::is_completion_only),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

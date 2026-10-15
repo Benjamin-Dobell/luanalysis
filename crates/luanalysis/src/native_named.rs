@@ -615,7 +615,7 @@ impl NativeNamed {
                                 .filter_map(|parameter| parameter.ty.as_ref()),
                         );
                     }
-                    TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::Error => {}
+                    TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {}
                 }
             }
         }

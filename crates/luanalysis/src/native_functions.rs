@@ -193,8 +193,9 @@ impl NativeRegistry {
                 [ty] => ty,
                 _ => return None,
             };
+            ty = ty.value_syntax();
             while let luanalysis_syntax::TypeExprKind::Parenthesized(inner) = &ty.kind {
-                ty = inner;
+                ty = inner.value_syntax();
             }
             let luanalysis_syntax::TypeExprKind::Function(signature) = &ty.kind else {
                 return None;
@@ -257,8 +258,9 @@ impl NativeRegistry {
                 [ty] => ty,
                 _ => return None,
             };
+            ty = ty.value_syntax();
             while let luanalysis_syntax::TypeExprKind::Parenthesized(inner) = &ty.kind {
-                ty = inner;
+                ty = inner.value_syntax();
             }
             let luanalysis_syntax::TypeExprKind::Function(signature) = &ty.kind else {
                 return None;

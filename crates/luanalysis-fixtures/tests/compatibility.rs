@@ -240,3 +240,38 @@ fn unsupported_feature_diagnostic_cannot_satisfy_a_legacy_type_error() {
     assert_eq!(comparison.missing, [0]);
     assert_eq!(comparison.unexpected, [0]);
 }
+
+#[test]
+fn full_legacy_completion_snippet_checks_the_companion_type_and_correction() {
+    let case = CaseConfig {
+        id: "legacy/snippet",
+        origin_path: "src/test/resources/inspections/snippet.lua",
+        lua_version: "5.3",
+        strict_nil: true,
+        unknown_callable: false,
+        unknown_indexable: false,
+        checked_severities: CHECKED_SEVERITIES,
+        status: CaseStatus::SharedSemantics,
+    };
+    case.require_supported().unwrap();
+    let fixture = import(include_str!("fixtures/snippet.lua"))
+        .unwrap()
+        .with_origin(FixtureOrigin::legacy(case.origin_path));
+    assert_eq!(fixture.diagnostics.len(), 1);
+    let expected = &fixture.diagnostics[0];
+    assert_eq!(fixture.snippet(expected), "level");
+    let observed = native_diagnostics(&fixture.source);
+    let comparison = compare_exact(
+        &[DiagnosticMatch {
+            severity: expected.severity,
+            span: expected.span,
+            code: Some("TS2322".into()),
+        }],
+        &observed,
+    );
+    assert!(comparison.is_match(), "{comparison:?}; {observed:?}");
+    let mut corrected = fixture.source.clone();
+    corrected.replace_range(expected.span.start..expected.span.end, "\"valid\"");
+    let report = luanalysis::check(&corrected);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+}

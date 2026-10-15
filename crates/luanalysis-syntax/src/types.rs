@@ -3,7 +3,7 @@ use crate::{
     FunctionAnnotations, FunctionType, FunctionTypeParam, GenericParameter, Name, NamedRecordKind,
     NamedTypeDeclarationKind, ParamAnnotation, Span, Token, TokenKind, TypeAnnotation, TypeExpr,
     TypeExprKind, TypeField, TypeFieldKey, TypeLiteral, TypePack, TypePacks, VarargAnnotation,
-    VariadicTypeIndex, lex,
+    VariadicTypeIndex,
 };
 
 #[derive(Default)]
@@ -96,7 +96,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 let types = annotation_type_text(types);
                 let types_offset = tag_offset + 1 + tag_len + raw_types.len()
                     - raw_types.trim_start_matches([' ', '\t']).len();
-                let lexed = lex(types);
+                let lexed = crate::lexer::lex_annotation(types);
                 let tokens = lexed
                     .tokens
                     .into_iter()
@@ -243,6 +243,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
         }
         line_offset += line.len();
     }
+    crate::completion_metadata::validate(&result, &mut diagnostics);
     (result, diagnostics)
 }
 
@@ -280,7 +281,7 @@ fn type_depth(root: &TypeExpr) -> usize {
                 }
                 pending.extend(function.returns.iter().map(|ty| (ty, current + 1)));
             }
-            TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::Error => {}
+            TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {}
         }
     }
     depth
@@ -290,7 +291,7 @@ fn annotation_type_text(text: &str) -> &str {
     if !text.contains('@') {
         return text.trim_end();
     }
-    let end = lex(text)
+    let end = crate::lexer::lex_annotation(text)
         .tokens
         .iter()
         .find_map(|token| {
@@ -814,6 +815,10 @@ impl TypeParser {
         }
         self.depth += 1;
         let mut ty = match self.current().kind.clone() {
+            TokenKind::CompletionHint(text) => {
+                self.pos += 1;
+                TypeExpr { kind: TypeExprKind::CompletionHint(text), span: start }
+            }
             TokenKind::Identifier(name) if name == "fun" => self.function_type(),
             TokenKind::Identifier(name) => {
                 self.pos += 1;

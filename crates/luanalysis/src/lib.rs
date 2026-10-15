@@ -545,8 +545,14 @@ impl Checker<'_> {
                 }
             },
             TypeExprKind::Union(types) => {
-                Type::Union(types.iter().map(|ty| self.annotation(ty)).collect())
+                let lowered: Vec<_> = types.iter().map(|ty| self.annotation(ty)).collect();
+                if types.iter().any(TypeExpr::is_completion_only) {
+                    self.engine.union_reduced(&lowered)
+                } else {
+                    Type::Union(lowered)
+                }
             }
+            TypeExprKind::CompletionHint(_) => Type::Never,
             TypeExprKind::Literal(literal) => match literal {
                 TypeLiteral::Boolean(value) => Type::BooleanLiteral(*value),
                 TypeLiteral::String(value) => Type::StringLiteral(value.clone()),

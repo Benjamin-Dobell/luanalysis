@@ -153,7 +153,7 @@ impl NativeRegistry {
                         pending.push((context, &vararg.ty));
                     }
                 }
-                TypeExprKind::Literal(_) | TypeExprKind::Error => {}
+                TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {}
             }
             let Some(name) = reference else { continue };
             // Match annotation name-binding precedence for primitive keywords.

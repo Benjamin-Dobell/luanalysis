@@ -12,6 +12,8 @@ pub enum TokenKind {
     Keyword(String),
     Number(String),
     String(Vec<u8>),
+    /// Annotation-only editor insertion text, with its original delimiter span.
+    CompletionHint(String),
     Symbol(String),
     Comment(Comment),
     Newline,
@@ -25,8 +27,17 @@ pub struct Lexed {
 }
 
 pub fn lex(source: &str) -> Lexed {
+    lex_with_mode(source, false)
+}
+
+pub(crate) fn lex_annotation(source: &str) -> Lexed {
+    lex_with_mode(source, true)
+}
+
+fn lex_with_mode(source: &str, annotations: bool) -> Lexed {
     let mut lexer = Lexer {
         source,
+        annotations,
         pos: 0,
         tokens: Vec::new(),
         diagnostics: Vec::new(),
@@ -40,6 +51,7 @@ pub fn lex(source: &str) -> Lexed {
 
 struct Lexer<'a> {
     source: &'a str,
+    annotations: bool,
     pos: usize,
     tokens: Vec<Token>,
     diagnostics: Vec<Diagnostic>,
@@ -60,6 +72,9 @@ impl Lexer<'_> {
             } else if start == 0 && self.at("#!") {
                 self.line_end();
                 self.push_comment(start, CommentKind::Shebang);
+            } else if ch == '`' && self.annotations {
+                let value = self.completion_hint(start);
+                self.push(start, TokenKind::CompletionHint(value));
             } else if ch == '\'' || ch == '"' {
                 let value = self.short_string(ch, start);
                 self.push(start, TokenKind::String(value));
@@ -217,6 +232,31 @@ impl Lexer<'_> {
             );
             self.source.as_bytes()[body..].to_vec()
         }
+    }
+
+    fn completion_hint(&mut self, start: usize) -> String {
+        self.advance();
+        let body = self.pos;
+        while self.pos < self.source.len() {
+            let ch = self.char();
+            if ch == '`' {
+                let text = self.source[body..self.pos].to_owned();
+                self.advance();
+                if text.is_empty() {
+                    self.error(start, "completion hint cannot be empty".to_owned());
+                }
+                return text;
+            }
+            if matches!(ch, '\r' | '\n') {
+                break;
+            }
+            self.advance();
+            if ch == '\\' && self.pos < self.source.len() {
+                self.advance();
+            }
+        }
+        self.error(start, "unterminated completion hint".to_owned());
+        self.source[body..self.pos].to_owned()
     }
 
     fn short_string(&mut self, quote: char, start: usize) -> Vec<u8> {

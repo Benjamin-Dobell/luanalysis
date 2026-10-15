@@ -1556,7 +1556,7 @@ fn function_initializer(value: &mut Expr) -> Option<&mut Function> {
 
 fn function_type_annotation(annotation: &TypeAnnotation) -> bool {
     fn function_type(ty: &TypeExpr) -> bool {
-        match &ty.kind {
+        match &ty.value_syntax().kind {
             TypeExprKind::Function(_) => true,
             TypeExprKind::Parenthesized(inner) => function_type(inner),
             _ => false,

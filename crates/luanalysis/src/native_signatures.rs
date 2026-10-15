@@ -27,8 +27,9 @@ impl NativeRegistry {
             [ty] => ty,
             _ => return None,
         };
+        ty = ty.value_syntax();
         while let TypeExprKind::Parenthesized(inner) = &ty.kind {
-            ty = inner;
+            ty = inner.value_syntax();
         }
         match &ty.kind {
             TypeExprKind::Function(signature) => self.signature_key_for(signature.span),
@@ -489,6 +490,7 @@ impl NativeSignatures {
             .or_insert(next);
         let literal = signature.params.iter().any(|parameter| {
             parameter.ty.as_ref().is_some_and(|ty| {
+                let ty = ty.value_syntax();
                 matches!(&ty.kind, TypeExprKind::Literal(_))
                     || matches!(&ty.kind,TypeExprKind::Named(name) if name=="nil")
             })
@@ -582,8 +584,9 @@ impl NativeSignatures {
                     [ty] => ty,
                     _ => return None,
                 };
+                ty = ty.value_syntax();
                 while let TypeExprKind::Parenthesized(inner) = &ty.kind {
-                    ty = inner;
+                    ty = inner.value_syntax();
                 }
                 let TypeExprKind::Function(signature) = &ty.kind else {
                     return None;

@@ -309,7 +309,7 @@ impl NativeTypes {
                     self.annotation_dependencies_in_context(context, returned, used);
                 }
             }
-            TypeExprKind::Literal(_) | TypeExprKind::Error => {}
+            TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {}
         }
     }
 
