@@ -163,8 +163,15 @@ fn runtime_local_classes_keep_checked_initializers_and_ambient_placeholders_cann
 
 #[test]
 fn active_io_library_exposes_local_file_methods() {
-    let fixture = Fixture::new(
+    // This fixture disables automatic stdlib loading. IO's file class derives
+    // from the ordinary userdata declaration in the matching builtin resource.
+    let declarations = format!(
+        "{}\n\n{}",
+        include_str!("../stdlib/Lua54/builtin.def.lua"),
         include_str!("../stdlib/Lua54/io.def.lua"),
+    );
+    let fixture = Fixture::new(
+        &declarations,
         "local handle=io.open('example.txt')\nlocal lines=handle:lines()\nhandle:close()\n---@type fun():any\nlocal iterator=lines\n",
     );
     pass(&fixture.check());
