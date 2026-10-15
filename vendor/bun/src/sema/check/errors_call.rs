@@ -985,6 +985,7 @@ impl Checker<'_, '_> {
     ) -> Option<(usize, TypeId, TypeId)> {
         let mut params = self.sig_params(sig);
         let mut prefix = Vec::new();
+        let metatable = self.native_intrinsic_site(sig).is_some_and(|site| site.kind == super::native_intrinsics::NativeIntrinsicKind::SetMetatable);
         let rest = self.non_array_rest_type(&params);
         let boundary = args.iter().position(|arg| arg.is_spread()).unwrap_or(args.len());
         let boundary = if rest.is_some() {
@@ -997,7 +998,9 @@ impl Checker<'_, '_> {
             let Some(expected) = self.param_type_at(&params, i) else {
                 continue;
             };
-            let contextual = if self.is_any(expected) || expected == TypeId::UNKNOWN {
+            let contextual = if metatable && i == 1 {
+                prefix.first().copied().and_then(|target| self.native_metatable_argument_context(target)).unwrap_or(expected)
+            } else if self.is_any(expected) || expected == TypeId::UNKNOWN {
                 identity_context.and_then(|pack| self.native_pack_contextual_slot(pack, i)).unwrap_or(expected)
             } else { expected };
             let actual = match arg {
@@ -1014,7 +1017,7 @@ impl Checker<'_, '_> {
                 self.note_parameter_types_resolved(sig, &params, i + 1);
                 return Some((i, actual, expected));
             }
-            if identity_context.is_some() { prefix.push(actual); }
+            prefix.push(actual);
         }
         if boundary < args.len() || rest.is_some() {
             let expected = self.rest_type_at_position(&params, boundary, false);

@@ -4,7 +4,7 @@ use super::{CheckMode, Checker, ResolvedTypeCallError};
 use super::call::Arg;
 use super::native_globals::{NativeGlobalBindingId, NativeGlobalQueryError, NativeGlobalSourceRole, NativeValueDeclarationId};
 use super::native_packs::{NativePackAlternative, NativePackSlot};
-use crate::types::{ElemFlags, NativeResultPack, SigId, TypeData, TypeId};
+use crate::types::{ElemFlags, NativeFunctionContext, NativeResultPack, SigId, SigParam, TypeData, TypeId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NativeIntrinsicKind { Assert, Type, Require, SetMetatable }
@@ -100,6 +100,47 @@ impl<'p, 's> Checker<'p, 's> {
             if row.tail.is_none() { row.tail = declared_tail; }
         }
         Some(self.native_result_pack(&rows))
+    }
+
+    /// Contextual TYPE guidance from original written class call heads. This
+    /// creates no runtime metatable, allocation, or constructor-origin fact.
+    pub(super) fn native_metatable_argument_context(&mut self, target: TypeId) -> Option<TypeId> {
+        use super::native_tables::{NativeTableField, NativeTableFieldOrigin, NativeTableFlavor, NativeTableKey};
+        let target = self.native_runtime_carrier(target);
+        let receiver = self.native_contextual_owner_self_type(target)?;
+        let TypeData::NativeTypeParam { declaration, .. } = *self.data(receiver) else { return None };
+        let provider = self.native_type_declaration_provider?;
+        let super::native_named::NativeTypeDeclarationOwner::NamedType(owner) = provider.type_parameter_owner(declaration)? else { return None };
+        // The installed __call replaces the inherited constructor. Its context
+        // comes from this class's written heads, not a new promise to implement
+        // every different parent constructor signature.
+        let heads: Vec<_> = self.native_object_call_heads(target).into_iter().filter(|&head| {
+            self.sig_native_signature_decl(head).is_some_and(|(declaration, _)| {
+                self.native_signature_provider_for(declaration).signature_header(declaration).owner
+                    == super::native_signatures::NativeSignatureOwner::NamedType(owner)
+            })
+        }).collect();
+        if heads.is_empty() { return None }
+        let head = if heads.len() == 1 { heads[0] } else { self.intersected_signature(&heads)? };
+        let mut params = vec![SigParam { name: self.atoms().intern(b"class"), ty: receiver, optional: false, rest: false, is_required_rest: false, declaration: None }];
+        params.extend_from_slice(&self.sig_params(head));
+        let parameters = self.sig_type_params(head);
+        let returned = self.sig_result_pack(head);
+        let callable = self.native_pack_function(&params, &parameters, returned);
+        self.native_table(&[NativeTableField {
+            key: NativeTableKey::String(self.atoms().intern(b"__call")), value: callable,
+            optional: true, readonly: false, origin: NativeTableFieldOrigin::Declared,
+        }], &[], NativeTableFlavor::Declared).ok()
+    }
+
+    /// A contextual call head can carry an original class-self parameter even
+    /// through an ordinary generic helper. This is not a receiver-origin query.
+    pub fn native_contextual_signature_self_type(&mut self, context: NativeFunctionContext) -> Option<TypeId> {
+        let first = self.contextual_parameter_type(context, 0)?;
+        let TypeData::NativeTypeParam { declaration, .. } = *self.data(first) else { return None };
+        let provider = self.native_type_declaration_provider?;
+        let super::native_named::NativeTypeDeclarationOwner::NamedType(owner) = provider.type_parameter_owner(declaration)? else { return None };
+        (provider.type_declaration_self_parameter(owner) == Some(declaration)).then_some(first)
     }
 
     /// Original demands are checked under the same selected parameter context.
