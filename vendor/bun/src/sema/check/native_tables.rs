@@ -864,7 +864,11 @@ impl<'p, 's> Checker<'p, 's> {
         {
             return Ternary::FALSE;
         }
-        if source.fresh && !identity {
+        // Like TS's empty object/interface targets, an unconstrained structural
+        // table has no known properties against which extras can be rejected.
+        // Nominal requirements above and all nonempty contracts still apply.
+        let empty_target = target.fields.is_empty() && target.indexers.is_empty() && target.sequence_tails.is_empty();
+        if source.fresh && !identity && !empty_target {
             for field in &source.fields {
                 if field.optional && field.value.is_never() { continue }
                 if target.fields.iter().any(|other| other.key == field.key) { continue }

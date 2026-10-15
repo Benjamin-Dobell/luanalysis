@@ -13,9 +13,20 @@ fn fresh_replacement_of_an_inferred_empty_binding_keeps_the_new_allocation() {
 }
 
 #[test]
-fn written_empty_and_inferred_nonempty_bindings_keep_their_contracts() {
+fn written_empty_shapes_accept_extras_but_keep_the_declared_member_view() {
+    let source = "---@type {}\nlocal record={}\nrecord={new='word'}\n";
+    let report = check(source);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    let hidden = format!("{source}local hidden=record.new\n");
+    assert!(check(&hidden).diagnostics.iter().any(|error| error.code == "TS2339"), "written annotations still control exposed members");
+    let nested = "---@type {child:{}}\nlocal record={child={extra=true}}\n";
+    assert!(check(nested).diagnostics.is_empty());
+}
+
+#[test]
+fn known_structural_nominal_and_runtime_domains_keep_their_contracts() {
     for source in [
-        "---@type {}\nlocal record={}\nrecord={new='word'}\n",
+        "---@type {known:number}\nlocal record={known=1,new='word'}\n",
         "local record={old=1}\nrecord={new='word'}\n",
         "---@type table\nlocal record={}\nrecord=function() return 1 end\n",
         "---@type table\nlocal record={}\nrecord=1\n",

@@ -511,11 +511,14 @@ fn original_runtime_schemas_remain_structural_and_actual_views_do_not_gain_futur
 }
 
 #[test]
-fn inferred_empty_runtime_targets_accept_fresh_structural_replacements_only() {
+fn empty_structural_targets_accept_extras_without_erasing_known_contracts() {
     Engine::new().with_native_provider(Provider::new, |provider, queries| {
         let empty = provider.allocation(queries);
         let fresh = queries.table_type(&TableType {
-            fields: vec![TableField::new(key("new"), Type::StringLiteral(b"word".to_vec()))],
+            fields: vec![
+                TableField::new(key("new"), Type::StringLiteral(b"word".to_vec())),
+                TableField::new(key("extra"), Type::BooleanLiteral(true)),
+            ],
             fresh: true,
             ..Default::default()
         }).unwrap();
@@ -524,8 +527,14 @@ fn inferred_empty_runtime_targets_accept_fresh_structural_replacements_only() {
         assert!(queries.is_assignable(&fresh, &empty));
         assert_eq!(queries.runtime_table_declaration(&replacement), Some(declaration(1)));
         let written_empty = Provider::empty(queries);
-        assert!(!queries.is_assignable(&replacement, &written_empty), "comparison must not clear the candidate's original freshness");
-        assert!(!queries.is_assignable(&fresh, &written_empty), "written closed empty shapes retain excess-property checking");
+        assert!(queries.is_assignable(&replacement, &written_empty), "written empty shapes follow the same TS empty-object policy");
+        assert!(queries.is_assignable(&fresh, &written_empty));
+        let known = queries.table_type(&TableType {
+            fields: vec![TableField::new(key("new"), Type::String)],
+            ..Default::default()
+        }).unwrap();
+        assert!(!queries.is_assignable(&replacement, &known), "empty-target comparison must not erase original constructor freshness");
+        assert!(!queries.is_assignable(&fresh, &known), "known-field targets retain excess-property checking");
         let nonempty = queries.table_type(&TableType {
             fields: vec![TableField::new(key("old"), Type::Number)],
             ..Default::default()
