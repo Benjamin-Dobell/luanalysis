@@ -32,7 +32,7 @@ mod operators;
 use bind::{BindingId, BoundFile};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, Engine, LuaKey, NativeCheckMode,
-    NativeFlowKey, NativeFunctionKey, TableKey, Type, TypeQueries,
+    NativeEnvironmentKey, NativeFlowKey, NativeFunctionKey, TableKey, Type, TypeQueries,
 };
 use luanalysis_syntax::{
     Expr, ExprKind, Name, Span, Stmt, StmtKind, TypeAnnotation, TypeExpr, TypeExprKind, TypeLiteral,
@@ -184,6 +184,13 @@ impl Reference {
 enum Write {
     Local(BindingId, Type),
     Field(Reference, Type),
+}
+
+/// One evaluation's static view and physical environment origin. Assertions
+/// replace only the view; this transient result is never cached on the checker.
+struct EvaluatedExpression {
+    ty: Type,
+    environment: Option<NativeEnvironmentKey>,
 }
 
 struct Checker<'a> {
@@ -676,16 +683,30 @@ impl Checker<'_> {
     }
 
     fn expression_with_expected(&mut self, expr: &Expr, expected: Option<&Type>) -> Type {
+        self.expression_value(expr, expected, false).ty
+    }
+
+    fn receiver_expression(&mut self, expr: &Expr) -> EvaluatedExpression {
+        self.expression_value(expr, None, true)
+    }
+
+    fn expression_value(&mut self, expr: &Expr, expected: Option<&Type>, capture_origin: bool) -> EvaluatedExpression {
         let previous = self.flow_at;
         if let (Some(native), Some(at)) = (self.native, previous) {
             self.flow_at = Some(native.flow_input_for_expression(expr, at));
         }
-        let ty = if let Some(ty) = self.asserted_expression_type(expr) { ty } else { self.expression_at_current_flow(expr, expected) };
+        let value = if let Some(value) = self.asserted_expression_value(expr, capture_origin) { value }
+            else { self.expression_value_at_current_flow(expr, expected, capture_origin) };
         self.flow_at = previous;
-        ty
+        value
     }
 
     fn expression_at_current_flow(&mut self, expr: &Expr, expected: Option<&Type>) -> Type {
+        self.expression_value_at_current_flow(expr, expected, false).ty
+    }
+
+    fn expression_value_at_current_flow(&mut self, expr: &Expr, expected: Option<&Type>, capture_origin: bool) -> EvaluatedExpression {
+        let mut environment = None;
         let ty = match &expr.kind {
             ExprKind::Nil => Type::Nil,
             ExprKind::Boolean(value) => Type::BooleanLiteral(*value),
@@ -734,11 +755,13 @@ impl Checker<'_> {
                     if self.bound.binding_at(name.span.start).is_none() {
                         if let Some(ty) = self.global_read(name) {
                             self.record_expression_type(expr.span, &ty);
-                            return ty;
+                            let environment = if capture_origin { self.engine.global_environment_origin(&ty) } else { None };
+                            return EvaluatedExpression { ty, environment };
                         }
                         if let Some(ty) = self.native.and_then(|native| native.legacy_builtin_value(name)) {
                             self.record_expression_type(expr.span, &ty);
-                            return ty;
+                            let environment = if capture_origin { self.engine.global_environment_origin(&ty) } else { None };
+                            return EvaluatedExpression { ty, environment };
                         }
                     }
                     self.error(
@@ -749,13 +772,18 @@ impl Checker<'_> {
                     Type::Any
                 }
             },
-            ExprKind::Parenthesized(value) => self.expression_with_expected(value, expected),
+            ExprKind::Parenthesized(value) => {
+                let value = self.expression_value(value, expected, capture_origin);
+                environment = value.environment;
+                value.ty
+            },
             ExprKind::Table(fields) => self.native_table_expression(fields, expr.span, expected),
             ExprKind::Field { base, name } => {
-                let receiver = self.expression(base);
-                let receiver = self.runtime_member_contract(base,receiver);
+                let receiver = self.receiver_expression(base);
+                let environment = receiver.environment;
+                let receiver = self.runtime_member_contract(base,receiver.ty);
                 let ty = self.native_named_property_read(&receiver, name, base.span);
-                self.native_member_flow_type(expr, ty)
+                self.native_member_flow_type(expr, ty, environment)
             }
             ExprKind::Function(function) => {
                 if let (Some(native), Some(expected)) = (self.native, expected) {
@@ -780,11 +808,13 @@ impl Checker<'_> {
                 right,
             } => self.binary_expression(*op, *op_span, left, right),
             ExprKind::Index { base, index } => {
-                let receiver = self.expression(base);
-                let receiver = self.runtime_member_contract(base,receiver);
+                // Lua freezes the receiver before the key expression executes.
+                let receiver = self.receiver_expression(base);
+                let environment = receiver.environment;
+                let receiver = self.runtime_member_contract(base,receiver.ty);
                 let key = self.native_table_key(index);
                 let ty = self.native_table_read(&receiver, &key, index.span);
-                self.native_member_flow_type(expr, ty)
+                self.native_member_flow_type(expr, ty, environment)
             }
             ExprKind::MethodCall {
                 receiver,
@@ -798,7 +828,10 @@ impl Checker<'_> {
         let ty = self.finish_runtime_table_initializer(expr,expected,ty);
         let ty = self.finish_class_definition_initializer(expr.span, ty);
         self.record_expression_type(expr.span, &ty);
-        ty
+        if capture_origin && !matches!(expr.kind, ExprKind::Parenthesized(_)) {
+            environment = self.engine.global_environment_origin(&ty);
+        }
+        EvaluatedExpression { ty, environment }
     }
 
     fn compatible(&mut self, value: &Type, target: &Type, origin: Span) -> bool {

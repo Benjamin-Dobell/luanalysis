@@ -1,6 +1,6 @@
 //! Original inline assertion metadata; all exclusion and relations are native.
 use super::native_packs::AnnotationPack;
-use super::{Checker, describe};
+use super::{Checker, EvaluatedExpression, describe};
 use luanalysis_engine::{Type, ValuePack};
 use luanalysis_syntax::{Expr, ExpressionAssertion, ExpressionAssertionKind};
 
@@ -30,7 +30,7 @@ impl Checker<'_> {
             .retain(|info| info.span != expression.span);
         self.record_expression_type(expression.span, ty);
     }
-    pub(super) fn asserted_expression_type(&mut self, expression: &Expr) -> Option<Type> {
+    pub(super) fn asserted_expression_value(&mut self, expression: &Expr, capture_origin: bool) -> Option<EvaluatedExpression> {
         let assertions = self.assertions(expression);
         if assertions.is_empty() {
             return None;
@@ -45,20 +45,21 @@ impl Checker<'_> {
             .as_ref()
             .map(|pack| self.engine.pack_slot(pack, 0));
         let context = target.as_ref();
-        let mut value = self.expression_at_current_flow(expression, context);
+        let mut value = self.expression_value_at_current_flow(expression, context, capture_origin);
+        // Keep this evaluation's physical origin even when its static view changes.
         if let (Some(assertion), Some(target)) = (cast, target) {
-            self.assertion_overlap(&value, &target, assertion);
-            value = target;
+            self.assertion_overlap(&value.ty, &target, assertion);
+            value.ty = target;
         } else {
             for assertion in &assertions {
                 let pack = self.assertion_pack(assertion);
                 let excluded = self.engine.pack_slot(&pack, 0);
-                value = self.engine.exclude_type(&value, &excluded);
+                value.ty = self.engine.exclude_type(&value.ty, &excluded);
             }
         }
         self.active_assertions
             .remove(&(expression.span.start, expression.span.end));
-        self.asserted_report(expression, &value);
+        self.asserted_report(expression, &value.ty);
         Some(value)
     }
     pub(super) fn asserted_expression_pack(&mut self, expression: &Expr) -> Option<ValuePack> {

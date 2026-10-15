@@ -5,7 +5,7 @@
 use crate::Checker;
 use crate::native_packs::AnnotationPack;
 use luanalysis_engine::{
-    LuaKey, TableError, TableField as NativeField, TableFieldOrigin, TableIndexer, TableKey, TableType, Type,
+    LuaKey, NativeEnvironmentKey, TableError, TableField as NativeField, TableFieldOrigin, TableIndexer, TableKey, TableType, Type,
 };
 use luanalysis_syntax::{
     Expr, ExprKind, Span, TableField, TableFieldKind, TypeExpr, TypeExprKind, TypeField,
@@ -13,10 +13,10 @@ use luanalysis_syntax::{
 };
 
 impl Checker<'_> {
-    pub(super) fn native_member_flow_type(&mut self, expression: &Expr, declared: Type) -> Type {
+    pub(super) fn native_member_flow_type(&mut self, expression: &Expr, declared: Type, receiver_environment: Option<NativeEnvironmentKey>) -> Type {
         if let (Some(native), Some(at)) = (self.native, self.flow_at) {
-            let receiver = match &expression.kind { ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => Some(base.as_ref()), _ => None };
-            if let Some(receiver) = receiver && self.environment_origin_of_expression(receiver).is_some()
+            // The caller captured this before any computed-key evaluation.
+            if receiver_environment.is_some()
                 && let Some(result) = native.flow_environment_member_type(expression, at, &declared, self.engine) {
                 self.incomplete_flow |= result.incomplete;
                 return result.ty;
