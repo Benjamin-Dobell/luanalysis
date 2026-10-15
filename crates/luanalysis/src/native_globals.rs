@@ -479,7 +479,7 @@ impl NativeRegistry {
     }
     pub(crate) fn check_global_declarations(&self, queries: &mut dyn TypeQueries) {
         if self.source_role() == SourceRole::Declaration {
-            self.check_signature_declarations(queries);
+            self.check_all_signatures(queries);
         }
         for source in &self.globals.declarations {
             if let Some(function) = source.function {

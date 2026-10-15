@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn lua_runtime_implementation_arity_is_opt_in_and_keeps_native_type_relations() {
+    fn lua_physical_nil_arguments_require_the_implementation_contract_to_admit_nil() {
         for convention in [FunctionCallingConvention::TypeScript, FunctionCallingConvention::Lua] {
             let mut provider = Provider::new(vec![
                 head(Type::String, Type::String),
@@ -766,7 +766,7 @@ mod tests {
             ]);
             provider.calling_convention = convention;
             provider.parameterless_heads.push(0);
-            provider.implementation_parameter = Type::String;
+            provider.implementation_parameter = Type::Union(vec![Type::String, Type::Nil]);
             provider.implementation_contract = Some(ValuePack::single(Type::String));
             with_provider(provider, |_, queries| {
                 let implementation = queries.function_implementation_type(&Type::NativeFunction(Provider::function(0))).unwrap();
@@ -776,6 +776,15 @@ mod tests {
                 assert!(!queries.call(&implementation, &[]).errors.is_empty(), "the compatibility projection does not change the actual implementation signature");
                 assert!(queries.call(&implementation, &[Type::StringLiteral(b"value".to_vec())]).errors.is_empty());
                 assert!(queries.call(&Type::NativeFunction(Provider::function(0)), &[]).errors.is_empty(), "the original public zero-argument head remains callable");
+            });
+            let mut nonnullable = Provider::new(vec![head(Type::String, Type::String)]);
+            nonnullable.calling_convention = convention;
+            nonnullable.parameterless_heads.push(0);
+            nonnullable.implementation_parameter = Type::String;
+            nonnullable.implementation_contract = Some(ValuePack::single(Type::String));
+            with_provider(nonnullable, |_, queries| {
+                let implementation = queries.function_implementation_type(&Type::NativeFunction(Provider::function(0))).unwrap();
+                assert!(!queries.signature_implementation_compatible(Provider::key(0), &implementation), "an omitted argument is nil, not an arity waiver");
             });
         }
     }

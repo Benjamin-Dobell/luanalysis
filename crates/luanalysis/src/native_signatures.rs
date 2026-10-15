@@ -194,6 +194,20 @@ impl NativeRegistry {
     pub(super) fn check_all_signatures(&self, queries: &mut dyn TypeQueries) {
         self.check_signature_declarations(queries);
         if self.source_role() == luanalysis_project::SourceRole::Declaration {
+            // The original annotated main is a private declaration contract.
+            // Compare pure signature recipes; placeholder bodies stay opaque.
+            for (&function, heads) in &self.signatures.functions {
+                let Some(main) = self.ambient_implementation_signature(function) else { continue };
+                let implementation = queries.signature_type(main);
+                for &head in heads {
+                    if !queries.signature_implementation_compatible(head, &implementation) {
+                        self.merge_report(super::CheckReport { diagnostics: vec![Diagnostic {
+                            code: "TS2394", span: self.signatures.get(head).span,
+                            message: "This overload signature is not compatible with its implementation signature.".into(),
+                        }], ..Default::default() });
+                    }
+                }
+            }
             return;
         }
         for (&function, heads) in &self.signatures.functions {

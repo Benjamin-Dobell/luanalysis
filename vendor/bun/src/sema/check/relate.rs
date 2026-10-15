@@ -2896,24 +2896,19 @@ impl<'p, 's> Checker<'p, 's> {
         {
             return false;
         }
-        // A Lua implementation physically accepts an omitted fixed argument;
-        // the runtime supplies nil. Project that minimum arity only for this
-        // erased implementation comparison. The original signature's public
-        // parameters, callback contexts, and body types remain unchanged.
-        let source = if self.sig_native_decl(implementation).is_some_and(|(declaration, _)| {
+        // Compare the arguments each Lua overload physically supplies. Omitted
+        // fixed slots arrive as nil; accepting them requires the implementation's
+        // own written type to admit nil. Public and body signatures stay intact.
+        let implementation_declaration = self.sig_native_decl(implementation).map(|(declaration, _)| declaration)
+            .or_else(|| self.sig_native_signature_decl(implementation).and_then(|(declaration, _)| {
+                match self.native_signature_provider_for(declaration).signature_header(declaration).owner {
+                    super::native_signatures::NativeSignatureOwner::Function(function) => Some(function),
+                    _ => None,
+                }
+            }));
+        let target = if implementation_declaration.is_some_and(|declaration| {
             self.native_function_provider.is_some_and(|provider| provider.calling_convention(declaration) == super::native_signatures::NativeCallingConvention::Lua)
-        }) {
-            let params: Vec<_> = self.sig_params(source).iter().map(|parameter| SigParam {
-                optional: parameter.optional || !parameter.rest,
-                ..*parameter
-            }).collect();
-            let type_params = self.sig_type_params(source);
-            let this = self.sig_this_type(source);
-            self.types().intern_sig(SigData::Synth {
-                type_params: self.list(&type_params), params: self.list(&params),
-                ret: source_return, this, of: self.list(&[source]), is_union: false,
-            })
-        } else { source };
+        }) { self.lua_overload_argument_signature(source, target) } else { target };
         // `isSignatureAssignableTo`
         let mut r = Relater::new(Relation::Assignable, self.cycles);
         r.compares_types_assignable = true;
@@ -2926,6 +2921,37 @@ impl<'p, 's> Checker<'p, 's> {
             0,
         )
         .holds()
+    }
+
+    fn lua_overload_argument_signature(&mut self, implementation: SigId, overload: SigId) -> SigId {
+        let source = self.sig_params(implementation);
+        let target = self.sig_params(overload);
+        let source_fixed = source.len() - usize::from(source.last().is_some_and(|parameter| parameter.rest));
+        let target_fixed = target.len() - usize::from(target.last().is_some_and(|parameter| parameter.rest));
+        let width = source_fixed.max(target_fixed);
+        let minimum = self.min_argument_count(&target);
+        let mut params = Vec::with_capacity(width + 1);
+        for index in 0..width {
+            let value = self.param_type_at(&target, index).unwrap_or(TypeId::UNDEFINED);
+            let value = if index >= minimum { self.optional(value) } else { value };
+            let original = target.get(index).filter(|parameter| !parameter.rest).copied();
+            params.push(SigParam {
+                name: original.map_or(Atom::NONE, |parameter| parameter.name), ty: value,
+                optional: false, rest: false, is_required_rest: false,
+                declaration: original.and_then(|parameter| parameter.declaration),
+            });
+        }
+        if let Some(rest) = target.last().filter(|parameter| parameter.rest)
+            && (self.has_effective_rest_parameter(&target) || width < self.parameter_count(&target)) {
+            params.push(SigParam { ty: self.rest_type_at_position(&target, width, false), ..*rest });
+        }
+        let type_params = self.sig_type_params(overload);
+        let this = self.sig_this_type(overload);
+        let ret = self.sig_return(overload);
+        self.types().intern_sig(SigData::Synth {
+            type_params: self.list(&type_params), params: self.list(&params), ret, this,
+            of: self.list(&[overload]), is_union: false,
+        })
     }
 
     /// `hasExcessProperties`
