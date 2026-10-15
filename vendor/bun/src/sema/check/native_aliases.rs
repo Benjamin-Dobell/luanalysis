@@ -76,6 +76,7 @@ pub(super) struct NativeAliasCache {
     projected_references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u32, u64, u64), Origins>,
     projected_values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u32, u64, u64), Origins>,
     preservations: FxHashMap<(NativeReferenceKey, NativeValueKey, NativeFlowKey, u64, u64), NativeCallPreservation>,
+    metatable_absence: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), bool>,
     execution_ids: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64), u64>,
     executions: Vec<AliasExecutionFrame>,
 }
@@ -195,10 +196,92 @@ impl<'p, 's> Checker<'p, 's> {
                 if reference.graph != at.graph { return false }
                 if provider.reference_is_cell(reference) { return true }
                 let origins = self.native_alias_reference(provider, reference, before);
-                if origins.uncertain { self.mark_tainted_from(0); }
-                !origins.unknown && !origins.uncertain && !origins.non_table && !origins.tokens.is_empty()
+                if origins.uncertain { self.mark_tainted_from(0); return false }
+                if !origins.unknown && !origins.non_table && !origins.tokens.is_empty() { return true }
+                self.native_alias_fresh_raw_write(provider, at, before)
             },
         }
+    }
+
+    /// A literal Lua allocation starts without a metatable. Prove that its
+    /// current write cannot invoke __newindex using original execution facts,
+    /// not the receiver's structural type or allocation age alone.
+    fn native_alias_fresh_raw_write(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, before: NativeFlowKey) -> bool {
+        if !matches!(provider.node(at), Some(NativeFlowNode::Write { .. })) { return false }
+        let Some(receiver) = provider.write_alias_receiver(at) else { return false };
+        if receiver.input.graph != before.graph { return false }
+        let origins = self.native_alias_value(provider, receiver.value, receiver.input, 0);
+        if origins.uncertain { self.mark_tainted_from(0); return false }
+        if origins.unknown || origins.non_table || origins.tokens.len() != 1 { return false }
+        let allocation = origins.tokens.into_iter().next().unwrap();
+        let (value, input) = match &allocation { Origin::Allocation(value, input) => (*value, *input), _ => return false };
+        if input.graph != before.graph || !provider.contains_graph(before.graph) || provider.node(input).is_none() { return false }
+        let epoch = self.flow_memo.native_state.effect_epoch;
+        let frame = self.native_alias_cache.frame();
+        let key = (value, input, before, epoch, frame);
+        if let Some(&absent) = self.native_alias_cache.metatable_absence.get(&key) { return absent }
+        let query = Query::NativeAliasMetatableAbsence(value, input, before, epoch, frame);
+        if !self.enter(query) { self.mark_tainted_from(0); return false }
+        let begun = self.begin_memoizable();
+        let absent = self.native_alias_allocation_clear_since(provider, &allocation, input, before);
+        let stored = self.end_memoizable(begun);
+        let left = self.leave(query);
+        if stored.is_none() || left.is_err() { self.mark_tainted_from(0); return false }
+        if !self.is_stack_low() { self.native_alias_cache.metatable_absence.insert(key, absent); }
+        absent
+    }
+
+    fn native_alias_allocation_clear_since(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
+        let mut active = HashSet::new();
+        let mut completed = HashSet::new();
+        let mut work = vec![(before, false)];
+        let mut steps = 0usize;
+        while let Some((at, leaving)) = work.pop() {
+            steps += 1;
+            if steps > 16_384 || at.graph != input.graph || self.is_stack_low() { return false }
+            if at == input { continue }
+            if leaving { active.remove(&at); completed.insert(at); continue }
+            if completed.contains(&at) { continue }
+            if !active.insert(at) { return false }
+            let Some(node) = provider.node(at) else { return false };
+            let mut edges = Vec::new();
+            match node {
+                NativeFlowNode::Write { before, .. } => {
+                    match provider.alias_node_dispatch(at) {
+                        NativeAliasDispatch::NoDispatch => {},
+                        NativeAliasDispatch::ReferenceRead(_) => {
+                            // Earlier stores into this same still-metatable-free
+                            // object cannot dispatch. Other heap stores may run
+                            // arbitrary __newindex code and are not a proof.
+                            let Some(receiver) = provider.write_alias_receiver(at) else { return false };
+                            if receiver.input.graph != at.graph { return false }
+                            let origins = self.native_alias_value(provider, receiver.value, receiver.input, 0);
+                            if origins.uncertain { self.mark_tainted_from(0); return false }
+                            if origins.unknown || origins.non_table || origins.tokens.len() != 1 || !origins.tokens.contains(allocation) { return false }
+                        },
+                        NativeAliasDispatch::Unknown => return false,
+                    }
+                    edges.push(before);
+                },
+                NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. } => {
+                    if !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return false }
+                    edges.push(before);
+                },
+                NativeFlowNode::Merge { edges: incoming } => {
+                    if incoming.is_empty() || !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return false }
+                    edges.extend(incoming);
+                },
+                // Even a genuine standard setmetatable call can preserve raw
+                // fields while installing __newindex on this exact allocation.
+                NativeFlowNode::Call { .. } | NativeFlowNode::Loop { .. }
+                | NativeFlowNode::IteratorStart { .. } | NativeFlowNode::Iteration { .. }
+                | NativeFlowNode::Start | NativeFlowNode::Return { .. }
+                | NativeFlowNode::Unreachable | NativeFlowNode::Unsupported(_) => return false,
+            }
+            work.push((at, true));
+            work.extend(edges.into_iter().rev().map(|edge| (edge, false)));
+        }
+        true
     }
 
     fn native_alias_call_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {

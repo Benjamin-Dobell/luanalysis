@@ -32,6 +32,8 @@ mod native_call_certificate_tests;
 #[cfg(test)]
 mod native_standard_call_certificate_tests;
 #[cfg(test)]
+mod native_fresh_namespace_tests;
+#[cfg(test)]
 mod native_alias_written_contract_tests;
 #[cfg(test)]
 mod native_alias_environment_tests;

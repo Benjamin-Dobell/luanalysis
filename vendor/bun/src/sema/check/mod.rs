@@ -1070,6 +1070,7 @@ enum Query {
     NativeAliasProjectedValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u32, u64, u64),
     NativeAliasReturn(crate::types::NativeFunctionId, usize),
     NativeCallPreserves(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
+    NativeAliasMetatableAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
     NativeGlobals(NativeGlobalsQuery),
     NativeProject(NativeProjectQuery),
@@ -1166,7 +1167,7 @@ impl Query {
             Query::ReturnOfSignature(_)
             | Query::NativeContextualTypeOwner(..)
             | Query::NativeFlowCallEffects(..)
-            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..)
+            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
             | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
             | Query::NativeNamed(_)
             | Query::NativeGlobals(_)
