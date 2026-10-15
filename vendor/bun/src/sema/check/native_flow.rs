@@ -252,6 +252,8 @@ pub trait NativeFlowProvider {
     fn reference_follows_creation(&self, _: NativeReferenceKey) -> bool { false }
     fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { true }
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
+    /// A tested fixed child of this original receiver, independent of write metadata.
+    fn reference_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
     /// Original immutable predicate recipe for a verified assertion argument.
     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
@@ -369,11 +371,11 @@ fn predicate_subject(predicate: &NativePredicate) -> Option<NativeReferenceKey> 
     }
 }
 
-fn predicate_mentions(provider: &dyn NativeFlowProvider, predicate: &NativePredicate, reference: NativeReferenceKey, pack: bool) -> bool {
+fn predicate_mentions(provider: &dyn NativeFlowProvider, predicate: &NativePredicate, reference: NativeReferenceKey, pack: bool, checker: &mut Checker<'_, '_>) -> bool {
     match predicate {
-        NativePredicate::And(left, right) | NativePredicate::Or(left, right) => predicate_mentions(provider, left, reference, pack) || predicate_mentions(provider, right, reference, pack),
-        NativePredicate::Not(inner) => predicate_mentions(provider, inner, reference, pack),
-        _ => predicate_subject(predicate).is_some_and(|subject| if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) || provider.iterator_projection(subject).is_some_and(|projection| projection.frame == reference) } else { subject == reference }),
+        NativePredicate::And(left, right) | NativePredicate::Or(left, right) => predicate_mentions(provider, left, reference, pack, checker) || predicate_mentions(provider, right, reference, pack, checker),
+        NativePredicate::Not(inner) => predicate_mentions(provider, inner, reference, pack, checker),
+        _ => predicate_subject(predicate).is_some_and(|subject| if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) || provider.iterator_projection(subject).is_some_and(|projection| projection.frame == reference) } else { subject == reference || provider.reference_member_key(reference, subject, checker).is_some() }),
     }
 }
 
@@ -526,13 +528,13 @@ impl NativeDomain<'_> {
         Ok(self.provider.assertion_predicate(condition, input))
     }
 
-    fn predicate_flow_step(&self, at: NativeFlowKey, before: NativeFlowKey, predicate: NativePredicate, sense: bool, walk: &NativeWalk) -> FlowStep<NativeFlowKey, NativeTransfer> {
+    fn predicate_flow_step(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey, before: NativeFlowKey, predicate: NativePredicate, sense: bool, walk: &NativeWalk) -> FlowStep<NativeFlowKey, NativeTransfer> {
         if !self.edge(at, before) || !self.predicate_valid(at, &predicate) { return FlowStep::Value(TypeId::ERROR) }
         if let NativePredicate::GenericIteration { frame, .. } = predicate {
             return FlowStep::Follow { before, transfer: (walk.reference == frame).then_some(NativeTransfer::GenericIteration(sense)), count_passed: true };
         }
-        let applies = predicate_mentions(self.provider, &predicate, walk.reference, false);
-        let projection = predicate_mentions(self.provider, &predicate, walk.reference, true);
+        let applies = predicate_mentions(self.provider, &predicate, walk.reference, false, checker);
+        let projection = predicate_mentions(self.provider, &predicate, walk.reference, true, checker);
         let transfer = if applies { Some(NativeTransfer::Predicate(predicate, sense)) }
             else { projection.then_some(NativeTransfer::PackPredicate { predicate, sense, group: walk.reference }) };
         FlowStep::Follow { before, transfer, count_passed: true }
@@ -702,7 +704,7 @@ impl FlowDomain for NativeDomain<'_> {
                 predicate,
                 sense,
             } => {
-                self.predicate_flow_step(at, before, predicate, sense, walk)
+                self.predicate_flow_step(checker, at, before, predicate, sense, walk)
             }
             NativeFlowNode::Merge { edges } | NativeFlowNode::Loop { edges } => {
                 if edges.iter().any(|&edge| !self.edge(at, edge)) {
@@ -736,7 +738,7 @@ impl FlowDomain for NativeDomain<'_> {
                     },
                     NativeEffectResult::Complete(NativeCallEffects::Never) => FlowStep::Value(TypeId::UNREACHABLE_NEVER),
                     NativeEffectResult::Complete(NativeCallEffects::Assert { condition, input }) => match self.assertion_predicate(at, condition, input) {
-                        Ok(Some(predicate)) => self.predicate_flow_step(at, before, predicate, true, walk),
+                        Ok(Some(predicate)) => self.predicate_flow_step(checker, at, before, predicate, true, walk),
                         Ok(None) => FlowStep::Follow { before, transfer: None, count_passed: false },
                         Err(()) => FlowStep::Value(TypeId::ERROR),
                     },
@@ -779,30 +781,9 @@ impl FlowDomain for NativeDomain<'_> {
             NativeTransfer::PackPredicate { predicate, sense, group } => {
                 checker.native_narrow_pack(self.provider, NativeResultPack { ty: previous.ty }, &predicate, sense, group).ty
             }
-            NativeTransfer::Predicate(ref predicate @ (NativePredicate::And(..) | NativePredicate::Or(..) | NativePredicate::Not(..)), sense) => checker.native_narrow_predicate(self.provider, previous.ty, predicate, sense, walk.reference),
             NativeTransfer::Nothing => previous.ty,
             NativeTransfer::Predicate(_, _) if previous.ty.is_never() => previous.ty,
-            NativeTransfer::Predicate(NativePredicate::Truthy { .. }, sense) => {
-                checker.lua_truthiness_type(previous.ty, sense)
-            }
-            NativeTransfer::Predicate(
-                NativePredicate::Equal {
-                    other,
-                    input,
-                    equals,
-                    ..
-                },
-                sense,
-            ) => {
-                let other = checker.native_flow_value(self.provider, other, input);
-                checker.native_equal_flow_type(previous.ty, other, equals == sense)
-            }
-            NativeTransfer::Predicate(NativePredicate::RuntimeType { value, input, kind, equals, .. }, sense) => {
-                if self.provider.runtime_type_operation(value, input, checker) { checker.native_runtime_type(previous.ty, &kind, equals == sense) } else { previous.ty }
-            }
-            NativeTransfer::Predicate(NativePredicate::NumericIteration { .. }, _) => previous.ty,
-            NativeTransfer::Predicate(NativePredicate::GenericIteration { .. }, _) => previous.ty,
-            NativeTransfer::Predicate(NativePredicate::Unsupported(_), _) => TypeId::ERROR,
+            NativeTransfer::Predicate(ref predicate, sense) => checker.native_narrow_predicate(self.provider, previous.ty, predicate, sense, walk.reference),
         };
         let _ = walk;
         FlowType::new(ty, previous.incomplete)
@@ -1071,7 +1052,22 @@ impl<'s, 'p> Checker<'s, 'p> {
                     self.union_reduced(&[bypass, evaluated])
                 }
             }
-            _ if predicate_subject(predicate) != Some(reference) => if self.native_predicate_possible(provider, predicate, sense) { ty } else { TypeId::NEVER },
+            _ if predicate_subject(predicate) != Some(reference) => {
+                if let Some(subject) = predicate_subject(predicate)
+                    && let Some(key) = provider.reference_member_key(reference, subject, self) {
+                    return self.filter(ty, |checker, part| {
+                        let member = match checker.native_table_read(part, NativeTableAccessKey::Literal(key)) {
+                            Ok(member) => member,
+                            Err(error) if checker.native_table_absent_read(part, NativeTableAccessKey::Literal(key), error) => TypeId::UNDEFINED,
+                            // An invalid read keeps its original diagnostic; it
+                            // cannot prove that this receiver is unreachable.
+                            Err(_) => return true,
+                        };
+                        !checker.native_narrow_predicate(provider, member, predicate, sense, subject).is_never()
+                    });
+                }
+                if self.native_predicate_possible(provider, predicate, sense) { ty } else { TypeId::NEVER }
+            }
             NativePredicate::Truthy { .. } => self.lua_truthiness_type(ty, sense),
             NativePredicate::Equal { other, input, equals, .. } => { let other = self.native_flow_value(provider, *other, *input); self.native_equal_flow_type(ty, other, *equals == sense) },
             NativePredicate::RuntimeType { value, input, kind, equals, .. } => if provider.runtime_type_operation(*value, *input, self) { self.native_runtime_type(ty, kind, *equals == sense) } else { ty },

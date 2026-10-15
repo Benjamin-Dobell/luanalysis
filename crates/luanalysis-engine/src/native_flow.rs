@@ -61,6 +61,8 @@ pub trait NativeFlowProvider {
     /// Original fixed child key for a descendant write. Types and the actual
     /// persistent receiver update are evaluated by the native flow worker.
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> Option<super::LuaKey> { None }
+    /// A tested fixed child of the same original receiver.
+    fn reference_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey) -> Option<super::LuaKey> { None }
     fn value_type(
         &self,
         value: NativeValueKey,
@@ -147,6 +149,10 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     }
     fn write_member_key(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::NativeTableKey> {
         let key = self.provider.write_member_key(reference, target, at)?;
+        Some(super::native_tables::import_literal_key(checker, &key))
+    }
+    fn reference_member_key(&self, reference: NativeReferenceKey, member: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::NativeTableKey> {
+        let key = self.provider.reference_member_key(reference, member)?;
         Some(super::native_tables::import_literal_key(checker, &key))
     }
     fn value_type(

@@ -924,6 +924,8 @@ pub trait TypeQueries {
     fn widen(&mut self, ty: &Type) -> Type;
     /// The annotation form of a literal, using TypeScript's regular-literal worker.
     fn regular_type(&mut self, ty: &Type) -> Type;
+    /// Partition with the same Lua nil/false policy used by native graph flow.
+    fn lua_truthiness_type(&mut self, ty: &Type, sense: bool) -> Type;
     fn union_reduced(&mut self, types: &[Type]) -> Type;
     fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type>;
     fn property_type_checked(&mut self, ty: &Type, name: &str) -> Result<Option<Type>, TableError>;
@@ -1701,6 +1703,12 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             .map(|ty| import_type(self.checker, self.handles, ty))
             .collect();
         let ty = self.checker.union_reduced(&types);
+        export_type(self.checker, self.handles, ty)
+    }
+
+    fn lua_truthiness_type(&mut self, ty: &Type, sense: bool) -> Type {
+        let ty = import_type(self.checker, self.handles, ty);
+        let ty = self.checker.lua_truthiness_type(ty, sense);
         export_type(self.checker, self.handles, ty)
     }
 

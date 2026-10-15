@@ -194,50 +194,10 @@ impl Checker<'_> {
         }
     }
 
-    /// Exact primitive partitioning uses Lua truthiness. `any`, `unknown` and
-    /// future unspecialized native descriptions conservatively occur in both
-    /// partitions; no JS truthiness predicate is used to filter them.
+    /// Keep opaque regular literals and generic constraints in the same native
+    /// Lua truthiness domain used by graph predicates.
     fn lua_truthiness(&mut self, ty: &Type) -> (Type, Type) {
-        match ty {
-            Type::Never => (Type::Never, Type::Never),
-            Type::Nil | Type::Undefined | Type::BooleanLiteral(false) => (Type::Never, ty.clone()),
-            Type::Boolean => (Type::BooleanLiteral(true), Type::BooleanLiteral(false)),
-            Type::BooleanLiteral(true)
-            | Type::Number
-            | Type::NumberLiteral(_)
-            | Type::String
-            | Type::StringLiteral(_)
-            | Type::Shape(_)
-            | Type::FreshShape(_)
-            | Type::Function(_)
-            | Type::NativeFunction(_) => (ty.clone(), Type::Never),
-            Type::Union(types) => {
-                let mut truthy = Vec::new();
-                let mut falsey = Vec::new();
-                for ty in types {
-                    let (yes, no) = self.lua_truthiness(ty);
-                    truthy.push(yes);
-                    falsey.push(no);
-                }
-                (
-                    self.engine.union_reduced(&truthy),
-                    self.engine.union_reduced(&falsey),
-                )
-            }
-            Type::Any | Type::Unknown => (ty.clone(), ty.clone()),
-            _ => {
-                // In particular, reuse native type-parameter constraints when
-                // they establish a numeric/string bound. Do not treat failure
-                // of nil assignability TO a parameter as proof of truthiness.
-                if self.engine.is_assignable(ty, &Type::Number)
-                    || self.engine.is_assignable(ty, &Type::String)
-                {
-                    (ty.clone(), Type::Never)
-                } else {
-                    (ty.clone(), ty.clone())
-                }
-            }
-        }
+        (self.engine.lua_truthiness_type(ty, true), self.engine.lua_truthiness_type(ty, false))
     }
 
     fn length_operand(&mut self, ty: &Type) -> bool {

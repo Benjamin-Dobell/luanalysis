@@ -1272,7 +1272,7 @@ mod tests {
     }
 
     #[test]
-    fn contextual_union_fields_use_matching_members_while_reads_require_every_member() {
+    fn contextual_union_fields_use_declarations_while_reads_preserve_absence() {
         Engine::new().with_session(|queries| {
             let first = Type::Table(TableType {
                 fields: vec![TableField::new(
@@ -1290,7 +1290,10 @@ mod tests {
             });
             let expected = Type::Union(vec![first, second]);
             let key = literal(LuaKey::Integer(1));
-            assert!(queries.table_lookup(&expected, &key).is_err());
+            let read = queries.table_lookup(&expected, &key).unwrap();
+            assert!(queries.is_assignable(&Type::Nil, &read));
+            assert!(queries.is_assignable(&Type::BooleanLiteral(true), &read));
+            assert!(!queries.is_assignable(&read, &Type::BooleanLiteral(true)));
             let context = queries.table_value_context(&expected, &key).unwrap();
             assert_eq!(queries.inspect_type(&context), Type::BooleanLiteral(true));
             let actual = queries

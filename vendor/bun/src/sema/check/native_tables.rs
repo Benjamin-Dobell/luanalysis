@@ -622,9 +622,19 @@ impl<'p, 's> Checker<'p, 's> {
         if self.is_any(table) { return Ok(TypeId::ANY) }
         if self.is_union(table) {
             let mut values = Vec::new();
+            let mut present = false;
+            let mut missing = None;
             for &part in self.parts(table) {
-                values.push(self.native_table_read(part, key)?);
+                match self.native_table_read(part, key) {
+                    Ok(value) => { values.push(value); present = true; }
+                    Err(error) if self.native_table_absent_read(part, key, error) => {
+                        values.push(TypeId::UNDEFINED);
+                        missing.get_or_insert(error);
+                    }
+                    Err(error) => return Err(error),
+                }
             }
+            if !present { return Err(missing.expect("a union has constituents")) }
             return Ok(self.union_reduced(&values));
         }
         let base = self.base_constraint_or_type(table);
@@ -680,11 +690,24 @@ impl<'p, 's> Checker<'p, 's> {
         } else { self.intersection(&values) })
     }
 
+    /// A physical Lua table contributes nil when a different union constituent
+    /// supplies the queried key. This never turns an invalid receiver into a table.
+    pub(super) fn native_table_absent_read(&mut self, table: TypeId, key: NativeTableAccessKey, error: NativeTableError) -> bool {
+        // A broad key might also select one of this constituent's declared
+        // fields. A rejected lookup cannot prove those possible values are nil.
+        if !matches!(key, NativeTableAccessKey::Literal(_)) { return false }
+        if !matches!(error, NativeTableError::MissingKey { .. } | NativeTableError::KeyType { .. }) { return false }
+        let table = self.native_runtime_carrier(table);
+        if matches!(self.data(table), TypeData::NativeTable(_) | TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) { return true }
+        let base = self.base_constraint_or_type(table);
+        base != table && self.native_table_absent_read(base, key, error)
+    }
+
     pub fn native_table_value_context(&mut self, expected: TypeId, key: NativeTableAccessKey) -> Option<TypeId> {
         if let Some(reference) = self.native_definition_ref(expected) { return self.native_definition_value_context(reference, key) }
         if self.is_union(expected) {
-            // Contextual object properties draw information from every member that declares the
-            // key; an ordinary read still requires the key in every member.
+            // Contextual object properties draw information from declarations;
+            // unlike a runtime read, an absent constituent supplies no context.
             let mut values = Vec::new();
             for &part in self.parts(expected) { values.extend(self.native_table_value_context(part, key)); }
             return if values.is_empty() { None } else { Some(self.union(&values)) };
