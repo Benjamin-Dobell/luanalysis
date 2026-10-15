@@ -507,6 +507,199 @@ mod tests {
     }
 
     #[test]
+    fn printing_an_anonymous_record_expands_declared_heads_and_guards_recursive_members() {
+        use luanalysis_engine::{
+            NativeFunctionKey, NativeSignatureKey, NativeTypeDeclarationKey, NativeTypeMemberKey,
+            NativeTypeProvider, ObjectDeclarationForm, Parameter, SignatureHeader, SignatureOwner,
+            SignatureSite, TableFieldOrigin, TypeDeclarationHeader, TypeDeclarationKind,
+            TypeMemberHeader, TypeMemberKeyRecipe, TypeMemberOwner, TypeMemberVisibility,
+        };
+        use std::cell::Cell;
+
+        const DECLARATION: NativeTypeDeclarationKey = NativeTypeDeclarationKey {
+            snapshot: 92,
+            index: 0,
+        };
+        const CALLBACK: NativeTypeMemberKey = NativeTypeMemberKey {
+            snapshot: 92,
+            index: 0,
+        };
+        const NEXT: NativeTypeMemberKey = NativeTypeMemberKey {
+            snapshot: 92,
+            index: 1,
+        };
+        const SIGNATURE: NativeSignatureKey = NativeSignatureKey {
+            snapshot: 92,
+            index: 0,
+        };
+
+        #[derive(Default)]
+        struct AnonymousRecord {
+            member_reads: Cell<usize>,
+            signature_reads: Cell<usize>,
+        }
+
+        impl NativeTypeProvider for AnonymousRecord {
+            fn contains_function(&self, _: NativeFunctionKey) -> bool {
+                panic!("anonymous annotation printing must not query a runtime function")
+            }
+            fn function_parameters(
+                &self,
+                _: NativeFunctionKey,
+                _: &mut dyn TypeQueries,
+            ) -> Vec<Parameter> {
+                panic!("anonymous annotation printing must not query body parameters")
+            }
+            fn function_declared_return(
+                &self,
+                _: NativeFunctionKey,
+                _: &mut dyn TypeQueries,
+            ) -> Option<Type> {
+                panic!("anonymous annotation printing must not query a runtime return")
+            }
+            fn function_inferred_return(
+                &self,
+                _: NativeFunctionKey,
+                _: &mut dyn TypeQueries,
+            ) -> Type {
+                panic!("anonymous annotation printing must not infer a body")
+            }
+            fn return_cycle(&self, _: NativeFunctionKey) {
+                panic!("anonymous annotation printing must not create a body return cycle")
+            }
+            fn return_type_too_deep(&self, _: NativeFunctionKey) {
+                panic!("anonymous annotation printing must not create a body return query")
+            }
+            fn contains_type_declaration(&self, key: NativeTypeDeclarationKey) -> bool {
+                key == DECLARATION
+            }
+            fn type_declaration_header(
+                &self,
+                key: NativeTypeDeclarationKey,
+            ) -> TypeDeclarationHeader {
+                assert_eq!(key, DECLARATION);
+                TypeDeclarationHeader {
+                    kind: TypeDeclarationKind::Shape,
+                    name: String::new(),
+                    object_form: Some(ObjectDeclarationForm::Record),
+                    parameters: vec![],
+                    outer_parameters: vec![],
+                }
+            }
+            fn type_declaration_members(
+                &self,
+                key: NativeTypeDeclarationKey,
+            ) -> Vec<NativeTypeMemberKey> {
+                assert_eq!(key, DECLARATION);
+                self.member_reads.set(self.member_reads.get() + 1);
+                vec![CALLBACK, NEXT]
+            }
+            fn contains_type_member(&self, key: NativeTypeMemberKey) -> bool {
+                key == CALLBACK || key == NEXT
+            }
+            fn type_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
+                assert!(key == CALLBACK || key == NEXT);
+                TypeMemberHeader {
+                    owner: TypeMemberOwner::Declared(DECLARATION),
+                    key: TypeMemberKeyRecipe::Fixed(LuaKey::String(if key == CALLBACK {
+                        b"callback".to_vec()
+                    } else {
+                        b"next".to_vec()
+                    })),
+                    visibility: TypeMemberVisibility::Public,
+                    optional: false,
+                    readonly: false,
+                }
+            }
+            fn type_member_origin(&self, key: NativeTypeMemberKey) -> TableFieldOrigin {
+                assert!(key == CALLBACK || key == NEXT);
+                TableFieldOrigin::Declared
+            }
+            fn type_member_signatures(
+                &self,
+                key: NativeTypeMemberKey,
+            ) -> Option<Vec<NativeSignatureKey>> {
+                assert!(key == CALLBACK || key == NEXT);
+                (key == CALLBACK).then_some(vec![SIGNATURE])
+            }
+            fn type_member_type(&self, key: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> Type {
+                assert_eq!(key, NEXT, "the callback uses its original written head");
+                Type::Union(vec![
+                    Type::NativeNamedReference {
+                        declaration: DECLARATION,
+                        arguments: vec![],
+                    },
+                    Type::Nil,
+                ])
+            }
+            fn contains_signature(&self, key: NativeSignatureKey) -> bool {
+                key == SIGNATURE
+            }
+            fn signature_header(&self, key: NativeSignatureKey) -> SignatureHeader {
+                assert_eq!(key, SIGNATURE);
+                SignatureHeader {
+                    owner: SignatureOwner::NamedType(DECLARATION),
+                    site: SignatureSite {
+                        snapshot: key.snapshot,
+                        index: key.index,
+                    },
+                    parent: None,
+                    has_direct_literal_parameter: false,
+                }
+            }
+            fn signature_parameters(
+                &self,
+                key: NativeSignatureKey,
+                _: &mut dyn TypeQueries,
+            ) -> Vec<Parameter> {
+                assert_eq!(key, SIGNATURE);
+                self.signature_reads.set(self.signature_reads.get() + 1);
+                vec![Parameter {
+                    name: "value".into(),
+                    ty: Type::Number,
+                    optional: false,
+                }]
+            }
+            fn signature_declared_return_pack(
+                &self,
+                key: NativeSignatureKey,
+                _: &mut dyn TypeQueries,
+            ) -> ValuePack {
+                assert_eq!(key, SIGNATURE);
+                ValuePack::single(Type::String)
+            }
+            fn type_declaration_error(&self, error: luanalysis_engine::NamedTypeError) {
+                panic!("the original anonymous annotation is valid: {error:?}")
+            }
+        }
+
+        Engine::new().with_native_provider(AnonymousRecord::default, |provider, queries| {
+            let record = queries.named_type_reference(DECLARATION, &[]).unwrap();
+            let span = Span { start: 7, end: 11 };
+            let mut report = CheckReport::default();
+            report.push_type_diagnostic("TS2322", span, "Expected '{}'.", &[&record]);
+            assert_eq!(provider.member_reads.get(), 0);
+            assert_eq!(provider.signature_reads.get(), 0);
+
+            report.render_diagnostics(queries);
+            let diagnostic = &report.diagnostics[0];
+            let message = &diagnostic.message;
+            for expected in ["callback", "value: number", "string", "next", "nil", "..."] {
+                assert!(message.contains(expected), "{message}");
+            }
+            assert_eq!(message.matches("callback").count(), 1, "{message}");
+            for placeholder in ["record'", "contextual type", "named type", "undefined"] {
+                assert!(!message.contains(placeholder), "{message}");
+            }
+            assert!(provider.member_reads.get() > 0);
+            assert!(provider.signature_reads.get() > 0);
+            assert_eq!(diagnostic.code, "TS2322");
+            assert_eq!(diagnostic.span, span);
+            assert!(report.pending_diagnostics.is_empty());
+        });
+    }
+
+    #[test]
     fn appended_opaque_operands_keep_distinct_types_and_original_diagnostic_locations() {
         Engine::new().with_session(|queries| {
             let number = queries.regular_type(&Type::NumberLiteral(1.0));
