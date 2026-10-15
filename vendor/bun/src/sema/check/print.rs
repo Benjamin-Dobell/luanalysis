@@ -1845,12 +1845,12 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 }
                 let name = header.as_ref().map(|header| header.name).unwrap_or(Atom::NONE);
                 let mut text = self.text(name);
-                // A mapper also carries enclosing and alias/call-site formals.
-                // Only the declaration's own ordered parameters are public type
-                // arguments. Keep the full mapper for every semantic demand.
+                // A mapper also carries incidental alias/call-site formals.
+                // Display only this declaration's original captures and own
+                // parameters. Keep the full mapper for every semantic demand.
                 let mut arguments = Vec::new();
                 if let Some(header) = header {
-                    for parameter in header.parameters {
+                    for parameter in header.outer_parameters.into_iter().chain(header.parameters) {
                         let Some(formal) = self.c.native_type_parameter(parameter) else {
                             return self.elided_information_placeholder();
                         };
