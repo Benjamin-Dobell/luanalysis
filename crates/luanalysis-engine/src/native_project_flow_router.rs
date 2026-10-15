@@ -84,6 +84,9 @@ impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> 
     fn value_alias_member_source(&self, value: NativeValueKey, input: NativeFlowKey, key: NativeTableKey, checker: &Checker<'_, '_>) -> Option<NativeAliasReturnValue> {
         self.project_flow_adapter().value_alias_member_source(value, input, key, checker)
     }
+    fn value_alias_member_absent(&self, value: NativeValueKey, input: NativeFlowKey, key: NativeTableKey, checker: &Checker<'_, '_>) -> bool {
+        self.project_flow_adapter().value_alias_member_absent(value, input, key, checker)
+    }
 
     fn function_alias_returns(&self, function: NativeFunctionId) -> Option<Vec<NativeAliasReturn>> {
         self.project_flow_adapter().function_alias_returns(function)
