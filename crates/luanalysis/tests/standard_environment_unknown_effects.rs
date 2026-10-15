@@ -174,6 +174,99 @@ fn explicit_direct_alias_and_captured_replacements_survive_later_unknown_calls()
     }
 }
 
+const EVENT_MANAGER_VIEW: &str = r#"---@vararg unknown
+---@return unknown...
+local function replacement(...) return ... end
+---@param event string
+local function listen(event)
+    ;(--[[---@type table]] _G)[event]=replacement
+end
+
+---@class Manager
+local Manager={}
+---@param event string
+function Manager.add(event)
+    assert(true,'checked')
+    local saved=assert
+    saved(true,'saved')
+    listen(event)
+end
+return Manager
+"#;
+
+#[test]
+fn uncalled_sibling_environment_writes_do_not_erase_selected_standard_callable_views() {
+    let fixture = Fixture::new();
+    clean(fixture.check(EVENT_MANAGER_VIEW, true, None));
+    let source = EVENT_MANAGER_VIEW.replace(
+        "    assert(true,'checked')",
+        "    ---@param value number\n    ---@return number\n    local function checked(value) return value end\n    assert(checked('wrong'),'checked')",
+    );
+    let rejected = report(fixture.check(&source, true, None), 1);
+    error_on(&rejected, &source, "TS2345", "assert(checked('wrong'),'checked')", "'wrong'");
+    assert!(!rejected.contains("\"code\":\"TS2349\""), "{rejected}");
+    clean(fixture.check(&source.replace("checked('wrong')", "checked(42)"), true, None));
+}
+
+#[test]
+fn reached_direct_dynamic_and_sibling_replacements_are_not_reset_to_standard_contracts() {
+    let fixture = Fixture::new();
+    for replacement in [
+        "assert=42\n",
+        "(--[[---@type table]] _G)['assert']=42\n",
+        "---@param event string\nlocal function replace(event)\n(--[[---@type table]] _G)[event]=42\nend\nreplace('assert')\n",
+        "local function replace() assert=42 end\nreplace()\n",
+    ] {
+        let source = format!("{replacement}hostEffect()\nassert(true,'checked')\n");
+        let rejected = report(fixture.check(&source, true, None), 1);
+        error_on(&rejected, &source, "TS2349", "assert(true,'checked')", "assert");
+    }
+    let source = "---@param event string\nlocal function replace(event)\n(--[[---@type table]] _G)[event]=42\nassert(true,'checked')\nend\n";
+    let rejected = report(fixture.check(source, true, None), 1);
+    error_on(&rejected, source, "TS2349", "assert(true,'checked')", "assert");
+}
+
+#[test]
+fn builtin_to_builtin_replacement_uses_the_replacements_original_public_heads() {
+    let fixture = Fixture::new();
+    // The assignment still violates assert's generic contract. Its reached
+    // value nevertheless has type's one-argument public call signature.
+    let source = "assert=type\n---@type string\nlocal result=assert(42)\n";
+    let rejected = report(fixture.check(source, true, None), 1);
+    error_on(&rejected, source, "TS2322", "assert=type", "type");
+    assert!(!rejected.contains("\"code\":\"TS2349\""), "{rejected}");
+    let wrong = source.replace("assert(42)", "assert(42,'extra')");
+    let rejected = report(fixture.check(&wrong, true, None), 1);
+    error_on(&rejected, &wrong, "TS2554", "local result=assert(42,'extra')", "assert(42,'extra')");
+    let corrected = source.replace("assert=type", "assert=assert");
+    clean(fixture.check(&corrected.replace("---@type string", "---@type number"), true, None));
+}
+
+#[test]
+fn an_ordinary_standard_view_does_not_relax_strict_physical_capability_checks() {
+    let fixture = Fixture::new();
+    clean(fixture.check(EVENT_MANAGER_VIEW, true, None));
+    let strict = report(fixture.check_options(EVENT_MANAGER_VIEW, true, None, true), 1);
+    error_on(&strict, EVENT_MANAGER_VIEW, "TS2349", "assert(true,'checked')", "assert");
+}
+
+#[test]
+fn compatible_direct_and_reached_alias_replacements_do_not_acquire_assertion_effects() {
+    let fixture = Fixture::new();
+    let ordinary = "---@generic T\n---@param value T\n---@vararg unknown\n---@return T\nlocal function ordinary(value,...) return value end\n";
+    let probe = "---@param value number|nil\nlocal function probe(value)\nsaved(value)\n---@type number\nlocal checked=value\nend\n";
+    for replacement in [
+        "saved=ordinary\n",
+        "local function replace() saved=ordinary end\nreplace()\n",
+    ] {
+        let source = format!("{ordinary}local saved=assert\n{replacement}hostEffect()\n{probe}");
+        let rejected = report(fixture.check(&source, true, None), 1);
+        error_on(&rejected, &source, "TS2322", "local checked=value", "value");
+        assert!(!rejected.contains("\"code\":\"TS2349\""), "{rejected}");
+        clean(fixture.check(&source.replace(replacement, ""), true, None));
+    }
+}
+
 #[test]
 fn replaced_local_callees_remain_ordinary_after_an_unknown_call() {
     let fixture = Fixture::new();

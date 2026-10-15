@@ -756,7 +756,10 @@ impl Checker<'_> {
                             self.error("TS7034", declaration_span, format!("Variable '{declaration_name}' implicitly has type 'any' in some locations where its type cannot be determined."));
                             self.error("TS7005", expr.span, format!("Variable '{declaration_name}' implicitly has an 'any' type."));
                         }
-                        result.ty
+                        if !self.runtime_value && result.ty == Type::Unknown
+                            && native.has_standard_callable_initializer(self.bound.binding_at(name.span.start).unwrap())
+                            && let Some(written) = self.standard_callable_read(expr, at)
+                        { written } else { result.ty }
                     } else {
                         binding.value
                     }

@@ -1,7 +1,7 @@
 //! Original global declaration recipes. Native queries own type selection,
 //! compatibility, recursion and caching; this index retains no computed types.
 use super::NativeRegistry;
-use crate::bind::{BoundFile, OccurrenceKind};
+use crate::bind::{BindingId, BoundFile, OccurrenceKind};
 use crate::{Checker, Diagnostic};
 use luanalysis_engine::{
     GlobalQuery, GlobalQueryError, GlobalSourceRole, GlobalValueKind, NativeEnvironmentKey,
@@ -511,6 +511,28 @@ impl NativeRegistry {
             message,
         });
     }
+    /// Candidate discovery only. The native policy query still proves the
+    /// reached value; later assignments can invalidate this original copy.
+    pub(crate) fn has_standard_callable_initializer(&self, binding: BindingId) -> bool {
+        let mut binding = binding;
+        let mut visited = HashSet::new();
+        while visited.insert(binding) {
+            let Some(write) = self.flow.declaration_write(binding) else { return false };
+            let crate::flow::NodeKind::Write { value, .. } = &write.kind else { return false };
+            let evaluation = match value {
+                crate::flow::ValueDemand::Evaluation(evaluation)
+                | crate::flow::ValueDemand::PackElement { evaluation, index: 0 } => *evaluation,
+                _ => return false,
+            };
+            let mut expression = &self.flow.program.expression(self.flow.program.evaluation(evaluation).expression).expression;
+            while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
+            let ExprKind::Name(name) = &expression.kind else { return false };
+            if let Some(next) = self.bound.binding_at(name.span.start) { binding = next; }
+            else { return matches!(name.text.as_str(), "type" | "assert" | "require" | "setmetatable"); }
+        }
+        false
+    }
+
     pub(crate) fn check_global_declarations(&self, queries: &mut dyn TypeQueries) {
         if self.source_role() == SourceRole::Declaration {
             self.check_all_signatures(queries);
@@ -603,6 +625,26 @@ pub(super) fn query_declarations(error: &GlobalQueryError) -> Vec<NativeValueDec
 }
 
 impl Checker<'_> {
+    /// This is an ordinary written type view, never physical value evidence.
+    pub(crate) fn standard_callable_read(&mut self, expression: &luanalysis_syntax::Expr, at: luanalysis_engine::NativeFlowKey) -> Option<Type> {
+        if self.runtime_value { return None; }
+        let native = self.native?;
+        let evaluation = native.flow.evaluation_for_expression(expression, at.graph)?;
+        match self.engine.flow_standard_operation(
+            &crate::native_flow::FlowAdapter { sources: &native.flow, values: native },
+            native.flow.evaluation_value(evaluation.id),
+            native.flow.flow_key(evaluation.input, at.graph.context),
+        ) {
+            luanalysis_engine::NativeStandardOperation::Standard(site) => {
+                // A builtin assigned another builtin takes the replacement's
+                // exact original public heads, not the old binding's contract.
+                self.engine.value_declaration_type(site.declaration).ok()
+            },
+            luanalysis_engine::NativeStandardOperation::Pending => { self.incomplete_flow = true; None },
+            luanalysis_engine::NativeStandardOperation::Ordinary => None,
+        }
+    }
+
     pub(crate) fn is_global_annotation_target(&self, target: &luanalysis_syntax::Expr) -> bool {
         let ExprKind::Name(name) = &target.kind else {
             return false;
@@ -644,6 +686,15 @@ impl Checker<'_> {
             };
             if let Some(at) = self.flow_at {
                 let expression = luanalysis_syntax::Expr { span: name.span, kind: ExprKind::Name(name.clone()) };
+                if matches!(name.text.as_str(), "type" | "assert" | "require" | "setmetatable")
+                    && let Some(written) = self.standard_callable_read(&expression, at)
+                {
+                    // Ordinary standard operations use the selected policy's
+                    // reached value. Raw captured flow may reset a capability
+                    // because a different function could write it in the future.
+                    // This view cannot certify physical aliases or environment identity.
+                    return Some(written);
+                }
                 if let Some(reference) = native.flow.environment_member_reference(at.graph, &expression) {
                     // Unknown is the native reset type for a value capability:
                     // a computed write may replace it even if the declaration's
