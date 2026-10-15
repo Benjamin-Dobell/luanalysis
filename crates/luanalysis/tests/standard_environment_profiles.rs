@@ -303,20 +303,31 @@ fn profile_cli_json_preserves_transport_and_excludes_only_selected_standard_file
 }
 
 #[test]
-fn changed_standard_assert_value_is_an_explicit_original_source_capability_gate() {
+fn restoring_the_original_assert_alias_retains_its_checked_result_pack() {
     let fixture = Fixture::new();
     let source =
-        "local replacement=assert\nassert=replacement\nlocal value,label=assert(42,'word')\n";
+        "local replacement=assert\nassert=replacement\n---@type number,string\nlocal value,label=assert(42,'word')\n";
     let report = fixture.check(source, StandardEnvironmentProfile::Lua54);
-    assert!(code(&report, "LUA2039"), "{:#?}", report.files);
+    clean(&report);
     let main = report.file(report.project.entries[0]).unwrap();
-    let gate = main
+    assert!(main.report.bindings.iter().any(|binding| binding.name == "label" && binding.ty == "string"), "{:#?}", main.report.bindings);
+}
+
+#[test]
+fn a_compatible_custom_assert_replacement_has_only_its_ordinary_call_effects() {
+    let fixture = Fixture::new();
+    let source = "---@generic T\n---@param value T\n---@vararg unknown\n---@return T\nlocal function custom(value,...) return value end\nassert=custom\n---@param value number|nil\nlocal function consume(value)\nassert(value)\n---@type number\nlocal wrong=value\nend\nconsume(42)\n";
+    let report = fixture.check(source, StandardEnvironmentProfile::Lua54);
+    assert!(!code(&report, "LUA2039"), "{:#?}", report.files);
+    let main = report.file(report.project.entries[0]).unwrap();
+    let errors: Vec<_> = main
         .report
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code == "LUA2039")
-        .unwrap();
-    assert_eq!(&source[gate.span.start..gate.span.end], "assert");
+        .collect();
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_eq!(errors[0].code, "TS2322");
+    assert_eq!(&source[errors[0].span.start..errors[0].span.end], "value");
 }
 
 #[test]

@@ -87,10 +87,11 @@ impl NativeRegistry {
         }
         let function = declaration.function?;
         let binding = self.global_binding(name)?;
-        let owners = self.project_globals.as_ref()?.declarations(binding);
+        let globals = self.project_globals.as_ref()?;
+        let owners = globals.declarations(binding);
         let other_owners = owners
             .into_iter()
-            .filter(|key| *key != declaration.key)
+            .filter(|key| *key != declaration.key && globals.is_declaration_owner(*key))
             .collect();
         let mut heads = self.function_overload_signatures(function);
         if heads.is_empty() {

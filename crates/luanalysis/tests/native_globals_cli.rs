@@ -320,14 +320,14 @@ fn declaration_placeholders_never_supply_missing_contracts_and_metadata_is_valid
 }
 
 #[test]
-fn unsupported_ambient_execution_and_explicit_environment_lookup_have_precise_gates() {
+fn unsupported_ambient_execution_and_environment_lookup_have_original_diagnostics() {
     let fixture = Fixture::new();
     fixture.file("api.def.lua", "local placeholder = {}\n");
     fixture.file("main.lua", "local value = _G.answer\n");
     let output = fixture.check(&["api.def.lua"]);
     fail(&output, "api.def.lua:1:1: error[LUA2034]");
     assert!(
-        text(&output).contains("main.lua:1:15: error[LUA2036]"),
+        text(&output).contains("main.lua:1:15: error[TS2304]"),
         "{}",
         text(&output)
     );
@@ -335,7 +335,7 @@ fn unsupported_ambient_execution_and_explicit_environment_lookup_have_precise_ga
     fixture.file("main.lua", "local _ENV = {}\nlocal value = answer\n");
     fail(
         &fixture.check(&["api.def.lua"]),
-        "main.lua:2:15: error[LUA2036]",
+        "main.lua:2:15: error[TS2339]",
     );
 }
 

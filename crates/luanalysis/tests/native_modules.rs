@@ -208,7 +208,7 @@ fn missing_dynamic_and_invalid_require_requests_fail_at_original_call_arguments(
     }
 }
 #[test]
-fn shadowed_require_and_environment_loader_mutation_do_not_load_phantom_files() {
+fn shadowed_require_and_environment_loader_mutation_do_not_publish_phantom_module_errors() {
     let fixture = Fixture::new();
     let shadow=fixture.check("---@param name string\nlocal function require(name) return 42 end\nlocal value=require('absent')");
     clean(&shadow);
@@ -221,11 +221,8 @@ fn shadowed_require_and_environment_loader_mutation_do_not_load_phantom_files() 
     ] {
         let report = fixture.check(source);
         assert!(report.has_errors());
-        assert!(
-            report.project.dependencies.is_empty(),
-            "{source}: {:#?}",
-            report.project.dependencies
-        );
+        assert_eq!(report.project.files.len(), 1, "{source}: {:#?}", report.project.files);
+        assert!(!report.files.iter().flat_map(|file| &file.report.diagnostics).any(|error| error.code == "TS2307"), "{source}: {:#?}", report.files);
     }
 }
 #[test]

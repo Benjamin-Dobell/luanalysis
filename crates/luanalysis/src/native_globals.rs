@@ -173,11 +173,13 @@ pub(crate) struct ProjectGlobalIndex {
     pub environment: NativeEnvironmentKey,
     names: BTreeMap<String, NativeGlobalBindingKey>,
     declarations: Vec<Vec<NativeValueDeclarationKey>>,
+    declaration_owners: HashSet<NativeValueDeclarationKey>,
 }
 
 impl ProjectGlobalIndex {
     pub(super) fn new(environment: NativeEnvironmentKey, sources: &[&NativeRegistry]) -> Self {
         let mut by_name = BTreeMap::<String, Vec<NativeValueDeclarationKey>>::new();
+        let mut declaration_owners = HashSet::new();
         for source in sources {
             let mut introduced = HashSet::new();
             for declaration in &source.globals.declarations {
@@ -188,6 +190,9 @@ impl ProjectGlobalIndex {
                 let first = introduced.insert(&declaration.name.text);
                 if !explicit && !first {
                     continue;
+                }
+                if source.source_role() == SourceRole::Declaration {
+                    declaration_owners.insert(declaration.key);
                 }
                 by_name
                     .entry(declaration.name.text.clone())
@@ -212,6 +217,7 @@ impl ProjectGlobalIndex {
             environment,
             names,
             declarations,
+            declaration_owners,
         }
     }
 
@@ -220,6 +226,9 @@ impl ProjectGlobalIndex {
     }
     pub(super) fn bindings(&self) -> Vec<(Vec<u8>, NativeGlobalBindingKey)> {
         self.names.iter().map(|(name, key)| (name.as_bytes().to_vec(), *key)).collect()
+    }
+    pub(super) fn is_declaration_owner(&self, key: NativeValueDeclarationKey) -> bool {
+        self.declaration_owners.contains(&key)
     }
     pub(super) fn contains(&self, key: NativeGlobalBindingKey) -> bool {
         key.environment == self.environment && (key.index as usize) < self.declarations.len()
@@ -626,6 +635,11 @@ impl Checker<'_> {
             let Some(globals) = native.project_globals.as_ref() else { return Type::Unknown; };
             (Type::Unknown, self.engine.global_environment_type(globals.environment).unwrap_or(Type::Unknown))
         };
+        // This is the actual lexical upvalue's immutability proof. Demanding
+        // flow across unrelated calls for an unchanged environment makes call
+        // classification depend recursively on its own callee's environment.
+        // Explicit upvalue replacement retains the normal native traversal.
+        if binding.is_none() && native.flow.environment_cell_is_immutable() { return initial; }
         let Some(at) = self.flow_at else { return initial; };
         let Some(reference) = native.flow.environment_reference(at.graph, binding) else { return initial; };
         let result = self.engine.flow_type(&crate::native_flow::FlowAdapter { sources: &native.flow, values: native }, at, reference, &declared, &initial);

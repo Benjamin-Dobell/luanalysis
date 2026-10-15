@@ -209,16 +209,18 @@ fn ambient_generic_table_identity_retains_imported_definition_heads_without_func
 }
 
 #[test]
-fn immutable_assignment_context_keeps_one_original_modified_environment_gate() {
+fn immutable_assignment_context_checks_the_original_custom_environment_property() {
     let source = "local _ENV={}\nmissing=42\n";
     let report = luanalysis::check(source);
     let gates: Vec<_> = report
         .diagnostics
         .iter()
-        .filter(|error| error.code == "LUA2036")
+        .filter(|error| error.code == "TS2339")
         .collect();
     assert_eq!(gates.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(&source[gates[0].span.start..gates[0].span.end], "missing");
+    let corrected = luanalysis::check("local _ENV={missing=0}\nmissing=42\n");
+    assert!(corrected.diagnostics.is_empty(), "{:#?}", corrected.diagnostics);
 }
 
 #[test]

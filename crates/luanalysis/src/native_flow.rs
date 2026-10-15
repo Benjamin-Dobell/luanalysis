@@ -68,6 +68,7 @@ pub(super) struct NativeFlowSources {
     original_require_capability: bool,
     capability_bindings: HashSet<BindingId>,
     environment_candidates: HashMap<BindingId, HashSet<Vec<flow::Key>>>,
+    environment_cell_written: bool,
     pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
     iterator_projections: HashMap<BindingId, (flow::IteratorId, usize)>,
     contexts: RefCell<FlowContexts>,
@@ -78,6 +79,7 @@ impl NativeFlowSources {
         self.runtime_type_intrinsic_enabled = enabled;
     }
     pub(super) fn set_original_require_capability(&mut self, enabled: bool) { self.original_require_capability = enabled; }
+    pub(super) fn environment_cell_is_immutable(&self) -> bool { !self.environment_cell_written }
     fn loader_address_invalidates(&self, address: &flow::CapturedAddress) -> bool {
         if !self.loader_mutations.contains(&(address.span.start, address.span.end)) { return false; }
         if self.original_require_capability && address.reference.root == flow::ReferenceRoot::EnvironmentCell {
@@ -98,6 +100,9 @@ impl NativeFlowSources {
         functions: &HashMap<(usize, usize), u32>,
     ) -> Self {
         let program = flow::build(file, bound);
+        let environment_cell_written = program.graphs.iter().flat_map(|graph| &graph.nodes).any(|node| {
+            matches!(&node.kind, flow::NodeKind::Write { address, .. } if address.reference.root == flow::ReferenceRoot::EnvironmentCell && address.reference.path.is_empty())
+        });
         let mut result = Self {
             references: vec![Vec::new(); program.graphs.len()],
             reference_indices: vec![HashMap::new(); program.graphs.len()],
@@ -116,6 +121,7 @@ impl NativeFlowSources {
             original_require_capability: false,
             capability_bindings: HashSet::new(),
             environment_candidates: HashMap::new(),
+            environment_cell_written,
             pack_projections: HashMap::new(),
             iterator_projections: HashMap::new(),
             contexts: RefCell::new(FlowContexts::default()),
