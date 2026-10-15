@@ -16,21 +16,30 @@ impl Checker<'_> {
         expression: &Expr,
         expected: Option<&ValuePack>,
     ) -> ValuePack {
-        if let Some(pack) = self.asserted_expression_pack(expression) { return pack; }
+        if let Some(pack) = self.asserted_expression_pack(expression) {
+            return self.finish_class_definition_pack(expression.span, pack);
+        }
         let previous = self.flow_at;
         if let (Some(native), Some(at)) = (self.native, previous) {
             self.flow_at = Some(native.flow_input_for_expression(expression, at));
         }
         let pack = match &expression.kind {
             ExprKind::Call { callee, args } => {
-                self.call_expression_pack(callee, args, expression.span, expected)
+                let pack = self.call_expression_pack(callee, args, expression.span, expected);
+                self.finish_class_definition_pack(expression.span, pack)
             }
             ExprKind::MethodCall {
                 receiver,
                 name,
                 args,
-            } => self.method_call_pack(receiver, name, args, expression.span, expected),
-            ExprKind::Vararg => self.vararg_pack(expression.span),
+            } => {
+                let pack = self.method_call_pack(receiver, name, args, expression.span, expected);
+                self.finish_class_definition_pack(expression.span, pack)
+            }
+            ExprKind::Vararg => {
+                let pack = self.vararg_pack(expression.span);
+                self.finish_class_definition_pack(expression.span, pack)
+            }
             _ => {
                 let context = expected.and_then(|pack| self.engine.pack_contextual_slot(pack, 0));
                 ValuePack::single(self.expression_with_expected(expression, context.as_ref()))

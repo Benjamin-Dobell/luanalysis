@@ -107,11 +107,8 @@ impl NativeRegistry {
             return Err("multiple local definition destinations");
         };
         let [value] = attachment.local_values.as_slice() else {
-            return Err("class definition needs one literal initializer");
+            return Err("class definition needs one initializer");
         };
-        if !value.table_literal {
-            return Err("class definition needs a table literal initializer");
-        }
         let index = self
             .class_definitions
             .sources
@@ -150,6 +147,22 @@ impl NativeRegistry {
     }
 }
 impl Checker<'_> {
+    pub(crate) fn finish_class_definition_pack(
+        &mut self,
+        span: Span,
+        pack: luanalysis_engine::ValuePack,
+    ) -> luanalysis_engine::ValuePack {
+        if self.native.and_then(|native| native.class_definition_for_initializer(span)).is_none() {
+            return pack;
+        }
+        // A checked class attachment has exactly one original destination.
+        // Lua discards extra call results here; validate its actual first value.
+        let actual = self.engine.pack_slot(&pack, 0);
+        let value = self.finish_class_definition_initializer(span, actual);
+        self.record_expression_type(span, &value);
+        luanalysis_engine::ValuePack::single(value)
+    }
+
     fn class_definition_instance(&mut self, directive: &ClassDefinitionDirective) -> Option<Type> {
         let class = match self.engine.named_declared_type(directive.declaration) {
             Ok(class) => class,
