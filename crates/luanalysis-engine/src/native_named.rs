@@ -1,5 +1,9 @@
 //! Original declaration/member recipes transported into the native lazy
 //! declaration queries. This module never expands aliases or compares shapes.
+#[cfg(test)]
+#[path = "native_bodyless_member_tests.rs"]
+mod bodyless_member_tests;
+
 use super::{
     Checker, LuaKey, NativeFunctionKey, NativeTypeParameterKey, NativeTypeProvider,
     ProviderAdapter, SessionQueries, TableError, Type, TypeHandles, core_key, core_parameter_key,
@@ -106,6 +110,7 @@ pub enum NamedTypeError {
     DefinitionField { owner: NativeClassDefinitionKey, error: TableError },
     InvalidDeclaration(NativeTypeDeclarationKey),
     InvalidMember(NativeTypeMemberKey),
+    InvalidMemberSignatures { member: NativeTypeMemberKey, signature: Option<super::NativeSignatureKey> },
     InvalidTypeParameter(NativeTypeParameterKey),
     UnknownOwner {
         member: NativeTypeMemberKey,
@@ -262,6 +267,10 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
     }
     fn type_member_is_assignment(&self, key: NativeTypeMemberId) -> bool {
         self.provider.type_member_is_assignment(source_member(key))
+    }
+    fn type_member_signatures(&self, key: NativeTypeMemberId) -> Option<Vec<bun_sema::types::NativeSignatureId>> {
+        self.provider.type_member_signatures(source_member(key))
+            .map(|heads| heads.into_iter().map(super::core_signature_key).collect())
     }
     fn type_member_header(
         &self,
@@ -453,6 +462,9 @@ pub(super) fn export_error(
         NativeNamedTypeError::InvalidMember(key) => {
             NamedTypeError::InvalidMember(source_member(key))
         }
+        NativeNamedTypeError::InvalidMemberSignatures { member, signature } => NamedTypeError::InvalidMemberSignatures {
+            member: source_member(member), signature: signature.map(super::source_signature_key),
+        },
         NativeNamedTypeError::InvalidTypeParameter(key) => {
             NamedTypeError::InvalidTypeParameter(source_parameter_key(key))
         }
