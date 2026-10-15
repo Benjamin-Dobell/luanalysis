@@ -195,3 +195,20 @@ local alias=holder
     let corrected = source.replace("local observed=trigger.missing", "local observed=1");
     clean(&fixture.check(&corrected));
 }
+
+#[test]
+fn local_namespace_initialization_preserves_require_but_real_newindex_effects_do_not() {
+    let fixture = Fixture::new();
+    fixture.file("Helper.lua", "return {value=1}\n");
+    let source = "local Class=require('Class')\nlocal Helper=require('Helper')\n---@type number\nlocal result=Class.identity(Helper.value)\n";
+    let namespace = "---@class UserClass\nlocal Class={}\n\n---@param value number\n---@return number\nfunction Class.identity(value) return value end\n\nreturn Class\n";
+    let changing_loader = namespace.replace(
+        "local Class={}\n",
+        "local Class={}\n\nsetmetatable(Class, {\n---@param target table\n---@param key string\n---@param value function\n__newindex=function(target,key,value) package.path='custom/?.lua' end,\n})\n",
+    );
+    fixture.file("Class.lua", &changing_loader);
+    let denied = fixture.check(source);
+    assert!(text(&denied).contains("LUA2036"), "{}", text(&denied));
+    fixture.file("Class.lua", namespace);
+    clean(&fixture.check(source));
+}
