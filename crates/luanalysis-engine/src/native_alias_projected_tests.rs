@@ -44,7 +44,7 @@ impl NativeFlowProvider for Fields {
         graph.snapshot == 7710 && graph.region == 0 && graph.context < 2
     }
     fn contains_reference(&self, reference: NativeReferenceKey) -> bool {
-        self.contains_graph(reference.graph) && reference.reference < 4
+        self.contains_graph(reference.graph) && reference.reference < 5
     }
     fn node(&self, at: NativeFlowKey) -> Option<NativeFlowNode> {
         if !self.contains_graph(at.graph) {
@@ -98,7 +98,7 @@ impl NativeFlowProvider for Fields {
     ) -> NativeWriteRelation {
         if reference == target {
             NativeWriteRelation::Exact
-        } else if reference.reference == 2 && target.reference == 1
+        } else if matches!(reference.reference, 2 | 4) && target.reference == 1
             || reference.reference == 3 && target.reference == 0
         {
             NativeWriteRelation::Ancestor
@@ -113,6 +113,9 @@ impl NativeFlowProvider for Fields {
         reference: NativeReferenceKey,
         member: NativeReferenceKey,
     ) -> Option<Vec<LuaKey>> {
+        if reference.graph == member.graph && reference.reference == 1 && member.reference == 4 {
+            return Some(vec![LuaKey::String(b"child".to_vec()), LuaKey::String(b"missing".to_vec())]);
+        }
         (reference.graph == member.graph
             && ((reference.reference == 1 && member.reference == 2)
                 || (reference.reference == 0 && member.reference == 3)))
@@ -148,6 +151,10 @@ impl NativeFlowProvider for Fields {
             23 => NativeAliasValue::Reference {
                 reference: cell(input.graph.context, 0),
                 input: node(input.graph.context, 1),
+            },
+            24 => NativeAliasValue::Reference {
+                reference: cell(input.graph.context, 4),
+                input,
             },
             _ => NativeAliasValue::Unknown,
         }
@@ -190,6 +197,18 @@ impl NativeFlowProvider for Fields {
     fn flow_error(&self, _: NativeFlowKey, error: NativeFlowError) {
         panic!("invalid original graph {error:?}")
     }
+}
+
+#[test]
+fn a_completed_unsupported_projection_does_not_become_a_pending_query() {
+    Engine::new().with_native_provider(|| Functions, |_, queries| {
+        let source = Fields { history: History::Original };
+        // The copied constructor has a real child, whose missing grandchild
+        // has no original runtime-value recipe. That is a completed refusal,
+        // not a circular or provisional dependency.
+        assert_eq!(queries.flow_alias_intrinsic(&source, value(24), node(0, 3)), NativeAliasIntrinsic::Unknown);
+        assert_eq!(queries.flow_alias_relation(&source, cell(0, 2), node(0, 3), value(20), node(0, 0)), NativeAliasRelation::Same);
+    });
 }
 
 #[test]

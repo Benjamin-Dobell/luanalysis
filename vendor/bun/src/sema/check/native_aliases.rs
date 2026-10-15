@@ -97,6 +97,9 @@ impl NativeAliasCache {
 }
 impl Origins {
     fn unknown() -> Self { Self { unknown: true, uncertain: true, ..Self::default() } }
+    /// Completed original metadata can leave runtime provenance unsupported
+    /// without depending on an unresolved or recursive checker query.
+    fn unavailable() -> Self { Self { unknown: true, ..Self::default() } }
     fn non_table() -> Self { Self { non_table: true, ..Self::default() } }
     fn one(token: Origin, unknown: bool) -> Self { Self { tokens: HashSet::from([token]), unknown, non_table: false, uncertain: false } }
     fn merge(&mut self, other: Self) { self.tokens.extend(other.tokens); self.unknown |= other.unknown; self.non_table |= other.non_table; self.uncertain |= other.uncertain; }
@@ -521,7 +524,7 @@ impl<'p, 's> Checker<'p, 's> {
                 },
                 NativeAliasValue::NotTable => Origins::non_table(),
                 NativeAliasValue::Reference { .. } | NativeAliasValue::Allocation if column != 0 => Origins::non_table(),
-                _ => Origins::unknown(),
+                _ => Origins::unavailable(),
             }
         };
         let memoizable = self.end_memoizable(begun);
