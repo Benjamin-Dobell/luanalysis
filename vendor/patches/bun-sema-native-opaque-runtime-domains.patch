@@ -1,0 +1,296 @@
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index 5e5e66c..76283c7 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -2821,7 +2821,7 @@ impl<'p, 's> Checker<'p, 's> {
+         match q {
+             Query::NativeGlobals(_) => true,
+             Query::NativeProject(_) => true,
+-            Query::NativeNamed(NativeTypeDeclarationQuery::Bases(_)) => true,
++            Query::NativeNamed(NativeTypeDeclarationQuery::Bases(_) | NativeTypeDeclarationQuery::RuntimeDomain(_)) => true,
+             Query::NativeNamed(NativeTypeDeclarationQuery::DeclaredHead(id)) => self.native_type_declaration_provider
+                 .is_some_and(|p| p.contains_type_declaration(id) && p.type_declaration_header(self, id).kind == native_named::NativeTypeDeclarationKind::Alias),
+             Query::Return(..)
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index eddf1f6..1db7408 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -57,8 +57,15 @@ pub enum NativeRuntimeType {
+     String,
+     Table,
+     Function,
++    Userdata,
++    Thread,
+ }
+ 
++/// Runtime categories represented by selected original nominal declarations,
++/// rather than by structural table or function carriers.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub enum NativeOpaqueRuntimeKind { Userdata, Thread }
++
+ /// Lua lexical number facts preserve integer precision separately from the
+ /// checker's structural Number type. They are not loop state or joined types.
+ #[derive(Clone, Copy, Debug, PartialEq)]
+@@ -888,11 +895,19 @@ impl FlowDomain for NativeDomain<'_> {
+             NativeTransfer::Iteration(at, stage) => checker.native_iterator_step(self.provider, at, stage, NativeResultPack { ty: previous.ty }).ty,
+             NativeTransfer::GenericIteration(sense) => checker.native_iterator_filter(NativeResultPack { ty: previous.ty }, sense).ty,
+             NativeTransfer::PackPredicate { predicate, sense, group } => {
+-                checker.native_narrow_pack(self.provider, NativeResultPack { ty: previous.ty }, &predicate, sense, group).ty
++                let scope = checker.begin_scope();
++                let (ty, completed) = checker.run_memoizable(|checker| checker.native_narrow_pack(self.provider, NativeResultPack { ty: previous.ty }, &predicate, sense, group).ty);
++                let settled = checker.end_scope(scope).is_ok() && completed.is_some();
++                return FlowType::new(ty, previous.incomplete || !settled);
+             }
+             NativeTransfer::Nothing => previous.ty,
+             NativeTransfer::Predicate(_, _) if previous.ty.is_never() => previous.ty,
+-            NativeTransfer::Predicate(ref predicate, sense) => checker.native_narrow_predicate(self.provider, previous.ty, predicate, sense, walk.reference, walk.declared),
++            NativeTransfer::Predicate(ref predicate, sense) => {
++                let scope = checker.begin_scope();
++                let (ty, completed) = checker.run_memoizable(|checker| checker.native_narrow_predicate(self.provider, previous.ty, predicate, sense, walk.reference, walk.declared));
++                let settled = checker.end_scope(scope).is_ok() && completed.is_some();
++                return FlowType::new(ty, previous.incomplete || !settled);
++            },
+         };
+         let _ = walk;
+         FlowType::new(ty, previous.incomplete)
+@@ -1419,6 +1434,8 @@ impl<'s, 'p> Checker<'s, 'p> {
+             NativeRuntimeType::Nil if !sense => return self.non_nullable(ty),
+             NativeRuntimeType::Table => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Table, sense),
+             NativeRuntimeType::Function => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Function, sense),
++            NativeRuntimeType::Userdata => return self.native_narrow_opaque_runtime_kind(ty, NativeOpaqueRuntimeKind::Userdata, sense),
++            NativeRuntimeType::Thread => return self.native_narrow_opaque_runtime_kind(ty, NativeOpaqueRuntimeKind::Thread, sense),
+             _ => {}
+         }
+         let name = match kind {
+@@ -1426,7 +1443,7 @@ impl<'s, 'p> Checker<'s, 'p> {
+             NativeRuntimeType::Boolean => known::boolean,
+             NativeRuntimeType::Number => known::number,
+             NativeRuntimeType::String => known::string,
+-            NativeRuntimeType::Table | NativeRuntimeType::Function => unreachable!(),
++            NativeRuntimeType::Table | NativeRuntimeType::Function | NativeRuntimeType::Userdata | NativeRuntimeType::Thread => unreachable!(),
+         };
+         self.narrow_type_by_typeof_name(ty, name, sense)
+     }
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 8ba2ffb..8acf94b 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -170,6 +170,7 @@ pub enum NativeTypeDeclarationQuery {
+     MemberOwnerApplication(NativeTypeMemberId),
+     MemberOwnerMatch { member: NativeTypeMemberId, owner: TypeId },
+     Bases(NativeTypeDeclarationId),
++    RuntimeDomain(NativeTypeDeclarationId),
+     ObjectMembers(TypeId),
+     ObjectValidation(TypeId),
+     DefinitionContext(TypeId),
+@@ -220,6 +221,9 @@ pub enum NativeNamedTypeError {
+ /// is in declaration space, including member/indexer/bases queries. The backend owns resolving,
+ /// substitution, recursive publication, inference, relation checks and semantic diagnostics.
+ pub trait NativeTypeDeclarationProvider {
++    /// Selected original nominal roots. Display names and object structure do
++    /// not attest a Lua runtime category.
++    fn runtime_type_declaration(&self, _: super::native_flow::NativeOpaqueRuntimeKind) -> Option<NativeTypeDeclarationId> { None }
+     fn type_member_activation(&self, _: &mut Checker<'_, '_>, _: NativeTypeMemberId) -> NativeTypeMemberActivation { NativeTypeMemberActivation::Active }
+     fn contains_class_definition(&self, _: NativeDefinitionId) -> bool { false }
+     fn class_definition_header(&self, _: NativeDefinitionId) -> NativeDefinitionHeader { panic!("class definition provider absent") }
+@@ -426,7 +430,7 @@ impl<'p, 's> Checker<'p, 's> {
+         Some(self.cloned_native_type_param(parameter, self.types().mapper(mapping)))
+     }
+ 
+-    fn report_native_named(&mut self, error: NativeNamedTypeError) {
++    pub(super) fn report_native_named(&mut self, error: NativeNamedTypeError) {
+         let Some(provider) = self.native_type_declaration_provider else { return };
+         match error {
+             NativeNamedTypeError::CircularAlias(id) => provider.circular_type_alias(id),
+@@ -1101,7 +1105,7 @@ impl<'p, 's> Checker<'p, 's> {
+         Ok(value)
+     }
+ 
+-    fn native_named_bases(&mut self, declaration: NativeTypeDeclarationId) -> Result<Vec<TypeId>, NativeNamedTypeError> {
++    pub(super) fn native_named_bases(&mut self, declaration: NativeTypeDeclarationId) -> Result<Vec<TypeId>, NativeNamedTypeError> {
+         if let Some(known) = self.native_named_cache.bases.get(&declaration) { return known.clone() }
+         let provider = self.native_named_provider(declaration)?;
+         let native_query = NativeTypeDeclarationQuery::Bases(declaration);
+diff --git a/src/sema/check/native_runtime.rs b/src/sema/check/native_runtime.rs
+index 0daeb92..685a39f 100644
+--- a/src/sema/check/native_runtime.rs
++++ b/src/sema/check/native_runtime.rs
+@@ -1,9 +1,116 @@
+ //! Lua runtime top types. Structural carriers supply existing table/call
+ //! operations without erasing the distinction between functions and tables.
+ use super::Checker;
++use super::native_flow::NativeOpaqueRuntimeKind;
++use super::native_named::{NativeNamedTypeError, NativeTypeDeclarationKind, NativeTypeDeclarationQuery};
++use super::Query;
++use crate::types::NativeTypeDeclarationId;
+ use crate::types::{NativeRuntimeKind, NativeResultPack, NativeTableIndexer, NativeTableFlavor, SigParam, TypeData, TypeId};
+ 
++#[derive(Clone, Copy)]
++enum NativeOpaqueRuntimeDomain { Complete(Option<NativeOpaqueRuntimeKind>), Pending }
++use NativeOpaqueRuntimeDomain::{Complete, Pending};
++
+ impl<'p, 's> Checker<'p, 's> {
++    fn native_opaque_runtime_root(&self, kind: NativeOpaqueRuntimeKind) -> Option<NativeTypeDeclarationId> {
++        let declaration = self.native_type_declaration_provider?.runtime_type_declaration(kind)?;
++        let provider = self.native_named_provider(declaration).ok()?;
++        let header = provider.type_declaration_header(self, declaration);
++        (header.kind == NativeTypeDeclarationKind::Class
++            && header.parameters.is_empty() && header.outer_parameters.is_empty()).then_some(declaration)
++    }
++
++    /// Declaration identity and ancestry only. Runtime classification must not
++    /// expand a class's members, method contracts or inferred implementations.
++    fn native_opaque_runtime_declaration(&mut self, declaration: NativeTypeDeclarationId) -> Result<NativeOpaqueRuntimeDomain, NativeNamedTypeError> {
++        let roots = [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread]
++            .map(|kind| (kind, self.native_opaque_runtime_root(kind)));
++        if roots.iter().all(|(_, root)| root.is_none()) { return Ok(Complete(None)) }
++        if let Some((kind, _)) = roots.iter().find(|(_, root)| *root == Some(declaration)) { return Ok(Complete(Some(*kind))) }
++        let query_kind = NativeTypeDeclarationQuery::RuntimeDomain(declaration);
++        let query = Query::NativeNamed(query_kind);
++        if !self.enter(query) {
++            let error = if self.found_cycle { NativeNamedTypeError::CircularBase(declaration) } else { NativeNamedTypeError::TooDeep(query_kind) };
++            self.report_native_named(error);
++            return Err(error);
++        }
++        let context = self.native_query_context();
++        let begun = self.begin_memoizable();
++        let result = (|| {
++            let mut selected = None;
++            for (index, base) in self.native_named_bases(declaration)?.into_iter().enumerate() {
++                let TypeData::NativeObject(reference) = *self.data(base) else { continue };
++                let kind = match self.native_opaque_runtime_declaration(reference.declaration)? {
++                    Complete(Some(kind)) => kind,
++                    Complete(None) => continue,
++                    Pending => return Ok(Pending),
++                };
++                if let Some(previous) = selected && previous != kind {
++                    let expected = self.native_type_reference(self.native_opaque_runtime_root(previous).unwrap(), &[])?;
++                    let actual = self.native_type_reference(self.native_opaque_runtime_root(kind).unwrap(), &[])?;
++                    return Err(NativeNamedTypeError::IncompatibleBase { declaration, index, base, expected, actual });
++                }
++                selected = Some(kind);
++            }
++            Ok(Complete(selected))
++        })();
++        let completed = self.end_memoizable(begun);
++        let ended = self.leave(query);
++        if let Err(error) = result { self.report_native_named(error); return Err(error) }
++        if matches!(result, Ok(Pending)) { self.mark_tainted_from(0); self.note_cycle(); return result }
++        match ended {
++            Ok(_) if completed.is_some() => result,
++            Err(_) if self.native_complete_without_cache(context, completed.is_some()) => result,
++            _ => {
++                // An Ok base value can still be a provisional fallback. Never
++                // turn fresh dependency taint into a completed category/absence.
++                self.mark_tainted_from(0);
++                // Reachability has a boolean result but shares memoizable
++                // scope counters. An unfinished category cannot publish even
++                // its conservative reachable answer as a completed cache entry.
++                self.note_cycle();
++                Ok(Pending)
++            },
++        }
++    }
++
++    fn native_opaque_runtime_kind(&mut self, ty: TypeId) -> Result<NativeOpaqueRuntimeDomain, NativeNamedTypeError> {
++        if let TypeData::Intersection(parts) = self.data(ty) {
++            for part in parts.to_vec() {
++                match self.native_opaque_runtime_kind(part)? {
++                    Complete(None) => {},
++                    other => return Ok(other),
++                }
++            }
++            return Ok(Complete(None));
++        }
++        // A class namespace remains a physical table even when its instance
++        // schema has opaque ancestry. Materialization preserves that facet.
++        if matches!(self.data(ty), TypeData::NativeDefinition(_) | TypeData::NativeRuntimeTable(_)) { return Ok(Complete(None)) }
++        if matches!(self.data(ty), TypeData::NativeTable(table) if table.definition_origin.is_some()) { return Ok(Complete(None)) }
++        let Some(reference) = self.native_nominal_origin(ty) else { return Ok(Complete(None)) };
++        self.native_opaque_runtime_declaration(reference.declaration)
++    }
++
++    pub(super) fn native_narrow_opaque_runtime_kind(&mut self, ty: TypeId, kind: NativeOpaqueRuntimeKind, sense: bool) -> TypeId {
++        let Some(root) = self.native_opaque_runtime_root(kind) else { return ty };
++        let Ok(root) = self.native_type_reference(root, &[]) else { return ty };
++        if self.is_any(ty) { return ty }
++        if ty == TypeId::UNKNOWN { return if sense { root } else { ty } }
++        self.map_type(ty, |checker, part| {
++            let apparent = checker.base_constraint_of(part).unwrap_or(part);
++            match checker.native_opaque_runtime_kind(apparent) {
++                Ok(Complete(Some(actual))) => return if (actual == kind) == sense { part } else { TypeId::NEVER },
++                Ok(Pending) | Err(_) => return part,
++                Ok(Complete(None)) => {},
++            }
++            if checker.flags(part) & crate::types::tf::TYPE_PARAMETER != 0 {
++                return if sense { checker.intersection(&[part, root]) } else { part };
++            }
++            if apparent == TypeId::UNKNOWN || !sense { part } else { TypeId::NEVER }
++        })
++    }
++
+     pub fn native_runtime_top(&mut self, kind: NativeRuntimeKind) -> TypeId {
+         let index = match kind { NativeRuntimeKind::Table => 0, NativeRuntimeKind::Function => 1 };
+         if let Some(known) = self.native_runtime_tops[index] { return known }
+@@ -28,6 +135,10 @@ impl<'p, 's> Checker<'p, 's> {
+ 
+     pub(super) fn native_runtime_kind(&mut self, ty: TypeId) -> Option<NativeRuntimeKind> {
+         if !self.is_object_type(ty) { return None }
++        match self.native_opaque_runtime_kind(ty) {
++            Ok(Complete(Some(_))) | Ok(Pending) | Err(_) => return None,
++            Ok(Complete(None)) => {},
++        }
+         match self.data(ty) {
+             TypeData::NativeRuntimeTop { kind, .. } => Some(*kind),
+             // A named table can also have call signatures. Its origin takes
+@@ -45,6 +156,22 @@ impl<'p, 's> Checker<'p, 's> {
+     /// This gate runs inside recursive relations, including member/union and
+     /// generic-constraint checks. Composite types retain the shared traversal.
+     pub(super) fn native_runtime_types_compatible(&mut self, source: TypeId, target: TypeId) -> bool {
++        // Definition namespaces and instances can share a nominal owner, but
++        // an actual Lua table cannot acquire its owner's userdata/thread kind.
++        // Leave composite and instantiable types to the existing relation walk.
++        let (Ok(Complete(source_domain)), Ok(Complete(target_domain))) = (self.native_opaque_runtime_kind(source), self.native_opaque_runtime_kind(target)) else { return false };
++        if let Some(expected) = target_domain {
++            if !self.is_any(source) && source != TypeId::UNKNOWN && !source.is_never()
++                && !self.is_union(source) && !self.is_intersection(source) && !self.is_instantiable(source)
++                && source_domain != Some(expected)
++            { return false }
++        }
++        if source_domain.is_some()
++            && matches!(self.data(target), TypeData::NativeDefinition(_) | TypeData::NativeRuntimeTable(_))
++        { return false }
++        if source_domain.is_some()
++            && matches!(self.data(target), TypeData::NativeTable(table) if table.definition_origin.is_some())
++        { return false }
+         let (source_top, target_top) = match (self.data(source), self.data(target)) {
+             (TypeData::NativeRuntimeTop { kind: s, .. }, TypeData::NativeRuntimeTop { kind: t, .. }) => return s == t,
+             (TypeData::NativeRuntimeTop { kind, .. }, _) => (Some(*kind), None),
+@@ -76,6 +203,11 @@ impl<'p, 's> Checker<'p, 's> {
+         if ty == TypeId::UNKNOWN { return if sense { self.native_runtime_top(kind) } else { ty } }
+         self.map_type(ty, |checker, part| {
+             let apparent = checker.base_constraint_of(part).unwrap_or(part);
++            match checker.native_opaque_runtime_kind(apparent) {
++                Ok(Complete(Some(_))) => return if sense { TypeId::NEVER } else { part },
++                Ok(Pending) | Err(_) => return part,
++                Ok(Complete(None)) => {},
++            }
+             if let Some(actual) = checker.native_runtime_kind(apparent) {
+                 return if (actual == kind) == sense { part } else { TypeId::NEVER }
+             }
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+index f1f5e2d..f1031d9 100644
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -727,6 +727,11 @@ impl<'p, 's> Checker<'p, 's> {
+     /// once something else has resolved them (`ObjectFlagsMembersResolved`), or is instantiating
+     /// them: until that is done there are none.
+     pub(super) fn is_empty_anonymous_object_type(&mut self, ty: TypeId) -> bool {
++        // A declared nominal class is not an anonymous empty object. Its
++        // materialized schema carries the same nominal_origin checked below;
++        // answer from that original fact before demanding any member recipes.
++        if matches!(self.data(ty), TypeData::NativeObject(_))
++            && self.native_nominal_origin(ty).is_some() { return false }
+         let ty = match self.native_object_relation_view(ty) { Ok(ty) => ty, Err(_) => return false };
+         if let TypeData::NativeTable(table) = self.data(ty) {
+             if table.nominal_origin.is_some() { return false }

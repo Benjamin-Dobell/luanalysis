@@ -1866,6 +1866,36 @@
       "patch": "vendor/patches/bun-sema-native-flow-declaration-contracts.patch",
       "reason": "Infer native runtime-table carrier domains, retain Comparable-only key overlap, distinguish dead references from correlated iterator frames, constrain parent member predicates, preserve pure declaration context and unresolved provisional status, and reuse guarded mapped written member/indexer contracts through kernel 07ad58d.",
       "patch_sha256": "390d1fc7d6465e739cc0736a552e523cd191dff40e5f9e362e3f285217ccb09c"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-opaque-runtime-domains.patch",
+      "reason": "Classify Lua userdata/thread domains from selected original nominal roots and guarded ancestry without expanding members, preserve namespace table facets and pending predicate dependencies, and traverse actual intersection members through kernel 86e96a7.",
+      "patch_sha256": "99af2844301f650cbd3c8fcf717c6cc5044d525867e6dbcda05e888bb90e0edf"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-opaque-runtime-domains.patch",
+      "reason": "Classify Lua userdata/thread domains from selected original nominal roots and guarded ancestry without expanding members, preserve namespace table facets and pending predicate dependencies, and traverse actual intersection members through kernel 86e96a7.",
+      "patch_sha256": "99af2844301f650cbd3c8fcf717c6cc5044d525867e6dbcda05e888bb90e0edf"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-opaque-runtime-domains.patch",
+      "reason": "Classify Lua userdata/thread domains from selected original nominal roots and guarded ancestry without expanding members, preserve namespace table facets and pending predicate dependencies, and traverse actual intersection members through kernel 86e96a7.",
+      "patch_sha256": "99af2844301f650cbd3c8fcf717c6cc5044d525867e6dbcda05e888bb90e0edf"
+    },
+    {
+      "path": "src/sema/check/native_runtime.rs",
+      "patch": "vendor/patches/bun-sema-native-opaque-runtime-domains.patch",
+      "reason": "Classify Lua userdata/thread domains from selected original nominal roots and guarded ancestry without expanding members, preserve namespace table facets and pending predicate dependencies, and traverse actual intersection members through kernel 86e96a7.",
+      "patch_sha256": "99af2844301f650cbd3c8fcf717c6cc5044d525867e6dbcda05e888bb90e0edf"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-opaque-runtime-domains.patch",
+      "reason": "Classify Lua userdata/thread domains from selected original nominal roots and guarded ancestry without expanding members, preserve namespace table facets and pending predicate dependencies, and traverse actual intersection members through kernel 86e96a7.",
+      "patch_sha256": "99af2844301f650cbd3c8fcf717c6cc5044d525867e6dbcda05e888bb90e0edf"
     }
   ],
   "source_additions": {
@@ -1886,7 +1916,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "95b9feb77602185e003f8d53c42bfe5b9755be0e1e5246ce19940723c9be2790",
+      "extracted_sha256": "8ad1e58a17be0b9ba8e75bc02f629a65453592382152eac469960a6f6549d285",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_flow_calls.rs": {
@@ -1906,7 +1936,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "c2fafe09177b9f950e4fc18c2cad9c19f42199447d884f7a0f2f9e07b53cf622",
+      "extracted_sha256": "6ef9c545597435b864937889875166ed46546fa2530d6c9941f7f83c579b072e",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1922,7 +1952,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch"
     },
     "src/sema/check/native_runtime.rs": {
-      "extracted_sha256": "342eddd8d416a3dd997baa60622bbcf083fef98bd04973253e8cab4e4d9bc118",
+      "extracted_sha256": "ee8d22b6a42428c5a5a6b9f33e73bd8ae932fce288893ccc97cb539457ec2aa5",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
@@ -2896,7 +2926,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "3b8228e59d6388ba0f369236145604d3081f81dc49dd3197358c5e2cbf2f3664"
+      "extracted_sha256": "5302ddb717ff001b54f799bb64eb5b86d6f8174625638ab22e64cd8e5daf443d"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -2921,7 +2951,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "2fe92fcc6de893d117224af7d30a69893918e035a0b2e8b7d6b1f1b453401382"
+      "extracted_sha256": "d9beddae7d5a26c87f960ba8e60ed2e57f9c85b6c5b5a66d93be97578b65de75"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",

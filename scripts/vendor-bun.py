@@ -429,6 +429,12 @@ SOURCE_ADAPTATIONS.extend({
     "native_iterators.rs", "native_named.rs", "native_tables.rs",
 ])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-opaque-runtime-domains.patch",
+    "reason": "Classify Lua userdata/thread domains from selected original nominal roots and guarded ancestry without expanding members, preserve namespace table facets and pending predicate dependencies, and traverse actual intersection members through kernel 86e96a7.",
+} for path in ["mod.rs", "native_flow.rs", "native_named.rs", "native_runtime.rs", "relate.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
