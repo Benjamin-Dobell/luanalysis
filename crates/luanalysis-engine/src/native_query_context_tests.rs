@@ -145,6 +145,17 @@ impl NativeTypeProvider for ContextQueries {
     fn contains_expression(&self, key: NativeExpressionKey) -> bool {
         key == expression()
     }
+    fn check_expression(
+        &self,
+        key: NativeExpressionKey,
+        expected: Option<&Type>,
+        mode: NativeCheckMode,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        let expected = expected.map(|ty| ValuePack::single(ty.clone()));
+        let pack = self.check_expression_pack(key, expected.as_ref(), mode, queries);
+        queries.pack_slot(&pack, 0)
+    }
     fn check_expression_pack(
         &self,
         key: NativeExpressionKey,
