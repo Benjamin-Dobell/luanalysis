@@ -124,6 +124,7 @@ struct Provider {
     demands: RefCell<Vec<u32>>,
     errors: RefCell<Vec<NamedTypeError>>,
     constraint_cycles: RefCell<Vec<NativeTypeParameterKey>>,
+    assignments: Vec<u32>,
 }
 impl Provider {
     fn declaration(&self, key: NativeTypeDeclarationKey) -> &Declaration {
@@ -145,6 +146,12 @@ impl NativeTypeProvider for Provider {
     }
     fn type_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
         self.members[key.index as usize].header.clone()
+    }
+    fn type_member_is_assignment(&self, key: NativeTypeMemberKey) -> bool {
+        self.assignments.contains(&key.index)
+    }
+    fn type_member_origin(&self, key: NativeTypeMemberKey) -> TableFieldOrigin {
+        if self.assignments.contains(&key.index) { TableFieldOrigin::Inferred } else { TableFieldOrigin::Declared }
     }
     fn type_declaration_members(&self, key: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> {
         self.declaration(key)
@@ -1016,6 +1023,60 @@ fn fixed_alias_owner_scope_and_reference_keep_only_matching_instantiations() {
             assert_eq!(q.property_type(&textual, "extra"), None);
             assert_eq!(q.validate_named_member(member(0)).unwrap(), Type::Number);
             assert!(provider.errors.borrow().is_empty(), "{:?}", provider.errors.borrow());
+        },
+    );
+}
+
+#[test]
+fn a_direct_written_contract_governs_a_store_without_demanding_its_rhs_or_unrelated_members() {
+    for key in [LuaKey::Integer(3), LuaKey::String(b"count".to_vec())] {
+        Engine::new().with_native_provider(
+            || {
+                let mut assigned = Member::field(0, key.clone(), Type::Never);
+                assigned.value = None;
+                let mut unrelated = Member::field(0, LuaKey::String(b"unrelated".to_vec()), Type::Never);
+                unrelated.value = None;
+                Provider {
+                    declarations: vec![Declaration::record(0, vec![0, 1, 2])],
+                    members: vec![Member::field(0, key.clone(), Type::Number), assigned, unrelated],
+                    assignments: vec![1],
+                    ..Provider::default()
+                }
+            },
+            |provider, queries| {
+                assert_eq!(queries.named_member_context(member(1)), Ok(Some(Type::Number)));
+                let record = queries.named_type_reference(declaration(0), &[]).unwrap();
+                assert_eq!(queries.table_lookup(&record, &TableKey::Literal(key.clone())), Ok(Type::Number));
+                assert_eq!(&*provider.demands.borrow(), &[0]);
+                assert!(provider.errors.borrow().is_empty());
+            },
+        );
+    }
+}
+
+#[test]
+fn direct_indexer_contracts_and_generic_field_mappers_survive_assignment_candidates() {
+    Engine::new().with_native_provider(
+        || {
+            let mut assigned = Member::field(0, LuaKey::Integer(3), Type::Never);
+            assigned.value = None;
+            let mut record = Declaration::record(0, vec![0, 1]);
+            record.header.parameters = vec![parameter(0)];
+            Provider {
+                declarations: vec![record],
+                members: vec![Member::indexer(0, Type::Number, Type::NativeTypeParameter(parameter(0))), assigned],
+                assignments: vec![1],
+                parameters: 1,
+                ..Provider::default()
+            }
+        },
+        |provider, queries| {
+            for expected in [Type::Number, Type::String] {
+                let record = queries.named_type_reference(declaration(0), &[expected.clone()]).unwrap();
+                assert_eq!(queries.table_lookup(&record, &TableKey::Literal(LuaKey::Integer(3))), Ok(expected));
+            }
+            assert_eq!(&*provider.demands.borrow(), &[0]);
+            assert!(provider.errors.borrow().is_empty());
         },
     );
 }

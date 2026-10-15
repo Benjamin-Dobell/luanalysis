@@ -592,9 +592,9 @@ impl<'p, 's> Checker<'p, 's> {
         Ok(head)
     }
 
-    /// Context comes from the original owner's bases, never from the member's own
-    /// initializer type. Keeping this query separate avoids a self-referential
-    /// signature demand while preserving each inherited owner's mapper.
+    /// Stores reuse existing written contracts from their owner and its bases,
+    /// never their own initializer type. Keeping this query separate avoids a
+    /// self-referential RHS demand while preserving each owner's mapper.
     pub fn native_named_member_context(&mut self, member: NativeTypeMemberId) -> Result<Option<TypeId>, NativeNamedTypeError> {
         if self.native_type_declaration_provider.is_some_and(|provider| matches!(provider.type_member_header(self, member).owner, NativeTypeMemberOwner::RuntimeStore(_))) { return Ok(None) }
         if let Some(&known) = self.native_named_cache.member_contexts.get(&member) { return Ok(known) }
@@ -603,6 +603,7 @@ impl<'p, 's> Checker<'p, 's> {
         if !self.enter(query) { return Err(NativeNamedTypeError::TooDeep(native_query)) }
         let result = (|| {
             let (owner, header) = self.native_named_member_origin(member)?;
+            let provider = self.native_named_provider(owner.declaration)?;
             let key = match header.key {
                 NativeTypeMemberKey::Fixed(key) => NativeTableAccessKey::Literal(key),
                 NativeTypeMemberKey::Indexer { .. } => {
@@ -611,6 +612,30 @@ impl<'p, 's> Checker<'p, 's> {
                 }
             };
             let mut contexts = Vec::new();
+            if provider.type_member_is_assignment(member)
+                && let NativeTableAccessKey::Literal(key) = key
+            {
+                let key = key.normalize().map_err(|error| NativeNamedTypeError::Table { declaration: owner.declaration, error })?;
+                for declared in provider.type_declaration_members(owner.declaration) {
+                    if declared == member || provider.type_member_is_assignment(declared)
+                        || provider.type_member_origin(declared) != crate::types::NativeTableFieldOrigin::Declared { continue }
+                    let metadata = provider.type_member_header(self, declared);
+                    let matches = match metadata.key {
+                        NativeTypeMemberKey::Fixed(other) => other.normalize() == Ok(key),
+                        NativeTypeMemberKey::Indexer { .. } => {
+                            let raw = self.native_named_member_demand(declared, true)?;
+                            let expected = self.instantiate(raw, owner.mapper);
+                            self.is_assignable(self.native_table_key_type(key), expected)
+                        },
+                    };
+                    if !matches || self.native_named_member_header(owner, declared)?.is_none() { continue }
+                    let origin = NativeObjectMember { member: declared, overloads: Vec::new(), owner, via: None };
+                    if let Some(raw) = self.native_object_member_demand(&origin)? {
+                        let value = self.native_member_type(raw, owner);
+                        contexts.push(if metadata.optional { self.optional(value) } else { value });
+                    }
+                }
+            }
             for base in self.native_object_bases(owner)? {
                 if let Some(context) = self.native_table_value_context(base, key) { contexts.push(context); }
             }
@@ -828,7 +853,7 @@ impl<'p, 's> Checker<'p, 's> {
         let mut active = Vec::new();
         for member in std::iter::once(origin.member).chain(origin.overloads.iter().copied()) {
             if !self.native_named_member_active(member)? { continue }
-            // A store governed by an inherited contract is not another schema declaration.
+            // A store governed by an existing contract is not another schema declaration.
             if self.native_named_member_effective_metadata(member)?.is_assignment && self.native_named_member_context(member)?.is_some() { continue }
             let Some(mapper) = self.native_member_capture_mapper(origin.owner, member)? else { continue };
             active.push((member, mapper));

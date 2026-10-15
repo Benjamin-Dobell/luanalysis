@@ -258,7 +258,7 @@ impl NativeRegistry {
                 self.named_annotation(input.lexical_context, &input.documentation_contexts, ty, queries)
             }
             OriginalMemberValue::Expression(key) => {
-                // An ordinary assignment to an inherited property uses that
+                // An ordinary assignment to a declared property uses that
                 // property's existing contract. Reinferring it from its RHS
                 // can demand this same class through a read such as self.x.
                 // The original write still checks its actual RHS separately.

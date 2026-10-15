@@ -257,3 +257,73 @@ fn cli_checks_original_field_initializer_and_accepts_its_source_correction() {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn alias_record_updates_keep_existing_numeric_and_named_contracts() {
+    for (record, access) in [("{[1]:1,[2]:string[],[3]:number}", "[3]"), ("{count:number}", ".count"), ("number[]", "[3]")] {
+        let source = format!("---@alias Record {record}\n---@param original Record\nlocal function update(original)\n local view=--[[---@type Record]] original\n view{access}=view{access}+1\n ---@type number\n local checked=view{access}\nend\n");
+        accepted(&source);
+        let wrong = source.replace(&format!("view{access}=view{access}+1"), &format!("view{access}='wrong'"));
+        let report = check(&wrong);
+        let errors: Vec<_> = report.diagnostics.iter().filter(|error| error.code == "TS2322").collect();
+        assert_eq!(errors.len(), 1, "{wrong}: {:#?}", report.diagnostics);
+        assert_eq!(&wrong[errors[0].span.start..errors[0].span.end], "'wrong'");
+        assert!(report.diagnostics.iter().all(|error| !matches!(error.code, "TS2589" | "TS2300" | "LUA2032")), "{:#?}", report.diagnostics);
+        accepted(&wrong.replace("'wrong'", "42"));
+    }
+}
+
+#[test]
+fn recursive_json_array_node_updates_validate_the_original_length_and_element_writes() {
+    let source = "---@class JsonNull\nlocal NULL={}\n---@alias JsonObject table<string,JsonValue>\n---@alias JsonArray JsonValue[]\n---@alias JsonContainer JsonObject|JsonArray\n---@alias JsonValue JsonContainer|number|string|boolean|nil|JsonNull\n---@alias ArrayNode {[1]:1,[2]:JsonArray,[3]:number}\n---@param currentNode ArrayNode\n---@param value JsonValue\nlocal function addValue(currentNode,value)\n local arrayNode=--[[---@type ArrayNode]] currentNode\n local array=arrayNode[2]\n arrayNode[3]=arrayNode[3]+1\n array[arrayNode[3]]=value\nend\n";
+    accepted(source);
+    let wrong = source.replace("arrayNode[3]+1", "'wrong'");
+    let report = check(&wrong);
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2322"
+        && &wrong[error.span.start..error.span.end] == "'wrong'"), "{:#?}", report.diagnostics);
+    assert!(report.diagnostics.iter().all(|error| error.code != "TS2589"), "{:#?}", report.diagnostics);
+    accepted(&wrong.replace("'wrong'", "42"));
+}
+
+#[test]
+fn direct_declared_duplicates_still_fail_and_genuinely_new_definition_fields_are_inferred() {
+    let duplicate = "---@alias Record {[3]:number,[3]:string}\n---@param value Record\nlocal function read(value) return value[3] end\n";
+    let report = check(duplicate);
+    assert!(report.diagnostics.iter().any(|error| matches!(error.code, "LUA2032" | "TS2300")
+        && error.message.contains("Duplicate declared property 3")), "{:#?}", report.diagnostics);
+    accepted(&duplicate.replacen("[3]:string", "[4]:string", 1));
+
+    let constructor = "---@class Built\nlocal Built={}\nBuilt.count=1\n---@type number\nlocal checked=Built.count\n";
+    accepted(constructor);
+    let wrong = constructor.replace("---@type number\nlocal checked", "---@type string\nlocal checked");
+    let report = check(&wrong);
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2322"
+        && &wrong[error.span.start..error.span.end] == "Built.count"), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn cli_checks_an_alias_node_update_and_its_wrong_length_correction() {
+    let directory = std::env::temp_dir().join(format!("luanalysis alias node update {}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("node.lua");
+    let source = "---@alias ArrayNode {[1]:1,[2]:string[],[3]:number}\n---@param currentNode ArrayNode\nlocal function addValue(currentNode)\n local arrayNode=--[[---@type ArrayNode]] currentNode\n arrayNode[3]=arrayNode[3]+1\n arrayNode[2][arrayNode[3]]='value'\nend\n";
+    let run = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        .args(["check", "--format", "json", "--lua-version", "5.2"]).arg(&path).output().unwrap();
+    std::fs::write(&path, source).unwrap();
+    let output = run();
+    assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    let wrong = source.replace("arrayNode[3]+1", "'wrong'");
+    std::fs::write(&path, &wrong).unwrap();
+    let output = run();
+    let report = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(output.status.code(), Some(1), "{report}");
+    assert!(output.stderr.is_empty(), "{}", String::from_utf8_lossy(&output.stderr));
+    let start = wrong.find("'wrong'").unwrap();
+    assert_eq!(report.matches("\"code\":").count(), 1, "{report}");
+    assert!(report.contains("\"code\":\"TS2322\"")
+        && report.contains(&format!("\"range\":{{\"start\":{start},\"end\":{}}}", start + "'wrong'".len())), "{report}");
+    std::fs::write(&path, source).unwrap();
+    let output = run();
+    assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    std::fs::remove_dir_all(directory).unwrap();
+}
