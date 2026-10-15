@@ -1048,11 +1048,14 @@ impl NativeRegistry {
             let parameter = parameters.first().expect("real Lua receiver parameter");
             // A concrete member-assignment facet describes the public value,
             // while this body still owns the original polymorphic self. Keep
-            // an explicit @param self contract ahead of either default.
+            // an explicit @param self contract ahead of either default. Apply
+            // the same lexical capture mapper as the written return contract.
             let written_receiver = !function.params.iter().any(|parameter| parameter.text == "self")
                 && function.annotations.params.iter().any(|parameter| parameter.name.text == "self");
             let parameter_type = (!written_receiver && self.method_owner(self.key_for(function)).is_some())
-                .then(|| self.default_receiver_type(function, checker.engine)).flatten()
+                .then(|| self.default_receiver_type(function, checker.engine).map(|ty| {
+                    checker.captured_function.map_or(ty.clone(), |capture| checker.engine.instantiate_in_capture(&capture, &ty))
+                })).flatten()
                 .or_else(|| self.body_parameter_type(self.key_for(function), 0, checker.captured_function, checker.contextual_function, checker.engine))
                 .unwrap_or_else(|| parameter.ty.clone());
             let ty = if parameter.optional { Type::Union(vec![parameter_type, Type::Nil]) } else { parameter_type };
