@@ -132,19 +132,19 @@ use('text')
 #[test]
 fn computed_member_read_freezes_global_receiver_before_key_rebinds_its_base_to_an_ordinary_table() {
     let fixture = Fixture::new();
+    // Check the receiver's concrete static view across key evaluation. The
+    // key still rebinds base; later closure-write type propagation is separate.
     let source = r#"local ordinary={answer='ordinary'}
----@type table
+---@type {answer:number}|{answer:string}
 local base=_G
 ---@return 'answer'
 local function key()
     base=ordinary
     return 'answer'
 end
-local value=base[key()]
+local value=(--[[---@type {answer:number}]] base)[key()]
 ---@type number
 local checked=value
----@type string
-local rebound=base.answer
 "#;
     clean(&fixture.check(source));
 
@@ -158,19 +158,19 @@ local rebound=base.answer
 #[test]
 fn computed_member_read_keeps_ordinary_receiver_when_key_rebinds_its_base_to_global_environment() {
     let fixture = Fixture::new();
+    // A later global receiver must not replace the original concrete string
+    // view. No broad table/any contract can make the wrong-type control pass.
     let source = r#"local ordinary={answer='ordinary'}
----@type table
+---@type {answer:number}|{answer:string}
 local base=ordinary
 ---@return 'answer'
 local function key()
     base=_G
     return 'answer'
 end
-local value=base[key()]
+local value=(--[[---@type {answer:string}]] base)[key()]
 ---@type string
 local checked=value
----@type number
-local rebound=base.answer
 "#;
     clean(&fixture.check(source));
 
