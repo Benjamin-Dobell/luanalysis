@@ -257,11 +257,15 @@ impl Checker<'_> {
                 let (template, types) = crate::native_tables::table_error_description(&error);
                 self.error_types("LUA2031", span, format!("Class definition is unsupported: {template}"), &types.iter().collect::<Vec<_>>());
             }
-            other => self.error(
-                "LUA2031",
-                span,
-                format!("Class definition is unsupported: {other:?}"),
-            ),
+            other => {
+                let (template, types) = crate::diagnostic_types::named_error_description(&other);
+                self.error_types(
+                    "LUA2031",
+                    span,
+                    format!("Class definition is unsupported: {template}"),
+                    &types.iter().collect::<Vec<_>>(),
+                );
+            }
         }
     }
 }
