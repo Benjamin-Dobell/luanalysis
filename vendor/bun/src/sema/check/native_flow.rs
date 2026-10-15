@@ -262,6 +262,8 @@ pub trait NativeFlowProvider {
     /// A unique original literal field at its frozen evaluation input. A
     /// structural property type cannot establish runtime value provenance.
     fn value_alias_member_source(&self, _: NativeValueKey, _: NativeFlowKey, _: NativeTableKey, _: &Checker<'_, '_>) -> Option<super::native_aliases::NativeAliasReturnValue> { None }
+    /// Original receiver evaluation for a heap store, frozen before its RHS.
+    fn write_alias_receiver(&self, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasReturnValue> { None }
     fn function_alias_returns(&self, _: crate::types::NativeFunctionId) -> Option<Vec<super::native_aliases::NativeAliasReturn>> { None }
     fn function_alias_exit(&self, _: crate::types::NativeFunctionId) -> Option<NativeFlowKey> { None }
     /// Value capabilities require the assigned runtime value rather than the

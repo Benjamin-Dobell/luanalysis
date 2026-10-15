@@ -4,6 +4,7 @@ use super::{Checker, Query};
 use super::native_flow::*;
 use super::task::Stored;
 use crate::util::FxHashMap;
+use crate::types::NativeTableKey;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug)]
@@ -44,10 +45,24 @@ struct Origins { tokens: HashSet<Origin>, unknown: bool, non_table: bool, uncert
 pub(super) struct NativeAliasCache {
     references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u64), Origins>,
     values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u64), Origins>,
+    // These are interned query paths, not identities of invented source nodes.
+    paths: Vec<Vec<NativeTableKey>>,
+    path_ids: FxHashMap<Vec<NativeTableKey>, u32>,
+    projected_references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u32, u64), Origins>,
+    projected_values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u32, u64), Origins>,
 }
 impl NativeAliasCache {
     fn reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u64), result: Origins, _: Stored) { self.references.insert(key, result); }
     fn value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u64), result: Origins, _: Stored) { self.values.insert(key, result); }
+    fn path(&mut self, path: &[NativeTableKey]) -> u32 {
+        if let Some(&id) = self.path_ids.get(path) { return id }
+        let id = self.paths.len().try_into().expect("native alias path identities fit u32");
+        self.paths.push(path.to_vec());
+        self.path_ids.insert(path.to_vec(), id);
+        id
+    }
+    fn projected_reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u32, u64), result: Origins, _: Stored) { self.projected_references.insert(key, result); }
+    fn projected_value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u32, u64), result: Origins, _: Stored) { self.projected_values.insert(key, result); }
 }
 impl Origins {
     fn unknown() -> Self { Self { unknown: true, uncertain: true, ..Self::default() } }

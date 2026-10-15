@@ -270,6 +270,7 @@ fn is_task_independent(q: Query) -> bool {
         | Query::NativeContextualTypeOwner(..)
         | Query::NativeFlowCallEffects(..)
         | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..)
+        | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
         | Query::ReturnOfSignature(_)
         | Query::Shape(_)
         | Query::Properties(_)

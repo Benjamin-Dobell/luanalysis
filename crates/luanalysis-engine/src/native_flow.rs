@@ -30,6 +30,8 @@ pub trait NativeFlowProvider {
     fn reference_written_contract(&self, _: NativeReferenceKey, _: &mut dyn TypeQueries) -> Option<Type> { None }
     fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> NativeAliasValue { NativeAliasValue::Unknown }
     fn value_alias_member_source(&self, _: NativeValueKey, _: NativeFlowKey, _: &super::LuaKey) -> Option<NativeAliasReturnValue> { None }
+    /// Original heap-store receiver and its own frozen evaluation input.
+    fn write_alias_receiver(&self, _: NativeFlowKey) -> Option<NativeAliasReturnValue> { None }
     fn function_alias_returns(&self, _: super::NativeFunctionKey) -> Option<Vec<NativeAliasReturn>> { None }
     fn function_alias_exit(&self, _: super::NativeFunctionKey) -> Option<NativeFlowKey> { None }
     fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
@@ -104,6 +106,7 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
         let value = self.provider.alias_value_type(value, input, &mut SessionQueries { checker, handles: self.handles });
         import_type(checker, self.handles, &value)
     }
+    fn write_alias_receiver(&self, at: NativeFlowKey) -> Option<NativeAliasReturnValue> { self.provider.write_alias_receiver(at) }
     fn reference_is_cell(&self, reference: NativeReferenceKey) -> bool { self.provider.reference_is_cell(reference) }
     fn reference_written_contract(&self, reference: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::TypeId> {
         let contract = self.provider.reference_written_contract(reference, &mut SessionQueries { checker, handles: self.handles })?;

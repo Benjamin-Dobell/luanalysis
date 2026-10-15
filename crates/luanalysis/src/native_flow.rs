@@ -1590,6 +1590,14 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             flow::Key::Dynamic(_) => return None,
         })).collect()
     }
+    fn write_alias_receiver(&self, at: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasReturnValue> {
+        let flow::NodeKind::Write { address, .. } = &self.sources.source_node(at)?.kind else { return None };
+        let receiver = self.sources.program.evaluation(address.receiver?);
+        Some(luanalysis_engine::NativeAliasReturnValue {
+            value: self.sources.evaluation_value(receiver.id),
+            input: self.sources.flow_key(receiver.input, at.graph.context),
+        })
+    }
     fn value_type(
         &self,
         value: NativeValueKey,
