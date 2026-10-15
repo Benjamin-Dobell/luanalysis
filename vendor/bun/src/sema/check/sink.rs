@@ -264,7 +264,8 @@ fn is_task_independent(q: Query) -> bool {
         | Query::AliasTarget(_)
         | Query::WriteType(..)
         | Query::Comparison(_) => true,
-        Query::ReturnOfSignature(_)
+        Query::NativeGlobals(_)
+        | Query::ReturnOfSignature(_)
         | Query::Shape(_)
         | Query::Properties(_)
         | Query::Constraint(_)

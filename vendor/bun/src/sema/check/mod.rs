@@ -61,6 +61,7 @@ pub mod native_assertions;
 pub mod native_signatures;
 pub mod native_runtime;
 pub mod native_named;
+pub mod native_globals;
 pub mod native_project;
 mod grammarchecks;
 mod infer;
@@ -127,6 +128,7 @@ use symbols::{AliasTarget, ExcludedMeanings};
 use task::{Open, OrderDependent, Stored, Task};
 use native_project::{NativeProjectCache, NativeProjectProvider, NativeProjectQuery};
 use native_named::{NativeNamedCache, NativeTypeDeclarationProvider, NativeTypeDeclarationQuery};
+use native_globals::{NativeGlobalsCache, NativeGlobalsProvider, NativeGlobalsQuery};
 
 pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
 pub use native_packs::NativePackResult;
@@ -761,6 +763,8 @@ impl<'s> Program<'s> {
             native_function_provider: None,
             native_type_declaration_provider: None,
             native_named_cache: NativeNamedCache::default(),
+            native_globals_provider: None,
+            native_globals_cache: NativeGlobalsCache::default(),
             native_project_provider: None,
             native_project_cache: NativeProjectCache::default(),
             native_runtime_tops: [None; 2],
@@ -1039,6 +1043,7 @@ struct Scope {
 /// A query that may be circular.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 enum Query {
+    NativeGlobals(NativeGlobalsQuery),
     NativeProject(NativeProjectQuery),
     NativeNamed(NativeTypeDeclarationQuery),
     Expr(FileId, ExprId),
@@ -1132,6 +1137,7 @@ impl Query {
             Query::BaseConstructor(sym) => (sym.file, 13),
             Query::ReturnOfSignature(_)
             | Query::NativeNamed(_)
+            | Query::NativeGlobals(_)
             | Query::NativeProject(_)
             | Query::Shape(_)
             | Query::Properties(_)
@@ -1275,6 +1281,8 @@ pub struct Checker<'p, 's> {
     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
     native_type_declaration_provider: Option<&'p dyn NativeTypeDeclarationProvider>,
     native_named_cache: NativeNamedCache,
+    native_globals_provider: Option<&'p dyn NativeGlobalsProvider>,
+    native_globals_cache: NativeGlobalsCache,
     native_project_provider: Option<&'p dyn NativeProjectProvider>,
     native_project_cache: NativeProjectCache,
     native_runtime_tops: [Option<TypeId>; 2],
@@ -2762,6 +2770,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// A circular one is an error there, and `any`; here any other circular query is unresolved.
     fn is_resolution(&self, q: Query) -> bool {
         match q {
+            Query::NativeGlobals(_) => true,
             Query::NativeProject(_) => true,
             Query::NativeNamed(NativeTypeDeclarationQuery::DeclaredHead(id)) => self.native_type_declaration_provider
                 .is_some_and(|p| p.contains_type_declaration(id) && p.type_declaration_header(self, id).kind == native_named::NativeTypeDeclarationKind::Alias),

@@ -681,13 +681,14 @@ impl NativeRegistry {
         for source in self.named.declarations() {
             if matches!(source.syntax.kind, NamedTypeDeclarationKind::Record {
                 flavor: NamedRecordKind::Class, ..
-            }) && source.syntax.attachment.is_some() {
+            }) && source.syntax.attachment.is_some_and(|span| !self.is_ambient_global_attachment(span)) {
                 self.report.borrow_mut().diagnostics.push(Diagnostic {
                     code: "LUA2031", span: source.syntax.name.span,
                     message: format!("Runtime class declaration value '{}' requires explicit declaration-value ownership checking; standalone class annotations are supported in this slice.", source.syntax.name.text),
                 });
             }
-            if let Err(reason) = self.shape_attachment_directive(source) {
+            if let Err(reason) = self.shape_attachment_directive(source)
+                && !source.syntax.attachment.is_some_and(|span| self.is_ambient_global_attachment(span)) {
                 self.report.borrow_mut().diagnostics.push(Diagnostic {
                     code:"LUA2031",span:source.syntax.name.span,
                     message:format!("Shape '{}' attachment is unsupported: {reason}.",source.syntax.name.text),

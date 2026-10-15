@@ -459,6 +459,11 @@ impl Checker<'_> {
         }
         if let ExprKind::Name(name) = &target.kind {
             if self.bound.binding_at(name.span.start).is_none() {
+                if let Some(constraint) = self.global_read(name) {
+                    let value = self.function_expression(function);
+                    self.compatible(&value, &constraint, function.span);
+                    return;
+                }
                 self.error(
                     "LUA2021",
                     name.span,

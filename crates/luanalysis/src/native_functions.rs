@@ -27,6 +27,8 @@ mod named_provider;
 mod shape_attachment;
 #[path = "native_project_provider.rs"]
 pub(crate) mod project_provider;
+#[path = "native_globals.rs"]
+pub(crate) mod globals;
 #[path = "native_modules.rs"]
 pub(crate) mod modules;
 
@@ -60,6 +62,8 @@ pub(super) struct NativeRegistry {
     pub(super) types: NativeTypes,
     named: NativeNamed,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
+    globals: globals::NativeGlobals,
+    project_globals: Option<std::rc::Rc<globals::ProjectGlobalIndex>>,
     project_modules: Option<std::rc::Rc<modules::ProjectModuleIndex>>,
     pub(super) signatures: super::native_signatures::NativeSignatures,
     expressions: NativeExpressions,
@@ -118,12 +122,13 @@ impl NativeRegistry {
             expressions.key_for_span(expression.span)
         });
         let flow = NativeFlowSources::new(&file, &bound, snapshot, &function_spans);
+        let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions);
         let mut report = CheckReport::default();
         report
             .diagnostics
             .extend(types.diagnostics().iter().cloned());
         report.diagnostics.extend(signatures.diagnostics.iter().cloned());
-        Self {
+        let mut registry = Self {
             snapshot,
             source_role: luanalysis_project::SourceRole::Implementation,
             file,
@@ -135,6 +140,8 @@ impl NativeRegistry {
             types,
             named,
             project_names: None,
+            globals,
+            project_globals: None,
             project_modules: None,
             signatures,
             expressions,
@@ -145,7 +152,11 @@ impl NativeRegistry {
             checked_contextual_bodies: RefCell::new(HashSet::new()),
             checked_captured_bodies: RefCell::new(HashSet::new()),
             report: RefCell::new(report),
-        }
+        };
+        registry.project_globals = Some(std::rc::Rc::new(globals::ProjectGlobalIndex::new(
+            luanalysis_engine::NativeEnvironmentKey { snapshot, index: 0 }, &[&registry],
+        )));
+        registry
     }
 
     pub(super) fn bound(&self) -> &BoundFile {
@@ -153,7 +164,7 @@ impl NativeRegistry {
     }
 
     pub(crate) fn source_role(&self) -> luanalysis_project::SourceRole { self.source_role }
-    pub(crate) fn set_source_role(&mut self, role: luanalysis_project::SourceRole) { self.source_role=role; }
+    pub(crate) fn set_source_role(&mut self, role: luanalysis_project::SourceRole) { self.source_role = role; }
 
     pub(super) fn statements(&self) -> &[Stmt] {
         &self.file.statements
@@ -1718,6 +1729,36 @@ impl FlowValueQueries for NativeRegistry {
 }
 
 impl NativeTypeProvider for NativeRegistry {
+    fn contains_global_environment(&self, key: luanalysis_engine::NativeEnvironmentKey) -> bool {
+        self.project_globals.as_ref().is_some_and(|globals| globals.environment == key)
+    }
+    fn contains_global_binding(&self, key: luanalysis_engine::NativeGlobalBindingKey) -> bool {
+        self.project_globals.as_ref().is_some_and(|globals| globals.contains(key))
+    }
+    fn global_binding_declarations(&self, key: luanalysis_engine::NativeGlobalBindingKey) -> Vec<luanalysis_engine::NativeValueDeclarationKey> {
+        self.project_globals.as_ref().map_or_else(Vec::new, |globals| globals.declarations(key))
+    }
+    fn contains_value_declaration(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> bool {
+        self.contains_global_declaration(key)
+    }
+    fn value_declaration_header(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> luanalysis_engine::ValueDeclarationHeader {
+        self.global_header(key)
+    }
+    fn value_declaration_contract(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<Type> {
+        self.global_contract(key, queries)
+    }
+    fn value_declaration_initializer(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Type {
+        self.global_initializer(key, queries)
+    }
+    fn global_query_error(&self, error: luanalysis_engine::GlobalQueryError, _: &mut dyn TypeQueries) {
+        let mut declarations = globals::query_declarations(&error);
+        if let luanalysis_engine::GlobalQueryError::CircularQuery(luanalysis_engine::GlobalQuery::GlobalBinding(binding))
+        | luanalysis_engine::GlobalQueryError::TooDeep(luanalysis_engine::GlobalQuery::GlobalBinding(binding))
+        | luanalysis_engine::GlobalQueryError::UnresolvedQuery(luanalysis_engine::GlobalQuery::GlobalBinding(binding)) = &error {
+            declarations.extend(self.global_binding_declarations(*binding));
+        }
+        for key in declarations { self.global_error(key, &error); }
+    }
     fn contains_signature(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signatures.contains(key)}
     fn signature_header(&self,key:luanalysis_engine::NativeSignatureKey)->luanalysis_engine::SignatureHeader{self.signatures.get(key).header}
     fn function_overload_signatures(&self,key:NativeFunctionKey)->Vec<luanalysis_engine::NativeSignatureKey>{self.signatures.function_heads(key)}

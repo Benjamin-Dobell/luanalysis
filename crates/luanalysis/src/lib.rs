@@ -217,6 +217,7 @@ pub fn check(source: &str) -> CheckReport {
         move || NativeRegistry::new(file, bound),
         |registry, engine| {
             registry.check_named_declarations(engine);
+            registry.check_global_declarations(engine);
             let mut report = {
                 let mut checker = Checker {
                     active_assertions: HashSet::new(),
@@ -654,6 +655,10 @@ impl Checker<'_> {
                 }
                 None => {
                     if self.bound.binding_at(name.span.start).is_none() {
+                        if let Some(ty) = self.global_read(name) {
+                            self.record_expression_type(expr.span, &ty);
+                            return ty;
+                        }
                         if let Some(ty) = builtins::value(&name.text) {
                             self.record_expression_type(expr.span, &ty);
                             return ty;
@@ -806,24 +811,29 @@ impl Checker<'_> {
     }
 
     fn assign(&mut self, targets: &[Expr], values: &[Expr], annotation: Option<&TypeAnnotation>) {
-        if let Some(annotation) = annotation {
+        if let Some(annotation) = annotation
+            && !targets.iter().all(|target| self.is_global_annotation_target(target))
+        {
             self.error(
                 "LUA2004",
                 annotation.span,
                 "@type casts on assignments are not implemented yet",
             );
         }
-        // A local destination's declaration can contextualize a generic call
-        // without evaluating or storing any assignment destination early.
+        // Original local and global contracts contextualize RHS demands before
+        // any assignment destination is committed.
         let expected: Vec<_> = targets
             .iter()
             .map(|target| match &target.kind {
-                ExprKind::Name(name) => self
-                    .bound
-                    .binding_at(name.span.start)
-                    .and_then(|id| self.resolve_local(id))
-                    .filter(|binding| !binding.evolves_from_nil)
-                    .map(|binding| binding.constraint.clone()),
+                ExprKind::Name(name) => {
+                    if let Some(id) = self.bound.binding_at(name.span.start) {
+                        self.resolve_local(id)
+                            .filter(|binding| !binding.evolves_from_nil)
+                            .map(|binding| binding.constraint.clone())
+                    } else {
+                        self.global_read(name)
+                    }
+                },
                 _ => None,
             })
             .collect();
@@ -859,6 +869,11 @@ impl Checker<'_> {
             match &target.kind {
                 ExprKind::Name(name) => {
                     let Some(id) = self.bound.binding_at(name.span.start) else {
+                        if self.rejects_generic_global_write(name) { continue; }
+                        if let Some(constraint) = self.global_read(name) {
+                            self.compatible(&value, &constraint, origin);
+                            continue;
+                        }
                         self.error(
                             "TS2304",
                             name.span,

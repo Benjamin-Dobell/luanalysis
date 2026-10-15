@@ -1005,6 +1005,92 @@ mod tests {
             },
         );
     }
+
+    #[test]
+    fn native_declaration_signature_group_exposes_all_heads_without_runtime_fallback() {
+        with_provider(
+            Provider::new(vec![
+                head(Type::Number, Type::String),
+                head(Type::String, Type::Number),
+            ]),
+            |provider, queries| {
+                let callable = queries.signature_group_type(&[Provider::key(0), Provider::key(1)]);
+                assert_eq!(provider.parameter_reads.get(), 0);
+                assert_eq!(provider.return_reads.get(), 0);
+                assert_eq!(queries.native_function_key(&callable), None);
+                assert_eq!(queries.function_implementation_type(&callable), None);
+                for (argument, expected) in
+                    [(Type::Number, Type::String), (Type::String, Type::Number)]
+                {
+                    let called = queries.call(&callable, &[argument]);
+                    assert!(called.errors.is_empty());
+                    assert_eq!(called.return_type, expected);
+                }
+                assert!(!queries.call(&callable, &[Type::Boolean]).errors.is_empty());
+                let public = queries.call_signature_types(&callable);
+                assert_eq!(public.len(), 2);
+                for signature in public {
+                    assert_eq!(queries.native_function_key(&signature), None);
+                    assert_eq!(queries.function_implementation_type(&signature), None);
+                }
+                assert_eq!(provider.implementation_reads.get(), 0);
+                assert_eq!(provider.body_pack_reads.get(), 0);
+            },
+        );
+    }
+
+    #[test]
+    fn native_declaration_signature_group_keeps_signature_local_generic_inference() {
+        let parameter = Type::NativeTypeParameter(Provider::parameter(0));
+        let mut generic = head(parameter.clone(), parameter);
+        generic.generic = Some(0);
+        with_provider(Provider::new(vec![generic]), |provider, queries| {
+            let callable = queries.signature_group_type(&[Provider::key(0)]);
+            for argument in [Type::Number, Type::String] {
+                let called = queries.call(&callable, &[argument.clone()]);
+                assert!(called.errors.is_empty());
+                assert_eq!(called.return_type, argument);
+            }
+            assert_eq!(queries.function_implementation_type(&callable), None);
+            assert_eq!(provider.implementation_reads.get(), 0);
+        });
+    }
+
+    #[test]
+    fn native_declaration_signature_groups_validate_all_original_keys_and_session_ownership() {
+        let provider = Provider::new(vec![head(Type::Number, Type::String)]);
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_provider(provider.clone(), |provider, queries| {
+                let foreign = NativeSignatureKey {
+                    snapshot: 1220,
+                    index: 0,
+                };
+                let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    queries.signature_group_type(&[Provider::key(0), foreign]);
+                }))
+                .expect_err("foreign declaration head must be rejected");
+                assert_eq!(
+                    *failure.downcast::<InvalidNativeSignatureKey>().unwrap(),
+                    InvalidNativeSignatureKey(foreign)
+                );
+                assert_eq!(provider.parameter_reads.get(), 0);
+                assert_eq!(provider.return_reads.get(), 0);
+                queries.signature_group_type(&[]);
+            });
+        }))
+        .expect_err("an empty group cannot manufacture an implementation fallback");
+        assert!(failure.is::<String>() || failure.is::<&str>());
+        let escaped = with_provider(provider.clone(), |_, queries| {
+            queries.signature_group_type(&[Provider::key(0)])
+        });
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_provider(provider, |_, queries| {
+                queries.call_signature_types(&escaped)
+            });
+        }))
+        .expect_err("declaration group is an owned session type");
+        assert!(failure.downcast::<InvalidSessionType>().is_ok());
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1029,6 +1115,24 @@ impl SessionQueries<'_, '_, '_> {
             .checker
             .native_signature_type(core_signature_key(declaration))
             .unwrap_or_else(|| std::panic::panic_any(InvalidNativeSignatureKey(declaration)));
+        self.handles.retain(ty)
+    }
+
+    pub(super) fn signature_group_type_native(
+        &mut self,
+        declarations: &[NativeSignatureKey],
+    ) -> Type {
+        let declarations: Vec<_> = declarations
+            .iter()
+            .copied()
+            .map(core_signature_key)
+            .collect();
+        let ty = self
+            .checker
+            .native_signature_group_type(&declarations)
+            .unwrap_or_else(|key| {
+                std::panic::panic_any(InvalidNativeSignatureKey(source_signature_key(key)))
+            });
         self.handles.retain(ty)
     }
 }

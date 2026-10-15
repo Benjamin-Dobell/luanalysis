@@ -42,7 +42,10 @@ impl NativeRegistry {
     ) -> Vec<NativeTypeParameterKey> {
         let mut parameters = self.types.own_parameters(key);
         if let Some(signature) = self.implementation_annotation_signature(key) {
-            parameters.extend(self.signature_parameters_keys(signature));
+            parameters.extend(
+                self.types
+                    .own_parameters_in_context(NativeTypeContext::Signature(signature)),
+            );
         }
         parameters
     }
@@ -143,7 +146,7 @@ impl NativeRegistry {
         self.merge_report(checker.report);
         pack
     }
-    pub(super) fn check_all_signatures(&self, queries: &mut dyn TypeQueries) {
+    pub(super) fn check_signature_declarations(&self, queries: &mut dyn TypeQueries) {
         for recipe in &self.signatures.recipes {
             for parameter in self.signature_parameters_keys(recipe.key) {
                 queries.type_parameter_constraint(parameter);
@@ -152,6 +155,12 @@ impl NativeRegistry {
             // including declarations that were never used by a call.
             let ty = queries.signature_type(recipe.key);
             queries.format(&ty);
+        }
+    }
+    pub(super) fn check_all_signatures(&self, queries: &mut dyn TypeQueries) {
+        self.check_signature_declarations(queries);
+        if self.source_role() == luanalysis_project::SourceRole::Declaration {
+            return;
         }
         for (&function, heads) in &self.signatures.functions {
             let selected = self.expressions().final_facets(function);
@@ -179,8 +188,15 @@ impl NativeRegistry {
         &self,
         key: NativeSignatureKey,
     ) -> Vec<NativeTypeParameterKey> {
-        self.types
-            .own_parameters_in_context(NativeTypeContext::Signature(key))
+        let mut parameters = self
+            .types
+            .own_parameters_in_context(NativeTypeContext::Signature(key));
+        if let Some(function) = self.ambient_annotation_function(key) {
+            let mut original = self.types.own_parameters(function);
+            original.extend(parameters);
+            parameters = original;
+        }
+        parameters
     }
     pub(super) fn signature_outer_keys(
         &self,
@@ -205,8 +221,23 @@ impl NativeRegistry {
         for returned in &source.returns {
             self.annotation_parameter_dependencies(context, returned, &mut used)
         }
-        self.types
-            .outer_parameters_in_context(NativeTypeContext::Signature(key), &used)
+        let mut outer = self
+            .types
+            .outer_parameters_in_context(NativeTypeContext::Signature(key), &used);
+        if self.ambient_annotation_function(key).is_some() {
+            let formals = self.signature_parameters_keys(key);
+            outer.retain(|key| !formals.contains(key));
+        }
+        outer
+    }
+    fn ambient_annotation_function(&self, key: NativeSignatureKey) -> Option<NativeFunctionKey> {
+        if self.source_role() != luanalysis_project::SourceRole::Declaration {
+            return None;
+        }
+        let SignatureOwner::Function(function) = self.signatures.get(key).header.owner else {
+            return None;
+        };
+        (self.implementation_annotation_signature(function) == Some(key)).then_some(function)
     }
 }
 
@@ -388,15 +419,22 @@ impl NativeSignatures {
             // Assertions describe the expression at its creation/use site. A
             // function literal's own body scope must not become the parent of
             // the annotation applied to that literal.
-            let enclosing=functions.iter().enumerate()
-                .filter(|(_,function)|function.body_span.start<=assertion.expression.start
-                    && assertion.expression.end<=function.body_span.end)
-                .min_by_key(|(_,function)|function.body_span.end-function.body_span.start)
-                .map(|(index,_)|NativeFunctionKey {snapshot,index:index as u32});
-            let owner=enclosing.map_or(SignatureOwner::Standalone,SignatureOwner::Function);
-            let context=enclosing.map(NativeTypeContext::Function);
+            let enclosing = functions
+                .iter()
+                .enumerate()
+                .filter(|(_, function)| {
+                    function.body_span.start <= assertion.expression.start
+                        && assertion.expression.end <= function.body_span.end
+                })
+                .min_by_key(|(_, function)| function.body_span.end - function.body_span.start)
+                .map(|(index, _)| NativeFunctionKey {
+                    snapshot,
+                    index: index as u32,
+                });
+            let owner = enclosing.map_or(SignatureOwner::Standalone, SignatureOwner::Function);
+            let context = enclosing.map(NativeTypeContext::Function);
             for ty in &assertion.annotation.types {
-                result.visit_type(owner,context,None,ty);
+                result.visit_type(owner, context, None, ty);
             }
         }
         for extension in named.augmentations() {

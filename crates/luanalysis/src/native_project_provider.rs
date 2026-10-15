@@ -47,6 +47,7 @@ pub(crate) struct ProjectRegistry {
     files: Vec<FileRegistry>,
     snapshots: HashMap<u64, usize>,
     names: Rc<ProjectNamedIndex>,
+    globals: Rc<super::globals::ProjectGlobalIndex>,
 }
 
 impl ProjectRegistry {
@@ -87,6 +88,11 @@ impl ProjectRegistry {
             })
             .collect();
         let names = Rc::new(names);
+        let environment = luanalysis_engine::NativeEnvironmentKey {
+            snapshot: files.first().map_or_else(|| super::NEXT_SNAPSHOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), |file| file.source.snapshot),
+            index: 0,
+        };
+        let globals = Rc::new(super::globals::ProjectGlobalIndex::new(environment, &files.iter().map(|file| &file.source).collect::<Vec<_>>()));
         let modules_by_file: HashMap<_, _> = files
             .iter()
             .map(|file| (file.id, file.source.module_key()))
@@ -144,6 +150,7 @@ impl ProjectRegistry {
         for file in &mut files {
             file.source.project_names = Some(Rc::clone(&names));
             file.source.project_modules = Some(Rc::clone(&modules));
+            file.source.project_globals = Some(Rc::clone(&globals));
             for declaration in file.source.named.declarations() {
                 if names.candidates(&declaration.syntax.name.text).len() > 1 {
                     file.source
@@ -165,6 +172,7 @@ impl ProjectRegistry {
             files,
             snapshots,
             names,
+            globals,
         }
     }
 
@@ -183,6 +191,7 @@ impl ProjectRegistry {
         // Every identity/name exists before any declaration or body demand.
         for file in &self.files {
             file.source.check_named_declarations(queries);
+            file.source.check_global_declarations(queries);
         }
         let mut reports = Vec::with_capacity(self.files.len());
         for file in &self.files {
@@ -193,18 +202,6 @@ impl ProjectRegistry {
                 checker.statements(file.source.statements());
                 report = checker.report;
                 file.source.check_all_bodies(queries);
-            } else {
-                // A declaration stub is not executable code. Written aliases,
-                // members and constraints above are checked; value/global or
-                // module contracts require their coordinated native query lane.
-                for statement in file.source.statements() {
-                    report.diagnostics.push(Diagnostic {
-                        code: "LUA2034",
-                        span: statement.span,
-                        message: "Declaration value contracts require the native global/module integration."
-                            .into(),
-                    });
-                }
             }
             reports.push(FileCheckReport {
                 file: file.id,
@@ -270,6 +267,38 @@ macro_rules! dispatch {
 }
 
 impl NativeTypeProvider for ProjectRegistry {
+    fn contains_global_environment(&self, key: luanalysis_engine::NativeEnvironmentKey) -> bool {
+        key == self.globals.environment
+    }
+    fn contains_global_binding(&self, key: luanalysis_engine::NativeGlobalBindingKey) -> bool {
+        self.globals.contains(key)
+    }
+    fn global_binding_declarations(&self, key: luanalysis_engine::NativeGlobalBindingKey) -> Vec<luanalysis_engine::NativeValueDeclarationKey> {
+        self.globals.declarations(key)
+    }
+    fn contains_value_declaration(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> bool {
+        self.owner_if(key.snapshot).is_some_and(|owner| owner.contains_global_declaration(key))
+    }
+    fn value_declaration_header(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> luanalysis_engine::ValueDeclarationHeader {
+        self.owner(key.snapshot).global_header(key)
+    }
+    fn value_declaration_contract(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<Type> {
+        self.owner(key.snapshot).global_contract(key, queries)
+    }
+    fn value_declaration_initializer(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Type {
+        self.owner(key.snapshot).global_initializer(key, queries)
+    }
+    fn global_query_error(&self, error: luanalysis_engine::GlobalQueryError, _: &mut dyn TypeQueries) {
+        let mut declarations = super::globals::query_declarations(&error);
+        if let luanalysis_engine::GlobalQueryError::CircularQuery(luanalysis_engine::GlobalQuery::GlobalBinding(binding))
+        | luanalysis_engine::GlobalQueryError::TooDeep(luanalysis_engine::GlobalQuery::GlobalBinding(binding))
+        | luanalysis_engine::GlobalQueryError::UnresolvedQuery(luanalysis_engine::GlobalQuery::GlobalBinding(binding)) = &error {
+            declarations.extend(self.globals.declarations(*binding));
+        }
+        for key in declarations {
+            if let Some(owner) = self.owner_if(key.snapshot) { owner.global_error(key, &error); }
+        }
+    }
     fn contains_module(&self, key: NativeModuleKey) -> bool {
         key.index == 0 && self.owner_if(key.snapshot).is_some()
     }

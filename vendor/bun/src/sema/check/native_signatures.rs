@@ -46,6 +46,20 @@ impl<'p, 's> Checker<'p, 's> {
         Some(self.type_of_signature(sig, false))
     }
 
+    /// A declaration-only callable set. Original heads retain their own generic
+    /// scopes and source ordering, without borrowing any runtime implementation.
+    pub fn native_signature_group_type(&mut self, declarations: &[NativeSignatureId]) -> Result<TypeId, NativeSignatureId> {
+        assert!(!declarations.is_empty(), "native signature group requires an original declaration");
+        let Some(provider) = self.native_function_provider else { return Err(declarations[0]); };
+        if let Some(&invalid) = declarations.iter().find(|&&key| !provider.contains_signature(key)) { return Err(invalid); }
+        let mut shape = Shape::new_in(self.arena);
+        for &declaration in declarations {
+            let ty = self.native_signature_type(declaration).expect("validated original signature");
+            shape.call.push(self.single_call_signature(ty).expect("one original declaration head"));
+        }
+        Ok(self.synth(shape))
+    }
+
     pub(super) fn native_function_overload_type(&self, implementation: SigId) -> TypeId {
         let Some((function, mapper)) = self.sig_native_decl(implementation) else { return self.type_of_signature(implementation, false) };
         let declarations = self.native_function_provider.expect("native function provider").overload_signatures(function);

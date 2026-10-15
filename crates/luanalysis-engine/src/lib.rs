@@ -19,6 +19,8 @@ pub use native_project::*;
 mod native_project_tests;
 mod native_named;
 pub use native_named::*;
+mod native_globals;
+pub use native_globals::*;
 mod native_iterators;
 mod native_packs;
 pub use native_packs::*;
@@ -283,6 +285,14 @@ pub enum Type {
 /// Source recipes may use thread-local interior state; release its borrows
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
+    fn contains_global_environment(&self, _: NativeEnvironmentKey) -> bool { false }
+    fn contains_global_binding(&self, _: NativeGlobalBindingKey) -> bool { false }
+    fn global_binding_declarations(&self, _: NativeGlobalBindingKey) -> Vec<NativeValueDeclarationKey> { Vec::new() }
+    fn contains_value_declaration(&self, _: NativeValueDeclarationKey) -> bool { false }
+    fn value_declaration_header(&self, _: NativeValueDeclarationKey) -> ValueDeclarationHeader { panic!("native global value provider is not installed") }
+    fn value_declaration_contract(&self, _: NativeValueDeclarationKey, _: &mut dyn TypeQueries) -> Option<Type> { None }
+    fn value_declaration_initializer(&self, _: NativeValueDeclarationKey, _: &mut dyn TypeQueries) -> Type { panic!("native global initializer provider is not installed") }
+    fn global_query_error(&self, _: GlobalQueryError, _: &mut dyn TypeQueries) {}
     fn contains_module(&self, _: NativeModuleKey) -> bool { false }
     fn module_header(&self, _: NativeModuleKey) -> NativeModuleHeader { panic!("native project provider is not installed") }
     fn module_inferred_result_pack(&self, _: NativeModuleKey, _: &mut dyn TypeQueries) -> ValuePack { panic!("native project provider is not installed") }
@@ -648,6 +658,8 @@ pub enum CallError {
 /// Queries available during one native checker session. All inputs and outputs
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
+    fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError>;
+    fn value_declaration_type(&mut self, declaration: NativeValueDeclarationKey) -> Result<Type, GlobalQueryError>;
     fn module_result_pack(&mut self, key: NativeModuleKey) -> Result<ValuePack, NativeProjectError>;
     fn module_value(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<Type, NativeProjectError>;
     fn require_pack(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<ValuePack, NativeProjectError>;
@@ -656,6 +668,7 @@ pub trait TypeQueries {
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type;
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack;
     fn signature_type(&mut self, declaration: NativeSignatureKey) -> Type;
+    fn signature_group_type(&mut self, declarations: &[NativeSignatureKey]) -> Type;
     fn call_signature_types(&mut self, function: &Type) -> Vec<Type>;
     fn function_implementation_type(&mut self, function: &Type) -> Option<Type>;
     fn signature_implementation_compatible(&mut self, declaration: NativeSignatureKey, implementation: &Type) -> bool;
@@ -924,6 +937,7 @@ impl Engine {
                 bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize - (256 << 10),
             );
             checker.set_native_type_declaration_provider(&adapter);
+            checker.set_native_globals_provider(&adapter);
             checker.set_native_project_provider(&adapter);
             checker.enable_native_arrays();
             work(
@@ -990,6 +1004,8 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError> { self.global_binding_type_native(binding) }
+    fn value_declaration_type(&mut self, declaration: NativeValueDeclarationKey) -> Result<Type, GlobalQueryError> { self.value_declaration_type_native(declaration) }
     fn module_result_pack(&mut self, key: NativeModuleKey) -> Result<ValuePack, NativeProjectError> { self.module_result_pack_native(key) }
     fn module_value(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<Type, NativeProjectError> { self.module_value_native(key, policy) }
     fn require_pack(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<ValuePack, NativeProjectError> { self.require_pack_native(key, policy) }
@@ -998,6 +1014,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type { self.exclude_type_native(source, excluded) }
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack { self.exclude_pack_native(source, fixed, tail) }
     fn signature_type(&mut self, declaration: NativeSignatureKey) -> Type { self.signature_type_native(declaration) }
+    fn signature_group_type(&mut self, declarations: &[NativeSignatureKey]) -> Type { self.signature_group_type_native(declarations) }
     fn call_signature_types(&mut self, function: &Type) -> Vec<Type> {
         let function = import_type(self.checker, self.handles, function);
         self.checker.native_call_signature_types(function).into_iter().map(|ty| self.handles.retain(ty)).collect()

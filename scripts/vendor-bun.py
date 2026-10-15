@@ -208,6 +208,14 @@ SOURCE_ADAPTATIONS.extend({
 } for path in ["mod.rs", "context.rs", "sink.rs", "native_project.rs"])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-global-declarations.patch",
+    "reason": "Add environment-qualified global and original value-declaration queries with guarded raw contracts, deterministic identity checks, widened inferred introductions and declaration-only callable groups.",
+    **({"added": True} if path == "native_globals.rs" else {}),
+} for path in ["mod.rs", "sink.rs", "native_signatures.rs", "native_globals.rs"])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 
