@@ -68,9 +68,10 @@ function bit32.bxor(...) end
 ---
 --- The default for width is 1.
 ---@overload fun(n:number, field:number):number
+---@overload fun(n:number,field:number,width:number):number
 ---@param n number
 ---@param field number
----@param width number
+---@param width? number
 ---@return number
 function bit32.extract(n, field, width) end
 
@@ -78,10 +79,11 @@ function bit32.extract(n, field, width) end
 --- Returns a copy of n with the bits field to field + width - 1 replaced by the
 --- value v. See bit32.extract for details about field and width.
 ---@overload fun(n:number, v:number, field:number):number
+---@overload fun(n:number,v:number,field:number,width:number):number
 ---@param n number
 ---@param v number
 ---@param field number
----@param width number
+---@param width? number
 ---@return number
 function bit32.replace(n, v, field, width) end
 

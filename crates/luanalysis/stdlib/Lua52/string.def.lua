@@ -1,17 +1,3 @@
--- Copyright (c) 2018. tangzx(love.tangzx@qq.com)
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 ---
 --- The type *string* represents immutable sequences of bytes. Lua is 8-bit
 --- clean: strings can contain any 8-bit value, including embedded zeros
@@ -29,9 +15,10 @@ string = {}
 --- Note that numerical codes are not necessarily portable across platforms.
 ---@overload fun(s:string, i:number):number...
 ---@overload fun(s:string):number...
+---@overload fun(s:string,i:number,j:number):number...
 ---@param s string
----@param i number
----@param j number
+---@param i? number
+---@param j? number
 ---@return number...
 function string.byte(s, i, j) end
 
@@ -47,9 +34,7 @@ function string.char(...) end
 ---
 --- Returns a string containing a binary representation (*a binary chunk*) of
 --- the given function, so that a later `load` on this string returns a
---- copy of the function (but with new upvalues). If strip is a true value, the
---- binary representation may not include all debug information about the
---- function, to save space.
+--- copy of the function (but with new upvalues).
 ---
 --- Functions with upvalues have only their number of upvalues saved. When (re)
 --- loaded, those upvalues receive fresh instances containing **nil**. (You can
@@ -57,9 +42,8 @@ function string.char(...) end
 --- a way adequate to your needs.)
 ---@overload fun(func:fun()):string
 ---@param func fun()
----@param strip boolean
 ---@return string
-function string.dump(func, strip) end
+function string.dump(func) end
 
 ---
 --- Looks for the first match of `pattern` in the string `s`. If it finds a
@@ -80,10 +64,11 @@ function string.dump(func, strip) end
 --- a number rather than a string.
 ---@overload fun(s: string, pattern: string, init: number): nil | (number, number, (number | string)...)
 ---@overload fun(s: string, pattern: string): nil | (number, number, (number | string)...)
+---@overload fun(s:string,pattern:string,init:number,plain:boolean):nil | (number, number, (number | string)...)
 ---@param s string
 ---@param pattern string
----@param init number
----@param plain boolean
+---@param init? number
+---@param plain? boolean
 ---@return nil | (number, number, (number | string)...)
 function string.find(s, pattern, init, plain) end
 
@@ -201,10 +186,11 @@ function string.gmatch(s, pattern) end
 --- for more details. Take particular note of `()` empty captures which capture
 --- a number rather than a string.
 ---@overload fun(s: string, pattern: string, repl: string | table | fun: nil | false | string | number): string, number
+---@overload fun(s:string,pattern:string,repl:(string | table | fun: nil | false | string | number),n:number):string, number
 ---@param s string
 ---@param pattern string
 ---@param repl string | table | fun: nil | false | string | number
----@param n number
+---@param n? number
 ---@return string, number
 function string.gsub(s, pattern, repl, n) end
 
@@ -234,9 +220,10 @@ function string.lower(s) end
 --- for more details. Take particular note of `()` empty captures which capture
 --- a number rather than a string.
 ---@overload fun(s: string, pattern: string): nil | (number | string, (number | string)...)
+---@overload fun(s:string,pattern:string,init:number):nil | (number | string, (number | string)...)
 ---@param s string
 ---@param pattern string
----@param init number
+---@param init? number
 ---@return nil | (number | string, (number | string)...)
 function string.match(s, pattern, init) end
 
@@ -249,9 +236,10 @@ function string.match(s, pattern, init) end
 --- Note that it is very easy to exhaust the memory of your machine with a
 --- single call to this function.
 ---@overload fun(s:string, n:number):string
+---@overload fun(s:string,n:number,sep:string):string
 ---@param s string
 ---@param n number
----@param sep string
+---@param sep? string
 ---@return string
 function string.rep(s, n, sep) end
 
@@ -274,9 +262,10 @@ function string.reverse(s) end
 --- that length. If, after these corrections, `i` is greater than `j`, the
 --- function returns the empty string.
 ---@overload fun(s:string, i:number):string
+---@overload fun(s:string,i:number,j:number):string
 ---@param s string
 ---@param i number
----@param j number
+---@param j? number
 ---@return string
 function string.sub(s, i, j) end
 
