@@ -1,0 +1,19 @@
+---@shape lunajson__EncodeDispatcher
+---@field boolean fun(v: boolean): void
+---@field number fun(v: number): void
+---@field string fun(v: string): void
+---@field table fun(v: table): void
+
+---@param dispatcher lunajson__EncodeDispatcher
+---@param v any
+local function encode(dispatcher,v)
+    if type(v)=='boolean' then
+        dispatcher.boolean(v)
+    elseif type(v)=='number' then
+        dispatcher.number(v)
+    elseif type(v)=='string' then
+        dispatcher.string(v)
+    elseif type(v)=='table' then
+        dispatcher.table(v)
+    end
+end
