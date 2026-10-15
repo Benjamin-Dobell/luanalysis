@@ -206,7 +206,7 @@ impl Checker<'_> {
                 self.engine.error_type()
             }
             Err(error) => {
-                self.native_table_error(error, span, span);
+                self.native_table_error_with_owner(error, span, span, Some(receiver));
                 Type::Unknown
             }
         }
@@ -261,7 +261,7 @@ impl Checker<'_> {
         match self.engine.table_write(receiver, key, value) {
             Ok(()) => true,
             Err(error) => {
-                self.native_table_error(error, key_span, value_span);
+                self.native_table_error_with_owner(error, key_span, value_span, Some(receiver));
                 false
             }
         }
@@ -304,6 +304,10 @@ impl Checker<'_> {
     }
 
     pub(super) fn native_table_error(&mut self, error: TableError, key_span: Span, value_span: Span) {
+        self.native_table_error_with_owner(error, key_span, value_span, None);
+    }
+
+    fn native_table_error_with_owner(&mut self, error: TableError, key_span: Span, value_span: Span, owner: Option<&Type>) {
         if matches!(error, TableError::PendingContext) {
             self.incomplete_flow = true;
             return;
@@ -320,13 +324,17 @@ impl Checker<'_> {
             TableError::SequenceTooComplex { .. } => ("LUA2019", value_span),
             TableError::UnresolvedSequence => ("LUA2016", value_span),
         };
-        let (template, types) = table_error_description(&error);
+        let (template, types) = table_error_description_with_owner(&error, owner);
         self.error_types(code, origin, template, &types.iter().collect::<Vec<_>>());
     }
 }
 
 /// Build diagnostic text without querying or formatting native type operands.
 pub(crate) fn table_error_description(error: &TableError) -> (String, Vec<Type>) {
+    table_error_description_with_owner(error, None)
+}
+
+fn table_error_description_with_owner(error: &TableError, owner: Option<&Type>) -> (String, Vec<Type>) {
     fn key(key: &TableKey, types: &mut Vec<Type>) -> String {
         match key {
             TableKey::Literal(LuaKey::String(bytes)) => {
@@ -348,7 +356,15 @@ pub(crate) fn table_error_description(error: &TableError) -> (String, Vec<Type>)
             types.push(ty.clone());
             "Type '{}' cannot be indexed as a Lua table.".into()
         }
-        TableError::MissingKey { key: value } => format!("Property {} does not exist on this table type.", key(value, &mut types)),
+        TableError::MissingKey { key: value } => {
+            let key = key(value, &mut types);
+            if let Some(owner) = owner {
+                types.push(owner.clone());
+                format!("Property {key} does not exist on type '{{}}'.")
+            } else {
+                format!("Property {key} does not exist on this table type.")
+            }
+        }
         TableError::KeyType { key, expected } => {
             types.extend([key.clone(), expected.clone()]);
             "Key type '{}' is not assignable to index type '{}'.".into()
