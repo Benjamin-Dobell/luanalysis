@@ -442,7 +442,7 @@ fn generic_phantom_arguments_keep_ts_default_structural_behavior_after_same_orig
 }
 
 #[test]
-fn base_inheritance_remains_explicitly_gated() {
+fn class_base_inheritance_retains_nominal_ancestry() {
     Engine::new().with_native_provider(
         || {
             let mut p = basic();
@@ -451,10 +451,11 @@ fn base_inheritance_remains_explicitly_gated() {
         },
         |_, q| {
             assert!(q.named_declared_type(key(1)).is_ok());
-            assert_eq!(
-                q.validate_named_declaration(key(1)),
-                Err(NamedTypeError::UnsupportedBases(key(1)))
-            );
+            assert!(q.validate_named_declaration(key(1)).is_ok());
+            let derived=q.named_type_reference(key(1),&[]).unwrap();
+            let base=q.named_type_reference(key(0),&[]).unwrap();
+            assert!(q.is_assignable(&derived,&base));
+            assert!(!q.is_assignable(&base,&derived));
         },
     );
 }

@@ -2772,6 +2772,7 @@ impl<'p, 's> Checker<'p, 's> {
         match q {
             Query::NativeGlobals(_) => true,
             Query::NativeProject(_) => true,
+            Query::NativeNamed(NativeTypeDeclarationQuery::Bases(_)) => true,
             Query::NativeNamed(NativeTypeDeclarationQuery::DeclaredHead(id)) => self.native_type_declaration_provider
                 .is_some_and(|p| p.contains_type_declaration(id) && p.type_declaration_header(self, id).kind == native_named::NativeTypeDeclarationKind::Alias),
             Query::Return(..)

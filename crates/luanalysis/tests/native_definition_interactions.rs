@@ -220,3 +220,183 @@ fn immutable_assignment_context_keeps_one_original_modified_environment_gate() {
     assert_eq!(gates.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(&source[gates[0].span.start..gates[0].span.end], "missing");
 }
+
+#[test]
+fn inherited_partial_module_members_keep_write_constraints_and_actual_instance_requirements() {
+    let fixture = Fixture::new();
+    fixture.file("base.def.lua", "---@class Base\n---@field value number\n");
+    let derived = "---@class Derived:Base\nlocal prototype={}\nreturn prototype\n";
+    fixture.file("derived.lua", derived);
+    fixture.file("main.lua", "local prototype=require('derived')\n---@type number|nil\nlocal before=prototype.value\nprototype.value=42\n---@type number\nlocal after=prototype.value\n");
+    pass(&fixture.check(&["base.def.lua"]));
+    fixture.file(
+        "main.lua",
+        "local prototype=require('derived')\nprototype.value='wrong'\n",
+    );
+    fail(&fixture.check(&["base.def.lua"]), "TS2322", "main.lua:2:");
+    fixture.file("main.lua", "local prototype=require('derived')\n---@param value Base\n---@return number\nlocal function read(value) return value.value end\nlocal result=read(prototype)\n");
+    fail(&fixture.check(&["base.def.lua"]), "TS2345", "main.lua:5:");
+    fixture.file(
+        "derived.lua",
+        &derived.replace("prototype={}", "prototype={value=42}"),
+    );
+    pass(&fixture.check(&["base.def.lua"]));
+}
+
+#[test]
+fn ambient_inherited_class_globals_keep_complete_external_schema_and_nominal_ancestry() {
+    let fixture = Fixture::new();
+    fixture.file("base.def.lua", "---@class Base\n---@field value number\n");
+    fixture.file(
+        "derived.def.lua",
+        "---@class Derived:Base\n---@overload fun():number\nderived=unresolved_placeholder()\n",
+    );
+    fixture.file("main.lua", "---@param value Base\n---@return number\nlocal function read(value) return value.value end\n---@type number\nlocal field=read(derived)\n---@type number\nlocal called=derived()\n---@type table\nlocal category=derived\n");
+    pass(&fixture.check(&["base.def.lua", "derived.def.lua"]));
+    fixture.file(
+        "main.lua",
+        "---@param value Base\nlocal function read(value) end\nread({value=42})\n",
+    );
+    fail(
+        &fixture.check(&["base.def.lua", "derived.def.lua"]),
+        "TS2345",
+        "main.lua:3:",
+    );
+}
+
+#[test]
+fn global_alias_of_imported_derived_definition_contextualizes_inherited_callbacks() {
+    let fixture = Fixture::new();
+    fixture.file(
+        "base.def.lua",
+        "---@class Base\n---@field callback fun(value:number):number\n",
+    );
+    fixture.file("derived.lua", "---@class Derived:Base\nlocal definition={callback=function(value) return value+1 end}\nreturn definition\n");
+    let valid = "shared=require('derived')\n---@type number\nlocal result=shared.callback(42)\n";
+    fixture.file("main.lua", valid);
+    pass(&fixture.check(&["base.def.lua"]));
+    fixture.file(
+        "main.lua",
+        &format!("{valid}shared.callback=function(value) return 'wrong' end\n"),
+    );
+    fail(&fixture.check(&["base.def.lua"]), "TS2322", "main.lua:4:");
+    fixture.file("main.lua", valid);
+    pass(&fixture.check(&["base.def.lua"]));
+}
+
+#[test]
+fn mapped_generic_ancestor_definitions_keep_foreign_outer_parameter_identity() {
+    let fixture = Fixture::new();
+    fixture.file("base.def.lua", "---@class Box<T>\n---@field value T\n");
+    fixture.file("maker.lua", "---@generic T\n---@param value T\nlocal function make(value)\n---@class Derived:Box<T>\nlocal definition={value=value}\nreturn definition\nend\nreturn make\n");
+    let valid = "local make=require('maker')\nlocal numbers=make(42)\nlocal strings=make('text')\n---@type number\nlocal number=numbers.value\n---@type string\nlocal string=strings.value\n---@param value Box<number>\n---@return number\nlocal function read(value) return value.value end\nlocal accepted=read(numbers)\n";
+    fixture.file("main.lua", valid);
+    pass(&fixture.check(&["base.def.lua"]));
+    fixture.file(
+        "main.lua",
+        &format!("{valid}local rejected=read(strings)\n"),
+    );
+    fail(&fixture.check(&["base.def.lua"]), "TS2345", "main.lua:12:");
+    fixture.file("main.lua", valid);
+    pass(&fixture.check(&["base.def.lua"]));
+}
+
+#[test]
+fn completion_only_base_hints_preserve_record_identity_and_real_unions_stay_invalid() {
+    let fixture = Fixture::new();
+    fixture.file("base.def.lua", "---@class Base\n---@field value number\n");
+    let valid = "---@class Derived:(Base|`Suggested.Base`)\nlocal definition={value=42}\nreturn definition\n";
+    fixture.file("derived.lua", valid);
+    fixture.file("main.lua", "local value=require('derived')\n---@param value Base\n---@return number\nlocal function read(value) return value.value end\nlocal result=read(value)\n");
+    pass(&fixture.check(&["base.def.lua"]));
+    fixture.file(
+        "derived.lua",
+        &valid.replace("Base|`Suggested.Base`", "Base|number"),
+    );
+    fail(
+        &fixture.check(&["base.def.lua"]),
+        "TS2312",
+        "derived.lua:1:",
+    );
+    fixture.file("derived.lua", valid);
+    pass(&fixture.check(&["base.def.lua"]));
+}
+
+#[test]
+fn inherited_base_argument_errors_keep_one_original_diagnostic_and_accept_correction() {
+    let fixture = Fixture::new();
+    fixture.file(
+        "base.def.lua",
+        "---@class Base<T:number>\n---@field value T\n",
+    );
+    let invalid = "---@class Derived:Base<string>\nlocal definition={}\nreturn definition\n";
+    fixture.file("derived.lua", invalid);
+    fixture.file("main.lua", "local value=require('derived')\n");
+    let output = fixture.check(&["base.def.lua"]);
+    fail(&output, "TS2344", "derived.lua:1:");
+    assert_eq!(
+        text(&output).matches("error[TS2344]").count(),
+        1,
+        "{}",
+        text(&output)
+    );
+    assert!(!text(&output).contains("TS2312"), "{}", text(&output));
+    fixture.file(
+        "derived.lua",
+        &invalid.replace("Base<string>", "Base<number>"),
+    );
+    pass(&fixture.check(&["base.def.lua"]));
+    fixture.file(
+        "derived.lua",
+        &invalid
+            .replace("Base<string>", "Base<number>")
+            .replace("definition={}", "definition={value='wrong'}"),
+    );
+    fail(
+        &fixture.check(&["base.def.lua"]),
+        "TS2322",
+        "derived.lua:2:",
+    );
+}
+
+#[test]
+fn trusted_grandchild_global_keeps_valid_parent_indexer_refinement() {
+    let fixture = Fixture::new();
+    fixture.file(
+        "base.def.lua",
+        "---@shape Base\n---@field [string] number|string\n",
+    );
+    fixture.file(
+        "middle.def.lua",
+        "---@shape Middle:Base\n---@field [string] string\n",
+    );
+    fixture.file("leaf.def.lua", "---@class Leaf:Middle\nleaf={}\n");
+    let libraries = ["base.def.lua", "middle.def.lua", "leaf.def.lua"];
+    fixture.file(
+        "main.lua",
+        "---@type string\nlocal inherited=leaf.answer\nleaf.answer='text'\n",
+    );
+    pass(&fixture.check(&libraries));
+    fixture.file("main.lua", "leaf.answer=42\n");
+    fail(&fixture.check(&libraries), "TS2322", "main.lua:1:");
+}
+
+#[test]
+fn inherited_callback_override_checks_complete_native_result_packs_before_module_publication() {
+    let fixture = Fixture::new();
+    fixture.file(
+        "base.def.lua",
+        "---@class Base\n---@field read fun():number,string\n",
+    );
+    let invalid = "---@class Derived:Base\n---@field read fun():number\nlocal definition={}\nreturn definition\n";
+    fixture.file("derived.lua", invalid);
+    fixture.file("main.lua", "local value=require('derived')\n");
+    fail(
+        &fixture.check(&["base.def.lua"]),
+        "TS2416",
+        "derived.lua:2:",
+    );
+    fixture.file("derived.lua", "---@class Derived:Base\n---@field read fun():number,string\nlocal definition={read=function() return 42,'text' end}\nreturn definition\n");
+    fixture.file("main.lua", "local value=require('derived')\nlocal number,string=value.read()\n---@type number\nlocal n=number\n---@type string\nlocal s=string\n");
+    pass(&fixture.check(&["base.def.lua"]));
+}

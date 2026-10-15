@@ -1396,7 +1396,7 @@ impl<'p, 's> Checker<'p, 's> {
                 let shape = self.shape_memo(ty, |c| {
                     let resolved = match c.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return Shape::new_in(c.arena) };
                     let mut shape = c.members(resolved).map(|m| m.whole_shape().clone_in(c.arena)).unwrap_or_else(|| Shape::new_in(c.arena));
-                    if matches!(c.data(ty), TypeData::NativeObject(_)) {
+                    if matches!(c.data(ty), TypeData::NativeObject(_)) && shape.call.is_empty() {
                         shape.call.extend(c.native_object_call_heads(ty));
                     }
                     shape

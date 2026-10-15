@@ -1013,6 +1013,36 @@
       "patch": "vendor/patches/bun-sema-checked-class-definitions.patch",
       "reason": "Add attested original class definition values with partial actual views, checked initializer contexts and retained nominal origin, call heads, runtime table category and mapper identity without weakening complete instance requirements.",
       "patch_sha256": "97e184d7b7dcc6f4449c47260704f2c6328f6ae2670f0e4100eaf748ad951aa4"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
+      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
+      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
+      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
+      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
+      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
+      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
+      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
+      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
+      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
+      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
     }
   ],
   "source_additions": {
@@ -1037,7 +1067,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "b7127179fdc10f126df0354162c8dfaa8901ae232081389f76c7f980c408cab0",
+      "extracted_sha256": "ab6cbb7c6a39162a1bd14fb7c5f244d97591086430d551e619381e3e489f3944",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1057,7 +1087,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "0f9863f7070407ee71ae0b9de75379d5341cc69e3ed4d2010a4aa399c2446157",
+      "extracted_sha256": "6841efc251d9f8ae05bad1193fac0f6f8ca26acd46411c71841646414d9a111f",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2015,7 +2045,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "6d77b96dccd234d636a225060394097efe9711e961d5f703a66bd60c2f67b03d"
+      "extracted_sha256": "6078c89d5144fb23ba91ef0d88281922f15f40e8b7d296d1a6d06e3511a25efb"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -2040,7 +2070,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "0694e9aff8cbe7e2e9962b4b8b7ce349bdce8fcaacc171170f005cfa12b47a4d"
+      "extracted_sha256": "1470fe8a7a413e1fe804507ffd1c4e6026125ce8a38becf25de422b7ed082ebe"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -2095,7 +2125,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "bbadc030a63c511344883b1c2c26b0380dddae0f24693c2ff89ea3ea3e8ec35b"
+      "extracted_sha256": "b6234289305dffcd2774a7fe06021f0caf46235e648c260145f1fb3d90d5662b"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",

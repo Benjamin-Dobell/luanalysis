@@ -242,7 +242,6 @@ fn malformed_named_headers_and_fields_recover_at_the_next_runtime_statement() {
         "---@alias Broken<T string",
         "---@alias Bare<T:number|string> T",
         "---@alias Default<T=number> T",
-        "---@class BareBase:First|Second",
         "---@class",
         "---@class Broken<T:> :",
         "---@class Owner\n---@field [] number",

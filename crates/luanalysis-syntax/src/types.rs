@@ -175,7 +175,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                                     target: parser.union(),
                                 }
                             } else {
-                                let base = parser.take(":").map(|_| parser.primary());
+                                let base = parser.take(":").map(|_| parser.union());
                                 NamedTypeDeclarationKind::Record {
                                     flavor: match tag_name {
                                         "shape" => NamedRecordKind::Shape,

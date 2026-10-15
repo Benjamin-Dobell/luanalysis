@@ -519,6 +519,16 @@ impl<'p, 's> Checker<'p, 's> {
         self.is_assignable(source, domain) || self.is_assignable(domain, source)
     }
 
+    /// Key domains intersect constituent by constituent; neither complete union needs to be a
+    /// subtype of the other. Constraint reduction and atomic overlap reuse the native workers.
+    pub(super) fn native_table_key_domains_overlap(&mut self, source: TypeId, target: TypeId) -> bool {
+        let source = self.base_constraint_or_type(source);
+        let target = self.base_constraint_or_type(target);
+        if self.is_union(source) { return self.parts(source).iter().any(|&part| self.native_table_key_domains_overlap(part, target)) }
+        if self.is_union(target) { return self.parts(target).iter().any(|&part| self.native_table_key_domains_overlap(source, part)) }
+        self.native_table_inference_key_matches(source, target)
+    }
+
     fn native_table_access_type(&self, key: NativeTableAccessKey) -> TypeId {
         match key {
             NativeTableAccessKey::Literal(key) => self.native_table_key_type(key),
@@ -738,7 +748,7 @@ impl<'p, 's> Checker<'p, 's> {
     ) -> Ternary {
         let identity = r.relation == Relation::Identity;
         if let Some(target_origin) = target.nominal_origin {
-            if source.nominal_origin.is_none_or(|source_origin| source_origin.declaration != target_origin.declaration) {
+            if source.nominal_origin.is_none_or(|source_origin| !self.native_nominal_reference_compatible(source_origin, target_origin, identity)) {
                 return Ternary::FALSE;
             }
         } else if identity && source.nominal_origin.is_some() { return Ternary::FALSE }

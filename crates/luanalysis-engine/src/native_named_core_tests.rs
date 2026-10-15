@@ -424,7 +424,9 @@ fn native_generic_members_use_existing_mapper_once_and_constraints_defaults() {
                         LuaKey::String(b"value".to_vec()),
                         Type::NativeTypeParameter(parameter(0)),
                     ),
-                    Member::indexer(0, Type::String, Type::NativeTypeParameter(parameter(1))),
+                    // Keep the mapping probes independent: a string indexer would also constrain
+                    // the fixed 'value' member, making these deliberately different types invalid.
+                    Member::indexer(0, Type::Number, Type::NativeTypeParameter(parameter(1))),
                 ],
                 defaults: vec![None, Some(Type::Boolean)],
                 ..Provider::default()
@@ -444,7 +446,7 @@ fn native_generic_members_use_existing_mapper_once_and_constraints_defaults() {
             assert_eq!(
                 q.table_lookup(
                     &simultaneous,
-                    &TableKey::Literal(LuaKey::String(b"other".to_vec()))
+                    &TableKey::Literal(LuaKey::Integer(42))
                 )
                 .unwrap(),
                 Type::Number
@@ -455,7 +457,7 @@ fn native_generic_members_use_existing_mapper_once_and_constraints_defaults() {
             assert_eq!(
                 q.table_lookup(
                     &defaulted,
-                    &TableKey::Literal(LuaKey::String(b"other".to_vec()))
+                    &TableKey::Literal(LuaKey::Integer(42))
                 )
                 .unwrap(),
                 Type::Boolean
@@ -504,6 +506,29 @@ fn native_generic_members_use_existing_mapper_once_and_constraints_defaults() {
                     actual: Type::String,
                     expected: Type::Number,
                     ..
+                })
+            ));
+        },
+    );
+}
+
+#[test]
+fn own_fixed_members_must_satisfy_overlapping_declared_indexers() {
+    Engine::new().with_native_provider(
+        || Provider {
+            declarations: vec![Declaration::record(0, vec![0, 1])],
+            members: vec![
+                Member::field(0, LuaKey::String(b"value".to_vec()), Type::Number),
+                Member::indexer(0, Type::String, Type::Boolean),
+            ],
+            ..Provider::default()
+        },
+        |_, q| {
+            assert!(matches!(
+                q.validate_named_declaration(declaration(0)),
+                Err(NamedTypeError::Table {
+                    declaration: NativeTypeDeclarationKey { snapshot: 777, index: 0 },
+                    error: TableError::ValueType { value: Type::Number, expected: Type::Boolean },
                 })
             ));
         },
@@ -711,7 +736,7 @@ fn anonymous_alias_owner_augmentations_attach_after_canonical_head_resolution() 
 }
 
 #[test]
-fn nominal_base_visibility_and_duplicate_definitions_remain_explicit_errors() {
+fn module_visibility_and_duplicate_definitions_remain_explicit_errors() {
     Engine::new().with_native_provider(
         || {
             let mut class = Declaration::record(0, vec![]);
@@ -748,10 +773,7 @@ fn nominal_base_visibility_and_duplicate_definitions_remain_explicit_errors() {
                     TypeDeclarationKind::Module
                 ))
             );
-            assert_eq!(
-                q.validate_named_declaration(declaration(2)),
-                Err(NamedTypeError::UnsupportedBases(declaration(2)))
-            );
+            assert!(q.validate_named_declaration(declaration(2)).is_ok());
             assert_eq!(
                 q.validate_named_declaration(declaration(4)),
                 Err(NamedTypeError::UnsupportedVisibility(member(0)))

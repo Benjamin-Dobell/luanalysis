@@ -499,11 +499,11 @@ fn is_normalized_kind(data: &TypeData) -> bool {
 impl<'p, 's> Checker<'p, 's> {
     /// Atomic object comparisons enforce declaration origin inside the recursive relation worker.
     /// Composite and instantiable types still use its ordinary distribution/constraint rules.
-    fn native_nominal_objects_compatible(&self, source: TypeId, target: TypeId, relation: Relation) -> bool {
+    fn native_nominal_objects_compatible(&mut self, source: TypeId, target: TypeId, relation: Relation) -> bool {
         if !is_object_kind(self.data(source)) || !is_object_kind(self.data(target)) { return true }
         let (source, target) = (self.native_nominal_origin(source), self.native_nominal_origin(target));
         match target {
-            Some(target) => source.is_some_and(|source| source.declaration == target.declaration),
+            Some(target) => source.is_some_and(|source| self.native_nominal_reference_compatible(source, target, relation == Relation::Identity)),
             None => relation != Relation::Identity || source.is_none(),
         }
     }

@@ -439,6 +439,9 @@ impl NativeTypeProvider for ProjectRegistry {
             | NamedTypeError::AmbiguousOwner { member, .. } => member.snapshot,
             NamedTypeError::TypeArgumentArity { declaration, .. }
             | NamedTypeError::TypeArgumentConstraint { declaration, .. }
+            | NamedTypeError::InvalidBase { declaration, .. }
+            | NamedTypeError::IncompatibleOverride { declaration, .. }
+            | NamedTypeError::IncompatibleBase { declaration, .. }
             | NamedTypeError::Table { declaration, .. } => declaration.snapshot,
             NamedTypeError::TooDeep(query) => match query {
                 NamedTypeQuery::Head(key)

@@ -125,6 +125,9 @@ pub enum NamedTypeError {
     },
     CircularAlias(NativeTypeDeclarationKey),
     CircularBase(NativeTypeDeclarationKey),
+    InvalidBase { declaration: NativeTypeDeclarationKey, index: usize, base: Type },
+    IncompatibleOverride { declaration: NativeTypeDeclarationKey, member: NativeTypeMemberKey, base: Type, expected: Type, actual: Type },
+    IncompatibleBase { declaration: NativeTypeDeclarationKey, index: usize, base: Type, expected: Type, actual: Type },
     TooDeep(NamedTypeQuery),
     UnsupportedKind(NativeTypeDeclarationKey, TypeDeclarationKind),
     UnsupportedBases(NativeTypeDeclarationKey),
@@ -459,6 +462,9 @@ pub(super) fn export_error(
         NativeNamedTypeError::CircularBase(key) => {
             NamedTypeError::CircularBase(source_declaration(key))
         }
+        NativeNamedTypeError::InvalidBase { declaration, index, base } => NamedTypeError::InvalidBase { declaration: source_declaration(declaration), index, base: export_type(checker, handles, base) },
+        NativeNamedTypeError::IncompatibleOverride { declaration, member, base, expected, actual } => NamedTypeError::IncompatibleOverride { declaration: source_declaration(declaration), member: source_member(member), base: export_type(checker, handles, base), expected: export_type(checker, handles, expected), actual: export_type(checker, handles, actual) },
+        NativeNamedTypeError::IncompatibleBase { declaration, index, base, expected, actual } => NamedTypeError::IncompatibleBase { declaration: source_declaration(declaration), index, base: export_type(checker, handles, base), expected: export_type(checker, handles, expected), actual: export_type(checker, handles, actual) },
         NativeNamedTypeError::TooDeep(query) => NamedTypeError::TooDeep(match query {
             Q::DeclaredHead(key) => NamedTypeQuery::Head(source_declaration(key)),
             Q::MemberType(key) => NamedTypeQuery::Member(source_member(key)),

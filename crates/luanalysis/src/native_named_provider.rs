@@ -625,6 +625,28 @@ impl NativeRegistry {
             })
             .unwrap_or(self.file.span)
     }
+    fn named_base_origin(&self, key: NativeTypeDeclarationKey, index: usize) -> Span {
+        self.named
+            .declaration(named_key(key))
+            .and_then(|source| match &source.syntax.kind {
+                NamedTypeDeclarationKind::Record { base: Some(base), .. } if index == 0 => {
+                    Some(base.span)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| self.named_origin(key))
+    }
+    fn named_member_type_origin(&self, key: NativeTypeMemberKey) -> Span {
+        self.named
+            .member(member_key(key))
+            .map(|source| source.field.ty.span)
+            .or_else(|| {
+                self.named
+                    .anonymous_member(anonymous_member_key(key))
+                    .map(|source| source.span)
+            })
+            .unwrap_or_else(|| self.named_member_origin(key))
+    }
     pub(super) fn named_declaration_error(&self, error: NamedTypeError) {
         let (code, span, message) = match error {
             // Actual application spans are supplied by the annotation caller.
@@ -634,6 +656,26 @@ impl NativeRegistry {
                 "TS2456",
                 self.named_origin(key),
                 "Type alias circularly references itself.".into(),
+            ),
+            NamedTypeError::CircularBase(key) => (
+                "TS2310",
+                self.named_base_origin(key, 0),
+                "Type recursively references itself as a base type.".into(),
+            ),
+            NamedTypeError::InvalidBase { declaration, index, .. } => (
+                "TS2312",
+                self.named_base_origin(declaration, index),
+                "A base type must resolve to a class or shape record schema.".into(),
+            ),
+            NamedTypeError::IncompatibleOverride { member, .. } => (
+                "TS2416",
+                self.named_member_type_origin(member),
+                "Declared member is not assignable to the inherited member contract.".into(),
+            ),
+            NamedTypeError::IncompatibleBase { declaration, index, .. } => (
+                "TS2415",
+                self.named_base_origin(declaration, index),
+                "Inherited member or call signatures conflict.".into(),
             ),
             NamedTypeError::UnsupportedKind(key, kind) => (
                 "LUA2031",
@@ -790,7 +832,7 @@ impl Checker<'_> {
             [key] => *key,
             _ => {
                 self.error("TS2300", span, format!("Duplicate named type '{name}'."));
-                return Some(Type::Any);
+                return Some(self.engine.error_type());
             }
         };
         match self.engine.named_type_reference(declaration, arguments) {
@@ -804,7 +846,7 @@ impl Checker<'_> {
                     _ => span,
                 };
                 native.record_named_application_error(error, span, self.engine);
-                Some(Type::Any)
+                Some(self.engine.error_type())
             }
         }
     }
@@ -819,7 +861,7 @@ impl Checker<'_> {
                 self.native
                     .unwrap()
                     .record_named_application_error(error, ty.span, self.engine);
-                Some(Type::Any)
+                Some(self.engine.error_type())
             }
         }
     }

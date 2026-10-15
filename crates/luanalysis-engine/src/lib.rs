@@ -9,6 +9,8 @@ mod native;
 mod native_assertions;
 #[cfg(test)]
 mod native_runtime_primitive_tests;
+#[cfg(test)]
+mod native_inheritance_tests;
 mod native_flow;
 pub use native_flow::*;
 #[cfg(test)]
@@ -877,6 +879,8 @@ pub trait TypeQueries {
     ) -> CallResult;
     fn function_signature(&mut self, ty: &Type) -> Option<FunctionType>;
     fn inspect_type(&mut self, ty: &Type) -> Type;
+    /// Exact backend recovery type, preserving its error identity across the owned boundary.
+    fn error_type(&mut self) -> Type;
     fn allows_implicit_return(&mut self, returned: &Type) -> bool;
     fn aggregate_returns(
         &mut self,
@@ -1458,6 +1462,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             export_type(self.checker, self.handles, id)
         }
     }
+    fn error_type(&mut self) -> Type { self.handles.retain(TypeId::ERROR) }
     fn function_signature(&mut self, ty: &Type) -> Option<FunctionType> {
         let ty = import_type(self.checker, self.handles, ty);
         let signatures = self.checker.signatures(ty, false);

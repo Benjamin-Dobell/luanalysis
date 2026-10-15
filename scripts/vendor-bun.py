@@ -226,6 +226,13 @@ SOURCE_ADAPTATIONS.extend({
 ])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
+    "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements.",
+} for path in ["mod.rs", "native_named.rs", "native_tables.rs", "relate.rs", "shape.rs"])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

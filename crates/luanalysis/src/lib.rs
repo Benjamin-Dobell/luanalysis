@@ -536,7 +536,7 @@ impl Checker<'_> {
                             native_types::TypeNameResolution::Parameter(key)=>return Type::NativeTypeParameter(key),
                             native_types::TypeNameResolution::Ambiguous(_)=>{
                                 self.error("TS2300",ty.span,format!("Ambiguous generic parameter '{name}'."));
-                                return Type::Any;
+                                return self.engine.error_type();
                             },
                             native_types::TypeNameResolution::Missing=>{},
                         }
@@ -547,7 +547,7 @@ impl Checker<'_> {
                         ty.span,
                         format!("Cannot find name '{name}'."),
                     );
-                    Type::Any
+                    self.engine.error_type()
                 }
             },
             TypeExprKind::Union(types) => {
@@ -566,7 +566,7 @@ impl Checker<'_> {
                     .map(Type::NumberLiteral)
                     .unwrap_or_else(|| {
                         self.error("LUA2002", ty.span, "invalid numeric literal type");
-                        Type::Unknown
+                        self.engine.error_type()
                     }),
             },
             TypeExprKind::Record(fields) => self.native_table_annotation(fields, ty.span),
@@ -592,9 +592,9 @@ impl Checker<'_> {
                     _=>("TS2304",format!("Cannot find name '{}'.",base.text)),
                 };
                 self.error(code,base.span,message);
-                Type::Unknown
+                self.engine.error_type()
             }
-            TypeExprKind::Error => Type::Any,
+            TypeExprKind::Error => self.engine.error_type(),
         }
     }
 
