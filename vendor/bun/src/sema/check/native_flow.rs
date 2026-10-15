@@ -251,7 +251,9 @@ pub struct NativeIteratorProjection {
 pub trait NativeFlowProvider {
     /// Inspect a callee for identity analysis without publishing speculative
     /// source diagnostics; ordinary call checking remains a separate demand.
-    fn alias_callee_type(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> TypeId { self.value_type(value, input, checker) }
+    fn alias_value_type(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> TypeId { self.value_type(value, input, checker) }
+    /// Candidate metadata only; native value origin must attest the object.
+    fn alias_environment_candidate(&self, _: NativeValueKey, _: NativeFlowKey) -> bool { false }
     /// A lexical variable cell, rather than a slot in a mutable heap object.
     fn reference_is_cell(&self, _: NativeReferenceKey) -> bool { false }
     /// An invariant original written bound, never an inferred or narrowed view.

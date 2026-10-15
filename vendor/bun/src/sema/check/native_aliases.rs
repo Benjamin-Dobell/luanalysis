@@ -28,6 +28,7 @@ pub enum NativeAliasRelation { Same, Different, Possible }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum Origin {
+    Environment(super::native_globals::NativeEnvironmentId),
     Allocation(NativeValueKey, NativeFlowKey),
     OpaqueReference(NativeReferenceKey, NativeFlowKey),
     OpaqueValue(NativeValueKey, NativeFlowKey, usize),
@@ -192,7 +193,24 @@ impl<'p, 's> Checker<'p, 's> {
         let query = Query::NativeAliasValue(value, input, column);
         if !self.enter(query) { return Origins::unknown() }
         let begun = self.begin_memoizable();
-        let result = match provider.value_alias_source(value, input) {
+        let environment = if column == 0 && provider.alias_environment_candidate(value, input) {
+            let (origin, complete) = self.run_memoizable(|checker| {
+                let ty = provider.alias_value_type(value, input, checker);
+                let mut selected = None;
+                let unique = checker.parts(ty).iter().all(|&part| {
+                    let crate::types::TypeData::NativeTable(table) = checker.data(part) else { return false };
+                    let Some(origin) = table.environment_origin else { return false };
+                    if selected.is_some_and(|previous| previous != origin) { return false }
+                    selected = Some(origin);
+                    true
+                });
+                unique.then_some(selected).flatten()
+            });
+            if complete.is_some() && !self.is_stack_low() { origin } else { None }
+        } else { None };
+        let result = if let Some(environment) = environment {
+            Origins::one(Origin::Environment(environment), false)
+        } else { match provider.value_alias_source(value, input) {
             NativeAliasValue::Reference { reference, input } => if column == 0 { self.native_alias_reference(provider, reference, input) } else { Origins::non_table() },
             NativeAliasValue::Allocation => if column == 0 { Origins::one(Origin::Allocation(value, input), false) } else { Origins::non_table() },
             NativeAliasValue::Projection { value, input, index } => match index.checked_add(column) {
@@ -202,7 +220,7 @@ impl<'p, 's> Checker<'p, 's> {
             NativeAliasValue::Call { callee, input: callee_input } => self.native_alias_call(provider, value, input, column, callee, callee_input),
             NativeAliasValue::NotTable => Origins::non_table(),
             NativeAliasValue::Unknown => Origins::one(Origin::OpaqueValue(value, input, column), true),
-        };
+        } };
         let memoizable = self.end_memoizable(begun);
         if let Ok(stored) = self.leave(query)
             && memoizable.is_some() && !result.uncertain && !self.is_stack_low()
@@ -212,7 +230,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_alias_call(&mut self, provider: &dyn NativeFlowProvider, call: NativeValueKey, input: NativeFlowKey, column: usize, callee: NativeValueKey, callee_input: NativeFlowKey) -> Origins {
         let opaque = || Origins::one(Origin::OpaqueValue(call, input, column), true);
-        let callee_type = provider.alias_callee_type(callee, callee_input, self);
+        let callee_type = provider.alias_value_type(callee, callee_input, self);
         let Some(signature) = self.native_implementation_signature(callee_type) else { return opaque() };
         let Some((function, _)) = self.sig_native_decl(signature) else { return opaque() };
         let Some(rows) = provider.function_alias_returns(function) else { return opaque() };
@@ -232,6 +250,10 @@ impl<'p, 's> Checker<'p, 's> {
             result.uncertain |= origins.uncertain;
             result.non_table |= origins.non_table;
             for origin in origins.tokens {
+                if matches!(origin, Origin::Environment(_)) {
+                    result.tokens.insert(origin);
+                    continue;
+                }
                 if let Some(allocated) = origin.allocation_input() {
                     if allocated.graph == row.at.graph {
                         result.tokens.insert(Origin::CallAllocation(call, input, Box::new(origin)));

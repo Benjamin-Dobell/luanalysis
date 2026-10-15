@@ -1894,7 +1894,7 @@ impl NativeRegistry {
 }
 
 impl FlowValueQueries for NativeRegistry {
-    fn alias_callee_type(&self, sources:&NativeFlowSources, value:&ValueRecipe, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {
+    fn alias_value_type(&self, sources:&NativeFlowSources, value:&ValueRecipe, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {
         self.with_flow_context(input, queries, &mut |queries| {
             self.flow_value_type_in_context(sources,value,input,queries,NativeCheckMode::TYPE_ONLY)
         })
