@@ -106,7 +106,7 @@ function io.type(obj) end
 function io.write(...) end
 
 --- File object
----@class file
+---@class file : userdata
 local file = {}
 
 ---
