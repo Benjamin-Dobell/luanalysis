@@ -105,6 +105,87 @@ mod tests {
     use luanalysis_engine::{Engine, LuaKey};
 
     #[test]
+    fn printing_a_named_operand_does_not_demand_its_unrelated_member_bodies() {
+        use luanalysis_engine::{
+            NativeFunctionKey, NativeTypeDeclarationKey, NativeTypeProvider, ObjectDeclarationForm,
+            Parameter, TypeDeclarationHeader, TypeDeclarationKind,
+        };
+        const DECLARATION: NativeTypeDeclarationKey = NativeTypeDeclarationKey {
+            snapshot: 91,
+            index: 0,
+        };
+        struct NameOnly;
+        impl NativeTypeProvider for NameOnly {
+            fn contains_function(&self, _: NativeFunctionKey) -> bool {
+                false
+            }
+            fn function_parameters(
+                &self,
+                _: NativeFunctionKey,
+                _: &mut dyn TypeQueries,
+            ) -> Vec<Parameter> {
+                panic!("diagnostic printing must not query a body")
+            }
+            fn function_declared_return(
+                &self,
+                _: NativeFunctionKey,
+                _: &mut dyn TypeQueries,
+            ) -> Option<Type> {
+                panic!("diagnostic printing must not query a body")
+            }
+            fn function_inferred_return(
+                &self,
+                _: NativeFunctionKey,
+                _: &mut dyn TypeQueries,
+            ) -> Type {
+                panic!("diagnostic printing must not infer a body")
+            }
+            fn return_cycle(&self, _: NativeFunctionKey) {
+                panic!("diagnostic printing must not create a return cycle")
+            }
+            fn return_type_too_deep(&self, _: NativeFunctionKey) {
+                panic!("diagnostic printing must not create a return query")
+            }
+            fn contains_type_declaration(&self, key: NativeTypeDeclarationKey) -> bool {
+                key == DECLARATION
+            }
+            fn type_declaration_header(
+                &self,
+                _: NativeTypeDeclarationKey,
+            ) -> TypeDeclarationHeader {
+                TypeDeclarationHeader {
+                    kind: TypeDeclarationKind::Class,
+                    name: "NameOnly".into(),
+                    object_form: Some(ObjectDeclarationForm::Record),
+                    parameters: vec![],
+                    outer_parameters: vec![],
+                }
+            }
+            fn type_declaration_members(
+                &self,
+                _: NativeTypeDeclarationKey,
+            ) -> Vec<luanalysis_engine::NativeTypeMemberKey> {
+                panic!("printing a named identity must not materialize its member schema")
+            }
+        }
+        Engine::new().with_native_provider(
+            || NameOnly,
+            |_, queries| {
+                let named = queries.named_type_reference(DECLARATION, &[]).unwrap();
+                let mut report = CheckReport::default();
+                report.push_type_diagnostic(
+                    "TS2345",
+                    Span { start: 4, end: 5 },
+                    "Expected '{}'.",
+                    &[&named],
+                );
+                report.render_diagnostics(queries);
+                assert_eq!(report.diagnostics[0].message, "Expected 'NameOnly'.");
+            },
+        );
+    }
+
+    #[test]
     fn appended_opaque_operands_keep_distinct_types_and_original_diagnostic_locations() {
         Engine::new().with_session(|queries| {
             let number = queries.regular_type(&Type::NumberLiteral(1.0));
