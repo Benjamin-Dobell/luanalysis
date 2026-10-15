@@ -82,12 +82,16 @@ fn run() -> i32 {
         }
         if !positional && arg == "--lua-version" {
             let Some(version) = args.next() else {
-                return usage_error(format, "--lua-version requires a supported version (5.4)");
+                return usage_error(format, "--lua-version requires a supported version (5.0, 5.1, 5.2, 5.3 or 5.4)");
             };
-            if version != "5.4" {
-                return usage_error(format, &format!("Lua standard environment {:?} is not implemented; supported version: 5.4", version));
-            }
-            environment = StandardEnvironmentProfile::Lua54;
+            environment = match version.to_str() {
+                Some("5.0") => StandardEnvironmentProfile::Lua50,
+                Some("5.1") => StandardEnvironmentProfile::Lua51,
+                Some("5.2") => StandardEnvironmentProfile::Lua52,
+                Some("5.3") => StandardEnvironmentProfile::Lua53,
+                Some("5.4") => StandardEnvironmentProfile::Lua54,
+                _ => return usage_error(format, &format!("Lua standard environment {:?} is not implemented; supported versions: 5.0, 5.1, 5.2, 5.3, 5.4", version)),
+            };
             continue;
         }
         if !positional && arg == "--module-root" {
@@ -240,6 +244,6 @@ fn expand(path: &Path, errors: &mut Vec<HostDiagnostic>) -> Vec<PathBuf> {
 
 fn help() {
     println!(
-        "luanalysis check [--format text|json] [--dump-types] [--legacy-overloads] [--lua-version 5.4 | --no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--lua-version 5.4 selects the complete maintained Lua 5.4 declaration set.\n--no-stdlib disables standard declarations and the legacy minimal type builtin.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
+        "luanalysis check [--format text|json] [--dump-types] [--legacy-overloads] [--lua-version 5.0|5.1|5.2|5.3|5.4 | --no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--no-stdlib disables standard declarations and the legacy minimal type builtin.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
     );
 }

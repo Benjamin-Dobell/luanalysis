@@ -450,3 +450,70 @@ fn primitive_string_members_retain_original_context_inside_generic_callbacks() {
     let source = "---@generic T:string,R\n---@param value T\n---@param callback fun(value:T):R\n---@return R\nlocal function apply(value,callback) return callback(value) end\nlocal lowered=apply('WORD',function(value) return value:lower() end)\n---@type string\nlocal checked=lowered\n";
     clean(&fixture.check(source, StandardEnvironmentProfile::Lua54));
 }
+
+#[test]
+fn each_lua_version_selects_only_its_original_standard_declarations() {
+    for (profile, directory, count, has_bit32, has_utf8, has_package) in [
+        (StandardEnvironmentProfile::Lua50, "Lua50", 9, false, false, false),
+        (StandardEnvironmentProfile::Lua51, "Lua51", 10, false, false, true),
+        (StandardEnvironmentProfile::Lua52, "Lua52", 11, true, false, true),
+        (StandardEnvironmentProfile::Lua53, "Lua53", 12, true, true, true),
+        (StandardEnvironmentProfile::Lua54, "Lua54", 11, false, true, true),
+    ] {
+        let fixture = Fixture::new();
+        let report = fixture.check("local value=math.abs(-1)\nlocal text=('WORD'):lower()\n", profile);
+        clean(&report);
+        assert_eq!(report.standard_library_files.len(), count, "{profile:?}");
+        assert_eq!(report.checked_file_count(), 1, "{profile:?}");
+        let mut names = Vec::new();
+        for id in &report.standard_library_files {
+            let source = report.source(*id).unwrap();
+            assert!(matches!(source.origin, SourceOrigin::DeclarationLibrary { .. }));
+            assert_eq!(source.path.parent().unwrap(), std::path::Path::new("stdlib").join(directory));
+            names.push(source.path.file_name().unwrap().to_str().unwrap().to_owned());
+        }
+        assert_eq!(names.iter().any(|name| name == "bit32.def.lua"), has_bit32);
+        assert_eq!(names.iter().any(|name| name == "utf8.def.lua"), has_utf8);
+        assert_eq!(names.iter().any(|name| name == "package.def.lua"), has_package);
+    }
+}
+
+#[test]
+fn lua52_bit32_checks_original_arguments_and_results_without_later_api_leaks() {
+    let fixture = Fixture::new();
+    let source = "---@type number\nlocal masked=bit32.band(7,3)\n---@type number\nlocal field=bit32.extract(masked,0)\n---@type number\nlocal width=bit32.extract(masked,0,2)\n";
+    clean(&fixture.check(source, StandardEnvironmentProfile::Lua52));
+    let bad = fixture.check(&source.replace("bit32.band(7,3)", "bit32.band('wrong',3)"), StandardEnvironmentProfile::Lua52);
+    assert!(code(&bad, "TS2345"), "{:#?}", bad.files);
+    clean(&fixture.check(source, StandardEnvironmentProfile::Lua52));
+    for profile in [StandardEnvironmentProfile::Lua51, StandardEnvironmentProfile::Lua54] {
+        let missing = fixture.check("local value=bit32.band(7,3)\n", profile);
+        assert!(code(&missing, "TS2304"), "{profile:?}: {:#?}", missing.files);
+    }
+    let later = fixture.check("local value=utf8.char(65)\n", StandardEnvironmentProfile::Lua52);
+    assert!(code(&later, "TS2304"), "{:#?}", later.files);
+}
+
+#[test]
+fn lua52_selected_original_type_and_string_capabilities_keep_checked_contracts() {
+    let fixture = Fixture::new();
+    clean(&fixture.check(TYPE_GUARD, StandardEnvironmentProfile::Lua52));
+    let source = "---@type string\nlocal lowered=('WORD'):lower()\n";
+    clean(&fixture.check(source, StandardEnvironmentProfile::Lua52));
+    let wrong = fixture.check(&source.replace("---@type string", "---@type number"), StandardEnvironmentProfile::Lua52);
+    assert!(code(&wrong, "TS2322"), "{:#?}", wrong.files);
+}
+
+#[test]
+fn cli_selects_lua52_bit32_and_accepts_the_corrected_original_source() {
+    let fixture = Fixture::new();
+    fixture.file("main.lua", "local value=bit32.band('wrong',3)\n");
+    let bad = fixture.cli(&["--lua-version", "5.2", "main.lua"]);
+    assert_eq!(bad.status.code(), Some(1), "{bad:?}");
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("TS2345"), "{bad:?}");
+    fixture.file("main.lua", "---@type number\nlocal value=bit32.band(7,3)\n");
+    let corrected = fixture.cli(&["--lua-version", "5.2", "main.lua"]);
+    assert_eq!(corrected.status.code(), Some(0), "{corrected:?}");
+    let unsupported = fixture.cli(&["--lua-version", "5.5", "main.lua"]);
+    assert_eq!(unsupported.status.code(), Some(2));
+}

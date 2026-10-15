@@ -208,7 +208,7 @@ impl ProjectRegistry {
             if let Some(capability) = standard_environment.type_operation {
                 file.source.set_original_type_operation(capability);
             }
-            if environment_profile == StandardEnvironmentProfile::Lua54 {
+            if environment_profile.is_full_lua() {
                 for &declaration in &standard_environment.rejected_assert_declarations {
                     if declaration.snapshot == file.source.snapshot {
                         file.source.reject_untrusted_standard_assert(declaration);

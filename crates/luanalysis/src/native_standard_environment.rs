@@ -29,7 +29,7 @@ impl ProjectStandardEnvironment {
         files: impl Iterator<Item = (StandardLibrarySource, &'a NativeRegistry)>,
     ) -> Self {
         let mut result = Self {
-            assume_unknown_effects: matches!(profile, StandardEnvironmentProfile::LegacyMinimal | StandardEnvironmentProfile::Lua54),
+            assume_unknown_effects: profile.is_selected_standard(),
             string_library: None,
             type_operation: None,
             assert_operations: Vec::new(),
@@ -37,7 +37,7 @@ impl ProjectStandardEnvironment {
             setmetatable_operation: None,
             rejected_assert_declarations: Vec::new(),
         };
-        if !matches!(profile, StandardEnvironmentProfile::LegacyMinimal | StandardEnvironmentProfile::Lua54) {
+        if !profile.is_selected_standard() {
             return result;
         }
         for (kind, source) in files {
@@ -46,7 +46,7 @@ impl ProjectStandardEnvironment {
             }
             match profile {
                 StandardEnvironmentProfile::LegacyMinimal if kind != StandardLibrarySource::LegacyRequire => continue,
-                StandardEnvironmentProfile::Lua54 if kind == StandardLibrarySource::LegacyRequire => continue,
+                _ if profile.is_full_lua() && kind == StandardLibrarySource::LegacyRequire => continue,
                 _ => {},
             }
             if let Some((capabilities, other_owners)) = source.original_standard_function("require") {
