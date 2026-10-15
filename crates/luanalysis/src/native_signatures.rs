@@ -455,6 +455,12 @@ impl NativeSignatures {
             };
             let key=result.insert(SignatureOwner::Standalone,context,None,&declaration.signature,declaration.span,declaration.group_span);
             result.recipes[key.index as usize].documentation=Some(declaration.id);
+            result.recipes[key.index as usize].header.has_direct_literal_parameter |= declaration.signature.params.iter().any(|parameter| {
+                parameter.ty.as_ref().or_else(||declaration.annotations.params.iter().find(|tag|tag.name.text==parameter.name.text).map(|tag|&tag.ty)).is_some_and(|ty| {
+                    let ty=ty.value_syntax();
+                    matches!(ty.kind,TypeExprKind::Literal(_)) || matches!(&ty.kind,TypeExprKind::Named(name) if name=="nil")
+                })
+            });
             result.documentation.insert(declaration.id,key);
             let context=Some(NativeTypeContext::Signature(key));
             for generic in &declaration.annotations.generics { if let Some(ty)=&generic.constraint { result.visit_type(SignatureOwner::Standalone,context,Some(key),ty); } }

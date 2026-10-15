@@ -353,3 +353,31 @@ fn alias_colon_owner_never_uses_error_type_as_a_valid_receiver_contract() {
     );
     clean(&direct.replace("box.read('wrong receiver')", "box:read()"));
 }
+
+#[test]
+fn long_form_bodyless_literal_heads_keep_native_overload_priority() {
+    let source = "---@param value string\n---@return number\n---@function choose(value)\n\n---@param value \"literal\"\n---@return string\n---@function choose(value)\nlocal special=choose('literal')\nlocal ordinary=choose('other')\n";
+    let report = clean(source);
+    assert_eq!(
+        report.type_at(source.find("special=").unwrap()),
+        Some("string")
+    );
+    assert_eq!(
+        report.type_at(source.find("ordinary=").unwrap()),
+        Some("number")
+    );
+}
+
+#[test]
+fn foreign_doc_members_capture_original_enclosing_generic_scopes() {
+    let fixture = Fixture::new();
+    fixture.file("member.def.lua", "---@function Captured:read():{value:T}\n");
+    fixture.file("main.lua","---@generic T\n---@param value T\nlocal function make(value)\n ---@class Captured\n local Captured={}\n ---@type Captured\n local instance\n local result=instance:read()\n return result.value\nend\nlocal count=make(1)\nlocal text=make('x')\n");
+    let result = fixture.run(&["--library", "member.def.lua", "main.lua"]);
+    assert_eq!(result.status.code(), Some(0), "{}", output(&result));
+    assert!(
+        output(&result).contains("count: number") && output(&result).contains("text: string"),
+        "{}",
+        output(&result)
+    );
+}
