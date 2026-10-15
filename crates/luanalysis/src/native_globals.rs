@@ -13,6 +13,10 @@ use luanalysis_project::SourceRole;
 use luanalysis_syntax::{ExprKind, File, Name, Span, StmtKind, TypeExpr};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+#[path = "native_namespace_members.rs"]
+mod namespace;
+use namespace::NamespaceTarget;
+
 pub(super) struct GlobalDeclarationSource {
     pub key: NativeValueDeclarationKey,
     pub name: Name,
@@ -21,6 +25,7 @@ pub(super) struct GlobalDeclarationSource {
     pub function: Option<NativeFunctionKey>,
     pub initializer: Option<NativeExpressionKey>,
     pub expanded_initializer: bool,
+    pub namespace: Option<NamespaceTarget>,
 }
 
 pub(super) struct NativeGlobals {
@@ -29,12 +34,19 @@ pub(super) struct NativeGlobals {
 }
 
 impl NativeGlobals {
+    pub(super) fn member_namespace_end(&self, start: u32) -> u32 {
+        self.declarations.iter().filter_map(|source| source.namespace.as_ref())
+            .map(|target| target.member.index.checked_add(1).expect("namespace member identities fit u32"))
+            .max().unwrap_or(start)
+    }
+
     pub(super) fn new(
         snapshot: u64,
         file: &File,
         bound: &BoundFile,
         functions: &HashMap<(usize, usize), u32>,
         expressions: &super::NativeExpressions,
+        member_start: u32,
     ) -> Self {
         let mut result = Self {
             declarations: Vec::new(),
@@ -88,6 +100,7 @@ impl NativeGlobals {
                                             | ExprKind::Vararg
                                     )
                                 }),
+                            namespace: None,
                         });
                     }
                 }
@@ -96,13 +109,23 @@ impl NativeGlobals {
                     function,
                     method_span: None,
                 } => {
-                    let ExprKind::Name(name) = &target.kind else {
+                    let Some((name, namespace)) = namespace::declaration_target(
+                        target,
+                        snapshot,
+                        member_start,
+                        result
+                            .declarations
+                            .iter()
+                            .filter(|source| source.namespace.is_some())
+                            .count(),
+                    ) else {
                         result.unsupported.push(target.span);
                         continue;
                     };
-                    if bound.binding_at(name.span.start).is_some()
-                        || matches!(name.text.as_str(), "_G" | "_ENV")
-                        || nonstandard_environment(bound, name.span.start)
+                    let root = namespace.as_ref().map_or(&name, |target| &target.root);
+                    if bound.binding_at(root.span.start).is_some()
+                        || matches!(root.text.as_str(), "_G" | "_ENV")
+                        || nonstandard_environment(bound, root.span.start)
                     {
                         result.unsupported.push(target.span);
                         continue;
@@ -113,7 +136,7 @@ impl NativeGlobals {
                     };
                     result.declarations.push(GlobalDeclarationSource {
                         key,
-                        name: name.clone(),
+                        name,
                         statement: statement.span,
                         annotation: None,
                         function: Some(NativeFunctionKey {
@@ -122,6 +145,7 @@ impl NativeGlobals {
                         }),
                         initializer: None,
                         expanded_initializer: false,
+                        namespace,
                     });
                 }
                 _ => result.unsupported.push(statement.span),
@@ -149,6 +173,9 @@ impl ProjectGlobalIndex {
         for source in sources {
             let mut introduced = HashSet::new();
             for declaration in &source.globals.declarations {
+                if declaration.namespace.is_some() {
+                    continue;
+                }
                 let explicit = source.is_global_contract_owner(declaration);
                 let first = introduced.insert(&declaration.name.text);
                 if !explicit && !first {
@@ -226,7 +253,9 @@ impl NativeRegistry {
                 SourceRole::Implementation => GlobalSourceRole::Implementation,
                 SourceRole::Declaration => GlobalSourceRole::Declaration,
             },
-            kind: if source.function.is_some() {
+            kind: if source.namespace.is_some() {
+                GlobalValueKind::Member
+            } else if source.function.is_some() {
                 GlobalValueKind::Function
             } else {
                 GlobalValueKind::Variable
@@ -374,6 +403,10 @@ impl NativeRegistry {
             return;
         };
         let (code, message) = match error {
+            GlobalQueryError::InvalidPrimitiveMemberNamespace { .. } => (
+                "LUA2035",
+                format!("Selected primitive string namespace global '{}' must declare an original table or object contract.", source.name.text),
+            ),
             GlobalQueryError::MissingDeclarationContract(_) => (
                 "LUA2035",
                 format!(
@@ -425,6 +458,12 @@ impl NativeRegistry {
                 for parameter in self.function_type_parameters(function, queries) {
                     queries.type_parameter_constraint(parameter);
                 }
+            }
+            if source.namespace.is_some() {
+                if self.source_role() == SourceRole::Declaration {
+                    self.check_namespace_declaration(source, queries);
+                }
+                continue;
             }
             // Demand each selected binding, including declarations never read by
             // implementation code. The backend owns duplicate compatibility.

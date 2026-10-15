@@ -5,6 +5,7 @@ use super::{NativeRegistry, NativeTypeProvider};
 use crate::bind::BoundFile;
 use crate::project_check::FileCheckReport;
 use crate::{CheckReport, Diagnostic};
+use crate::standard_environment::{StandardEnvironmentProfile, StandardLibrarySource};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NamedTypeError, NamedTypeQuery,
     NativeBindingKey, NativeCheckMode, NativeExpressionKey, NativeFunctionKey, NativeSignatureKey, SignatureHeader,
@@ -23,6 +24,7 @@ use std::rc::Rc;
 pub(crate) struct RegistryInput {
     pub id: FileId,
     pub role: SourceRole,
+    pub standard_library: Option<StandardLibrarySource>,
     pub syntax: File,
     pub bound: BoundFile,
 }
@@ -40,6 +42,7 @@ impl ProjectNamedIndex {
 struct FileRegistry {
     id: FileId,
     role: SourceRole,
+    standard_library: Option<StandardLibrarySource>,
     source: NativeRegistry,
 }
 
@@ -48,6 +51,7 @@ pub(crate) struct ProjectRegistry {
     snapshots: HashMap<u64, usize>,
     names: Rc<ProjectNamedIndex>,
     globals: Rc<super::globals::ProjectGlobalIndex>,
+    standard_environment: super::standard::ProjectStandardEnvironment,
 }
 
 impl ProjectRegistry {
@@ -56,10 +60,20 @@ impl ProjectRegistry {
         Self::new_with_modules(inputs, Vec::new(), NativeLoaderPolicy::Lua54StandardFile)
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_modules(
         inputs: Vec<RegistryInput>,
         dependencies: Vec<Dependency>,
         policy: NativeLoaderPolicy,
+    ) -> Self {
+        Self::new_with_environment(inputs, dependencies, policy, StandardEnvironmentProfile::LegacyMinimal)
+    }
+
+    pub(crate) fn new_with_environment(
+        inputs: Vec<RegistryInput>,
+        dependencies: Vec<Dependency>,
+        policy: NativeLoaderPolicy,
+        environment_profile: StandardEnvironmentProfile,
     ) -> Self {
         let mut snapshots = HashMap::new();
         let mut names = ProjectNamedIndex::default();
@@ -83,6 +97,7 @@ impl ProjectRegistry {
                 FileRegistry {
                     id: input.id,
                     role: input.role,
+                    standard_library: input.standard_library,
                     source,
                 }
             })
@@ -147,18 +162,42 @@ impl ProjectRegistry {
             }
         }
         let modules = Rc::new(ProjectModuleIndex { policy, imports });
-        let legacy_builtins = if files.iter().any(|file| {
+        let type_replaced = files.iter().any(|file| {
             file.role == SourceRole::Implementation && file.source.bound.has_modified_type_intrinsic()
-        }) {
+        });
+        let assert_replaced = files.iter().any(|file| {
+            file.role == SourceRole::Implementation && file.source.bound.has_modified_assert_intrinsic()
+        });
+        let legacy_builtins = if environment_profile != StandardEnvironmentProfile::LegacyMinimal || type_replaced {
             crate::builtins::LegacyBuiltinPolicy::Disabled
         } else {
             crate::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility
         };
+        // Every original registry receives the shared selected namespace before
+        // immutable capability ownership is inspected.
+        for file in &mut files { file.source.project_globals = Some(Rc::clone(&globals)); }
+        let standard_environment = super::standard::ProjectStandardEnvironment::new(
+            environment_profile,
+            files.iter().filter_map(|file| file.standard_library.map(|kind| (kind, &file.source))),
+            type_replaced,
+            assert_replaced,
+        );
         for file in &mut files {
             file.source.project_names = Some(Rc::clone(&names));
             file.source.project_modules = Some(Rc::clone(&modules));
             file.source.project_globals = Some(Rc::clone(&globals));
             file.source.set_legacy_builtin_policy(legacy_builtins);
+            if let Some(capability) = standard_environment.type_operation {
+                file.source.set_original_type_operation(capability);
+            }
+            if environment_profile == StandardEnvironmentProfile::Lua54 {
+                file.source.reject_modified_standard_assert();
+                for &declaration in &standard_environment.rejected_assert_declarations {
+                    if declaration.snapshot == file.source.snapshot {
+                        file.source.reject_untrusted_standard_assert(declaration);
+                    }
+                }
+            }
             for declaration in file.source.named.declarations() {
                 if names.candidates(&declaration.syntax.name.text).len() > 1 {
                     file.source
@@ -181,6 +220,7 @@ impl ProjectRegistry {
             snapshots,
             names,
             globals,
+            standard_environment,
         }
     }
 
@@ -275,6 +315,21 @@ macro_rules! dispatch {
 }
 
 impl NativeTypeProvider for ProjectRegistry {
+    fn signature_intrinsic(&self, signature: luanalysis_engine::NativeSignatureKey) -> Option<luanalysis_engine::NativeIntrinsicSite> {
+        let original = self.standard_environment.assert_operation?;
+        (original.signature == signature).then_some(luanalysis_engine::NativeIntrinsicSite {
+            binding: original.binding,
+            declaration: original.declaration,
+            kind: luanalysis_engine::NativeIntrinsicKind::Assert,
+        })
+    }
+    // The selected initial namespace is independent of current lexical names.
+    fn primitive_member_environment(&self) -> Option<luanalysis_engine::NativeEnvironmentKey> {
+        self.standard_environment.string_library.map(|binding| binding.environment)
+    }
+    fn primitive_member_binding(&self, environment: luanalysis_engine::NativeEnvironmentKey, _: luanalysis_engine::NativePrimitiveMemberKind) -> Option<luanalysis_engine::NativeGlobalBindingKey> {
+        self.standard_environment.string_library.filter(|binding| binding.environment == environment)
+    }
     fn contains_global_environment(&self, key: luanalysis_engine::NativeEnvironmentKey) -> bool {
         key == self.globals.environment
     }
@@ -300,7 +355,8 @@ impl NativeTypeProvider for ProjectRegistry {
         let mut declarations = super::globals::query_declarations(&error);
         if let luanalysis_engine::GlobalQueryError::CircularQuery(luanalysis_engine::GlobalQuery::GlobalBinding(binding))
         | luanalysis_engine::GlobalQueryError::TooDeep(luanalysis_engine::GlobalQuery::GlobalBinding(binding))
-        | luanalysis_engine::GlobalQueryError::UnresolvedQuery(luanalysis_engine::GlobalQuery::GlobalBinding(binding)) = &error {
+        | luanalysis_engine::GlobalQueryError::UnresolvedQuery(luanalysis_engine::GlobalQuery::GlobalBinding(binding))
+        | luanalysis_engine::GlobalQueryError::InvalidPrimitiveMemberNamespace { binding, .. } = &error {
             declarations.extend(self.globals.declarations(*binding));
         }
         for key in declarations {
@@ -536,6 +592,7 @@ mod tests {
                 index,
             },
             role: SourceRole::Implementation,
+            standard_library: None,
             syntax,
             bound,
         }

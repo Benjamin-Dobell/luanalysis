@@ -103,6 +103,8 @@ pub struct BoundFile {
     intrinsic_occurrences: Vec<IntrinsicOccurrence>,
     modified_module_environment: bool,
     modified_type_intrinsic: bool,
+    modified_assert_intrinsic: bool,
+    assert_intrinsic_mutations: Vec<Span>,
 }
 
 impl BoundFile {
@@ -172,6 +174,14 @@ impl BoundFile {
         self.modified_type_intrinsic
     }
 
+    pub fn has_modified_assert_intrinsic(&self) -> bool {
+        self.modified_assert_intrinsic
+    }
+
+    pub fn assert_intrinsic_mutations(&self) -> &[Span] {
+        &self.assert_intrinsic_mutations
+    }
+
     pub fn scope_at(&self, byte_offset: usize) -> Option<ScopeId> {
         if let Some(occurrence) = self.occurrence_at(byte_offset) {
             return Some(occurrence.scope);
@@ -200,6 +210,8 @@ pub fn bind(file: &File) -> BoundFile {
             intrinsic_occurrences: Vec::new(),
             modified_module_environment: false,
             modified_type_intrinsic: false,
+            modified_assert_intrinsic: false,
+            assert_intrinsic_mutations: Vec::new(),
         },
         active: Vec::new(),
     };
@@ -460,8 +472,12 @@ impl Binder {
         if self.modifies_module_environment(expression) {
             self.file.modified_module_environment = true;
         }
-        if self.modifies_type_intrinsic(expression) {
+        if self.modifies_standard_intrinsic(expression, "type") {
             self.file.modified_type_intrinsic = true;
+        }
+        if self.modifies_standard_intrinsic(expression, "assert") {
+            self.file.modified_assert_intrinsic = true;
+            self.file.assert_intrinsic_mutations.push(expression.span);
         }
         match &expression.kind {
             ExprKind::Name(name) => self.name(name, OccurrenceKind::Write),
@@ -483,25 +499,25 @@ impl Binder {
         self.global_path_modifies_module_environment(root, &keys)
     }
 
-    fn modifies_type_intrinsic(&self, expression: &Expr) -> bool {
+    fn modifies_standard_intrinsic(&self, expression: &Expr, intrinsic: &str) -> bool {
         let mut keys = Vec::new();
         let Some(root) = access_path(expression, &mut keys) else { return false; };
-        self.global_path_modifies_type_intrinsic(root, &keys)
+        self.global_path_modifies_standard_intrinsic(root, &keys, intrinsic)
     }
 
-    fn global_path_modifies_type_intrinsic(&self, root: &Name, keys: &[Option<&[u8]>]) -> bool {
+    fn global_path_modifies_standard_intrinsic(&self, root: &Name, keys: &[Option<&[u8]>], intrinsic: &str) -> bool {
         if self.resolve("_ENV").is_some() || self.resolve(&root.text).is_some() {
             return false;
         }
+        if root.text == intrinsic { return keys.is_empty(); }
         match root.text.as_str() {
-            "type" => keys.is_empty(),
             "_ENV" | "_G" if keys.is_empty() => true,
-            "_G" | "_ENV" => matches!(keys, [None] | [Some(b"type")]),
+            "_G" | "_ENV" => matches!(keys, [None]) || matches!(keys, [Some(key)] if *key == intrinsic.as_bytes()),
             _ => false,
         }
     }
 
-    fn call_modifies_type_intrinsic(&self, callee: &Expr, args: &[Expr]) -> bool {
+    fn call_modifies_standard_intrinsic(&self, callee: &Expr, args: &[Expr], intrinsic: &str) -> bool {
         let mut keys = Vec::new();
         let Some(root) = access_path(callee, &mut keys) else { return false; };
         if self.resolve("_ENV").is_some() || self.resolve(&root.text).is_some() {
@@ -513,7 +529,7 @@ impl Binder {
         let mut target_keys = Vec::new();
         let Some(target) = access_path(&args[0], &mut target_keys) else { return false; };
         target_keys.push(string_key(&args[1]));
-        self.global_path_modifies_type_intrinsic(target, &target_keys)
+        self.global_path_modifies_standard_intrinsic(target, &target_keys, intrinsic)
     }
 
     fn global_path_modifies_module_environment(&self, root: &Name, keys: &[Option<&[u8]>]) -> bool {
@@ -593,8 +609,12 @@ impl Binder {
                 if self.call_modifies_module_environment(callee, args) {
                     self.file.modified_module_environment = true;
                 }
-                if self.call_modifies_type_intrinsic(callee, args) {
+                if self.call_modifies_standard_intrinsic(callee, args, "type") {
                     self.file.modified_type_intrinsic = true;
+                }
+                if self.call_modifies_standard_intrinsic(callee, args, "assert") {
+                    self.file.modified_assert_intrinsic = true;
+                    self.file.assert_intrinsic_mutations.push(expression.span);
                 }
                 self.expression(callee);
                 for argument in args {

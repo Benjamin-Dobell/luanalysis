@@ -110,6 +110,7 @@ fn lua54_loader_data_rows_are_separate_from_discarded_chunk_results() {
         )),
         ProjectCheckOptions {
             loader_policy: NativeLoaderPolicy::Lua53StandardFile,
+            ..ProjectCheckOptions::default()
         },
     );
     clean(&old);

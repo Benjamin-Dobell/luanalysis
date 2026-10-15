@@ -88,6 +88,9 @@ pub(super) struct NativeRegistry {
     report: RefCell<CheckReport>,
 }
 
+#[path = "native_standard_environment.rs"]
+pub(crate) mod standard;
+
 impl NativeRegistry {
     pub(super) fn new(file: File, bound: BoundFile) -> Self {
         let snapshot = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
@@ -155,8 +158,8 @@ impl NativeRegistry {
             expressions.key_for_span(expression.span)
         });
         let flow = NativeFlowSources::new(&file, &bound, snapshot, &function_spans);
-        let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions);
-        let members = super::native_members::NativeMembers::new(snapshot, &named, Vec::new());
+        let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
+        let members = super::native_members::NativeMembers::new(snapshot, &named, Vec::new(), globals.member_namespace_end(named.next_member_index()));
         let mut report = CheckReport::default();
         report
             .diagnostics
@@ -215,7 +218,7 @@ impl NativeRegistry {
     pub(super) fn rebuild_original_members(&mut self) {
         let mut inputs = self.original_constructor_member_inputs();
         inputs.extend(self.methods.original_members());
-        self.members = super::native_members::NativeMembers::new(self.snapshot, &self.named, inputs);
+        self.members = super::native_members::NativeMembers::new(self.snapshot, &self.named, inputs, self.globals.member_namespace_end(self.named.next_member_index()));
         for (context, owner) in self.original_member_owner_scopes() {
             self.types.attach_owner_scope(context, owner);
         }
@@ -1740,6 +1743,15 @@ impl NativeRegistry {
             }
             _ => return NativeCallEffects::None,
         };
+        if let Some(intrinsic) = checker.engine.function_intrinsic(&callee) {
+            let effects = if checker.incomplete_flow { NativeCallEffects::None } else {
+                match intrinsic.kind {
+                    luanalysis_engine::NativeIntrinsicKind::Assert => sources.assertion_call_effect(evaluation, input),
+                }
+            };
+            if !checker.incomplete_flow { self.merge_flow_report(input, checker.check_mode, checker.report); }
+            return effects;
+        }
         // Reachability must not demand the inferred result of an unused call:
         // that result can recursively depend on the current function. An
         // explicit nonreturning contract is sufficient for this flow effect.

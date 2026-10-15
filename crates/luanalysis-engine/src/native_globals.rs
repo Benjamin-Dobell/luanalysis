@@ -18,6 +18,10 @@ pub struct NativeValueDeclarationKey {
     pub snapshot: u64,
     pub index: u32,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NativePrimitiveMemberKind {
+    String,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GlobalSourceRole {
     Implementation,
@@ -45,6 +49,10 @@ pub enum GlobalQueryError {
     InvalidEnvironment(NativeEnvironmentKey),
     InvalidBinding(NativeGlobalBindingKey),
     InvalidDeclaration(NativeValueDeclarationKey),
+    InvalidPrimitiveMemberNamespace {
+        binding: NativeGlobalBindingKey,
+        kind: NativePrimitiveMemberKind,
+    },
     MissingDeclarationContract(NativeValueDeclarationKey),
     ConflictingDeclarations {
         binding: NativeGlobalBindingKey,
@@ -113,6 +121,12 @@ fn error(error: core::NativeGlobalQueryError) -> GlobalQueryError {
         core::NativeGlobalQueryError::InvalidDeclaration(key) => {
             GlobalQueryError::InvalidDeclaration(declaration(key))
         }
+        core::NativeGlobalQueryError::InvalidPrimitiveMemberNamespace { binding: key, kind } => {
+            GlobalQueryError::InvalidPrimitiveMemberNamespace {
+                binding: binding(key),
+                kind: match kind { core::NativePrimitiveMemberKind::String => NativePrimitiveMemberKind::String },
+            }
+        }
         core::NativeGlobalQueryError::MissingDeclarationContract(key) => {
             GlobalQueryError::MissingDeclarationContract(declaration(key))
         }
@@ -134,6 +148,13 @@ fn error(error: core::NativeGlobalQueryError) -> GlobalQueryError {
 }
 
 impl<P: NativeTypeProvider> core::NativeGlobalsProvider for ProviderAdapter<'_, P> {
+    fn primitive_member_environment(&self) -> Option<core::NativeEnvironmentId> {
+        self.provider.primitive_member_environment().map(core_environment)
+    }
+    fn primitive_member_binding(&self, key: core::NativeEnvironmentId, kind: core::NativePrimitiveMemberKind) -> Option<core::NativeGlobalBindingId> {
+        let kind = match kind { core::NativePrimitiveMemberKind::String => NativePrimitiveMemberKind::String };
+        self.provider.primitive_member_binding(environment(key), kind).map(core_binding)
+    }
     fn contains_global_environment(&self, key: core::NativeEnvironmentId) -> bool {
         self.provider.contains_global_environment(environment(key))
     }

@@ -600,10 +600,21 @@ impl<'p, 's> Checker<'p, 's> {
                         });
                     }
                 } else if let Some((index, source, target)) = self.resolved_signature_argument_error(
-                    failed, args, Relation::Assignable, CheckMode::empty(),
+                    failed, args, Relation::Assignable, CheckMode::empty(), None,
                 ) {
                     errors.push(ResolvedTypeCallError::Argument { index, source, target });
                 }
+            }
+        }
+        if errors.is_empty() {
+            match self.native_intrinsic_result_pack(selected, args, expected_return, expected_result_pack) {
+                Ok(Some(pack)) => {
+                    let ret = self.native_pack_slot(pack, 0);
+                    let sig = self.types().intern_sig(SigData::WithNativeResultPack { sig: selected, pack });
+                    return ResolvedTypeCall { sig: Some(sig), ret, errors };
+                }
+                Ok(None) => {}
+                Err(error) => return ResolvedTypeCall { sig: None, ret: TypeId::ERROR, errors: vec![error] },
             }
         }
         ResolvedTypeCall { sig: Some(selected), ret: self.sig_return(selected), errors }
@@ -1149,7 +1160,10 @@ impl<'p, 's> Checker<'p, 's> {
         let args = s.args;
         if matches!(s.site, CallSite::Native { .. }) {
             if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(params).is_some() {
-                return self.native_argument_pack_has_correct_arity(args, params);
+                // Intrinsic identity results need a contextual final demand.
+                // Physical-count probing cannot publish an earlier untyped facet.
+                let mode = if !s.candidates.is_empty() && s.candidates.iter().all(|&sig| self.native_intrinsic_site(sig).is_some()) { CheckMode::TYPE_ONLY } else { CheckMode::empty() };
+                return self.native_argument_pack_has_correct_arity(args, params, mode);
             }
             return self.has_correct_arity_for_count(params, matches!(params, List::Own(_)), args.len(), None, false);
         }
@@ -2031,6 +2045,20 @@ impl<'p, 's> Checker<'p, 's> {
                 CallSite::Ts { file, .. } => self.spread_argument_type(file, args, arg_count, rest, Some(context), check_mode),
                 CallSite::Native { .. } => self.native_argument_sequence_type(args, arg_count, rest, Some(context), check_mode),
             };
+            if matches!(s.site, CallSite::Native { .. }) {
+                // A Lua expansion supplies physical fixed arguments too. Infer
+                // each covered position once from its native pack projection,
+                // rather than distributing correlated rows into unrelated T candidates.
+                let fixed = params.iter().position(|parameter| parameter.rest).unwrap_or(params.len());
+                for index in arg_count..fixed {
+                    if let Some(parameter) = self.param_type_at(&params, index)
+                        && self.could_contain_type_variables(parameter)
+                    {
+                        let argument = self.native_pack_slot(NativeResultPack { ty: spread_type }, index - arg_count);
+                        self.infer(context, argument, parameter, 0);
+                    }
+                }
+            }
             self.infer(context, spread_type, rest, 0);
         }
         self.inference_mapper(context)

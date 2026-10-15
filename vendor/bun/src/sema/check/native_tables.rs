@@ -598,6 +598,11 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub fn native_table_read(&mut self, table: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
+        // Lua dot/index reads and colon calls share the initial primitive
+        // namespace and preserve its original member/signature capability.
+        if let Ok(NativeTableAccessKey::Literal(NativeTableKey::String(name))) = self.native_table_access(key)
+            && let Some(member) = self.native_primitive_property(table, name)
+        { return member.ok_or(NativeTableError::MissingKey { key }); }
         let table = self.native_runtime_carrier(table);
         if let Some(reference) = self.native_definition_ref(table) { return self.native_definition_member_read(reference, table, key) }
         if let TypeData::NativeObject(reference) = *self.data(table) {

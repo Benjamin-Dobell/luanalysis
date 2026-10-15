@@ -206,12 +206,8 @@ impl SessionQueries<'_, '_, '_> {
         function: &Type,
     ) -> Option<Type> {
         let function = import_type(self.checker, self.handles, function);
-        let signatures = self.checker.signatures(function, false);
-        if signatures.len() != 1 {
-            return None;
-        }
         self.checker
-            .sig_declared_scalar_return(signatures[0])
+            .native_callable_declared_scalar_return(function)
             .map(|ty| export_type(self.checker, self.handles, ty))
     }
     fn import_arguments(

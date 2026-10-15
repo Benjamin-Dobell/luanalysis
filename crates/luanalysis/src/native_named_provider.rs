@@ -260,7 +260,8 @@ impl NativeRegistry {
             || self.named.anonymous_head(anonymous_key(key)).is_some()
     }
     pub(super) fn named_contains_member(&self, key: NativeTypeMemberKey) -> bool {
-        self.members.get(key).is_some() || self.named.member(member_key(key)).is_some()
+        self.members.get(key).is_some() || self.namespace_contains_member(key)
+            || self.named.member(member_key(key)).is_some()
             || self
                 .named
                 .anonymous_member(anonymous_member_key(key))
@@ -373,6 +374,7 @@ impl NativeRegistry {
     }
     pub(super) fn named_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
         if let Some(header) = self.original_member_header(key) { return header; }
+        if let Some(header) = self.namespace_member_header(key) { return header; }
         if let Some(source) = self.named.member(member_key(key)) {
             return TypeMemberHeader {
                 owner: match &source.owner {
@@ -444,6 +446,7 @@ impl NativeRegistry {
                 .flat_map(|source| source.members.iter().copied())
                 .map(member),
         );
+        result.extend(self.namespace_members_for(key));
         result
     }
     pub(crate) fn named_annotation(
@@ -489,6 +492,7 @@ impl NativeRegistry {
         queries: &mut dyn TypeQueries,
     ) -> Type {
         if let Some(ty) = self.original_member_type(key, queries) { return ty; }
+        if let Some(ty) = self.namespace_member_type(key, queries) { return ty; }
         if let Some(source) = self.named.member(member_key(key)) {
             return self.named_annotation(
                 source.lexical_context,
@@ -614,6 +618,7 @@ impl NativeRegistry {
             .unwrap_or(self.file.span)
     }
     fn named_member_origin(&self, key: NativeTypeMemberKey) -> Span {
+        if let Some(span) = self.namespace_member_origin(key) { return span; }
         self.named
             .member(member_key(key))
             .map(|source| {

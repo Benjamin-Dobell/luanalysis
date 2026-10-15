@@ -17,6 +17,28 @@ pub struct NativeSignatureKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NativeIntrinsicKind { Assert }
+
+/// Trusted operation identity attached to an original written signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct NativeIntrinsicSite {
+    pub binding: super::NativeGlobalBindingKey,
+    pub declaration: super::NativeValueDeclarationKey,
+    pub kind: NativeIntrinsicKind,
+}
+
+pub(super) fn source_intrinsic_site(site: bun_sema::check::native_intrinsics::NativeIntrinsicSite) -> NativeIntrinsicSite {
+    NativeIntrinsicSite {
+        binding: super::NativeGlobalBindingKey {
+            environment: super::NativeEnvironmentKey { snapshot: site.binding.environment.snapshot, index: site.binding.environment.index },
+            index: site.binding.index,
+        },
+        declaration: super::NativeValueDeclarationKey { snapshot: site.declaration.snapshot, index: site.declaration.index },
+        kind: match site.kind { bun_sema::check::native_intrinsics::NativeIntrinsicKind::Assert => NativeIntrinsicKind::Assert },
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SignatureOwner {
     Standalone,
     Function(NativeFunctionKey),

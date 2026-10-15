@@ -25,6 +25,14 @@ mod native_named;
 pub use native_named::*;
 mod native_globals;
 pub use native_globals::*;
+#[cfg(test)]
+mod native_primitive_members_tests;
+#[cfg(test)]
+mod native_intrinsic_assert_tests;
+#[cfg(test)]
+mod native_assertion_flow_tests;
+#[cfg(test)]
+mod native_pack_spread_inference_tests;
 mod native_iterators;
 mod native_packs;
 pub use native_packs::*;
@@ -291,6 +299,10 @@ pub enum Type {
 /// Source recipes may use thread-local interior state; release its borrows
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
+    /// The initial standard-library environment whose primitive metatables are selected.
+    /// This is independent of the current lexical or global variable named `string`.
+    fn primitive_member_environment(&self) -> Option<NativeEnvironmentKey> { None }
+    fn primitive_member_binding(&self, _: NativeEnvironmentKey, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingKey> { None }
     fn contains_global_environment(&self, _: NativeEnvironmentKey) -> bool { false }
     fn contains_global_binding(&self, _: NativeGlobalBindingKey) -> bool { false }
     fn global_binding_declarations(&self, _: NativeGlobalBindingKey) -> Vec<NativeValueDeclarationKey> { Vec::new() }
@@ -319,6 +331,7 @@ pub trait NativeTypeProvider {
         self.function_declared_scalar_contract(key, queries)
     }
     fn contains_signature(&self, _: NativeSignatureKey) -> bool { false }
+    fn signature_intrinsic(&self, _: NativeSignatureKey) -> Option<NativeIntrinsicSite> { None }
     fn signature_header(&self, _: NativeSignatureKey) -> SignatureHeader { panic!("native signature provider is not installed") }
     fn function_overload_signatures(&self, _: NativeFunctionKey) -> Vec<NativeSignatureKey> { Vec::new() }
     fn signature_type_parameters(&self, _: NativeSignatureKey) -> Vec<NativeTypeParameterKey> { Vec::new() }
@@ -680,6 +693,8 @@ pub trait TypeQueries {
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type;
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack;
     fn signature_type(&mut self, declaration: NativeSignatureKey) -> Type;
+    /// Pure original-callee metadata; never infers a callable's return or body.
+    fn function_intrinsic(&mut self, function: &Type) -> Option<NativeIntrinsicSite>;
     fn signature_group_type(&mut self, declarations: &[NativeSignatureKey]) -> Type;
     fn call_signature_types(&mut self, function: &Type) -> Vec<Type>;
     fn function_implementation_type(&mut self, function: &Type) -> Option<Type>;
@@ -1062,6 +1077,10 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type { self.exclude_type_native(source, excluded) }
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack { self.exclude_pack_native(source, fixed, tail) }
     fn signature_type(&mut self, declaration: NativeSignatureKey) -> Type { self.signature_type_native(declaration) }
+    fn function_intrinsic(&mut self, function: &Type) -> Option<NativeIntrinsicSite> {
+        let function = import_type(self.checker, self.handles, function);
+        self.checker.native_function_intrinsic(function).map(native_signatures::source_intrinsic_site)
+    }
     fn signature_group_type(&mut self, declarations: &[NativeSignatureKey]) -> Type { self.signature_group_type_native(declarations) }
     fn call_signature_types(&mut self, function: &Type) -> Vec<Type> {
         let function = import_type(self.checker, self.handles, function);
@@ -1974,6 +1993,17 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
         Some(NativeTypeResult::Declaration(checker.native_pack_slot(pack, 0)))
     }
     fn contains_signature(&self, key: bun_sema::types::NativeSignatureId) -> bool { self.provider.contains_signature(source_signature_key(key)) }
+    fn signature_intrinsic(&self, key: bun_sema::types::NativeSignatureId) -> Option<bun_sema::check::native_intrinsics::NativeIntrinsicSite> {
+        let site = self.provider.signature_intrinsic(source_signature_key(key))?;
+        Some(bun_sema::check::native_intrinsics::NativeIntrinsicSite {
+            binding: bun_sema::check::native_globals::NativeGlobalBindingId {
+                environment: bun_sema::check::native_globals::NativeEnvironmentId { snapshot: site.binding.environment.snapshot, index: site.binding.environment.index },
+                index: site.binding.index,
+            },
+            declaration: bun_sema::check::native_globals::NativeValueDeclarationId { snapshot: site.declaration.snapshot, index: site.declaration.index },
+            kind: match site.kind { NativeIntrinsicKind::Assert => bun_sema::check::native_intrinsics::NativeIntrinsicKind::Assert },
+        })
+    }
     fn signature_header(&self, key: bun_sema::types::NativeSignatureId) -> bun_sema::check::native_signatures::NativeSignatureHeader { self.signature_header_core(key) }
     fn overload_signatures(&self, function: NativeFunctionId) -> Vec<bun_sema::types::NativeSignatureId> { self.provider.function_overload_signatures(source_key(function)).into_iter().map(core_signature_key).collect() }
     fn signature_parameters(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Vec<SigParam> { self.signature_parameters_core(checker, key) }

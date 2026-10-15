@@ -21,6 +21,7 @@ pub struct NativeFlowResult {
 /// Immutable graph recipes and source-value demands. No graph join, loop
 /// iteration, or narrowing algorithm is performed by this interface.
 pub trait NativeFlowProvider {
+    fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
     fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
@@ -73,6 +74,9 @@ pub(super) struct FlowProviderAdapter<'a> {
 }
 
 impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
+    fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
+        self.provider.assertion_predicate(condition, input)
+    }
     fn reference_declaration(&self, reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> { self.provider.reference_declaration(reference) }
     fn graph_creation(&self, graph: NativeGraphKey) -> Option<NativeFunctionCreation> { self.provider.graph_creation(graph) }
     fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> { self.provider.reference_in_graph(reference, graph) }

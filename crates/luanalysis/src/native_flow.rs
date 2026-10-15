@@ -3,6 +3,10 @@
 //! This adapter canonicalizes source handles and frozen addresses. It performs
 //! no type narrowing, type joins, reachability traversal or loop iteration.
 
+#[cfg(test)]
+#[path = "native_assertion_flow_tests.rs"]
+mod assertion_tests;
+
 use super::{bind::BindingId, flow};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NativeCallEffects, NativeFlowError,
@@ -551,6 +555,59 @@ impl NativeFlowSources {
         }
     }
 
+    fn assertion_operand_is_frozen(&self, evaluation: flow::EvaluationId) -> bool {
+        let mut pending = vec![evaluation];
+        while let Some(evaluation) = pending.pop() {
+            let evaluation = self.program.evaluation(evaluation);
+            let expression = &self.program.expression(evaluation.expression).expression;
+            match expression.kind {
+                ExprKind::Call { .. } if !self.runtime_type_calls.contains(&evaluation.expression) => return false,
+                ExprKind::MethodCall { .. } | ExprKind::Vararg => return false,
+                _ => {}
+            }
+            pending.extend(evaluation.operands.iter().copied());
+        }
+        true
+    }
+
+    /// Select the original physical first argument, including a colon receiver.
+    /// Unknown argument calls may mutate a reference after its asserted value
+    /// was frozen; they cannot establish a later reference predicate here.
+    pub(super) fn assertion_call_effect(&self, evaluation: &flow::Evaluation, input: NativeFlowKey) -> NativeCallEffects {
+        let expression = &self.program.expression(evaluation.expression).expression;
+        let first = match &expression.kind {
+            ExprKind::Call { args, .. } if args.is_empty() => return NativeCallEffects::Never,
+            ExprKind::Call { .. } => 1,
+            ExprKind::MethodCall { .. } => 0,
+            _ => return NativeCallEffects::None,
+        };
+        let arguments = &evaluation.operands[first..];
+        let Some(&first) = arguments.first() else { return NativeCallEffects::None };
+        if !self.assertion_operand_is_frozen(first) { return NativeCallEffects::None }
+        let first = self.program.evaluation(first);
+        let input = self.flow_key(first.input, input.graph.context);
+        if arguments.iter().skip(1).any(|&argument| !self.assertion_operand_is_frozen(argument)) {
+            let predicate = self.predicate_evaluation(input, first);
+            let mut pending = vec![&predicate];
+            while let Some(predicate) = pending.pop() {
+                match predicate {
+                    NativePredicate::And(left, right) | NativePredicate::Or(left, right) => { pending.push(left); pending.push(right); }
+                    NativePredicate::Not(inner) => pending.push(inner),
+                    NativePredicate::Truthy { subject: None, .. } => {}
+                    _ => return NativeCallEffects::None,
+                }
+            }
+        }
+        NativeCallEffects::Assert { condition: self.evaluation_value(first.id), input }
+    }
+
+    fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
+        let ValueRecipe::Evaluation(evaluation) = self.value(condition)? else { return None };
+        let evaluation = self.program.evaluation(*evaluation);
+        if self.flow_key(evaluation.input, input.graph.context) != input || !self.assertion_operand_is_frozen(evaluation.id) { return None }
+        Some(self.predicate_evaluation(input, evaluation))
+    }
+
     pub(super) fn declaration_write(&self, binding: BindingId) -> Option<&flow::Node> {
         self.declaration_writes
             .get(&binding)
@@ -951,6 +1008,9 @@ pub(super) struct FlowAdapter<'a> {
 }
 
 impl NativeFlowProvider for FlowAdapter<'_> {
+    fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
+        self.sources.assertion_predicate(condition, input)
+    }
     fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
         self.sources.reference_key(graph, self.sources.source_reference(reference)?)
     }

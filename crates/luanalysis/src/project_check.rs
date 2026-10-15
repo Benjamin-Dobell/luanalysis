@@ -2,19 +2,22 @@
 //! Files retain their own syntax, lexical identities, graphs and source reports.
 use crate::native_functions::project_provider::{ProjectRegistry, RegistryInput};
 use crate::{CheckReport, Diagnostic};
+use crate::standard_environment::{StandardEnvironmentProfile, StandardEnvironmentSelection};
 use luanalysis_engine::{Engine, NativeLoaderPolicy};
 use luanalysis_project::{
-    DependencyOutcome, FileId, Project, RequireRequest, SourceFile, SourceRole,
+    DeclarationSourceError, DependencyOutcome, FileId, Project, RequireRequest, SourceFile, SourceRole,
 };
 
 #[derive(Clone, Copy, Debug)]
 pub struct ProjectCheckOptions {
     pub loader_policy: NativeLoaderPolicy,
+    pub environment: StandardEnvironmentProfile,
 }
 impl Default for ProjectCheckOptions {
     fn default() -> Self {
         Self {
             loader_policy: NativeLoaderPolicy::Lua54StandardFile,
+            environment: StandardEnvironmentProfile::LegacyMinimal,
         }
     }
 }
@@ -56,6 +59,8 @@ pub struct FileCheckReport {
 pub struct ProjectCheckReport {
     pub project: Project,
     pub files: Vec<FileCheckReport>,
+    pub standard_library_files: Vec<FileId>,
+    pub environment_errors: Vec<DeclarationSourceError>,
 }
 impl ProjectCheckReport {
     pub fn file(&self, file: FileId) -> Option<&FileCheckReport> {
@@ -67,10 +72,14 @@ impl ProjectCheckReport {
         self.project.file(file)
     }
 
+    pub fn checked_file_count(&self) -> usize {
+        self.files.iter().filter(|file| !self.standard_library_files.contains(&file.file)).count()
+    }
+
     /// Host failures and source diagnostics affect success. A static dependency
     /// cycle alone is a graph fact rather than a type-checking failure.
     pub fn has_errors(&self) -> bool {
-        self.files
+        !self.environment_errors.is_empty() || self.files
             .iter()
             .any(|file| !file.report.diagnostics.is_empty())
             || !self.project.entry_errors.is_empty()
@@ -91,9 +100,14 @@ pub fn check_project(project: Project) -> ProjectCheckReport {
 }
 
 pub fn check_project_with_options(
-    project: Project,
+    mut project: Project,
     options: ProjectCheckOptions,
 ) -> ProjectCheckReport {
+    let (selection, environment_errors) = match StandardEnvironmentSelection::register(&mut project, options.environment) {
+        Ok(selection) => (selection, Vec::new()),
+        Err(error) => (StandardEnvironmentSelection::empty(StandardEnvironmentProfile::None), vec![error]),
+    };
+    let standard_library_files = selection.files();
     let mut inputs = Vec::new();
     let mut files = Vec::new();
     for source in &project.files {
@@ -103,6 +117,7 @@ pub fn check_project_with_options(
             inputs.push(RegistryInput {
                 id: source.id,
                 role: source.role,
+                standard_library: selection.kind(source.id),
                 syntax: parsed,
                 bound,
             });
@@ -126,9 +141,9 @@ pub fn check_project_with_options(
     }
     let dependencies = project.dependencies.clone();
     files.extend(Engine::new().with_native_provider(
-        move || ProjectRegistry::new_with_modules(inputs, dependencies, options.loader_policy),
+        move || ProjectRegistry::new_with_environment(inputs, dependencies, options.loader_policy, selection.profile),
         |registry, queries| registry.check(queries),
     ));
     files.sort_by_key(|file| file.file.index);
-    ProjectCheckReport { project, files }
+    ProjectCheckReport { project, files, standard_library_files, environment_errors }
 }

@@ -558,3 +558,103 @@ fn annotated_nil_and_void_union_count_cycles_keep_written_alternative_cardinalit
         assert_eq!(provider.cycles.get(), 0);
     });
 }
+
+struct WrittenHeads;
+impl WrittenHeads {
+    fn key(index: u32) -> NativeSignatureKey {
+        NativeSignatureKey {
+            snapshot: 4917,
+            index,
+        }
+    }
+}
+impl NativeTypeProvider for WrittenHeads {
+    fn contains_function(&self, _: NativeFunctionKey) -> bool {
+        false
+    }
+    fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> {
+        panic!("no function body exists")
+    }
+    fn function_declared_return(
+        &self,
+        _: NativeFunctionKey,
+        _: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        panic!("no function body exists")
+    }
+    fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type {
+        panic!("no function body exists")
+    }
+    fn return_cycle(&self, _: NativeFunctionKey) {
+        panic!("no function body exists")
+    }
+    fn return_type_too_deep(&self, _: NativeFunctionKey) {
+        panic!("no function body exists")
+    }
+    fn contains_signature(&self, key: NativeSignatureKey) -> bool {
+        key.snapshot == 4917 && key.index < 3
+    }
+    fn signature_header(&self, key: NativeSignatureKey) -> SignatureHeader {
+        SignatureHeader {
+            owner: SignatureOwner::Standalone,
+            site: SignatureSite {
+                snapshot: key.snapshot,
+                index: key.index,
+            },
+            parent: None,
+            has_direct_literal_parameter: false,
+        }
+    }
+    fn signature_parameters(
+        &self,
+        _: NativeSignatureKey,
+        _: &mut dyn TypeQueries,
+    ) -> Vec<Parameter> {
+        panic!("a pure written return query must not check arguments or bodies")
+    }
+    fn signature_declared_return_pack(
+        &self,
+        key: NativeSignatureKey,
+        _: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        if key.index == 2 {
+            ValuePack::single(Type::Number)
+        } else {
+            ValuePack::never()
+        }
+    }
+}
+
+#[test]
+fn original_written_never_head_has_a_pure_scalar_contract_without_argument_or_body_demands() {
+    Engine::new().with_native_provider(
+        || WrittenHeads,
+        |_, queries| {
+            let head = queries.signature_type(WrittenHeads::key(0));
+            assert_eq!(
+                queries.function_declared_scalar_return(&head),
+                Some(Type::Never)
+            );
+        },
+    );
+}
+
+#[test]
+fn all_original_public_heads_must_be_never_before_a_pure_overload_flow_effect_is_claimed() {
+    Engine::new().with_native_provider(
+        || WrittenHeads,
+        |_, queries| {
+            let all_never =
+                queries.signature_group_type(&[WrittenHeads::key(0), WrittenHeads::key(1)]);
+            assert_eq!(
+                queries.function_declared_scalar_return(&all_never),
+                Some(Type::Never)
+            );
+            let mixed = queries.signature_group_type(&[WrittenHeads::key(0), WrittenHeads::key(2)]);
+            assert_eq!(queries.function_declared_scalar_return(&mixed), None);
+            let opposite =
+                queries.signature_group_type(&[WrittenHeads::key(2), WrittenHeads::key(0)]);
+            assert_eq!(queries.function_declared_scalar_return(&opposite), None);
+        },
+    );
+}

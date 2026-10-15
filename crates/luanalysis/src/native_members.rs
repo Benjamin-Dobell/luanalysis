@@ -44,8 +44,8 @@ pub(super) struct NativeMembers {
     inputs: Vec<OriginalMemberInput>,
 }
 impl NativeMembers {
-    pub(super) fn new(snapshot: u64, named: &NativeNamed, mut inputs: Vec<OriginalMemberInput>) -> Self {
-        let base = named.member_namespace_end();
+    pub(super) fn new(snapshot: u64, named: &NativeNamed, mut inputs: Vec<OriginalMemberInput>, base: u32) -> Self {
+        assert!(base >= named.member_namespace_end(), "original member namespaces are disjoint");
         inputs.sort_by_key(|input| (input.span.start, input.span.end));
         let mut result = Self { snapshot, base, sources: Vec::new(), inputs: inputs.clone() };
         for input in inputs {

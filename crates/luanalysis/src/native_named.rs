@@ -735,6 +735,10 @@ impl NativeNamed {
     pub(super) fn declarations(&self) -> &[NamedDeclarationSource] {
         &self.declarations
     }
+    pub(super) fn next_member_index(&self) -> u32 {
+        (self.members.len() + self.anonymous_members.len())
+            .try_into().expect("original member identities fit u32")
+    }
     pub(super) fn augmentations(&self) -> &[AugmentationSource] {
         &self.augmentations
     }

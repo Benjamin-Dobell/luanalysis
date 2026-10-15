@@ -171,6 +171,7 @@ pub enum NativeFlowNode {
 pub enum NativeCallEffects {
     None,
     Never,
+    Assert { condition: NativeValueKey, input: NativeFlowKey },
     Unsupported(&'static str),
 }
 
@@ -237,6 +238,8 @@ pub struct NativeIteratorProjection {
 
 pub trait NativeFlowProvider {
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
+    /// Original immutable predicate recipe for a verified assertion argument.
+    fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
     fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
@@ -477,6 +480,64 @@ impl NativeDomain<'_> {
         }
         true
     }
+
+    fn assertion_predicate(&self, at: NativeFlowKey, condition: NativeValueKey, input: NativeFlowKey) -> Result<Option<NativePredicate>, ()> {
+        if !self.edge(at, input) { return Err(()) }
+        if condition.snapshot != input.graph.snapshot {
+            self.provider.flow_error(at, NativeFlowError::InvalidValue(condition));
+            return Err(());
+        }
+        if self.provider.node(input).is_none() {
+            self.provider.flow_error(at, NativeFlowError::InvalidNode(input));
+            return Err(());
+        }
+        Ok(self.provider.assertion_predicate(condition, input))
+    }
+
+    fn predicate_flow_step(&self, at: NativeFlowKey, before: NativeFlowKey, predicate: NativePredicate, sense: bool, walk: &NativeWalk) -> FlowStep<NativeFlowKey, NativeTransfer> {
+        if !self.edge(at, before) || !self.predicate_valid(at, &predicate) { return FlowStep::Value(TypeId::ERROR) }
+        if let NativePredicate::GenericIteration { frame, .. } = predicate {
+            return FlowStep::Follow { before, transfer: (walk.reference == frame).then_some(NativeTransfer::GenericIteration(sense)), count_passed: true };
+        }
+        let applies = predicate_mentions(self.provider, &predicate, walk.reference, false);
+        let projection = predicate_mentions(self.provider, &predicate, walk.reference, true);
+        let transfer = if applies { Some(NativeTransfer::Predicate(predicate, sense)) }
+            else { projection.then_some(NativeTransfer::PackPredicate { predicate, sense, group: walk.reference }) };
+        FlowStep::Follow { before, transfer, count_passed: true }
+    }
+
+    fn predicate_reach_step(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey, before: NativeFlowKey, predicate: NativePredicate, sense: bool) -> ReachStep<NativeFlowKey> {
+        if !self.edge(at, before) || !self.predicate_valid(at, &predicate) { return ReachStep::Value(false) }
+        match predicate {
+            predicate @ (NativePredicate::And(..) | NativePredicate::Or(..) | NativePredicate::Not(..)) => {
+                if checker.native_predicate_possible(self.provider, &predicate, sense) { ReachStep::Follow(before) } else { ReachStep::Value(false) }
+            }
+            NativePredicate::Truthy { value, input, .. } => {
+                let value = checker.native_flow_value(self.provider, value, input);
+                if checker.lua_truthiness_type(value, sense).is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
+            }
+            NativePredicate::Equal { .. } => ReachStep::Follow(before),
+            NativePredicate::RuntimeType { value, input, kind, equals, .. } => {
+                let value = checker.native_flow_value(self.provider, value, input);
+                if checker.native_runtime_type(value, &kind, equals == sense).is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
+            }
+            NativePredicate::NumericIteration { start, limit, step, stage } => {
+                match checker.native_numeric_entry(self.provider, start, limit, step, stage) {
+                    NumericEntry::Impossible => ReachStep::Value(false),
+                    NumericEntry::Known(enters) if enters != sense => ReachStep::Value(false),
+                    NumericEntry::Known(_) | NumericEntry::Unknown => ReachStep::Follow(before),
+                }
+            }
+            NativePredicate::GenericIteration { frame, input } => {
+                let pack = checker.native_flow_iterator_pack(self.provider, input, frame);
+                if checker.native_iterator_filter(pack, sense).ty.is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
+            }
+            NativePredicate::Unsupported(feature) => {
+                self.provider.flow_error(at, NativeFlowError::Unsupported(feature));
+                ReachStep::Value(false)
+            }
+        }
+    }
 }
 
 impl FlowDomain for NativeDomain<'_> {
@@ -599,24 +660,7 @@ impl FlowDomain for NativeDomain<'_> {
                 predicate,
                 sense,
             } => {
-                if !self.edge(at, before) || !self.predicate_valid(at, &predicate) {
-                    return FlowStep::Value(TypeId::ERROR);
-                }
-                if let NativePredicate::GenericIteration { frame, .. } = predicate {
-                    return FlowStep::Follow { before, transfer: (walk.reference == frame).then_some(NativeTransfer::GenericIteration(sense)), count_passed: true };
-                }
-                let applies = predicate_mentions(self.provider, &predicate, walk.reference, false);
-                let projection = predicate_mentions(self.provider, &predicate, walk.reference, true);
-                let transfer = if applies {
-                    Some(NativeTransfer::Predicate(predicate, sense))
-                } else {
-                    projection.then_some(NativeTransfer::PackPredicate { predicate, sense, group: walk.reference })
-                };
-                FlowStep::Follow {
-                    before,
-                    transfer,
-                    count_passed: true,
-                }
+                self.predicate_flow_step(at, before, predicate, sense, walk)
             }
             NativeFlowNode::Merge { edges } | NativeFlowNode::Loop { edges } => {
                 if edges.iter().any(|&edge| !self.edge(at, edge)) {
@@ -641,6 +685,11 @@ impl FlowDomain for NativeDomain<'_> {
                 }
                 match checker.native_flow_call_effects(self.provider, value, input) {
                     NativeCallEffects::Never => FlowStep::Value(TypeId::UNREACHABLE_NEVER),
+                    NativeCallEffects::Assert { condition, input } => match self.assertion_predicate(at, condition, input) {
+                        Ok(Some(predicate)) => self.predicate_flow_step(at, before, predicate, true, walk),
+                        Ok(None) => FlowStep::Follow { before, transfer: None, count_passed: false },
+                        Err(()) => FlowStep::Value(TypeId::ERROR),
+                    },
                     NativeCallEffects::None => FlowStep::Follow {
                         before,
                         transfer: None,
@@ -890,51 +939,7 @@ impl ReachDomain for NativeDomain<'_> {
                 }
             }
             NativeFlowNode::Predicate { before, predicate, sense } => {
-                if !self.edge(at, before) || !self.predicate_valid(at, &predicate) {
-                    return ReachStep::Value(false);
-                }
-                match predicate {
-                    predicate @ (NativePredicate::And(..) | NativePredicate::Or(..) | NativePredicate::Not(..)) => {
-                        if checker.native_predicate_possible(self.provider, &predicate, sense) { ReachStep::Follow(before) } else { ReachStep::Value(false) }
-                    }
-                    NativePredicate::Truthy { value, input, .. } => {
-                        let value = checker.native_flow_value(self.provider, value, input);
-                        if checker.lua_truthiness_type(value, sense).is_never() {
-                            ReachStep::Value(false)
-                        } else {
-                            ReachStep::Follow(before)
-                        }
-                    }
-                    NativePredicate::Equal { .. } => ReachStep::Follow(before),
-                    NativePredicate::RuntimeType { value, input, kind, equals, .. } => {
-                        let value = checker.native_flow_value(self.provider, value, input);
-                        if checker.native_runtime_type(value, &kind, equals == sense).is_never() {
-                            ReachStep::Value(false)
-                        } else {
-                            ReachStep::Follow(before)
-                        }
-                    }
-                    NativePredicate::NumericIteration { start, limit, step, stage } => {
-                        let entry = checker.native_numeric_entry(self.provider, start, limit, step, stage);
-                        match entry {
-                            NumericEntry::Impossible => ReachStep::Value(false),
-                            NumericEntry::Known(enters) if enters != sense => ReachStep::Value(false),
-                            NumericEntry::Known(_) | NumericEntry::Unknown => ReachStep::Follow(before),
-                        }
-                    }
-                    NativePredicate::GenericIteration { frame, input } => {
-                        let pack = checker.native_flow_iterator_pack(self.provider, input, frame);
-                        if checker.native_iterator_filter(pack, sense).ty.is_never() {
-                            ReachStep::Value(false)
-                        } else {
-                            ReachStep::Follow(before)
-                        }
-                    }
-                    NativePredicate::Unsupported(feature) => {
-                        self.provider.flow_error(at, NativeFlowError::Unsupported(feature));
-                        ReachStep::Value(false)
-                    }
-                }
+                self.predicate_reach_step(checker, at, before, predicate, sense)
             }
             NativeFlowNode::Call {
                 before,
@@ -947,6 +952,11 @@ impl ReachDomain for NativeDomain<'_> {
                 match checker.native_flow_call_effects(self.provider, value, input) {
                     NativeCallEffects::None => ReachStep::Follow(before),
                     NativeCallEffects::Never => ReachStep::Value(false),
+                    NativeCallEffects::Assert { condition, input } => match self.assertion_predicate(at, condition, input) {
+                        Ok(Some(predicate)) => self.predicate_reach_step(checker, at, before, predicate, true),
+                        Ok(None) => ReachStep::Follow(before),
+                        Err(()) => ReachStep::Value(false),
+                    },
                     NativeCallEffects::Unsupported(feature) => {
                         self.provider
                             .flow_error(at, NativeFlowError::Unsupported(feature));

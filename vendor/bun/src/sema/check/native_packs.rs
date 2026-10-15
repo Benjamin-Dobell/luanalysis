@@ -253,7 +253,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// The existing tuple relation checks physical required/optional/rest lengths after values
     /// have been erased. A still-symbolic generic rest is rechecked by `chooseOverload` after
     /// signature instantiation, as in TS.
-    pub(super) fn native_argument_pack_has_correct_arity(&mut self, args: &[Arg], params: &[SigParam]) -> bool {
+    pub(super) fn native_argument_pack_has_correct_arity(&mut self, args: &[Arg], params: &[SigParam], mode: CheckMode) -> bool {
         let expected = NativeResultPack { ty: self.rest_type_at_position(params, 0, false) };
         let Some(mut expected_rows) = self.native_pack_alternatives(expected) else { return true };
         for row in &mut expected_rows {
@@ -263,7 +263,7 @@ impl<'p, 's> Checker<'p, 's> {
         let mut actual_rows = if let Some(&arg) = args.last().filter(|arg| arg.is_spread()) {
             let pack = match arg {
                 Arg::ResolvedPack(pack) => pack,
-                Arg::NativePack(expression) => self.check_native_argument_pack(expression, None, None, CheckMode::empty()),
+                Arg::NativePack(expression) => self.check_native_argument_pack(expression, None, None, mode),
                 _ => unreachable!("TS spread in native call arity"),
             };
             if self.is_any(pack.ty) {

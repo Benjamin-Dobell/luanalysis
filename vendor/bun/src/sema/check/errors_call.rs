@@ -981,8 +981,10 @@ impl Checker<'_, '_> {
         args: &[Arg],
         relation: Relation,
         check_mode: CheckMode,
+        identity_context: Option<NativeResultPack>,
     ) -> Option<(usize, TypeId, TypeId)> {
         let mut params = self.sig_params(sig);
+        let mut prefix = Vec::new();
         let rest = self.non_array_rest_type(&params);
         let boundary = args.iter().position(|arg| arg.is_spread()).unwrap_or(args.len());
         let boundary = if rest.is_some() {
@@ -995,9 +997,12 @@ impl Checker<'_, '_> {
             let Some(expected) = self.param_type_at(&params, i) else {
                 continue;
             };
+            let contextual = if self.is_any(expected) || expected == TypeId::UNKNOWN {
+                identity_context.and_then(|pack| self.native_pack_contextual_slot(pack, i)).unwrap_or(expected)
+            } else { expected };
             let actual = match arg {
                 Arg::Resolved(ty) => ty,
-                Arg::Native(expression) => self.check_native_argument(expression, Some(expected), None, check_mode),
+                Arg::Native(expression) => self.check_native_argument(expression, Some(contextual), None, check_mode),
                 _ => panic!("TS argument in native call applicability"),
             };
             let actual = if check_mode.contains(CheckMode::SKIP_CONTEXT_SENSITIVE) {
@@ -1009,10 +1014,12 @@ impl Checker<'_, '_> {
                 self.note_parameter_types_resolved(sig, &params, i + 1);
                 return Some((i, actual, expected));
             }
+            if identity_context.is_some() { prefix.push(actual); }
         }
         if boundary < args.len() || rest.is_some() {
             let expected = self.rest_type_at_position(&params, boundary, false);
-            let actual = self.native_argument_sequence_type(args, boundary, expected, None, check_mode);
+            let contextual = identity_context.and_then(|pack| self.native_pack_contextual_tail(pack, &prefix)).map_or(expected, |pack| pack.ty);
+            let actual = self.native_argument_sequence_type(args, boundary, contextual, None, check_mode);
             if !self.is_resolved_call_argument_applicable(actual, expected, relation) {
                 self.note_parameter_types_resolved(sig, &params, boundary);
                 return Some((boundary, actual, expected));
@@ -1032,8 +1039,9 @@ impl Checker<'_, '_> {
         check_mode: CheckMode,
         report: bool,
     ) -> bool {
-        if matches!(s.site, CallSite::Native { .. }) {
-            return self.resolved_signature_argument_error(sig, s.args, relation, check_mode).is_none();
+        if let CallSite::Native { expected_return, expected_result_pack, .. } = s.site {
+            let context = self.native_intrinsic_argument_context(sig, expected_return, expected_result_pack);
+            return self.resolved_signature_argument_error(sig, s.args, relation, check_mode, context).is_none();
         }
         let (file, e, node, this_arg) = s.ts_site();
         let args = s.args;

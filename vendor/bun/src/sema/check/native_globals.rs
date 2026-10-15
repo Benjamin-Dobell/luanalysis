@@ -13,6 +13,9 @@ pub struct NativeGlobalBindingId { pub environment: NativeEnvironmentId, pub ind
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeValueDeclarationId { pub snapshot: u64, pub index: u32 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NativePrimitiveMemberKind { String }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeGlobalSourceRole { Implementation, Declaration }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,6 +35,7 @@ pub enum NativeGlobalQueryError {
     InvalidEnvironment(NativeEnvironmentId),
     InvalidBinding(NativeGlobalBindingId),
     InvalidDeclaration(NativeValueDeclarationId),
+    InvalidPrimitiveMemberNamespace { binding: NativeGlobalBindingId, kind: NativePrimitiveMemberKind },
     MissingDeclarationContract(NativeValueDeclarationId),
     ConflictingDeclarations { binding: NativeGlobalBindingId, declarations: Vec<NativeValueDeclarationId> },
     CircularQuery(NativeGlobalsQuery),
@@ -40,6 +44,9 @@ pub enum NativeGlobalQueryError {
 }
 
 pub trait NativeGlobalsProvider {
+    /// Frozen initial-library capability, never a lookup of the current variable spelling.
+    fn primitive_member_environment(&self) -> Option<NativeEnvironmentId> { None }
+    fn primitive_member_binding(&self, _: NativeEnvironmentId, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingId> { None }
     fn contains_global_environment(&self, environment: NativeEnvironmentId) -> bool;
     fn contains_global_binding(&self, binding: NativeGlobalBindingId) -> bool;
     fn global_binding_declarations(&self, binding: NativeGlobalBindingId) -> Vec<NativeValueDeclarationId>;
@@ -71,12 +78,51 @@ impl NativeGlobalsCache {
 }
 
 impl<'p, 's> Checker<'p, 's> {
+    /// None is the ordinary backend property path. Some(None) is an authoritative
+    /// absent Lua member and must not fall through to the TypeScript String library.
+    pub(super) fn native_primitive_property(&mut self, ty: TypeId, name: crate::atom::Atom) -> Option<Option<TypeId>> {
+        let provider = self.native_globals_provider?;
+        let environment = provider.primitive_member_environment()?;
+        let apparent = self.base_constraint_of(ty).unwrap_or(ty);
+        if self.is_union(apparent) {
+            let parts = self.parts(apparent).to_vec();
+            if !parts.iter().any(|&part| {
+                let apparent = self.base_constraint_of(part).unwrap_or(part);
+                self.flags(apparent) & crate::types::tf::STRING_LIKE != 0
+            }) { return None }
+            let mut values = Vec::with_capacity(parts.len());
+            for part in parts {
+                let Some(value) = self.type_of_property(part, name) else { return Some(None) };
+                values.push(value);
+            }
+            return Some(Some(self.union(&values)));
+        }
+        if self.flags(apparent) & crate::types::tf::STRING_LIKE == 0 { return None }
+        if !provider.contains_global_environment(environment) {
+            self.report_native_global(NativeGlobalQueryError::InvalidEnvironment(environment));
+            return Some(None);
+        }
+        let Some(binding) = provider.primitive_member_binding(environment, NativePrimitiveMemberKind::String) else { return None };
+        if binding.environment != environment {
+            self.report_native_global(NativeGlobalQueryError::InvalidBinding(binding));
+            return Some(None);
+        }
+        let Ok(namespace) = self.native_global_binding_type(binding) else { return Some(None) };
+        // Only original native table/object namespaces qualify. In particular, a
+        // string/any contract cannot recurse back into this primitive lookup.
+        if !matches!(self.data(namespace), crate::types::TypeData::NativeTable(_) | crate::types::TypeData::NativeObject(_)) {
+            self.report_native_global(NativeGlobalQueryError::InvalidPrimitiveMemberNamespace { binding, kind: NativePrimitiveMemberKind::String });
+            return Some(None);
+        }
+        Some(self.type_of_property(namespace, name))
+    }
+
     pub fn set_native_globals_provider(&mut self, provider: &'p dyn NativeGlobalsProvider) {
         assert!(self.native_globals_provider.is_none(), "native globals provider already installed");
         self.native_globals_provider = Some(provider);
     }
 
-    fn report_native_global(&mut self, error: NativeGlobalQueryError) {
+    pub(super) fn report_native_global(&mut self, error: NativeGlobalQueryError) {
         if let Some(provider) = self.native_globals_provider { provider.global_query_error(self, error); }
     }
 

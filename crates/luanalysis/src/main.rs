@@ -1,4 +1,5 @@
-use luanalysis::project_check::{check_project, static_require_requests};
+use luanalysis::project_check::{ProjectCheckOptions, check_project_with_options, static_require_requests};
+use luanalysis::standard_environment::StandardEnvironmentProfile;
 use luanalysis_project::{
     Project, ProjectConfig, ProjectInput, ProjectLoadPlan, Resolver, SourceRole,
 };
@@ -43,6 +44,7 @@ fn run() -> i32 {
     let mut libraries = Vec::new();
     let mut module_roots = Vec::new();
     let mut package_path = None;
+    let mut environment = StandardEnvironmentProfile::LegacyMinimal;
     let mut positional = false;
     while let Some(arg) = args.next() {
         if !positional && arg == "--" {
@@ -67,6 +69,20 @@ fn run() -> i32 {
                 return usage_error(format, "--library requires a file or directory path");
             };
             libraries.push(PathBuf::from(path));
+            continue;
+        }
+        if !positional && arg == "--no-stdlib" {
+            environment = StandardEnvironmentProfile::None;
+            continue;
+        }
+        if !positional && arg == "--lua-version" {
+            let Some(version) = args.next() else {
+                return usage_error(format, "--lua-version requires a supported version (5.4)");
+            };
+            if version != "5.4" {
+                return usage_error(format, &format!("Lua standard environment {:?} is not implemented; supported version: 5.4", version));
+            }
+            environment = StandardEnvironmentProfile::Lua54;
             continue;
         }
         if !positional && arg == "--module-root" {
@@ -175,7 +191,7 @@ fn run() -> i32 {
         },
         static_require_requests,
     );
-    let result = check_project(project);
+    let result = check_project_with_options(project, ProjectCheckOptions { environment, ..ProjectCheckOptions::default() });
     let report = CliReport::from_project(&result, &display_paths, host_errors, dump);
     report.print(format);
     report.exit_code
@@ -219,6 +235,6 @@ fn expand(path: &Path, errors: &mut Vec<HostDiagnostic>) -> Vec<PathBuf> {
 
 fn help() {
     println!(
-        "luanalysis check [--format text|json] [--dump-types] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
+        "luanalysis check [--format text|json] [--dump-types] [--lua-version 5.4 | --no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--lua-version 5.4 selects the four reviewed standard declaration resources.\n--no-stdlib disables standard declarations and the legacy minimal type builtin.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
     );
 }

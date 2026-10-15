@@ -5122,6 +5122,12 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub fn sig_declared_scalar_return(&mut self, sig: SigId) -> Option<TypeId> {
         match *self.types().sig(sig) {
+            SigData::NativeDeclarationSignature { .. } => {
+                // A written head has no implementation body to infer. Reuse
+                // its guarded declaration-pack query and original mapper.
+                let returned = self.signature_return_type(sig);
+                Some(self.native_pack_slot(NativeResultPack { ty: returned }, 0))
+            }
             SigData::Native { declaration, mapper } => {
                 let provider = self.native_provider_for(declaration);
                 let declared = provider.declared_scalar_return_type(self, declaration)?;

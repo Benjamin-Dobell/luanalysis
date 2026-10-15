@@ -27,6 +27,19 @@ pub struct NativeSignatureHeader {
 }
 
 impl<'p, 's> Checker<'p, 's> {
+    /// A pure written scalar contract, sufficient for nonreturning call flow.
+    /// Multiple public heads establish that effect only when every one is never.
+    pub fn native_callable_declared_scalar_return(&mut self, callable: TypeId) -> Option<TypeId> {
+        let signatures = self.signatures(callable, false).to_vec();
+        let first = self.sig_declared_scalar_return(*signatures.first()?)?;
+        if signatures.len() == 1 { return Some(first); }
+        if first != TypeId::NEVER { return None; }
+        for signature in signatures.into_iter().skip(1) {
+            if self.sig_declared_scalar_return(signature)? != TypeId::NEVER { return None; }
+        }
+        Some(TypeId::NEVER)
+    }
+
     pub(super) fn native_signature_provider_for(&self, declaration: NativeSignatureId) -> &'p dyn NativeFunctionProvider {
         let provider = self.native_function_provider.expect("native signature without a provider");
         assert!(provider.contains_signature(declaration), "foreign native signature identity");

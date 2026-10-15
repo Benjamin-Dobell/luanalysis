@@ -29,7 +29,7 @@ impl OutputFormat {
                 }
             } else if matches!(
                 arg.to_str(),
-                Some("--library" | "--module-root" | "--package-path")
+                Some("--library" | "--module-root" | "--package-path" | "--lua-version")
             ) {
                 args.next();
             }
@@ -96,6 +96,9 @@ impl CliReport {
         mut errors: Vec<HostDiagnostic>,
         dump: bool,
     ) -> Self {
+        for error in &result.environment_errors {
+            errors.push(HostDiagnostic::general("LUA0003", error));
+        }
         for error in result
             .project
             .entry_errors
@@ -149,7 +152,7 @@ impl CliReport {
         }
         Self {
             exit_code,
-            files_checked: result.project.files.len(),
+            files_checked: result.checked_file_count(),
             diagnostics,
             bindings,
         }

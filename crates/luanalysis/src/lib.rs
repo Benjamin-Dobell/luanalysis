@@ -10,6 +10,7 @@ mod builtins;
 mod module_requests;
 pub mod flow;
 pub mod project_check;
+pub mod standard_environment;
 mod functions;
 mod native_expressions;
 mod native_flow;
