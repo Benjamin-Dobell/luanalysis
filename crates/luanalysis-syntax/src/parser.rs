@@ -32,6 +32,7 @@ pub fn parse(source: &str) -> File {
         type_extensions: Vec::new(),
         expression_assertions: Vec::new(),
         overload_annotations: Vec::new(),
+        documentation_references: Vec::new(),
         documentation_group: None,
         depth: 0,
         block_depth: 0,
@@ -45,6 +46,7 @@ pub fn parse(source: &str) -> File {
         type_declarations: parser.type_declarations,
         type_extensions: parser.type_extensions,
         overload_annotations: parser.overload_annotations,
+        documentation_references: parser.documentation_references,
         comments,
         diagnostics: parser.diagnostics,
         span: Span::new(0, source.len()),
@@ -61,6 +63,7 @@ struct Parser<'a> {
     type_extensions: Vec<TypeExtension>,
     expression_assertions: Vec<crate::ExpressionAssertion>,
     overload_annotations: Vec<OverloadAnnotation>,
+    documentation_references: Vec<crate::DocumentationReference>,
     documentation_group: Option<DocumentationGroup>,
     depth: usize,
     block_depth: usize,
@@ -231,6 +234,9 @@ impl Parser<'_> {
         group.span = group.span.join(comment.span);
         for item in documentation.declarations {
             match item {
+                types::DeclarationItem::Reference(reference) => {
+                    self.documentation_references.push(reference);
+                }
                 types::DeclarationItem::Overload { signature, span, tag_span } => {
                     let index = self.overload_annotations.len();
                     let id = OverloadDeclarationId(index.try_into().expect("original overload index fits u32"));
@@ -599,22 +605,29 @@ impl Parser<'_> {
     }
     fn record_expression_overloads(
         &mut self,
-        comment:Span,
-        declarations:Vec<types::DeclarationItem>,
-        annotations:&mut FunctionAnnotations,
-        role:&str,
+        comment: Span,
+        declarations: Vec<types::DeclarationItem>,
+        annotations: &mut FunctionAnnotations,
+        role: &str,
     ) {
         for declaration in declarations {
-            if let types::DeclarationItem::Overload {signature,span,tag_span}=declaration {
-                let id=OverloadDeclarationId(self.overload_annotations.len().try_into().expect("original overload index fits u32"));
-                self.overload_annotations.push(OverloadAnnotation {
-                    id,signature,span,tag_span,group_span:comment,named_candidates:Vec::new(),
-                });
-                annotations.overloads.push(OverloadReference {id,span});
-            } else {
-                self.diagnostics.push(Diagnostic {
-                    span:comment,message:format!("named declarations cannot annotate {role}"),
-                });
+            match declaration {
+                types::DeclarationItem::Reference(reference) => {
+                    self.documentation_references.push(reference);
+                }
+                types::DeclarationItem::Overload { signature, span, tag_span } => {
+                    let id = OverloadDeclarationId(self.overload_annotations.len().try_into().expect("original overload index fits u32"));
+                    self.overload_annotations.push(OverloadAnnotation {
+                        id, signature, span, tag_span, group_span: comment, named_candidates: Vec::new(),
+                    });
+                    annotations.overloads.push(OverloadReference { id, span });
+                }
+                _ => {
+                    self.diagnostics.push(Diagnostic {
+                        span: comment,
+                        message: format!("named declarations cannot annotate {role}"),
+                    });
+                }
             }
         }
     }
@@ -630,13 +643,24 @@ impl Parser<'_> {
             let (documentation, diagnostics) = types::annotations(&comment);
             if documentation.functions.type_annotation.is_none()
                 || types::annotation_spans(&documentation.functions).len() != 1
-                || !documentation.declarations.is_empty()
+                || documentation.declarations.iter().any(|item| {
+                    !matches!(item, types::DeclarationItem::Reference(_))
+                })
                 || !documentation.exclusions.is_empty()
             {
                 break;
             }
             self.pos += 1;
             self.diagnostics.extend(diagnostics);
+            self.documentation_references.extend(
+                documentation.declarations.into_iter().filter_map(|item| {
+                    if let types::DeclarationItem::Reference(reference) = item {
+                        Some(reference)
+                    } else {
+                        None
+                    }
+                }),
+            );
             types::merge_annotations(annotations, documentation.functions, &mut self.diagnostics);
         }
     }

@@ -52,6 +52,7 @@ pub(crate) fn validate(documentation: &ParsedDocumentation, diagnostics: &mut Ve
     }
     for item in &documentation.declarations {
         match item {
+            DeclarationItem::Reference(_) => {}
             DeclarationItem::Named {
                 generics: parameters,
                 kind,

@@ -12,6 +12,8 @@ mod types;
 mod completion_metadata;
 #[cfg(test)]
 mod completion_metadata_tests;
+#[cfg(test)]
+mod documentation_reference_tests;
 
 pub use lexer::{Lexed, Token, TokenKind, lex};
 pub use parser::parse;
@@ -68,6 +70,9 @@ pub struct File {
     /// Canonical original @overload heads. Documentation/function associations
     /// reference these nodes instead of cloning signature-local generic scopes.
     pub overload_annotations: Vec<OverloadAnnotation>,
+    /// Original documentation links. These do not introduce annotation types
+    /// or runtime reads; the source identities remain available to editor hosts.
+    pub documentation_references: Vec<DocumentationReference>,
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
@@ -157,6 +162,13 @@ pub struct TypeExtension {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Name {
     pub text: String,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentationReference {
+    pub target: Name,
+    pub member: Option<Name>,
     pub span: Span,
 }
 

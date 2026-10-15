@@ -14,6 +14,7 @@ pub(crate) struct ParsedDocumentation {
 }
 
 pub(crate) enum DeclarationItem {
+    Reference(crate::DocumentationReference),
     Named {
         name: Name,
         generics: Vec<GenericParameter>,
@@ -82,6 +83,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     | "module"
                     | "field"
                     | "overload"
+                    | "see"
             ) {
                 diagnostics.push(Diagnostic {
                     span: Span::new(tag_offset, tag_offset + 1 + tag_len),
@@ -137,6 +139,22 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 let annotation_span = Span::new(tag_offset, types_offset + types.len());
                 let mut group = FunctionAnnotations::default();
                 match tag_name {
+                    "see" => {
+                        if let Some(target) = parser.declaration_name("@see target") {
+                            let member = if parser.take("#").is_some() {
+                                parser.declaration_name("@see member")
+                            } else {
+                                None
+                            };
+                            result.declarations.push(DeclarationItem::Reference(
+                                crate::DocumentationReference {
+                                    target,
+                                    member,
+                                    span: annotation_span,
+                                },
+                            ));
+                        }
+                    }
                     "overload" => {
                         let ty = parser.primary();
                         if let TypeExprKind::Function(signature) = ty.kind {
