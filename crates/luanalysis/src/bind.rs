@@ -44,6 +44,9 @@ pub enum DeclarationKind {
     Local,
     LocalFunction,
     Parameter,
+    /// Lua's real first parameter in `function receiver:method(...)`.
+    /// Its source declaration is the original colon, not an inserted AST name.
+    ImplicitReceiver,
     LoopVariable,
 }
 
@@ -103,6 +106,14 @@ pub struct BoundFile {
 }
 
 impl BoundFile {
+    pub fn implicit_receiver(&self, function_span: Span) -> Option<BindingId> {
+        let scope = self.scopes.iter().find(|scope| {
+            scope.kind == ScopeKind::Function && scope.span == function_span
+        })?;
+        scope.bindings.iter().copied().find(|binding| {
+            self.declaration(*binding).kind == DeclarationKind::ImplicitReceiver
+        })
+    }
     pub fn declaration(&self, binding: BindingId) -> &Declaration {
         &self.declarations[binding.0]
     }
@@ -247,12 +258,16 @@ impl Binder {
     }
 
     fn declare(&mut self, name: &Name, kind: DeclarationKind, activation: usize) {
+        self.declare_at(&name.text, name.span, kind, activation);
+    }
+
+    fn declare_at(&mut self, name: &str, span: Span, kind: DeclarationKind, activation: usize) {
         let id = BindingId(self.file.declarations.len());
         let scope = self.current_scope();
         self.file.declarations.push(Declaration {
             id,
-            name: name.text.clone(),
-            span: name.span,
+            name: name.to_owned(),
+            span,
             scope,
             kind,
             activation,
@@ -262,8 +277,8 @@ impl Binder {
             .last_mut()
             .unwrap()
             .names
-            .insert(name.text.clone(), id);
-        self.occurrence(name, OccurrenceKind::Declaration, Some(id));
+            .insert(name.to_owned(), id);
+        self.occurrence_at(name, span, OccurrenceKind::Declaration, Some(id));
     }
 
     fn resolve(&self, name: &str) -> Option<BindingId> {
@@ -274,10 +289,14 @@ impl Binder {
     }
 
     fn occurrence(&mut self, name: &Name, kind: OccurrenceKind, binding: Option<BindingId>) {
+        self.occurrence_at(&name.text, name.span, kind, binding);
+    }
+
+    fn occurrence_at(&mut self, name: &str, span: Span, kind: OccurrenceKind, binding: Option<BindingId>) {
         let scope = self.current_scope();
         self.file.occurrences.push(NameOccurrence {
-            name: name.text.clone(),
-            span: name.span,
+            name: name.to_owned(),
+            span,
             scope,
             binding,
             kind,
@@ -348,13 +367,13 @@ impl Binder {
                 }
                 StmtKind::LocalFunction { name, function } => {
                     self.declare(name, DeclarationKind::LocalFunction, name.span.end);
-                    self.function(function);
+                    self.function(function, None);
                 }
                 StmtKind::FunctionDeclaration {
-                    target, function, ..
+                    target, function, method_span
                 } => {
                     self.target(target);
-                    self.function(function);
+                    self.function(function, *method_span);
                 }
                 StmtKind::Return(values) => {
                     for value in values {
@@ -569,7 +588,7 @@ impl Binder {
                     self.expression(&field.value);
                 }
             }
-            ExprKind::Function(function) => self.function(function),
+            ExprKind::Function(function) => self.function(function, None),
             ExprKind::Call { callee, args } => {
                 if self.call_modifies_module_environment(callee, args) {
                     self.file.modified_module_environment = true;
@@ -597,8 +616,11 @@ impl Binder {
         }
     }
 
-    fn function(&mut self, function: &Function) {
+    fn function(&mut self, function: &Function, receiver: Option<Span>) {
         self.enter_scope(ScopeKind::Function, function.span);
+        if let Some(span) = receiver {
+            self.declare_at("self", span, DeclarationKind::ImplicitReceiver, function.body_span.start);
+        }
         for parameter in &function.params {
             self.declare(
                 parameter,

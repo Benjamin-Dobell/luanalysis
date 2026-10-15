@@ -366,9 +366,18 @@ impl SessionQueries<'_, '_, '_> {
             .native_table_value_context(expected, key)
             .map(|ty| self.handles.retain(ty))
     }
+
+    pub(super) fn definition_field_write_native(&mut self, table: &Type, key: &LuaKey, value: &Type) -> Result<Type, TableError> {
+        let table = import_type(self.checker, self.handles, table);
+        let key = import_literal_key(self.checker, key);
+        let value = import_type(self.checker, self.handles, value);
+        self.checker.native_definition_fixed_write(table, key, value)
+            .map(|ty| export_type(self.checker, self.handles, ty))
+            .map_err(|error| export_error(self.checker, self.handles, error))
+    }
 }
 
-fn import_literal_key(checker: &Checker<'_, '_>, key: &LuaKey) -> NativeTableKey {
+pub(super) fn import_literal_key(checker: &Checker<'_, '_>, key: &LuaKey) -> NativeTableKey {
     match key {
         LuaKey::String(bytes) => NativeTableKey::String(checker.atoms().intern(bytes)),
         LuaKey::Integer(value) => NativeTableKey::Integer(*value),

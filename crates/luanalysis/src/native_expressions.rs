@@ -473,6 +473,22 @@ impl NativeRegistry {
     }
     /// Captures only lexical binding-cell constraints. Expected return
     /// inference variables are not part of this immutable environment.
+    pub(crate) fn source_named_function_value(
+        &self,
+        function: &Function,
+        target: &Expr,
+        expected: &Type,
+        mode: NativeCheckMode,
+        queries: &mut dyn TypeQueries,
+    ) -> Type {
+        // The original declaration target is the contextual site. There is no
+        // fabricated function expression or second runtime function identity.
+        let value = self.source_function_value(function, mode, queries);
+        let value = queries.contextual_function_value(&value, self.expression_key(target), expected, mode);
+        self.expressions().retain_final(self.key_for(function), mode, &value);
+        value
+    }
+
     pub(super) fn source_function_value(
         &self,
         function: &Function,

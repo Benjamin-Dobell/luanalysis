@@ -305,6 +305,7 @@ pub trait NativeTypeProvider {
     fn project_query_error(&self, _: NativeProjectError) {}
 
     fn contains_class_definition(&self, _: NativeClassDefinitionKey) -> bool { false }
+    fn type_declaration_self_parameter(&self, _: NativeTypeDeclarationKey) -> Option<NativeTypeParameterKey> { None }
     fn class_definition_header(&self, _: NativeClassDefinitionKey) -> ClassDefinitionHeader { panic!("class definition provider absent") }
     /// Raw written return annotation only. This hook must not inspect the body
     /// or demand its result count. Zero results project to Lua nil in scalar use.
@@ -758,6 +759,7 @@ pub trait TypeQueries {
     fn table_lookup(&mut self, table: &Type, key: &TableKey) -> Result<Type, TableError>;
     fn table_write(&mut self, table: &Type, key: &TableKey, value: &Type)
     -> Result<(), TableError>;
+    fn definition_field_write(&mut self, table: &Type, key: &LuaKey, value: &Type) -> Result<Type, TableError>;
     fn table_value_context(&mut self, table: &Type, key: &TableKey) -> Option<Type>;
     fn array_type(&mut self, element: &Type) -> Type;
     fn retain_pack(&mut self, pack: &ValuePack) -> ValuePack;
@@ -870,6 +872,7 @@ pub trait TypeQueries {
     fn regular_type(&mut self, ty: &Type) -> Type;
     fn union_reduced(&mut self, types: &[Type]) -> Type;
     fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type>;
+    fn property_type_checked(&mut self, ty: &Type, name: &str) -> Result<Option<Type>, TableError>;
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type;
     /// Session-owned automatic declaration sentinel. Keep a separate original
     /// initial value when querying flow; this capability is not ordinary Any.
@@ -905,6 +908,7 @@ pub trait TypeQueries {
     fn named_type_reference(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Result<Type, NamedTypeError>;
     fn named_object_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey>;
     fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
+    fn named_receiver_type(&mut self, class: &Type, receiver: &Type) -> Result<Type, NamedTypeError>;
     fn validate_named_declaration(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
     fn validate_named_member(&mut self, member: NativeTypeMemberKey) -> Result<Type, NamedTypeError>;
 }
@@ -1175,6 +1179,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn table_value_context(&mut self, table: &Type, key: &TableKey) -> Option<Type> {
         self.table_value_context_native(table, key)
+    }
+    fn definition_field_write(&mut self, table: &Type, key: &LuaKey, value: &Type) -> Result<Type, TableError> {
+        self.definition_field_write_native(table, key, value)
     }
     fn array_type(&mut self, element: &Type) -> Type {
         self.array_type_native(element)
@@ -1599,6 +1606,14 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             .map(|ty| export_type(self.checker, self.handles, ty))
     }
 
+    fn property_type_checked(&mut self, ty: &Type, name: &str) -> Result<Option<Type>, TableError> {
+        match self.table_lookup(ty, &TableKey::Literal(LuaKey::String(name.as_bytes().to_vec()))) {
+            Ok(value) => Ok(Some(value)),
+            Err(TableError::MissingKey { .. } | TableError::NotTable { .. }) => Ok(self.property_type(ty, name)),
+            Err(error) => Err(error),
+        }
+    }
+
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type {
         let declared = import_type(self.checker, self.handles, declared);
         let assigned = import_type(self.checker, self.handles, assigned);
@@ -1672,6 +1687,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError> {
         native_named::declared(self, declaration, false)
     }
+    fn named_receiver_type(&mut self, class: &Type, receiver: &Type) -> Result<Type, NamedTypeError> { native_named::receiver(self, class, receiver) }
     fn validate_named_declaration(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError> {
         native_named::declared(self, declaration, true)
     }

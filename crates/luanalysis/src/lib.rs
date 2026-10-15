@@ -17,6 +17,7 @@ mod native_assertions;
 mod native_iterators;
 mod native_functions;
 mod native_named;
+mod native_members;
 mod native_signatures;
 mod native_packs;
 mod native_return_annotations;
@@ -328,6 +329,17 @@ impl Checker<'_> {
     }
 
     fn record_binding(&mut self, name: &Name, binding: BindingId, ty: &Type) {
+        self.record_binding_at(&name.text, name.span, binding, ty);
+    }
+
+    fn record_semantic_binding(&mut self, binding: BindingId, ty: &Type) {
+        let declaration = self.bound.declaration(binding);
+        let name = declaration.name.clone();
+        let span = declaration.span;
+        self.record_binding_at(&name, span, binding, ty);
+    }
+
+    fn record_binding_at(&mut self, name: &str, span: Span, binding: BindingId, ty: &Type) {
         if let Some(native) = self.native.filter(|_| {
             self.contextual_function.is_none()
                 && self.captured_function.is_none()
@@ -340,8 +352,8 @@ impl Checker<'_> {
         }
         self.report.bindings.push(BindingInfo {
             binding,
-            name: name.text.clone(),
-            span: name.span,
+            name: name.to_owned(),
+            span,
             ty: describe(ty),
         });
         self.report.pending_bindings.push((binding, ty.clone()));
@@ -684,7 +696,7 @@ impl Checker<'_> {
             ExprKind::Table(fields) => self.native_table_expression(fields, expr.span, expected),
             ExprKind::Field { base, name } => {
                 let receiver = self.expression(base);
-                let ty = self.native_named_property_read(&receiver, name);
+                let ty = self.native_named_property_read(&receiver, name, base.span);
                 self.native_member_flow_type(expr, ty)
             }
             ExprKind::Function(function) => {

@@ -4,9 +4,9 @@
 //! constraint/default resolution, cycle detection, relations and inference.
 
 use super::Diagnostic;
-use super::native_named::{NamedGenericScopeRecipe, NativeTypeContext};
+use super::native_named::{NamedGenericScopeRecipe, NativeNamedKey, NativeTypeContext};
 use luanalysis_engine::{NativeFunctionKey, NativeTypeParameterKey, Type};
-use luanalysis_syntax::{Name, TypeExpr, TypeExprKind};
+use luanalysis_syntax::{Name, Span, TypeExpr, TypeExprKind};
 use std::collections::{HashMap, HashSet};
 
 pub(super) struct TypeParameterRecipe {
@@ -26,12 +26,17 @@ pub(super) struct TypeParameterSource {
     pub owner: NativeTypeContext,
     pub order: u32,
     pub constraint: Option<TypeExpr>,
+    /// A real semantic class-self parameter. Its constraint is the original
+    /// declared head, not a fabricated generic/constraint AST node.
+    pub semantic_self: Option<NativeNamedKey>,
 }
 
 struct TypeScope {
     // A written generic function-type head supplies body-visible names without
     // changing their original Signature owner or creating a parent cycle.
     annotation_scope: Option<NativeTypeContext>,
+    method_owner: Option<NativeTypeContext>,
+    self_parameter: Option<NativeTypeParameterKey>,
     parent: Option<NativeTypeContext>,
     documentation_parents: Vec<NativeTypeContext>,
     names: HashMap<String, NativeTypeParameterKey>,
@@ -112,6 +117,8 @@ impl NativeTypes {
             );
             let mut scope = TypeScope {
                 annotation_scope: None,
+                method_owner: None,
+                self_parameter: None,
                 parent,
                 documentation_parents,
                 names: HashMap::new(),
@@ -139,6 +146,7 @@ impl NativeTypes {
                     owner,
                     order: u32::try_from(order).expect("type parameter order fits in u32"),
                     constraint: parameter.constraint,
+                    semantic_self: None,
                 });
             }
             assert!(
@@ -147,6 +155,39 @@ impl NativeTypes {
             );
         }
         result
+    }
+
+    pub(super) fn register_self_parameter(&mut self, owner: NativeNamedKey, span: Span) -> NativeTypeParameterKey {
+        let context = NativeTypeContext::NamedType(owner);
+        if let Some(key) = self.scopes[&context].self_parameter { return key }
+        let key = NativeTypeParameterKey {
+            snapshot: self.snapshot,
+            index: self.parameters.len().try_into().expect("semantic self parameter index fits u32"),
+        };
+        self.parameters.push(TypeParameterSource {
+            key,
+            name: Name { text: "self".into(), span },
+            owner: context,
+            order: 0,
+            constraint: None,
+            semantic_self: Some(owner),
+        });
+        self.scopes.get_mut(&context).expect("original class type scope").self_parameter = Some(key);
+        key
+    }
+
+    pub(super) fn self_parameter(&self, owner: NativeNamedKey) -> Option<NativeTypeParameterKey> {
+        self.scopes.get(&NativeTypeContext::NamedType(owner)).and_then(|scope| scope.self_parameter)
+    }
+
+    pub(super) fn attach_method_scope(&mut self, function: NativeFunctionKey, owner: NativeNamedKey) {
+        self.attach_owner_scope(NativeTypeContext::Function(function), owner);
+    }
+
+    pub(super) fn attach_owner_scope(&mut self, member: NativeTypeContext, owner: NativeNamedKey) {
+        let context = NativeTypeContext::NamedType(owner);
+        assert!(self.scopes.contains_key(&context), "original class scope");
+        self.scopes.get_mut(&member).expect("original member scope").method_owner = Some(context);
     }
 
     pub(super) fn attach_signature_scope(&mut self,function:NativeFunctionKey,signature:luanalysis_engine::NativeSignatureKey) {
@@ -190,6 +231,7 @@ impl NativeTypes {
     }
 
     pub(super) fn siblings(&self, key: NativeTypeParameterKey) -> Vec<NativeTypeParameterKey> {
+        if self.parameter(key).semantic_self.is_some() { return vec![key] }
         self.own_parameters_in_context(self.parameter(key).owner)
     }
 
@@ -206,22 +248,22 @@ impl NativeTypes {
 
     pub(super) fn resolve_name_in_context(
         &self,
-        mut context: Option<NativeTypeContext>,
+        context: Option<NativeTypeContext>,
         name: &str,
     ) -> TypeNameResolution {
-        let mut remaining = self.scopes.len();
-        while let Some(owner) = context {
-            assert!(remaining > 0, "cyclic lexical generic-owner metadata");
-            remaining -= 1;
+        let mut pending: Vec<_> = context.into_iter().collect();
+        let mut visited = HashSet::new();
+        while let Some(owner) = pending.pop() {
+            if !visited.insert(owner) { continue }
             let Some(scope) = self.scopes.get(&owner) else {
                 return TypeNameResolution::Missing;
             };
-            if let Some(key) = scope.names.get(name) {
-                return TypeNameResolution::Parameter(*key);
+            if let Some(key) = own_name(scope, name) {
+                return TypeNameResolution::Parameter(key);
             }
             if let Some(annotation)=scope.annotation_scope {
-                if let Some(key)=self.scopes[&annotation].names.get(name) {
-                    return TypeNameResolution::Parameter(*key);
+                if let Some(key)=own_name(&self.scopes[&annotation], name) {
+                    return TypeNameResolution::Parameter(key);
                 }
             }
             // These are sibling documentation scopes, not recursive alias
@@ -230,7 +272,7 @@ impl NativeTypes {
                 .documentation_parents
                 .iter()
                 .filter_map(|owner| self.scopes.get(owner))
-                .filter_map(|scope| scope.names.get(name).copied())
+                .filter_map(|scope| own_name(scope, name))
                 .collect();
             candidates.sort_by_key(|key| key.index);
             candidates.dedup();
@@ -239,7 +281,8 @@ impl NativeTypes {
                 1 => return TypeNameResolution::Parameter(candidates[0]),
                 _ => return TypeNameResolution::Ambiguous(candidates),
             }
-            context = scope.parent;
+            if let Some(parent) = scope.parent { pending.push(parent); }
+            if let Some(owner) = scope.method_owner { pending.push(owner); }
         }
         TypeNameResolution::Missing
     }
@@ -328,41 +371,30 @@ impl NativeTypes {
         owner: NativeTypeContext,
         used: &HashSet<NativeTypeParameterKey>,
     ) -> Vec<NativeTypeParameterKey> {
-        let mut parents = Vec::new();
         let scope = self
             .scopes
             .get(&owner)
             .expect("original generic owner scope");
-        let mut parent = scope.parent;
-        let documentation_parents: Vec<_> = scope
-            .documentation_parents
-            .iter()
-            .map(|owner| {
-                self.scopes
-                    .get(owner)
-                    .expect("original documentation generic owner scope")
-            })
-            .collect();
-        let mut remaining = self.scopes.len();
-        while let Some(owner) = parent {
-            assert!(remaining > 0, "cyclic lexical generic-owner metadata");
-            remaining -= 1;
-            let scope = self
-                .scopes
-                .get(&owner)
-                .expect("enclosing generic owner scope");
-            parents.push(scope);
-            parent = scope.parent;
+        let mut pending: Vec<_> = scope.parent.into_iter().chain(scope.method_owner).chain(scope.documentation_parents.iter().copied()).collect();
+        let mut visited = HashSet::new();
+        let mut parameters = Vec::new();
+        while let Some(owner) = pending.pop() {
+            if !visited.insert(owner) { continue }
+            let scope = self.scopes.get(&owner).expect("original enclosing generic owner scope");
+            parameters.extend(scope.parameters.iter().copied().chain(scope.self_parameter));
+            pending.extend(scope.parent);
+            pending.extend(scope.method_owner);
+            pending.extend(scope.documentation_parents.iter().copied());
         }
-        let mut seen = HashSet::new();
-        parents
-            .into_iter()
-            .rev()
-            .chain(documentation_parents)
-            .flat_map(|scope| scope.parameters.iter().copied())
-            .filter(|key| used.contains(key) && seen.insert(*key))
-            .collect()
+        parameters.retain(|key| used.contains(key));
+        parameters.sort_by_key(|key| key.index);
+        parameters.dedup();
+        parameters
     }
+}
+
+fn own_name(scope: &TypeScope, name: &str) -> Option<NativeTypeParameterKey> {
+    scope.names.get(name).copied().or_else(|| (name == "self").then_some(scope.self_parameter).flatten())
 }
 
 fn context_snapshot(context: NativeTypeContext) -> u64 {

@@ -4258,13 +4258,13 @@ impl<'p, 's> Checker<'p, 's> {
         match data {
             TypeData::NativeDefinition(reference) => {
                 let declared = self.intern(TypeData::NativeObject(NativeObjectReference {
-                    declaration: reference.class.declaration, mapper: MapperId::IDENTITY,
+                    declaration: reference.class.declaration, mapper: MapperId::IDENTITY, self_argument: None,
                 }));
                 (8, declared.0, 0)
             }
             TypeData::NativeObject(reference) => {
                 let declared = self.intern(TypeData::NativeObject(NativeObjectReference {
-                    declaration: reference.declaration, mapper: MapperId::IDENTITY,
+                    declaration: reference.declaration, mapper: MapperId::IDENTITY, self_argument: None,
                 }));
                 (8, declared.0, 0)
             }
@@ -5273,6 +5273,7 @@ impl<'p, 's> Checker<'p, 's> {
         state: u8,
         shared: &mut WorkerState,
     ) -> Ternary {
+        let target = self.native_receiver_relation_target(source, target);
         let source = match self.native_object_relation_view(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
         let target = match self.native_object_relation_view(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
         let native_call_contract = self.native_object_has_call_signatures(source) || self.native_object_has_call_signatures(target);

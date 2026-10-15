@@ -422,6 +422,9 @@ impl NativeTypeProvider for ProjectRegistry {
     }
     fn type_declaration_error(&self, error: NamedTypeError) {
         let snapshot = match &error {
+            NamedTypeError::InvalidReceiver { .. } | NamedTypeError::UnsupportedReceiverType { .. } => {
+                unreachable!("receiver failures belong to their original expression query")
+            },
             NamedTypeError::InvalidDefinition(owner)
             | NamedTypeError::DefinitionOwner { owner, .. }
             | NamedTypeError::DefinitionInitializer { owner, .. }
@@ -454,6 +457,7 @@ impl NativeTypeProvider for ProjectRegistry {
     }
 
     dispatch! {
+        fn type_declaration_self_parameter(key: NativeTypeDeclarationKey) -> Option<NativeTypeParameterKey>;
         fn signature_header(key: NativeSignatureKey) -> SignatureHeader;
         fn function_overload_signatures(key: NativeFunctionKey) -> Vec<NativeSignatureKey>;
         fn signature_type_parameters(key: NativeSignatureKey) -> Vec<NativeTypeParameterKey>;

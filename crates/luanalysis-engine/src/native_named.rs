@@ -97,6 +97,8 @@ pub enum NamedTypeQuery {
 #[derive(Clone, Debug, PartialEq)]
 pub enum NamedTypeError {
     InvalidDefinition(NativeClassDefinitionKey),
+    InvalidReceiver { declaration: NativeTypeDeclarationKey, expected: Type, actual: Type },
+    UnsupportedReceiverType { actual: Type },
     DefinitionOwner { owner: NativeClassDefinitionKey, expected: NativeTypeDeclarationKey, actual: Type },
     DefinitionInitializer { owner: NativeClassDefinitionKey, actual: Type },
     DefinitionField { owner: NativeClassDefinitionKey, error: TableError },
@@ -190,6 +192,7 @@ fn source_kind(kind: NativeTypeDeclarationKind) -> TypeDeclarationKind {
 }
 
 impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_, P> {
+    fn type_declaration_self_parameter(&self, key: NativeTypeDeclarationId) -> Option<bun_sema::types::NativeTypeParamId> { self.provider.type_declaration_self_parameter(source_declaration(key)).map(super::core_parameter_key) }
     fn contains_class_definition(&self, key: NativeDefinitionId) -> bool {
         self.provider.contains_class_definition(source_definition(key))
     }
@@ -359,6 +362,14 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
     }
 }
 
+pub(super) fn receiver(queries: &mut SessionQueries<'_, '_, '_>, class: &Type, receiver: &Type) -> Result<Type, NamedTypeError> {
+    let class = import_type(queries.checker, queries.handles, class);
+    let receiver = import_type(queries.checker, queries.handles, receiver);
+    queries.checker.native_receiver_type(class, receiver)
+        .map(|ty| export_type(queries.checker, queries.handles, ty))
+        .map_err(|error| export_error(queries.checker, queries.handles, error))
+}
+
 pub(super) fn resolve(
     queries: &mut SessionQueries<'_, '_, '_>,
     declaration: NativeTypeDeclarationKey,
@@ -412,6 +423,8 @@ pub(super) fn export_error(
 ) -> NamedTypeError {
     use bun_sema::check::native_named::NativeTypeDeclarationQuery as Q;
     match error {
+        NativeNamedTypeError::InvalidReceiver { declaration, expected, actual } => NamedTypeError::InvalidReceiver { declaration: source_declaration(declaration), expected: export_type(checker, handles, expected), actual: export_type(checker, handles, actual) },
+        NativeNamedTypeError::UnsupportedReceiverType { actual } => NamedTypeError::UnsupportedReceiverType { actual: export_type(checker, handles, actual) },
         NativeNamedTypeError::InvalidDefinition(owner) => NamedTypeError::InvalidDefinition(source_definition(owner)),
         NativeNamedTypeError::DefinitionOwner { owner,expected,actual } => NamedTypeError::DefinitionOwner { owner:source_definition(owner),expected:source_declaration(expected),actual:export_type(checker,handles,actual) },
         NativeNamedTypeError::DefinitionInitializer { owner,actual } => NamedTypeError::DefinitionInitializer { owner:source_definition(owner),actual:export_type(checker,handles,actual) },

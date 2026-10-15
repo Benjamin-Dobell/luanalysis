@@ -182,6 +182,7 @@ impl Checker<'_> {
         &mut self,
         receiver: &Type,
         name: &luanalysis_syntax::Name,
+        receiver_span: Span,
     ) -> Type {
         let key = TableKey::Literal(LuaKey::String(name.text.as_bytes().to_vec()));
         match self.engine.table_lookup(receiver, &key) {
@@ -203,7 +204,7 @@ impl Checker<'_> {
                 Type::Unknown
             }
             Err(error) => {
-                self.native_table_error(error, name.span, name.span);
+                self.native_table_error(error, name.span, receiver_span);
                 Type::Unknown
             }
         }
@@ -264,7 +265,7 @@ impl Checker<'_> {
         }
     }
 
-    fn native_table_error(&mut self, error: TableError, key_span: Span, value_span: Span) {
+    pub(super) fn native_table_error(&mut self, error: TableError, key_span: Span, value_span: Span) {
         let (code, origin, message) = match error {
             TableError::InvalidKey { key } => (
                 "TS2538",

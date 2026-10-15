@@ -135,7 +135,7 @@ impl Checker<'_> {
             if function.annotations.vararg.is_none() {
                 return self
                     .engine
-                    .contextual_rest_pack(&context, function.params.len());
+                    .contextual_rest_pack(&context, function.params.len() + usize::from(native.implicit_receiver(function).is_some()));
             }
         }
         self.engine
@@ -316,6 +316,8 @@ impl Checker<'_> {
                     }
                 }
             });
+        let receiver = self.native.and_then(|native| native.implicit_receiver(function));
+        let offset = usize::from(receiver.is_some());
         let mut seen = HashSet::new();
         for tag in &function.annotations.params {
             if !seen.insert(&tag.name.text) {
@@ -325,7 +327,7 @@ impl Checker<'_> {
                     format!("duplicate annotation for parameter '{}'", tag.name.text),
                 );
             }
-            if !function
+            if !(receiver.is_some() && tag.name.text == "self") && !function
                 .params
                 .iter()
                 .any(|param| param.text == tag.name.text)
@@ -339,6 +341,24 @@ impl Checker<'_> {
         }
         let mut params = Vec::new();
         let mut optional_seen = false;
+        if let Some(binding) = receiver {
+            let tag = (!function.params.iter().any(|parameter| parameter.text == "self"))
+                .then(|| function.annotations.params.iter().find(|tag| tag.name.text == "self")).flatten();
+            let (ty, optional) = if let Some(tag) = tag {
+                (self.annotation(&tag.ty), tag.optional)
+            } else if let Some(parameter) = context.as_ref().and_then(|context| context.params.first()) {
+                (parameter.ty.clone(), parameter.optional)
+            } else if let Some(ty) = self.contextual_function.and_then(|context| self.engine.contextual_parameter_type(&context, 0)) {
+                (ty, false)
+            } else if let Some(ty) = self.native.and_then(|native| native.default_receiver_type(function, self.engine)) {
+                (ty, false)
+            } else {
+                self.error("TS7006", self.bound.declaration(binding).span, "The implicit receiver has no type contract.");
+                (Type::Any, false)
+            };
+            optional_seen = optional;
+            params.push(Parameter { name: "self".into(), ty, optional });
+        }
         for (index, param) in function.params.iter().enumerate() {
             let (ty, optional) = if let Some(tag) = function
                 .annotations
@@ -349,12 +369,12 @@ impl Checker<'_> {
                 (self.annotation(&tag.ty), tag.optional)
             } else if let Some(expected) = context
                 .as_ref()
-                .and_then(|context| context.params.get(index))
+                .and_then(|context| context.params.get(index + offset))
             {
                 (expected.ty.clone(), expected.optional)
             } else if let Some(ty) = self
                 .contextual_function
-                .and_then(|context| self.engine.contextual_parameter_type(&context, index))
+                .and_then(|context| self.engine.contextual_parameter_type(&context, index + offset))
             {
                 (ty, false)
             } else {
@@ -449,14 +469,7 @@ impl Checker<'_> {
         function: &Function,
         method_span: Option<Span>,
     ) {
-        if let Some(span) = method_span {
-            self.error(
-                "LUA2021",
-                span,
-                "method definitions require the implicit receiver integration",
-            );
-            return;
-        }
+        let _ = method_span; // The original receiver binding is owned by the binder.
         if let ExprKind::Name(name) = &target.kind {
             if self.bound.binding_at(name.span.start).is_none() {
                 if let Some(constraint) = self.global_read(name) {
@@ -472,7 +485,10 @@ impl Checker<'_> {
                 return;
             }
         }
-        let ty = self.function_expression(function);
+        let expected = self.assignment_target_context(target);
+        let ty = if let (Some(native), Some(expected)) = (self.native, expected.as_ref()) {
+            native.source_named_function_value(function, target, expected, self.check_mode, self.engine)
+        } else { self.function_expression(function) };
         self.assign_values(std::slice::from_ref(target), vec![(ty, function.span)]);
     }
 
@@ -485,7 +501,14 @@ impl Checker<'_> {
         for binding in self.locals.values_mut() {
             binding.value = binding.constraint.clone();
         }
-        for (name, param) in function.params.iter().zip(&signature.params) {
+        let receiver = self.bound.implicit_receiver(function.span);
+        if let Some(binding) = receiver {
+            let param = &signature.params[0];
+            let ty = if param.optional { Type::Union(vec![param.ty.clone(), Type::Nil]) } else { param.ty.clone() };
+            self.locals.insert(binding, Binding { constraint: ty.clone(), initial: ty.clone(), value: ty.clone(), evolves_from_nil: false });
+            self.record_semantic_binding(binding, &ty);
+        }
+        for (name, param) in function.params.iter().zip(signature.params.iter().skip(usize::from(receiver.is_some()))) {
             let binding = self
                 .bound
                 .binding_at(name.span.start)

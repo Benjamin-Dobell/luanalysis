@@ -3202,15 +3202,21 @@ impl<'p, 's> Checker<'p, 's> {
                 },
                 TypeData::Template { types, .. } => left.extend_from_slice(types),
                 TypeData::NativeArray { element, .. } => left.push(*element),
-                TypeData::NativeObject(reference) => left.extend(values(reference.mapper)),
+                TypeData::NativeObject(reference) => {
+                    left.extend(values(reference.mapper));
+                    left.extend(reference.self_argument);
+                }
                 TypeData::NativeDefinition(reference) => {
                     left.push(reference.view);
                     left.extend(values(reference.class.mapper));
+                    left.extend(reference.class.self_argument);
                 }
                 TypeData::NativeTable(table) => {
                     left.extend(table.fields.iter().map(|field| field.value));
                     for indexer in &table.indexers { left.extend([indexer.key, indexer.value]); }
                     left.extend(table.sequence_tails.iter().map(|tail| tail.value));
+                    if let Some(reference) = table.nominal_origin { left.extend(reference.self_argument); }
+                    if let Some(reference) = table.definition_origin { left.extend(reference.class.self_argument); }
                 }
                 TypeData::Anon { mapper, .. }
                 | TypeData::NativeTypeParam { mapper, .. }

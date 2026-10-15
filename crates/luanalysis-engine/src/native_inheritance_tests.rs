@@ -1,6 +1,9 @@
 use crate::*;
 use std::cell::{Cell,RefCell};
 
+#[path = "native_self_tests.rs"]
+mod native_self;
+
 fn key(index:u32)->NativeTypeDeclarationKey {NativeTypeDeclarationKey{snapshot:92001,index}}
 fn param(index:u32)->NativeTypeParameterKey {NativeTypeParameterKey{snapshot:92001,index}}
 fn reference(index:u32,args:Vec<Type>)->Type {Type::NativeNamedReference{declaration:key(index),arguments:args}}

@@ -2326,6 +2326,7 @@ impl<'p, 's> Checker<'p, 's> {
         need_apparent_type: bool,
     ) -> TypeId {
         match self.data(ty) {
+            TypeData::NativeObject(_) | TypeData::NativeDefinition(_) | TypeData::NativeTable(_) => self.native_with_receiver(ty, this_argument),
             TypeData::Ref { target, .. } => {
                 let declared = self.declared_type(*target);
                 let args = self.type_arguments(ty);

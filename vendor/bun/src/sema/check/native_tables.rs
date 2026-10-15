@@ -559,7 +559,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub fn native_table_read(&mut self, table: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
         let table = self.native_runtime_carrier(table);
-        if let TypeData::NativeDefinition(reference) = *self.data(table) { return self.native_table_read(reference.view, key) }
+        if let Some(reference) = self.native_definition_ref(table) { return self.native_definition_member_read(reference, table, key) }
         if let TypeData::NativeObject(reference) = *self.data(table) {
             return self.native_named_read(reference, key);
         }
@@ -579,7 +579,7 @@ impl<'p, 's> Checker<'p, 's> {
             return Ok(self.union_reduced(&values));
         }
         let base = self.base_constraint_or_type(table);
-        if base != table { return self.native_table_read(base, key) }
+        if base != table { let base = self.type_with_this_argument(base, table); return self.native_table_read(base, key) }
         if self.is_array_or_tuple(table) { return Err(NativeTableError::NotTable { ty: table }) }
         let TypeData::NativeTable(data) = self.data(table) else {
             if let NativeTableAccessKey::Literal(NativeTableKey::String(name)) = key
@@ -673,7 +673,7 @@ impl<'p, 's> Checker<'p, 's> {
             return Ok(());
         }
         let base = self.base_constraint_or_type(table);
-        if base != table { return self.native_table_write(base, key, value) }
+        if base != table { let base = self.type_with_this_argument(base, table); return self.native_table_write(base, key, value) }
         if self.is_array_or_tuple(table) { return Err(NativeTableError::NotTable { ty: table }) }
         let TypeData::NativeTable(data) = self.data(table) else {
             if let NativeTableAccessKey::Literal(NativeTableKey::String(name)) = key

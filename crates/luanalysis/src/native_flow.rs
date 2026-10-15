@@ -890,6 +890,8 @@ impl NativeFlowSources {
             NativeWriteRelation::Exact
         } else if target.path.len() < query.path.len() && query.path.starts_with(&target.path) {
             NativeWriteRelation::Ancestor
+        } else if target.path.len() == query.path.len() + 1 && !matches!(target.path.last(), Some(flow::Key::Dynamic(_))) {
+            NativeWriteRelation::Descendant
         } else {
             NativeWriteRelation::Unaffected
         }
@@ -1012,6 +1014,17 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         at: NativeFlowKey,
     ) -> NativeWriteRelation {
         self.sources.write_affects(reference, target, at)
+    }
+    fn write_member_key(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<luanalysis_engine::LuaKey> {
+        if self.sources.write_affects(reference, target, at) != NativeWriteRelation::Descendant { return None; }
+        let target = self.sources.source_reference(target)?;
+        Some(match target.path.last()? {
+            flow::Key::String(value) => luanalysis_engine::LuaKey::String(value.clone()),
+            flow::Key::Boolean(value) => luanalysis_engine::LuaKey::Boolean(*value),
+            flow::Key::Integer(value) => luanalysis_engine::LuaKey::Integer(*value),
+            flow::Key::Float(value) => luanalysis_engine::LuaKey::Number(f64::from_bits(*value)),
+            flow::Key::Dynamic(_) => return None,
+        })
     }
     fn value_type(
         &self,

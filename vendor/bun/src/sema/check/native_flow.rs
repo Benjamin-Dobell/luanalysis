@@ -38,6 +38,9 @@ pub enum NativeWriteRelation {
     Exact,
     /// Replacing an ancestor invalidates the descendant reference facts.
     Ancestor,
+    /// A single frozen literal child of the queried receiver. The provider supplies its key;
+    /// the native transfer, rather than the source graph, owns the resulting value view.
+    Descendant,
     Unaffected,
 }
 
@@ -233,6 +236,7 @@ pub struct NativeIteratorProjection {
 }
 
 pub trait NativeFlowProvider {
+    fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
     fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
@@ -308,6 +312,7 @@ struct NativeDomain<'a> {
 }
 
 enum NativeTransfer {
+    DefinitionWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey },
     Predicate(NativePredicate, bool),
     PackPredicate { predicate: NativePredicate, sense: bool, group: NativeReferenceKey },
     Iteration(NativeFlowKey, NativeIteratorStage),
@@ -552,6 +557,11 @@ impl FlowDomain for NativeDomain<'_> {
                         FlowStep::Value(checker.resolved_assignment_type(walk.declared, assigned))
                     }
                     NativeWriteRelation::Ancestor => FlowStep::Value(walk.declared),
+                    NativeWriteRelation::Descendant => FlowStep::Follow {
+                        before,
+                        transfer: Some(NativeTransfer::DefinitionWrite { at, target, value, input }),
+                        count_passed: false,
+                    },
                     NativeWriteRelation::Unaffected => FlowStep::Follow {
                         before,
                         transfer: None,
@@ -654,6 +664,13 @@ impl FlowDomain for NativeDomain<'_> {
         previous: FlowType,
     ) -> FlowType {
         let ty = match transfer {
+            NativeTransfer::DefinitionWrite { at, target, value, input } => {
+                if checker.native_definition_flow_target(previous.ty)
+                    && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
+                    let value = checker.native_flow_value(self.provider, value, input);
+                    checker.native_definition_flow_write(previous.ty, key, value)
+                } else { previous.ty }
+            }
             NativeTransfer::Iteration(at, stage) => checker.native_iterator_step(self.provider, at, stage, NativeResultPack { ty: previous.ty }).ty,
             NativeTransfer::GenericIteration(sense) => checker.native_iterator_filter(NativeResultPack { ty: previous.ty }, sense).ty,
             NativeTransfer::PackPredicate { predicate, sense, group } => {

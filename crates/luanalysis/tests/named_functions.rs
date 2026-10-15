@@ -54,22 +54,6 @@ fn invalid_member_definition_returns_keep_original_body_ranges() {
 }
 
 #[test]
-fn implicit_receivers_stay_explicit_semantic_gates() {
-    for (source, origin) in [(
-        "local object = {}\nfunction object:read() return 1 end",
-        ":",
-    )] {
-        let report = check(source);
-        let gate = report
-            .diagnostics
-            .iter()
-            .find(|error| error.code == "LUA2021")
-            .unwrap();
-        assert_eq!(&source[gate.span.start..gate.span.end], origin);
-    }
-}
-
-#[test]
 fn original_global_functions_now_infer_through_the_native_global_binding() {
     let report = check("function global() return 1 end\nlocal answer = global()\n");
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);

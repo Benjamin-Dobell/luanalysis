@@ -6,7 +6,7 @@
 //! arbitrary table indexers require their own later native boundaries.
 
 use super::{Checker, describe};
-use luanalysis_engine::{PackArgument, Type, ValuePack};
+use luanalysis_engine::{PackArgument, TableError, Type, ValuePack};
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, Name, Span, UnaryOperator};
 
 impl Checker<'_> {
@@ -326,14 +326,20 @@ impl Checker<'_> {
         let receiver_type = self.expression(receiver);
         let callee = if matches!(receiver_type, Type::Any) {
             Type::Any
-        } else if let Some(callee) = self.engine.property_type(&receiver_type, &name.text) {
-            self.reference(receiver)
+        } else {
+            match self.engine.property_type_checked(&receiver_type, &name.text) {
+            Ok(Some(callee)) => self.native.is_none().then(|| self.reference(receiver)).flatten()
                 .and_then(|mut reference| {
                     reference.path.push(name.text.clone());
                     self.assigned_fields.get(&reference).cloned()
                 })
-                .unwrap_or(callee)
-        } else {
+                .unwrap_or(callee),
+            Err(TableError::ValueType { value, expected }) => {
+                let message = format!("Receiver type '{}' does not satisfy '{}'.", self.engine.format(&value), self.engine.format(&expected));
+                self.error("TS2345", receiver.span, message);
+                self.engine.error_type()
+            }
+            Ok(None) | Err(TableError::KeyType { .. } | TableError::MissingKey { .. } | TableError::NotTable { .. }) => {
             self.error(
                 "TS2339",
                 name.span,
@@ -344,6 +350,9 @@ impl Checker<'_> {
                 ),
             );
             Type::Any
+            }
+            Err(error) => { self.native_table_error(error, name.span, receiver.span); self.engine.error_type() }
+            }
         };
         self.record_expression_type(name.span, &callee);
         let receiver_argument = if let Some(native) = self.native {

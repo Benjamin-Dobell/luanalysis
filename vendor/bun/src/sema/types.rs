@@ -2385,12 +2385,14 @@ impl<'p, 's> Types<'p, 's> {
                     .difference(ObjectFlags::PROPAGATING_FLAGS),
             },
             TypeData::NativeArray { element, .. } => self.object_flags(*element),
-            TypeData::NativeObject(reference) => self.mapper_record(reference.mapper).1
+            TypeData::NativeObject(reference) => (self.mapper_record(reference.mapper).1
+                | reference.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty)))
                 .difference(ObjectFlags::PROPAGATING_FLAGS),
             TypeData::NativeDefinition(reference) => self.object_flags(reference.view)
-                | self.mapper_record(reference.class.mapper).1.difference(ObjectFlags::PROPAGATING_FLAGS),
+                | (self.mapper_record(reference.class.mapper).1
+                    | reference.class.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty))).difference(ObjectFlags::PROPAGATING_FLAGS),
             TypeData::NativeTable(table) => {
-                let origin_flags = table.nominal_origin.map_or(ObjectFlags::empty(), |origin| self.mapper_record(origin.mapper).1);
+                let origin_flags = table.nominal_origin.map_or(ObjectFlags::empty(), |origin| self.mapper_record(origin.mapper).1 | origin.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty)));
                 let flags = table.fields.iter().fold(origin_flags, |flags, field| flags | self.object_flags(field.value));
                 let flags = table.indexers.iter().fold(flags, |flags, indexer| flags | self.object_flags(indexer.key) | self.object_flags(indexer.value));
                 let flags = table.sequence_tails.iter().fold(flags, |flags, tail| flags | self.object_flags(tail.value));
@@ -3528,7 +3530,7 @@ follow_enum!(SigData<'_> {
     SigData::WithNativeResultPack { sig, pack } => (sig, pack),
 });
 follow_struct!(NativeCapturedBinding { declaration, ty });
-follow_struct!(NativeObjectReference { declaration, mapper });
+follow_struct!(NativeObjectReference { declaration, mapper, self_argument });
 follow_struct!(NativeDefinitionRef { owner, class, view });
 follow_struct!(NativeTableField { key, value, optional, readonly });
 follow_struct!(NativeTableIndexer { key, value, readonly, sparse });

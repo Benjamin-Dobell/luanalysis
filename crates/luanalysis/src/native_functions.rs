@@ -29,6 +29,8 @@ mod shape_attachment;
 mod class_definitions;
 #[path = "native_assignment_context.rs"]
 mod assignment_context;
+#[path = "native_methods.rs"]
+mod methods;
 #[path = "native_project_provider.rs"]
 pub(crate) mod project_provider;
 #[path = "native_globals.rs"]
@@ -67,6 +69,7 @@ pub(super) struct NativeRegistry {
     pub(super) types: NativeTypes,
     named: NativeNamed,
     class_definitions: class_definitions::NativeClassDefinitions,
+    methods: methods::NativeMethods,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
     globals: globals::NativeGlobals,
     project_globals: Option<std::rc::Rc<globals::ProjectGlobalIndex>>,
@@ -100,7 +103,7 @@ impl NativeRegistry {
             functions,
             function_names,
             function_spans,
-            declarations,
+            mut declarations,
             ..
         } = index;
         let source_function_keys = function_spans
@@ -110,6 +113,16 @@ impl NativeRegistry {
         let named = NativeNamed::new(snapshot, &file, &bound, &source_function_keys)
             .expect("original named declaration metadata");
         let class_definitions = class_definitions::NativeClassDefinitions::new(snapshot, &named);
+        let methods = methods::NativeMethods::new(snapshot, &file, &functions, &function_spans, &bound, &named);
+        for (index, function) in functions.iter().enumerate() {
+            if let Some(receiver) = bound.implicit_receiver(function.span) {
+                declarations.insert(receiver, DeclarationSource::Parameter { function: index as u32, index: 0 });
+                for (parameter_index, parameter) in function.params.iter().enumerate() {
+                    let binding = bound.binding_at(parameter.span.start).expect("original written method parameter");
+                    declarations.insert(binding, DeclarationSource::Parameter { function: index as u32, index: parameter_index + 1 });
+                }
+            }
+        }
         let signatures=super::native_signatures::NativeSignatures::new(snapshot,&file,&functions,&named);
         let mut types = NativeTypes::new_with_named(
             snapshot,
@@ -123,6 +136,18 @@ impl NativeRegistry {
         );
         for (function,signature) in signatures.implementation_scopes(&functions) {
             types.attach_signature_scope(function,signature);
+        }
+        // Semantic self identities are allocated only after all original
+        // written generic keys. They are not class type-argument formals.
+        for source in named.declarations() {
+            if matches!(source.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record {
+                flavor: luanalysis_syntax::NamedRecordKind::Class | luanalysis_syntax::NamedRecordKind::Shape, ..
+            }) {
+                types.register_self_parameter(source.key, source.syntax.name.span);
+            }
+        }
+        for method in methods.sources() {
+            if let Some(owner) = method.class_owner { types.attach_method_scope(method.function, owner); }
         }
         let expressions = NativeExpressions::new(snapshot, &file, &function_spans);
         let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
@@ -148,6 +173,7 @@ impl NativeRegistry {
             types,
             named,
             class_definitions,
+            methods,
             project_names: None,
             globals,
             project_globals: None,
@@ -906,7 +932,18 @@ impl NativeRegistry {
         function: &Function,
         parameters: &[Parameter],
     ) {
-        for (index, (name, parameter)) in function.params.iter().zip(parameters).enumerate() {
+        let receiver = self.bound.implicit_receiver(function.span);
+        let offset = usize::from(receiver.is_some());
+        if let Some(binding) = receiver {
+            let parameter = parameters.first().expect("real Lua receiver parameter");
+            let parameter_type = self.body_parameter_type(self.key_for(function), 0, checker.captured_function, checker.contextual_function, checker.engine)
+                .unwrap_or_else(|| parameter.ty.clone());
+            let ty = if parameter.optional { Type::Union(vec![parameter_type, Type::Nil]) } else { parameter_type };
+            checker.locals.insert(binding, Binding { constraint:ty.clone(), initial:ty.clone(), value:ty.clone(), evolves_from_nil:false });
+            checker.record_semantic_binding(binding, &ty);
+        }
+        for (written_index, (name, parameter)) in function.params.iter().zip(parameters.iter().skip(offset)).enumerate() {
+            let index = written_index + offset;
             let binding = self
                 .bound
                 .binding_at(name.span.start)
@@ -1296,6 +1333,14 @@ impl NativeRegistry {
         if !functions.insert(key) {
             return;
         }
+        if let Some(method) = self.methods.get(key) {
+            if method.implicit_receiver.is_some() {
+                if let Some(owner) = method.class_owner {
+                    if let Some(parameter) = self.types.self_parameter(owner) { used.insert(parameter); }
+                    used.extend(self.types.own_parameters_in_context(NativeTypeContext::NamedType(owner)));
+                }
+            }
+        }
         let function = self.function(key);
         for parameter in &function.annotations.generics {
             if let Some(constraint) = &parameter.constraint {
@@ -1388,7 +1433,23 @@ impl NativeRegistry {
             DeclarationSource::Parameter { function, index } => {
                 let owner = self.key(*function);
                 let function = self.function(owner);
-                let name = &function.params[*index];
+                let offset = usize::from(self.bound.implicit_receiver(function.span).is_some());
+                if *index < offset {
+                    let tag = (!function.params.iter().any(|parameter| parameter.text == "self"))
+                        .then(|| function.annotations.params.iter().find(|tag| tag.name.text == "self")).flatten();
+                    if let Some(tag) = tag {
+                        self.function_annotation_parameter_dependencies(Some(owner), &tag.ty, used);
+                    } else if let Some(method) = self.methods.get(owner) {
+                        if let Some(class) = method.class_owner {
+                            if let Some(parameter) = self.types.self_parameter(class) { used.insert(parameter); }
+                            used.extend(self.types.own_parameters_in_context(NativeTypeContext::NamedType(class)));
+                        } else {
+                            self.value_type_dependencies(&method.receiver, used, functions, bindings);
+                        }
+                    }
+                    return;
+                }
+                let name = &function.params[*index - offset];
                 if let Some(tag) = function
                     .annotations
                     .params
@@ -1813,6 +1874,9 @@ impl NativeTypeProvider for NativeRegistry {
     fn contains_type_declaration(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> bool {
         self.named_contains_declaration(key)
     }
+    fn type_declaration_self_parameter(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> Option<NativeTypeParameterKey> {
+        self.types.self_parameter(crate::native_named::NativeNamedKey { snapshot: key.snapshot, index: key.index })
+    }
     fn type_declaration_header(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> luanalysis_engine::TypeDeclarationHeader {
         self.named_declaration_header(key)
     }
@@ -1937,7 +2001,7 @@ impl NativeTypeProvider for NativeRegistry {
         (function.vararg.is_some()
             && function.annotations.vararg.is_none()
             && function.annotations.type_annotation.is_none())
-        .then_some(function.params.len())
+        .then_some(function.params.len() + usize::from(self.implicit_receiver(function).is_some()))
     }
     fn function_rest_pack_in_context(
         &self,
@@ -2014,7 +2078,15 @@ impl NativeTypeProvider for NativeRegistry {
     }
 
     fn contextual_parameter_indices(&self, key: NativeFunctionKey) -> Vec<usize> {
-        NativeExpressions::contextual_indices(self.function(key))
+        let function = self.function(key);
+        let offset = usize::from(self.implicit_receiver(function).is_some());
+        let mut indices: Vec<_> = NativeExpressions::contextual_indices(function).into_iter().map(|index| index + offset).collect();
+        if offset != 0 && function.annotations.type_annotation.is_none()
+            && (!function.annotations.params.iter().any(|parameter| parameter.name.text=="self")
+                || function.params.iter().any(|parameter| parameter.text=="self")) {
+            indices.insert(0, 0);
+        }
+        indices
     }
     fn function_parameters_in_context(
         &self,
@@ -2103,7 +2175,8 @@ impl NativeTypeProvider for NativeRegistry {
     }
 
     fn has_type_parameter_constraint(&self, key: NativeTypeParameterKey) -> bool {
-        self.types.parameter(key).constraint.is_some()
+        let source = self.types.parameter(key);
+        source.constraint.is_some() || source.semantic_self.is_some()
     }
 
     fn type_parameter_constraint(
@@ -2112,6 +2185,11 @@ impl NativeTypeProvider for NativeRegistry {
         queries: &mut dyn TypeQueries,
     ) -> Option<Type> {
         let source = self.types.parameter(key);
+        if let Some(owner) = source.semantic_self {
+            return Some(queries.named_declared_type(luanalysis_engine::NativeTypeDeclarationKey {
+                snapshot: owner.snapshot, index: owner.index,
+            }).unwrap_or_else(|_| queries.error_type()));
+        }
         let recipe = source.constraint.as_ref()?;
         let mut checker = self.checker(queries);
         match source.owner {
