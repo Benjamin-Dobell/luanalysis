@@ -209,6 +209,13 @@ impl NativeRegistry {
     pub(crate) fn set_source_role(&mut self, role: luanalysis_project::SourceRole) {
         if self.source_role != role {
             self.source_role = role;
+            if role == luanalysis_project::SourceRole::Declaration {
+                for method in self.methods.sources() {
+                    if let Some(owner) = method.declaration_owner {
+                        self.types.attach_method_scope(method.function, owner);
+                    }
+                }
+            }
             self.rebuild_original_members();
         }
     }
@@ -1376,7 +1383,7 @@ impl NativeRegistry {
         }
         if let Some(method) = self.methods.get(key) {
             if method.implicit_receiver.is_some() {
-                if let Some(owner) = method.class_owner {
+                if let Some(owner) = self.method_owner(key) {
                     if let Some(parameter) = self.types.self_parameter(owner) { used.insert(parameter); }
                     used.extend(self.types.own_parameters_in_context(NativeTypeContext::NamedType(owner)));
                 }
@@ -1481,7 +1488,7 @@ impl NativeRegistry {
                     if let Some(tag) = tag {
                         self.function_annotation_parameter_dependencies(Some(owner), &tag.ty, used);
                     } else if let Some(method) = self.methods.get(owner) {
-                        if let Some(class) = method.class_owner {
+                        if let Some(class) = self.method_owner(owner) {
                             if let Some(parameter) = self.types.self_parameter(class) { used.insert(parameter); }
                             used.extend(self.types.own_parameters_in_context(NativeTypeContext::NamedType(class)));
                         } else {

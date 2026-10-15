@@ -107,7 +107,7 @@ impl NativeGlobals {
                 StmtKind::FunctionDeclaration {
                     target,
                     function,
-                    method_span: None,
+                    ..
                 } => {
                     let Some((name, namespace)) = namespace::declaration_target(
                         target,
@@ -491,10 +491,10 @@ impl NativeRegistry {
         let mut names = HashSet::new();
         for parameter in &source.annotations.params {
             if !names.insert(&parameter.name.text)
-                || !source
+                || (!(parameter.name.text == "self" && self.implicit_receiver(source).is_some()) && !source
                     .params
                     .iter()
-                    .any(|name| name.text == parameter.name.text)
+                    .any(|name| name.text == parameter.name.text))
             {
                 checker.error(
                     "LUA2011",

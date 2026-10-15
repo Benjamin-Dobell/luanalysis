@@ -83,7 +83,7 @@ impl NativeRegistry {
         let source = &self.signatures.get(key).signature;
         let mut checker = self.signature_checker(key, queries);
         let mut optional = false;
-        let parameters = source
+        let mut parameters: Vec<_> = source
             .params
             .iter()
             .map(|parameter| {
@@ -114,6 +114,16 @@ impl NativeRegistry {
                 }
             })
             .collect();
+        if let Some(function) = self.signature_method_function(key) {
+            let original = self.function(function);
+            let explicit = (!original.params.iter().any(|parameter| parameter.text == "self"))
+                .then(|| original.annotations.params.iter().find(|parameter| parameter.name.text == "self"))
+                .flatten();
+            let receiver = explicit.map(|parameter| checker.annotation(&parameter.ty))
+                .or_else(|| self.default_receiver_type(original, checker.engine))
+                .unwrap_or_else(|| checker.engine.error_type());
+            parameters.insert(0, Parameter { name: "self".into(), ty: receiver, optional: false });
+        }
         self.merge_report(checker.report);
         parameters
     }
@@ -204,6 +214,12 @@ impl NativeRegistry {
     ) -> Vec<NativeTypeParameterKey> {
         let source = &self.signatures.get(key).signature;
         let mut used = std::collections::HashSet::new();
+        if let Some(function) = self.signature_method_function(key)
+            && let Some(owner) = self.method_owner(function)
+            && let Some(parameter) = self.types.self_parameter(owner)
+        {
+            used.insert(parameter);
+        }
         let context = Some(NativeTypeContext::Signature(key));
         for parameter in &source.generics {
             if let Some(ty) = &parameter.constraint {
@@ -238,6 +254,14 @@ impl NativeRegistry {
             return None;
         };
         (self.implementation_annotation_signature(function) == Some(key)).then_some(function)
+    }
+
+    /// Only public method overload heads omit the source language's implicit
+    /// physical receiver. Nested function-type annotations keep their own slots.
+    fn signature_method_function(&self, key: NativeSignatureKey) -> Option<NativeFunctionKey> {
+        let SignatureOwner::Function(function) = self.signatures.get(key).header.owner else { return None };
+        (self.signatures.function_heads(function).contains(&key)
+            && self.implicit_receiver(self.function(function)).is_some()).then_some(function)
     }
 }
 

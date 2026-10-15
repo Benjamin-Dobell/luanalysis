@@ -19,6 +19,8 @@ pub(super) struct MethodSource {
     pub implicit_receiver: Option<BindingId>,
     /// Exact original attached class binding, never a matching runtime name.
     pub class_owner: Option<NativeNamedKey>,
+    /// Original global attachment, used only for declaration-library recipes.
+    pub declaration_owner: Option<NativeNamedKey>,
 }
 
 pub(super) struct NativeMethods {
@@ -35,6 +37,7 @@ impl NativeMethods {
         named: &NativeNamed,
     ) -> Self {
         let mut owners: HashMap<BindingId, Vec<NativeNamedKey>> = HashMap::new();
+        let mut declaration_owners: HashMap<String, Vec<NativeNamedKey>> = HashMap::new();
         for declaration in named.declarations() {
             if !matches!(
                 declaration.syntax.kind,
@@ -52,27 +55,36 @@ impl NativeMethods {
             else {
                 continue;
             };
-            let RuntimeAttachmentKind::Local { bindings } = &attachment.kind else {
-                continue;
-            };
-            let [binding] = bindings.as_slice() else {
-                continue;
-            };
             if attachment.declarations.len() == 1
                 && named.candidates(&declaration.syntax.name.text).len() == 1
             {
-                owners.entry(*binding).or_default().push(declaration.key);
+                match &attachment.kind {
+                    RuntimeAttachmentKind::Local { bindings } => {
+                        if let [binding] = bindings.as_slice() {
+                            owners.entry(*binding).or_default().push(declaration.key);
+                        }
+                    }
+                    RuntimeAttachmentKind::Assignment { targets } => {
+                        if let [Expr { kind: ExprKind::Name(name), .. }] = targets.as_slice()
+                            && bound.binding_at(name.span.start).is_none()
+                            && !matches!(name.text.as_str(), "_G" | "_ENV")
+                        {
+                            declaration_owners.entry(name.text.clone()).or_default().push(declaration.key);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         let mut methods = Self {
             snapshot,
             sources: vec![None; functions.len()],
         };
-        methods.statements(&file.statements, spans, bound, &owners);
+        methods.statements(&file.statements, spans, bound, &owners, &declaration_owners);
         // Each original function body is indexed once; expression nesting was
         // already traversed by the original function identity collector.
         for function in functions {
-            methods.statements(&function.body, spans, bound, &owners);
+            methods.statements(&function.body, spans, bound, &owners, &declaration_owners);
         }
         methods
     }
@@ -105,6 +117,7 @@ impl NativeMethods {
         spans: &HashMap<(usize, usize), u32>,
         bound: &BoundFile,
         owners: &HashMap<BindingId, Vec<NativeNamedKey>>,
+        declaration_owners: &HashMap<String, Vec<NativeNamedKey>>,
     ) {
         for statement in statements {
             match &statement.kind {
@@ -112,13 +125,13 @@ impl NativeMethods {
                     target,
                     function,
                     method_span,
-                } => self.record(target, function, *method_span, spans, bound, owners),
+                } => self.record(target, function, *method_span, spans, bound, owners, declaration_owners),
                 StmtKind::Assign {
                     targets, values, ..
                 } if targets.len() == values.len() => {
                     for (target, value) in targets.iter().zip(values) {
                         if let Some(function) = function_literal(value) {
-                            self.record(target, function, None, spans, bound, owners);
+                            self.record(target, function, None, spans, bound, owners, declaration_owners);
                         }
                     }
                 }
@@ -126,16 +139,16 @@ impl NativeMethods {
                 | StmtKind::While { body, .. }
                 | StmtKind::Repeat { body, .. }
                 | StmtKind::NumericFor { body, .. }
-                | StmtKind::GenericFor { body, .. } => self.statements(body, spans, bound, owners),
+                | StmtKind::GenericFor { body, .. } => self.statements(body, spans, bound, owners, declaration_owners),
                 StmtKind::If {
                     branches,
                     else_branch,
                 } => {
                     for branch in branches {
-                        self.statements(&branch.body, spans, bound, owners);
+                        self.statements(&branch.body, spans, bound, owners, declaration_owners);
                     }
                     if let Some(branch) = else_branch {
-                        self.statements(&branch.body, spans, bound, owners);
+                        self.statements(&branch.body, spans, bound, owners, declaration_owners);
                     }
                 }
                 _ => {}
@@ -150,6 +163,7 @@ impl NativeMethods {
         spans: &HashMap<(usize, usize), u32>,
         bound: &BoundFile,
         owners: &HashMap<BindingId, Vec<NativeNamedKey>>,
+        declaration_owners: &HashMap<String, Vec<NativeNamedKey>>,
     ) {
         let (receiver, member) = match &target.kind {
             ExprKind::Field { base, name } => {
@@ -178,6 +192,13 @@ impl NativeMethods {
                 }),
             _ => None,
         };
+        let declaration_owner = match &receiver.kind {
+            ExprKind::Name(name) if bound.binding_at(name.span.start).is_none() =>
+                declaration_owners.get(&name.text).and_then(|owners| match owners.as_slice() {
+                    [owner] => Some(*owner), _ => None,
+                }),
+            _ => None,
+        };
         self.sources[index as usize] = Some(MethodSource {
             function: key,
             target: target.clone(),
@@ -186,6 +207,7 @@ impl NativeMethods {
             colon,
             implicit_receiver: bound.implicit_receiver(function.span),
             class_owner,
+            declaration_owner,
         });
     }
 }
@@ -198,6 +220,11 @@ fn function_literal(value: &Expr) -> Option<&Function> {
 }
 
 impl super::NativeRegistry {
+    pub(crate) fn method_owner(&self, key: NativeFunctionKey) -> Option<NativeNamedKey> {
+        let method = self.methods.get(key)?;
+        method.class_owner.or_else(|| (self.source_role() == luanalysis_project::SourceRole::Declaration)
+            .then_some(method.declaration_owner).flatten())
+    }
     pub(crate) fn implicit_receiver(&self, function: &Function) -> Option<BindingId> {
         self.bound.implicit_receiver(function.span)
     }
@@ -205,8 +232,11 @@ impl super::NativeRegistry {
     pub(crate) fn default_receiver_type(&self, function: &Function, queries: &mut dyn TypeQueries) -> Option<Type> {
         let key = self.key_for(function);
         let method = self.methods.get(key)?;
-        if let Some(owner) = method.class_owner {
+        if let Some(owner) = self.method_owner(key) {
             return self.types.self_parameter(owner).map(Type::NativeTypeParameter);
+        }
+        if self.source_role() == luanalysis_project::SourceRole::Declaration {
+            return None;
         }
         // A plain Lua receiver is read at its original pre-write creation
         // point. The native flow walker remains the only value-flow solver.
