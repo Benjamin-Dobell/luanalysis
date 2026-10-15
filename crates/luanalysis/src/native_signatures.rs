@@ -795,6 +795,7 @@ impl NativeSignatures {
     }
     pub(super) fn ambient_function_heads(&self, key: NativeFunctionKey) -> Vec<NativeSignatureKey> {
         let mut heads = self.function_heads(key);
+        if !heads.is_empty() { return heads; }
         if let Some(&main) = self.ambient_mains.get(&key)
             && !heads.contains(&main)
         {
