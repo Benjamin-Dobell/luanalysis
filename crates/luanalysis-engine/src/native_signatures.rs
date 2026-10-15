@@ -10,6 +10,11 @@ use bun_sema::check::native_signatures::{
 };
 use bun_sema::types::{NativeSignatureId, SigParam};
 
+/// Runtime implementation arity policy. Written public signature arity and
+/// body parameter types are independent of this metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FunctionCallingConvention { TypeScript, Lua }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeSignatureKey {
     pub snapshot: u64,
@@ -95,6 +100,9 @@ mod tests {
         implementation_contract: Option<ValuePack>,
         implementation_pack: Option<ValuePack>,
         body_pack_reads: Cell<usize>,
+        calling_convention: FunctionCallingConvention,
+        parameterless_heads: Vec<u32>,
+        implementation_parameter: Type,
     }
     impl Provider {
         fn key(index: u32) -> NativeSignatureKey {
@@ -135,10 +143,16 @@ mod tests {
                 implementation_contract: None,
                 implementation_pack: None,
                 body_pack_reads: Cell::new(0),
+                calling_convention: FunctionCallingConvention::TypeScript,
+                parameterless_heads: Vec::new(),
+                implementation_parameter: Type::Any,
             }
         }
     }
     impl NativeTypeProvider for Provider {
+        fn function_calling_convention(&self, _: NativeFunctionKey) -> FunctionCallingConvention {
+            self.calling_convention
+        }
         fn contains_signature(&self, key: NativeSignatureKey) -> bool {
             key.snapshot == 1219 && (key.index as usize) < self.heads.len()
         }
@@ -178,6 +192,7 @@ mod tests {
             _: &mut dyn TypeQueries,
         ) -> Vec<Parameter> {
             self.parameter_reads.set(self.parameter_reads.get() + 1);
+            if self.parameterless_heads.contains(&key.index) { return Vec::new(); }
             vec![Parameter {
                 name: "value".into(),
                 ty: self.heads[key.index as usize].parameter.clone(),
@@ -233,7 +248,7 @@ mod tests {
                         .and_then(|context| queries.contextual_parameter_type(&context, 0))
                         .unwrap_or(Type::Any)
                 } else {
-                    Type::Any
+                    self.implementation_parameter.clone()
                 },
                 optional: false,
             }]
@@ -739,6 +754,30 @@ mod tests {
                 !queries.signature_implementation_compatible(Provider::key(1), &wrong_parameter)
             );
         });
+    }
+
+    #[test]
+    fn lua_runtime_implementation_arity_is_opt_in_and_keeps_native_type_relations() {
+        for convention in [FunctionCallingConvention::TypeScript, FunctionCallingConvention::Lua] {
+            let mut provider = Provider::new(vec![
+                head(Type::String, Type::String),
+                head(Type::Number, Type::String),
+                head(Type::String, Type::Number),
+            ]);
+            provider.calling_convention = convention;
+            provider.parameterless_heads.push(0);
+            provider.implementation_parameter = Type::String;
+            provider.implementation_contract = Some(ValuePack::single(Type::String));
+            with_provider(provider, |_, queries| {
+                let implementation = queries.function_implementation_type(&Type::NativeFunction(Provider::function(0))).unwrap();
+                assert_eq!(queries.signature_implementation_compatible(Provider::key(0), &implementation), convention == FunctionCallingConvention::Lua);
+                assert!(!queries.signature_implementation_compatible(Provider::key(1), &implementation), "wrong parameter types still fail");
+                assert!(!queries.signature_implementation_compatible(Provider::key(2), &implementation), "wrong result types still fail");
+                assert!(!queries.call(&implementation, &[]).errors.is_empty(), "the compatibility projection does not change the actual implementation signature");
+                assert!(queries.call(&implementation, &[Type::StringLiteral(b"value".to_vec())]).errors.is_empty());
+                assert!(queries.call(&Type::NativeFunction(Provider::function(0)), &[]).errors.is_empty(), "the original public zero-argument head remains callable");
+            });
+        }
     }
 
     #[test]

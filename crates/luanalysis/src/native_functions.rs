@@ -2227,6 +2227,10 @@ impl NativeTypeProvider for NativeRegistry {
     fn contains_function(&self, key: NativeFunctionKey) -> bool {
         key.snapshot == self.snapshot && (key.index as usize) < self.functions.len()
     }
+    fn function_calling_convention(&self, key: NativeFunctionKey) -> luanalysis_engine::FunctionCallingConvention {
+        let _ = self.function(key);
+        luanalysis_engine::FunctionCallingConvention::Lua
+    }
 
     fn function_parameters(
         &self,

@@ -299,6 +299,7 @@ pub enum Type {
 /// Source recipes may use thread-local interior state; release its borrows
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
+    fn function_calling_convention(&self, _: NativeFunctionKey) -> FunctionCallingConvention { FunctionCallingConvention::TypeScript }
     /// The initial standard-library environment whose primitive metatables are selected.
     /// This is independent of the current lexical or global variable named `string`.
     fn primitive_member_environment(&self) -> Option<NativeEnvironmentKey> { None }
@@ -1977,6 +1978,12 @@ struct ProviderAdapter<'a, P> {
 }
 
 impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
+    fn calling_convention(&self, key: NativeFunctionId) -> bun_sema::check::native_signatures::NativeCallingConvention {
+        match self.provider.function_calling_convention(source_key(key)) {
+            FunctionCallingConvention::TypeScript => bun_sema::check::native_signatures::NativeCallingConvention::TypeScript,
+            FunctionCallingConvention::Lua => bun_sema::check::native_signatures::NativeCallingConvention::Lua,
+        }
+    }
     fn declared_result_pack_contract(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Option<NativePackResult> {
         let pack = self.provider.function_declared_scalar_contract(source_key(key), &mut SessionQueries { checker, handles: self.handles })?;
         Some(NativePackResult::Declaration(native_packs::import_declared_pack(checker, self.handles, &pack)))

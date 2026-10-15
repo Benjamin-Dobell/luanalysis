@@ -416,6 +416,9 @@ impl NativeTypeProvider for ProjectRegistry {
         self.owner_if(key.snapshot)
             .is_some_and(|owner| owner.contains_function(key))
     }
+    fn function_calling_convention(&self, key: NativeFunctionKey) -> luanalysis_engine::FunctionCallingConvention {
+        self.owner(key.snapshot).function_calling_convention(key)
+    }
     fn contains_binding(&self, key: NativeBindingKey) -> bool {
         self.owner_if(key.snapshot)
             .is_some_and(|owner| owner.contains_binding(key))

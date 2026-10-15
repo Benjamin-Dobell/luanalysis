@@ -2896,6 +2896,24 @@ impl<'p, 's> Checker<'p, 's> {
         {
             return false;
         }
+        // A Lua implementation physically accepts an omitted fixed argument;
+        // the runtime supplies nil. Project that minimum arity only for this
+        // erased implementation comparison. The original signature's public
+        // parameters, callback contexts, and body types remain unchanged.
+        let source = if self.sig_native_decl(implementation).is_some_and(|(declaration, _)| {
+            self.native_function_provider.is_some_and(|provider| provider.calling_convention(declaration) == super::native_signatures::NativeCallingConvention::Lua)
+        }) {
+            let params: Vec<_> = self.sig_params(source).iter().map(|parameter| SigParam {
+                optional: parameter.optional || !parameter.rest,
+                ..*parameter
+            }).collect();
+            let type_params = self.sig_type_params(source);
+            let this = self.sig_this_type(source);
+            self.types().intern_sig(SigData::Synth {
+                type_params: self.list(&type_params), params: self.list(&params),
+                ret: source_return, this, of: self.list(&[source]), is_union: false,
+            })
+        } else { source };
         // `isSignatureAssignableTo`
         let mut r = Relater::new(Relation::Assignable, self.cycles);
         r.compares_types_assignable = true;

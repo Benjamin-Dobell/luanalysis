@@ -144,6 +144,7 @@ pub enum NativeTypeResult {
 /// Language-specific declaration demands executed in the same checker and query scope.
 /// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
 pub trait NativeFunctionProvider {
+    fn calling_convention(&self, _: NativeFunctionId) -> native_signatures::NativeCallingConvention { native_signatures::NativeCallingConvention::TypeScript }
     fn contains_signature(&self, _: NativeSignatureId) -> bool { false }
     fn signature_intrinsic(&self, _: NativeSignatureId) -> Option<native_intrinsics::NativeIntrinsicSite> { None }
     fn signature_header(&self, _: NativeSignatureId) -> native_signatures::NativeSignatureHeader { panic!("native signature provider is not installed") }

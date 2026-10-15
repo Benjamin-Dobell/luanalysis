@@ -4,6 +4,11 @@ use super::{Checker, NativeFunctionProvider};
 use super::native_named::NativeTypeDeclarationId;
 use crate::types::{MapperId, NativeFunctionId, NativeSignatureId, Shape, SigData, SigId, TypeId};
 
+/// Physical runtime implementation arity is separate from written public
+/// callable contracts. Lua fills omitted fixed arguments with nil.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum NativeCallingConvention { TypeScript, Lua }
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum NativeSignatureOwner {
     Standalone,
