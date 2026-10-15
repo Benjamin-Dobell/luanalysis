@@ -89,7 +89,7 @@ impl<'p, 's> Checker<'p, 's> {
         // UNKNOWN is the broad declared carrier, distinct from the entry pack.
         // NEVER is the initial value before IteratorStart. This keeps the
         // shared walker's ordinary entry-first back-edge policy active.
-        let result = self.native_flow_type(provider, at, frame, TypeId::UNKNOWN, TypeId::NEVER);
+        let result = self.native_flow_iterator_frame(provider, at, frame);
         NativeResultPack { ty: result.ty }
     }
 
@@ -110,13 +110,13 @@ impl<'p, 's> Checker<'p, 's> {
         frame: NativeReferenceKey,
         index: usize,
     ) -> NativeFlowResult {
-        let frame = self.native_flow_type(provider, at, frame, TypeId::UNKNOWN, TypeId::NEVER);
+        let frame = self.native_flow_iterator_frame(provider, at, frame);
         let ty = self.native_pack_slot(NativeResultPack { ty: frame.ty }, index.saturating_add(2));
         NativeFlowResult { ty, incomplete: frame.incomplete, unresolved_auto: false }
     }
 
     pub fn native_flow_iterator_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativeIteratorProjection, ordinary: TypeId) -> NativeFlowResult {
-        let frame = self.native_flow_type(provider, at, projection.frame, TypeId::UNKNOWN, TypeId::NEVER);
+        let frame = self.native_flow_iterator_frame(provider, at, projection.frame);
         let projected = self.native_pack_slot(NativeResultPack { ty: frame.ty }, projection.index);
         let ty = self.map_type(ordinary, |checker, part| {
             if checker.are_comparable(part, projected) { part } else { TypeId::NEVER }

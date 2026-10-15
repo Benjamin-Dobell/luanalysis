@@ -362,7 +362,13 @@ pub trait NativeFlowProvider {
 }
 
 type ValueContext = (NativeValueKey, NativeFlowKey);
-type LoopKey = (NativeFlowKey, NativeReferenceKey, TypeId, TypeId);
+type LoopKey = (NativeFlowKey, NativeReferenceKey, TypeId, TypeId, NativeFlowRole);
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum NativeFlowRole {
+    Reference,
+    IteratorFrame,
+}
 
 pub(super) struct NativeLoopFrame {
     key: LoopKey,
@@ -404,6 +410,7 @@ struct NativeWalk {
     reference: NativeReferenceKey,
     declared: TypeId,
     initial: TypeId,
+    role: NativeFlowRole,
     traversal: WalkState<NativeFlowKey>,
 }
 
@@ -694,7 +701,7 @@ impl FlowDomain for NativeDomain<'_> {
                 None => FlowStep::Initial,
             },
             NativeFlowNode::Unreachable | NativeFlowNode::Return { .. } => {
-                FlowStep::Value(checker.convert_auto_to_any(walk.declared))
+                FlowStep::Value(self.unreachable_branch(checker, walk))
             }
             NativeFlowNode::Unsupported(feature) => {
                 self.provider
@@ -795,7 +802,9 @@ impl FlowDomain for NativeDomain<'_> {
                     return FlowStep::Value(TypeId::ERROR);
                 }
                 if matches!(self.provider.node(at), Some(NativeFlowNode::Loop { .. })) {
-                    FlowStep::Loop { edges }
+                    if edges.is_empty() {
+                        FlowStep::Value(self.unreachable_branch(checker, walk))
+                    } else { FlowStep::Loop { edges } }
                 } else {
                     FlowStep::Branch {
                         edges,
@@ -903,6 +912,11 @@ impl FlowDomain for NativeDomain<'_> {
         reachable || stored.is_none()
     }
     fn unreachable_branch(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk) -> TypeId {
+        if walk.role == NativeFlowRole::IteratorFrame {
+            // No reachable hidden-state rows can flow around this dead edge.
+            // UNKNOWN is the protocol bound, not an iterator/state/control row.
+            return checker.native_result_pack(&[]).ty;
+        }
         // Like TS Flow::Unreachable, an entirely dead continuation is checked
         // against the declaration. Per-reference predicate Never stays intact.
         checker.convert_auto_to_any(walk.declared)
@@ -921,7 +935,7 @@ impl FlowDomain for NativeDomain<'_> {
             .flow_memo
             .native_state
             .loop_types
-            .get(&(node, walk.reference, walk.declared, initial))
+            .get(&(node, walk.reference, walk.declared, initial, walk.role))
             .copied()
     }
     fn loop_active(
@@ -931,7 +945,7 @@ impl FlowDomain for NativeDomain<'_> {
         node: NativeFlowKey,
         initial: TypeId,
     ) -> Option<(TypeId, usize)> {
-        let key = (node, walk.reference, walk.declared, initial);
+        let key = (node, walk.reference, walk.declared, initial, walk.role);
         checker
             .flow_memo
             .native_state
@@ -949,7 +963,7 @@ impl FlowDomain for NativeDomain<'_> {
         ty: TypeId,
     ) {
         checker.flow_memo.native_state.loops.push(NativeLoopFrame {
-            key: (node, walk.reference, walk.declared, initial),
+            key: (node, walk.reference, walk.declared, initial, walk.role),
             ty,
             depth: checker.stack.len(),
             outer_effect_epoch: checker.flow_memo.native_state.effect_epoch,
@@ -981,7 +995,7 @@ impl FlowDomain for NativeDomain<'_> {
             .flow_memo
             .native_state
             .loop_types
-            .insert((node, walk.reference, walk.declared, initial), ty);
+            .insert((node, walk.reference, walk.declared, initial, walk.role), ty);
         checker.flow_memo.flow_loop_cached_at = checker.work;
     }
     fn disabled(&self, checker: &Checker<'_, '_>, _: &NativeWalk) -> bool {
@@ -1005,7 +1019,9 @@ impl FlowDomain for NativeDomain<'_> {
     fn finish(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, ty: TypeId) -> TypeId {
         let ty = checker.finalize_evolving_array(ty);
         if ty == TypeId::UNREACHABLE_NEVER {
-            walk.declared
+            if walk.role == NativeFlowRole::IteratorFrame {
+                checker.native_result_pack(&[]).ty
+            } else { walk.declared }
         } else {
             ty
         }
@@ -1441,6 +1457,30 @@ impl<'s, 'p> Checker<'s, 'p> {
         declared: TypeId,
         initial: TypeId,
     ) -> NativeFlowResult {
+        self.native_flow_type_for_role(provider, at, reference, declared, initial, NativeFlowRole::Reference)
+    }
+
+    /// Hidden generic-for state has a correlated pack protocol rather than an
+    /// ordinary declaration type. Its dead edges carry no reachable rows; the
+    /// original IteratorStart and call workers still determine every live row.
+    pub(super) fn native_flow_iterator_frame(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        at: NativeFlowKey,
+        reference: NativeReferenceKey,
+    ) -> NativeFlowResult {
+        self.native_flow_type_for_role(provider, at, reference, TypeId::UNKNOWN, TypeId::NEVER, NativeFlowRole::IteratorFrame)
+    }
+
+    fn native_flow_type_for_role(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        at: NativeFlowKey,
+        reference: NativeReferenceKey,
+        declared: TypeId,
+        initial: TypeId,
+        role: NativeFlowRole,
+    ) -> NativeFlowResult {
         let error = if !provider.contains_graph(at.graph) {
             NativeFlowError::InvalidGraph(at.graph)
         } else if reference.graph != at.graph || !provider.contains_reference(reference) {
@@ -1454,6 +1494,7 @@ impl<'s, 'p> Checker<'s, 'p> {
                 reference,
                 declared,
                 initial,
+                role,
                 traversal: WalkState::default(),
             };
             let result = self.walk_flow_reference(&domain, &mut walk, at);

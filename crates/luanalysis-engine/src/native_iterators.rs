@@ -241,6 +241,13 @@ mod tests {
                     },
                     sense: at.node == 9,
                 },
+                11 => NativeFlowNode::Unreachable,
+                12 => NativeFlowNode::Merge { edges: vec![Self::at(11)] },
+                13 => NativeFlowNode::Iteration {
+                    before: Self::at(12),
+                    frame: Self::reference(0),
+                    stage: NativeIteratorStage::Next,
+                },
                 _ => return None,
             })
         }
@@ -385,6 +392,24 @@ mod tests {
             assert!(!queries.flow_reachable(&graph, Graph::at(4)));
             assert!(queries.flow_reachable(&graph, Graph::at(6)));
             assert!(graph.errors.borrow().is_empty());
+        });
+    }
+
+    #[test]
+    fn dead_hidden_feedback_has_no_rows_and_does_not_reuse_an_ordinary_unknown_bound() {
+        Engine::new().with_session(|queries| {
+            let iterator = function(queries, Type::Nil, Type::Nil, ValuePack::empty());
+            let graph = Graph::new(ValuePack::Alternatives(vec![row(vec![iterator])]), true);
+            for _ in 0..2 {
+                let ordinary = queries.flow_type(&graph, Graph::at(12), Graph::reference(0), &Type::Unknown, &Type::Never);
+                assert_eq!(queries.inspect_type(&ordinary.ty), Type::Unknown);
+                for point in [Graph::at(11), Graph::at(12), Graph::at(13)] {
+                    let frame = queries.flow_iterator_pack(&graph, point, Graph::reference(0));
+                    assert!(queries.inspect_pack(&frame).expect("unreachable hidden state remains a pack").is_empty());
+                }
+            }
+            assert!(graph.errors.borrow().is_empty());
+            assert!(graph.flow_errors.borrow().is_empty(), "{:?}", graph.flow_errors.borrow());
         });
     }
 
