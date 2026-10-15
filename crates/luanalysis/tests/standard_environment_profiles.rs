@@ -99,6 +99,35 @@ fn code(report: &ProjectCheckReport, code: &str) -> bool {
         .any(|d| d.code == code)
 }
 
+#[test]
+fn gmatch_generic_for_uses_the_returned_iterator_and_checks_the_original_call_arguments() {
+    let fixture = Fixture::new();
+    let source = r#"---@param value string
+local function split(value)
+    ---@type string[]
+    local components={}
+    for component in --[[---@type fun(): string]] string.gmatch(value, "([^ ]+)") do
+        table.insert(components,component)
+    end
+    return components
+end
+"#;
+    let unasserted = "---@param value string\nlocal function inspect(value)\nfor component in string.gmatch(value,'([^ ]+)') do\n---@type number|string\nlocal checked=component\nend\nend\n";
+    for profile in [StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua54] {
+        clean(&fixture.check(source, profile));
+        clean(&fixture.check(unasserted, profile));
+        let parenthesized = source.replace("in --[[---@type fun(): string]] string.gmatch(value, \"([^ ]+)\") do", "in (--[[---@type fun(): string]] string.gmatch(value, \"([^ ]+)\")) do");
+        clean(&fixture.check(&parenthesized, profile));
+        let wrong = source.replace("string.gmatch(value,", "string.gmatch(42,");
+        let report = fixture.check(&wrong, profile);
+        let diagnostics: Vec<_> = report.files.iter().flat_map(|file| &file.report.diagnostics).collect();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].code, "TS2345");
+        assert_eq!(&wrong[diagnostics[0].span.start..diagnostics[0].span.end], "42");
+        clean(&fixture.check(source, profile));
+    }
+}
+
 const GENERIC_PAIRS_COPY: &str = r#"
 ---@generic K, V
 ---@param tab table<K, V>

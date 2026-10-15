@@ -34,7 +34,7 @@ impl<'p, 's> Checker<'p, 's> {
             let iterator = self.native_pack_slot(row, 0);
             let state = self.native_pack_slot(row, 1);
             let control = self.native_pack_slot(row, 2);
-            let called = self.call_resolved_result_pack(iterator, &[state, control], &[], None);
+            let called = self.call_native_iterator_result_pack(iterator, state, control);
             for error in called.errors {
                 provider.iterator_error(at, stage, iterator, error, self);
             }

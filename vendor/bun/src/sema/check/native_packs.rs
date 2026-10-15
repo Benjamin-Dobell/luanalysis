@@ -99,6 +99,12 @@ impl<'p, 's> Checker<'p, 's> {
         self.result_pack_of_native_call(resolved)
     }
 
+    pub(super) fn call_native_iterator_result_pack(&mut self, callee: TypeId, state: TypeId, control: TypeId) -> NativeResultPackCall {
+        let args = [Arg::Resolved(state), Arg::Resolved(control)];
+        let resolved = self.resolve_native_iterator_arguments(callee, &args);
+        self.result_pack_of_native_call(resolved)
+    }
+
     pub fn call_expression_result_pack(
         &mut self,
         callee: TypeId,

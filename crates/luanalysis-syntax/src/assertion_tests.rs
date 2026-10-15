@@ -7,6 +7,16 @@ fn parsed(source: &str) -> File {
 }
 
 #[test]
+fn generic_for_inline_assertion_targets_the_complete_iterator_factory_call() {
+    let source = "for item in --[[---@type fun(): string]] string.gmatch(value, '([^ ]+)') do end";
+    let file = parsed(source);
+    let assertion = &file.expression_assertions[0];
+    assert_eq!(&source[assertion.expression.start..assertion.expression.end], "string.gmatch(value, '([^ ]+)')");
+    let StmtKind::GenericFor { values, .. } = &file.statements[0].kind else { panic!() };
+    assert!(matches!(values[0].kind, ExprKind::Call { .. }));
+}
+
+#[test]
 fn inline_assertions_keep_original_call_and_lvalue_syntax() {
     let source = "local a,b=--[[---@type number,string]] pair()\n;(--[[---@not nil]] object).field=--[[---@type number]] value";
     let file = parsed(source);

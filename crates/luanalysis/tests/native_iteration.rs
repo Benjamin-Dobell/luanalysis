@@ -3,6 +3,60 @@
 
 use luanalysis::{CheckReport, check};
 
+#[test]
+fn generic_for_accepts_ignored_hidden_arguments_and_keeps_declared_argument_checks() {
+    let source = r#"---@function zero():nil|string
+---@function one(state:{value:string}):nil|string
+---@function two(state:string,control:nil|string):nil|string
+for value in zero do
+    ---@type string
+    local zeroValue=value
+end
+for value in one,{value='item'},0 do
+    ---@type string
+    local oneValue=value
+end
+for value in two,'state',nil do
+    ---@type string
+    local twoValue=value
+end
+"#;
+    accepted(source);
+    for (wrong, marker) in [
+        (source.replace("one,{value='item'},0", "one,{value=42},0"), "{value=42}"),
+        (source.replace("two,'state',nil", "two,'state',42"), "42"),
+    ] {
+        let report = check(&wrong);
+        assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(report.diagnostics[0].code, "TS2345");
+        assert_eq!(&wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end], marker);
+    }
+    let wrong_explicit = format!("{source}zero(nil,nil)\n");
+    let report = check(&wrong_explicit);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2554");
+    accepted(&format!("{source}zero()\n"));
+    let wrong_explicit = format!("{source}one({{value='item'}},0)\n");
+    let report = check(&wrong_explicit);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2554");
+    accepted(&format!("{source}one({{value='item'}})\n"));
+}
+
+#[test]
+fn hidden_iterator_invocation_keeps_typed_rest_and_required_third_parameters() {
+    let rest = "---@function nextValue(state:string,...:number):nil|number\nfor value in nextValue,'state',0 do\n---@type number\nlocal checked=value\nend\n";
+    accepted(rest);
+    let report = check(&rest.replace("nextValue,'state',0", "nextValue,'state','wrong'"));
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2345");
+    let third = "---@function nextValue(state:string,control:nil|string,extra:number):nil|string\nfor value in nextValue,'state',nil do end\n";
+    let report = check(third);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2554");
+    accepted(&third.replace("extra:number", "extra?:number"));
+}
+
 const LOCAL_ROW_HEADER: &str = r#"---@shape Packed<T>
 ---@field [number] T
 ---@field n number

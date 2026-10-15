@@ -155,6 +155,12 @@ pub(super) enum AllowMembers {
 }
 
 #[derive(Copy, Clone)]
+pub(super) enum NativeCallRole {
+    Explicit,
+    Iterator,
+}
+
+#[derive(Copy, Clone)]
 pub(super) enum CallSite {
     Ts {
         file: FileId,
@@ -166,6 +172,7 @@ pub(super) enum CallSite {
         expected_return: Option<TypeId>,
         expected_result_pack: Option<NativeResultPack>,
         this_type: Option<TypeId>,
+        role: NativeCallRole,
     },
 }
 
@@ -568,6 +575,22 @@ impl<'p, 's> Checker<'p, 's> {
         expected_return: Option<TypeId>,
         expected_result_pack: Option<NativeResultPack>,
     ) -> ResolvedTypeCall {
+        self.resolve_native_arguments_with_role(callee, args, type_args, expected_return, expected_result_pack, NativeCallRole::Explicit)
+    }
+
+    pub(super) fn resolve_native_iterator_arguments(&mut self, callee: TypeId, args: &[Arg]) -> ResolvedTypeCall {
+        self.resolve_native_arguments_with_role(callee, args, &[], None, None, NativeCallRole::Iterator)
+    }
+
+    fn resolve_native_arguments_with_role(
+        &mut self,
+        callee: TypeId,
+        args: &[Arg],
+        type_args: &[TypeId],
+        expected_return: Option<TypeId>,
+        expected_result_pack: Option<NativeResultPack>,
+        role: NativeCallRole,
+    ) -> ResolvedTypeCall {
         if self.is_any(callee) {
             for &arg in args {
                 match arg {
@@ -627,7 +650,7 @@ impl<'p, 's> Checker<'p, 's> {
             _ => false,
         });
         let mut state = CallState {
-            site: CallSite::Native { expected_return, expected_result_pack, this_type: None },
+            site: CallSite::Native { expected_return, expected_result_pack, this_type: None, role },
             type_args,
             args,
             candidates: SmallVec::from_slice(&candidates),
@@ -1257,6 +1280,15 @@ impl<'p, 's> Checker<'p, 's> {
     ) -> bool {
         let args = s.args;
         if matches!(s.site, CallSite::Native { .. }) {
+            if matches!(s.site, CallSite::Native { role: NativeCallRole::Iterator, .. })
+                && !params.last().is_some_and(|parameter| parameter.rest)
+                && args.len() > params.len()
+            {
+                // Lua supplies both hidden state/control values even when a
+                // fixed-parameter iterator ignores one or both. Keep the full
+                // argument list for inference and declared-parameter checks.
+                return self.has_correct_arity_for_count(params, matches!(params, List::Own(_)), params.len(), None, false);
+            }
             if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(params).is_some() {
                 // Intrinsic identity results need a contextual final demand.
                 // Physical-count probing cannot publish an earlier untyped facet.

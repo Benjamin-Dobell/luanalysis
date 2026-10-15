@@ -361,6 +361,70 @@ mod tests {
     }
 
     #[test]
+    fn hidden_iterator_arguments_may_be_ignored_without_relaxing_explicit_calls() {
+        Engine::new().with_session(|queries| {
+            for count in 0..=2 {
+                let returns = ValuePack::Alternatives(vec![row(vec![Type::String]), row(vec![Type::Nil])]);
+                let mut params = Vec::new();
+                if count >= 1 {
+                    params.push(Parameter { name: "state".into(), ty: Type::String, optional: false });
+                }
+                if count == 2 {
+                    params.push(Parameter { name: "control".into(), ty: Type::Union(vec![Type::String, Type::Nil]), optional: false });
+                }
+                let iterator = queries.pack_function(&PackFunctionType {
+                    params, rest: None, type_parameters: Vec::new(), returns,
+                });
+                if count < 2 {
+                    let explicit = queries.call_pack(&iterator, &[Type::String, Type::Nil], &[], None);
+                    assert!(explicit.errors.iter().any(|error| matches!(error, CallError::Arity { actual: 2, .. })), "{count}: {:?}", explicit.errors);
+                }
+                let graph = Graph::new(ValuePack::Alternatives(vec![row(vec![iterator.clone(), Type::String])]), true);
+                let result = queries.iterator_result(&graph, Graph::at(4), Graph::reference(0), 0);
+                assert_eq!(queries.inspect_type(&result), Type::String);
+                assert!(graph.errors.borrow().is_empty(), "{count}: {:?}", graph.errors.borrow());
+                if count < 2 {
+                    let explicit = queries.call_pack(&iterator, &[Type::String, Type::Nil], &[], None);
+                    assert!(explicit.errors.iter().any(|error| matches!(error, CallError::Arity { actual: 2, .. })), "{count}: {:?}", explicit.errors);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn ignored_hidden_arguments_keep_declared_state_typed_rest_and_required_arity_checks() {
+        Engine::new().with_session(|queries| {
+            let returns = ValuePack::Alternatives(vec![row(vec![Type::Number]), row(vec![Type::Nil])]);
+            let one = queries.pack_function(&PackFunctionType {
+                params: vec![Parameter { name: "state".into(), ty: Type::Number, optional: false }],
+                rest: None, type_parameters: Vec::new(), returns: returns.clone(),
+            });
+            let rest = queries.pack_function(&PackFunctionType {
+                params: vec![Parameter { name: "state".into(), ty: Type::Number, optional: false }],
+                rest: Some(ValuePack::variadic(Type::Number)), type_parameters: Vec::new(), returns: returns.clone(),
+            });
+            let three = queries.pack_function(&PackFunctionType {
+                params: (0..3).map(|index| Parameter { name: format!("arg{index}"), ty: Type::Number, optional: false }).collect(),
+                rest: None, type_parameters: Vec::new(), returns,
+            });
+            for (iterator, state, control, argument) in [
+                (one, Type::String, Type::Nil, Some(0)),
+                (rest, Type::Number, Type::String, Some(1)),
+                (three, Type::Number, Type::Number, None),
+            ] {
+                let graph = Graph::new(ValuePack::Alternatives(vec![row(vec![iterator, state, control])]), false);
+                let _ = queries.iterator_result(&graph, Graph::at(4), Graph::reference(0), 0);
+                let errors = graph.errors.borrow();
+                if let Some(index) = argument {
+                    assert!(errors.iter().any(|error| matches!(error, CallError::Argument { index: actual, .. } if *actual == index)), "{errors:?}");
+                } else {
+                    assert!(errors.iter().any(|error| matches!(error, CallError::Arity { actual: 2, minimum: 3, .. })), "{errors:?}");
+                }
+            }
+        });
+    }
+
+    #[test]
     fn generic_iteration_enters_on_false_and_terminates_only_on_nil() {
         Engine::new().with_session(|queries| {
             let returns = ValuePack::Alternatives(vec![
