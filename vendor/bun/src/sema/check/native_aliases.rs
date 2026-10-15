@@ -244,14 +244,29 @@ impl<'p, 's> Checker<'p, 's> {
                     // A captured future slot may have no original spelling
                     // in the caller. Its contents are unnecessary when the
                     // independent allocation proof excludes __newindex.
-                    if self.native_alias_fresh_raw_write(provider, at, before) { return true }
+                    if self.native_alias_fresh_raw_write(provider, at, before)
+                        || self.native_alias_fresh_raw_read(provider, at, before) { return true }
                     self.mark_tainted_from(0);
                     return false;
                 }
                 if !origins.unknown && !origins.maybe_nil && (origins.non_table || !origins.tokens.is_empty()) { return true }
                 self.native_alias_fresh_raw_write(provider, at, before)
+                    || self.native_alias_fresh_raw_read(provider, at, before)
             },
         }
+    }
+
+    /// The read uses its original evaluated receiver, including when a later
+    /// computed key rebinds that receiver's source variable. Only absence of a
+    /// metatable proves a missing raw slot cannot invoke __index; absence of
+    /// __newindex is a different capability used exclusively for writes.
+    fn native_alias_fresh_raw_read(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, before: NativeFlowKey) -> bool {
+        let Some(receiver) = provider.read_alias_receiver(at) else { return false };
+        if receiver.input.graph != before.graph { return false }
+        let origins = self.native_alias_value(provider, receiver.value, receiver.input, 0);
+        if origins.uncertain { self.mark_tainted_from(0); return false }
+        if origins.unknown || origins.non_table || origins.tokens.is_empty() { return false }
+        origins.tokens.iter().all(|allocation| self.native_alias_allocation_without_metatable(provider, allocation, before))
     }
 
     /// A literal Lua allocation starts without a metatable. Prove that its

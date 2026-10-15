@@ -91,3 +91,32 @@ fn reusable_callback_returns_do_not_publish_one_installer_invocations_heap() {
     rejects_number(source);
     clean(&source.replace("---@type string\n local wrong", "---@type number|string\n local corrected"));
 }
+
+#[test]
+fn an_original_missing_read_keeps_real_index_effects_and_its_frozen_receiver() {
+    let directory = std::env::temp_dir().join(format!("luanalysis-runtime-call-index-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("main.lua");
+    let attach = "setmetatable(original,{__index=function() setmetatable(original,{__newindex=function() end}) end})\n";
+    for read in [
+        "local ignored=value.count\n",
+        "local function key() value={} return 'count' end\nlocal ignored=value[key()]\n",
+    ] {
+        let source = format!("local original={{}}\nlocal value=original\n{attach}local function install() original.count=1 end\n{read}install()\n---@type number\nlocal unproven=original.count\n");
+        let invoke = |source: &str| {
+            std::fs::write(&path, source).unwrap();
+            std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+                .current_dir(&directory)
+                .args(["check", "--lua-version", "5.4", "main.lua"])
+                .output().unwrap()
+        };
+        let wrong = invoke(&source);
+        let errors = String::from_utf8_lossy(&wrong.stderr);
+        assert_eq!(wrong.status.code(), Some(1), "{errors}");
+        assert!(errors.contains("TS2322"), "{errors}");
+        let corrected = source.replace(attach, "").replace("value[key()]", "value.count");
+        let fixed = invoke(&corrected);
+        assert!(fixed.status.success(), "{}", String::from_utf8_lossy(&fixed.stderr));
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
