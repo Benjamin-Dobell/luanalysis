@@ -139,3 +139,16 @@ fn an_ordinary_single_argument_string_function_acquires_no_runtime_type_predicat
     let invalid = fixture.check("---@param value any\n---@return string\nlocal function kind(value) return 'number' end\n---@param value number|string\nlocal function use(value)\nif kind(value)=='number' then\n---@type number\nlocal wrong=value\nend\nend\n");
     assert!(text(&invalid).contains("TS2322"), "{}", text(&invalid));
 }
+
+#[test]
+fn erased_mutable_environment_views_do_not_silently_reuse_standard_loader_exports() {
+    let fixture = Fixture::new();
+    let invalid = fixture.check("local env=--[[---@type table]] _G\nenv=--[[---@type table]] _G\nenv.package.loaded.module='cached'\nlocal value=require('module')\n");
+    assert!(text(&invalid).contains("LUA2036"), "{}", text(&invalid));
+}
+
+#[test]
+fn a_forged_table_cast_cannot_turn_an_unrelated_table_into_the_global_environment() {
+    let fixture = Fixture::new();
+    clean(&fixture.check("local unrelated=--[[---@type table]] {}\nunrelated.package={loaded={}}\nunrelated.package.loaded.module='cached'\nlocal value=require('module')\n---@type number\nlocal checked=value.value\n"));
+}

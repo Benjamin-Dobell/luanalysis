@@ -43,6 +43,12 @@ struct FlowContext {
     captured: Option<CapturedFunctionContext>,
 }
 
+#[derive(Default)]
+struct FlowContexts {
+    by_context: HashMap<FlowContext, u64>,
+    by_id: Vec<FlowContext>,
+}
+
 pub(super) struct NativeFlowSources {
     pub program: flow::ProgramFlow,
     functions: HashMap<NativeFunctionKey, u32>,
@@ -64,7 +70,7 @@ pub(super) struct NativeFlowSources {
     environment_candidates: HashMap<BindingId, HashSet<Vec<flow::Key>>>,
     pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
     iterator_projections: HashMap<BindingId, (flow::IteratorId, usize)>,
-    contexts: RefCell<HashMap<FlowContext, u64>>,
+    contexts: RefCell<FlowContexts>,
 }
 
 impl NativeFlowSources {
@@ -112,7 +118,7 @@ impl NativeFlowSources {
             environment_candidates: HashMap::new(),
             pack_projections: HashMap::new(),
             iterator_projections: HashMap::new(),
-            contexts: RefCell::new(HashMap::new()),
+            contexts: RefCell::new(FlowContexts::default()),
             program,
         };
         for (span, index) in functions {
@@ -397,6 +403,9 @@ impl NativeFlowSources {
             let owner = self.graph(0, reference.graph.context);
             let writes = self.program.graphs.iter().flat_map(|graph| graph.nodes.iter()).filter_map(|node| {
                 let flow::NodeKind::Write { address, .. } = &node.kind else { return None; };
+                // Rebinding a local alias changes its cell, not the table it
+                // previously referenced. Only a member store can mutate it.
+                if matches!(address.reference.root, flow::ReferenceRoot::Binding(_)) && address.reference.path.is_empty() { return None; }
                 let candidates = self.environment_candidate_paths(&address.reference);
                 let affects = if source.root == flow::ReferenceRoot::LoaderState {
                     self.loader_address_invalidates(address) || candidates.iter().any(|path| match path.as_slice() {
@@ -589,26 +598,22 @@ impl NativeFlowSources {
             captured: captured.copied(),
         };
         let mut contexts = self.contexts.borrow_mut();
-        let next = contexts.len() as u64 + 1;
-        *contexts.entry(context).or_insert(next)
+        if let Some(id) = contexts.by_context.get(&context) { return *id; }
+        let next = contexts.by_id.len() as u64 + 1;
+        contexts.by_id.push(context);
+        contexts.by_context.insert(context, next);
+        next
     }
 
     pub(super) fn contextual(&self, graph: NativeGraphKey) -> Option<ContextualFunctionContext> {
         if graph.context == 0 {
             return None;
         }
-        self.contexts.borrow().iter().find_map(|(context, id)| {
-            (*id == graph.context)
-                .then_some(context.contextual)
-                .flatten()
-        })
+        self.contexts.borrow().by_id.get(usize::try_from(graph.context).ok()?.checked_sub(1)?)?.contextual
     }
 
     pub(super) fn captured(&self, graph: NativeGraphKey) -> Option<CapturedFunctionContext> {
-        self.contexts
-            .borrow()
-            .iter()
-            .find_map(|(context, id)| (*id == graph.context).then_some(context.captured).flatten())
+        self.contexts.borrow().by_id.get(usize::try_from(graph.context).ok()?.checked_sub(1)?)?.captured
     }
 
     pub(super) fn contains_graph(&self, graph: NativeGraphKey) -> bool {
@@ -1233,6 +1238,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         let Some(flow::Node { kind: flow::NodeKind::Write { address, .. }, .. }) = self.sources.source_node(at) else {
             return NativeWriteRelation::Unaffected;
         };
+        if matches!(address.reference.root, flow::ReferenceRoot::Binding(_)) && address.reference.path.is_empty() { return NativeWriteRelation::Unaffected; }
         let input = self.sources.flow_key(address.epoch, at.graph.context);
         let path = if let Some(receiver) = address.receiver {
             let receiver = self.sources.program.evaluation(receiver);
@@ -1247,7 +1253,28 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             let environment = self.values.environment_value(binding, input, queries);
             queries.global_environment_origin(&environment).map(|_| Vec::new())
         } else { None };
-        let Some(mut path) = path else { return NativeWriteRelation::Unaffected; };
+        let Some(mut path) = path else {
+            // A mutable alias can erase its actual table identity through a
+            // written view. Candidate metadata cannot prove a store exact, but
+            // it also cannot prove a selected capability survives that store.
+            // Keep this unsupported value-origin case conservative at this
+            // actual continuation, rather than borrowing standard exports.
+            let possible = self.sources.environment_candidate_paths(&address.reference);
+            let invalidates = possible.iter().any(|path| {
+                if query.root == flow::ReferenceRoot::LoaderState {
+                    match path.as_slice() {
+                        [flow::Key::Dynamic(_), ..] => true,
+                        [flow::Key::String(name)] if name == b"require" => !self.sources.original_require_capability,
+                        [flow::Key::String(name), members @ ..] if name == b"package" => crate::bind::modifies_package(&members.iter().map(|key| match key { flow::Key::String(value) => Some(value.as_slice()), _ => None }).collect::<Vec<_>>()),
+                        _ => false,
+                    }
+                } else {
+                    matches!((path.first(), query.path.first()), (Some(flow::Key::Dynamic(_)), _) | (Some(_), Some(flow::Key::Dynamic(_))))
+                        || matches!((path.as_slice(), query.path.as_slice()), ([written], [read]) if written == read)
+                }
+            });
+            return if invalidates { NativeWriteRelation::Ancestor } else { NativeWriteRelation::Unaffected };
+        };
         let Some(key) = address.reference.path.last().cloned() else { return NativeWriteRelation::Unaffected; };
         path.push(key);
         if query.root == flow::ReferenceRoot::LoaderState {
