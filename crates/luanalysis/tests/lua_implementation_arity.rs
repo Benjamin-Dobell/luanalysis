@@ -252,6 +252,27 @@ local string=textual()
 }
 
 #[test]
+fn generic_logical_fallback_assignments_reduce_only_the_ordinary_value_type() {
+    for absent in ["nil", "false", "nil|false"] {
+        let source = format!(
+            "---@generic T\n---@param value T|{absent}\n---@param fallback T\n---@return T\nlocal function pick(value,fallback)\n value=value or fallback\n ---@type T\n local checked=value\n return checked\nend\n"
+        );
+        clean(&source);
+        let invalid = source.replace("local checked=value", "local checked=42");
+        assert!(
+            check(&invalid).diagnostics.iter().any(|error| error.code == "TS2322"),
+            "{invalid}"
+        );
+        let unnarrowed = source.replace("value=value or fallback", "value=value");
+        assert!(
+            check(&unnarrowed).diagnostics.iter().any(|error| error.code == "TS2322"),
+            "{unnarrowed}"
+        );
+        clean(&invalid.replace("local checked=42", "local checked=value"));
+    }
+}
+
+#[test]
 fn original_base64_decoding_map_short_heads_accept_the_runtime_implementation() {
     let source = r#"---@class Base64
 local Base64={}

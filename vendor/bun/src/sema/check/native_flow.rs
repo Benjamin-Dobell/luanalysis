@@ -678,7 +678,14 @@ impl FlowDomain for NativeDomain<'_> {
                         let assigned = checker.native_flow_value(self.provider, value, input);
                         let runtime = checker.native_has_runtime_table(walk.declared);
                         let assigned = if runtime || checker.native_has_runtime_table(assigned) { checker.regular_type_of_object_literal(assigned) } else { assigned };
-                        FlowStep::Value(if self.provider.reference_tracks_runtime_value(walk.reference) || runtime { assigned } else { checker.resolved_assignment_type(walk.declared, assigned) })
+                        FlowStep::Value(if self.provider.reference_tracks_runtime_value(walk.reference) || runtime { assigned } else {
+                            // Runtime RHS queries retain original capability alternatives.
+                            // Ordinary CFA consumes the normalized expression type: a
+                            // redundant T & nil arm must not retain nil beside T.
+                            let parts = checker.parts(assigned).to_vec();
+                            let assigned = checker.union_reduced(&parts);
+                            checker.resolved_assignment_type(walk.declared, assigned)
+                        })
                     }
                     NativeWriteRelation::Ancestor => FlowStep::Value(walk.declared),
                     NativeWriteRelation::Descendant => FlowStep::Follow {
