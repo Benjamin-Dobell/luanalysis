@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn namespace_and_constructor_member_recipes_have_disjoint_original_keys() {
-        let source = "---@class Example\nExample = {value = 1}\n---@return number\nfunction Example.read() return 1 end\n";
+        let source = "---@class Namespace\nnamespace = {}\n---@return number\nfunction namespace.read() return 1 end\n---@class Example\nlocal Example = {value = 1}\n";
         let file = luanalysis_syntax::parse(source);
         assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
         let bound = crate::bind::bind(&file);
