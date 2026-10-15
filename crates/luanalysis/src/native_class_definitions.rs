@@ -231,7 +231,7 @@ impl Checker<'_> {
                 &[&value, &expected],
             ),
             NamedTypeError::DefinitionField { error, .. } => {
-                let (template, types) = super::native_tables::table_error_description(&error);
+                let (template, types) = crate::native_tables::table_error_description(&error);
                 self.error_types("TS2322", span, format!("Class definition field is incompatible: {template}"), &types.iter().collect::<Vec<_>>());
             }
             NamedTypeError::DefinitionInitializer { actual, .. } => self.error_types(
@@ -250,7 +250,7 @@ impl Checker<'_> {
                 "LUA2031", span, "Class definition owner is incompatible with type '{}'.", &[&actual],
             ),
             NamedTypeError::Table { error, .. } => {
-                let (template, types) = super::native_tables::table_error_description(&error);
+                let (template, types) = crate::native_tables::table_error_description(&error);
                 self.error_types("LUA2031", span, format!("Class definition is unsupported: {template}"), &types.iter().collect::<Vec<_>>());
             }
             other => self.error(
