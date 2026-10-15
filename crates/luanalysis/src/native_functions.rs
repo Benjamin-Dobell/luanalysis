@@ -80,6 +80,7 @@ pub(super) struct NativeRegistry {
     bound: BoundFile,
     functions: Vec<Function>,
     function_names: Vec<Option<Name>>,
+    declaration_functions: HashSet<u32>,
     function_spans: HashMap<(usize, usize), u32>,
     declarations: HashMap<BindingId, DeclarationSource>,
     pub(super) types: NativeTypes,
@@ -132,6 +133,7 @@ impl NativeRegistry {
                 .map(|assertion| ((assertion.expression.start, assertion.expression.end), &assertion.annotation)).collect(),
             functions: Vec::new(),
             function_names: Vec::new(),
+            declaration_functions: HashSet::new(),
             function_spans: HashMap::new(),
             declarations: HashMap::new(),
         };
@@ -139,6 +141,7 @@ impl NativeRegistry {
         let RegistryIndex {
             functions,
             function_names,
+            declaration_functions,
             function_spans,
             mut declarations,
             ..
@@ -216,6 +219,7 @@ impl NativeRegistry {
             bound,
             functions,
             function_names,
+            declaration_functions,
             function_spans,
             declarations,
             types,
@@ -1162,6 +1166,14 @@ impl NativeRegistry {
         self.inferred_return_with_context(key, queries, None, None)
     }
 
+    fn has_empty_declaration_result(&self, key: NativeFunctionKey) -> bool {
+        if !self.declaration_functions.contains(&key.index) || self.declared_pack_recipe(key).is_some() { return false }
+        let graph = self.flow.graph_for_function(key, None).expect("original declaration owns a function graph");
+        self.flow.program.graphs[graph.region as usize].returns.iter().all(|&at| {
+            matches!(&self.flow.program.node(at).kind, super::flow::NodeKind::Return { values } if values.is_empty())
+        })
+    }
+
     fn inferred_return_pack_with_context(
         &self,
         key: NativeFunctionKey,
@@ -1169,6 +1181,11 @@ impl NativeRegistry {
         contextual: Option<ContextualFunctionContext>,
         captured: Option<CapturedFunctionContext>,
     ) -> ValuePack {
+        // Like TS declarations, an unannotated declaration with no valued
+        // return cannot infer never, independently of end reachability. Lua
+        // represents that result as zero physical values. Its body is still
+        // checked separately by check_all_bodies in the selected frame.
+        if self.has_empty_declaration_result(key) { return ValuePack::empty() }
         let base = self
             .flow
             .graph_for_function(key, contextual.as_ref())
@@ -1251,6 +1268,7 @@ impl NativeRegistry {
         contextual: Option<ContextualFunctionContext>,
         captured: Option<CapturedFunctionContext>,
     ) -> Type {
+        if self.has_empty_declaration_result(key) { return Type::Void }
         let graph = self
             .flow
             .graph_for_function(key, contextual.as_ref())
@@ -2680,6 +2698,7 @@ struct RegistryIndex<'a> {
     assertions: HashMap<(usize, usize), &'a luanalysis_syntax::TypeAnnotation>,
     functions: Vec<Function>,
     function_names: Vec<Option<Name>>,
+    declaration_functions: HashSet<u32>,
     function_spans: HashMap<(usize, usize), u32>,
     declarations: HashMap<BindingId, DeclarationSource>,
 }
@@ -2742,6 +2761,7 @@ impl RegistryIndex<'_> {
                 StmtKind::Block { body, .. } => self.statements(body, owner),
                 StmtKind::LocalFunction { name, function } => {
                     let index = self.function(function, Some(name));
+                    self.declaration_functions.insert(index);
                     let binding = self
                         .bound
                         .binding_at(name.span.start)
@@ -2757,7 +2777,8 @@ impl RegistryIndex<'_> {
                         ExprKind::Name(name) | ExprKind::Field { name, .. } => Some(name),
                         _ => None,
                     };
-                    self.function(function, name);
+                    let index = self.function(function, name);
+                    self.declaration_functions.insert(index);
                 }
                 StmtKind::Return(values) => {
                     for value in values {
