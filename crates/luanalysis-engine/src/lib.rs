@@ -12,6 +12,8 @@ mod native_assertions;
 #[cfg(test)]
 mod native_runtime_primitive_tests;
 #[cfg(test)]
+mod native_opaque_runtime_tests;
+#[cfg(test)]
 mod native_inheritance_tests;
 mod native_flow;
 mod native_project_flow_router;
@@ -337,6 +339,9 @@ pub enum Type {
 /// Source recipes may use thread-local interior state; release its borrows
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
+    /// Exact selected original declaration identity for an opaque Lua runtime
+    /// category. A matching user-written class name does not grant this fact.
+    fn runtime_type_declaration(&self, _: NativeOpaqueRuntimeKind) -> Option<NativeTypeDeclarationKey> { None }
     fn project_flow_provider(&self) -> Option<&dyn NativeFlowProvider> { None }
     fn function_flow_execution(&self, _: NativeFunctionKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Option<NativeAliasExecution> { None }
     fn contextual_type_owner(&self, _: NativeFunctionKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> ContextualTypeOwner { ContextualTypeOwner::Absent }

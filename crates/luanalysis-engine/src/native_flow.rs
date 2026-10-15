@@ -7,7 +7,7 @@ use bun_sema::check::native_flow as core;
 pub use core::{
     NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeGraphKey,
     NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePackProjection,
-    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation, NativeIteratorProjection, NativeIteratorStage,
+    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeOpaqueRuntimeKind, NativeValueKey, NativeWriteRelation, NativeIteratorProjection, NativeIteratorStage,
     NativeVariableDeclaration, NativeVariableWrite, NativeFunctionCreation, NativeFrozenReference,
 };
 pub use bun_sema::check::native_aliases::{NativeAliasRelation, NativeAliasReturn, NativeAliasReturnValue, NativeAliasEnvironmentMember, NativeAliasExecution, NativeAliasCall, NativeAliasDispatch, NativeCallPreservation};

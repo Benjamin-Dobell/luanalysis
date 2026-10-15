@@ -170,6 +170,7 @@ pub enum NativeTypeDeclarationQuery {
     MemberOwnerApplication(NativeTypeMemberId),
     MemberOwnerMatch { member: NativeTypeMemberId, owner: TypeId },
     Bases(NativeTypeDeclarationId),
+    RuntimeDomain(NativeTypeDeclarationId),
     ObjectMembers(TypeId),
     ObjectValidation(TypeId),
     DefinitionContext(TypeId),
@@ -220,6 +221,9 @@ pub enum NativeNamedTypeError {
 /// is in declaration space, including member/indexer/bases queries. The backend owns resolving,
 /// substitution, recursive publication, inference, relation checks and semantic diagnostics.
 pub trait NativeTypeDeclarationProvider {
+    /// Selected original nominal roots. Display names and object structure do
+    /// not attest a Lua runtime category.
+    fn runtime_type_declaration(&self, _: super::native_flow::NativeOpaqueRuntimeKind) -> Option<NativeTypeDeclarationId> { None }
     fn type_member_activation(&self, _: &mut Checker<'_, '_>, _: NativeTypeMemberId) -> NativeTypeMemberActivation { NativeTypeMemberActivation::Active }
     fn contains_class_definition(&self, _: NativeDefinitionId) -> bool { false }
     fn class_definition_header(&self, _: NativeDefinitionId) -> NativeDefinitionHeader { panic!("class definition provider absent") }
@@ -426,7 +430,7 @@ impl<'p, 's> Checker<'p, 's> {
         Some(self.cloned_native_type_param(parameter, self.types().mapper(mapping)))
     }
 
-    fn report_native_named(&mut self, error: NativeNamedTypeError) {
+    pub(super) fn report_native_named(&mut self, error: NativeNamedTypeError) {
         let Some(provider) = self.native_type_declaration_provider else { return };
         match error {
             NativeNamedTypeError::CircularAlias(id) => provider.circular_type_alias(id),
@@ -1101,7 +1105,7 @@ impl<'p, 's> Checker<'p, 's> {
         Ok(value)
     }
 
-    fn native_named_bases(&mut self, declaration: NativeTypeDeclarationId) -> Result<Vec<TypeId>, NativeNamedTypeError> {
+    pub(super) fn native_named_bases(&mut self, declaration: NativeTypeDeclarationId) -> Result<Vec<TypeId>, NativeNamedTypeError> {
         if let Some(known) = self.native_named_cache.bases.get(&declaration) { return known.clone() }
         let provider = self.native_named_provider(declaration)?;
         let native_query = NativeTypeDeclarationQuery::Bases(declaration);

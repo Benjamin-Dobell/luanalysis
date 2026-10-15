@@ -252,6 +252,9 @@ fn source_kind(kind: NativeTypeDeclarationKind) -> TypeDeclarationKind {
 }
 
 impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_, P> {
+    fn runtime_type_declaration(&self, kind: super::NativeOpaqueRuntimeKind) -> Option<NativeTypeDeclarationId> {
+        self.provider.runtime_type_declaration(kind).map(core_declaration)
+    }
     fn runtime_table_constructor(&self, key: NativeTypeDeclarationId) -> Option<bun_sema::types::NativeExpressionId> {
         self.provider.runtime_table_constructor(source_declaration(key)).map(super::core_expression_key)
     }
@@ -627,7 +630,7 @@ pub(super) fn export_error(
             Q::MemberOwnerMatch { member, .. } => NamedTypeQuery::MemberOwnerMatch(source_member(member)),
             Q::IndexerKey(key) => NamedTypeQuery::Indexer(source_member(key)),
             Q::RuntimeTableMember(_, key, indexer) => if indexer { NamedTypeQuery::Indexer(source_member(key)) } else { NamedTypeQuery::Member(source_member(key)) },
-            Q::Bases(key) => NamedTypeQuery::Bases(source_declaration(key)),
+            Q::Bases(key) | Q::RuntimeDomain(key) => NamedTypeQuery::Bases(source_declaration(key)),
             Q::ObjectMembers(ty) | Q::ObjectValidation(ty) | Q::DefinitionContext(ty) | Q::RuntimeTableSeed(ty) | Q::RuntimeTableWrittenContext(ty, _) => {
                 let bun_sema::types::TypeData::NativeObject(reference) = checker.data(ty) else {
                     unreachable!("native object-members query owner")
