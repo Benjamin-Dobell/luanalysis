@@ -159,6 +159,24 @@ mod tests {
     use luanalysis_engine::{Engine, GlobalValueKind, NativeFunctionKey, NativeTypeProvider};
 
     #[test]
+    fn namespace_and_constructor_member_recipes_have_disjoint_original_keys() {
+        let source = "---@class Example\nExample = {value = 1}\n---@return number\nfunction Example.read() return 1 end\n";
+        let file = luanalysis_syntax::parse(source);
+        assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
+        let bound = crate::bind::bind(&file);
+        let registry = NativeRegistry::new(file, bound);
+        let namespace = registry.globals.declarations.iter()
+            .find_map(|source| source.namespace.as_ref()).expect("original dotted declaration");
+        let originals = registry.members.sources();
+        assert!(!originals.is_empty(), "original constructor members are retained");
+        for source in originals {
+            assert_ne!(source.key, namespace.member);
+            assert!(source.key.index > namespace.member.index);
+        }
+        assert!(registry.members.get(namespace.member).is_none());
+    }
+
+    #[test]
     fn namespace_keys_are_original_value_declarations_and_disjoint_type_members() {
         let source = "---@class std__Math\n---@field config {name:string}\nmath = {}\n---@param value number\n---@return number\nfunction math.abs(value) return unresolved_placeholder(value) end\n";
         let file = luanalysis_syntax::parse(source);

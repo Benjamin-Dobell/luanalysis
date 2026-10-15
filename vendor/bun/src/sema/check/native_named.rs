@@ -1004,7 +1004,7 @@ impl<'p, 's> Checker<'p, 's> {
             field.value = present;
             field.optional = optional;
         } else {
-            fields.push(NativeTableField { key, value: present, optional, readonly: false });
+            fields.push(NativeTableField { key, value: present, optional, readonly: false, origin: crate::types::NativeTableFieldOrigin::Inferred });
         }
         updated.fields = self.list(&fields);
         updated.fresh = false;
