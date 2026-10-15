@@ -183,6 +183,15 @@ impl Checker<'_> {
         }
         if let Some(at) = self.flow_at {
             let native = self.native?;
+            // A statement call enters here without expression() updating the
+            // checker's ambient flow position. Use its original invocation
+            // epoch, after all operands and before executing this require.
+            let expression = &native.expressions().get(native.expression_key_for_span(span)).expression;
+            let at = native.flow.evaluation_for_expression(expression, at.graph)
+                .and_then(|evaluation| match native.flow.node(native.flow.flow_key(evaluation.completed, at.graph.context)) {
+                    Some(luanalysis_engine::NativeFlowNode::Call { before, .. }) => Some(before),
+                    _ => None,
+                }).unwrap_or(at);
             let reference = native.flow.loader_reference(at.graph);
             let result = self.engine.flow_standard_loader_state(&crate::native_flow::FlowAdapter { sources: &native.flow, values: native }, at, reference);
             self.incomplete_flow |= result.incomplete;
