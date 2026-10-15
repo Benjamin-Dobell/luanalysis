@@ -96,7 +96,7 @@ fn encoder_cycle_guard_preserves_visited_builder_and_callback_reference_types() 
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     for (reference, expected) in [
         ("visited[o]=true", "table<table, true>"),
-        ("builder[i]='['", "table<number, string>"),
+        ("builder[i]='['", "string[]"),
         ("emit(']')", "fun(text: string): void"),
     ] {
         assert_eq!(
