@@ -5336,6 +5336,14 @@ impl<'p, 's> Checker<'p, 's> {
         shared: &mut WorkerState,
     ) -> Ternary {
         let target = self.native_receiver_relation_target(source, target);
+        // An inferred empty allocation has no written excess-property bound.
+        // Keep that provenance until this comparison has regularized its
+        // candidate; projecting both carriers first would lose the distinction
+        // from a closed written empty shape. Actual allocation views stay intact.
+        let inferred_empty = matches!(self.data(target), TypeData::NativeRuntimeTable(reference)
+            if matches!(self.data(reference.view), TypeData::NativeTable(table)
+                if table.fields.is_empty() && table.indexers.is_empty() && table.sequence_tails.is_empty()));
+        let source = if r.relation == Relation::Assignable && inferred_empty { self.regular_type_of_object_literal(source) } else { source };
         let source = match self.native_object_relation_view(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
         let target = match self.native_object_relation_view(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
         let native_call_contract = self.native_object_has_call_signatures(source) || self.native_object_has_call_signatures(target);

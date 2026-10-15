@@ -511,6 +511,36 @@ fn original_runtime_schemas_remain_structural_and_actual_views_do_not_gain_futur
 }
 
 #[test]
+fn inferred_empty_runtime_targets_accept_fresh_structural_replacements_only() {
+    Engine::new().with_native_provider(Provider::new, |provider, queries| {
+        let empty = provider.allocation(queries);
+        let fresh = queries.table_type(&TableType {
+            fields: vec![TableField::new(key("new"), Type::StringLiteral(b"word".to_vec()))],
+            fresh: true,
+            ..Default::default()
+        }).unwrap();
+        let replacement = queries.runtime_table_value(declaration(1), &fresh).unwrap();
+        assert!(queries.is_assignable(&replacement, &empty), "an inferred empty allocation permits fresh structural extras");
+        assert!(queries.is_assignable(&fresh, &empty));
+        assert_eq!(queries.runtime_table_declaration(&replacement), Some(declaration(1)));
+        let written_empty = Provider::empty(queries);
+        assert!(!queries.is_assignable(&replacement, &written_empty), "comparison must not clear the candidate's original freshness");
+        assert!(!queries.is_assignable(&fresh, &written_empty), "written closed empty shapes retain excess-property checking");
+        let nonempty = queries.table_type(&TableType {
+            fields: vec![TableField::new(key("old"), Type::Number)],
+            ..Default::default()
+        }).unwrap();
+        let nonempty = queries.runtime_table_value(declaration(0), &nonempty).unwrap();
+        assert!(!queries.is_assignable(&replacement, &nonempty));
+        let nominal = queries.named_declared_type(declaration(2)).unwrap();
+        assert!(!queries.is_assignable(&replacement, &nominal));
+        assert!(!queries.is_assignable(&replacement, &Type::RuntimeFunction));
+        assert_eq!(provider.seed_calls.get(), 0, "actual empty target recognition does not demand prospective schema");
+        assert_eq!(provider.member_calls.get(), 0);
+    });
+}
+
+#[test]
 fn original_seed_singletons_validate_later_stores_before_inference_widening() {
     Engine::new().with_native_provider(
         || {
