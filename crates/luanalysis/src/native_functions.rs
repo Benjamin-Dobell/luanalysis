@@ -1408,6 +1408,7 @@ impl NativeRegistry {
                 // invent an unrelated untyped declaration and bogus TS7006.
                 for facet in facets {
                     queries.format(&facet);
+                    self.retain_selected_body_frame(key, &facet, queries);
                 }
                 for context in self.expressions.final_contexts(key) {
                     let captures = self.expressions.captures_for_context(key, &context);
@@ -1436,7 +1437,12 @@ impl NativeRegistry {
                         self.check_body_in_capture(key, &context, queries);
                     }
                 }
-                continue;
+                if !self.expressions.final_contexts(key).is_empty() || !self.expressions.final_captures(key).is_empty() {
+                    continue;
+                }
+                // A selected raw declaration, or an unapplied contextual
+                // candidate, still owns a private implementation body. Written
+                // public overload heads alone cannot establish its diagnostics.
             }
             // Enter the native QueryReturn guard/cache for inferred returns.
             // An annotated return needs no body query; validate it below.

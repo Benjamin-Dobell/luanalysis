@@ -434,6 +434,30 @@ pub(super) fn publishes(mode: NativeCheckMode) -> bool {
 }
 
 impl NativeRegistry {
+    /// Selected callable values can expose only written overload heads when
+    /// formatted. Retain the implementation's exact body frame explicitly,
+    /// rather than relying on metadata callbacks as a side effect of display.
+    pub(super) fn retain_selected_body_frame(
+        &self,
+        key: NativeFunctionKey,
+        value: &Type,
+        queries: &mut dyn TypeQueries,
+    ) {
+        // A plain original declaration has no contextual/captured body facet.
+        // check_all_bodies validates that private body in declaration space.
+        if matches!(value, Type::NativeFunction(function) if *function == key) { return; }
+        let Some(captured) = queries.function_capture_context(value) else { return; };
+        assert_eq!(queries.native_function_key(value), Some(key), "selected body frame retains its original implementation");
+        self.retain_capture_ancestry(&captured, queries);
+        let contextual = queries.captured_function_context(&captured);
+        let mode = contextual.map_or_else(NativeCheckMode::empty, |context| context.mode);
+        self.expressions().retain_capture(key, &captured, mode);
+        if let Some(contextual) = contextual {
+            self.expressions().retain_context(key, &contextual);
+            self.expressions().retain_context_capture(key, &contextual, &captured);
+        }
+    }
+
     fn retain_capture_ancestry(
         &self,
         context: &CapturedFunctionContext,
