@@ -254,6 +254,27 @@ SOURCE_ADAPTATIONS.extend({
 ])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-inherited-field-contracts.patch",
+    "reason": "Preserve inherited property contracts and original member context while checking constructor-origin fields, without publishing inferred implementation fields as independent schema contracts.",
+} for path in ["native_named.rs", "sink.rs"])
+
+
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-native-semantic-self-identity.patch",
+    "reason": "Keep the original semantic self identity stable across generic definition schema expansion and instantiation.",
+})
+
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-recursive-override-classification.patch",
+    "reason": "Classify recursive nominal overrides using original lazy declaration metadata, suppressing inference side effects while preserving shared call, flow and relation workers.",
+} for path in ["call.rs", "flow.rs", "native_named.rs", "relate.rs"])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

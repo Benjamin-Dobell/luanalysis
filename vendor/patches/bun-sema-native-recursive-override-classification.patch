@@ -1,0 +1,79 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+index 6f4772f..fcdddda 100644
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -3591,6 +3591,16 @@ impl<'p, 's> Checker<'p, 's> {
+         if !self.is_object_type(ty) {
+             return None;
+         }
++        if matches!(self.data(ty), TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) {
++            // Original Lua heads expose call contracts separately from field
++            // types. Keep this classification lazy while recursive override
++            // relations are checking those fields.
++            if kind == SignatureKind::Construct { return None }
++            let heads = self.native_object_call_heads(ty);
++            if heads.len() != 1 || allow_members == AllowMembers::No
++                && self.native_object_has_non_signature_members(ty).ok()? { return None }
++            return Some(heads[0]);
++        }
+         let members = self.members(ty)?;
+         let shape = members.whole_shape();
+         let construct = kind == SignatureKind::Construct;
+diff --git a/src/sema/check/flow.rs b/src/sema/check/flow.rs
+index 7fe603b..d080779 100644
+--- a/src/sema/check/flow.rs
++++ b/src/sema/check/flow.rs
+@@ -1198,6 +1198,9 @@ impl<'p, 's> Checker<'p, 's> {
+ 
+     /// `isFunctionObjectType`
+     fn is_function_object_type(&mut self, ty: TypeId) -> bool {
++        if matches!(self.data(ty), TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) {
++            return self.native_object_has_call_signatures(ty);
++        }
+         let Some(members) = self.members(ty) else {
+             return false;
+         };
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 6f27d21..1b41ca0 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -759,6 +759,21 @@ impl<'p, 's> Checker<'p, 's> {
+         !self.native_object_call_heads(ty).is_empty()
+     }
+ 
++    /// Signature classification needs the presence of original members, not
++    /// their types. A member type may itself be a class whose override contract
++    /// is currently being compared, so materializing it here would recurse into
++    /// the declaration's own unfinished schema.
++    pub(super) fn native_object_has_non_signature_members(&mut self, ty: TypeId) -> Result<bool, NativeNamedTypeError> {
++        match *self.data(ty) {
++            TypeData::NativeObject(reference) => Ok(!self.native_object_members(reference)?.is_empty()),
++            TypeData::NativeDefinition(reference) => {
++                let TypeData::NativeTable(table) = self.data(reference.view) else { unreachable!("definition has its original table view") };
++                Ok(!table.fields.is_empty() || !table.indexers.is_empty() || !table.sequence_tails.is_empty())
++            }
++            _ => unreachable!("native object signature classification"),
++        }
++    }
++
+     pub(super) fn native_object_call_heads(&mut self, ty: TypeId) -> Vec<SigId> {
+         let Some(reference) = self.native_object_call_reference(ty) else { return Vec::new() };
+         let Ok(provider) = self.native_named_provider(reference.declaration) else { return Vec::new() };
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+index 6ac096a..af9e0a2 100644
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -5713,6 +5713,13 @@ impl<'p, 's> Checker<'p, 's> {
+         target: TypeId,
+         state: u8,
+     ) -> Ternary {
++        // A structural discriminant match cannot establish a Lua class origin.
++        // Apply the same atomic nominal gate before looking at any union
++        // member's properties; those properties may be the recursive override
++        // contract currently under validation.
++        if !self.parts(target).iter().any(|&part| self.native_nominal_objects_compatible(source, part, r.relation)) {
++            return Ternary::FALSE;
++        }
+         let Some(sm) = self.members(source) else {
+             return Ternary::FALSE;
+         };

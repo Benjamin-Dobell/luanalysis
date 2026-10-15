@@ -1,0 +1,150 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index f3b31a8..51c2b1c 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -143,9 +143,11 @@ pub struct NativeTypeMemberHeader {
+ pub enum NativeTypeDeclarationQuery {
+     DeclaredHead(NativeTypeDeclarationId),
+     MemberType(NativeTypeMemberId),
++    MemberContext(NativeTypeMemberId),
+     IndexerKey(NativeTypeMemberId),
+     Bases(NativeTypeDeclarationId),
+     ObjectMembers(TypeId),
++    DefinitionContext(TypeId),
+ }
+ 
+ #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+@@ -231,6 +233,8 @@ pub struct NativeObjectReference {
+ pub(super) struct NativeNamedCache {
+     heads: FxHashMap<NativeTypeDeclarationId, Result<TypeId, NativeNamedTypeError>>,
+     types: FxHashMap<NativeTypeDeclarationQuery, TypeId>,
++    member_contexts: FxHashMap<NativeTypeMemberId, Option<TypeId>>,
++    definition_contexts: FxHashMap<TypeId, Result<TypeId, NativeNamedTypeError>>,
+     objects: FxHashMap<TypeId, Result<TypeId, NativeNamedTypeError>>,
+     bases: FxHashMap<NativeTypeDeclarationId, Result<Vec<TypeId>, NativeNamedTypeError>>,
+     mapped_bases: FxHashMap<TypeId, Vec<TypeId>>,
+@@ -251,6 +255,12 @@ impl NativeNamedCache {
+     fn ty(&mut self, key: NativeTypeDeclarationQuery, value: TypeId, _: Stored) {
+         self.types.insert(key, value);
+     }
++    fn member_context(&mut self, key: NativeTypeMemberId, value: Option<TypeId>, _: Stored) {
++        self.member_contexts.insert(key, value);
++    }
++    fn definition_context(&mut self, key: TypeId, value: Result<TypeId, NativeNamedTypeError>, _: Stored) {
++        self.definition_contexts.insert(key, value);
++    }
+     fn object(&mut self, key: TypeId, value: Result<TypeId, NativeNamedTypeError>, _: Stored) {
+         self.objects.insert(key, value);
+     }
+@@ -375,6 +385,36 @@ impl<'p, 's> Checker<'p, 's> {
+         Ok(head)
+     }
+ 
++    /// Context comes from the original owner's bases, never from the member's own
++    /// initializer type. Keeping this query separate avoids a self-referential
++    /// signature demand while preserving each inherited owner's mapper.
++    pub fn native_named_member_context(&mut self, member: NativeTypeMemberId) -> Result<Option<TypeId>, NativeNamedTypeError> {
++        if let Some(&known) = self.native_named_cache.member_contexts.get(&member) { return Ok(known) }
++        let native_query = NativeTypeDeclarationQuery::MemberContext(member);
++        let query = Query::NativeNamed(native_query);
++        if !self.enter(query) { return Err(NativeNamedTypeError::TooDeep(native_query)) }
++        let result = (|| {
++            let (owner, header) = self.native_named_member_origin(member)?;
++            let key = match header.key {
++                NativeTypeMemberKey::Fixed(key) => NativeTableAccessKey::Literal(key),
++                NativeTypeMemberKey::Indexer { .. } => {
++                    let raw = self.native_named_member_demand(member, true)?;
++                    NativeTableAccessKey::Type(self.instantiate(raw, owner.mapper))
++                }
++            };
++            let mut contexts = Vec::new();
++            for base in self.native_object_bases(owner)? {
++                if let Some(context) = self.native_table_value_context(base, key) { contexts.push(context); }
++            }
++            Ok(if contexts.is_empty() { None } else { Some(self.intersection(&contexts)) })
++        })();
++        if let Ok(stored) = self.leave(query) {
++            if let Ok(context) = result { self.native_named_cache.member_context(member, context, stored); }
++        }
++        if let Err(error) = result { self.report_native_named(error) }
++        result
++    }
++
+     fn native_named_member_demand(&mut self, member: NativeTypeMemberId, key: bool) -> Result<TypeId, NativeNamedTypeError> {
+         let provider = self.native_type_declaration_provider.filter(|p| p.contains_type_member(member))
+             .ok_or(NativeNamedTypeError::InvalidMember(member))?;
+@@ -783,6 +823,19 @@ impl<'p, 's> Checker<'p, 's> {
+                 }
+             }
+         }
++        // Constructor indexers describe inferred stores, not a written promise
++        // that every overlapping named property has the initializer's type.
++        // Include the original fixed contracts in their inferred domain while
++        // retaining each fixed property's more precise type. The actual dynamic
++        // store is independently checked against those contracts at construction.
++        for indexer in &mut indexers {
++            if indexer.origin != crate::types::NativeTableFieldOrigin::Inferred { continue }
++            let mut values = vec![indexer.value];
++            for field in &fields {
++                if self.native_table_key_domains_overlap(self.native_table_key_type(field.key), indexer.key) { values.push(field.value); }
++            }
++            indexer.value = self.union(&values);
++        }
+         for (position, indexer) in indexers.iter().enumerate() {
+             let origin = &indexer_origins[position];
+             for (other_position, expected) in indexers.iter().enumerate().take(position) {
+@@ -882,7 +935,6 @@ impl<'p, 's> Checker<'p, 's> {
+         };
+         if !valid { return Err(NativeNamedTypeError::DefinitionOwner { owner, expected, actual: class }) }
+         let TypeData::NativeObject(reference) = *self.data(class) else { unreachable!() };
+-        self.native_object_resolved(class)?;
+         Ok(reference)
+     }
+ 
+@@ -896,9 +948,30 @@ impl<'p, 's> Checker<'p, 's> {
+     /// Contextual guidance is structural and optional. It confers neither nominal origin nor a
+     /// definition value capability; only the checked value factory below does that.
+     pub fn native_definition_context(&mut self, owner: NativeDefinitionId, class: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+-        self.native_definition_class(owner, class)?;
++        let reference = self.native_definition_class(owner, class)?;
++        if let Some(&known) = self.native_named_cache.definition_contexts.get(&class) { return known }
++        let native_query = NativeTypeDeclarationQuery::DefinitionContext(class);
++        let query = Query::NativeNamed(native_query);
++        if !self.enter(query) { return Err(NativeNamedTypeError::TooDeep(native_query)) }
++        let result = self.native_definition_context_uncached(reference);
++        if let Ok(stored) = self.leave(query) { self.native_named_cache.definition_context(class, result, stored); }
++        if let Err(error) = result { self.report_native_named(error) }
++        result
++    }
++
++    fn native_definition_context_uncached(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {
++        let class = self.intern(TypeData::NativeObject(reference));
+         let schema_class = self.native_definition_schema(class)?;
+-        let schema = self.native_object_resolved(schema_class)?;
++        let TypeData::NativeObject(reference) = *self.data(schema_class) else { unreachable!("definition schema has its original class") };
++        let provider = self.native_named_provider(reference.declaration)?;
++        // An initializer receives written own contracts and inherited contracts.
++        // Its own inferred recipes are results of that check, never the expected
++        // type used to perform it. In particular a bad inferred override must not
++        // discard an inherited callback's parameter/return context.
++        let members: Vec<_> = self.native_object_members(reference)?.into_iter()
++            .filter(|origin| origin.via.is_some() || provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared)
++            .collect();
++        let schema = self.native_object_resolved_uncached(reference, &members)?;
+         let TypeData::NativeTable(data) = self.data(schema) else { unreachable!() };
+         let fields: Vec<_> = data.fields.iter().map(|field| NativeTableField { optional: true, ..*field }).collect();
+         let mut context = (**data).clone_in(self.arena);
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+index c3d54eb..d62f66b 100644
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -244,7 +244,8 @@ impl<'s> Sink<'s> {
+ /// signature or mapper id can be task-local.
+ fn is_task_independent(q: Query) -> bool {
+     match q {
+-        Query::NativeNamed(super::native_named::NativeTypeDeclarationQuery::ObjectMembers(_)) => false,
++        Query::NativeNamed(super::native_named::NativeTypeDeclarationQuery::ObjectMembers(_)
++            | super::native_named::NativeTypeDeclarationQuery::DefinitionContext(_)) => false,
+         Query::NativeNamed(_)
+         | Query::NativeProject(_) => true,
+         Query::Symbol(_)

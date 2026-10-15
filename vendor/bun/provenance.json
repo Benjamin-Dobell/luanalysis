@@ -1152,6 +1152,48 @@
       "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
       "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
       "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-inherited-field-contracts.patch",
+      "reason": "Preserve inherited property contracts and original member context while checking constructor-origin fields, without publishing inferred implementation fields as independent schema contracts.",
+      "patch_sha256": "63b07b388a542e616f15eeb206d473df6ba3aad16d292543815032b1ebf092d0"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-inherited-field-contracts.patch",
+      "reason": "Preserve inherited property contracts and original member context while checking constructor-origin fields, without publishing inferred implementation fields as independent schema contracts.",
+      "patch_sha256": "63b07b388a542e616f15eeb206d473df6ba3aad16d292543815032b1ebf092d0"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-semantic-self-identity.patch",
+      "reason": "Keep the original semantic self identity stable across generic definition schema expansion and instantiation.",
+      "patch_sha256": "15192be256476306eaa769d210821df5c801c81c3e3a53e4cd055fedab763856"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-recursive-override-classification.patch",
+      "reason": "Classify recursive nominal overrides using original lazy declaration metadata, suppressing inference side effects while preserving shared call, flow and relation workers.",
+      "patch_sha256": "901257f7db3472018c065093bfb34c2c8fb7ecb84a3bd68ad18c84bed2b82e37"
+    },
+    {
+      "path": "src/sema/check/flow.rs",
+      "patch": "vendor/patches/bun-sema-native-recursive-override-classification.patch",
+      "reason": "Classify recursive nominal overrides using original lazy declaration metadata, suppressing inference side effects while preserving shared call, flow and relation workers.",
+      "patch_sha256": "901257f7db3472018c065093bfb34c2c8fb7ecb84a3bd68ad18c84bed2b82e37"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-recursive-override-classification.patch",
+      "reason": "Classify recursive nominal overrides using original lazy declaration metadata, suppressing inference side effects while preserving shared call, flow and relation workers.",
+      "patch_sha256": "901257f7db3472018c065093bfb34c2c8fb7ecb84a3bd68ad18c84bed2b82e37"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-recursive-override-classification.patch",
+      "reason": "Classify recursive nominal overrides using original lazy declaration metadata, suppressing inference side effects while preserving shared call, flow and relation workers.",
+      "patch_sha256": "901257f7db3472018c065093bfb34c2c8fb7ecb84a3bd68ad18c84bed2b82e37"
     }
   ],
   "source_additions": {
@@ -1180,7 +1222,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "a2b5b8ec4bce738daee30bed762686eac5da10ee18b65897129940b298046f64",
+      "extracted_sha256": "cca932d366a088a4d8a29254963c770acf93c669fdb3282c4d49321b8b9bfd8f",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1898,7 +1940,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "dcf4a904b436f16df29dbaa854aba6601213e076310f4c2a485d65c9912b447c"
+      "extracted_sha256": "594aaaf7ab4a6b79604c30a4a52f5611f1deb162f3bd6738266d24e03384e6e1"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -2113,7 +2155,7 @@
     "src/sema/check/flow.rs": {
       "upstream": "src/sema/check/flow.rs",
       "sha256": "eca4c6e84d836502b89074917574c1f0623497ab0b0f11b06b729296b4d2c467",
-      "extracted_sha256": "feb09d25c866213106eb01829c664d158ac378a1dc83046db2184900b2663ee5"
+      "extracted_sha256": "56e8b8ee032140adb094f8029d851984c1d7a8d8adbd551b2c28c71e686f7193"
     },
     "src/sema/check/grammarchecks.rs": {
       "upstream": "src/sema/check/grammarchecks.rs",
@@ -2183,7 +2225,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "3b859c429b731b0078053fa9e30f858781bd1d13805b134078180b5481cca2f4"
+      "extracted_sha256": "e8cca7cb27628790822ef4ae7f1e6c0e5d022f27c05bcbaf8dfc6821a3280df0"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -2243,7 +2285,7 @@
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "841afa1761135fe6312c886045f283ca4edbe26f3568060ebfdeb90b80a00e67"
+      "extracted_sha256": "307df5f52afec0b2005151c6a6566babfb5cb0fe81b5bcf8e5ff1fc19d8fc6ac"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",
