@@ -110,6 +110,9 @@ pub(super) trait FlowDomain {
     fn crossed(walk: &Self::Walk) -> u32;
     fn set_crossed(walk: &mut Self::Walk, crossed: u32);
     fn initial(&self, checker: &mut Checker<'_, '_>, walk: &mut Self::Walk) -> TypeId;
+    fn join(&self, checker: &mut Checker<'_, '_>, _: &Self::Walk, types: &[TypeId], initial: TypeId) -> TypeId {
+        checker.flow_join(types, initial)
+    }
     fn starts_as_declared(&self, checker: &mut Checker<'_, '_>, walk: &mut Self::Walk) -> bool;
     fn shared(&self, checker: &Checker<'_, '_>, node: Self::Node) -> bool;
     fn step(
@@ -351,7 +354,7 @@ impl<'s, 'p> Checker<'s, 'p> {
                     } else {
                         domain.initial(self, walk)
                     };
-                    break FlowType::new(self.flow_join(&types, initial), incomplete).ty;
+                    break FlowType::new(domain.join(self, walk, &types, initial), incomplete).ty;
                 }
                 FlowStep::Loop { edges } => {
                     match *edges {
@@ -422,7 +425,7 @@ impl<'s, 'p> Checker<'s, 'p> {
                             break cached;
                         }
                     }
-                    let result = FlowType::new(self.flow_join(&types, initial), incomplete);
+                    let result = FlowType::new(domain.join(self, walk, &types, initial), incomplete);
                     if !incomplete
                         && !D::state(walk).too_deep
                         && D::state(walk).steps < MAX_STEPS

@@ -57,6 +57,25 @@ fn a_later_assert_store_through_a_written_function_contract_keeps_runtime_identi
 }
 
 #[test]
+fn a_loop_callee_replaced_by_an_ordinary_function_cannot_keep_assertion_effects() {
+    let source = include_str!("fixtures/native_effects/loop_replaced_guard.lua");
+    let fixture = Fixture::new(source);
+    let output = fixture.check();
+    rejects(&output, "TS2322");
+    assert!(
+        text(&output).contains("main.lua:12:18: error[TS2322]"),
+        "{}",
+        text(&output)
+    );
+    fs::write(
+        fixture.0.join("main.lua"),
+        source.replace("  guard(value)", "  guard=assert\n  guard(value)"),
+    )
+    .unwrap();
+    pass(&fixture.check());
+}
+
+#[test]
 fn restoring_the_real_assert_before_each_loop_call_keeps_its_refinement() {
     let fixture = Fixture::new(&format!(
         "{ORDINARY}---@param value number|nil\n---@param again boolean\nlocal function read(value,again)\n ---@type fun(value:any):any\n local guard=ordinary\n while again do\n  guard=assert\n  guard(value)\n  ---@type number\n  local narrowed=value\n  guard=ordinary\n  value=nil\n end\nend\nlocal result=read(42,true)\n"

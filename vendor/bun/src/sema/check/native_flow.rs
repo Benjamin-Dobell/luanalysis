@@ -595,6 +595,13 @@ impl FlowDomain for NativeDomain<'_> {
     fn initial(&self, _: &mut Checker<'_, '_>, walk: &mut NativeWalk) -> TypeId {
         walk.initial
     }
+    fn join(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, types: &[TypeId], initial: TypeId) -> TypeId {
+        if self.provider.reference_tracks_runtime_value(walk.reference) {
+            // Structural subtyping cannot remove an alternative runtime value:
+            // an ordinary function may share assert's shape without its effect.
+            checker.union_or_evolving_with(types, false)
+        } else { checker.flow_join(types, initial) }
+    }
     fn starts_as_declared(&self, _: &mut Checker<'_, '_>, walk: &mut NativeWalk) -> bool {
         walk.initial == walk.declared
     }
