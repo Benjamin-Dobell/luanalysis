@@ -1043,6 +1043,12 @@
       "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
       "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
       "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-overload-failure-diagnostics.patch",
+      "patch_sha256": "e411833d345a23dfb6d1db8344675c1bb2e79164173a11b4b41352f3acc19466",
+      "reason": "Report native overload failures against actual failed public heads, retaining argument-type and arity correlation rather than checking a synthesized recovery signature; shared overload selection remains unchanged."
     }
   ],
   "source_additions": {
@@ -1785,7 +1791,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "2fa621c746eb35d37f78fc5a7a94e49746243a15091b3f371a66304750b41d1b"
+      "extracted_sha256": "613e395eb8b20e42bda48596929fdb177b597b01bb4a438bf979563392e75abf"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",

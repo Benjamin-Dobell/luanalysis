@@ -6,6 +6,8 @@
 #![feature(linkage)]
 
 mod native;
+#[cfg(test)]
+mod native_overload_failure_tests;
 mod native_assertions;
 #[cfg(test)]
 mod native_runtime_primitive_tests;

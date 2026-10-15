@@ -556,7 +556,9 @@ impl<'p, 's> Checker<'p, 's> {
                         || self.sig_native_signature_decl(candidate).zip(self.sig_native_signature_decl(failed)).is_some_and(|(left, right)| left.0 == right.0)
                 })
             });
-            let diagnostic_sig = state.candidate_for_type_argument_error.or(argument_candidate).unwrap_or(sig);
+            let diagnostic_sig = state.candidate_for_type_argument_error.or(argument_candidate)
+                .or(state.candidate_for_argument_arity_error)
+                .unwrap_or_else(|| state.candidates[self.longest_candidate_index(&state.candidates, args.len())]);
             let type_params = self.sig_type_params(diagnostic_sig);
             if !self.has_correct_type_argument_arity(&type_params, type_args.len()) {
                 errors.push(ResolvedTypeCallError::TypeArgumentArity {
@@ -573,7 +575,10 @@ impl<'p, 's> Checker<'p, 's> {
                     }
                 }
             } else {
-                let params = self.sig_params(selected);
+                // The synthesized overload-failure signature is recovery data:
+                // its merged parameters are not an applicable public head.
+                let failed = state.candidates_for_argument_error.last().copied().unwrap_or(diagnostic_sig);
+                let params = self.sig_params(failed);
                 if !self.has_correct_arity(&state, &params) {
                     let (min, max) = if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(&params).is_some() {
                         let expected = NativeResultPack { ty: self.rest_type_at_position(&params, 0, false) };
@@ -595,7 +600,7 @@ impl<'p, 's> Checker<'p, 's> {
                         });
                     }
                 } else if let Some((index, source, target)) = self.resolved_signature_argument_error(
-                    selected, args, Relation::Assignable, CheckMode::empty(),
+                    failed, args, Relation::Assignable, CheckMode::empty(),
                 ) {
                     errors.push(ResolvedTypeCallError::Argument { index, source, target });
                 }

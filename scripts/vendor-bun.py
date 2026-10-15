@@ -233,6 +233,13 @@ SOURCE_ADAPTATIONS.extend({
 } for path in ["mod.rs", "native_named.rs", "native_tables.rs", "relate.rs", "shape.rs"])
 
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/call.rs",
+    "patch": "vendor/patches/bun-sema-native-overload-failure-diagnostics.patch",
+    "reason": "Report native overload failures against actual failed public heads, retaining argument-type and arity correlation rather than checking a synthesized recovery signature; shared overload selection remains unchanged.",
+})
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 
