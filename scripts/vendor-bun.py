@@ -303,6 +303,13 @@ SOURCE_ADAPTATIONS.append({
 })
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-void-callback-results.patch",
+    "reason": "Preserve TypeScript void callback variance for native signatures with an empty declared result row, excluding Never and preserving ordinary physical result-pack assignment.",
+} for path in ["native_packs.rs", "relate.rs"])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

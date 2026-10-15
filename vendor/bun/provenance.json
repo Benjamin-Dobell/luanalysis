@@ -1332,6 +1332,18 @@
       "patch": "vendor/patches/bun-sema-native-member-overload-visibility.patch",
       "reason": "Require matching source visibility before grouping pure written member overloads.",
       "patch_sha256": "7bb5cd4c6e49c1bd9f43360d09372a659d95c6653c5c658f11292d516fe9af4f"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-native-void-callback-results.patch",
+      "reason": "Preserve TypeScript void callback variance for native signatures with an empty declared result row, excluding Never and preserving ordinary physical result-pack assignment.",
+      "patch_sha256": "f93ba6750f6779be0d3ceb40fd0cc86fe3170b67857f53451e7f354c1c53b4eb"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-void-callback-results.patch",
+      "reason": "Preserve TypeScript void callback variance for native signatures with an empty declared result row, excluding Never and preserving ordinary physical result-pack assignment.",
+      "patch_sha256": "f93ba6750f6779be0d3ceb40fd0cc86fe3170b67857f53451e7f354c1c53b4eb"
     }
   ],
   "source_additions": {
@@ -1364,7 +1376,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "76425902b977e3d7bc828dc2d518c0e958903785c7f0ed364a01c14f856d4cf5",
+      "extracted_sha256": "3861f65b1da8923ef9e7f331c6610cc2cceb6a2066357d2b6d35324dae2ac7f1",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
@@ -2363,7 +2375,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "0d54290e48213b19f421ef58a70e178840990c97d0593c0a8ed490b0e6513d42"
+      "extracted_sha256": "9767a8e75fa76ac3e029d6d7e9a68f2ab58c693b249260b200aa313e6043c5eb"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
