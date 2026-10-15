@@ -230,14 +230,14 @@ impl Checker<'_> {
                 | TableError::NotTable { .. }
                 | TableError::MissingKey { .. },
             ) => {
-                self.error(
+                self.error_types(
                     "TS2339",
                     name.span,
                     format!(
-                        "Property '{}' does not exist on type '{}'.",
-                        name.text,
-                        crate::describe(receiver)
+                        "Property '{}' does not exist on type '{{}}'.",
+                        name.text
                     ),
+                    &[receiver],
                 );
                 Type::Unknown
             }
@@ -308,110 +308,63 @@ impl Checker<'_> {
             self.incomplete_flow = true;
             return;
         }
-        let (code, origin, message) = match error {
+        let (code, origin) = match &error {
             TableError::PendingContext => unreachable!("pending member context handled above"),
-            TableError::InvalidKey { key } => (
-                "TS2538",
-                key_span,
-                format!(
-                    "{} cannot be used as a Lua table key.",
-                    self.table_key_description(&key)
-                ),
-            ),
-            TableError::NotTable { ty } => (
-                "TS7053",
-                key_span,
-                format!(
-                    "Type '{}' cannot be indexed as a Lua table.",
-                    self.engine.format(&ty)
-                ),
-            ),
-            TableError::MissingKey { key } => (
-                "TS2339",
-                key_span,
-                format!(
-                    "Property {} does not exist on this table type.",
-                    self.table_key_description(&key)
-                ),
-            ),
-            TableError::KeyType { key, expected } => (
-                "TS2538",
-                key_span,
-                format!(
-                    "Key type '{}' is not assignable to index type '{}'.",
-                    self.engine.format(&key),
-                    self.engine.format(&expected)
-                ),
-            ),
-            TableError::ValueType { value, expected } => (
-                "TS2322",
-                value_span,
-                format!(
-                    "Type '{}' is not assignable to type '{}'.",
-                    self.engine.format(&value),
-                    self.engine.format(&expected)
-                ),
-            ),
-            TableError::ReadOnly { key } => (
-                "TS2540",
-                key_span,
-                format!(
-                    "Cannot assign to readonly property {}.",
-                    self.table_key_description(&key)
-                ),
-            ),
-            TableError::RequiredDeletion { key } => (
-                "TS2322",
-                value_span,
-                format!(
-                    "Nil cannot delete required property {}.",
-                    self.table_key_description(&TableKey::Literal(key))
-                ),
-            ),
-            TableError::DuplicateDeclaredField { key } => (
-                "TS2300",
-                key_span,
-                format!(
-                    "Duplicate declared property {}.",
-                    self.table_key_description(&TableKey::Literal(key))
-                ),
-            ),
-            TableError::InvalidSequenceStart { start } => (
-                "LUA2002",
-                value_span,
-                format!("Invalid Lua sequence starting index {start}."),
-            ),
-            TableError::SequenceTooComplex {
-                count,
-                alternatives,
-            } => (
-                "LUA2019",
-                value_span,
-                format!(
-                    "Lua table result sequence exceeds native complexity limits ({count} fields, {alternatives} alternatives)."
-                ),
-            ),
-            TableError::UnresolvedSequence => (
-                "LUA2016",
-                value_span,
-                "Lua table result sequence could not be resolved from its native pack.".into(),
-            ),
+            TableError::InvalidKey { .. } | TableError::KeyType { .. } => ("TS2538", key_span),
+            TableError::NotTable { .. } => ("TS7053", key_span),
+            TableError::MissingKey { .. } => ("TS2339", key_span),
+            TableError::ValueType { .. } | TableError::RequiredDeletion { .. } => ("TS2322", value_span),
+            TableError::ReadOnly { .. } => ("TS2540", key_span),
+            TableError::DuplicateDeclaredField { .. } => ("TS2300", key_span),
+            TableError::InvalidSequenceStart { .. } => ("LUA2002", value_span),
+            TableError::SequenceTooComplex { .. } => ("LUA2019", value_span),
+            TableError::UnresolvedSequence => ("LUA2016", value_span),
         };
-        self.error(code, origin, message);
+        let (template, types) = table_error_description(&error);
+        self.error_types(code, origin, template, &types.iter().collect::<Vec<_>>());
     }
+}
 
-    fn table_key_description(&mut self, key: &TableKey) -> String {
+/// Build diagnostic text without querying or formatting native type operands.
+pub(crate) fn table_error_description(error: &TableError) -> (String, Vec<Type>) {
+    fn key(key: &TableKey, types: &mut Vec<Type>) -> String {
         match key {
             TableKey::Literal(LuaKey::String(bytes)) => {
-                crate::describe(&Type::StringLiteral(bytes.clone()))
+                types.push(Type::StringLiteral(bytes.clone()));
+                "{}".into()
             }
             TableKey::Literal(LuaKey::Integer(value)) => value.to_string(),
             TableKey::Literal(LuaKey::Number(value)) => value.to_string(),
             TableKey::Literal(LuaKey::Boolean(value)) => value.to_string(),
             TableKey::Type(Type::Nil | Type::Undefined) => "nil".into(),
-            TableKey::Type(ty) => self.engine.format(ty),
+            TableKey::Type(ty) => { types.push(ty.clone()); "{}".into() }
         }
     }
+    let mut types = Vec::new();
+    let template = match error {
+        TableError::PendingContext => "Lua table member context remains unresolved.".into(),
+        TableError::InvalidKey { key: value } => format!("{} cannot be used as a Lua table key.", key(value, &mut types)),
+        TableError::NotTable { ty } => {
+            types.push(ty.clone());
+            "Type '{}' cannot be indexed as a Lua table.".into()
+        }
+        TableError::MissingKey { key: value } => format!("Property {} does not exist on this table type.", key(value, &mut types)),
+        TableError::KeyType { key, expected } => {
+            types.extend([key.clone(), expected.clone()]);
+            "Key type '{}' is not assignable to index type '{}'.".into()
+        }
+        TableError::ValueType { value, expected } => {
+            types.extend([value.clone(), expected.clone()]);
+            "Type '{}' is not assignable to type '{}'.".into()
+        }
+        TableError::ReadOnly { key: value } => format!("Cannot assign to readonly property {}.", key(value, &mut types)),
+        TableError::RequiredDeletion { key: value } => format!("Nil cannot delete required property {}.", key(&TableKey::Literal(value.clone()), &mut types)),
+        TableError::DuplicateDeclaredField { key: value } => format!("Duplicate declared property {}.", key(&TableKey::Literal(value.clone()), &mut types)),
+        TableError::InvalidSequenceStart { start } => format!("Invalid Lua sequence starting index {start}."),
+        TableError::SequenceTooComplex { count, alternatives } => format!("Lua table result sequence exceeds native complexity limits ({count} fields, {alternatives} alternatives)."),
+        TableError::UnresolvedSequence => "Lua table result sequence could not be resolved from its native pack.".into(),
+    };
+    (template, types)
 }
 
 fn sequence_key(index: usize) -> TableKey {

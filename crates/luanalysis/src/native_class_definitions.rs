@@ -224,28 +224,35 @@ impl Checker<'_> {
             NamedTypeError::DefinitionField {
                 error: luanalysis_engine::TableError::ValueType { value, expected },
                 ..
-            } => self.error(
+            } => self.error_types(
                 "TS2322",
                 span,
-                format!(
-                    "Type '{}' is not assignable to class definition field type '{}'.",
-                    crate::describe(&value),
-                    crate::describe(&expected)
-                ),
+                "Type '{}' is not assignable to class definition field type '{}'.",
+                &[&value, &expected],
             ),
-            NamedTypeError::DefinitionField { error, .. } => self.error(
+            NamedTypeError::DefinitionField { error, .. } => {
+                let (template, types) = super::native_tables::table_error_description(&error);
+                self.error_types("TS2322", span, format!("Class definition field is incompatible: {template}"), &types.iter().collect::<Vec<_>>());
+            }
+            NamedTypeError::DefinitionInitializer { actual, .. } => self.error_types(
                 "TS2322",
                 span,
-                format!("Class definition field is incompatible: {error:?}"),
+                "Class definition requires a table, found '{}'.",
+                &[&actual],
             ),
-            NamedTypeError::DefinitionInitializer { actual, .. } => self.error(
-                "TS2322",
-                span,
-                format!(
-                    "Class definition requires a table, found '{}'.",
-                    crate::describe(&actual)
-                ),
+            NamedTypeError::InvalidReceiver { actual, expected, .. } => self.error_types(
+                "LUA2031", span, "Class definition is unsupported: receiver type '{}' does not satisfy '{}'.", &[&actual, &expected],
             ),
+            NamedTypeError::UnsupportedReceiverType { actual } => self.error_types(
+                "LUA2031", span, "Class definition is unsupported for receiver type '{}'.", &[&actual],
+            ),
+            NamedTypeError::DefinitionOwner { actual, .. } => self.error_types(
+                "LUA2031", span, "Class definition owner is incompatible with type '{}'.", &[&actual],
+            ),
+            NamedTypeError::Table { error, .. } => {
+                let (template, types) = super::native_tables::table_error_description(&error);
+                self.error_types("LUA2031", span, format!("Class definition is unsupported: {template}"), &types.iter().collect::<Vec<_>>());
+            }
             other => self.error(
                 "LUA2031",
                 span,

@@ -5,7 +5,7 @@
 //! semantics, not JavaScript operator rules. Metamethods, integer domains and
 //! arbitrary table indexers require their own later native boundaries.
 
-use super::{Checker, describe};
+use super::Checker;
 use luanalysis_engine::{PackArgument, TableError, Type, ValuePack};
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, Name, Span, UnaryOperator};
 
@@ -34,13 +34,11 @@ impl Checker<'_> {
                 if self.length_operand(&value_type) {
                     Type::Number
                 } else {
-                    self.error(
+                    self.error_types(
                         "LUA2020",
                         value.span,
-                        format!(
-                            "Operator '#' requires a string or table operand; got '{}'. Length metamethods are not implemented.",
-                            describe(&value_type)
-                        ),
+                        "Operator '#' requires a string or table operand; got '{}'. Length metamethods are not implemented.",
+                        &[&value_type],
                     );
                     Type::Any
                 }
@@ -56,14 +54,14 @@ impl Checker<'_> {
                     }
                     Type::Number
                 } else {
-                    self.error(
+                    self.error_types(
                         "TS2356",
                         value.span,
                         format!(
-                            "Operator '{}' requires a number operand; got '{}'. Arithmetic metamethods are not implemented.",
-                            unary_spelling(op),
-                            describe(&value_type)
+                            "Operator '{}' requires a number operand; got '{{}}'. Arithmetic metamethods are not implemented.",
+                            unary_spelling(op)
                         ),
+                        &[&value_type],
                     );
                     Type::Any
                 }
@@ -155,15 +153,14 @@ impl Checker<'_> {
                 if both_numbers || both_strings {
                     Type::Boolean
                 } else {
-                    self.error(
+                    self.error_types(
                         "TS2365",
                         op_span,
                         format!(
-                            "Operator '{}' requires two numbers or two strings; got '{}' and '{}'. Comparison metamethods are not implemented.",
-                            binary_spelling(op),
-                            describe(&left_type),
-                            describe(&right_type)
+                            "Operator '{}' requires two numbers or two strings; got '{{}}' and '{{}}'. Comparison metamethods are not implemented.",
+                            binary_spelling(op)
                         ),
+                        &[&left_type, &right_type],
                     );
                     Type::Any
                 }
@@ -211,25 +208,23 @@ impl Checker<'_> {
     }
 
     fn numeric_error(&mut self, code: &'static str, span: Span, op: BinaryOperator, ty: &Type) {
-        self.error(
+        self.error_types(
             code,
             span,
             format!(
-                "Operator '{}' requires a number operand; got '{}'. Arithmetic metamethods are not implemented.",
-                binary_spelling(op),
-                describe(ty)
+                "Operator '{}' requires a number operand; got '{{}}'. Arithmetic metamethods are not implemented.",
+                binary_spelling(op)
             ),
+            &[ty],
         );
     }
 
     fn concat_error(&mut self, span: Span, ty: &Type) {
-        self.error(
+        self.error_types(
             "LUA2020",
             span,
-            format!(
-                "Operator '..' requires a string or number operand; got '{}'. Concatenation metamethods are not implemented.",
-                describe(ty)
-            ),
+            "Operator '..' requires a string or number operand; got '{}'. Concatenation metamethods are not implemented.",
+            &[ty],
         );
     }
 
@@ -302,19 +297,18 @@ impl Checker<'_> {
                 })
                 .unwrap_or(callee),
             Err(TableError::ValueType { value, expected }) => {
-                let message = format!("Receiver type '{}' does not satisfy '{}'.", self.engine.format(&value), self.engine.format(&expected));
-                self.error("TS2345", receiver.span, message);
+                self.error_types("TS2345", receiver.span, "Receiver type '{}' does not satisfy '{}'.", &[&value, &expected]);
                 self.engine.error_type()
             }
             Ok(None) | Err(TableError::KeyType { .. } | TableError::MissingKey { .. } | TableError::NotTable { .. }) => {
-            self.error(
+            self.error_types(
                 "TS2339",
                 name.span,
                 format!(
-                    "Property '{}' does not exist on type '{}'.",
-                    name.text,
-                    describe(&receiver_type)
+                    "Property '{}' does not exist on type '{{}}'.",
+                    name.text
                 ),
+                &[&receiver_type],
             );
             Type::Any
             }

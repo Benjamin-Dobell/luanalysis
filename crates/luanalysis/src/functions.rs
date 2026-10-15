@@ -2,7 +2,7 @@
 //! Signature identity, lazy return inference and whole-pack relations are native.
 
 use super::native_packs::{Adjustment, AnnotationPack, adjustment};
-use super::{Binding, Checker, describe};
+use super::{Binding, Checker};
 use luanalysis_engine::{
     CallError, CallResult, FunctionType, PackArgument, PackCallResult, PackFunctionType, Parameter,
     Type, ValuePack,
@@ -633,7 +633,7 @@ impl Checker<'_> {
     ) -> Type {
         for error in result.errors {
             match error {
-                CallError::NotCallable => self.error("TS2349", callee_span, format!("Type '{}' has no call signatures.", describe(callee_type))),
+                CallError::NotCallable => self.error_types("TS2349", callee_span, "Type '{}' has no call signatures.", &[callee_type]),
                 CallError::Arity { actual, minimum, maximum } => {
                     let expected = match maximum {
                         Some(maximum) if maximum == minimum => minimum.to_string(),
@@ -649,14 +649,14 @@ impl Checker<'_> {
                 }
                 CallError::Argument { index, source, target } => {
                     let origin = argument_spans.get(index).or_else(|| argument_spans.last()).copied().unwrap_or(span);
-                    self.error("TS2345", origin, format!("Argument of type '{}' is not assignable to parameter of type '{}'.", describe(&source), describe(&target)));
+                    self.error_types("TS2345", origin, "Argument of type '{}' is not assignable to parameter of type '{}'.", &[&source, &target]);
                 }
                 CallError::TypeArgumentArity { actual, minimum, maximum } => {
                     let expected = if maximum == minimum { minimum.to_string() } else { format!("{minimum}-{maximum}") };
                     self.error("TS2558", callee_span, format!("Expected {expected} type arguments, but got {actual}."));
                 }
                 CallError::TypeArgument { source, target, .. } => {
-                    self.error("TS2344", callee_span, format!("Type '{}' does not satisfy the constraint '{}'.", describe(&source), describe(&target)));
+                    self.error_types("TS2344", callee_span, "Type '{}' does not satisfy the constraint '{}'.", &[&source, &target]);
                 }
                 unsupported => self.error("LUA2018", callee_span, format!("native call form {unsupported:?} requires a later call-checking integration")),
             }

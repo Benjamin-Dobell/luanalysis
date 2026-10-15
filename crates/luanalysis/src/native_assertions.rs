@@ -1,6 +1,6 @@
 //! Original inline assertion metadata; all exclusion and relations are native.
 use super::native_packs::AnnotationPack;
-use super::{Checker, EvaluatedExpression, describe};
+use super::{Checker, EvaluatedExpression};
 use luanalysis_engine::{Type, ValuePack};
 use luanalysis_syntax::{Expr, ExpressionAssertion, ExpressionAssertionKind};
 
@@ -21,7 +21,7 @@ impl Checker<'_> {
     }
     fn assertion_overlap(&mut self, source: &Type, target: &Type, assertion: &ExpressionAssertion) {
         if !self.engine.assertion_overlap(source, target) {
-            self.error("TS2352", assertion.span, format!("Conversion of type '{}' to type '{}' may be a mistake because neither type sufficiently overlaps with the other.", describe(source), describe(target)));
+            self.error_types("TS2352", assertion.span, "Conversion of type '{}' to type '{}' may be a mistake because neither type sufficiently overlaps with the other.", &[source, target]);
         }
     }
     fn asserted_report(&mut self, expression: &Expr, ty: &Type) {
