@@ -1055,6 +1055,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// validation is a separate demand, so recursive member types can use the
     /// ordinary relation/inference guards after this shape has been published.
     pub(super) fn native_object_schema_resolved(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+        if let TypeData::NativeRuntimeTable(reference) = *self.data(ty) { return Ok(reference.view) }
         if let TypeData::NativeDefinition(reference) = *self.data(ty) { return Ok(self.native_definition_resolved(reference)) }
         let TypeData::NativeObject(reference) = *self.data(ty) else { return Ok(ty) };
         if let Some(&known) = self.native_named_cache.schemas.get(&ty) { return known }
@@ -1248,7 +1249,7 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn native_named_read(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
         if self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_header(self, reference.declaration).kind == NativeTypeDeclarationKind::RuntimeTable) {
             let object = self.intern(TypeData::NativeObject(reference));
-            let resolved = self.native_object_resolved(object).map_err(|_| NativeTableError::NotTable { ty: object })?;
+            let resolved = self.native_object_resolved(object).map_err(|error| error.table_error(object))?;
             return self.native_table_read(resolved, key);
         }
         if let NativeTableAccessKey::Literal(key) = key {

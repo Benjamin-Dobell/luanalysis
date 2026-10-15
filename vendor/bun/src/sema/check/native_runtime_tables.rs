@@ -165,7 +165,7 @@ impl<'p, 's> Checker<'p, 's> {
             Err(error) => return Err(error),
         }
         let key = self.native_table_access(key)?;
-        let members = self.native_object_members(reference.schema).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
+        let members = self.native_object_members(reference.schema).map_err(|error| error.table_error(TypeId::ERROR))?;
         let provider = self.native_named_provider(reference.schema.declaration).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
         // Original fixed keys and computed key domains do not demand future
         // stored values. Their schema presence cannot prove runtime presence.
@@ -176,7 +176,7 @@ impl<'p, 's> Checker<'p, 's> {
                     if matches!(key, NativeTableAccessKey::Literal(key) if other.normalize() == Ok(key)) { return Ok(TypeId::UNDEFINED) }
                 }
                 NativeTypeMemberKey::Indexer { .. } => {
-                    let raw = self.native_runtime_member_demand(reference.schema, member.member, true).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
+                    let raw = self.native_runtime_member_demand(reference.schema, member.member, true).map_err(|error| error.table_error(TypeId::ERROR))?;
                     let domain = self.native_member_type(raw, member.owner);
                     let observed = match key { NativeTableAccessKey::Literal(key) => self.native_table_key_type(key), NativeTableAccessKey::Type(ty) => ty };
                     if self.is_assignable(observed, domain) { return Ok(TypeId::UNDEFINED) }
@@ -188,7 +188,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub(in crate::check) fn native_runtime_table_write(&mut self, reference: NativeRuntimeTableRef, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
         let schema = self.intern(TypeData::NativeObject(reference.schema));
-        let schema = self.native_object_resolved(schema).map_err(|_| NativeTableError::NotTable { ty: schema })?;
+        let schema = self.native_object_resolved(schema).map_err(|error| error.table_error(schema))?;
         self.native_table_write(schema, key, value)
     }
 
