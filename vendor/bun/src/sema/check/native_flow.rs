@@ -251,6 +251,12 @@ pub struct NativeFrozenReference {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct NativeFlowPackResult {
+    pub pack: NativeResultPack,
+    pub incomplete: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct NativeIteratorProjection {
     pub frame: NativeReferenceKey,
     /// Physical hidden-frame column: iterator/state occupy columns zero/one.
@@ -1246,8 +1252,8 @@ impl<'s, 'p> Checker<'s, 'p> {
         provider: &dyn NativeFlowProvider,
         ordinary: NativeResultPack,
         elements: &[Option<NativeFrozenReference>],
-    ) -> NativeFlowResult {
-        let fallback = |incomplete| NativeFlowResult { ty: ordinary.ty, incomplete, unresolved_auto: false };
+    ) -> NativeFlowPackResult {
+        let fallback = |incomplete| NativeFlowPackResult { pack: ordinary, incomplete };
         let Some(ordinary_rows) = self.native_pack_alternatives(ordinary) else { return fallback(false) };
         let [ordinary_row] = ordinary_rows.as_slice() else { return fallback(false) };
         if ordinary_row.tail.is_some() || ordinary_row.fixed.len() != elements.len() {
@@ -1290,7 +1296,7 @@ impl<'s, 'p> Checker<'s, 'p> {
                 }).collect();
                 reconstructed.push(super::native_packs::NativePackAlternative { fixed, tail: None });
             }
-            NativeFlowResult { ty: checker.native_result_pack(&reconstructed).ty, incomplete: false, unresolved_auto: false }
+            NativeFlowPackResult { pack: checker.native_result_pack(&reconstructed), incomplete: false }
         });
         if stored.is_none() { fallback(true) } else { result }
     }

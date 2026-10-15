@@ -301,7 +301,7 @@ impl SessionQueries<'_, '_, '_> {
         let ordinary = import_pack(self.checker, self.handles, ordinary);
         let result = self.checker.native_flow_correlated_pack(&adapter, ordinary, elements);
         NativeFlowPackResult {
-            pack: self.handles.retain_pack(self.checker, bun_sema::types::NativeResultPack { ty: result.ty }),
+            pack: self.handles.retain_pack(self.checker, result.pack),
             incomplete: result.incomplete,
         }
     }
