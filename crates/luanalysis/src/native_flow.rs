@@ -274,7 +274,18 @@ impl NativeFlowSources {
             .filter(|occurrence| occurrence.kind == super::bind::OccurrenceKind::Write)
             .filter_map(|occurrence| occurrence.binding)
             .collect();
-        let mut mutable_groups = HashSet::new();
+        let mut foreign_mutable_groups = HashSet::new();
+        let mut write_owners: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        for graph in &result.program.graphs {
+            for node in &graph.nodes {
+                if let flow::NodeKind::Write { address, .. } = &node.kind
+                    && address.reference.path.is_empty()
+                    && let flow::ReferenceRoot::Binding(binding) = address.reference.root
+                {
+                    write_owners.entry(binding).or_default().insert(graph.index);
+                }
+            }
+        }
         let mut mutable_iterators = HashSet::new();
         for graph in &result.program.graphs {
             for node in &graph.nodes {
@@ -304,8 +315,8 @@ impl NativeFlowSources {
                     let flow::ReferenceRoot::Binding(binding) = address.reference.root else {
                         continue;
                     };
-                    if written.contains(&binding) {
-                        mutable_groups.insert(*evaluation);
+                    if write_owners.get(&binding).is_some_and(|owners| owners.iter().any(|owner| *owner != graph.index)) {
+                        foreign_mutable_groups.insert(*evaluation);
                     }
                     result
                         .pack_projections
@@ -324,7 +335,7 @@ impl NativeFlowSources {
         }
         result
             .pack_projections
-            .retain(|_, (evaluation, _)| !mutable_groups.contains(evaluation));
+            .retain(|_, (evaluation, _)| !foreign_mutable_groups.contains(evaluation));
         result
             .iterator_projections
             .retain(|_, (iterator, _)| !mutable_iterators.contains(iterator));
@@ -1152,9 +1163,22 @@ impl NativeFlowSources {
         ) else {
             return NativeWriteRelation::Unaffected;
         };
-        let flow::NodeKind::Write { address, .. } = &node.kind else {
+        let flow::NodeKind::Write { address, value, declaration, .. } = &node.kind else {
             return NativeWriteRelation::Unaffected;
         };
+        if let flow::ReferenceRoot::Pack(evaluation) = query.root {
+            let flow::ReferenceRoot::Binding(binding) = target.root else { return NativeWriteRelation::Unaffected; };
+            if !target.path.is_empty() || !self.pack_projections.get(&binding).is_some_and(|(group, _)| *group == evaluation) {
+                return NativeWriteRelation::Unaffected;
+            }
+            // The original simultaneous declaration stores create the relation;
+            // any reached later rebind of a sibling breaks that physical tuple.
+            return if *declaration && matches!(value, flow::ValueDemand::PackElement { evaluation: original, .. } if *original == evaluation) {
+                NativeWriteRelation::Unaffected
+            } else {
+                NativeWriteRelation::Ancestor
+            };
+        }
         if query.root == flow::ReferenceRoot::LoaderState {
             return if self.loader_address_invalidates(address) { NativeWriteRelation::Ancestor } else { NativeWriteRelation::Unaffected };
         }
@@ -1630,6 +1654,9 @@ impl NativeFlowProvider for FlowAdapter<'_> {
     }
     fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeWriteRelation {
         let Some(query) = self.sources.source_reference(reference) else { return NativeWriteRelation::Unaffected; };
+        if matches!(query.root, flow::ReferenceRoot::Pack(_)) {
+            return self.sources.write_affects(reference, target, at);
+        }
         if query.root == flow::ReferenceRoot::LoaderState {
             let ordinary = self.sources.write_affects(reference, target, at);
             if ordinary != NativeWriteRelation::Unaffected { return ordinary; }

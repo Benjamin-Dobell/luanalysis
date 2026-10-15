@@ -4,7 +4,8 @@
 use crate::{
     Binding, bind::BindingId, flow, native_flow::FlowAdapter, native_functions::NativeRegistry,
 };
-use luanalysis_engine::{NativeFlowKey, TypeQueries, ValuePack};
+use luanalysis_engine::{NativeFlowKey, NativeFrozenReference, TypeQueries, ValuePack};
+use luanalysis_syntax::ExprKind;
 
 impl NativeRegistry {
     pub(super) fn source_iterator_header(
@@ -30,6 +31,39 @@ impl NativeRegistry {
             .collect();
         let mut checker = self.checker_at_flow(input, queries);
         let raw = checker.expression_list_pack(&expressions, None);
+        let expands = expressions.last().is_some_and(|expression| matches!(expression.kind,
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Vararg));
+        let raw = if expands {
+            raw
+        } else {
+            let references: Vec<_> = recipe.values.iter().map(|value| {
+                let evaluation = sources.program.evaluation(*value);
+                let mut expression = &sources.program.expression(evaluation.expression).expression;
+                loop {
+                    if !self.expression_assertions(expression.span).is_empty() { return None; }
+                    match &expression.kind {
+                        ExprKind::Parenthesized(inner) => expression = inner,
+                        ExprKind::Name(_) => break,
+                        _ => return None,
+                    }
+                }
+                let reference = sources.expression_reference(expression, input.graph)?;
+                if let Some(flow::Reference { root: flow::ReferenceRoot::Binding(binding), .. }) = sources.source_reference(reference)
+                    && self.shape_for_binding(*binding).is_some()
+                {
+                    return None;
+                }
+                Some(NativeFrozenReference {
+                    reference,
+                    input: sources.flow_key(evaluation.input, input.graph.context),
+                })
+            }).collect();
+            let correlated = checker.engine.flow_correlated_pack(
+                &FlowAdapter { sources, values: self }, &raw, &references,
+            );
+            checker.incomplete_flow |= correlated.incomplete;
+            correlated.pack
+        };
         let pack = match checker.engine.adjust_pack(&raw, 4) {
             Ok(pack) => pack,
             Err(error) => {

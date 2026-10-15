@@ -232,15 +232,22 @@ pub struct NativeFunctionCreation {
     pub position: usize,
 }
 
-/// Original immutable sibling projections of one physical Lua result list.
-/// The provider establishes source identity/immutability; the checker narrows
-/// the complete result pack through the shared flow traversal.
+/// Original sibling projections of one physical Lua result list. The provider
+/// establishes source identity; reached writes invalidate the binding relation
+/// and the checker narrows the complete pack through shared flow traversal.
 #[derive(Clone, Copy, Debug)]
 pub struct NativePackProjection {
     pub group: NativeReferenceKey,
     pub value: NativeValueKey,
     pub input: NativeFlowKey,
     pub index: usize,
+}
+
+/// A physical scalar read, frozen before later expressions in its Lua list.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeFrozenReference {
+    pub reference: NativeReferenceKey,
+    pub input: NativeFlowKey,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1218,8 +1225,8 @@ impl<'s, 'p> Checker<'s, 'p> {
         if !self.is_union(initial.ty) {
             return NativeFlowResult { ty: ordinary, incomplete: false, unresolved_auto: false };
         }
-        let result = self.native_flow_type(provider, at, projection.group, initial.ty, initial.ty);
-        let ty = if result.ty == initial.ty {
+        let result = self.native_flow_type(provider, at, projection.group, TypeId::UNKNOWN, initial.ty);
+        let ty = if result.ty == initial.ty || self.native_pack_alternatives(NativeResultPack { ty: result.ty }).is_none() {
             ordinary
         } else {
             let projected = self.native_pack_slot(NativeResultPack { ty: result.ty }, projection.index);
@@ -1230,6 +1237,62 @@ impl<'s, 'p> Checker<'s, 'p> {
             })
         };
         NativeFlowResult { ty, incomplete: result.incomplete, unresolved_auto: false }
+    }
+
+    /// Reassemble scalar reads from one surviving original result list. The
+    /// ordinary list remains authoritative when the source relation was lost.
+    pub fn native_flow_correlated_pack(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        ordinary: NativeResultPack,
+        elements: &[Option<NativeFrozenReference>],
+    ) -> NativeFlowResult {
+        let fallback = |incomplete| NativeFlowResult { ty: ordinary.ty, incomplete, unresolved_auto: false };
+        let Some(ordinary_rows) = self.native_pack_alternatives(ordinary) else { return fallback(false) };
+        let [ordinary_row] = ordinary_rows.as_slice() else { return fallback(false) };
+        if ordinary_row.tail.is_some() || ordinary_row.fixed.len() != elements.len() {
+            return fallback(false);
+        }
+        let projections: Vec<_> = elements.iter().map(|element| {
+            element.and_then(|element| provider.pack_projection(element.reference).map(|projection| (element, projection)))
+        }).collect();
+        let mut participating = projections.iter().flatten();
+        let Some((first, source)) = participating.next().copied() else { return fallback(false) };
+        let Some((mut last, _)) = participating.next().copied() else { return fallback(false) };
+        for &(element, projection) in projections.iter().flatten() {
+            if element.reference.graph != source.group.graph || element.input.graph != source.group.graph
+                || projection.group != source.group || projection.value != source.value || projection.input != source.input
+            {
+                return fallback(false);
+            }
+            last = element;
+        }
+        if first.input.graph != source.input.graph || !provider.contains_reference(source.group) {
+            return fallback(false);
+        }
+        let (result, stored) = self.run_memoizable(|checker| {
+            let initial = checker.native_flow_pack_value(provider, source.value, source.input);
+            // UNKNOWN is the invalidated relation, never the original rows.
+            let group = checker.native_flow_type(provider, last.input, source.group, TypeId::UNKNOWN, initial.ty);
+            if group.incomplete { return fallback(true); }
+            let Some(rows) = checker.native_pack_alternatives(NativeResultPack { ty: group.ty }) else { return fallback(false) };
+            let views: Vec<_> = projections.iter().map(|projection| {
+                projection.and_then(|(element, _)| provider.reference_written_contract(element.reference, checker))
+            }).collect();
+            let mut reconstructed = Vec::with_capacity(rows.len());
+            for row in rows {
+                let row = checker.native_result_pack(&[row]);
+                let fixed = ordinary_row.fixed.iter().enumerate().map(|(index, ordinary)| {
+                    let Some((_, projection)) = projections[index] else { return *ordinary };
+                    let ty = checker.native_pack_slot(row, projection.index);
+                    let ty = views[index].map_or(ty, |bound| checker.resolved_assignment_type(bound, ty));
+                    super::native_packs::NativePackSlot { ty, optional: false }
+                }).collect();
+                reconstructed.push(super::native_packs::NativePackAlternative { fixed, tail: None });
+            }
+            NativeFlowResult { ty: checker.native_result_pack(&reconstructed).ty, incomplete: false, unresolved_auto: false }
+        });
+        if stored.is_none() { fallback(true) } else { result }
     }
 
     fn native_flow_pack_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeResultPack {

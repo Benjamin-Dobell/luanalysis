@@ -984,6 +984,7 @@ pub trait TypeQueries {
     fn iterator_result_with_status(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey, index: usize) -> NativeFlowResult;
     fn flow_iterator_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativeIteratorProjection, ordinary: &Type) -> NativeFlowResult;
     fn flow_pack_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativePackProjection, ordinary: &Type) -> NativeFlowResult;
+    fn flow_correlated_pack(&mut self, provider: &dyn NativeFlowProvider, ordinary: &ValuePack, elements: &[Option<NativeFrozenReference>]) -> NativeFlowPackResult;
     fn contextual_function(
         &mut self,
         function: NativeFunctionKey,
@@ -1692,6 +1693,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn flow_pack_projection(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, projection: NativePackProjection, ordinary: &Type) -> NativeFlowResult {
         self.flow_pack_projection_native(provider, at, projection, ordinary)
+    }
+    fn flow_correlated_pack(&mut self, provider: &dyn NativeFlowProvider, ordinary: &ValuePack, elements: &[Option<NativeFrozenReference>]) -> NativeFlowPackResult {
+        self.flow_correlated_pack_native(provider, ordinary, elements)
     }
     fn contextual_function(
         &mut self,

@@ -8,7 +8,7 @@ pub use core::{
     NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeGraphKey,
     NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePackProjection,
     NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation, NativeIteratorProjection, NativeIteratorStage,
-    NativeVariableDeclaration, NativeVariableWrite, NativeFunctionCreation,
+    NativeVariableDeclaration, NativeVariableWrite, NativeFunctionCreation, NativeFrozenReference,
 };
 pub use bun_sema::check::native_aliases::{NativeAliasRelation, NativeAliasReturn, NativeAliasReturnValue, NativeAliasEnvironmentMember, NativeAliasExecution, NativeAliasCall, NativeAliasDispatch, NativeCallPreservation};
 #[derive(Clone, Copy, Debug)]
@@ -32,6 +32,12 @@ pub struct NativeFlowResult {
     pub ty: Type,
     pub incomplete: bool,
     pub unresolved_auto: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeFlowPackResult {
+    pub pack: ValuePack,
+    pub incomplete: bool,
 }
 
 /// Immutable graph recipes and source-value demands. No graph join, loop
@@ -285,6 +291,21 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
 }
 
 impl SessionQueries<'_, '_, '_> {
+    pub(super) fn flow_correlated_pack_native(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        ordinary: &ValuePack,
+        elements: &[Option<NativeFrozenReference>],
+    ) -> NativeFlowPackResult {
+        let adapter = FlowProviderAdapter { provider, handles: self.handles };
+        let ordinary = import_pack(self.checker, self.handles, ordinary);
+        let result = self.checker.native_flow_correlated_pack(&adapter, ordinary, elements);
+        NativeFlowPackResult {
+            pack: self.handles.retain_pack(self.checker, bun_sema::types::NativeResultPack { ty: result.ty }),
+            incomplete: result.incomplete,
+        }
+    }
+
     pub(super) fn flow_pack_projection_native(
         &mut self,
         provider: &dyn NativeFlowProvider,

@@ -3,6 +3,79 @@
 
 use luanalysis::{CheckReport, check};
 
+const LOCAL_ROW_HEADER: &str = r#"---@shape Packed<T>
+---@field [number] T
+---@field n number
+
+---@function packedOnly(state:Packed<string>,control:number):nil|(number,string|nil)
+---@function choose(): ((fun(state:Packed<string>,control:number):nil|(number,string|nil)),Packed<string>,0)|((fun(state:string[],control:number):nil|(number,string)),string[],0)
+"#;
+
+const LOCAL_ROW_LOOP: &str = r#"for key,value in step,state,control do
+---@type number
+local checkedKey=key
+---@type nil|string
+local checkedValue=value
+end
+"#;
+
+#[test]
+fn destructured_iterator_header_preserves_original_rows_before_a_future_write() {
+    for suffix in ["", "state={'replacement after the loop'}"] {
+        accepted(&format!("{LOCAL_ROW_HEADER}local step,state,control=choose()\n{LOCAL_ROW_LOOP}{suffix}"));
+    }
+}
+
+#[test]
+fn replacing_any_iterator_sibling_discards_the_original_row_relation() {
+    for replacement in [
+        "state={'replacement'}",
+        "step=packedOnly",
+        "control=1",
+    ] {
+        let source = format!("{LOCAL_ROW_HEADER}local step,state,control=choose()\n{replacement}\n{LOCAL_ROW_LOOP}");
+        let report = check(&source);
+        assert!(report.diagnostics.iter().any(|diagnostic| diagnostic.code == "TS2345"),
+            "{replacement}: {:#?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn effects_between_frozen_header_reads_cannot_join_different_reached_values() {
+    let source = format!(r#"{LOCAL_ROW_HEADER}local step,state,control=choose()
+local function replaceState()
+state={{'replacement without n'}}
+return state
+end
+for key,value in step,replaceState(),control do end
+"#);
+    let report = check(&source);
+    assert!(report.diagnostics.iter().any(|diagnostic| diagnostic.code == "TS2345"),
+        "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn independent_original_iterator_groups_do_not_share_rows() {
+    let source = format!("{LOCAL_ROW_HEADER}local step,state,control=choose()\nlocal otherStep,otherState,otherControl=choose()\nfor key,value in step,otherState,control do end");
+    let report = check(&source);
+    assert!(report.diagnostics.iter().any(|diagnostic| diagnostic.code == "TS2345"),
+        "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn iterator_reconstruction_preserves_written_and_asserted_state_views() {
+    let header = r#"---@function hidden(): (fun(state:{payload:string,hidden:number},control:number):nil|(number,string)),{payload:string,hidden:number},0
+"#;
+    for binding in [
+        "---@type fun(state:{payload:string,hidden:number},control:number):nil|(number,string),{payload:string},number\nlocal step,state,control=hidden()\nfor key,value in step,state,control do end",
+        "local step,state,control=hidden()\nfor key,value in step,--[[---@type {payload:string}]]state,control do end",
+    ] {
+        let report = check(&format!("{header}{binding}"));
+        assert!(report.diagnostics.iter().any(|diagnostic| diagnostic.code == "TS2345"),
+            "{binding}: {:#?}", report.diagnostics);
+    }
+}
+
 fn accepted(source: &str) -> CheckReport {
     let report = check(source);
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);

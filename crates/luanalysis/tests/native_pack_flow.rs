@@ -45,6 +45,12 @@ fn writes_to_either_sibling_disable_immutable_binding_correlation() {
 }
 
 #[test]
+fn a_future_sibling_write_does_not_discard_the_current_result_relation() {
+    let source = format!("{RESULT}---@param ready boolean\nlocal function use(ready) local success,value=result(ready)\nif success then\n---@type number\nlocal present=value\nend\nvalue=nil\nend");
+    clean(&source);
+}
+
+#[test]
 fn independent_calls_do_not_share_discriminant_facts() {
     let source = format!(
         "{RESULT}---@param ready boolean\nlocal function use(ready) local first,one=result(ready) local second,two=result(ready)\nif first then\n---@type number\nlocal present=one\n---@type number\nlocal invalid=two\nend end"
