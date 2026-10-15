@@ -362,8 +362,10 @@ mod tests {
 
     #[test]
     fn hidden_iterator_arguments_may_be_ignored_without_relaxing_explicit_calls() {
-        Engine::new().with_session(|queries| {
-            for count in 0..=2 {
+        for count in 0..=2 {
+            // Graph's fixed snapshot names one immutable program per session.
+            // Different headers must not reuse that program's cached frame.
+            Engine::new().with_session(|queries| {
                 let returns = ValuePack::Alternatives(vec![row(vec![Type::String]), row(vec![Type::Nil])]);
                 let mut params = Vec::new();
                 if count >= 1 {
@@ -383,45 +385,42 @@ mod tests {
                 let result = queries.iterator_result(&graph, Graph::at(4), Graph::reference(0), 0);
                 assert_eq!(queries.inspect_type(&result), Type::String);
                 assert!(graph.errors.borrow().is_empty(), "{count}: {:?}", graph.errors.borrow());
+                assert!(graph.header_reads.get() > 0, "{count}: original header was not queried");
+                assert!(graph.flow_errors.borrow().is_empty(), "{count}: {:?}", graph.flow_errors.borrow());
                 if count < 2 {
                     let explicit = queries.call_pack(&iterator, &[Type::String, Type::Nil], &[], None);
                     assert!(explicit.errors.iter().any(|error| matches!(error, CallError::Arity { actual: 2, .. })), "{count}: {:?}", explicit.errors);
                 }
-            }
-        });
+            });
+        }
     }
 
     #[test]
     fn ignored_hidden_arguments_keep_declared_state_typed_rest_and_required_arity_checks() {
-        Engine::new().with_session(|queries| {
-            let returns = ValuePack::Alternatives(vec![row(vec![Type::Number]), row(vec![Type::Nil])]);
-            let one = queries.pack_function(&PackFunctionType {
-                params: vec![Parameter { name: "state".into(), ty: Type::Number, optional: false }],
-                rest: None, type_parameters: Vec::new(), returns: returns.clone(),
-            });
-            let rest = queries.pack_function(&PackFunctionType {
-                params: vec![Parameter { name: "state".into(), ty: Type::Number, optional: false }],
-                rest: Some(ValuePack::variadic(Type::Number)), type_parameters: Vec::new(), returns: returns.clone(),
-            });
-            let three = queries.pack_function(&PackFunctionType {
-                params: (0..3).map(|index| Parameter { name: format!("arg{index}"), ty: Type::Number, optional: false }).collect(),
-                rest: None, type_parameters: Vec::new(), returns,
-            });
-            for (iterator, state, control, argument) in [
-                (one, Type::String, Type::Nil, Some(0)),
-                (rest, Type::Number, Type::String, Some(1)),
-                (three, Type::Number, Type::Number, None),
-            ] {
+        for (case, count, rest, state, control, argument) in [
+            ("wrong declared state", 1, false, Type::String, Type::Nil, Some(0)),
+            ("wrong typed rest control", 1, true, Type::Number, Type::String, Some(1)),
+            ("missing required third parameter", 3, false, Type::Number, Type::Number, None),
+        ] {
+            Engine::new().with_session(|queries| {
+                let iterator = queries.pack_function(&PackFunctionType {
+                    params: (0..count).map(|index| Parameter { name: format!("arg{index}"), ty: Type::Number, optional: false }).collect(),
+                    rest: rest.then(|| ValuePack::variadic(Type::Number)),
+                    type_parameters: Vec::new(),
+                    returns: ValuePack::Alternatives(vec![row(vec![Type::Number]), row(vec![Type::Nil])]),
+                });
                 let graph = Graph::new(ValuePack::Alternatives(vec![row(vec![iterator, state, control])]), false);
                 let _ = queries.iterator_result(&graph, Graph::at(4), Graph::reference(0), 0);
                 let errors = graph.errors.borrow();
                 if let Some(index) = argument {
-                    assert!(errors.iter().any(|error| matches!(error, CallError::Argument { index: actual, .. } if *actual == index)), "{errors:?}");
+                    assert!(errors.iter().any(|error| matches!(error, CallError::Argument { index: actual, .. } if *actual == index)), "{case}: {errors:?}");
                 } else {
-                    assert!(errors.iter().any(|error| matches!(error, CallError::Arity { actual: 2, minimum: 3, .. })), "{errors:?}");
+                    assert!(errors.iter().any(|error| matches!(error, CallError::Arity { actual: 2, minimum: 3, .. })), "{case}: {errors:?}");
                 }
-            }
-        });
+                assert!(graph.header_reads.get() > 0, "{case}: original header was not queried");
+                assert!(graph.flow_errors.borrow().is_empty(), "{case}: {:?}", graph.flow_errors.borrow());
+            });
+        }
     }
 
     #[test]
