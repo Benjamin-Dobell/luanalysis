@@ -98,6 +98,83 @@ fn code(report: &ProjectCheckReport, code: &str) -> bool {
         .flat_map(|f| &f.report.diagnostics)
         .any(|d| d.code == code)
 }
+
+const GENERIC_PAIRS_COPY: &str = r#"
+---@generic K, V
+---@param tab table<K, V>
+---@return table<K, V>
+local function copy(tab)
+    ---@type table<K, V>
+    local result = {}
+    for k, v in pairs(tab) do
+        result[k] = v
+    end
+    return result
+end
+"#;
+
+#[test]
+fn generic_pairs_keys_exclude_lua_nil_without_inventing_a_javascript_null_branch() {
+    let fixture = Fixture::new();
+    for profile in [StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua54] {
+        clean(&fixture.check(GENERIC_PAIRS_COPY, profile));
+        let source = GENERIC_PAIRS_COPY.replace("result[k] = v", "result[k] = 'wrong'");
+        let report = fixture.check(&source, profile);
+        let diagnostics: Vec<_> = report.files.iter().flat_map(|file| &file.report.diagnostics).collect();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].code, "TS2322", "{diagnostics:#?}");
+        assert_eq!(&source[diagnostics[0].span.start..diagnostics[0].span.end], "'wrong'");
+    }
+}
+
+#[test]
+fn generic_next_key_nil_guards_preserve_dictionary_key_and_value_contracts() {
+    let fixture = Fixture::new();
+    let source = r#"
+---@generic K, V
+---@param tab table<K, V>
+local function copyEntry(tab)
+    local key, value = next(tab)
+    if key ~= nil then
+        tab[key] = value
+    end
+end
+"#;
+    for profile in [StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua54] {
+        clean(&fixture.check(source, profile));
+        let wrong = source.replace("tab[key] = value", "tab[nil] = value");
+        let report = fixture.check(&wrong, profile);
+        let diagnostics: Vec<_> = report.files.iter().flat_map(|file| &file.report.diagnostics).collect();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].code, "TS2538", "{diagnostics:#?}");
+        assert_eq!(&wrong[diagnostics[0].span.start..diagnostics[0].span.end], "nil");
+    }
+}
+
+#[test]
+fn nil_narrowed_generic_intersections_remain_valid_inside_union_key_domains() {
+    let fixture = Fixture::new();
+    let source = r#"
+---@generic K, V
+---@param tab table<K | number, V>
+---@param key K | number | nil
+---@param value V
+local function putPresent(tab, key, value)
+    if key ~= nil then
+        tab[key] = value
+    end
+end
+"#;
+    for profile in [StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua54] {
+        clean(&fixture.check(source, profile));
+        let wrong = source.replace("if key ~= nil then", "if key == nil then");
+        let report = fixture.check(&wrong, profile);
+        let diagnostics: Vec<_> = report.files.iter().flat_map(|file| &file.report.diagnostics).collect();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].code, "TS2538", "{diagnostics:#?}");
+        assert_eq!(&wrong[diagnostics[0].span.start..diagnostics[0].span.end], "key");
+    }
+}
 const TYPE_GUARD: &str = "---@param value number|string\nlocal function check(value)\nif type(value)=='number' then\n---@type number\nlocal numeric=value\nend\nend\n";
 
 #[test]

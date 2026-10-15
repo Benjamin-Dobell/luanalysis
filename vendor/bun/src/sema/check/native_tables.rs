@@ -522,6 +522,9 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub(super) fn native_table_valid_key_type(&self, ty: TypeId) -> bool {
+        if let TypeData::Union(parts) = self.data(ty) {
+            return parts.iter().all(|&part| self.native_table_valid_key_type(part));
+        }
         if let TypeData::Intersection(parts) = self.data(ty) {
             return parts.iter().any(|&part| self.native_table_valid_key_type(part));
         }

@@ -1386,6 +1386,10 @@ impl<'s, 'p> Checker<'s, 'p> {
 
     pub(super) fn native_runtime_type(&mut self, ty: TypeId, kind: &NativeRuntimeType, sense: bool) -> TypeId {
         match kind {
+            // Lua has one nil value. JS `typeof x !== "undefined"` retains
+            // null, including a synthetic T & null branch for type parameters.
+            // Exclude both native nullish carriers through the shared worker.
+            NativeRuntimeType::Nil if !sense => return self.non_nullable(ty),
             NativeRuntimeType::Table => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Table, sense),
             NativeRuntimeType::Function => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Function, sense),
             _ => {}
