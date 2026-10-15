@@ -396,6 +396,49 @@ fn incompatible_optional_and_readonly_metadata_do_not_merge() {
 }
 
 #[test]
+fn nonpublic_pure_members_keep_their_original_visibility_error() {
+    use TypeMemberVisibility::{Private, Protected, Public};
+    for visibilities in [
+        [Private, Public],
+        [Public, Private],
+        [Protected, Public],
+        [Public, Protected],
+        [Private, Protected],
+        [Protected, Private],
+    ] {
+        Engine::new().with_native_provider(
+            || {
+                let mut provider = Provider::new();
+                for (member, visibility) in provider.members.iter_mut().zip(visibilities) {
+                    member.header.visibility = visibility;
+                }
+                provider
+            },
+            |provider, queries| {
+                let original = provider
+                    .members
+                    .iter()
+                    .find(|member| member.header.visibility != Public)
+                    .unwrap()
+                    .key;
+                let class = queries.named_declared_type(declaration(0)).unwrap();
+                assert!(queries.property_type(&class, "choose").is_none());
+                assert_eq!(
+                    queries.validate_named_declaration(declaration(0)),
+                    Err(NamedTypeError::UnsupportedVisibility(original))
+                );
+                assert!(
+                    provider
+                        .errors
+                        .borrow()
+                        .contains(&NamedTypeError::UnsupportedVisibility(original))
+                );
+            },
+        );
+    }
+}
+
+#[test]
 fn invalid_group_contributors_report_their_original_member_identity() {
     for invalid in [None, Some(signature(99))] {
         Engine::new().with_native_provider(

@@ -722,6 +722,7 @@ impl<'p, 's> Checker<'p, 's> {
                         matches!(previous_metadata.key, NativeTypeMemberKey::Fixed(previous_key) if previous_key.normalize() == Ok(key))
                             && previous_metadata.optional == metadata.optional
                             && previous_metadata.readonly == metadata.readonly
+                            && previous_metadata.visibility == metadata.visibility
                             && provider.type_member_origin(previous.member) == crate::types::NativeTableFieldOrigin::Declared
                             && provider.type_member_signatures(previous.member).is_some()
                     });
