@@ -419,7 +419,11 @@ impl Checker<'_> {
                         } => self.method_call_expression(receiver, name, args, expr.span, true),
                         _ => Type::Any,
                     };
-                    if matches!(result, Type::Never) {
+                    let terminates = match (self.native, self.flow_at) {
+                        (Some(native), Some(at)) => native.call_statement_terminates(expr, at, self.engine),
+                        _ => matches!(result, Type::Never),
+                    };
+                    if terminates {
                         return true;
                     }
                 }

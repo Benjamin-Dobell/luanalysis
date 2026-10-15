@@ -871,6 +871,7 @@ pub trait TypeQueries {
         initial: &Type,
     ) -> NativeFlowResult;
     fn flow_reachable(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey) -> bool;
+    fn flow_definitely_unreachable(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey) -> bool;
     fn flow_iterator_pack(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey) -> ValuePack;
     fn iterator_result(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey, index: usize) -> Type;
     fn iterator_result_with_status(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey, index: usize) -> NativeFlowResult;
@@ -1453,6 +1454,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             handles: self.handles,
         };
         self.checker.native_flow_reachable(&adapter, at)
+    }
+    fn flow_definitely_unreachable(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey) -> bool {
+        self.checker.native_flow_definitely_unreachable(&native_flow::FlowProviderAdapter { provider, handles: self.handles }, at)
     }
     fn flow_iterator_pack(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, frame: NativeReferenceKey) -> ValuePack {
         self.flow_iterator_pack_native(provider, at, frame)

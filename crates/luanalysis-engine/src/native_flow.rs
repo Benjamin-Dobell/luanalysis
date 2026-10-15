@@ -663,7 +663,9 @@ mod tests {
                     value,
                 };
                 assert!(!queries.flow_reachable(&graph, graph.at(2)));
+                assert!(queries.flow_definitely_unreachable(&graph, graph.at(2)));
                 assert!(queries.flow_reachable(&graph, graph.at(3)));
+                assert!(!queries.flow_definitely_unreachable(&graph, graph.at(3)));
             }
         });
     }
@@ -824,6 +826,7 @@ mod effect_query_tests {
                     }
                     for _ in 0..8 {
                         assert!(queries.flow_reachable(self, Self::at(3)));
+                        assert!(!queries.flow_definitely_unreachable(self, Self::at(3)));
                     }
                     assert_eq!(
                         self.effects.get(),

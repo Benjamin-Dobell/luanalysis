@@ -1316,6 +1316,17 @@ impl<'s, 'p> Checker<'s, 'p> {
         reachable
     }
 
+    /// Source visitation can stop only after a completed reachability result.
+    /// A provisional false during a loop/query cycle must not hide diagnostics.
+    pub fn native_flow_definitely_unreachable(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        at: NativeFlowKey,
+    ) -> bool {
+        let (reachable, stored) = self.run_memoizable(|checker| checker.native_flow_reachable(provider, at));
+        !reachable && stored.is_some()
+    }
+
     fn native_flow_value(
         &mut self,
         provider: &dyn NativeFlowProvider,

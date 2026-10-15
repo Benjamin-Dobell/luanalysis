@@ -529,6 +529,12 @@ impl NativeRegistry {
             })
     }
 
+    pub(super) fn call_statement_terminates(&self, expression: &Expr, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {
+        let Some(evaluation) = self.flow.evaluation_for_expression(expression, at.graph) else { return false };
+        let after = self.flow.flow_key(evaluation.completed, at.graph.context);
+        queries.flow_definitely_unreachable(&FlowAdapter { sources: &self.flow, values: self }, after)
+    }
+
     pub(super) fn flow_entry(
         &self,
         function: Option<NativeFunctionKey>,
