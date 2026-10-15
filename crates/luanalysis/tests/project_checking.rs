@@ -163,6 +163,10 @@ fn duplicate_project_named_types_keep_each_origin_and_never_select_a_first_decla
     let report = check_project(fixture.load(vec![main], vec![first, second]));
     assert_eq!(report.checked_file_count(), 3);
     for file in &report.files {
+        if report.standard_library_files.contains(&file.file) {
+            assert!(file.report.diagnostics.is_empty());
+            continue;
+        }
         let source = &report.source(file.file).unwrap().source;
         assert_eq!(
             file.report.diagnostics.len(),
