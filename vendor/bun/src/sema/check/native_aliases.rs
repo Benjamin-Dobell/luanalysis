@@ -273,7 +273,9 @@ impl<'p, 's> Checker<'p, 's> {
                     edges.push(before);
                 },
                 NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. } => {
-                    if !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return false }
+                    // A prior raw member read can be proven non-dispatching
+                    // even though its original opcode is ReferenceRead.
+                    if !self.native_alias_dispatch_safe(provider, at, before) { return false }
                     edges.push(before);
                 },
                 NativeFlowNode::Merge { edges: incoming } => {

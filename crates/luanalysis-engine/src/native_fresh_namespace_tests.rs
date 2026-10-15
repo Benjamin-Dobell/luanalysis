@@ -19,7 +19,7 @@ fn standard() -> NativeIntrinsicSite {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Scenario { Single, Multiple, MultipleReceivers, NonNilRawSlot, NilRawSlot, MetatableOnClass, MetatableBeforeClass, UnknownPass, ForeignAllocation, Loop }
+enum Scenario { Single, Multiple, MultipleReceivers, RawRead, NonNilRawSlot, NilRawSlot, MetatableOnClass, MetatableBeforeClass, UnknownPass, ForeignAllocation, Loop }
 
 /// Original execution recipes for a factory with `local Class = {}` and
 /// function-literal field stores. Heap stores deliberately remain dispatch
@@ -32,6 +32,7 @@ struct Namespace {
     receivers: HashMap<NativeFlowKey, NativeAliasReturnValue>,
     method_targets: HashMap<NativeFlowKey, NativeReferenceKey>,
     unknown: HashSet<NativeFlowKey>,
+    reads: HashMap<NativeFlowKey, NativeReferenceKey>,
     standard_calls: HashMap<NativeValueKey, NativeAliasCall>,
     terminal: NativeFlowKey,
     current: NativeFlowKey,
@@ -43,7 +44,7 @@ impl Namespace {
         let mut source = Self {
             routed, scenario,
             nodes: HashMap::from([(at(0, 0), NativeFlowNode::Start), (at(1, 0), NativeFlowNode::Start)]),
-            receivers: HashMap::new(), method_targets: HashMap::new(), unknown: HashSet::new(),
+            receivers: HashMap::new(), method_targets: HashMap::new(), unknown: HashSet::new(), reads: HashMap::new(),
             standard_calls: HashMap::new(), terminal: at(1, 0), current: at(1, 0), next: 1,
         };
         if matches!(scenario, Scenario::ForeignAllocation) {
@@ -66,6 +67,10 @@ impl Namespace {
                 let right = source.push(NativeFlowNode::Write { before, target: reference(1, 5), value: value(12), input: before });
                 source.push(NativeFlowNode::Merge { edges: vec![left, right] });
             },
+            Scenario::RawRead => {
+                let read = source.push(NativeFlowNode::Pass { before: source.current });
+                source.reads.insert(read, reference(1, 2));
+            },
             Scenario::UnknownPass => {
                 let barrier = source.push(NativeFlowNode::Pass { before: source.current });
                 source.unknown.insert(barrier);
@@ -79,7 +84,7 @@ impl Namespace {
             },
             _ => {},
         }
-        source.method(2);
+        source.method(if matches!(scenario, Scenario::RawRead) { 3 } else { 2 });
         if matches!(scenario, Scenario::Multiple | Scenario::MultipleReceivers) { source.method(3); }
         source.terminal = source.push(NativeFlowNode::Return { before: source.current });
         source
@@ -196,6 +201,7 @@ impl NativeFlowProvider for Namespace {
     }
     fn alias_node_dispatch(&self, original: NativeFlowKey) -> NativeAliasDispatch {
         if let Some(&target) = self.method_targets.get(&original) { return NativeAliasDispatch::ReferenceRead(target); }
+        if let Some(&reference) = self.reads.get(&original) { return NativeAliasDispatch::ReferenceRead(reference); }
         if self.unknown.contains(&original) { return NativeAliasDispatch::Unknown; }
         match self.node(original) {
             // Original control-flow merges execute no Lua operation. Match the
@@ -209,7 +215,7 @@ impl NativeFlowProvider for Namespace {
     fn write_alias_receiver(&self, original: NativeFlowKey) -> Option<NativeAliasReturnValue> { self.receivers.get(&original).copied() }
     fn value_alias_member_source(&self, original: NativeValueKey, input: NativeFlowKey, key: &LuaKey) -> Option<NativeAliasReturnValue> {
         if original != value(1) || *key != LuaKey::String(b"first".to_vec()) { return None; }
-        let source = match self.scenario { Scenario::NonNilRawSlot => 40, Scenario::NilRawSlot => 41, _ => return None };
+        let source = match self.scenario { Scenario::NonNilRawSlot | Scenario::RawRead => 40, Scenario::NilRawSlot => 41, _ => return None };
         Some(NativeAliasReturnValue { value: value(source), input })
     }
     fn reference_member_path(&self, original: NativeReferenceKey, member: NativeReferenceKey) -> Option<Vec<LuaKey>> {
@@ -314,6 +320,15 @@ fn multiple_fresh_receivers_can_all_be_raw_without_becoming_one_object() {
             assert_eq!(source.preserve(queries), NativeCallPreservation::Preserved);
             let NativeFlowNode::Return { before } = source.node(source.terminal).unwrap() else { unreachable!() };
             assert_eq!(queries.flow_alias_relation(source, reference(1, 1), before, value(11), before), NativeAliasRelation::Possible);
+        });
+    }
+}
+
+#[test]
+fn a_proven_raw_read_preserves_metatable_absence_for_a_later_missing_slot_store() {
+    for routed in [false, true] {
+        Engine::new().with_native_provider(move || Namespace::new(Scenario::RawRead, routed), |source, queries| {
+            assert_eq!(source.preserve(queries), NativeCallPreservation::Preserved);
         });
     }
 }
