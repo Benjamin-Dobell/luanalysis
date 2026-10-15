@@ -807,9 +807,9 @@ impl NativeSignatures {
     pub(super) fn function_heads(&self, key: NativeFunctionKey) -> Vec<NativeSignatureKey> {
         self.functions.get(&key).cloned().unwrap_or_default()
     }
-    pub(super) fn ambient_function_heads(&self, key: NativeFunctionKey) -> Vec<NativeSignatureKey> {
+    pub(super) fn ambient_function_heads(&self, key: NativeFunctionKey, expose_implementation: bool) -> Vec<NativeSignatureKey> {
         let mut heads = self.function_heads(key);
-        if !heads.is_empty() { return heads; }
+        if !heads.is_empty() && !expose_implementation { return heads; }
         if let Some(&main) = self.ambient_mains.get(&key)
             && !heads.contains(&main)
         {

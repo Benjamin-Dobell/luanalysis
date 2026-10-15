@@ -87,6 +87,9 @@ impl<'p, 's> Checker<'p, 's> {
             self.native_signature_provider_for(declaration);
             shape.call.push(self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper, implementation: Some(implementation) }));
         }
+        if self.native_function_provider.expect("native function provider").exposes_implementation(function) {
+            shape.call.push(implementation);
+        }
         self.synth(shape)
     }
 

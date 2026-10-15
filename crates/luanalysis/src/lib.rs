@@ -37,6 +37,14 @@ use luanalysis_syntax::{
 use native_functions::NativeRegistry;
 use std::collections::{HashMap, HashSet};
 
+/// Public exposure of an overloaded function's implementation contract.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OverloadMode {
+    #[default]
+    V2,
+    LegacyExposeImplementation,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub code: &'static str,
@@ -200,6 +208,12 @@ struct Checker<'a> {
 
 /// Checks the documented native subset without generating TypeScript source.
 pub fn check(source: &str) -> CheckReport {
+    check_with_overload_mode(source, OverloadMode::default())
+}
+
+/// Checks one source with an explicit overload compatibility policy.
+/// Both modes validate the same private implementation and function body.
+pub fn check_with_overload_mode(source: &str, overload_mode: OverloadMode) -> CheckReport {
     let file = luanalysis_syntax::parse(source);
     if file.has_lua_syntax_errors() {
         return CheckReport {
@@ -223,6 +237,7 @@ pub fn check(source: &str) -> CheckReport {
     Engine::new().with_native_provider(
         move || {
             let mut registry = NativeRegistry::new(file, bound);
+            registry.set_overload_mode(overload_mode);
             registry.set_legacy_builtin_policy(builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility);
             registry
         },

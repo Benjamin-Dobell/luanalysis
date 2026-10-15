@@ -149,6 +149,7 @@ pub trait NativeFunctionProvider {
     fn signature_intrinsic(&self, _: NativeSignatureId) -> Option<native_intrinsics::NativeIntrinsicSite> { None }
     fn signature_header(&self, _: NativeSignatureId) -> native_signatures::NativeSignatureHeader { panic!("native signature provider is not installed") }
     fn overload_signatures(&self, _: NativeFunctionId) -> Vec<NativeSignatureId> { Vec::new() }
+    fn exposes_implementation(&self, _: NativeFunctionId) -> bool { false }
     fn signature_parameters(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<SigParam> { panic!("native signature provider is not installed") }
     fn signature_type_parameters(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<TypeId> { Vec::new() }
     fn signature_outer_type_parameters(&self, _: NativeSignatureId) -> Vec<NativeTypeParamId> { Vec::new() }

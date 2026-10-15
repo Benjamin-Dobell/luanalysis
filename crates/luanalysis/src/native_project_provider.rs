@@ -75,6 +75,16 @@ impl ProjectRegistry {
         policy: NativeLoaderPolicy,
         environment_profile: StandardEnvironmentProfile,
     ) -> Self {
+        Self::new_with_environment_and_overloads(inputs, dependencies, policy, environment_profile, crate::OverloadMode::default())
+    }
+
+    pub(crate) fn new_with_environment_and_overloads(
+        inputs: Vec<RegistryInput>,
+        dependencies: Vec<Dependency>,
+        policy: NativeLoaderPolicy,
+        environment_profile: StandardEnvironmentProfile,
+        overload_mode: crate::OverloadMode,
+    ) -> Self {
         let mut snapshots = HashMap::new();
         let mut names = ProjectNamedIndex::default();
         let mut files: Vec<_> = inputs
@@ -82,6 +92,7 @@ impl ProjectRegistry {
             .enumerate()
             .map(|(index, input)| {
                 let mut source = NativeRegistry::new(input.syntax, input.bound);
+                source.set_overload_mode(overload_mode);
                 source.set_source_role(input.role);
                 assert!(snapshots.insert(source.snapshot, index).is_none());
                 for declaration in source.named.declarations() {
@@ -531,6 +542,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn type_declaration_self_parameter(key: NativeTypeDeclarationKey) -> Option<NativeTypeParameterKey>;
         fn signature_header(key: NativeSignatureKey) -> SignatureHeader;
         fn function_overload_signatures(key: NativeFunctionKey) -> Vec<NativeSignatureKey>;
+        fn function_exposes_implementation(key: NativeFunctionKey) -> bool;
         fn signature_type_parameters(key: NativeSignatureKey) -> Vec<NativeTypeParameterKey>;
         fn signature_outer_type_parameters(key: NativeSignatureKey) -> Vec<NativeTypeParameterKey>;
         fn signature_parameters(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> Vec<Parameter>;

@@ -63,6 +63,7 @@ enum DeclarationSource {
 pub(super) struct NativeRegistry {
     snapshot: u64,
     source_role: luanalysis_project::SourceRole,
+    overload_mode: crate::OverloadMode,
     legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy,
     file: File,
     bound: BoundFile,
@@ -177,6 +178,7 @@ impl NativeRegistry {
         let mut registry = Self {
             snapshot,
             source_role: luanalysis_project::SourceRole::Implementation,
+            overload_mode: crate::OverloadMode::default(),
             legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy::Disabled,
             file,
             bound,
@@ -215,6 +217,9 @@ impl NativeRegistry {
     }
 
     pub(crate) fn source_role(&self) -> luanalysis_project::SourceRole { self.source_role }
+    pub(crate) fn set_overload_mode(&mut self, mode: crate::OverloadMode) {
+        self.overload_mode = mode;
+    }
     pub(crate) fn set_source_role(&mut self, role: luanalysis_project::SourceRole) {
         if self.source_role != role {
             self.source_role = role;
@@ -1985,8 +1990,12 @@ impl NativeTypeProvider for NativeRegistry {
     fn signature_header(&self,key:luanalysis_engine::NativeSignatureKey)->luanalysis_engine::SignatureHeader{self.signatures.get(key).header}
     fn function_overload_signatures(&self,key:NativeFunctionKey)->Vec<luanalysis_engine::NativeSignatureKey>{
         if self.source_role() == luanalysis_project::SourceRole::Declaration {
-            self.signatures.ambient_function_heads(key)
+            self.signatures.ambient_function_heads(key, self.overload_mode == crate::OverloadMode::LegacyExposeImplementation)
         } else { self.signatures.function_heads(key) }
+    }
+    fn function_exposes_implementation(&self, _: NativeFunctionKey) -> bool {
+        self.source_role() == luanalysis_project::SourceRole::Implementation
+            && self.overload_mode == crate::OverloadMode::LegacyExposeImplementation
     }
     fn signature_type_parameters(&self,key:luanalysis_engine::NativeSignatureKey)->Vec<NativeTypeParameterKey>{self.signature_parameters_keys(key)}
     fn signature_outer_type_parameters(&self,key:luanalysis_engine::NativeSignatureKey)->Vec<NativeTypeParameterKey>{self.signature_outer_keys(key)}

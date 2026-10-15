@@ -338,6 +338,7 @@ pub trait NativeTypeProvider {
     fn signature_intrinsic(&self, _: NativeSignatureKey) -> Option<NativeIntrinsicSite> { None }
     fn signature_header(&self, _: NativeSignatureKey) -> SignatureHeader { panic!("native signature provider is not installed") }
     fn function_overload_signatures(&self, _: NativeFunctionKey) -> Vec<NativeSignatureKey> { Vec::new() }
+    fn function_exposes_implementation(&self, _: NativeFunctionKey) -> bool { false }
     fn signature_type_parameters(&self, _: NativeSignatureKey) -> Vec<NativeTypeParameterKey> { Vec::new() }
     fn signature_outer_type_parameters(&self, _: NativeSignatureKey) -> Vec<NativeTypeParameterKey> { Vec::new() }
     fn signature_parameters(&self, _: NativeSignatureKey, _: &mut dyn TypeQueries) -> Vec<Parameter> { panic!("native signature provider is not installed") }
@@ -2037,6 +2038,7 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     }
     fn signature_header(&self, key: bun_sema::types::NativeSignatureId) -> bun_sema::check::native_signatures::NativeSignatureHeader { self.signature_header_core(key) }
     fn overload_signatures(&self, function: NativeFunctionId) -> Vec<bun_sema::types::NativeSignatureId> { self.provider.function_overload_signatures(source_key(function)).into_iter().map(core_signature_key).collect() }
+    fn exposes_implementation(&self, function: NativeFunctionId) -> bool { self.provider.function_exposes_implementation(source_key(function)) }
     fn signature_parameters(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Vec<SigParam> { self.signature_parameters_core(checker, key) }
     fn signature_type_parameters(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Vec<TypeId> { self.provider.signature_type_parameters(source_signature_key(key)).into_iter().map(|key| import_type(checker, self.handles, &Type::NativeTypeParameter(key))).collect() }
     fn signature_outer_type_parameters(&self, key: bun_sema::types::NativeSignatureId) -> Vec<NativeTypeParamId> { self.provider.signature_outer_type_parameters(source_signature_key(key)).into_iter().map(core_parameter_key).collect() }

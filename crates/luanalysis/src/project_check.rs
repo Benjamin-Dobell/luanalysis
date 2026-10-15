@@ -12,12 +12,14 @@ use luanalysis_project::{
 pub struct ProjectCheckOptions {
     pub loader_policy: NativeLoaderPolicy,
     pub environment: StandardEnvironmentProfile,
+    pub overload_mode: crate::OverloadMode,
 }
 impl Default for ProjectCheckOptions {
     fn default() -> Self {
         Self {
             loader_policy: NativeLoaderPolicy::Lua54StandardFile,
             environment: StandardEnvironmentProfile::LegacyMinimal,
+            overload_mode: crate::OverloadMode::default(),
         }
     }
 }
@@ -136,7 +138,7 @@ pub fn check_project_with_options(
     }
     let dependencies = project.dependencies.clone();
     files.extend(Engine::new().with_native_provider(
-        move || ProjectRegistry::new_with_environment(inputs, dependencies, options.loader_policy, selection.profile),
+        move || ProjectRegistry::new_with_environment_and_overloads(inputs, dependencies, options.loader_policy, selection.profile, options.overload_mode),
         |registry, queries| registry.check(queries),
     ));
     files.sort_by_key(|file| file.file.index);
