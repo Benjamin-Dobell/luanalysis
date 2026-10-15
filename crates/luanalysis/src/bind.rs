@@ -78,12 +78,26 @@ pub struct NameOccurrence {
     pub kind: OccurrenceKind,
 }
 
+/// A standard Lua operation identified by lexical binding facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuiltinIntrinsic {
+    LuaRequire,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IntrinsicOccurrence {
+    span: Span,
+    intrinsic: BuiltinIntrinsic,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoundFile {
     pub scopes: Vec<Scope>,
     pub declarations: Vec<Declaration>,
     /// Original-source occurrences sorted by byte offset.
     pub occurrences: Vec<NameOccurrence>,
+    intrinsic_occurrences: Vec<IntrinsicOccurrence>,
+    modified_module_environment: bool,
 }
 
 impl BoundFile {
@@ -111,6 +125,29 @@ impl BoundFile {
             .and_then(|occurrence| occurrence.binding)
     }
 
+    /// Identifies a standard operation under an original name byte offset.
+    ///
+    /// A file that directly changes the global module loader cannot establish
+    /// the standard `require` identity, including at earlier occurrences.
+    pub fn intrinsic_at(&self, byte_offset: usize) -> Option<BuiltinIntrinsic> {
+        if self.modified_module_environment {
+            return None;
+        }
+        let after = self
+            .intrinsic_occurrences
+            .partition_point(|occurrence| occurrence.span.start <= byte_offset);
+        after.checked_sub(1).and_then(|index| {
+            let occurrence = &self.intrinsic_occurrences[index];
+            (byte_offset < occurrence.span.end).then_some(occurrence.intrinsic)
+        })
+    }
+
+    /// Direct syntactic writes to the standard global module environment.
+    /// Project hosts can combine this fact across files before resolving imports.
+    pub fn has_modified_module_environment(&self) -> bool {
+        self.modified_module_environment
+    }
+
     pub fn scope_at(&self, byte_offset: usize) -> Option<ScopeId> {
         if let Some(occurrence) = self.occurrence_at(byte_offset) {
             return Some(occurrence.scope);
@@ -136,6 +173,8 @@ pub fn bind(file: &File) -> BoundFile {
             scopes: Vec::new(),
             declarations: Vec::new(),
             occurrences: Vec::new(),
+            intrinsic_occurrences: Vec::new(),
+            modified_module_environment: false,
         },
         active: Vec::new(),
     };
@@ -145,6 +184,10 @@ pub fn bind(file: &File) -> BoundFile {
     binder
         .file
         .occurrences
+        .sort_by_key(|occurrence| (occurrence.span.start, occurrence.span.end));
+    binder
+        .file
+        .intrinsic_occurrences
         .sort_by_key(|occurrence| (occurrence.span.start, occurrence.span.end));
     binder.file
 }
@@ -243,7 +286,18 @@ impl Binder {
     }
 
     fn name(&mut self, name: &Name, kind: OccurrenceKind) {
-        self.occurrence(name, kind, self.resolve(&name.text));
+        let binding = self.resolve(&name.text);
+        if kind == OccurrenceKind::Read
+            && name.text == "require"
+            && binding.is_none()
+            && self.resolve("_ENV").is_none()
+        {
+            self.file.intrinsic_occurrences.push(IntrinsicOccurrence {
+                span: name.span,
+                intrinsic: BuiltinIntrinsic::LuaRequire,
+            });
+        }
+        self.occurrence(name, kind, binding);
     }
 
     fn statements(&mut self, statements: &[Stmt]) {
@@ -364,6 +418,9 @@ impl Binder {
     }
 
     fn target(&mut self, expression: &Expr) {
+        if self.modifies_module_environment(expression) {
+            self.file.modified_module_environment = true;
+        }
         match &expression.kind {
             ExprKind::Name(name) => self.name(name, OccurrenceKind::Write),
             ExprKind::Field { base, .. } => self.expression(base),
@@ -373,6 +430,64 @@ impl Binder {
             }
             ExprKind::Parenthesized(inner) => self.target(inner),
             _ => self.expression(expression),
+        }
+    }
+
+    fn modifies_module_environment(&self, expression: &Expr) -> bool {
+        let mut keys = Vec::new();
+        let Some(root) = access_path(expression, &mut keys) else {
+            return false;
+        };
+        self.global_path_modifies_module_environment(root, &keys)
+    }
+
+    fn global_path_modifies_module_environment(&self, root: &Name, keys: &[Option<&[u8]>]) -> bool {
+        // An explicit local _ENV redirects unresolved names as well as writes.
+        if self.resolve("_ENV").is_some() || self.resolve(&root.text).is_some() {
+            return false;
+        }
+        match root.text.as_str() {
+            "require" => keys.is_empty(),
+            "package" => modifies_package(keys),
+            "_ENV" if keys.is_empty() => true,
+            "_G" | "_ENV" => match keys.first() {
+                Some(None) => true,
+                Some(Some(b"require")) => keys.len() == 1,
+                Some(Some(b"package")) => modifies_package(&keys[1..]),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn call_modifies_module_environment(&self, callee: &Expr, args: &[Expr]) -> bool {
+        let mut callee_keys = Vec::new();
+        let Some(callee_root) = access_path(callee, &mut callee_keys) else {
+            return false;
+        };
+        if self.resolve("_ENV").is_some() || self.resolve(&callee_root.text).is_some() {
+            return false;
+        }
+        let (global, members) = match (callee_root.text.as_str(), callee_keys.as_slice()) {
+            ("_G" | "_ENV", [Some(global), members @ ..]) => (*global, members),
+            (global, members) => (global.as_bytes(), members),
+        };
+        match (global, members) {
+            (b"rawset", []) if args.len() >= 2 => {
+                let mut target_keys = Vec::new();
+                let Some(target_root) = access_path(&args[0], &mut target_keys) else {
+                    return false;
+                };
+                target_keys.push(string_key(&args[1]));
+                self.global_path_modifies_module_environment(target_root, &target_keys)
+            }
+            (b"table", [Some(b"insert" | b"remove")]) if !args.is_empty() => {
+                self.modifies_module_environment(&args[0])
+            }
+            (b"table", [Some(b"move")]) if args.len() >= 4 => {
+                self.modifies_module_environment(args.get(4).unwrap_or(&args[0]))
+            }
+            _ => false,
         }
     }
 
@@ -400,6 +515,9 @@ impl Binder {
             }
             ExprKind::Function(function) => self.function(function),
             ExprKind::Call { callee, args } => {
+                if self.call_modifies_module_environment(callee, args) {
+                    self.file.modified_module_environment = true;
+                }
                 self.expression(callee);
                 for argument in args {
                     self.expression(argument);
@@ -442,4 +560,41 @@ impl Binder {
         self.statements(&function.body);
         self.leave_scope();
     }
+}
+
+/// A missing key denotes a runtime-computed key, not a guessed field spelling.
+fn access_path<'a>(expression: &'a Expr, keys: &mut Vec<Option<&'a [u8]>>) -> Option<&'a Name> {
+    match &expression.kind {
+        ExprKind::Name(name) => Some(name),
+        ExprKind::Parenthesized(inner) => access_path(inner, keys),
+        ExprKind::Field { base, name } => {
+            let root = access_path(base, keys)?;
+            keys.push(Some(name.text.as_bytes()));
+            Some(root)
+        }
+        ExprKind::Index { base, index } => {
+            let root = access_path(base, keys)?;
+            keys.push(string_key(index));
+            Some(root)
+        }
+        _ => None,
+    }
+}
+
+fn string_key(expression: &Expr) -> Option<&[u8]> {
+    match &expression.kind {
+        ExprKind::String(bytes) => Some(bytes),
+        ExprKind::Parenthesized(inner) => string_key(inner),
+        _ => None,
+    }
+}
+
+fn modifies_package(keys: &[Option<&[u8]>]) -> bool {
+    matches!(
+        keys.first(),
+        None | Some(None)
+            | Some(Some(
+                b"path" | b"cpath" | b"loaded" | b"preload" | b"searchers" | b"loaders"
+            ))
+    )
 }

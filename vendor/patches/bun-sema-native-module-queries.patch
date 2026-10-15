@@ -1,0 +1,274 @@
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -61,6 +61,7 @@
+ pub mod native_signatures;
+ pub mod native_runtime;
+ pub mod native_named;
++pub mod native_project;
+ mod grammarchecks;
+ mod infer;
+ mod instantiate;
+@@ -124,6 +125,7 @@
+ use std::sync::atomic::AtomicBool;
+ use symbols::{AliasTarget, ExcludedMeanings};
+ use task::{Open, OrderDependent, Stored, Task};
++use native_project::{NativeProjectCache, NativeProjectProvider, NativeProjectQuery};
+ use native_named::{NativeNamedCache, NativeTypeDeclarationProvider, NativeTypeDeclarationQuery};
+ 
+ pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
+@@ -759,6 +761,8 @@
+             native_function_provider: None,
+             native_type_declaration_provider: None,
+             native_named_cache: NativeNamedCache::default(),
++            native_project_provider: None,
++            native_project_cache: NativeProjectCache::default(),
+             native_runtime_tops: [None; 2],
+             native_arrays: false,
+             native_function_contexts: Vec::new(),
+@@ -1035,6 +1039,7 @@
+ /// A query that may be circular.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ enum Query {
++    NativeProject(NativeProjectQuery),
+     NativeNamed(NativeTypeDeclarationQuery),
+     Expr(FileId, ExprId),
+     Symbol(Sym),
+@@ -1127,6 +1132,7 @@
+             Query::BaseConstructor(sym) => (sym.file, 13),
+             Query::ReturnOfSignature(_)
+             | Query::NativeNamed(_)
++            | Query::NativeProject(_)
+             | Query::Shape(_)
+             | Query::Properties(_)
+             | Query::Constraint(_)
+@@ -1269,6 +1275,8 @@
+     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
+     native_type_declaration_provider: Option<&'p dyn NativeTypeDeclarationProvider>,
+     native_named_cache: NativeNamedCache,
++    native_project_provider: Option<&'p dyn NativeProjectProvider>,
++    native_project_cache: NativeProjectCache,
+     native_runtime_tops: [Option<TypeId>; 2],
+     native_arrays: bool,
+     native_function_contexts: Vec<NativeFunctionContext>,
+@@ -2754,6 +2762,7 @@
+     /// A circular one is an error there, and `any`; here any other circular query is unresolved.
+     fn is_resolution(&self, q: Query) -> bool {
+         match q {
++            Query::NativeProject(_) => true,
+             Query::NativeNamed(NativeTypeDeclarationQuery::DeclaredHead(id)) => self.native_type_declaration_provider
+                 .is_some_and(|p| p.contains_type_declaration(id) && p.type_declaration_header(self, id).kind == native_named::NativeTypeDeclarationKind::Alias),
+             Query::Return(..)
+diff --git a/src/sema/check/context.rs b/src/sema/check/context.rs
+--- a/src/sema/check/context.rs
++++ b/src/sema/check/context.rs
+@@ -2360,7 +2360,7 @@
+ 
+     pub(super) fn get_native_inference_context(&self, expression: NativeExpressionId) -> Option<usize> {
+         self.inference_contexts.iter().rposition(|info| match info.origin {
+-            ExpressionOrigin::Native(ancestor) => self.native_function_provider
++            ExpressionOrigin::Native(ancestor) => expression.snapshot == ancestor.snapshot && self.native_function_provider
+                 .is_some_and(|provider| provider.is_expression_descendant(expression, ancestor)),
+             ExpressionOrigin::Ts(..) => false,
+         })
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -245,7 +245,8 @@
+ fn is_task_independent(q: Query) -> bool {
+     match q {
+         Query::NativeNamed(super::native_named::NativeTypeDeclarationQuery::ObjectMembers(_)) => false,
+-        Query::NativeNamed(_) => true,
++        Query::NativeNamed(_)
++        | Query::NativeProject(_) => true,
+         Query::Symbol(_)
+         | Query::Declared(_)
+         | Query::Bases(_)
+diff --git a/src/sema/check/native_project.rs b/src/sema/check/native_project.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/native_project.rs
+@@ -0,0 +1,183 @@
++//! Original Lua chunks use their own guarded query namespace. A module is not a
++//! synthetic function; its provider returns the checked whole source result pack.
++
++use super::{Checker, Query};
++use super::native_flow::NativeRuntimeType;
++use super::native_packs::{NativePackAlternative, NativePackSlot};
++use super::task::Stored;
++use crate::types::{NativeResultPack, TypeId};
++use crate::util::FxHashMap;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub struct NativeModuleId {
++    pub snapshot: u64,
++    pub index: u32,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeModuleSourceRole {
++    Implementation,
++    Declaration,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct NativeModuleHeader {
++    pub role: NativeModuleSourceRole,
++}
++
++/// A supported policy asserts the standard file loader without package.loaded,
++/// searcher or preload replacement. Dynamic/custom effects are not approximated.
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub enum NativeLoaderPolicy {
++    Lua50StandardFile,
++    Lua51StandardFile,
++    Lua52StandardFile,
++    Lua53StandardFile,
++    Lua54StandardFile,
++    Unsupported,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
++pub enum NativeProjectQuery {
++    ChunkResult(NativeModuleId),
++    ModuleValue { module: NativeModuleId, policy: NativeLoaderPolicy },
++    RequirePack { module: NativeModuleId, policy: NativeLoaderPolicy },
++}
++
++impl NativeProjectQuery {
++    pub fn module(self) -> NativeModuleId {
++        match self {
++            Self::ChunkResult(module) | Self::ModuleValue { module, .. }
++                | Self::RequirePack { module, .. } => module,
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeProjectError {
++    InvalidModule(NativeModuleId),
++    MissingDeclarationContract(NativeModuleId),
++    UnsupportedLoader { module: NativeModuleId, policy: NativeLoaderPolicy },
++    CircularQuery(NativeProjectQuery),
++    TooDeep(NativeProjectQuery),
++    UnresolvedQuery(NativeProjectQuery),
++}
++
++pub trait NativeProjectProvider {
++    fn contains_module(&self, module: NativeModuleId) -> bool;
++    fn module_header(&self, module: NativeModuleId) -> NativeModuleHeader;
++    fn module_inferred_result_pack(&self, checker: &mut Checker<'_, '_>, module: NativeModuleId) -> NativeResultPack;
++    fn project_query_error(&self, _: NativeProjectError) {}
++}
++
++#[derive(Default)]
++pub(super) struct NativeProjectCache {
++    values: FxHashMap<NativeProjectQuery, Result<TypeId, NativeProjectError>>,
++}
++
++impl NativeProjectCache {
++    fn store(&mut self, key: NativeProjectQuery, value: Result<TypeId, NativeProjectError>, _: Stored) {
++        self.values.insert(key, value);
++    }
++}
++
++impl<'p, 's> Checker<'p, 's> {
++    pub fn set_native_project_provider(&mut self, provider: &'p dyn NativeProjectProvider) {
++        assert!(self.native_project_provider.is_none(), "native project provider already installed");
++        self.native_project_provider = Some(provider);
++    }
++
++    fn report_native_project(&self, error: NativeProjectError) {
++        if let Some(provider) = self.native_project_provider {
++            provider.project_query_error(error);
++        }
++    }
++
++    fn native_project_demand(
++        &mut self,
++        demand: NativeProjectQuery,
++        compute: impl FnOnce(&mut Self, &'p dyn NativeProjectProvider) -> Result<TypeId, NativeProjectError>,
++    ) -> Result<TypeId, NativeProjectError> {
++        if let Some(&known) = self.native_project_cache.values.get(&demand) { return known }
++        let module = demand.module();
++        let Some(provider) = self.native_project_provider.filter(|provider| provider.contains_module(module)) else {
++            let error = NativeProjectError::InvalidModule(module);
++            self.report_native_project(error);
++            return Err(error);
++        };
++        let query = Query::NativeProject(demand);
++        if let Some(raw) = self.provisional(query) { return Ok(TypeId(raw as u32)) }
++        if !self.enter(query) {
++            let error = if self.found_cycle { NativeProjectError::CircularQuery(demand) }
++                else { NativeProjectError::TooDeep(demand) };
++            self.report_native_project(error);
++            return Err(error);
++        }
++        let result = compute(self, provider);
++        let left = self.leave(query);
++        if self.left_a_cycle {
++            let error = NativeProjectError::CircularQuery(demand);
++            self.report_native_project(error);
++            self.native_project_cache.store(demand, Err(error), self.cycle_result());
++            return Err(error);
++        }
++        match left {
++            Ok(stored) => self.native_project_cache.store(demand, result, stored),
++            Err(open) => {
++                if let Ok(ty) = result {
++                    self.cache_provisionally(query, u64::from(ty.0), open);
++                    let error = NativeProjectError::UnresolvedQuery(demand);
++                    self.report_native_project(error);
++                    return Err(error);
++                }
++            }
++        }
++        if let Err(error) = result { self.report_native_project(error) }
++        result
++    }
++
++    pub fn native_module_result_pack(&mut self, module: NativeModuleId) -> Result<NativeResultPack, NativeProjectError> {
++        self.native_project_demand(NativeProjectQuery::ChunkResult(module), |checker, provider| {
++            if provider.module_header(module).role == NativeModuleSourceRole::Declaration {
++                return Err(NativeProjectError::MissingDeclarationContract(module));
++            }
++            // A chunk is a lexical root. Its exports do not inherit the
++            // importing function's expected signature or capture environment.
++            // The active native query stack remains intact across this scope.
++            let contextual = std::mem::take(&mut checker.native_function_contexts);
++            let captured = std::mem::take(&mut checker.native_capture_contexts);
++            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||
++                provider.module_inferred_result_pack(checker, module).ty));
++            checker.native_function_contexts = contextual;
++            checker.native_capture_contexts = captured;
++            Ok(result.unwrap_or_else(|error| std::panic::resume_unwind(error)))
++        }).map(|ty| NativeResultPack { ty })
++    }
++
++    pub fn native_module_value(&mut self, module: NativeModuleId, policy: NativeLoaderPolicy) -> Result<TypeId, NativeProjectError> {
++        self.native_project_demand(NativeProjectQuery::ModuleValue { module, policy }, |checker, _| {
++            if policy == NativeLoaderPolicy::Unsupported {
++                return Err(NativeProjectError::UnsupportedLoader { module, policy });
++            }
++            let pack = checker.native_module_result_pack(module)?;
++            let first = checker.native_pack_slot(pack, 0);
++            let non_nil = checker.native_runtime_type(first, &NativeRuntimeType::Nil, false);
++            let nil = checker.native_runtime_type(first, &NativeRuntimeType::Nil, true);
++            Ok(if nil.is_never() { non_nil } else { checker.union(&[non_nil, TypeId::TRUE]) })
++        })
++    }
++
++    pub fn native_require_pack(&mut self, module: NativeModuleId, policy: NativeLoaderPolicy) -> Result<NativeResultPack, NativeProjectError> {
++        self.native_project_demand(NativeProjectQuery::RequirePack { module, policy }, |checker, _| {
++            let value = checker.native_module_value(module, policy)?;
++            let mut rows = vec![NativePackAlternative { fixed: vec![NativePackSlot { ty: value, optional: false }], tail: None }];
++            if policy == NativeLoaderPolicy::Lua54StandardFile {
++                rows.push(NativePackAlternative { fixed: vec![
++                    NativePackSlot { ty: value, optional: false },
++                    NativePackSlot { ty: TypeId::STRING, optional: false },
++                ], tail: None });
++            }
++            Ok(checker.native_result_pack(&rows).ty)
++        }).map(|ty| NativeResultPack { ty })
++    }
++}

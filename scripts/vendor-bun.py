@@ -200,6 +200,14 @@ SOURCE_ADAPTATIONS.extend({
 ])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-module-queries.patch",
+    "reason": "Add original-source chunk/module/require queries using native query guards, cycle/provisional publication and Stored caches, preserving lexical module roots and explicit standard-loader policies.",
+    **({"added": True} if path == "native_project.rs" else {}),
+} for path in ["mod.rs", "context.rs", "sink.rs", "native_project.rs"])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

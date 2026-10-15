@@ -273,7 +273,7 @@ fn unresolved_runtime_require_remains_an_error_while_project_names_are_available
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", text(&output));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Cannot find name 'require'"),
+        String::from_utf8_lossy(&output.stderr).contains("error[TS2307]"),
         "{}",
         text(&output)
     );

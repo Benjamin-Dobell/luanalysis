@@ -7,6 +7,7 @@
 
 pub mod bind;
 mod builtins;
+mod module_requests;
 pub mod flow;
 pub mod project_check;
 mod functions;

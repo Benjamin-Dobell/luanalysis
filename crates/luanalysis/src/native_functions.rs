@@ -27,6 +27,8 @@ mod named_provider;
 mod shape_attachment;
 #[path = "native_project_provider.rs"]
 pub(crate) mod project_provider;
+#[path = "native_modules.rs"]
+pub(crate) mod modules;
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 
@@ -48,6 +50,7 @@ enum DeclarationSource {
 
 pub(super) struct NativeRegistry {
     snapshot: u64,
+    source_role: luanalysis_project::SourceRole,
     file: File,
     bound: BoundFile,
     functions: Vec<Function>,
@@ -57,6 +60,7 @@ pub(super) struct NativeRegistry {
     pub(super) types: NativeTypes,
     named: NativeNamed,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
+    project_modules: Option<std::rc::Rc<modules::ProjectModuleIndex>>,
     pub(super) signatures: super::native_signatures::NativeSignatures,
     expressions: NativeExpressions,
     packs: NativePacks,
@@ -121,6 +125,7 @@ impl NativeRegistry {
         report.diagnostics.extend(signatures.diagnostics.iter().cloned());
         Self {
             snapshot,
+            source_role: luanalysis_project::SourceRole::Implementation,
             file,
             bound,
             functions,
@@ -130,6 +135,7 @@ impl NativeRegistry {
             types,
             named,
             project_names: None,
+            project_modules: None,
             signatures,
             expressions,
             packs,
@@ -145,6 +151,9 @@ impl NativeRegistry {
     pub(super) fn bound(&self) -> &BoundFile {
         &self.bound
     }
+
+    pub(crate) fn source_role(&self) -> luanalysis_project::SourceRole { self.source_role }
+    pub(crate) fn set_source_role(&mut self, role: luanalysis_project::SourceRole) { self.source_role=role; }
 
     pub(super) fn statements(&self) -> &[Stmt] {
         &self.file.statements
@@ -302,7 +311,8 @@ impl NativeRegistry {
         let record = self.expressions.get(key);
         let contextual = queries
             .current_contextual_function()
-            .filter(|context| self.expressions.function_for(context.expression) == record.owner);
+            .filter(|context| self.expressions.contains(context.expression)
+                && self.expressions.function_for(context.expression) == record.owner);
         let mut checker = self.checker(queries);
         checker.check_mode = mode;
         checker.type_context = record.owner;
@@ -782,6 +792,9 @@ impl NativeRegistry {
         context: &ContextualFunctionContext,
         queries: &mut dyn TypeQueries,
     ) -> Option<Binding> {
+        if !self.expressions.contains(context.expression) {
+            return self.resolve_binding(binding, queries);
+        }
         let owner = self.expressions.function_for(context.expression);
         let source = self.declarations.get(&binding)?.clone();
         match source {
@@ -1572,6 +1585,10 @@ impl NativeRegistry {
         };
         let evaluation = sources.program.evaluation(*evaluation);
         let expression = &sources.program.expression(evaluation.expression).expression;
+        // The import query owns its result. Reachability must not ask a
+        // builtin's source spelling for a function signature or infer a
+        // module's result merely to classify an unused call.
+        if self.module_import(expression.span).is_some() { return NativeCallEffects::None; }
         let mut checker = self.checker_at_flow(input, queries);
         let callee = match &expression.kind {
             ExprKind::Call { callee, .. } => checker.expression(callee),
@@ -1589,31 +1606,10 @@ impl NativeRegistry {
         // explicit nonreturning contract is sufficient for this flow effect.
         let declared_return = match &callee {
             Type::Function(signature) => Some((*signature.returns).clone()),
-            _ => checker.engine.native_function_key(&callee).and_then(|key| {
-                let function = self.function(key);
-                let mut declaration = self.checker(checker.engine);
-                declaration.type_context = Some(key);
-                let result = if let Some(annotation) = &function.annotations.returns {
-                    match annotation.types.as_slice() {
-                        [ty] if annotation.packs.is_none() => Some(declaration.annotation(ty)),
-                        _ => None,
-                    }
-                } else {
-                    function
-                        .annotations
-                        .type_annotation
-                        .as_ref()
-                        .and_then(|annotation| annotation.types.first())
-                        .and_then(|ty| match declaration.annotation(ty) {
-                            Type::Function(signature) => Some(*signature.returns),
-                            _ => None,
-                        })
-                };
-                let result =
-                    result.and_then(|ty| declaration.engine.instantiate_in_function(&callee, &ty));
-                self.merge_report(declaration.report);
-                result
-            }),
+            // Native callables can originate in another original file. The
+            // pure written-contract query routes to its actual provider and
+            // does not demand physical result counts or inferred bodies.
+            _ => checker.engine.function_declared_scalar_return(&callee),
         };
         if !checker.incomplete_flow {
             self.merge_flow_report(input, checker.check_mode, checker.report);

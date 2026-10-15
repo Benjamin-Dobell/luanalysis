@@ -2360,7 +2360,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub(super) fn get_native_inference_context(&self, expression: NativeExpressionId) -> Option<usize> {
         self.inference_contexts.iter().rposition(|info| match info.origin {
-            ExpressionOrigin::Native(ancestor) => self.native_function_provider
+            ExpressionOrigin::Native(ancestor) => expression.snapshot == ancestor.snapshot && self.native_function_provider
                 .is_some_and(|provider| provider.is_expression_descendant(expression, ancestor)),
             ExpressionOrigin::Ts(..) => false,
         })

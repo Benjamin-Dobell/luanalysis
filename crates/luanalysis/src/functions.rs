@@ -105,6 +105,10 @@ impl Checker<'_> {
             return ValuePack::variadic(Type::Any);
         };
         let Some(key) = self.type_context else {
+            if native.has_module_index() {
+                self.error("LUA2036",origin,"Module chunk varargs require a native loader-argument contract.");
+                return ValuePack::variadic(Type::Unknown);
+            }
             return ValuePack::variadic(Type::Any);
         };
         let function = native.function(key);
@@ -146,6 +150,7 @@ impl Checker<'_> {
         span: Span,
         expected: Option<&ValuePack>,
     ) -> ValuePack {
+        if let Some(pack) = self.native_require_pack(args, span) { return pack; }
         let callee_type = self.expression(callee);
         let arguments = self.call_arguments(args);
         let call = self
@@ -562,6 +567,7 @@ impl Checker<'_> {
         _discard: bool,
         expected: Option<&Type>,
     ) -> Type {
+        if let Some(pack) = self.native_require_pack(args, span) { return self.engine.pack_slot(&pack, 0); }
         let callee_type = self.expression(callee);
         let arguments = self.call_arguments(args);
         let call = self

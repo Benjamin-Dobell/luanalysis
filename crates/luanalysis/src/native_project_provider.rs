@@ -1,5 +1,6 @@
 //! Aggregate source recipe transport. Keys stay in each original file snapshot;
 //! all type queries and recursion guards remain in the one native checker.
+use super::modules::{ImportOutcome, ImportRecipe, ProjectModuleIndex, classify_unresolved};
 use super::{NativeRegistry, NativeTypeProvider};
 use crate::bind::BoundFile;
 use crate::project_check::FileCheckReport;
@@ -11,7 +12,10 @@ use luanalysis_engine::{
     TypeDeclarationHeader, TypeDeclarationOwner, TypeMemberHeader, TypeMemberOwner, TypeQueries,
     ValuePack,
 };
-use luanalysis_project::{FileId, SourceRole};
+use luanalysis_engine::{
+    ModuleSourceRole, NativeLoaderPolicy, NativeModuleHeader, NativeModuleKey, NativeProjectError,
+};
+use luanalysis_project::{Dependency, DependencyOutcome, FileId, SourceRole};
 use luanalysis_syntax::File;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -46,14 +50,24 @@ pub(crate) struct ProjectRegistry {
 }
 
 impl ProjectRegistry {
+    #[cfg(test)]
     pub(crate) fn new(inputs: Vec<RegistryInput>) -> Self {
+        Self::new_with_modules(inputs, Vec::new(), NativeLoaderPolicy::Lua54StandardFile)
+    }
+
+    pub(crate) fn new_with_modules(
+        inputs: Vec<RegistryInput>,
+        dependencies: Vec<Dependency>,
+        policy: NativeLoaderPolicy,
+    ) -> Self {
         let mut snapshots = HashMap::new();
         let mut names = ProjectNamedIndex::default();
         let mut files: Vec<_> = inputs
             .into_iter()
             .enumerate()
             .map(|(index, input)| {
-                let source = NativeRegistry::new(input.syntax, input.bound);
+                let mut source = NativeRegistry::new(input.syntax, input.bound);
+                source.set_source_role(input.role);
                 assert!(snapshots.insert(source.snapshot, index).is_none());
                 for declaration in source.named.declarations() {
                     names
@@ -73,8 +87,63 @@ impl ProjectRegistry {
             })
             .collect();
         let names = Rc::new(names);
+        let modules_by_file: HashMap<_, _> = files
+            .iter()
+            .map(|file| (file.id, file.source.module_key()))
+            .collect();
+        let environment_modified = files.iter().any(|file| {
+            file.role == SourceRole::Implementation && file.source.module_environment_modified()
+        });
+        let mut imports = HashMap::new();
+        for file in &files {
+            if file.role == SourceRole::Declaration {
+                continue;
+            }
+            for call in file.source.module_calls() {
+                let outcome = if environment_modified {
+                    ImportOutcome::ModifiedEnvironment
+                } else if let Some(outcome) = classify_unresolved(&call) {
+                    outcome
+                } else {
+                    let dependency = dependencies.iter().find(|edge| {
+                        edge.from == file.id
+                            && edge.request.span.start == call.argument_span.start
+                            && edge.request.span.end == call.argument_span.end
+                    });
+                    match dependency.map(|edge|&edge.outcome) {
+                        Some(DependencyOutcome::Resolved(target))=>modules_by_file.get(target).copied().map_or(ImportOutcome::InvalidSource,ImportOutcome::Module),
+                        Some(DependencyOutcome::Unresolved(error))=>ImportOutcome::Missing(error.to_string()),
+                        Some(DependencyOutcome::Unreadable(error))=>ImportOutcome::Missing(error.to_string()),
+                        Some(DependencyOutcome::InvalidSpan)=>ImportOutcome::Missing("Module request has an invalid original source span.".into()),
+                        None=>ImportOutcome::Missing("Static require request was not resolved by this project's source host.".into()),
+                    }
+                };
+                // Static resolution is a source-host obligation even when the
+                // original call is unreachable and creates no type demand.
+                if let ImportOutcome::Missing(message) = &outcome {
+                    file.source
+                        .report
+                        .borrow_mut()
+                        .diagnostics
+                        .push(Diagnostic {
+                            code: "TS2307",
+                            span: call.argument_span,
+                            message: message.clone(),
+                        });
+                }
+                imports.insert(
+                    (file.source.snapshot, call.span.start, call.span.end),
+                    ImportRecipe {
+                        argument_span: call.argument_span,
+                        outcome,
+                    },
+                );
+            }
+        }
+        let modules = Rc::new(ProjectModuleIndex { policy, imports });
         for file in &mut files {
             file.source.project_names = Some(Rc::clone(&names));
+            file.source.project_modules = Some(Rc::clone(&modules));
             for declaration in file.source.named.declarations() {
                 if names.candidates(&declaration.syntax.name.text).len() > 1 {
                     file.source
@@ -201,6 +270,41 @@ macro_rules! dispatch {
 }
 
 impl NativeTypeProvider for ProjectRegistry {
+    fn contains_module(&self, key: NativeModuleKey) -> bool {
+        key.index == 0 && self.owner_if(key.snapshot).is_some()
+    }
+    fn module_header(&self, key: NativeModuleKey) -> NativeModuleHeader {
+        let file = &self.files[*self
+            .snapshots
+            .get(&key.snapshot)
+            .expect("original module snapshot")];
+        NativeModuleHeader {
+            role: match file.source.source_role() {
+                SourceRole::Implementation => ModuleSourceRole::Implementation,
+                SourceRole::Declaration => ModuleSourceRole::Declaration,
+            },
+        }
+    }
+    fn module_inferred_result_pack(
+        &self,
+        key: NativeModuleKey,
+        queries: &mut dyn TypeQueries,
+    ) -> ValuePack {
+        self.owner(key.snapshot).module_result_pack(queries)
+    }
+    fn project_query_error(&self, error: NativeProjectError) {
+        let module = match error {
+            NativeProjectError::InvalidModule(module)
+            | NativeProjectError::MissingDeclarationContract(module)
+            | NativeProjectError::UnsupportedLoader { module, .. } => module,
+            NativeProjectError::CircularQuery(query)
+            | NativeProjectError::TooDeep(query)
+            | NativeProjectError::UnresolvedQuery(query) => query.module(),
+        };
+        if let Some(owner) = self.owner_if(module.snapshot) {
+            owner.module_query_error(error);
+        }
+    }
     fn contains_signature(&self,key:NativeSignatureKey)->bool {
         self.owner_if(key.snapshot).is_some_and(|owner|owner.contains_signature(key))
     }
@@ -391,7 +495,7 @@ mod tests {
             .next()
             .unwrap();
         let implementation = include_str!("native_project_provider.rs")
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .unwrap();
         for method in trait_source.split("fn ").skip(1) {

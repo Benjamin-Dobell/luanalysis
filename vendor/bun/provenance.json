@@ -909,6 +909,31 @@
       "patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch",
       "reason": "Add distinct broad Lua table/function runtime categories with native structural carriers, recursive relation guards and original-source runtime narrowing, preserving named table origins even when callable.",
       "patch_sha256": "ddf15a169e73cc31898036c645303386325ba088c5da82be7fbe63359a37aaf3"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-module-queries.patch",
+      "reason": "Add original-source chunk/module/require queries using native query guards, cycle/provisional publication and Stored caches, preserving lexical module roots and explicit standard-loader policies.",
+      "patch_sha256": "dc0d415ab0ee213589ddb23e6a1c93ec070d2261e22dc5aeb8e189140319a613"
+    },
+    {
+      "path": "src/sema/check/context.rs",
+      "patch": "vendor/patches/bun-sema-native-module-queries.patch",
+      "reason": "Add original-source chunk/module/require queries using native query guards, cycle/provisional publication and Stored caches, preserving lexical module roots and explicit standard-loader policies.",
+      "patch_sha256": "dc0d415ab0ee213589ddb23e6a1c93ec070d2261e22dc5aeb8e189140319a613"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-module-queries.patch",
+      "reason": "Add original-source chunk/module/require queries using native query guards, cycle/provisional publication and Stored caches, preserving lexical module roots and explicit standard-loader policies.",
+      "patch_sha256": "dc0d415ab0ee213589ddb23e6a1c93ec070d2261e22dc5aeb8e189140319a613"
+    },
+    {
+      "path": "src/sema/check/native_project.rs",
+      "patch": "vendor/patches/bun-sema-native-module-queries.patch",
+      "reason": "Add original-source chunk/module/require queries using native query guards, cycle/provisional publication and Stored caches, preserving lexical module roots and explicit standard-loader policies.",
+      "added": true,
+      "patch_sha256": "dc0d415ab0ee213589ddb23e6a1c93ec070d2261e22dc5aeb8e189140319a613"
     }
   ],
   "source_additions": {
@@ -935,6 +960,10 @@
     "src/sema/check/native_packs.rs": {
       "extracted_sha256": "773d2771f263643a1baec872e645c81fdea47b85c1dc6ba15fa4adf2758bb246",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
+    },
+    "src/sema/check/native_project.rs": {
+      "extracted_sha256": "c6dc9a9bab11e5a5362d6b6daaacf9677f33f8052b2dd11400c7e9c51a66aff7",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-module-queries.patch"
     },
     "src/sema/check/native_runtime.rs": {
       "extracted_sha256": "28d4b4ca43e7810b828715e33ebbfd0b2f0325413e907c109f667c134111ee6a",
@@ -1653,7 +1682,7 @@
     "src/sema/check/context.rs": {
       "upstream": "src/sema/check/context.rs",
       "sha256": "38ce21bc5a1016ca18ed46af9e6cc93927640ed24b869c5c8ee91147f6505601",
-      "extracted_sha256": "663b49fcfeec2e64a17cfcfec348124e697746e1896b215a7ccf9f7c0b9102c8"
+      "extracted_sha256": "c4cdd82046390a9df1ec2f2299951347e2694f4cf7c4ab29cf6144eddee83620"
     },
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
@@ -1903,7 +1932,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "620ff71100fe523fd4dbc77e5e6fbedc889dbbaaedcb3e0967e05ce8dcfde30d"
+      "extracted_sha256": "040ff7521bbcdaf6ffbeba18acb96dcc8ca8af32e2b15a842007743da2c41d9b"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -1988,7 +2017,7 @@
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "0a0313a73df21eada78cabc2018c8a8edc12f88e4e338f25771a4f035856233d"
+      "extracted_sha256": "f07d7f52ea2915347ed0d563d7edccf57cdd01b282f437ed838ea984dfdf4cf0"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",

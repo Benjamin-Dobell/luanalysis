@@ -1,4 +1,4 @@
-use luanalysis::project_check::check_project;
+use luanalysis::project_check::{check_project, static_require_requests};
 use luanalysis_project::{
     Project, ProjectConfig, ProjectInput, ProjectLoadPlan, Resolver, SourceRole,
 };
@@ -36,6 +36,8 @@ fn run() -> i32 {
     let mut dump = false;
     let mut files = Vec::new();
     let mut libraries = Vec::new();
+    let mut module_roots = Vec::new();
+    let mut package_path = None;
     let mut positional = false;
     while let Some(arg) = args.next() {
         if !positional && arg == "--" {
@@ -52,6 +54,22 @@ fn run() -> i32 {
                 return 2;
             };
             libraries.push(PathBuf::from(path));
+            continue;
+        }
+        if !positional && arg == "--module-root" {
+            let Some(path) = args.next() else {
+                eprintln!("luanalysis: --module-root requires a directory path");
+                return 2;
+            };
+            module_roots.push(PathBuf::from(path));
+            continue;
+        }
+        if !positional && arg == "--package-path" {
+            let Some(path) = args.next().and_then(|value| value.into_string().ok()) else {
+                eprintln!("luanalysis: --package-path requires UTF-8 package.path templates");
+                return 2;
+            };
+            package_path = Some(path);
             continue;
         }
         if !positional && (arg == "--help" || arg == "-h") {
@@ -110,10 +128,29 @@ fn run() -> i32 {
         }
     }
 
-    // Library membership and module search policy are independent. This slice
-    // connects named project checking; binder-proven requires and guarded native
-    // module/global queries remain their own explicit integration capability.
-    let resolver = match Resolver::new(ProjectConfig::new(roots)) {
+    // Explicit module roots override positional directory roots. A file-only
+    // invocation follows Lua's current-directory package-path convention;
+    // declaration libraries never add implicit module search roots.
+    let roots = if !module_roots.is_empty() {
+        module_roots
+    } else if !roots.is_empty() {
+        roots
+    } else {
+        match std::env::current_dir() {
+            Ok(root) => vec![root],
+            Err(error) => {
+                eprintln!("luanalysis: error[LUA0001]: {error}");
+                return 2;
+            }
+        }
+    };
+    let mut config = ProjectConfig::new(roots);
+    config.set_package_path(
+        package_path
+            .as_deref()
+            .unwrap_or("?.lua;?/init.lua;?.ttslua;?/init.ttslua"),
+    );
+    let resolver = match Resolver::new(config) {
         Ok(resolver) => resolver,
         Err(error) => {
             eprintln!("luanalysis: error[LUA0001]: {error}");
@@ -126,7 +163,7 @@ fn run() -> i32 {
             entries,
             libraries: library_files,
         },
-        |_| Vec::new(),
+        static_require_requests,
     );
     let result = check_project(project);
     for error in result
@@ -217,6 +254,6 @@ fn expand(path: &Path, io_errors: &mut bool) -> Vec<PathBuf> {
 
 fn help() {
     println!(
-        "luanalysis check [--dump-types] [--library <file|directory>]... <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--library includes original declaration files independently of module search roots.\nReports diagnostics at original Lua source locations."
+        "luanalysis check [--dump-types] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations."
     );
 }

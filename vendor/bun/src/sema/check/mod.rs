@@ -61,6 +61,7 @@ pub mod native_assertions;
 pub mod native_signatures;
 pub mod native_runtime;
 pub mod native_named;
+pub mod native_project;
 mod grammarchecks;
 mod infer;
 mod instantiate;
@@ -124,6 +125,7 @@ use spans::{skip_trivia_back, trim_trivia_end};
 use std::sync::atomic::AtomicBool;
 use symbols::{AliasTarget, ExcludedMeanings};
 use task::{Open, OrderDependent, Stored, Task};
+use native_project::{NativeProjectCache, NativeProjectProvider, NativeProjectQuery};
 use native_named::{NativeNamedCache, NativeTypeDeclarationProvider, NativeTypeDeclarationQuery};
 
 pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
@@ -759,6 +761,8 @@ impl<'s> Program<'s> {
             native_function_provider: None,
             native_type_declaration_provider: None,
             native_named_cache: NativeNamedCache::default(),
+            native_project_provider: None,
+            native_project_cache: NativeProjectCache::default(),
             native_runtime_tops: [None; 2],
             native_arrays: false,
             native_function_contexts: Vec::new(),
@@ -1035,6 +1039,7 @@ struct Scope {
 /// A query that may be circular.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 enum Query {
+    NativeProject(NativeProjectQuery),
     NativeNamed(NativeTypeDeclarationQuery),
     Expr(FileId, ExprId),
     Symbol(Sym),
@@ -1127,6 +1132,7 @@ impl Query {
             Query::BaseConstructor(sym) => (sym.file, 13),
             Query::ReturnOfSignature(_)
             | Query::NativeNamed(_)
+            | Query::NativeProject(_)
             | Query::Shape(_)
             | Query::Properties(_)
             | Query::Constraint(_)
@@ -1269,6 +1275,8 @@ pub struct Checker<'p, 's> {
     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
     native_type_declaration_provider: Option<&'p dyn NativeTypeDeclarationProvider>,
     native_named_cache: NativeNamedCache,
+    native_project_provider: Option<&'p dyn NativeProjectProvider>,
+    native_project_cache: NativeProjectCache,
     native_runtime_tops: [Option<TypeId>; 2],
     native_arrays: bool,
     native_function_contexts: Vec<NativeFunctionContext>,
@@ -2754,6 +2762,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// A circular one is an error there, and `any`; here any other circular query is unresolved.
     fn is_resolution(&self, q: Query) -> bool {
         match q {
+            Query::NativeProject(_) => true,
             Query::NativeNamed(NativeTypeDeclarationQuery::DeclaredHead(id)) => self.native_type_declaration_provider
                 .is_some_and(|p| p.contains_type_declaration(id) && p.type_declaration_header(self, id).kind == native_named::NativeTypeDeclarationKind::Alias),
             Query::Return(..)

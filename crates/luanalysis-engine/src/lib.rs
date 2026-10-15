@@ -13,6 +13,10 @@ mod native_flow;
 pub use native_flow::*;
 #[cfg(test)]
 mod native_auto_tests;
+mod native_project;
+pub use native_project::*;
+#[cfg(test)]
+mod native_project_tests;
 mod native_named;
 pub use native_named::*;
 mod native_iterators;
@@ -279,6 +283,11 @@ pub enum Type {
 /// Source recipes may use thread-local interior state; release its borrows
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
+    fn contains_module(&self, _: NativeModuleKey) -> bool { false }
+    fn module_header(&self, _: NativeModuleKey) -> NativeModuleHeader { panic!("native project provider is not installed") }
+    fn module_inferred_result_pack(&self, _: NativeModuleKey, _: &mut dyn TypeQueries) -> ValuePack { panic!("native project provider is not installed") }
+    fn project_query_error(&self, _: NativeProjectError) {}
+
     /// Raw written return annotation only. This hook must not inspect the body
     /// or demand its result count. Zero results project to Lua nil in scalar use.
     /// Context/capture variants also return declaration-space annotations; the
@@ -639,6 +648,10 @@ pub enum CallError {
 /// Queries available during one native checker session. All inputs and outputs
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
+    fn module_result_pack(&mut self, key: NativeModuleKey) -> Result<ValuePack, NativeProjectError>;
+    fn module_value(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<Type, NativeProjectError>;
+    fn require_pack(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<ValuePack, NativeProjectError>;
+
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool;
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type;
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack;
@@ -882,6 +895,9 @@ impl Engine {
     pub fn with_session<R: Send>(&self, work: impl FnOnce(&mut dyn TypeQueries) -> R + Send) -> R {
         with_program(|program, handles| {
             let mut checker = program.checker();
+            checker.set_stack_limit(
+                bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize - (256 << 10),
+            );
             checker.enable_native_arrays();
             work(&mut SessionQueries {
                 checker: &mut checker,
@@ -904,7 +920,11 @@ impl Engine {
                 handles,
             };
             let mut checker = program.checker_with_native_provider(&adapter);
+            checker.set_stack_limit(
+                bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize - (256 << 10),
+            );
             checker.set_native_type_declaration_provider(&adapter);
+            checker.set_native_project_provider(&adapter);
             checker.enable_native_arrays();
             work(
                 &provider,
@@ -970,6 +990,10 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn module_result_pack(&mut self, key: NativeModuleKey) -> Result<ValuePack, NativeProjectError> { self.module_result_pack_native(key) }
+    fn module_value(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<Type, NativeProjectError> { self.module_value_native(key, policy) }
+    fn require_pack(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<ValuePack, NativeProjectError> { self.require_pack_native(key, policy) }
+
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool { self.assertion_overlap_native(source, target) }
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type { self.exclude_type_native(source, excluded) }
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack { self.exclude_pack_native(source, fixed, tail) }
