@@ -121,6 +121,14 @@ impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> 
         self.project_flow_adapter().write_member_key(reference, target, at, checker)
     }
 
+    fn write_index_value(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> {
+        self.project_flow_adapter().write_index_value(reference, target, at)
+    }
+
+    fn runtime_table_store_in_scope(&self, declaration: bun_sema::check::native_named::NativeTypeDeclarationId, at: NativeFlowKey) -> bool {
+        self.project_flow_adapter().runtime_table_store_in_scope(declaration, at)
+    }
+
     fn reference_member_key(&self, reference: NativeReferenceKey, member: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<NativeTableKey> {
         self.project_flow_adapter().reference_member_key(reference, member, checker)
     }
