@@ -52,3 +52,23 @@ fn invalid_constructors_keep_only_the_original_key_diagnostic() {
         assert_eq!(report.diagnostics[0].code, "TS2538");
     }
 }
+
+#[test]
+fn cli_written_callback_rejects_a_wrong_initializer_and_accepts_the_source_correction() {
+    let directory = std::env::temp_dir().join(format!("luanalysis-written-runtime-context-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("main.lua");
+    let corrected = "local callbacks={\n---@type fun(value:number):number\nmap=function(value) return value end,\n}\nlocal unrelated={}\nunrelated.child={}\nunrelated.child.label='ready'\ncallbacks.map=function(replacement) return replacement+1 end\n---@type number\nlocal result=callbacks.map(42)\n";
+    let invoke = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        .args(["check", "--no-stdlib"]).arg(&path).output().unwrap();
+    std::fs::write(&path, corrected.replace("replacement+1", "'wrong'")).unwrap();
+    let wrong = invoke();
+    let errors = String::from_utf8_lossy(&wrong.stderr);
+    assert_eq!(wrong.status.code(), Some(1), "{errors}");
+    assert!(errors.contains("main.lua:8:") && errors.contains("TS2322"), "{errors}");
+    assert!(!errors.contains("TS7006"), "written callback parameter context must remain available: {errors}");
+    std::fs::write(&path, corrected).unwrap();
+    let fixed = invoke();
+    assert!(fixed.status.success(), "{}", String::from_utf8_lossy(&fixed.stderr));
+    std::fs::remove_dir_all(directory).unwrap();
+}

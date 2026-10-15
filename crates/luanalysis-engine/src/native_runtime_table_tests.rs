@@ -30,6 +30,9 @@ fn parameter() -> NativeTypeParameterKey {
         index: 0,
     }
 }
+fn inherited_parameter() -> NativeTypeParameterKey {
+    NativeTypeParameterKey { snapshot: 6400, index: 1 }
+}
 fn binding() -> NativeBindingKey {
     NativeBindingKey {
         snapshot: 6400,
@@ -82,6 +85,7 @@ struct Provider {
     receiver_calls: RefCell<Vec<u32>>,
     forbidden_receivers: Vec<u32>,
     foreign_receiver: bool,
+    inherited_written: bool,
     generic: bool,
     faceted: bool,
     errors: RefCell<Vec<NamedTypeError>>,
@@ -101,6 +105,7 @@ impl Provider {
             receiver_calls: RefCell::new(Vec::new()),
             forbidden_receivers: vec![],
             foreign_receiver: false,
+            inherited_written: false,
             generic: false,
             faceted: false,
             errors: RefCell::new(vec![]),
@@ -212,13 +217,15 @@ impl NativeTypeProvider for Provider {
         original.node == 2
     }
     fn contains_type_parameter(&self, original: NativeTypeParameterKey) -> bool {
-        self.generic && original == parameter()
+        self.generic && original == parameter() || self.inherited_written && original == inherited_parameter()
     }
     fn type_parameter_name(&self, _: NativeTypeParameterKey) -> String {
         "T".into()
     }
-    fn type_parameter_owner(&self, _: NativeTypeParameterKey) -> Option<TypeDeclarationOwner> {
-        Some(TypeDeclarationOwner::Function(function(3)))
+    fn type_parameter_owner(&self, original: NativeTypeParameterKey) -> Option<TypeDeclarationOwner> {
+        Some(if original == inherited_parameter() {
+            TypeDeclarationOwner::NamedType(declaration(3))
+        } else { TypeDeclarationOwner::Function(function(3)) })
     }
     fn function_type_parameters(
         &self,
@@ -232,18 +239,18 @@ impl NativeTypeProvider for Provider {
         }
     }
     fn contains_type_declaration(&self, original: NativeTypeDeclarationKey) -> bool {
-        original.snapshot == 6400 && original.index < 3
+        original.snapshot == 6400 && original.index < 4
     }
     fn type_declaration_header(&self, original: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
         TypeDeclarationHeader {
-            kind: if original.index == 2 {
-                TypeDeclarationKind::Class
-            } else {
-                TypeDeclarationKind::RuntimeTable
+            kind: match original.index {
+                2 => TypeDeclarationKind::Class,
+                3 => TypeDeclarationKind::Shape,
+                _ => TypeDeclarationKind::RuntimeTable,
             },
             name: format!("original table {}", original.index),
             object_form: Some(ObjectDeclarationForm::Record),
-            parameters: vec![],
+            parameters: if original.index == 3 { vec![inherited_parameter()] } else { vec![] },
             outer_parameters: if self.generic {
                 vec![parameter()]
             } else {
@@ -288,7 +295,9 @@ impl NativeTypeProvider for Provider {
     }
     fn type_member_header(&self, original: NativeTypeMemberKey) -> TypeMemberHeader {
         TypeMemberHeader {
-            owner: TypeMemberOwner::RuntimeStore(at(original.index + 1)),
+            owner: if self.inherited_written && original.index == 0 {
+                TypeMemberOwner::Declared(declaration(3))
+            } else { TypeMemberOwner::RuntimeStore(at(original.index + 1)) },
             key: if self.members[original.index as usize].indexer.is_some() {
                 TypeMemberKeyRecipe::Indexer { sparse: true }
             } else {
@@ -322,6 +331,11 @@ impl NativeTypeProvider for Provider {
     }
     fn type_declaration_members(&self, _: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> {
         (0..self.members.len() as u32).map(member).collect()
+    }
+    fn type_declaration_bases(&self, original: NativeTypeDeclarationKey, _: &mut dyn TypeQueries) -> Vec<Type> {
+        if self.inherited_written && original.index == 0 {
+            vec![Type::NativeNamedReference { declaration: declaration(3), arguments: vec![Type::Number] }]
+        } else { vec![] }
     }
     fn type_declaration_error(&self, error: NamedTypeError) {
         self.errors.borrow_mut().push(error);
@@ -357,6 +371,33 @@ fn written_context_filters_inferred_and_other_keys_before_receiver_discovery() {
             },
         );
     }
+}
+
+#[test]
+fn inherited_written_context_maps_the_original_generic_owner_without_inferred_receivers() {
+    Engine::new().with_native_provider(
+        || {
+            let mut provider = Provider::new();
+            provider.inherited_written = true;
+            provider.members[0].origin = TableFieldOrigin::Declared;
+            provider.members[0].ty = Type::NativeTypeParameter(inherited_parameter());
+            provider.members.push(Member {
+                name: "value", ty: Type::String, origin: TableFieldOrigin::Inferred, indexer: None,
+            });
+            provider.forbidden_receivers = vec![1, 2];
+            provider
+        },
+        |provider, queries| {
+            let table = provider.allocation(queries);
+            let context = queries.table_value_context(&table, &access("value")).unwrap();
+            assert_eq!(queries.inspect_type(&context), Type::Number);
+            assert!(queries.is_assignable(&Type::Number, &context));
+            assert!(!queries.is_assignable(&Type::String, &context));
+            assert!(provider.receiver_calls.borrow().is_empty());
+            assert_eq!(provider.member_calls.get(), 1);
+            assert!(provider.errors.borrow().is_empty(), "{:#?}", provider.errors.borrow());
+        },
+    );
 }
 
 struct Flow {
