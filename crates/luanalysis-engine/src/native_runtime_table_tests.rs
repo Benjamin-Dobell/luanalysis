@@ -81,6 +81,7 @@ struct Provider {
     members: Vec<Member>,
     seed: TableType,
     seed_calls: Cell<usize>,
+    forbid_seed: bool,
     member_calls: Cell<usize>,
     receiver_calls: RefCell<Vec<u32>>,
     forbidden_receivers: Vec<u32>,
@@ -101,6 +102,7 @@ impl Provider {
             }],
             seed: TableType::default(),
             seed_calls: Cell::new(0),
+            forbid_seed: false,
             member_calls: Cell::new(0),
             receiver_calls: RefCell::new(Vec::new()),
             forbidden_receivers: vec![],
@@ -269,6 +271,7 @@ impl NativeTypeProvider for Provider {
         _: NativeTypeDeclarationKey,
         queries: &mut dyn TypeQueries,
     ) -> Option<Type> {
+        assert!(!self.forbid_seed, "written constructor bounds do not re-evaluate the original seed");
         self.seed_calls.set(self.seed_calls.get() + 1);
         let mut seed = self.seed.clone();
         if self.faceted {
@@ -577,12 +580,13 @@ fn written_runtime_storage_bounds_do_not_become_previous_reached_values() {
             let table = queries.runtime_table_value(declaration(0), &actual).unwrap();
             let schema = queries.runtime_table_schema(&table).unwrap();
             let assigned = vec![Type::NumberLiteral(1.0), Type::StringLiteral(b"word".to_vec()), Type::Nil, Type::NumberLiteral(2.0)];
+            let expected = [Type::Number, Type::String, Type::Nil, Type::Number];
             let flow = Flow {
                 nodes: vec![NativeFlowNode::Start, Flow::write(0, 0, 1), Flow::write(1, 1, 1), Flow::write(2, 2, 1), Flow::write(3, 3, 1)],
                 values: assigned.clone(), weak: None,
             };
             for declared in [&schema, &table] {
-                for (index, expected) in assigned.iter().enumerate() {
+                for (index, expected) in expected.iter().enumerate() {
                     let reached = queries.flow_type(&flow, at(index as u32 + 1), reference(0), declared, &table);
                     assert!(!reached.incomplete);
                     let value = queries.table_lookup(&reached.ty, &access("value")).unwrap();
@@ -597,6 +601,30 @@ fn written_runtime_storage_bounds_do_not_become_previous_reached_values() {
                     assert!(queries.table_write(&reached.ty, &access("value"), &Type::Boolean).is_err());
                 }
             }
+        },
+    );
+}
+
+#[test]
+fn written_constructor_flow_and_rhs_context_do_not_demand_the_seed() {
+    Engine::new().with_native_provider(
+        || {
+            let mut provider = Provider::new();
+            provider.forbid_seed = true;
+            provider
+        },
+        |_, queries| {
+            let actual = queries.table_type(&TableType {
+                fields: vec![TableField::declared(key("value"), Type::NumberLiteral(1.0))],
+                ..Default::default()
+            }).unwrap();
+            let table = queries.runtime_table_value(declaration(0), &actual).unwrap();
+            let flow = Flow { nodes: vec![NativeFlowNode::Start, Flow::write(0, 0, 1)], values: vec![Type::NumberLiteral(1.0)], weak: None };
+            let reached = queries.flow_type(&flow, at(1), reference(0), &table, &table);
+            assert!(!reached.incomplete);
+            let value = queries.table_lookup(&reached.ty, &access("value")).unwrap();
+            assert_eq!(queries.inspect_type(&value), Type::NumberLiteral(1.0));
+            assert_eq!(queries.table_value_context(&reached.ty, &access("value")), Some(value));
         },
     );
 }

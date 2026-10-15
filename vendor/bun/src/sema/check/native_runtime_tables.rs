@@ -49,7 +49,8 @@ impl<'p, 's> Checker<'p, 's> {
         if !matches!(self.data(view), TypeData::NativeTable(_)) {
             return Err(NativeNamedTypeError::InvalidDeclaration(declaration));
         }
-        Ok(self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view })))
+        let bounds = self.native_runtime_table_ref(actual).map_or(Some(view), |reference| reference.bounds);
+        Ok(self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view, bounds })))
     }
 
     fn native_runtime_table_seed(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {
@@ -219,6 +220,10 @@ impl<'p, 's> Checker<'p, 's> {
     pub(in crate::check) fn native_runtime_table_value_context(&mut self, reference: NativeRuntimeTableRef, key: NativeTableAccessKey) -> Option<TypeId> {
         let key = self.native_table_access(key).ok()?;
         if let NativeTableAccessKey::Literal(key) = key {
+            if let Some(bounds) = reference.bounds
+                && let TypeData::NativeTable(data) = self.data(bounds)
+                && let Some(field) = data.fields.iter().find(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared)
+            { return Some(field.value) }
             if let TypeData::NativeTable(data) = self.data(reference.view)
                 && data.fields.iter().any(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared)
             {
@@ -269,14 +274,21 @@ impl<'p, 's> Checker<'p, 's> {
         let mut fields = data.fields.to_vec();
         let optional = self.contains_undefined(value);
         let present = self.without_undefined(value);
+        let bound = reference.bounds.and_then(|bounds| match self.data(bounds) {
+            TypeData::NativeTable(data) => data.fields.iter().find(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared).map(|field| (field.value, field.readonly)),
+            _ => None,
+        });
+        let reached = bound.map_or(present, |(bound, _)| self.resolved_assignment_type(bound, present));
         if let Some(field) = fields.iter_mut().find(|field| field.key == key) {
-            // Validation uses the original storage schema. This view records
-            // only the reached value; a prior narrowing (including Never after
-            // deletion) cannot become the bound of the next assignment.
-            field.value = present;
+            // Validation uses the original schema. Narrow against the original
+            // written constructor bound, never the previous reached value.
+            // This also retains regular singleton literals without retaining
+            // fresh literals beyond a written broad number/string bound.
+            field.value = reached;
             field.optional = optional;
         } else {
-            fields.push(NativeTableField { key, value: present, optional, readonly: false, origin: NativeTableFieldOrigin::Inferred });
+            fields.push(NativeTableField { key, value: reached, optional, readonly: bound.is_some_and(|(_, readonly)| readonly),
+                origin: if bound.is_some() { NativeTableFieldOrigin::Declared } else { NativeTableFieldOrigin::Inferred } });
         }
         description.fields = self.list(&fields);
         description.fresh = false;
@@ -290,9 +302,10 @@ impl<'p, 's> Checker<'p, 's> {
     }
     pub(in crate::check) fn native_runtime_table_absent_view(&mut self, ty: TypeId) -> TypeId {
         if self.is_union(ty) { return self.map_type(ty, |checker, part| checker.native_runtime_table_absent_view(part)) }
+        let bounds = self.native_runtime_table_ref(ty).and_then(|reference| reference.bounds);
         let Some(schema) = self.native_runtime_table_schema(ty) else { return ty };
         let TypeData::NativeObject(schema) = *self.data(schema) else { unreachable!("runtime schema") };
         let view = self.native_table(&[], &[], NativeTableFlavor::Declared).expect("empty original value view");
-        self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view }))
+        self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view, bounds }))
     }
 }

@@ -3216,6 +3216,7 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 TypeData::NativeRuntimeTable(reference) => {
                     left.push(reference.view);
+                    left.extend(reference.bounds);
                     left.extend(values(reference.schema.mapper));
                     left.extend(reference.schema.self_argument);
                 }

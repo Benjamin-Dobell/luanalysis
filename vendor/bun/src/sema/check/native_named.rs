@@ -67,6 +67,9 @@ pub struct NativeDefinitionRef {
 pub struct NativeRuntimeTableRef {
     pub schema: NativeObjectReference,
     pub view: TypeId,
+    /// The original checked constructor keeps written storage bounds even
+    /// when the reached view narrows or deletes their current values.
+    pub bounds: Option<TypeId>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]

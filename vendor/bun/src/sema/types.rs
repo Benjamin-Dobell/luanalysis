@@ -2400,6 +2400,7 @@ impl<'p, 's> Types<'p, 's> {
                     | reference.class.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty))).difference(ObjectFlags::PROPAGATING_FLAGS),
             TypeData::NativeRuntimeTable(reference) => self.object_flags(reference.view)
                 | (self.mapper_record(reference.schema.mapper).1
+                    | reference.bounds.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty))
                     | reference.schema.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty))).difference(ObjectFlags::PROPAGATING_FLAGS),
             TypeData::NativeTable(table) => {
                 let origin_flags = table.nominal_origin.map_or(ObjectFlags::empty(), |origin| self.mapper_record(origin.mapper).1 | origin.self_argument.map_or(ObjectFlags::empty(), |ty| self.object_flags(ty)));
@@ -3550,7 +3551,7 @@ follow_enum!(SigData<'_> {
 follow_struct!(NativeCapturedBinding { declaration, ty });
 follow_struct!(NativeObjectReference { declaration, mapper, self_argument, runtime_context });
 follow_struct!(NativeDefinitionRef { owner, class, view });
-follow_struct!(NativeRuntimeTableRef { schema, view });
+follow_struct!(NativeRuntimeTableRef { schema, view, bounds });
 follow_struct!(NativeRuntimeTableContext { contextual, captured });
 follow_enum!(NativeTableFieldOrigin {
     NativeTableFieldOrigin::Inferred => (),

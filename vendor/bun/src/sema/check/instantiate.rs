@@ -690,7 +690,8 @@ impl<'p, 's> Checker<'p, 's> {
                 let reference = *reference;
                 let schema = NativeObjectReference { mapper: self.compose(reference.schema.mapper, mapper), self_argument: reference.schema.self_argument.map(|ty| self.instantiate(ty, mapper)), ..reference.schema };
                 let view = self.instantiate(reference.view, mapper);
-                self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view }))
+                let bounds = reference.bounds.map(|bounds| self.instantiate(bounds, mapper));
+                self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view, bounds }))
             }
             TypeData::NativeDefinition(reference) => {
                 let reference = *reference;
