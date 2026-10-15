@@ -48,6 +48,7 @@ static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 enum DeclarationSource {
     Local {
         annotation: Option<TypeExpr>,
+        initializer_assertion: Option<(luanalysis_syntax::TypeAnnotation, usize)>,
         owner: Option<u32>,
         automatic: bool,
     },
@@ -103,6 +104,8 @@ impl NativeRegistry {
         assert_ne!(snapshot, u64::MAX, "source snapshot identities exhausted");
         let mut index = RegistryIndex {
             bound: &bound,
+            assertions: file.expression_assertions.iter().filter(|assertion| assertion.kind == luanalysis_syntax::ExpressionAssertionKind::Type)
+                .map(|assertion| ((assertion.expression.start, assertion.expression.end), &assertion.annotation)).collect(),
             functions: Vec::new(),
             function_names: Vec::new(),
             function_spans: HashMap::new(),
@@ -123,7 +126,6 @@ impl NativeRegistry {
         let named = NativeNamed::new(snapshot, &file, &bound, &source_function_keys)
             .expect("original named declaration metadata");
         let class_definitions = class_definitions::NativeClassDefinitions::new(snapshot, &named);
-        let methods = methods::NativeMethods::new(snapshot, &file, &functions, &function_spans, &bound, &named);
         for (index, function) in functions.iter().enumerate() {
             if let Some(receiver) = bound.implicit_receiver(function.span) {
                 declarations.insert(receiver, DeclarationSource::Parameter { function: index as u32, index: 0 });
@@ -156,6 +158,7 @@ impl NativeRegistry {
                 types.register_self_parameter(source.key, source.syntax.name.span);
             }
         }
+        let methods = methods::NativeMethods::new(snapshot, &file, &functions, &function_spans, &bound, &named, &types);
         for method in methods.sources() {
             if let Some(owner) = method.class_owner { types.attach_method_scope(method.function, owner); }
         }
@@ -853,7 +856,7 @@ impl NativeRegistry {
         let mut checker = self.checker(queries);
         checker.captured_function = checker.engine.current_captured_function();
         let (constraint, evolves_from_nil) = match source {
-            DeclarationSource::Local { annotation, owner, .. } => {
+            DeclarationSource::Local { annotation, initializer_assertion, owner, .. } => {
                 checker.type_context = owner.map(|owner| self.key(owner));
                 if let Some(annotation) = annotation {
                     // The declaration already supplies the captured type.
@@ -863,6 +866,13 @@ impl NativeRegistry {
                         .shape_binding_constraint(binding, Some(&explicit), Some(annotation.span))
                         .unwrap_or(explicit);
                     (constraint, false)
+                } else if let Some((annotation, slot)) = initializer_assertion {
+                    // Reading a declaration's written initializer type does not
+                    // execute or revalidate that initializer. Its original
+                    // expression still checks the assertion and all effects.
+                    let pack = AnnotationPack::annotation(&annotation).lower(&mut |ty| checker.annotation(ty));
+                    let value = checker.engine.pack_slot(&pack, slot);
+                    (checker.engine.widen(&value), false)
                 } else if let Some(constraint) = checker.shape_binding_constraint(binding, None, None) {
                     (constraint, false)
                 } else {
@@ -977,6 +987,7 @@ impl NativeRegistry {
             }
             DeclarationSource::Local {
                 annotation,
+                initializer_assertion,
                 owner: Some(function),
                 ..
             } if Some(self.key(function)) == owner => {
@@ -997,6 +1008,15 @@ impl NativeRegistry {
                         value: constraint.clone(),
                         constraint,
                         evolves_from_nil: false,
+                    });
+                }
+                if let Some((annotation, slot)) = initializer_assertion {
+                    let pack = AnnotationPack::annotation(&annotation).lower(&mut |ty| checker.annotation(ty));
+                    let value = checker.engine.pack_slot(&pack, slot);
+                    let constraint = checker.engine.widen(&value);
+                    self.contextual_report(context, checker.report);
+                    return Some(Binding {
+                        initial: constraint.clone(), value: constraint.clone(), constraint, evolves_from_nil: false,
                     });
                 }
                 if let Some(constraint) = checker.shape_binding_constraint(binding, None, None) {
@@ -1024,7 +1044,14 @@ impl NativeRegistry {
         let offset = usize::from(receiver.is_some());
         if let Some(binding) = receiver {
             let parameter = parameters.first().expect("real Lua receiver parameter");
-            let parameter_type = self.body_parameter_type(self.key_for(function), 0, checker.captured_function, checker.contextual_function, checker.engine)
+            // A concrete member-assignment facet describes the public value,
+            // while this body still owns the original polymorphic self. Keep
+            // an explicit @param self contract ahead of either default.
+            let written_receiver = !function.params.iter().any(|parameter| parameter.text == "self")
+                && function.annotations.params.iter().any(|parameter| parameter.name.text == "self");
+            let parameter_type = (!written_receiver && self.method_owner(self.key_for(function)).is_some())
+                .then(|| self.default_receiver_type(function, checker.engine)).flatten()
+                .or_else(|| self.body_parameter_type(self.key_for(function), 0, checker.captured_function, checker.contextual_function, checker.engine))
                 .unwrap_or_else(|| parameter.ty.clone());
             let ty = if parameter.optional { Type::Union(vec![parameter_type, Type::Nil]) } else { parameter_type };
             checker.locals.insert(binding, Binding { constraint:ty.clone(), initial:ty.clone(), value:ty.clone(), evolves_from_nil:false });
@@ -2471,6 +2498,7 @@ fn type_scope_recipes(
 
 struct RegistryIndex<'a> {
     bound: &'a BoundFile,
+    assertions: HashMap<(usize, usize), &'a luanalysis_syntax::TypeAnnotation>,
     functions: Vec<Function>,
     function_names: Vec<Option<Name>>,
     function_spans: HashMap<(usize, usize), u32>,
@@ -2478,6 +2506,19 @@ struct RegistryIndex<'a> {
 }
 
 impl RegistryIndex<'_> {
+    fn initializer_assertion(&self, values: &[Expr], destination: usize) -> Option<(luanalysis_syntax::TypeAnnotation, usize)> {
+        // Preserve existing automatic-nil declarations. Scalar RHS values
+        // contribute one slot; only the final Lua call/vararg can expand.
+        if super::automatic_nil_initializer(values, destination) { return None; }
+        let (expression, slot) = if let Some(expression) = values.get(destination) {
+            (expression, 0)
+        } else {
+            let expression = values.last()?;
+            if super::native_packs::adjustment(expression, true) != super::native_packs::Adjustment::Expand { return None; }
+            (expression, destination - (values.len() - 1))
+        };
+        self.assertions.get(&(expression.span.start, expression.span.end)).map(|annotation| ((*annotation).clone(), slot))
+    }
     fn statements(&mut self, statements: &[Stmt], owner: Option<u32>) {
         for statement in statements {
             match &statement.kind {
@@ -2498,6 +2539,7 @@ impl RegistryIndex<'_> {
                                     .as_ref()
                                     .and_then(|annotation| annotation.types.get(index))
                                     .cloned(),
+                                initializer_assertion: self.initializer_assertion(values, index),
                                 owner,
                                 automatic: annotation.as_ref().and_then(|annotation| annotation.types.get(index)).is_none()
                                     && super::automatic_nil_initializer(values, index),

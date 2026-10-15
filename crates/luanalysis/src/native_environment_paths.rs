@@ -29,6 +29,12 @@ impl NativeRegistry {
         let mut expression = expression;
         while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
 
+        // An original allocation reached only through immutable local cells
+        // cannot be the pre-existing global environment object. This is a Lua
+        // identity fact; asking its written class assertion to prove it would
+        // recursively validate that class while resolving its own methods.
+        if self.immutable_fresh_table(expression, &mut HashSet::new()) { return None; }
+
         // This primitive query bypasses the assertion on the original receiver.
         // An equal-looking table schema cannot manufacture a runtime identity.
         let mut checker = self.checker_at_flow(input, queries);
@@ -74,6 +80,18 @@ impl NativeRegistry {
         aliases: &mut HashSet<BindingId>,
         depth: usize,
     ) -> Option<Vec<flow::Key>> {
+        let initializer = self.immutable_initializer(binding)?;
+        let original = &self.flow.program.expression(initializer.expression).expression;
+        // A contextual callback's signature is not its enclosing chunk's
+        // context. Reuse a context only for its genuine owning graph.
+        let context = if initializer.input.graph == input.graph.region { input.graph.context }
+            else if initializer.input.graph == 0 { 0 }
+            else { return None; };
+        let frozen = self.flow.flow_key(initializer.input, context);
+        self.environment_path(original, frozen, queries, aliases, depth)
+    }
+
+    fn immutable_initializer(&self, binding: BindingId) -> Option<&flow::Evaluation> {
         // Count original stores across every actual graph. A later store, even
         // inside a closure, invalidates this immutable initializer proof.
         let mut writes = self.flow.program.graphs.iter().flat_map(|graph| &graph.nodes).filter_map(|node| {
@@ -83,15 +101,24 @@ impl NativeRegistry {
         });
         let (flow::ValueDemand::Evaluation(initializer), true) = writes.next()? else { return None; };
         if writes.next().is_some() { return None; }
-        let initializer = self.flow.program.evaluation(*initializer);
-        let original = &self.flow.program.expression(initializer.expression).expression;
-        // A contextual callback's signature is not its enclosing chunk's
-        // context. Reuse a context only for its genuine owning graph.
-        let context = if initializer.input.graph == input.graph.region { input.graph.context }
-            else if initializer.input.graph == 0 { 0 }
-            else { return None; };
-        let frozen = self.flow.flow_key(initializer.input, context);
-        self.environment_path(original, frozen, queries, aliases, depth)
+        Some(self.flow.program.evaluation(*initializer))
+    }
+
+    fn immutable_fresh_table(&self, expression: &Expr, seen: &mut HashSet<BindingId>) -> bool {
+        let mut expression = expression;
+        loop {
+            while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
+            match &expression.kind {
+                ExprKind::Table(_) => return true,
+                ExprKind::Name(name) => {
+                    let Some(binding) = self.bound.binding_at(name.span.start) else { return false };
+                    if !seen.insert(binding) { return false; }
+                    let Some(initializer) = self.immutable_initializer(binding) else { return false };
+                    expression = &self.flow.program.expression(initializer.expression).expression;
+                }
+                _ => return false,
+            }
+        }
     }
 
     fn environment_path_key(&self, expression: &Expr) -> Option<flow::Key> {

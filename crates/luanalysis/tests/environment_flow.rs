@@ -52,6 +52,24 @@ fn a_frozen_environment_alias_write_reaches_the_original_global() {
 }
 
 #[test]
+fn a_nominal_assertion_cannot_hide_environment_identity_while_fresh_allocations_stay_separate() {
+    let fixture = Fixture::new();
+    let header = "---@class LoaderView\n---@field require fun(name: string): table\n\n";
+    let invalid = fixture.check(&format!("{header}local alias=--[[---@type LoaderView]] _G\nalias.require=function(name) return {{}} end\nlocal after=require('module')\n"));
+    assert!(text(&invalid).contains("LUA2036"), "{}", text(&invalid));
+    clean(&fixture.check(&format!("{header}local fresh=--[[---@type LoaderView]] {{require=function(name) return {{}} end}}\nlocal alias=fresh\nalias.require=function(name) return {{}} end\nlocal after=require('module')\n---@type number\nlocal checked=after.value\n")));
+}
+
+#[test]
+fn fresh_containers_do_not_hide_nested_environment_values_or_later_alias_replacements() {
+    let fixture = Fixture::new();
+    let nested = fixture.check("local wrapper={env=_G}\nwrapper.env.require=function(name) return {} end\nlocal after=require('module')\n");
+    assert!(text(&nested).contains("LUA2036"), "{}", text(&nested));
+    let replaced = fixture.check("local fresh={}\nlocal alias=fresh\nalias=_G\nalias.require=function(name) return {} end\nlocal after=require('module')\n");
+    assert!(text(&replaced).contains("LUA2036"), "{}", text(&replaced));
+}
+
+#[test]
 fn local_environment_nil_keeps_cached_locals_and_rejects_actual_global_reads() {
     let fixture = Fixture::new();
     clean(&fixture.check("local cached=answer\nlocal _ENV=nil\n---@type number\nlocal copied=cached\n"));

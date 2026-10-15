@@ -195,6 +195,12 @@ impl NativeRegistry {
                 }
                 let value = Type::NativeFunction(*key);
                 if let Ok(Some(expected)) = queries.named_member_context(member) {
+                    if let OriginalMemberOrigin::Method(_) = input.origin {
+                        let target = self.original_method_target(*key).expect("original named member definition");
+                        // A schema demand describes this declaration, not a
+                        // runtime closure created in the caller's active facet.
+                        return queries.contextual_function_value(&value, self.expression_key(target), &expected, luanalysis_engine::NativeCheckMode::empty());
+                    }
                     let expression = self.expressions().key_for_span(self.function(*key).span);
                     self.source_check_expression(expression, Some(&expected), luanalysis_engine::NativeCheckMode::empty(), queries)
                 } else { value }

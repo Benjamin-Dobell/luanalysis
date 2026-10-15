@@ -43,6 +43,7 @@ impl NativeMethods {
         spans: &HashMap<(usize, usize), u32>,
         bound: &BoundFile,
         named: &NativeNamed,
+        types: &crate::native_types::NativeTypes,
     ) -> Self {
         let mut owners: HashMap<BindingId, Vec<NativeNamedKey>> = HashMap::new();
         let mut declaration_owners: HashMap<String, Vec<NativeNamedKey>> = HashMap::new();
@@ -83,6 +84,24 @@ impl NativeMethods {
                     _ => {}
                 }
             }
+        }
+        // Closure-based Lua constructors declare their instance through an
+        // original local @type contract, then install functions on that value.
+        // These definitions belong to the written class, just as functions on
+        // an attached @class local do. Do not infer an owner from a variable's
+        // spelling, an arbitrary alias, a parameter, or a declaration without
+        // an initializer.
+        let assertions: HashMap<_, _> = file.expression_assertions.iter().filter_map(|assertion| {
+            if assertion.kind != luanalysis_syntax::ExpressionAssertionKind::Type { return None; }
+            let [ty] = assertion.annotation.types.as_slice() else { return None };
+            Some(((assertion.expression.start, assertion.expression.end), ty))
+        }).collect();
+        collect_written_local_owners(&file.statements, None, &assertions, bound, named, types, &mut owners);
+        for function in functions {
+            let context = crate::native_named::NativeTypeContext::Function(NativeFunctionKey {
+                snapshot, index: spans[&(function.span.start, function.span.end)],
+            });
+            collect_written_local_owners(&function.body, Some(context), &assertions, bound, named, types, &mut owners);
         }
         let mut methods = Self {
             snapshot,
@@ -223,6 +242,49 @@ impl NativeMethods {
         });
     }
 }
+fn collect_written_local_owners(
+    statements: &[Stmt],
+    context: Option<crate::native_named::NativeTypeContext>,
+    assertions: &HashMap<(usize, usize), &TypeExpr>,
+    bound: &BoundFile,
+    named: &NativeNamed,
+    types: &crate::native_types::NativeTypes,
+    owners: &mut HashMap<BindingId, Vec<NativeNamedKey>>,
+) {
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::Local { names, values, annotation } => {
+                for (index, (name, value)) in names.iter().zip(values).enumerate() {
+                    let written = annotation.as_ref().and_then(|annotation| annotation.types.get(index))
+                        .or_else(|| assertions.get(&(value.span.start, value.span.end)).copied());
+                    let Some(ty) = written else { continue };
+                    let mut ty = ty.value_syntax();
+                    while let luanalysis_syntax::TypeExprKind::Parenthesized(inner) = &ty.kind {
+                        ty = inner.value_syntax();
+                    }
+                    let luanalysis_syntax::TypeExprKind::Named(type_name) = &ty.kind else { continue };
+                    if types.resolve_name_in_context(context, type_name) != crate::native_types::TypeNameResolution::Missing { continue; }
+                    let [owner] = named.candidates(type_name) else { continue };
+                    if !named.declaration(*owner).is_some_and(|declaration| matches!(
+                        declaration.syntax.kind,
+                        NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. }
+                    )) { continue; }
+                    let binding = bound.binding_at(name.span.start).expect("original initialized local");
+                    let candidates = owners.entry(binding).or_default();
+                    if !candidates.contains(owner) { candidates.push(*owner); }
+                }
+            }
+            StmtKind::Block { body, .. } | StmtKind::While { body, .. }
+            | StmtKind::Repeat { body, .. } | StmtKind::NumericFor { body, .. }
+            | StmtKind::GenericFor { body, .. } => collect_written_local_owners(body, context, assertions, bound, named, types, owners),
+            StmtKind::If { branches, else_branch } => {
+                for branch in branches { collect_written_local_owners(&branch.body, context, assertions, bound, named, types, owners); }
+                if let Some(branch) = else_branch { collect_written_local_owners(&branch.body, context, assertions, bound, named, types, owners); }
+            }
+            _ => {}
+        }
+    }
+}
 fn fixed_member_target(target: &Expr) -> Option<(&Expr, LuaKey)> {
     match &target.kind {
         ExprKind::Field { base, name } => Some((base, LuaKey::String(name.text.as_bytes().to_vec()))),
@@ -244,6 +306,9 @@ fn function_literal(value: &Expr) -> Option<&Function> {
 }
 
 impl super::NativeRegistry {
+    pub(crate) fn original_method_target(&self, key: NativeFunctionKey) -> Option<&Expr> {
+        Some(&self.methods.get(key)?.target)
+    }
     pub(crate) fn method_owner(&self, key: NativeFunctionKey) -> Option<NativeNamedKey> {
         let method = self.methods.get(key)?;
         method.class_owner.or_else(|| (self.source_role() == luanalysis_project::SourceRole::Declaration)
