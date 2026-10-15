@@ -1366,7 +1366,9 @@ impl Parser<'_> {
             }
             let mut function_annotations = FunctionAnnotations::default();
             while let TokenKind::Comment(comment) = self.current().kind.clone() {
-                if expression_assertion_comment(&comment) {
+                if expression_assertion_comment(&comment)
+                    && !self.table_field_declaration_ahead(&comment)
+                {
                     break;
                 }
                 self.pos += 1;
@@ -1425,6 +1427,15 @@ impl Parser<'_> {
                 }
             };
             let (mut value, mut value_depth) = self.expr_with_depth();
+            let annotation = function_annotations.type_annotation.take();
+            // Share the original head's source span with the actual function
+            // body, as local declaration annotations already do. The field
+            // retains its contract for storage and initializer checking too.
+            if annotation.as_ref().is_some_and(function_type_annotation)
+                && function_initializer(&mut value).is_some()
+            {
+                function_annotations.type_annotation = annotation.clone();
+            }
             self.attach_function_annotations(
                 std::slice::from_mut(&mut value),
                 function_annotations,
@@ -1442,7 +1453,7 @@ impl Parser<'_> {
             }
             built_depth = built_depth.max(value_depth + 1);
             let span = field_start.join(value.span);
-            fields.push(TableField { kind, value, span });
+            fields.push(TableField { kind, value, annotation, span });
             self.inner_trivia();
             if self.take_symbol(",").is_some() || self.take_symbol(";").is_some() {
                 continue;
@@ -1467,6 +1478,45 @@ impl Parser<'_> {
             },
             built_depth,
         )
+    }
+    fn table_field_declaration_ahead(&self, comment: &Comment) -> bool {
+        let documentation = types::annotations(comment).0;
+        if documentation.functions.type_annotation.is_none() || !documentation.exclusions.is_empty() {
+            return false;
+        }
+        let next = self.significant_index();
+        let mut after = next + 1;
+        if matches!(self.tokens[next].kind, TokenKind::Identifier(_)) {
+            while matches!(self.tokens[after].kind, TokenKind::Newline | TokenKind::Comment(_)) {
+                after += 1;
+            }
+            if matches!(&self.tokens[after].kind, TokenKind::Symbol(symbol) if symbol == "=") {
+                return true;
+            }
+        }
+        if matches!(&self.tokens[next].kind, TokenKind::Symbol(symbol) if symbol == "[") {
+            let mut depth = 1usize;
+            while after < self.tokens.len() && depth != 0 {
+                match &self.tokens[after].kind {
+                    TokenKind::Symbol(symbol) if symbol == "[" => depth += 1,
+                    TokenKind::Symbol(symbol) if symbol == "]" => depth -= 1,
+                    TokenKind::Eof => break,
+                    _ => {}
+                }
+                after += 1;
+            }
+            while after < self.tokens.len() && matches!(self.tokens[after].kind, TokenKind::Newline | TokenKind::Comment(_)) {
+                after += 1;
+            }
+            if depth == 0 && self.tokens.get(after).is_some_and(|token| matches!(&token.kind, TokenKind::Symbol(symbol) if symbol == "=")) {
+                return true;
+            }
+        }
+        // A standalone documentation line also owns a sequence field. Inline
+        // expression assertions after '{' or ',' keep their existing meaning.
+        let line_start = self.source[..comment.span.start].rfind(['\r', '\n']).map_or(0, |index| index + 1);
+        self.source[line_start..comment.span.start].chars().all(|ch| matches!(ch, ' ' | '\t'))
+            && self.source[comment.span.end..self.tokens[next].span.start].contains(['\r', '\n'])
     }
     fn recover_statement(&mut self) {
         while !self.eof()

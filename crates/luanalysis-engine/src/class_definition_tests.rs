@@ -415,7 +415,7 @@ fn generic_dynamic_constructor_collision_preserves_present_and_deleted_candidate
         let mut p=basic();p.constraint=Some(Type::String);p.declarations[2].fields=vec![Type::Union(vec![Type::Number,Type::String])];Definitions{base:p,heads:vec![]}
     },|_,q| {
         let class=q.named_type_reference(key(2),&[]).unwrap();
-        let actual=q.table_type(&TableType{fields:vec![TableField::new(LuaKey::String(b"value".to_vec()),Type::Number)],indexers:vec![TableIndexer{key:Type::NativeTypeParameter(parameter()),value:Type::String,sparse:true,readonly:false}],fresh:true,collision_candidates:true,..TableType::default()}).unwrap();
+        let actual=q.table_type(&TableType{fields:vec![TableField::new(LuaKey::String(b"value".to_vec()),Type::Number)],indexers:vec![TableIndexer{key:Type::NativeTypeParameter(parameter()),value:Type::String,sparse:true,readonly:false,origin:TableFieldOrigin::Inferred}],fresh:true,collision_candidates:true,..TableType::default()}).unwrap();
         let ordinary=q.property_type(&actual,"value").unwrap();
         assert!(q.is_assignable(&Type::Number,&ordinary));assert!(q.is_assignable(&Type::String,&ordinary));
         assert!(!q.is_assignable(&Type::Nil,&ordinary));
@@ -423,7 +423,7 @@ fn generic_dynamic_constructor_collision_preserves_present_and_deleted_candidate
         let value=q.property_type(&definition,"value").unwrap();
         assert!(q.is_assignable(&Type::Number,&value));assert!(q.is_assignable(&Type::String,&value));
         assert!(!q.is_assignable(&value,&Type::Number));
-        let deleted=q.table_type(&TableType{fields:vec![TableField::new(LuaKey::String(b"value".to_vec()),Type::Number)],indexers:vec![TableIndexer{key:Type::NativeTypeParameter(parameter()),value:Type::Nil,sparse:true,readonly:false}],fresh:true,collision_candidates:true,..TableType::default()}).unwrap();
+        let deleted=q.table_type(&TableType{fields:vec![TableField::new(LuaKey::String(b"value".to_vec()),Type::Number)],indexers:vec![TableIndexer{key:Type::NativeTypeParameter(parameter()),value:Type::Nil,sparse:true,readonly:false,origin:TableFieldOrigin::Inferred}],fresh:true,collision_candidates:true,..TableType::default()}).unwrap();
         let ordinary=q.property_type(&deleted,"value").unwrap();
         assert!(q.is_assignable(&Type::Number,&ordinary));assert!(q.is_assignable(&Type::Nil,&ordinary));
         assert!(!q.is_assignable(&Type::String,&ordinary));

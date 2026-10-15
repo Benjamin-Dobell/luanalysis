@@ -440,6 +440,16 @@ impl NativeSignatures {
                 result.visit_type(owner, context, None, ty);
             }
         }
+        for field in named.field_annotations() {
+            let owner = match field.lexical_context {
+                Some(NativeTypeContext::Function(function)) => SignatureOwner::Function(function),
+                Some(NativeTypeContext::NamedType(owner)) => SignatureOwner::NamedType(NativeTypeDeclarationKey { snapshot: owner.snapshot, index: owner.index }),
+                _ => SignatureOwner::Standalone,
+            };
+            for ty in &field.annotation.types {
+                result.visit_type(owner, field.lexical_context, None, ty);
+            }
+        }
         for extension in named.augmentations() {
             let owner = match extension.candidates.as_slice() {
                 [key] => SignatureOwner::NamedType(NativeTypeDeclarationKey {

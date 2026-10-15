@@ -20,11 +20,18 @@ pub enum NativeTableAccessKey {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum NativeTableFieldOrigin {
+    Inferred,
+    Declared,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeTableField {
     pub key: NativeTableKey,
     pub value: TypeId,
     pub optional: bool,
     pub readonly: bool,
+    pub origin: NativeTableFieldOrigin,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
@@ -33,6 +40,7 @@ pub struct NativeTableIndexer {
     pub value: TypeId,
     pub readonly: bool,
     pub sparse: bool,
+    pub origin: NativeTableFieldOrigin,
 }
 
 /// Open sequence entries have integer keys at or above `start`; they do not imply a broad Lua
@@ -42,6 +50,7 @@ pub struct NativeTableSequenceTail {
     pub start: i64,
     pub value: TypeId,
     pub readonly: bool,
+    pub origin: NativeTableFieldOrigin,
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -150,6 +159,21 @@ impl<'p, 's> Checker<'p, 's> {
         pack: NativeResultPack,
         expected: Option<TypeId>,
     ) -> Result<TypeId, NativeTableError> {
+        self.native_table_with_sequence_and_policy_origin(fields, indexers, sequence_tails, flavor, collision_candidates, start, pack, NativeTableFieldOrigin::Inferred, expected)
+    }
+
+    pub fn native_table_with_sequence_and_policy_origin(
+        &mut self,
+        fields: &[NativeTableField],
+        indexers: &[NativeTableIndexer],
+        sequence_tails: &[NativeTableSequenceTail],
+        flavor: NativeTableFlavor,
+        collision_candidates: bool,
+        start: i64,
+        pack: NativeResultPack,
+        origin: NativeTableFieldOrigin,
+        expected: Option<TypeId>,
+    ) -> Result<TypeId, NativeTableError> {
         if start < 1 { return Err(NativeTableError::InvalidSequenceStart { start }) }
         let alternatives = match self.native_pack_alternatives(pack) {
             Some(rows) => rows,
@@ -177,15 +201,16 @@ impl<'p, 's> Checker<'p, 's> {
                     let index = start.checked_add(offset as i64).ok_or(NativeTableError::InvalidSequenceStart { start })?;
                     actual_fields.push(NativeTableField {
                         key: NativeTableKey::Integer(index), value: slot.ty, optional: false, readonly: false,
+                        origin,
                     });
                 }
                 let mut tails = sequence_tails.to_vec();
                 if present == row.fixed.len() && let Some(value) = row.tail {
                     let start = start.checked_add(present as i64).ok_or(NativeTableError::InvalidSequenceStart { start })?;
-                    tails.push(NativeTableSequenceTail { start, value, readonly: false });
+                    tails.push(NativeTableSequenceTail { start, value, readonly: false, origin });
                 }
                 let table = self.native_table_with_context_and_sequence_policy(&actual_fields, indexers, &tails, flavor, collision_candidates, expected)?;
-                tables.push(self.native_table_sequence_presence(table, start, width, open_start)?);
+                tables.push(self.native_table_sequence_presence(table, start, width, open_start, origin)?);
             }
         }
         Ok(self.union(&tables))
@@ -193,7 +218,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// Absence is a fact in each whole row, rather than an invented nil store. These keys are
     /// possible sequence positions in another row; unrelated absent closed-shape keys still fail.
-    fn native_table_sequence_presence(&mut self, table: TypeId, start: i64, width: usize, open_start: Option<i64>) -> Result<TypeId, NativeTableError> {
+    fn native_table_sequence_presence(&mut self, table: TypeId, start: i64, width: usize, open_start: Option<i64>, origin: NativeTableFieldOrigin) -> Result<TypeId, NativeTableError> {
         let TypeData::NativeTable(data) = self.data(table) else { return Err(NativeTableError::NotTable { ty: table }) };
         let mut fields = data.fields.to_vec();
         let mut tails = data.sequence_tails.to_vec();
@@ -202,7 +227,7 @@ impl<'p, 's> Checker<'p, 's> {
             if fields.iter().any(|field| field.key == key)
                 || tails.iter().any(|tail| Self::native_sequence_contains(tail.start, key))
                 || data.indexers.iter().any(|indexer| c.is_assignable(c.native_table_key_type(key), indexer.key)) { return }
-            fields.push(NativeTableField { key, value: TypeId::NEVER, optional: true, readonly: false });
+            fields.push(NativeTableField { key, value: TypeId::NEVER, optional: true, readonly: false, origin });
         };
         for offset in 0..width {
             let index = start.checked_add(offset as i64).ok_or(NativeTableError::InvalidSequenceStart { start })?;
@@ -210,7 +235,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         if let Some(open) = open_start {
             match tails.iter().map(|tail| tail.start).min() {
-                None => tails.push(NativeTableSequenceTail { start: open, value: TypeId::NEVER, readonly: false }),
+                None => tails.push(NativeTableSequenceTail { start: open, value: TypeId::NEVER, readonly: false, origin }),
                 Some(current) if current > open => {
                     let gap = usize::try_from(current - open).map_err(|_| NativeTableError::SequenceTooComplex { count: usize::MAX, alternatives: 1 })?;
                     if gap >= 10_000 { return Err(NativeTableError::SequenceTooComplex { count: gap, alternatives: 1 }) }
@@ -291,7 +316,10 @@ impl<'p, 's> Checker<'p, 's> {
         collision_candidates: bool,
     ) -> Result<TypeId, NativeTableError> {
         let mut fields = fields.to_vec();
-        for field in &mut fields { field.key = field.key.normalize()?; }
+        for field in &mut fields {
+            field.key = field.key.normalize()?;
+            if field.origin == NativeTableFieldOrigin::Declared { field.value = self.regular(field.value); }
+        }
         fields.sort_by(|a, b| self.native_table_compare_keys(a.key, b.key));
         for pair in fields.windows(2) {
             if pair[0].key == pair[1].key {
@@ -304,10 +332,14 @@ impl<'p, 's> Checker<'p, 's> {
             }
         }
         let mut indexers = indexers.to_vec();
+        for indexer in &mut indexers {
+            if indexer.origin == NativeTableFieldOrigin::Declared { indexer.value = self.regular(indexer.value); }
+        }
         indexers.sort_by_key(|indexer| indexer.key.0);
         let mut sequence_tails = sequence_tails.to_vec();
-        for tail in &sequence_tails {
+        for tail in &mut sequence_tails {
             if tail.start < 1 { return Err(NativeTableError::InvalidSequenceStart { start: tail.start }) }
+            if tail.origin == NativeTableFieldOrigin::Declared { tail.value = self.regular(tail.value); }
         }
         sequence_tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
@@ -362,11 +394,12 @@ impl<'p, 's> Checker<'p, 's> {
         for &field in fields {
             let key = field.key.normalize()?;
             let mut field = NativeTableField { key, ..field };
+            if field.origin == NativeTableFieldOrigin::Declared { field.value = self.regular(field.value); }
             if collision_candidates {
                 field.optional |= self.contains_undefined(field.value);
                 field.value = self.without_undefined(field.value);
             }
-            if fresh {
+            if fresh && field.origin == NativeTableFieldOrigin::Inferred {
                 let contextual = expected.and_then(|expected| self.native_table_value_context(expected, NativeTableAccessKey::Literal(key)));
                 field.value = self.widen_literal_for_context(field.value, contextual);
                 field.value = self.get_widened_type(field.value);
@@ -378,6 +411,7 @@ impl<'p, 's> Checker<'p, 's> {
                 previous.value = self.union_reduced(&[previous.value, field.value]);
                 previous.optional |= field.optional;
                 previous.readonly &= field.readonly;
+                if field.origin == NativeTableFieldOrigin::Declared { previous.origin = field.origin; }
             } else {
                 merged.push(field);
             }
@@ -392,11 +426,14 @@ impl<'p, 's> Checker<'p, 's> {
                 return Err(NativeTableError::InvalidKey { key: NativeTableAccessKey::Type(indexer.key) });
             }
             let mut indexer = indexer;
+            if indexer.origin == NativeTableFieldOrigin::Declared { indexer.value = self.regular(indexer.value); }
             if fresh {
                 indexer.sparse = true;
-                let contextual = expected.and_then(|expected| self.native_table_value_context(expected, NativeTableAccessKey::Type(indexer.key)));
-                indexer.value = self.widen_literal_for_context(indexer.value, contextual);
-                indexer.value = self.get_widened_type(indexer.value);
+                if indexer.origin == NativeTableFieldOrigin::Inferred {
+                    let contextual = expected.and_then(|expected| self.native_table_value_context(expected, NativeTableAccessKey::Type(indexer.key)));
+                    indexer.value = self.widen_literal_for_context(indexer.value, contextual);
+                    indexer.value = self.get_widened_type(indexer.value);
+                }
             }
             if let Some(previous) = domains.iter_mut().find(|previous| previous.key == indexer.key) {
                 previous.value = if collision_candidates {
@@ -406,6 +443,7 @@ impl<'p, 's> Checker<'p, 's> {
                 };
                 previous.sparse |= indexer.sparse;
                 previous.readonly = if collision_candidates { previous.readonly && indexer.readonly } else { previous.readonly || indexer.readonly };
+                if indexer.origin == NativeTableFieldOrigin::Declared { previous.origin = indexer.origin; }
             } else {
                 domains.push(indexer);
             }
@@ -414,7 +452,8 @@ impl<'p, 's> Checker<'p, 's> {
         for &tail in sequence_tails {
             if tail.start < 1 { return Err(NativeTableError::InvalidSequenceStart { start: tail.start }) }
             let mut tail = tail;
-            if fresh {
+            if tail.origin == NativeTableFieldOrigin::Declared { tail.value = self.regular(tail.value); }
+            if fresh && tail.origin == NativeTableFieldOrigin::Inferred {
                 let contextual = expected.and_then(|expected| self.native_table_sequence_context(expected, tail.start))
                     .and_then(|pack| self.native_pack_alternatives(pack))
                     .map(|rows| self.union(&rows.iter().flat_map(|row| row.fixed.iter().map(|slot| slot.ty).chain(row.tail)).collect::<Vec<_>>()));
@@ -425,6 +464,7 @@ impl<'p, 's> Checker<'p, 's> {
                 previous.value = if collision_candidates { self.union_reduced(&[previous.value, tail.value]) }
                     else { self.intersection(&[previous.value, tail.value]) };
                 previous.readonly = if collision_candidates { previous.readonly && tail.readonly } else { previous.readonly || tail.readonly };
+                if tail.origin == NativeTableFieldOrigin::Declared { previous.origin = tail.origin; }
             } else { tails.push(tail); }
         }
         if collision_candidates {
@@ -902,6 +942,7 @@ impl<'p, 's> Checker<'p, 's> {
                 value: self.type_of_prop(prop, members.mapper),
                 optional: prop.flags.contains(PropFlags::OPTIONAL),
                 readonly: prop.flags.contains(PropFlags::READONLY),
+                origin: if self.is_fresh_object_literal_type(ty) { NativeTableFieldOrigin::Inferred } else { NativeTableFieldOrigin::Declared },
             });
         }
         let indexers = members.index_infos().iter().map(|indexer| NativeTableIndexer {
@@ -909,6 +950,7 @@ impl<'p, 's> Checker<'p, 's> {
             value: self.instantiate(indexer.value, members.mapper),
             readonly: indexer.readonly,
             sparse: false,
+            origin: if self.is_fresh_object_literal_type(ty) { NativeTableFieldOrigin::Inferred } else { NativeTableFieldOrigin::Declared },
         }).collect::<Vec<_>>();
         Some(NativeTableData {
             definition_origin: None,
@@ -922,14 +964,14 @@ impl<'p, 's> Checker<'p, 's> {
 
     pub(super) fn native_table_widened(&mut self, table: &NativeTableData<'p>) -> TypeId {
         let fields = table.fields.iter().map(|field| NativeTableField {
-            value: self.get_widened_type(field.value), ..*field
+            value: if field.origin == NativeTableFieldOrigin::Declared { self.regular(field.value) } else { self.get_widened_type(field.value) }, ..*field
         }).collect::<Vec<_>>();
         let indexers = table.indexers.iter().map(|indexer| NativeTableIndexer {
             key: self.get_widened_type(indexer.key),
-            value: self.get_widened_type(indexer.value), ..*indexer
+            value: if indexer.origin == NativeTableFieldOrigin::Declared { self.regular(indexer.value) } else { self.get_widened_type(indexer.value) }, ..*indexer
         }).collect::<Vec<_>>();
         let sequence_tails = table.sequence_tails.iter().map(|tail| NativeTableSequenceTail {
-            value: self.get_widened_type(tail.value), ..*tail
+            value: if tail.origin == NativeTableFieldOrigin::Declared { self.regular(tail.value) } else { self.get_widened_type(tail.value) }, ..*tail
         }).collect::<Vec<_>>();
         let definition_origin = table.definition_origin.map(|reference| NativeDefinitionRef { view: self.get_widened_type(reference.view), ..reference });
         self.intern(TypeData::NativeTable(self.boxed(NativeTableData {

@@ -246,6 +246,12 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
     fn contains_type_member(&self, key: NativeTypeMemberId) -> bool {
         self.provider.contains_type_member(source_member(key))
     }
+    fn type_member_origin(&self, key: NativeTypeMemberId) -> bun_sema::types::NativeTableFieldOrigin {
+        match self.provider.type_member_origin(source_member(key)) {
+            super::TableFieldOrigin::Inferred => bun_sema::types::NativeTableFieldOrigin::Inferred,
+            super::TableFieldOrigin::Declared => bun_sema::types::NativeTableFieldOrigin::Declared,
+        }
+    }
     fn type_member_header(
         &self,
         checker: &Checker<'_, '_>,

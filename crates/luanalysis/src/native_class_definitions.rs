@@ -34,7 +34,7 @@ impl NativeClassDefinitions {
         }
     }
 }
-pub(super) struct ClassDefinitionDirective {
+pub(crate) struct ClassDefinitionDirective {
     pub key: NativeClassDefinitionKey,
     pub declaration: NativeTypeDeclarationKey,
     pub binding: BindingId,
@@ -52,7 +52,7 @@ impl NativeRegistry {
         self.named
             .declaration(*self.class_definitions.sources.get(key.index as usize)?)
     }
-    pub(super) fn class_definition_directive(
+    pub(crate) fn class_definition_directive(
         &self,
         source: &NamedDeclarationSource,
     ) -> Result<Option<ClassDefinitionDirective>, &'static str> {

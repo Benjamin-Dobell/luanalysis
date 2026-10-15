@@ -3,8 +3,9 @@
 //! indexer checking and duplicate-constructor policy remain native operations.
 
 use crate::Checker;
+use crate::native_packs::AnnotationPack;
 use luanalysis_engine::{
-    LuaKey, TableError, TableField as NativeField, TableIndexer, TableKey, TableType, Type,
+    LuaKey, TableError, TableField as NativeField, TableFieldOrigin, TableIndexer, TableKey, TableType, Type,
 };
 use luanalysis_syntax::{
     Expr, ExprKind, Span, TableField, TableFieldKind, TypeExpr, TypeExprKind, TypeField,
@@ -99,6 +100,9 @@ impl Checker<'_> {
                 TableFieldKind::Sequence { index } => (sequence_key(*index), field.value.span),
                 TableFieldKind::Keyed(key) => (self.native_table_key(key), key.span),
             };
+            let written = field.annotation.as_ref().map(|annotation| {
+                AnnotationPack::annotation(annotation).lower(&mut |ty| self.annotation(ty))
+            });
             if position + 1 == fields.len()
                 && matches!(field.kind, TableFieldKind::Sequence { .. })
                 && matches!(
@@ -126,12 +130,21 @@ impl Checker<'_> {
                 }
                 let start =
                     i64::try_from(index).expect("source sequence index fits Lua integer domain");
-                let context = expected
+                let inferred_context = expected
                     .and_then(|expected| self.engine.table_sequence_context(expected, start));
-                let pack = self.expression_pack(&field.value, context.as_ref());
+                let context = written.as_ref().or(inferred_context.as_ref());
+                let actual = self.expression_pack(&field.value, context);
+                let pack = if let Some(written) = &written {
+                    if !self.engine.pack_assignable(&actual, written) {
+                        self.error("TS2322", field.value.span,
+                            "Lua table field result pack is not assignable to its declared result pack.");
+                    }
+                    self.engine.return_pack_with_cardinality(written, &actual)
+                } else { actual };
+                let origin = if written.is_some() { TableFieldOrigin::Declared } else { TableFieldOrigin::Inferred };
                 return match self
                     .engine
-                    .table_with_sequence(&table, start, &pack, expected)
+                    .table_with_sequence_origin(&table, start, &pack, origin, expected)
                 {
                     Ok(ty) => ty,
                     Err(error) => {
@@ -142,11 +155,22 @@ impl Checker<'_> {
             }
             let context =
                 expected.and_then(|expected| self.engine.table_value_context(expected, &key));
-            let value = self.expression_with_expected(&field.value, context.as_ref());
+            let declared = written.as_ref().map(|written| self.engine.pack_slot(written, 0));
+            if let (Some(declared), Some(context), Some(annotation)) = (&declared, &context, &field.annotation) {
+                self.compatible(declared, context, annotation.span);
+            }
+            let actual = self.expression_with_expected(&field.value, declared.as_ref().or(context.as_ref()));
+            if let Some(declared) = &declared {
+                self.compatible(&actual, declared, field.value.span);
+            }
+            let value = declared.unwrap_or(actual);
             match &key {
-                TableKey::Literal(key) => table.fields.push(NativeField::new(key.clone(), value)),
+                TableKey::Literal(key) => table.fields.push(if written.is_some() {
+                    NativeField::declared(key.clone(), value)
+                } else { NativeField::new(key.clone(), value) }),
                 TableKey::Type(key) => {
-                    let mut indexer = TableIndexer::new(key.clone(), value);
+                    let mut indexer = if written.is_some() { TableIndexer::declared(key.clone(), value) }
+                        else { TableIndexer::new(key.clone(), value) };
                     indexer.sparse = true;
                     table.indexers.push(indexer);
                 }

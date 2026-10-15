@@ -399,6 +399,9 @@ pub struct ParamAnnotation {
 pub struct TableField {
     pub kind: TableFieldKind,
     pub value: Expr,
+    /// Written declaration contract on this original constructor field. This
+    /// describes the stored member, independently from a cast on its value.
+    pub annotation: Option<TypeAnnotation>,
     pub span: Span,
 }
 

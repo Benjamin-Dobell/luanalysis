@@ -68,6 +68,7 @@ pub(super) struct NativeRegistry {
     declarations: HashMap<BindingId, DeclarationSource>,
     pub(super) types: NativeTypes,
     named: NativeNamed,
+    pub(super) members: super::native_members::NativeMembers,
     class_definitions: class_definitions::NativeClassDefinitions,
     methods: methods::NativeMethods,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
@@ -155,6 +156,7 @@ impl NativeRegistry {
         });
         let flow = NativeFlowSources::new(&file, &bound, snapshot, &function_spans);
         let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions);
+        let members = super::native_members::NativeMembers::new(snapshot, &named, Vec::new());
         let mut report = CheckReport::default();
         report
             .diagnostics
@@ -172,6 +174,7 @@ impl NativeRegistry {
             declarations,
             types,
             named,
+            members,
             class_definitions,
             methods,
             project_names: None,
@@ -188,6 +191,7 @@ impl NativeRegistry {
             checked_captured_bodies: RefCell::new(HashSet::new()),
             report: RefCell::new(report),
         };
+        registry.rebuild_original_members();
         registry.project_globals = Some(std::rc::Rc::new(globals::ProjectGlobalIndex::new(
             luanalysis_engine::NativeEnvironmentKey { snapshot, index: 0 }, &[&registry],
         )));
@@ -199,7 +203,23 @@ impl NativeRegistry {
     }
 
     pub(crate) fn source_role(&self) -> luanalysis_project::SourceRole { self.source_role }
-    pub(crate) fn set_source_role(&mut self, role: luanalysis_project::SourceRole) { self.source_role = role; }
+    pub(crate) fn set_source_role(&mut self, role: luanalysis_project::SourceRole) {
+        if self.source_role != role {
+            self.source_role = role;
+            self.rebuild_original_members();
+        }
+    }
+
+    // Setup only: project roles are assigned before the provider is installed
+    // into a native session, so no member query can retain the previous IDs.
+    pub(super) fn rebuild_original_members(&mut self) {
+        let mut inputs = self.original_constructor_member_inputs();
+        inputs.extend(self.methods.original_members());
+        self.members = super::native_members::NativeMembers::new(self.snapshot, &self.named, inputs);
+        for (context, owner) in self.original_member_owner_scopes() {
+            self.types.attach_owner_scope(context, owner);
+        }
+    }
 
     pub(crate) fn set_legacy_builtin_policy(&mut self, policy: super::builtins::LegacyBuiltinPolicy) {
         let enabled = policy == super::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility
@@ -369,16 +389,33 @@ impl NativeRegistry {
         mode: luanalysis_engine::NativeCheckMode,
         queries: &'a mut dyn TypeQueries,
     ) -> Checker<'a> {
+        self.expression_checker(key, mode, queries, true)
+    }
+    pub(super) fn checker_for_declaration_expression<'a>(
+        &'a self,
+        key: NativeExpressionKey,
+        queries: &'a mut dyn TypeQueries,
+    ) -> Checker<'a> {
+        self.expression_checker(key, luanalysis_engine::NativeCheckMode::empty(), queries, false)
+    }
+    fn expression_checker<'a>(
+        &'a self,
+        key: NativeExpressionKey,
+        mode: luanalysis_engine::NativeCheckMode,
+        queries: &'a mut dyn TypeQueries,
+        inherit_signature_context: bool,
+    ) -> Checker<'a> {
         let record = self.expressions.get(key);
         let contextual = queries
             .current_contextual_function()
+            .filter(|_| inherit_signature_context)
             .filter(|context| self.expressions.contains(context.expression)
                 && self.expressions.function_for(context.expression) == record.owner);
         let mut checker = self.checker(queries);
         checker.check_mode = mode;
         checker.type_context = record.owner;
         checker.contextual_function = contextual;
-        let captured = checker.engine.current_captured_function();
+        let captured = checker.engine.current_captured_function().filter(|_| inherit_signature_context);
         checker.captured_function = captured;
         if let Some(owner) = record.owner {
             let (parameters, _) = if let Some(context) = contextual {
@@ -415,6 +452,7 @@ impl NativeRegistry {
             .expect("the function belongs to this original Lua source snapshot");
         self.key(index)
     }
+    pub(super) fn named_metadata(&self) -> &NativeNamed { &self.named }
 
     fn key(&self, index: u32) -> NativeFunctionKey {
         NativeFunctionKey {
@@ -1323,7 +1361,7 @@ impl NativeRegistry {
         }
     }
 
-    fn function_type_dependencies(
+    pub(super) fn function_type_dependencies(
         &self,
         key: NativeFunctionKey,
         used: &mut HashSet<NativeTypeParameterKey>,
@@ -1467,7 +1505,7 @@ impl NativeRegistry {
         }
     }
 
-    fn value_type_dependencies(
+    pub(super) fn value_type_dependencies(
         &self,
         expression: &Expr,
         used: &mut HashSet<NativeTypeParameterKey>,
@@ -1506,6 +1544,11 @@ impl NativeRegistry {
             }
             ExprKind::Table(fields) => {
                 for field in fields {
+                    if let Some(annotation) = &field.annotation {
+                        for ty in &annotation.types {
+                            self.function_annotation_parameter_dependencies(owner, ty, used);
+                        }
+                    }
                     if let luanalysis_syntax::TableFieldKind::Keyed(key) = &field.kind {
                         self.value_type_dependencies(key, used, functions, bindings);
                     }
@@ -1885,6 +1928,9 @@ impl NativeTypeProvider for NativeRegistry {
     }
     fn type_member_header(&self, key: luanalysis_engine::NativeTypeMemberKey) -> luanalysis_engine::TypeMemberHeader {
         self.named_member_header(key)
+    }
+    fn type_member_origin(&self, key: luanalysis_engine::NativeTypeMemberKey) -> luanalysis_engine::TableFieldOrigin {
+        self.original_member_origin(key).unwrap_or(luanalysis_engine::TableFieldOrigin::Declared)
     }
     fn type_declaration_members(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> Vec<luanalysis_engine::NativeTypeMemberKey> {
         self.named_declaration_members(key)

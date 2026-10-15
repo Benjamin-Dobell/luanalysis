@@ -10,6 +10,7 @@ impl<'p, 's> Checker<'p, 's> {
         let carrier = match kind {
             NativeRuntimeKind::Table => self.native_table(&[], &[NativeTableIndexer {
                 key: TypeId::ANY, value: TypeId::ANY, readonly: false, sparse: false,
+                origin: crate::types::NativeTableFieldOrigin::Declared,
             }], NativeTableFlavor::Declared).expect("any is a valid table key domain"),
             NativeRuntimeKind::Function => {
                 let pack = self.native_result_pack(&[super::native_packs::NativePackAlternative { fixed: Vec::new(), tail: Some(TypeId::ANY) }]);

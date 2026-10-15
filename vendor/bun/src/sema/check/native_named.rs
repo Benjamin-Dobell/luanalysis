@@ -188,6 +188,7 @@ pub trait NativeTypeDeclarationProvider {
 
     fn contains_type_member(&self, declaration: NativeTypeMemberId) -> bool;
     fn type_member_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeMemberId) -> NativeTypeMemberHeader;
+    fn type_member_origin(&self, _: NativeTypeMemberId) -> crate::types::NativeTableFieldOrigin { crate::types::NativeTableFieldOrigin::Declared }
     /// Own declarations plus potential explicit-owner augmentations; the backend validates each
     /// original owner candidate before publishing or inheriting its member origin.
     fn type_declaration_members(&self, declaration: NativeTypeDeclarationId) -> Vec<NativeTypeMemberId>;
@@ -442,7 +443,7 @@ impl<'p, 's> Checker<'p, 's> {
             if let NativeTypeMemberKey::Indexer { sparse } = header.key {
                 let raw_key = self.native_named_member_demand(member, true)?;
                 let key = self.instantiate(raw_key, owner.mapper);
-                self.native_table(&[], &[NativeTableIndexer { key, value, readonly: header.readonly, sparse }], NativeTableFlavor::Declared)
+                self.native_table(&[], &[NativeTableIndexer { key, value, readonly: header.readonly, sparse, origin: crate::types::NativeTableFieldOrigin::Declared }], NativeTableFlavor::Declared)
                     .map_err(|error| NativeNamedTypeError::Table { declaration: owner.declaration, error })?;
             }
             Ok(value)
@@ -747,6 +748,7 @@ impl<'p, 's> Checker<'p, 's> {
         let mut indexer_origins: Vec<NativeObjectMember> = Vec::new();
         for origin in members.iter().cloned() {
             let metadata = provider.type_member_header(self, origin.member);
+            let value_origin = provider.type_member_origin(origin.member);
             let raw = self.native_named_member_demand(origin.member, false)?;
             let value = self.native_member_type(raw, origin.owner);
             if header.kind != NativeTypeDeclarationKind::Class {
@@ -756,7 +758,7 @@ impl<'p, 's> Checker<'p, 's> {
             }
             match metadata.key {
                 NativeTypeMemberKey::Fixed(key) => {
-                    let field = NativeTableField { key: key.normalize().map_err(|error| NativeNamedTypeError::Table { declaration, error })?, value, optional: metadata.optional, readonly: metadata.readonly };
+                    let field = NativeTableField { key: key.normalize().map_err(|error| NativeNamedTypeError::Table { declaration, error })?, value, optional: metadata.optional, readonly: metadata.readonly, origin: value_origin };
                     if let Some(position) = fields.iter().position(|other: &NativeTableField| other.key == field.key) {
                         let previous = fields[position];
                         let previous_origin = &field_origins[position];
@@ -776,7 +778,7 @@ impl<'p, 's> Checker<'p, 's> {
                 NativeTypeMemberKey::Indexer { sparse } => {
                     let raw_key = self.native_named_member_demand(origin.member, true)?;
                     let key = self.native_member_type(raw_key, origin.owner);
-                    indexers.push(NativeTableIndexer { key, value, readonly: metadata.readonly, sparse });
+                    indexers.push(NativeTableIndexer { key, value, readonly: metadata.readonly, sparse, origin: value_origin });
                     indexer_origins.push(origin);
                 }
             }
@@ -842,6 +844,7 @@ impl<'p, 's> Checker<'p, 's> {
                 if let NativeTypeMemberKey::Fixed(member_key) = metadata.key && member_key.normalize()? == key {
                     let raw = self.native_named_member_demand(origin.member, false).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
                     let value = self.native_member_read(raw, origin.owner)?;
+                    let value = if provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared { self.regular(value) } else { value };
                     let value = if let Some((_, base)) = origin.via {
                         let TypeData::NativeObject(owner) = *self.data(base) else { unreachable!() };
                         self.native_named_read(owner, NativeTableAccessKey::Literal(key))?

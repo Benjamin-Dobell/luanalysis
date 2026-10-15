@@ -86,7 +86,7 @@ pub struct NativeFunctionContext {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MapperId(pub u32);
 pub use crate::check::native_tables::{
-    NativeTableAccessKey, NativeTableData, NativeTableField, NativeTableFlavor,
+    NativeTableAccessKey, NativeTableData, NativeTableField, NativeTableFieldOrigin, NativeTableFlavor,
     NativeTableIndexer, NativeTableKey, NativeTableSequenceTail,
 };
 pub use crate::check::native_named::{NativeDefinitionId, NativeDefinitionRef, NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
@@ -3532,9 +3532,13 @@ follow_enum!(SigData<'_> {
 follow_struct!(NativeCapturedBinding { declaration, ty });
 follow_struct!(NativeObjectReference { declaration, mapper, self_argument });
 follow_struct!(NativeDefinitionRef { owner, class, view });
-follow_struct!(NativeTableField { key, value, optional, readonly });
-follow_struct!(NativeTableIndexer { key, value, readonly, sparse });
-follow_struct!(NativeTableSequenceTail { start, value, readonly });
+follow_enum!(NativeTableFieldOrigin {
+    NativeTableFieldOrigin::Inferred => (),
+    NativeTableFieldOrigin::Declared => (),
+});
+follow_struct!(NativeTableField { key, value, optional, readonly, origin });
+follow_struct!(NativeTableIndexer { key, value, readonly, sparse, origin });
+follow_struct!(NativeTableSequenceTail { start, value, readonly, origin });
 follow_struct!(NativeTableData<'_> { definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 follow_struct!(NativeCapturedFunctionContext { signature });
 follow_struct!(NativeResultPack { ty });
@@ -3612,6 +3616,7 @@ clone_in_is_copy!(
     NativeBindingId,
     NativeCapturedBinding,
     NativeTableField,
+    NativeTableFieldOrigin,
     NativeTableIndexer,
     NativeTableSequenceTail,
     NativeTableKey,

@@ -260,7 +260,7 @@ impl NativeRegistry {
             || self.named.anonymous_head(anonymous_key(key)).is_some()
     }
     pub(super) fn named_contains_member(&self, key: NativeTypeMemberKey) -> bool {
-        self.named.member(member_key(key)).is_some()
+        self.members.get(key).is_some() || self.named.member(member_key(key)).is_some()
             || self
                 .named
                 .anonymous_member(anonymous_member_key(key))
@@ -327,6 +327,7 @@ impl NativeRegistry {
             for signature in self.signatures.named_heads(source.key) {
                 used.extend(self.signature_outer_keys(signature));
             }
+            self.original_member_dependencies(source.key, &mut used);
             return TypeDeclarationHeader {
                 kind,
                 name: source.syntax.name.text.clone(),
@@ -371,6 +372,7 @@ impl NativeRegistry {
         }
     }
     pub(super) fn named_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
+        if let Some(header) = self.original_member_header(key) { return header; }
         if let Some(source) = self.named.member(member_key(key)) {
             return TypeMemberHeader {
                 owner: match &source.owner {
@@ -434,6 +436,7 @@ impl NativeRegistry {
                 .collect()
         };
         // Canonical alias ownership and applicability belong to the core.
+        result.extend(self.members.members(named_key(key)));
         result.extend(
             self.named
                 .augmentations()
@@ -443,7 +446,7 @@ impl NativeRegistry {
         );
         result
     }
-    fn named_annotation(
+    pub(crate) fn named_annotation(
         &self,
         context: Option<NativeTypeContext>,
         documentation: &[NativeNamedKey],
@@ -485,6 +488,7 @@ impl NativeRegistry {
         key: NativeTypeMemberKey,
         queries: &mut dyn TypeQueries,
     ) -> Type {
+        if let Some(ty) = self.original_member_type(key, queries) { return ty; }
         if let Some(source) = self.named.member(member_key(key)) {
             return self.named_annotation(
                 source.lexical_context,
@@ -513,6 +517,7 @@ impl NativeRegistry {
         key: NativeTypeMemberKey,
         queries: &mut dyn TypeQueries,
     ) -> Type {
+        if let Some(ty) = self.original_member_indexer_key(key, queries) { return ty; }
         if let Some(source) = self.named.member(member_key(key)) {
             let TypeFieldKey::Indexed(ty) = &source.field.key else {
                 unreachable!("original declared indexer")
@@ -623,6 +628,7 @@ impl NativeRegistry {
                     .anonymous_member(anonymous_member_key(key))
                     .map(|source| source.span)
             })
+            .or_else(|| self.members.get(key).map(|source| source.candidates[0].span))
             .unwrap_or(self.file.span)
     }
     fn named_base_origin(&self, key: NativeTypeDeclarationKey, index: usize) -> Span {

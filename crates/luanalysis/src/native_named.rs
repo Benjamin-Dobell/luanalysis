@@ -6,7 +6,7 @@ use luanalysis_engine::NativeFunctionKey;
 use luanalysis_syntax::{
     Expr, ExprKind, FieldDeclaration, Function, GenericParameter, Name, NamedTypeDeclaration,
     NamedTypeDeclarationId, NamedTypeDeclarationKind, Span, Stmt, StmtKind, TableFieldKind,
-    TypeExpr, TypeExprKind, TypeExtension, TypeFieldKey,
+    TableField, TypeAnnotation, TypeExpr, TypeExprKind, TypeExtension, TypeFieldKey,
 };
 use std::collections::HashMap;
 
@@ -153,6 +153,14 @@ pub(super) struct NamedMemberSource {
 }
 
 #[derive(Clone, Debug)]
+pub(super) struct RuntimeFieldAnnotationSource {
+    pub field_span: Span,
+    pub value_span: Span,
+    pub annotation: TypeAnnotation,
+    pub lexical_context: Option<NativeTypeContext>,
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct AugmentationSource {
     pub key: NativeAugmentationKey,
     pub syntax: TypeExtension,
@@ -207,6 +215,7 @@ pub(super) struct NativeNamed {
     anonymous_heads: Vec<AnonymousHeadSource>,
     anonymous_by_span: HashMap<(usize, usize), NativeAnonymousHeadKey>,
     anonymous_members: Vec<AnonymousMemberSource>,
+    field_annotations: Vec<RuntimeFieldAnnotationSource>,
 }
 
 impl NativeNamed {
@@ -232,6 +241,7 @@ impl NativeNamed {
             anonymous_heads: Vec::new(),
             anonymous_by_span: HashMap::new(),
             anonymous_members: Vec::new(),
+            field_annotations: Vec::new(),
         };
         // Allocate every declaration/name before target, member or augmentation
         // metadata can ask for a forward reference. Duplicate names survive.
@@ -328,6 +338,15 @@ impl NativeNamed {
             });
         }
         let source = source_index(&file.statements);
+        result.field_annotations = source.fields.iter().filter_map(|field| {
+            Some(RuntimeFieldAnnotationSource {
+                field_span: field.span,
+                value_span: field.value.span,
+                annotation: field.annotation.clone()?,
+                lexical_context: enclosing_function(field.span, functions),
+            })
+        }).collect();
+        result.field_annotations.sort_by_key(|source| (source.field_span.start, source.field_span.end));
         result.index_anonymous(&source, functions);
         let statements = source.statements;
         for declaration in &result.declarations {
@@ -443,6 +462,16 @@ impl NativeNamed {
             });
         }
         let mut statements: Vec<_> = source.statements.values().copied().collect();
+        for source in &self.field_annotations {
+            for ty in &source.annotation.types {
+                roots.push(Root {
+                    ty: ty.clone(),
+                    context: source.lexical_context,
+                    documentation_contexts: self.documentation_contexts_at(ty.span),
+                    origin: AnonymousHeadOrigin::RuntimeAnnotation(source.field_span),
+                });
+            }
+        }
         statements.sort_by_key(|statement| (statement.span.start, statement.span.end));
         for statement in statements {
             let annotation = match &statement.kind {
@@ -671,6 +700,12 @@ impl NativeNamed {
     pub(super) fn anonymous_heads(&self) -> &[AnonymousHeadSource] {
         &self.anonymous_heads
     }
+    pub(super) fn field_annotations(&self) -> &[RuntimeFieldAnnotationSource] {
+        &self.field_annotations
+    }
+    pub(super) fn member_namespace_end(&self) -> u32 {
+        (self.members.len() + self.anonymous_members.len()).try_into().expect("original member namespace fits u32")
+    }
     pub(super) fn anonymous_head(
         &self,
         key: NativeAnonymousHeadKey,
@@ -828,6 +863,7 @@ fn runtime_attachment(
 struct SourceIndex<'a> {
     statements: HashMap<(usize, usize), &'a Stmt>,
     functions: HashMap<(usize, usize), &'a Function>,
+    fields: Vec<&'a TableField>,
 }
 
 fn source_index(statements: &[Stmt]) -> SourceIndex<'_> {
@@ -838,6 +874,7 @@ fn source_index(statements: &[Stmt]) -> SourceIndex<'_> {
     let mut pending: Vec<_> = statements.iter().map(Node::Statement).collect();
     let mut result = HashMap::new();
     let mut functions = HashMap::new();
+    let mut fields = Vec::new();
     while let Some(node) = pending.pop() {
         match node {
             Node::Statement(statement) => {
@@ -925,8 +962,9 @@ fn source_index(statements: &[Stmt]) -> SourceIndex<'_> {
                     pending.push(Node::Expression(receiver));
                     pending.extend(args.iter().map(Node::Expression));
                 }
-                ExprKind::Table(fields) => {
-                    for field in fields {
+                ExprKind::Table(table_fields) => {
+                    fields.extend(table_fields);
+                    for field in table_fields {
                         pending.push(Node::Expression(&field.value));
                         if let TableFieldKind::Keyed(key) = &field.kind {
                             pending.push(Node::Expression(key));
@@ -946,5 +984,6 @@ fn source_index(statements: &[Stmt]) -> SourceIndex<'_> {
     SourceIndex {
         statements: result,
         functions,
+        fields,
     }
 }

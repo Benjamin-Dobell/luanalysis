@@ -336,6 +336,7 @@ pub trait NativeTypeProvider {
     fn type_member_header(&self, _: NativeTypeMemberKey) -> TypeMemberHeader {
         panic!("native named member provider is not installed")
     }
+    fn type_member_origin(&self, _: NativeTypeMemberKey) -> TableFieldOrigin { TableFieldOrigin::Declared }
     fn type_declaration_members(&self, _: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> { Vec::new() }
     fn type_declaration_call_signatures(&self, _: NativeTypeDeclarationKey) -> Vec<NativeSignatureKey> { Vec::new() }
     fn type_alias_target(&self, _: NativeTypeDeclarationKey, _: &mut dyn TypeQueries) -> Type {
@@ -755,6 +756,14 @@ pub trait TypeQueries {
         pack: &ValuePack,
         expected: Option<&Type>,
     ) -> Result<Type, TableError>;
+    fn table_with_sequence_origin(
+        &mut self,
+        table: &TableType,
+        start: i64,
+        pack: &ValuePack,
+        origin: TableFieldOrigin,
+        expected: Option<&Type>,
+    ) -> Result<Type, TableError>;
     fn table_sequence_context(&mut self, expected: &Type, start: i64) -> Option<ValuePack>;
     fn table_lookup(&mut self, table: &Type, key: &TableKey) -> Result<Type, TableError>;
     fn table_write(&mut self, table: &Type, key: &TableKey, value: &Type)
@@ -1161,7 +1170,17 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         pack: &ValuePack,
         expected: Option<&Type>,
     ) -> Result<Type, TableError> {
-        self.table_with_sequence_native(table, start, pack, expected)
+        self.table_with_sequence_native(table, start, pack, TableFieldOrigin::Inferred, expected)
+    }
+    fn table_with_sequence_origin(
+        &mut self,
+        table: &TableType,
+        start: i64,
+        pack: &ValuePack,
+        origin: TableFieldOrigin,
+        expected: Option<&Type>,
+    ) -> Result<Type, TableError> {
+        self.table_with_sequence_native(table, start, pack, origin, expected)
     }
     fn table_sequence_context(&mut self, expected: &Type, start: i64) -> Option<ValuePack> {
         self.table_sequence_context_native(expected, start)

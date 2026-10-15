@@ -7,9 +7,13 @@
 use super::{Checker, SessionQueries, Type, TypeHandles, ValuePack, export_type, export_type_with_literal_policy, import_type};
 use bun_sema::check::native_tables::NativeTableError;
 use bun_sema::types::{
-    NativeTableAccessKey, NativeTableField, NativeTableFlavor, NativeTableIndexer, NativeTableKey,
+    NativeTableAccessKey, NativeTableField, NativeTableFieldOrigin, NativeTableFlavor, NativeTableIndexer, NativeTableKey,
     NativeTableSequenceTail, TypeData, TypeId,
 };
+
+#[cfg(test)]
+#[path = "native_table_origin_tests.rs"]
+mod origin_tests;
 
 /// An exact Lua runtime key. String keys retain their bytes, and integer keys
 /// retain Lua's full integer precision independently of numeric value types.
@@ -28,12 +32,22 @@ pub enum TableKey {
     Type(Type),
 }
 
+/// Whether a value type came from an initializer or an original written contract.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Default)]
+pub enum TableFieldOrigin {
+    #[default]
+    Inferred,
+    Declared,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TableField {
     pub key: LuaKey,
     pub value: Type,
     pub optional: bool,
     pub readonly: bool,
+    /// A written mutable contract keeps its literal type independently of freshness.
+    pub origin: TableFieldOrigin,
 }
 
 impl TableField {
@@ -43,7 +57,12 @@ impl TableField {
             value,
             optional: false,
             readonly: false,
+            origin: TableFieldOrigin::Inferred,
         }
+    }
+
+    pub fn declared(key: LuaKey, value: Type) -> Self {
+        Self { origin: TableFieldOrigin::Declared, ..Self::new(key, value) }
     }
 }
 
@@ -55,6 +74,7 @@ pub struct TableIndexer {
     /// Inferred dynamic constructor entries may be absent. Declared indexers
     /// retain their declared value type on reads, matching the TS default.
     pub sparse: bool,
+    pub origin: TableFieldOrigin,
 }
 
 impl TableIndexer {
@@ -64,7 +84,12 @@ impl TableIndexer {
             value,
             readonly: false,
             sparse: false,
+            origin: TableFieldOrigin::Inferred,
         }
+    }
+
+    pub fn declared(key: Type, value: Type) -> Self {
+        Self { origin: TableFieldOrigin::Declared, ..Self::new(key, value) }
     }
 }
 
@@ -75,6 +100,7 @@ pub struct TableSequenceTail {
     pub start: i64,
     pub value: Type,
     pub readonly: bool,
+    pub origin: TableFieldOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -106,6 +132,20 @@ pub enum TableError {
     InvalidSequenceStart { start: i64 },
     SequenceTooComplex { count: usize, alternatives: usize },
     UnresolvedSequence,
+}
+
+fn import_origin(origin: &TableFieldOrigin) -> NativeTableFieldOrigin {
+    match origin {
+        TableFieldOrigin::Inferred => NativeTableFieldOrigin::Inferred,
+        TableFieldOrigin::Declared => NativeTableFieldOrigin::Declared,
+    }
+}
+
+fn export_origin(origin: NativeTableFieldOrigin) -> TableFieldOrigin {
+    match origin {
+        NativeTableFieldOrigin::Inferred => TableFieldOrigin::Inferred,
+        NativeTableFieldOrigin::Declared => TableFieldOrigin::Declared,
+    }
 }
 
 pub(super) fn import_table(
@@ -174,6 +214,7 @@ fn import_descriptors(
             value: import_type(checker, handles, &field.value),
             optional: field.optional,
             readonly: field.readonly,
+            origin: import_origin(&field.origin),
         })
         .collect();
     let indexers = table
@@ -184,6 +225,7 @@ fn import_descriptors(
             value: import_type(checker, handles, &indexer.value),
             readonly: indexer.readonly,
             sparse: indexer.sparse,
+            origin: import_origin(&indexer.origin),
         })
         .collect();
     (fields, indexers)
@@ -201,6 +243,7 @@ fn import_sequence_tails(
             start: tail.start,
             value: import_type(checker, handles, &tail.value),
             readonly: tail.readonly,
+            origin: import_origin(&tail.origin),
         })
         .collect()
 }
@@ -234,26 +277,29 @@ pub(super) fn export_table(
             .into_iter()
             .map(|field| TableField {
                 key: export_literal_key(checker, field.key),
-                value: export_type_with_literal_policy(checker, handles, field.value, preserve_regular),
+                value: export_type_with_literal_policy(checker, handles, field.value, preserve_regular && field.origin == NativeTableFieldOrigin::Inferred),
                 optional: field.optional,
                 readonly: field.readonly,
+                origin: export_origin(field.origin),
             })
             .collect(),
         indexers: indexers
             .into_iter()
             .map(|indexer| TableIndexer {
-                key: export_type_with_literal_policy(checker, handles, indexer.key, preserve_regular),
-                value: export_type_with_literal_policy(checker, handles, indexer.value, preserve_regular),
+                key: export_type_with_literal_policy(checker, handles, indexer.key, false),
+                value: export_type_with_literal_policy(checker, handles, indexer.value, preserve_regular && indexer.origin == NativeTableFieldOrigin::Inferred),
                 readonly: indexer.readonly,
                 sparse: indexer.sparse,
+                origin: export_origin(indexer.origin),
             })
             .collect(),
         sequence_tails: tails
             .into_iter()
             .map(|tail| TableSequenceTail {
                 start: tail.start,
-                value: export_type_with_literal_policy(checker, handles, tail.value, preserve_regular),
+                value: export_type_with_literal_policy(checker, handles, tail.value, preserve_regular && tail.origin == NativeTableFieldOrigin::Inferred),
                 readonly: tail.readonly,
+                origin: export_origin(tail.origin),
             })
             .collect(),
         fresh,
@@ -289,6 +335,7 @@ impl SessionQueries<'_, '_, '_> {
         table: &TableType,
         start: i64,
         pack: &ValuePack,
+        origin: TableFieldOrigin,
         expected: Option<&Type>,
     ) -> Result<Type, TableError> {
         let (fields, indexers) = import_descriptors(self.checker, self.handles, table);
@@ -301,7 +348,7 @@ impl SessionQueries<'_, '_, '_> {
             NativeTableFlavor::Declared
         };
         self.checker
-            .native_table_with_sequence_and_policy(
+            .native_table_with_sequence_and_policy_origin(
                 &fields,
                 &indexers,
                 &tails,
@@ -309,6 +356,7 @@ impl SessionQueries<'_, '_, '_> {
                 table.collision_candidates || table.fresh,
                 start,
                 pack,
+                import_origin(&origin),
                 expected,
             )
             .map(|ty| export_type(self.checker, self.handles, ty))
@@ -486,6 +534,7 @@ mod tests {
                 value,
                 readonly: false,
                 sparse,
+                origin: TableFieldOrigin::Inferred,
             }],
             ..Default::default()
         }
@@ -538,7 +587,8 @@ mod tests {
                 vec![TableSequenceTail {
                     start: 2,
                     value: Type::String,
-                    readonly: false
+                    readonly: false,
+                    origin: TableFieldOrigin::Inferred,
                 }]
             );
             let inspected = queries.inspect_type(&table);
@@ -697,6 +747,7 @@ mod tests {
                         start: 2,
                         value: Type::String,
                         readonly: true,
+                        origin: TableFieldOrigin::Inferred,
                     }],
                     ..Default::default()
                 })
