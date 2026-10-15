@@ -1,0 +1,298 @@
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index 8e8fa90..e4aea3f 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -1070,7 +1070,9 @@ enum Query {
+     NativeAliasProjectedValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u32, u64, u64),
+     NativeAliasReturn(crate::types::NativeFunctionId, usize),
+     NativeCallPreserves(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
++    NativeAliasLoaderState(native_flow::NativeReferenceKey, native_flow::NativeFlowKey),
+     NativeAliasMetatableAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
++    NativeAliasCallableTable(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
+     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
+     NativeGlobals(NativeGlobalsQuery),
+     NativeProject(NativeProjectQuery),
+@@ -1167,7 +1169,8 @@ impl Query {
+             Query::ReturnOfSignature(_)
+             | Query::NativeContextualTypeOwner(..)
+             | Query::NativeFlowCallEffects(..)
+-            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
++            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..) | Query::NativeAliasCallableTable(..)
++            | Query::NativeAliasLoaderState(..)
+             | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
+             | Query::NativeNamed(_)
+             | Query::NativeGlobals(_)
+diff --git a/src/sema/check/native_aliases.rs b/src/sema/check/native_aliases.rs
+index b414476..377afd9 100644
+--- a/src/sema/check/native_aliases.rs
++++ b/src/sema/check/native_aliases.rs
+@@ -17,6 +17,9 @@ pub enum NativeAliasValue {
+     Function { function: NativeFunctionId, creation: NativeFlowKey },
+     Call { callee: NativeValueKey, input: NativeFlowKey },
+     Projection { value: NativeValueKey, input: NativeFlowKey, index: usize },
++    /// An original number, string or boolean value: no object identity, but
++    /// unlike nil its raw table slot is present even when the value is false.
++    NonNilScalar,
+     NotTable,
+     Unknown,
+ }
+@@ -70,7 +73,7 @@ enum Origin {
+     CallOpaque(NativeValueKey, NativeFlowKey, Box<Origin>),
+ }
+ #[derive(Clone, Default)]
+-struct Origins { tokens: HashSet<Origin>, unknown: bool, non_table: bool, uncertain: bool }
++struct Origins { tokens: HashSet<Origin>, unknown: bool, non_table: bool, uncertain: bool, maybe_nil: bool }
+ 
+ /// Completed provenance facts belong to the checker that owns their query
+ /// dependencies. Flow epochs separate speculative effects from stable inputs.
+@@ -90,6 +93,13 @@ pub(super) struct NativeAliasCache {
+ }
+ #[derive(Clone, Copy)]
+ struct AliasExecutionFrame { id: u64, entry: NativeFlowKey, caller: NativeFlowKey, function: Option<(NativeFunctionId, NativeFlowKey, u64)> }
++#[derive(Clone, Copy)]
++struct AliasCallableTable {
++    callee: NativeAliasReturnValue,
++    function: NativeFunctionId,
++    creation: NativeFlowKey,
++    activation: u64,
++}
+ impl NativeAliasCache {
+     fn reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u64, u64), result: Origins, _: Stored) { self.references.insert(key, result); }
+     fn value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u64, u64), result: Origins, _: Stored) { self.values.insert(key, result); }
+@@ -109,9 +119,10 @@ impl Origins {
+     /// Completed original metadata can leave runtime provenance unsupported
+     /// without depending on an unresolved or recursive checker query.
+     fn unavailable() -> Self { Self { unknown: true, ..Self::default() } }
+-    fn non_table() -> Self { Self { non_table: true, ..Self::default() } }
+-    fn one(token: Origin, unknown: bool) -> Self { Self { tokens: HashSet::from([token]), unknown, non_table: false, uncertain: false } }
+-    fn merge(&mut self, other: Self) { self.tokens.extend(other.tokens); self.unknown |= other.unknown; self.non_table |= other.non_table; self.uncertain |= other.uncertain; }
++    fn non_table() -> Self { Self { non_table: true, maybe_nil: true, ..Self::default() } }
++    fn non_nil_scalar() -> Self { Self { non_table: true, ..Self::default() } }
++    fn one(token: Origin, unknown: bool) -> Self { Self { tokens: HashSet::from([token]), unknown, non_table: false, uncertain: false, maybe_nil: false } }
++    fn merge(&mut self, other: Self) { self.tokens.extend(other.tokens); self.unknown |= other.unknown; self.non_table |= other.non_table; self.uncertain |= other.uncertain; self.maybe_nil |= other.maybe_nil; }
+     fn relation(&self, other: &Self) -> NativeAliasRelation {
+         if self.tokens.is_empty() && !self.unknown || other.tokens.is_empty() && !other.unknown { return NativeAliasRelation::Different }
+         if self.tokens.len() == 1 && self.tokens == other.tokens && !self.non_table && !other.non_table && !self.uncertain && !other.uncertain { return NativeAliasRelation::Same }
+@@ -205,7 +216,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 if provider.reference_is_cell(reference) { return true }
+                 let origins = self.native_alias_reference(provider, reference, before);
+                 if origins.uncertain { self.mark_tainted_from(0); return false }
+-                if !origins.unknown && !origins.non_table && !origins.tokens.is_empty() { return true }
++                if !origins.unknown && !origins.maybe_nil && (origins.non_table || !origins.tokens.is_empty()) { return true }
+                 self.native_alias_fresh_raw_write(provider, at, before)
+             },
+         }
+@@ -220,9 +231,15 @@ impl<'p, 's> Checker<'p, 's> {
+         if receiver.input.graph != before.graph { return false }
+         let origins = self.native_alias_value(provider, receiver.value, receiver.input, 0);
+         if origins.uncertain { self.mark_tainted_from(0); return false }
+-        if origins.unknown || origins.non_table || origins.tokens.len() != 1 { return false }
+-        let allocation = origins.tokens.into_iter().next().unwrap();
+-        let (value, input) = match &allocation { Origin::Allocation(value, input) => (*value, *input), _ => return false };
++        if origins.unknown || origins.non_table || origins.tokens.is_empty() { return false }
++        // Several reached allocations do not identify one receiver. They can
++        // nevertheless all be metatable-free, proving only that the store has
++        // no implicit dispatch; alias relations retain their alternatives.
++        origins.tokens.iter().all(|allocation| self.native_alias_allocation_without_metatable(provider, allocation, before))
++    }
++
++    fn native_alias_allocation_without_metatable(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, before: NativeFlowKey) -> bool {
++        let (value, input) = match allocation { Origin::Allocation(value, input) => (*value, *input), _ => return false };
+         if input.graph != before.graph || !provider.contains_graph(before.graph) || provider.node(input).is_none() { return false }
+         let epoch = self.flow_memo.native_state.effect_epoch;
+         let frame = self.native_alias_cache.frame();
+@@ -231,7 +248,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let query = Query::NativeAliasMetatableAbsence(value, input, before, epoch, frame);
+         if !self.enter(query) { self.mark_tainted_from(0); return false }
+         let begun = self.begin_memoizable();
+-        let absent = self.native_alias_allocation_clear_since(provider, &allocation, input, before);
++        let absent = self.native_alias_allocation_clear_since(provider, input, before);
+         let stored = self.end_memoizable(begun);
+         let left = self.leave(query);
+         if stored.is_none() || left.is_err() { self.mark_tainted_from(0); return false }
+@@ -239,7 +256,7 @@ impl<'p, 's> Checker<'p, 's> {
+         absent
+     }
+ 
+-    fn native_alias_allocation_clear_since(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
++    fn native_alias_allocation_clear_since(&mut self, provider: &dyn NativeFlowProvider, input: NativeFlowKey, before: NativeFlowKey) -> bool {
+         let mut active = HashSet::new();
+         let mut completed = HashSet::new();
+         let mut work = vec![(before, false)];
+@@ -255,24 +272,17 @@ impl<'p, 's> Checker<'p, 's> {
+             let mut edges = Vec::new();
+             match node {
+                 NativeFlowNode::Write { before, .. } => {
+-                    match provider.alias_node_dispatch(at) {
+-                        NativeAliasDispatch::NoDispatch => {},
+-                        NativeAliasDispatch::ReferenceRead(_) => {
+-                            // Earlier stores into this same still-metatable-free
+-                            // object cannot dispatch. Other heap stores may run
+-                            // arbitrary __newindex code and are not a proof.
+-                            let Some(receiver) = provider.write_alias_receiver(at) else { return false };
+-                            if receiver.input.graph != at.graph { return false }
+-                            let origins = self.native_alias_value(provider, receiver.value, receiver.input, 0);
+-                            if origins.uncertain { self.mark_tainted_from(0); return false }
+-                            if origins.unknown || origins.non_table || origins.tokens.len() != 1 || !origins.tokens.contains(allocation) { return false }
+-                        },
+-                        NativeAliasDispatch::Unknown => return false,
+-                    }
++                    // The earlier store must independently have a present raw
++                    // slot or metatable-free receivers at its own earlier input.
++                    // This cannot certify an unknown store merely because it
++                    // happens to target a different syntactic path.
++                    if !self.native_alias_dispatch_safe(provider, at, before) { return false }
+                     edges.push(before);
+                 },
+                 NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. } => {
+-                    if !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return false }
++                    // A prior raw member read can be proven non-dispatching
++                    // even though its original opcode is ReferenceRead.
++                    if !self.native_alias_dispatch_safe(provider, at, before) { return false }
+                     edges.push(before);
+                 },
+                 NativeFlowNode::Merge { edges: incoming } => {
+@@ -332,20 +342,109 @@ impl<'p, 's> Checker<'p, 's> {
+                     NativeCallPreservation::Preserved
+                 },
+             },
+-            Origin::Function(function, creation, activation) => {
+-                if activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation) { return NativeCallPreservation::Unknown }
+-                if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation, activation))) { return NativeCallPreservation::Pending }
+-                let Some(execution) = provider.function_alias_execution(function, creation) else { return NativeCallPreservation::Unknown };
+-                self.native_alias_execution_preservation(provider, reference, call, &recipe, &execution, Some((function, creation, activation)))
++            Origin::Function(function, creation, activation) => self.native_alias_function_preservation(provider, reference, call, &recipe, function, creation, activation),
++            allocation @ Origin::Allocation(..) => {
++                let callable = match self.native_alias_callable_table(provider, &allocation, recipe.execution_input) {
++                    Ok(Some(callable)) => callable,
++                    Ok(None) => return NativeCallPreservation::Unknown,
++                    Err(()) => return NativeCallPreservation::Pending,
++                };
++                // Lua passes the frozen table as the first physical __call
++                // argument. Keep it even when a later entry-state capability
++                // cannot yet transport parameter aliases.
++                let receiver = recipe.callee;
++                let mut recipe = recipe;
++                recipe.callee = callable.callee;
++                recipe.arguments.insert(0, receiver);
++                self.native_alias_function_preservation(provider, reference, call, &recipe, callable.function, callable.creation, callable.activation)
+             },
+             _ => NativeCallPreservation::Unknown,
+         }
+     }
+ 
++    fn native_alias_function_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, recipe: &NativeAliasCall, function: NativeFunctionId, creation: NativeFlowKey, activation: u64) -> NativeCallPreservation {
++        if activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation) { return NativeCallPreservation::Unknown }
++        if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation, activation))) { return NativeCallPreservation::Pending }
++        let Some(execution) = provider.function_alias_execution(function, creation) else { return NativeCallPreservation::Unknown };
++        self.native_alias_execution_preservation(provider, reference, call, recipe, &execution, Some((function, creation, activation)))
++    }
++
++    fn native_alias_callable_table(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, before: NativeFlowKey) -> Result<Option<AliasCallableTable>, ()> {
++        let Origin::Allocation(value, input) = allocation else { return Ok(None) };
++        if input.graph != before.graph { return Ok(None) }
++        let query = Query::NativeAliasCallableTable(*value, *input, before, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
++        if !self.enter(query) { self.mark_tainted_from(0); return Err(()) }
++        let (result, completed) = self.run_memoizable(|checker| checker.native_alias_callable_table_worker(provider, allocation, *input, before));
++        if self.leave(query).is_err() || completed.is_none() || result.is_err() {
++            self.mark_tainted_from(0);
++            return Err(());
++        }
++        result
++    }
++
++    /// Find the reached physical metamethod, rather than trusting a callable
++    /// type or a future source-level setmetatable candidate. This first proof
++    /// accepts a direct literal metatable and no intervening heap effects.
++    fn native_alias_callable_table_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, mut at: NativeFlowKey) -> Result<Option<AliasCallableTable>, ()> {
++        let mut visited = HashSet::new();
++        while at != input {
++            if at.graph != input.graph || visited.len() >= 16_384 || !visited.insert(at) || self.is_stack_low() { return Ok(None) }
++            match provider.node(at) {
++                Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. })
++                    if matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) => at = before,
++                Some(NativeFlowNode::Write { before, target, .. })
++                    if provider.reference_is_cell(target) && matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) => at = before,
++                Some(NativeFlowNode::Call { before, value, input: call_input }) => {
++                    let Some(recipe) = provider.alias_call_source(value, call_input) else { return Ok(None) };
++                    if recipe.execution_input != before || recipe.arguments.len() < 2 { return Ok(None) }
++                    let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
++                    if callee.uncertain { return Err(()) }
++                    if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return Ok(None) }
++                    if !matches!(callee.tokens.into_iter().next(), Some(Origin::Standard(site)) if site.kind == NativeIntrinsicKind::SetMetatable) { return Ok(None) }
++                    let receiver = recipe.arguments[0];
++                    let receiver = self.native_alias_value(provider, receiver.value, receiver.input, 0);
++                    if receiver.uncertain { return Err(()) }
++                    if receiver.unknown || receiver.non_table || receiver.tokens.len() != 1 || !receiver.tokens.contains(allocation) { return Ok(None) }
++                    let metatable = recipe.arguments[1];
++                    // Recover only a field of the original literal itself.
++                    // A mutable alias needs a separate reached-heap proof.
++                    let key = NativeTableKey::String(self.atoms().intern(b"__call"));
++                    let Some(callee) = provider.value_alias_member_source(metatable.value, metatable.input, key, self) else { return Ok(None) };
++                    let function = self.native_alias_value(provider, callee.value, callee.input, 0);
++                    if function.uncertain { return Err(()) }
++                    if function.unknown || function.non_table || function.tokens.len() != 1 { return Ok(None) }
++                    let Some(Origin::Function(function, creation, activation)) = function.tokens.into_iter().next() else { return Ok(None) };
++                    return Ok(Some(AliasCallableTable { callee, function, creation, activation }));
++                },
++                _ => return Ok(None),
++            }
++        }
++        Ok(None)
++    }
++
+     fn native_alias_loader_state(&mut self, provider: &dyn NativeFlowProvider, loader: NativeReferenceKey, input: NativeFlowKey) -> NativeFlowResult {
+         use crate::types::TypeId;
+         let unknown = NativeFlowResult { ty: TypeId::FALSE, incomplete: false, unresolved_auto: false };
+         if loader.graph != input.graph || !provider.contains_reference(loader) || !provider.contains_graph(input.graph) || provider.node(input).is_none() { return unknown }
++        // Cyclic module execution can create fresh alias-execution frames for
++        // the same original loader input. Guard that original dependency,
++        // rather than treating every new execution frame as independent work.
++        let query = Query::NativeAliasLoaderState(loader, input);
++        if !self.enter(query) {
++            self.mark_tainted_from(0);
++            return NativeFlowResult { incomplete: true, ..unknown };
++        }
++        let (mut result, completed) = self.run_memoizable(|checker| checker.native_alias_loader_state_worker(provider, loader, input));
++        if self.leave(query).is_err() || completed.is_none() || result.incomplete {
++            self.mark_tainted_from(0);
++            result.incomplete = true;
++        }
++        result
++    }
++
++    fn native_alias_loader_state_worker(&mut self, provider: &dyn NativeFlowProvider, loader: NativeReferenceKey, input: NativeFlowKey) -> NativeFlowResult {
++        use crate::types::TypeId;
++        let unknown = NativeFlowResult { ty: TypeId::FALSE, incomplete: false, unresolved_auto: false };
+         let initial = if let Some(index) = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry.graph == input.graph) {
+             let frame = self.native_alias_cache.executions[index];
+             let Some(parent) = provider.reference_in_graph(loader, frame.caller.graph) else { return unknown };
+@@ -584,6 +683,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 None => Origins::unknown(),
+             },
+             NativeAliasValue::Call { callee, input: callee_input } => self.native_alias_call(provider, value, input, column, callee, callee_input),
++            NativeAliasValue::NonNilScalar => if column == 0 { Origins::non_nil_scalar() } else { Origins::non_table() },
+             NativeAliasValue::NotTable => Origins::non_table(),
+             NativeAliasValue::Unknown => Origins::one(Origin::OpaqueValue(value, input, column), true),
+         } };
+@@ -629,7 +729,7 @@ impl<'p, 's> Checker<'p, 's> {
+                     Some(column) => self.native_alias_projected_value(provider, value, input, column, &path),
+                     None => Origins::unknown(),
+                 },
+-                NativeAliasValue::NotTable => Origins::non_table(),
++                NativeAliasValue::NonNilScalar | NativeAliasValue::NotTable => Origins::non_table(),
+                 NativeAliasValue::Reference { .. } | NativeAliasValue::Allocation if column != 0 => Origins::non_table(),
+                 _ => Origins::unavailable(),
+             }
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+index 25ccecf..fe31343 100644
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -272,6 +272,7 @@ fn is_task_independent(q: Query) -> bool {
+         | Query::NativeContextualTypeOwner(..)
+         | Query::NativeFlowCallEffects(..)
+         | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
++        | Query::NativeAliasLoaderState(..) | Query::NativeAliasCallableTable(..)
+         | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
+         | Query::ReturnOfSignature(_)
+         | Query::Shape(_)

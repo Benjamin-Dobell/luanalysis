@@ -1610,6 +1610,24 @@
       "patch": "vendor/patches/bun-sema-native-fresh-namespace-environment-members.patch",
       "reason": "Prove raw writes to original fresh namespace allocations before any dispatch and resolve original member reads only after proving their physical global environment receiver through kernel 5e72664.",
       "patch_sha256": "5bfabcffa01128bfa4a2de0e246cc50b6efa766d7be4df41ef9c4858651abd1b"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-raw-slots-callable-loader.patch",
+      "reason": "Retain original non-nil scalar raw-slot presence and all fresh receiver alternatives, guard cyclic loader inheritance, and prove reached literal __call execution through kernel e21b3cd.",
+      "patch_sha256": "113297fea07fc6e0a0ec14e1c7bce25cb8a23ea95e69252f5fd18e17146de54b"
+    },
+    {
+      "path": "src/sema/check/native_aliases.rs",
+      "patch": "vendor/patches/bun-sema-native-raw-slots-callable-loader.patch",
+      "reason": "Retain original non-nil scalar raw-slot presence and all fresh receiver alternatives, guard cyclic loader inheritance, and prove reached literal __call execution through kernel e21b3cd.",
+      "patch_sha256": "113297fea07fc6e0a0ec14e1c7bce25cb8a23ea95e69252f5fd18e17146de54b"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-raw-slots-callable-loader.patch",
+      "reason": "Retain original non-nil scalar raw-slot presence and all fresh receiver alternatives, guard cyclic loader inheritance, and prove reached literal __call execution through kernel e21b3cd.",
+      "patch_sha256": "113297fea07fc6e0a0ec14e1c7bce25cb8a23ea95e69252f5fd18e17146de54b"
     }
   ],
   "source_additions": {
@@ -1618,7 +1636,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_aliases.rs": {
-      "extracted_sha256": "72485b044807b8e785db722d22ae090c970dae026e96938b90abf9571575484c",
+      "extracted_sha256": "7c32f703002ecabd2bf78f314fa9411fb03637553e8363068a770fd139680be9",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_assertions.rs": {
@@ -2624,7 +2642,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "51130e7f9b91d4064fc00c8eced3115b633af63f8396b3060675d523214ddb11"
+      "extracted_sha256": "875df423b67a2aa5f923d2a5c46147eddae79df4bc9723c8725f8e21b201db83"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -2709,7 +2727,7 @@
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "d7aee538f7475002ba83e5f9a494b75763f4b999e0de89839580c6fecd72b2f6"
+      "extracted_sha256": "344a0e0a94ca35fca0e54893dd339ffad8f9737df3758a06556944413427e412"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",

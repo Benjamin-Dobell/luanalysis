@@ -376,6 +376,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Prove raw writes to original fresh namespace allocations before any dispatch and resolve original member reads only after proving their physical global environment receiver through kernel 5e72664.",
 } for path in ["mod.rs", "native_aliases.rs", "native_flow.rs", "sink.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-raw-slots-callable-loader.patch",
+    "reason": "Retain original non-nil scalar raw-slot presence and all fresh receiver alternatives, guard cyclic loader inheritance, and prove reached literal __call execution through kernel e21b3cd.",
+} for path in ["mod.rs", "native_aliases.rs", "sink.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
