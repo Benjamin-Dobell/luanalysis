@@ -1,0 +1,5 @@
+-- Bodyless signatures declare members without placeholder implementations.
+---@class ExampleCounter
+---@field value number
+---@function ExampleCounter:add(amount: number): number
+---@function ExampleCounter:copy(): self
