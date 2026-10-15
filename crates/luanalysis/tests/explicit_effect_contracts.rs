@@ -118,3 +118,52 @@ replacement(42)
     let corrected = source.replace("---@type number\n    local checked=value", "---@type number|nil\n    local checked=value");
     clean(fixture.check(&corrected, None));
 }
+
+#[test]
+fn written_overload_effects_terminate_only_when_every_public_head_is_never() {
+    let fixture = Fixture::new();
+    let source = r#"---@shape EffectService
+---@function EffectService.run(value:number): never
+---@function EffectService.run(value:string): nil
+---@param service EffectService
+---@return number
+local function use(service)
+    service.run(1)
+end
+"#;
+    rejected(fixture.check(source, None), "TS2355");
+    let all_never = source.replace("run(value:string): nil", "run(value:string): never");
+    clean(fixture.check(&all_never, None));
+    let ordinary = source.replace("run(value:number): never", "run(value:number): number");
+    rejected(fixture.check(&ordinary, None), "TS2355");
+    clean(fixture.check(&ordinary.replace("    service.run(1)\n", "    service.run(1)\n    return 42\n"), None));
+}
+
+#[test]
+fn written_multihead_member_calls_keep_selected_captured_bodies_checked() {
+    let fixture = Fixture::new();
+    let source = r#"---@shape CapturedEffectService
+---@function CapturedEffectService.run(value:number): true
+---@function CapturedEffectService.run(value:string): true
+---@param service CapturedEffectService
+local function factory(service)
+    return function()
+        service.run(1)
+        service.run('word')
+        ---@type number
+        local checked=42
+        return checked
+    end
+end
+local callback=factory(--[[---@type CapturedEffectService]] {})
+local result=callback()
+---@type number
+local checked=result
+"#;
+    clean(fixture.check(source, None));
+    let wrong = source.replace("local checked=42", "local checked='written overload body error'");
+    let output = rejected(fixture.check(&wrong, None), "TS2322");
+    let start = wrong.find("'written overload body error'").unwrap();
+    assert!(output.contains(&format!("\"range\":{{\"start\":{start},\"end\":{}}}", start + "'written overload body error'".len())), "{output}");
+    clean(fixture.check(source, None));
+}

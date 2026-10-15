@@ -1923,10 +1923,12 @@ impl NativeRegistry {
                 luanalysis_engine::NativeAliasIntrinsic::Unknown => {},
             }
         }
-        if let Some(callee) = self.original_effect_call_contract(expression, queries)
-            && let Some(returned) = queries.function_declared_scalar_return(&callee)
-        {
-            return if matches!(returned, Type::Never) {
+        if let Some(callee) = self.original_effect_call_contract(expression, queries) {
+            // An authoritative written overload set can have no single
+            // scalar result without lacking a written effect contract. Only
+            // the native all-never result terminates this continuation.
+            // Any Pending native dependency still taints the enclosing query.
+            return if matches!(queries.function_declared_scalar_return(&callee), Some(Type::Never)) {
                 NativeCallEffects::Never
             } else { NativeCallEffects::None };
         }
