@@ -157,3 +157,20 @@ fn a_generic_sparse_array_store_preserves_type_policy_and_checks_the_body_result
         pass(&fixture.check_lua_version(version));
     }
 }
+
+#[test]
+fn a_captured_iterator_callee_in_nested_loops_keeps_its_original_creation_value() {
+    let source = include_str!("fixtures/native_effects/table_utils_select_inject.lua");
+    let fixture = Fixture::new(source);
+    pass(&fixture.check_lua_version("5.2"));
+    let wrong = source.replace("local arrayLength = 0", "local arrayLength = 0\n    ---@type string\n    local wrong = arrayLength");
+    assert_ne!(wrong, source);
+    fs::write(fixture.0.join("main.lua"), &wrong).unwrap();
+    let output = fixture.check_lua_version("5.2");
+    rejects(&output, "TS2322");
+    assert!(!text(&output).contains("LUA2041"), "{}", text(&output));
+    let line = wrong.lines().position(|line| line.contains("local wrong = arrayLength")).unwrap() + 1;
+    assert!(text(&output).contains(&format!("main.lua:{line}:19: error[TS2322]")), "{}", text(&output));
+    fs::write(fixture.0.join("main.lua"), source).unwrap();
+    pass(&fixture.check_lua_version("5.2"));
+}

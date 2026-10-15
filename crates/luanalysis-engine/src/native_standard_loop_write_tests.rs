@@ -133,3 +133,103 @@ fn an_ordinary_loop_table_store_does_not_demand_a_global_purity_proof() {
         });
     }
 }
+
+fn captured_graph(region: u32) -> NativeGraphKey { NativeGraphKey { region, ..graph() } }
+fn captured_at(region: u32, node: u32) -> NativeFlowKey { NativeFlowKey { graph: captured_graph(region), node } }
+fn captured_ref(region: u32, reference: u32) -> NativeReferenceKey { NativeReferenceKey { graph: captured_graph(region), reference } }
+
+/// A captured builtin copy is used before nested loops. Resolving another
+/// loop callee would revisit this call if the immutable capture walked the
+/// local body instead of using its original closure-creation value.
+struct CapturedLoop { mutation: u8 }
+impl NativeTypeProvider for CapturedLoop {
+    fn assumed_standard_environment(&self) -> Option<NativeEnvironmentKey> { Some(environment()) }
+    fn contains_global_environment(&self, key: NativeEnvironmentKey) -> bool { key == environment() }
+    fn contains_global_binding(&self, key: NativeGlobalBindingKey) -> bool { key == binding(0) }
+    fn global_binding_declarations(&self, _: NativeGlobalBindingKey) -> Vec<NativeValueDeclarationKey> { vec![declaration()] }
+    fn contains_value_declaration(&self, key: NativeValueDeclarationKey) -> bool { key == declaration() }
+    fn value_declaration_header(&self, _: NativeValueDeclarationKey) -> ValueDeclarationHeader {
+        ValueDeclarationHeader { role: GlobalSourceRole::Declaration, kind: GlobalValueKind::Function }
+    }
+    fn value_declaration_signatures(&self, _: NativeValueDeclarationKey) -> Option<Vec<NativeSignatureKey>> { Some(vec![signature()]) }
+    fn contains_signature(&self, key: NativeSignatureKey) -> bool { key == signature() }
+    fn signature_intrinsic(&self, key: NativeSignatureKey) -> Option<NativeIntrinsicSite> { (key == signature()).then_some(site()) }
+    fn contains_function(&self, _: NativeFunctionKey) -> bool { false }
+    fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> { panic!("immutable capture is metadata-only") }
+    fn function_declared_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> { panic!("immutable capture is metadata-only") }
+    fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type { panic!("immutable capture is metadata-only") }
+    fn return_cycle(&self, _: NativeFunctionKey) { panic!("immutable capture is metadata-only") }
+    fn return_type_too_deep(&self, _: NativeFunctionKey) { panic!("immutable capture is metadata-only") }
+}
+impl NativeFlowProvider for CapturedLoop {
+    fn contains_graph(&self, key: NativeGraphKey) -> bool { key == captured_graph(0) || key == captured_graph(1) }
+    fn contains_reference(&self, key: NativeReferenceKey) -> bool { self.contains_graph(key.graph) && key.reference < 3 }
+    fn reference_is_cell(&self, key: NativeReferenceKey) -> bool { key.reference != 0 }
+    fn reference_alias_initial(&self, key: NativeReferenceKey) -> NativeAliasInitial {
+        if key.reference == 0 { NativeAliasInitial::GlobalValue(binding(0)) } else { NativeAliasInitial::Opaque }
+    }
+    fn reference_declaration(&self, key: NativeReferenceKey) -> Option<NativeVariableDeclaration> {
+        let owner = if key.reference == 1 { captured_graph(0) } else { key.graph };
+        let mut writes = if key.reference == 1 { vec![NativeVariableWrite { owner, statement_end: 10 }] } else { Vec::new() };
+        if key.reference == 1 && self.mutation != 0 {
+            writes.push(NativeVariableWrite { owner: captured_graph(if self.mutation == 1 { 0 } else { 1 }), statement_end: 30 });
+        }
+        Some(NativeVariableDeclaration { owner, reference: NativeReferenceKey { graph: owner, reference: key.reference }, writes })
+    }
+    fn graph_creation(&self, key: NativeGraphKey) -> Option<NativeFunctionCreation> {
+        (key == captured_graph(1)).then_some(NativeFunctionCreation { input: captured_at(0, 1), position: 20 })
+    }
+    fn reference_in_graph(&self, key: NativeReferenceKey, target: NativeGraphKey) -> Option<NativeReferenceKey> {
+        let original = NativeReferenceKey { graph: target, ..key };
+        self.contains_reference(original).then_some(original)
+    }
+    fn node(&self, key: NativeFlowKey) -> Option<NativeFlowNode> {
+        if !self.contains_graph(key.graph) { return None; }
+        Some(match (key.graph.region, key.node) {
+            (_, 0) => NativeFlowNode::Start,
+            (0, 1) => NativeFlowNode::Write { before: captured_at(0, 0), target: captured_ref(0, 1), value: value(10), input: captured_at(0, 0) },
+            (0, 2) if self.mutation == 1 => NativeFlowNode::Write { before: captured_at(0, 1), target: captured_ref(0, 1), value: value(11), input: captured_at(0, 1) },
+            (1, 1) => NativeFlowNode::Loop { edges: vec![captured_at(1, 0), captured_at(1, if self.mutation == 2 { 5 } else { 4 })] },
+            (1, 2) => NativeFlowNode::Call { before: captured_at(1, 1), value: value(20), input: captured_at(1, 1) },
+            (1, 3) => NativeFlowNode::Loop { edges: vec![captured_at(1, 2), captured_at(1, 4)] },
+            (1, 4) => NativeFlowNode::Call { before: captured_at(1, 3), value: value(21), input: captured_at(1, 3) },
+            (1, 5) if self.mutation == 2 => NativeFlowNode::Write { before: captured_at(1, 4), target: captured_ref(1, 1), value: value(11), input: captured_at(1, 4) },
+            _ => return None,
+        })
+    }
+    fn is_shared(&self, _: NativeFlowKey) -> bool { false }
+    fn value_alias_source(&self, key: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue {
+        match key.index {
+            0 => NativeAliasValue::Reference { reference: captured_ref(1, 1), input },
+            1 => NativeAliasValue::Reference { reference: captured_ref(1, 2), input },
+            10 => NativeAliasValue::Reference { reference: captured_ref(0, 0), input: captured_at(0, 0) },
+            _ => NativeAliasValue::Unknown,
+        }
+    }
+    fn alias_call_source(&self, key: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> {
+        let callee = match key.index { 20 => value(0), 21 => value(1), _ => return None };
+        Some(NativeAliasCall { callee: NativeAliasReturnValue { value: callee, input }, arguments: Vec::new(), execution_input: input })
+    }
+    fn write_affects(&self, watched: NativeReferenceKey, target: NativeReferenceKey, _: NativeFlowKey) -> NativeWriteRelation {
+        if watched == target { NativeWriteRelation::Exact } else { NativeWriteRelation::Unaffected }
+    }
+    fn value_type(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Type { panic!("immutable capture must not demand flowed types") }
+    fn call_effects(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> NativeCallEffects { panic!("immutable capture must not demand call effects") }
+    fn flow_error(&self, _: NativeFlowKey, error: NativeFlowError) { panic!("invalid original test graph: {error:?}") }
+}
+
+#[test]
+fn an_immutable_captured_callee_does_not_walk_its_own_nested_loop_calls() {
+    Engine::new().with_native_provider(|| CapturedLoop { mutation: 0 }, |source, queries| {
+        assert_eq!(queries.flow_standard_operation(source, value(0), captured_at(1, 1)), NativeStandardOperation::Standard(site()));
+    });
+}
+
+#[test]
+fn a_late_or_foreign_capture_store_cannot_use_the_creation_value() {
+    for mutation in [1, 2] {
+        Engine::new().with_native_provider(|| CapturedLoop { mutation }, |source, queries| {
+            assert_eq!(queries.flow_standard_operation(source, value(0), captured_at(1, 1)), NativeStandardOperation::Ordinary);
+        });
+    }
+}

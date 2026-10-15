@@ -203,6 +203,27 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     fn native_standard_reference_worker(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Origins {
+        if provider.reference_is_cell(reference)
+            && let Some(declaration) = provider.reference_declaration(reference)
+            && declaration.owner != reference.graph
+            && let Some(creation) = provider.graph_creation(reference.graph)
+            && provider.graph_creation(declaration.owner).is_none()
+            && declaration.writes.iter().all(|write| write.owner == declaration.owner && write.statement_end <= creation.position)
+        {
+            // This exact captured lexical cell cannot change in the body.
+            // Resolve its original creation value before traversing local
+            // calls/loops, which can themselves be classifying this callee.
+            // Preserve the same actual execution-parent routing as Start.
+            if let Some(index) = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry.graph == at.graph) {
+                let caller = self.native_alias_cache.executions[index].caller;
+                if let Some(parent) = provider.reference_in_graph(reference, caller.graph) {
+                    return self.with_native_alias_parent(index, |checker| checker.native_standard_reference(provider, parent, caller));
+                }
+            }
+            if let Some(outer) = provider.reference_in_graph(reference, creation.input.graph) {
+                return self.native_standard_reference(provider, outer, creation.input);
+            }
+        }
         match provider.node(at) {
             Some(NativeFlowNode::Start) => {
                 let declaration = provider.reference_declaration(reference);
