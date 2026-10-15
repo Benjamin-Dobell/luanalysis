@@ -1281,6 +1281,37 @@ pub(super) struct FlowAdapter<'a> {
 }
 
 impl FlowAdapter<'_> {
+    /// Some(None) certifies raw absence in this complete original literal;
+    /// None leaves the recipe unsupported. No inferred property view is used.
+    fn alias_literal_member(&self, value: NativeValueKey, input: NativeFlowKey, key: &luanalysis_engine::LuaKey) -> Option<Option<luanalysis_engine::NativeAliasReturnValue>> {
+        let luanalysis_engine::LuaKey::String(_) = key else { return None; };
+        let mut evaluation = match self.sources.value(value)? {
+            ValueRecipe::Evaluation(evaluation) | ValueRecipe::PackElement { evaluation, index: 0 } => self.sources.program.evaluation(*evaluation),
+            _ => return None,
+        };
+        while matches!(self.sources.program.expression(evaluation.expression).expression.kind, ExprKind::Parenthesized(_)) {
+            evaluation = self.sources.program.evaluation(*evaluation.operands.first()?);
+        }
+        let ExprKind::Table(fields) = &self.sources.program.expression(evaluation.expression).expression.kind else { return None };
+        let mut selected = None;
+        for field in fields {
+            let field_key = match &field.kind {
+                luanalysis_syntax::TableFieldKind::Named(name) => luanalysis_engine::LuaKey::String(name.text.as_bytes().to_vec()),
+                luanalysis_syntax::TableFieldKind::Keyed(expression) => crate::native_tables::literal_key(expression)?,
+                luanalysis_syntax::TableFieldKind::Sequence { index } => luanalysis_engine::LuaKey::Integer((*index).try_into().ok()?),
+            };
+            if &field_key != key { continue; }
+            if selected.is_some() || matches!(field.kind, luanalysis_syntax::TableFieldKind::Sequence { .. }) { return None; }
+            selected = Some(&field.value);
+        }
+        let Some(selected) = selected else { return Some(None) };
+        let selected = self.sources.evaluation_for_expression(selected, input.graph)?;
+        Some(Some(luanalysis_engine::NativeAliasReturnValue {
+            value: self.sources.evaluation_value(selected.id),
+            input: self.sources.flow_key(selected.input, input.graph.context),
+        }))
+    }
+
     fn alias_read_reference(&self, original: &flow::Reference, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
         if original.root == flow::ReferenceRoot::EnvironmentCell && self.sources.environment_cell_is_immutable() {
             self.sources.reference_key(graph, &flow::Reference {
@@ -1458,33 +1489,10 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         // String field identity is byte-exact. Numeric equivalence and sequence
         // expansion need the native key/collision projection before they can
         // establish a unique original value source.
-        let luanalysis_engine::LuaKey::String(_) = key else { return None; };
-        let mut evaluation = match self.sources.value(value)? {
-            ValueRecipe::Evaluation(evaluation) | ValueRecipe::PackElement { evaluation, index: 0 } => self.sources.program.evaluation(*evaluation),
-            _ => return None,
-        };
-        while matches!(self.sources.program.expression(evaluation.expression).expression.kind, ExprKind::Parenthesized(_)) {
-            evaluation = self.sources.program.evaluation(*evaluation.operands.first()?);
-        }
-        let ExprKind::Table(fields) = &self.sources.program.expression(evaluation.expression).expression.kind else { return None };
-        let mut selected = None;
-        for field in fields {
-            let field_key = match &field.kind {
-                luanalysis_syntax::TableFieldKind::Named(name) => luanalysis_engine::LuaKey::String(name.text.as_bytes().to_vec()),
-                luanalysis_syntax::TableFieldKind::Keyed(expression) => crate::native_tables::literal_key(expression)?,
-                luanalysis_syntax::TableFieldKind::Sequence { index } => luanalysis_engine::LuaKey::Integer((*index).try_into().ok()?),
-            };
-            if &field_key != key { continue; }
-            // Duplicate stores and expandable sequence values need the native
-            // collision/pack origin operation; no single source is invented.
-            if selected.is_some() || matches!(field.kind, luanalysis_syntax::TableFieldKind::Sequence { .. }) { return None; }
-            selected = Some(&field.value);
-        }
-        let selected = self.sources.evaluation_for_expression(selected?, input.graph)?;
-        Some(luanalysis_engine::NativeAliasReturnValue {
-            value: self.sources.evaluation_value(selected.id),
-            input: self.sources.flow_key(selected.input, input.graph.context),
-        })
+        self.alias_literal_member(value, input, key).flatten()
+    }
+    fn value_alias_member_absent(&self, value: NativeValueKey, input: NativeFlowKey, key: &luanalysis_engine::LuaKey) -> bool {
+        matches!(self.alias_literal_member(value, input, key), Some(None))
     }
     fn value_alias_source(&self,value:NativeValueKey,input:NativeFlowKey)->luanalysis_engine::NativeAliasValue {
         use luanalysis_engine::NativeAliasValue;

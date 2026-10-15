@@ -273,6 +273,7 @@ fn is_task_independent(q: Query) -> bool {
         | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallState(..)
         | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
         | Query::NativeAliasLoaderState(..) | Query::NativeAliasCallableTable(..)
+        | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
         | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
         | Query::ReturnOfSignature(_)
         | Query::Shape(_)

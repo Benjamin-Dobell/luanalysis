@@ -105,3 +105,23 @@ fn argument_evaluation_cannot_reuse_the_earlier_safe_call_metamethod() {
 fn an_ordinary_attach_function_does_not_attest_a_call_metamethod() {
     invalidates(&format!("{HEADER}---@generic T\n---@param value T\n---@param meta table\n---@return T\nlocal function ordinary(value,meta) return value end\nordinary(Static,{{__call=function() return {{}} end}})\nlocal instance=Static()\nreturn Static\n"));
 }
+
+#[test]
+fn an_original_call_only_metatable_allows_later_namespace_stores() {
+    clean(&format!("{HEADER}Static.INFO=3\nsetmetatable(Static,{{__call=function()\nlocal self={{}}\nlocal level=Static.INFO\nfunction self.read() return level end\nreturn self\nend}})\nlocal instance=Static()\nfunction Static.first() return 1 end\nfunction Static.second() return 2 end\nreturn Static\n"));
+}
+
+#[test]
+fn a_replacement_newindex_handler_still_invalidates_the_loader() {
+    invalidates(&format!("{HEADER}{SAFE}local instance=Static()\nsetmetatable(Static,{{__newindex=function() package.path='custom/?.lua' end}})\nfunction Static.method() return 1 end\nreturn Static\n"));
+}
+
+#[test]
+fn a_constructor_cannot_hide_its_reached_metatable_replacement() {
+    invalidates(&format!("{HEADER}setmetatable(Static,{{__call=function()\nsetmetatable(Static,{{__newindex=function() package.path='custom/?.lua' end}})\nreturn {{}}\nend}})\nlocal instance=Static()\nfunction Static.method() return 1 end\nreturn Static\n"));
+}
+
+#[test]
+fn retrieving_and_mutating_the_metatable_is_an_effect_barrier() {
+    invalidates(&format!("{HEADER}{SAFE}local instance=Static()\nlocal meta=getmetatable(Static)\nmeta.__newindex=function() package.path='custom/?.lua' end\nfunction Static.method() return 1 end\nreturn Static\n"));
+}

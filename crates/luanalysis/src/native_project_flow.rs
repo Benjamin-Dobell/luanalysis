@@ -57,6 +57,7 @@ impl NativeFlowProvider for ProjectRegistry {
         fn value_alias_source(value: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue { value.snapshot; NativeAliasValue::Unknown }
         fn value_alias_environment_member(value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasEnvironmentMember> { value.snapshot; None }
         fn value_alias_member_source(value: NativeValueKey, input: NativeFlowKey, key: &LuaKey) -> Option<NativeAliasReturnValue> { value.snapshot; None }
+        fn value_alias_member_absent(value: NativeValueKey, input: NativeFlowKey, key: &LuaKey) -> bool { value.snapshot; false }
         fn reference_tracks_runtime_value(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
         fn reference_follows_creation(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
         fn runtime_type_operation(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool { value.snapshot; false }

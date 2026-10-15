@@ -93,6 +93,7 @@ pub(super) struct NativeAliasCache {
     projected_values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u32, u64, u64), Origins>,
     preservations: FxHashMap<(NativeReferenceKey, NativeValueKey, NativeFlowKey, u64, u64), NativeCallPreservation>,
     metatable_absence: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), bool>,
+    newindex_absence: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), bool>,
     execution_ids: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64), u64>,
     executions: Vec<AliasExecutionFrame>,
 }
@@ -105,6 +106,8 @@ struct AliasCallableTable {
     creation: NativeFlowKey,
     activation: u64,
 }
+#[derive(Clone, Copy)]
+enum AliasMetatableCall { Preserved, Replaced(NativeAliasReturnValue), Unknown, Pending }
 impl NativeAliasCache {
     fn reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u64, u64), result: Origins, _: Stored) { self.references.insert(key, result); }
     fn value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u64, u64), result: Origins, _: Stored) { self.values.insert(key, result); }
@@ -257,7 +260,162 @@ impl<'p, 's> Checker<'p, 's> {
         // Several reached allocations do not identify one receiver. They can
         // nevertheless all be metatable-free, proving only that the store has
         // no implicit dispatch; alias relations retain their alternatives.
-        origins.tokens.iter().all(|allocation| self.native_alias_allocation_without_metatable(provider, allocation, before))
+        origins.tokens.iter().all(|allocation| {
+            self.native_alias_allocation_without_metatable(provider, allocation, before)
+                || self.native_alias_allocation_without_newindex(provider, allocation, before)
+        })
+    }
+
+    /// A reached literal metatable can lack __newindex while still supplying
+    /// __call. Keep this distinct from absence of a metatable altogether.
+    fn native_alias_allocation_without_newindex(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, before: NativeFlowKey) -> bool {
+        let Origin::Allocation(value, input) = allocation else { return false };
+        if !provider.contains_graph(before.graph) || provider.node(*input).is_none() { return false }
+        let epoch = self.flow_memo.native_state.effect_epoch;
+        let frame = self.native_alias_cache.frame();
+        let key = (*value, *input, before, epoch, frame);
+        if let Some(&absent) = self.native_alias_cache.newindex_absence.get(&key) { return absent }
+        let query = Query::NativeAliasNewIndexAbsence(*value, *input, before, epoch, frame);
+        if !self.enter(query) { self.mark_tainted_from(0); return false }
+        let (absent, completed) = self.run_memoizable(|checker| checker.native_alias_newindex_absent_worker(provider, allocation, *input, before));
+        if self.leave(query).is_err() || completed.is_none() { self.mark_tainted_from(0); return false }
+        if !self.is_stack_low() { self.native_alias_cache.newindex_absence.insert(key, absent); }
+        absent
+    }
+
+    fn native_alias_newindex_absent_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
+        let mut active = HashSet::new();
+        let mut completed = HashSet::new();
+        let mut work = vec![(before, false)];
+        let mut steps = 0usize;
+        while let Some((at, leaving)) = work.pop() {
+            steps += 1;
+            if steps > 16_384 || at.graph != before.graph || self.is_stack_low() { return false }
+            if at == input { continue }
+            if leaving { active.remove(&at); completed.insert(at); continue }
+            if completed.contains(&at) { continue }
+            if !active.insert(at) { return false }
+            let mut edges = Vec::new();
+            match provider.node(at) {
+                Some(NativeFlowNode::Start) => {
+                    let Some(index) = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry == at) else { return false };
+                    let caller = self.native_alias_cache.executions[index].caller;
+                    if !self.with_native_alias_parent(index, |checker| checker.native_alias_allocation_without_newindex(provider, allocation, caller)) { return false }
+                },
+                Some(NativeFlowNode::Write { before, .. } | NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }) => {
+                    if !self.native_alias_dispatch_safe(provider, at, before) { return false }
+                    edges.push(before);
+                },
+                Some(NativeFlowNode::Call { before, value, input }) => match self.native_alias_metatable_call(provider, allocation, value, input) {
+                    AliasMetatableCall::Preserved => edges.push(before),
+                    AliasMetatableCall::Replaced(metatable) => {
+                        let key = NativeTableKey::String(self.atoms().intern(b"__newindex"));
+                        if !provider.value_alias_member_absent(metatable.value, metatable.input, key, self) { return false }
+                    },
+                    AliasMetatableCall::Pending => { self.mark_tainted_from(0); return false },
+                    AliasMetatableCall::Unknown => return false,
+                },
+                Some(NativeFlowNode::Merge { edges: incoming }) => {
+                    if incoming.is_empty() || !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return false }
+                    edges.extend(incoming);
+                },
+                _ => return false,
+            }
+            work.push((at, true));
+            work.extend(edges.into_iter().rev().map(|edge| (edge, false)));
+        }
+        true
+    }
+
+    fn native_alias_metatable_call(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, call: NativeValueKey, input: NativeFlowKey) -> AliasMetatableCall {
+        let Origin::Allocation(value, allocated) = allocation else { return AliasMetatableCall::Unknown };
+        let query = Query::NativeAliasMetatableCall(*value, *allocated, call, input, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
+        if !self.enter(query) { self.mark_tainted_from(0); return AliasMetatableCall::Pending }
+        let (result, completed) = self.run_memoizable(|checker| checker.native_alias_metatable_call_worker(provider, allocation, call, input));
+        if self.leave(query).is_err() || completed.is_none() || matches!(result, AliasMetatableCall::Pending) {
+            self.mark_tainted_from(0);
+            return AliasMetatableCall::Pending;
+        }
+        result
+    }
+
+    fn native_alias_metatable_call_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, call: NativeValueKey, input: NativeFlowKey) -> AliasMetatableCall {
+        let Some(mut recipe) = provider.alias_call_source(call, input) else { return AliasMetatableCall::Unknown };
+        if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return AliasMetatableCall::Unknown }
+        let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
+        if callee.uncertain { return AliasMetatableCall::Pending }
+        if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return AliasMetatableCall::Unknown }
+        let (function, creation, activation) = match callee.tokens.into_iter().next().unwrap() {
+            Origin::Standard(site) => return match site.kind {
+                NativeIntrinsicKind::Type | NativeIntrinsicKind::Assert => AliasMetatableCall::Preserved,
+                NativeIntrinsicKind::SetMetatable => {
+                    let Some(receiver) = recipe.arguments.first() else { return AliasMetatableCall::Unknown };
+                    let receiver = self.native_alias_value(provider, receiver.value, receiver.input, 0);
+                    if receiver.uncertain { return AliasMetatableCall::Pending }
+                    if receiver.unknown || receiver.non_table || receiver.tokens.is_empty() { return AliasMetatableCall::Unknown }
+                    if !receiver.tokens.contains(allocation) { AliasMetatableCall::Preserved }
+                    else if receiver.tokens.len() == 1 {
+                        recipe.arguments.get(1).copied().map_or(AliasMetatableCall::Unknown, AliasMetatableCall::Replaced)
+                    } else { AliasMetatableCall::Unknown }
+                },
+                NativeIntrinsicKind::Require => AliasMetatableCall::Unknown,
+            },
+            Origin::Function(function, creation, activation) => (function, creation, activation),
+            target @ Origin::Allocation(..) => {
+                let callable = match self.native_alias_callable_table(provider, &target, recipe.execution_input) {
+                    Ok(Some(callable)) => callable,
+                    Ok(None) => return AliasMetatableCall::Unknown,
+                    Err(()) => return AliasMetatableCall::Pending,
+                };
+                let receiver = recipe.callee;
+                recipe.callee = callable.callee;
+                recipe.arguments.insert(0, receiver);
+                (callable.function, callable.creation, callable.activation)
+            },
+            _ => return AliasMetatableCall::Unknown,
+        };
+        if activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation) { return AliasMetatableCall::Unknown }
+        if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation, activation))) { return AliasMetatableCall::Pending }
+        let Some(execution) = provider.function_alias_execution(function, creation) else { return AliasMetatableCall::Unknown };
+        if !provider.contains_graph(execution.entry.graph) || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) || execution.terminals.is_empty() { return AliasMetatableCall::Unknown }
+        self.with_native_alias_execution(call, recipe.execution_input, &execution, Some((function, creation, activation)), |checker| {
+            let mut active = HashSet::new();
+            let mut completed = HashSet::new();
+            let mut work: Vec<_> = execution.terminals.iter().rev().map(|&at| (at, false)).collect();
+            let mut steps = 0usize;
+            while let Some((at, leaving)) = work.pop() {
+                steps += 1;
+                if steps > 16_384 || at.graph != execution.entry.graph || checker.is_stack_low() { return AliasMetatableCall::Unknown }
+                if leaving { active.remove(&at); completed.insert(at); continue }
+                if completed.contains(&at) { continue }
+                if !active.insert(at) { return AliasMetatableCall::Unknown }
+                let mut edges = Vec::new();
+                match provider.node(at) {
+                    Some(NativeFlowNode::Start) if at == execution.entry => {},
+                    Some(NativeFlowNode::Write { before, .. } | NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }) => {
+                        if !checker.native_alias_dispatch_safe(provider, at, before) { return AliasMetatableCall::Unknown }
+                        edges.push(before);
+                    },
+                    Some(NativeFlowNode::Call { before, value, input }) => match checker.native_alias_metatable_call(provider, allocation, value, input) {
+                        AliasMetatableCall::Preserved => edges.push(before),
+                        AliasMetatableCall::Pending => return AliasMetatableCall::Pending,
+                        // Object-identity preservation does not attest an
+                        // unchanged metatable, even for standard setmetatable.
+                        AliasMetatableCall::Replaced(_) | AliasMetatableCall::Unknown => return AliasMetatableCall::Unknown,
+                    },
+                    Some(NativeFlowNode::Return { before }) => edges.push(before),
+                    Some(NativeFlowNode::Merge { edges: incoming }) => {
+                        if !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return AliasMetatableCall::Unknown }
+                        edges.extend(incoming);
+                    },
+                    Some(NativeFlowNode::Unreachable) => {},
+                    _ => return AliasMetatableCall::Unknown,
+                }
+                work.push((at, true));
+                work.extend(edges.into_iter().rev().map(|edge| (edge, false)));
+            }
+            AliasMetatableCall::Preserved
+        })
     }
 
     fn native_alias_allocation_without_metatable(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, before: NativeFlowKey) -> bool {

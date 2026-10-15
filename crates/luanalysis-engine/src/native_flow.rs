@@ -59,6 +59,7 @@ pub trait NativeFlowProvider {
     fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> NativeAliasValue { NativeAliasValue::Unknown }
     fn value_alias_environment_member(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativeAliasEnvironmentMember> { None }
     fn value_alias_member_source(&self, _: NativeValueKey, _: NativeFlowKey, _: &super::LuaKey) -> Option<NativeAliasReturnValue> { None }
+    fn value_alias_member_absent(&self, _: NativeValueKey, _: NativeFlowKey, _: &super::LuaKey) -> bool { false }
     /// Original heap-store receiver and its own frozen evaluation input.
     fn write_alias_receiver(&self, _: NativeFlowKey) -> Option<NativeAliasReturnValue> { None }
     fn function_alias_returns(&self, _: super::NativeFunctionKey) -> Option<Vec<NativeAliasReturn>> { None }
@@ -173,6 +174,9 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     }
     fn value_alias_member_source(&self, value: NativeValueKey, input: NativeFlowKey, key: bun_sema::types::NativeTableKey, checker: &Checker<'_, '_>) -> Option<NativeAliasReturnValue> {
         self.provider.value_alias_member_source(value, input, &super::native_tables::export_literal_key(checker, key))
+    }
+    fn value_alias_member_absent(&self, value: NativeValueKey, input: NativeFlowKey, key: bun_sema::types::NativeTableKey, checker: &Checker<'_, '_>) -> bool {
+        self.provider.value_alias_member_absent(value, input, &super::native_tables::export_literal_key(checker, key))
     }
     fn value_alias_environment_member(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasEnvironmentMember> {
         self.provider.value_alias_environment_member(value, input)
