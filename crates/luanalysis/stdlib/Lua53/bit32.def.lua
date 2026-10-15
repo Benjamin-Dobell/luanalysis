@@ -1,17 +1,3 @@
--- Copyright (c) 2020
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 bit32 = {}
 
 ---
@@ -67,21 +53,23 @@ function bit32.bxor(...) end
 --- significant). All accessed bits must be in the range [0, 31].
 ---
 --- The default for width is 1.
----@overload fun(n:number, field:number):number
+---@overload fun(n:number,field:number):number
+---@overload fun(n:number,field:number,width:number):number
 ---@param n number
 ---@param field number
----@param width number
+---@param width? number
 ---@return number
 function bit32.extract(n, field, width) end
 
 ---
 --- Returns a copy of n with the bits field to field + width - 1 replaced by the
 --- value v. See bit32.extract for details about field and width.
----@overload fun(n:number, v:number, field:number):number
+---@overload fun(n:number,v:number,field:number):number
+---@overload fun(n:number,v:number,field:number,width:number):number
 ---@param n number
 ---@param v number
 ---@param field number
----@param width number
+---@param width? number
 ---@return number
 function bit32.replace(n, v, field, width) end
 

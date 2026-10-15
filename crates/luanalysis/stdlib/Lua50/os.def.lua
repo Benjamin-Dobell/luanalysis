@@ -1,17 +1,3 @@
--- Copyright (c) 2018. tangzx(love.tangzx@qq.com)
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 ---@class std__Os
 os = {}
 
@@ -70,8 +56,9 @@ function os.clock() end
 ---@overload fun(format: string): string | std__Date
 ---@overload fun(format: "%c", time: number): string
 ---@overload fun(format: "!*t" | "*t", time: number): std__Date
----@param format string
----@param time number
+---@overload fun(format:string,time:number):string | std__Date
+---@param format? string
+---@param time? number
 ---@return string | std__Date
 function os.date(format, time) end
 
@@ -97,18 +84,20 @@ function os.difftime(t2, t1) end
 ---
 --- When called without a command, `os.execute` returns a boolean that is true
 --- if a shell is available.
----@overload fun():string|number
----@param command string
----@return string|number
+---@overload fun():number
+---@overload fun(command:string):number
+---@param command? string
+---@return number
 function os.execute(command) end
 
 ---
 --- Calls the C function `exit`, with an optional `code`, to terminate the host
 --- program. The default value for `code` is the success code.
 ---
----@overload fun(): void
----@param code number
----@return void @Never returns
+---@overload fun():void
+---@overload fun(code:number):void
+---@param code? number
+---@return void
 function os.exit(code) end
 
 ---
@@ -153,8 +142,9 @@ function os.rename(oldname, newname) end
 --- This function may be not thread safe because of its reliance on C function
 --- `setlocale`.
 ---@overload fun(locale:string):string|nil
+---@overload fun(locale:string,category:string):string|nil
 ---@param locale string
----@param category string
+---@param category? string
 ---@return string|nil
 function os.setlocale(locale, category) end
 
@@ -181,7 +171,8 @@ function os.setlocale(locale, category) end
 --- documented in the `os.date` function, so that they represent the same time
 --- as before the call but with values inside their valid ranges.
 ---@overload fun():number
----@param table table
+---@overload fun(table:table):number
+---@param table? table
 ---@return number
 function os.time(table) end
 

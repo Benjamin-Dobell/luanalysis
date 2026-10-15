@@ -1,17 +1,3 @@
--- Copyright (c) 2018. tangzx(love.tangzx@qq.com)
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 ---
 --- The type *string* represents immutable sequences of bytes. Lua is 8-bit
 --- clean: strings can contain any 8-bit value, including embedded zeros
@@ -27,8 +13,9 @@ string = {}
 ---
 --- Note that numerical codes are not necessarily portable across platforms.
 ---@overload fun(s:string):number
+---@overload fun(s:string,i:number):number
 ---@param s string
----@param i number
+---@param i? number
 ---@return number
 function string.byte(s, i) end
 
@@ -68,10 +55,11 @@ function string.dump(func) end
 --- a number rather than a string.
 ---@overload fun(s: string, pattern: string, init: number): nil | (number, number, (number | string)...)
 ---@overload fun(s: string, pattern: string): nil | (number, number, (number | string)...)
+---@overload fun(s:string,pattern:string,init:number,plain:boolean):nil | (number, number, (number | string)...)
 ---@param s string
 ---@param pattern string
----@param init number
----@param plain boolean
+---@param init? number
+---@param plain? boolean
 ---@return nil | (number, number, (number | string)...)
 function string.find(s, pattern, init, plain) end
 
@@ -175,11 +163,12 @@ function string.gfind(s, pat) end
 --- Refer to the Lua manual's [section on patterns](https://www.lua.org/manual/5.0/manual.html#pm)
 --- for more details. Take particular note of `()` empty captures which capture
 --- a number rather than a string.
----@overload fun(s: string, pattern: string, repl: string | fun: string): string, number
+---@overload fun(s:string,pattern:string,repl:(string | fun:string)):string, number
+---@overload fun(s:string,pattern:string,repl:(string | fun:string),n:number):string, number
 ---@param s string
 ---@param pattern string
----@param repl string | fun: string
----@param n number
+---@param repl string | fun:string
+---@param n? number
 ---@return string, number
 function string.gsub(s, pattern, repl, n) end
 
@@ -206,12 +195,10 @@ function string.lower(s) end
 ---
 --- Note that it is very easy to exhaust the memory of your machine with a
 --- single call to this function.
----@overload fun(s:string, n:number):string
 ---@param s string
 ---@param n number
----@param sep string
 ---@return string
-function string.rep(s, n, sep) end
+function string.rep(s, n) end
 
 ---
 --- Returns the substring of `s` that starts at `i` and continues until
@@ -226,9 +213,10 @@ function string.rep(s, n, sep) end
 --- that length. If, after these corrections, `i` is greater than `j`, the
 --- function returns the empty string.
 ---@overload fun(s:string, i:number):string
+---@overload fun(s:string,i:number,j:number):string
 ---@param s string
 ---@param i number
----@param j number
+---@param j? number
 ---@return string
 function string.sub(s, i, j) end
 

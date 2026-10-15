@@ -1,26 +1,12 @@
--- Copyright (c) 2018. tangzx(love.tangzx@qq.com)
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 ---
 --- Calls error if the value of its argument `v` is false (i.e., **nil** or
 --- **false**); otherwise, returns all its arguments. In case of error,
 --- `message` is the error object; when absent, it defaults to "assertion
 --- failed!"
----@overload fun<T>(v: T): T
+---@overload fun<T>(v: T, ...: unknown): T
 ---@generic T
 ---@param v T
----@param message string
+---@param message? string | unknown
 ---@return T
 function assert(v, message) end
 
@@ -47,13 +33,16 @@ function assert(v, message) end
 --- collector (see §2.10). Returns the previous value for step
 --- be followed by three numbers: the garbage-collector pause, the step
 --- multiplier, and the step size.
----@overload fun(): number
----@overload fun(opt: "count"): number, number
----@overload fun(opt: "step", size: number): boolean
----@overload fun(opt: "setpause", pause: number): number
----@overload fun(opt: "setstepmul", multiplier: number): number
----@param opt "collect" | "stop" | "restart"
----@return number
+---@overload fun():number
+---@overload fun(opt:"count"):number
+---@overload fun(opt:"step"):boolean
+---@overload fun(opt:"step",size:number):boolean
+---@overload fun(opt:"setpause",pause:number):number
+---@overload fun(opt:"setstepmul",multiplier:number):number
+---@overload fun(opt:"collect" | "stop" | "restart"):number
+---@param opt? "collect" | "stop" | "restart" | "count" | "step" | "setpause" | "setstepmul"
+---@param arg? number
+---@return number | boolean
 function collectgarbage(opt, arg) end
 
 ---
@@ -63,7 +52,8 @@ function collectgarbage(opt, arg) end
 --- `dofile` propagates the error to its caller (that is, `dofile` does not run
 --- in protected mode).
 ---@overload fun():table
----@param filename string
+---@overload fun(filename:string):table
+---@param filename? string
 ---@return table
 function dofile(filename) end
 
@@ -77,11 +67,11 @@ function dofile(filename) end
 --- that called `error` was called; and so on. Passing a level 0 avoids the
 --- addition of error position information to the message.
 ---
---- _**Note**: Return type is inaccurate. This function never returns._
----@overload fun(message: any): void
----@param message string
----@param level number
----@return void
+---@overload fun(message: any): never
+---@overload fun(message:string,level:number):never
+---@param message string | any
+---@param level? number
+---@return never
 function error(message, level) end
 
 ---
@@ -104,8 +94,9 @@ function getmetatable(object) end
 --- Level 1 is the function calling `getfenv`. If the given function is not a
 --- Lua function, or if `f` is 0, `getfenv` returns the global environment. The
 --- default for `f` is 1.
----@overload fun(): any
----@param f function | number
+---@overload fun():any
+---@overload fun(f:function | number):any
+---@param f? function | number
 ---@return any
 function getfenv(f) end
 
@@ -117,7 +108,7 @@ function getfenv(f) end
 --- the first absent index.
 ---@generic V
 ---@param t V[]
----@return (fun(tab: V[], k: nil | number): nil | (number, V)), V[], number
+---@return (fun(tab: V[], k: nil | number): nil | (number, V)), V[], 0
 function ipairs(t) end
 
 ---
@@ -134,9 +125,10 @@ function ipairs(t) end
 --- `chunkname` is used as the name of the chunk for error messages and debug
 --- information. When absent, it defaults to `chunk`, if `chunk` is a string,
 --- or to "=(`load`)" otherwise.
----@overload fun(func: (fun(): nil | string)): function | (nil, string)
----@param func fun(): nil | string
----@param chunkname string
+---@overload fun(chunk:(fun():nil | string)):function | (nil, string)
+---@overload fun(chunk:(fun():nil | string),chunkname:string):function | (nil, string)
+---@param chunk fun():nil | string
+---@param chunkname? string
 ---@return function | (nil, string)
 function load(chunk, chunkname) end
 
@@ -147,17 +139,19 @@ function load(chunk, chunkname) end
 ---      `assert(loadstring(s))()`
 ---
 --- When absent, `chunkname` defaults to the given string.
----@overload fun(chunk: string): function | (nil, string)
+---@overload fun(chunk:string):function | (nil, string)
+---@overload fun(chunk:string,chunkname:string):function | (nil, string)
 ---@param chunk string
----@param chunkname string
+---@param chunkname? string
 ---@return function | (nil, string)
 function loadstring(chunk, chunkname) end
 
 ---
 --- Similar to `load`, but gets the chunk from file `filename` or from the
 --- standard input, if no file name is given.
----@overload fun(): function | (nil, string)
----@param filename string
+---@overload fun():function | (nil, string)
+---@overload fun(filename:string):function | (nil, string)
+---@param filename? string
 ---@return function | (nil, string)
 function loadfile(filename) end
 
@@ -198,9 +192,10 @@ function module(name, ...) end
 --- any value to a non-existent field in the table. You may however modify
 --- existing fields. In particular, you may set existing fields to nil.
 ---@overload fun<K, V>(table: table<K, V>): nil | (K, V)
+---@overload fun<K,V>(table:table<K, V>,index:K):nil | (K, V)
 ---@generic K, V
 ---@param table table<K, V>
----@param index K
+---@param index? K
 ---@return nil | (K, V)
 function next(table, index) end
 
@@ -217,7 +212,7 @@ function next(table, index) end
 --- traversal.
 ---@generic K, V
 ---@param t table<K, V>
----@return (fun(tab: table<K, V>, k: nil | K): nil | (K, V)), table<K, V>, K
+---@return (fun(tab: table<K, V>, k: nil | K): nil | (K, V)), table<K, V>, nil
 function pairs(t) end
 
 ---
@@ -227,11 +222,12 @@ function pairs(t) end
 --- boolean), which is true if the call succeeds without errors. In such case,
 --- `pcall` also returns all results from the call, after this first result. In
 --- case of any error, `pcall` returns **false** plus the error message.
----@overload fun(f: (fun: void), ...: any): true | (false, any)
+---@overload fun(f:(fun: void),...:any):true | (false, any)
+---@overload fun<T>(f:(fun: T),...:any):(true, T) | (false, any)
 ---@generic T
----@param f fun: T
+---@param f (fun: T) | (fun: void)
 ---@vararg any
----@return (true, T) | (false, any)
+---@return true | (true, T) | (false, any)
 function pcall(f, ...) end
 
 ---
@@ -350,8 +346,9 @@ function setmetatable(table, metatable) end
 --- the string `e` is not a valid numeral in the given base, the function
 --- returns **nil**.
 ---@overload fun(e: number | string): nil | number
----@param e string
----@param base number
+---@overload fun(e:string,base:number):nil | number
+---@param e string | number
+---@param base? number
 ---@return nil | number
 function tonumber(e, base) end
 
@@ -381,27 +378,30 @@ function type(v) end
 --- except that the above code can be written only for a fixed number of elements.
 --- By default, `i` is 1 and `j` is the length of the list, as defined by the length
 --- operator (see §2.5.5).
----@overload fun<T>(list: T[]): T...
----@overload fun<T>(list: T[], i: number): T...
+---@overload fun<T>(list:T[]):T...
+---@overload fun<T>(list:T[],i:number):T...
+---@overload fun<T>(list:T[],i:number,j:number):T...
 ---@generic T
 ---@param list T[]
----@param i number
----@param j number
+---@param i? number
+---@param j? number
 ---@return T...
-function unpack(list, i, j)end
+function unpack(list, i, j) end
 
 ---
 --- A global variable (not a function) that holds a string containing the
 --- running Lua version. The current value of this variable is "`Lua 5.1`".
+---@type "Lua 5.1"
+
 _VERSION = "Lua 5.1"
 
 ---
 --- This function is similar to `pcall`, except that it sets a new message
 --- handler `msgh`.
----@overload fun(f: (fun: void), msgh: fun(message: any): any, ...: any): true | (false, any)
+---@overload fun(f:(fun: void),msgh:(fun(message:any):any)):true | (false, any)
+---@overload fun<T>(f:(fun: T),msgh:(fun(message:any):any)):(true, T) | (false, any)
 ---@generic T
----@param f fun: T
----@param msgh fun(message: any): any
----@vararg any
----@return (true, T) | (false, any)
-function xpcall(f, ...) end
+---@param f (fun: T) | (fun: void)
+---@param msgh fun(message:any):any
+---@return true | (true, T) | (false, any)
+function xpcall(f, msgh) end

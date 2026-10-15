@@ -1,17 +1,3 @@
--- Copyright (c) 2018. tangzx(love.tangzx@qq.com)
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 ---@class std__Debug
 debug = {}
 
@@ -27,15 +13,18 @@ debug = {}
 function debug.debug() end
 
 --- Returns the environment of object `o`.
+---@param o any
+---@return table
 function debug.getfenv(o) end
 
 ---
 --- Returns the current hook settings of the thread, as three values: the
 --- current hook function, the current hook mask, and the current hook count
 --- (as set by the `debug.sethook` function).
----@overload fun():thread
----@param thread thread
----@return thread
+---@overload fun():function | nil, string, number
+---@overload fun(thread:thread):function | nil, string, number
+---@param thread? thread
+---@return function | nil, string, number
 function debug.gethook(thread) end
 
 ---@shape std__DebugInfo
@@ -72,9 +61,10 @@ function debug.gethook(thread) end
 ---@overload fun(f: function | number): std__DebugInfo
 ---@overload fun(f: function | number, what: string): std__DebugInfo
 ---@overload fun(thread: thread, f: function | number): std__DebugInfo
----@param thread thread
----@param f function | number
----@param what string
+---@overload fun(thread:thread,f:function | number,what:string):std__DebugInfo
+---@param thread thread | function | number
+---@param f? function | number | string
+---@param what? string
 ---@return std__DebugInfo
 function debug.getinfo(thread, f, what) end
 
@@ -98,12 +88,13 @@ function debug.getinfo(thread, f, what) end
 ---
 --- The parameter `f` may also be a function. In that case, `getlocal` returns
 --- only the name of function parameters.
----@overload fun(f:table, var:string):table
----@param thread thread
----@param f table
----@param var string
----@return table
-function debug.getlocal(thread, f, var) end
+---@overload fun(level:number,index:number):nil | (string, any)
+---@overload fun(thread:thread,level:number,index:number):nil | (string, any)
+---@param thread thread | number
+---@param level number
+---@param index? number
+---@return nil | (string, any)
+function debug.getlocal(thread, level, index) end
 
 ---
 --- Returns the metatable of the given `value` or **nil** if it does not have
@@ -157,11 +148,15 @@ function debug.setfenv(object, table) end
 --- call `getinfo` with level 2 to get more information about the running
 --- function (level 0 is the `getinfo` function, and level 1 is the hook
 --- function)
----@overload fun(hook:(fun():any), mask:any)
----@param thread thread
----@param hook fun():any
----@param mask string
----@param count number
+---@overload fun():void
+---@overload fun(hook:(fun():any),mask:string):void
+---@overload fun(hook:(fun():any),mask:string,count:number):void
+---@overload fun(thread:thread,hook:(fun():any),mask:string):void
+---@overload fun(thread:thread,hook:(fun():any),mask:string,count:number):void
+---@param thread? thread | (fun():any)
+---@param hook? (fun():any) | string
+---@param mask? string | number
+---@param count? number
 function debug.sethook(thread, hook, mask, count) end
 
 ---
@@ -171,13 +166,14 @@ function debug.sethook(thread, hook, mask, count) end
 --- raises an error when called with a `level` out of range. (You can call
 --- `getinfo` to check whether the level is valid.) Otherwise, it returns the
 --- name of the local variable.
----@overload fun(level:number, var:string, value:any):string
----@param thread thread
+---@overload fun(level:number,index:number,value:any):string | nil
+---@overload fun(thread:thread,level:number,index:number,value:any):string | nil
+---@param thread thread | number
 ---@param level number
----@param var string
----@param value any
----@return string
-function debug.setlocal(thread, level, var, value) end
+---@param index number | any
+---@param value? any
+---@return string | nil
+function debug.setlocal(thread, level, index, value) end
 
 ---
 --- Sets the metatable for the given `object` to the given `table` (which
@@ -208,8 +204,9 @@ function debug.setupvalue(f, up, value) end
 ---@overload fun(thread: thread): string
 ---@overload fun(message: string): string
 ---@overload fun(): string
----@param thread thread
----@param message string
----@param level number
+---@overload fun(thread:thread,message:string,level:number):string
+---@param thread? thread | string
+---@param message? string | number
+---@param level? number
 ---@return string
 function debug.traceback(thread, message, level) end

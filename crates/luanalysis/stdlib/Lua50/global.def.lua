@@ -1,26 +1,13 @@
--- Copyright (c) 2018. tangzx(love.tangzx@qq.com)
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 ---
 --- Calls error if the value of its argument `v` is false (i.e., **nil** or
 --- **false**); otherwise, returns all its arguments. In case of error,
 --- `message` is the error object; when absent, it defaults to "assertion
 --- failed!"
----@overload fun<T>(v: T): T
+---@overload fun<T>(v:T):T
+---@overload fun<T>(v:T,message:string):T
 ---@generic T
 ---@param v T
----@param message string
+---@param message? string
 ---@return T
 function assert(v, message) end
 
@@ -30,8 +17,9 @@ function assert(v, message) end
 --- the byte counter, then Lua immediately runs the garbage collector (see 2.9).
 --- If `limit` is absent, it defaults to zero (thus forcing a garbage-collection
 --- cycle).
----@overload fun(): number
----@param limit number
+---@overload fun():number
+---@overload fun(limit:number):number
+---@param limit? number
 ---@return number
 function collectgarbage(limit) end
 
@@ -42,7 +30,8 @@ function collectgarbage(limit) end
 --- `dofile` propagates the error to its caller (that is, `dofile` does not run
 --- in protected mode).
 ---@overload fun():table
----@param filename string
+---@overload fun(filename:string):table
+---@param filename? string
 ---@return table
 function dofile(filename) end
 
@@ -56,11 +45,11 @@ function dofile(filename) end
 --- that called `error` was called; and so on. Passing a level 0 avoids the
 --- addition of error position information to the message.
 ---
---- _**Note**: Return type is inaccurate. This function never returns._
----@overload fun(message: any): void
----@param message string
----@param level number
----@return void
+---@overload fun(message: any): never
+---@overload fun(message:string,level:number):never
+---@param message string | any
+---@param level? number
+---@return never
 function error(message, level) end
 
 ---
@@ -83,8 +72,9 @@ function getmetatable(object) end
 --- Level 1 is the function calling `getfenv`. If the given function is not a
 --- Lua function, or if `f` is 0, `getfenv` returns the global environment. The
 --- default for `f` is 1.
----@overload fun(): any
----@param f function | number
+---@overload fun():any
+---@overload fun(f:function | number):any
+---@param f? function | number
 ---@return any
 function getfenv(f) end
 
@@ -101,7 +91,7 @@ function gcinfo() end
 --- the first absent index.
 ---@generic V
 ---@param t V[]
----@return (fun(tab: V[], k: nil | number): nil | (number, V)), V[], number
+---@return (fun(tab: V[], k: nil | number): nil | (number, V)), V[], 0
 function ipairs(t) end
 
 ---
@@ -109,7 +99,9 @@ function ipairs(t) end
 --- returns the compiled chunk as a function; otherwise, returns nil plus the
 --- error message. The environment of the returned function is the global
 --- environment.
----@param filename string
+---@overload fun():function | (nil, string)
+---@overload fun(filename:string):function | (nil, string)
+---@param filename? string
 ---@return function | (nil, string)
 function loadfile(filename) end
 
@@ -139,9 +131,10 @@ function loadlib(libname, funcname) end
 --- To load and run a given string, use the idiom
 ---
 ---      `assert(loadstring(s))()`
----@overload fun(chunk: string): function | (nil, string)
+---@overload fun(chunk:string):function | (nil, string)
+---@overload fun(chunk:string,chunkname:string):function | (nil, string)
 ---@param chunk string
----@param chunkname string
+---@param chunkname? string
 ---@return function | (nil, string)
 function loadstring(chunk, chunkname) end
 
@@ -163,9 +156,10 @@ function loadstring(chunk, chunkname) end
 --- any value to a non-existent field in the table. You may however modify
 --- existing fields. In particular, you may set existing fields to nil.
 ---@overload fun<K, V>(table: table<K, V>): nil | (K, V)
+---@overload fun<K,V>(table:table<K, V>,index:K):nil | (K, V)
 ---@generic K, V
 ---@param table table<K, V>
----@param index K
+---@param index? K
 ---@return nil | (K, V)
 function next(table, index) end
 
@@ -182,7 +176,7 @@ function next(table, index) end
 --- traversal.
 ---@generic K, V
 ---@param t table<K, V>
----@return (fun(tab: table<K, V>, k: nil | K): nil | (K, V)), table<K, V>, K
+---@return (fun(tab: table<K, V>, k: nil | K): nil | (K, V)), table<K, V>, nil
 function pairs(t) end
 
 ---
@@ -192,11 +186,12 @@ function pairs(t) end
 --- boolean), which is true if the call succeeds without errors. In such case,
 --- `pcall` also returns all results from the call, after this first result. In
 --- case of any error, `pcall` returns **false** plus the error message.
----@overload fun(f: (fun: void), ...: any): boolean, nil | string
+---@overload fun(f:(fun: void),...:any):true | (false, any)
+---@overload fun<T>(f:(fun: T),...:any):(true, T) | (false, any)
 ---@generic T
----@param f fun: T
+---@param f (fun: T) | (fun: void)
 ---@vararg any
----@return boolean, T
+---@return true | (true, T) | (false, any)
 function pcall(f, ...) end
 
 ---
@@ -304,8 +299,9 @@ function setmetatable(table, metatable) end
 --- the string `e` is not a valid numeral in the given base, the function
 --- returns **nil**.
 ---@overload fun(e: number | string): nil | number
----@param e string
----@param base number
+---@overload fun(e:string,base:number):nil | number
+---@param e string | number
+---@param base? number
 ---@return nil | number
 function tonumber(e, base) end
 
@@ -335,27 +331,25 @@ function type(v) end
 --- except that the above code can be written only for a fixed number of elements.
 --- By default, `i` is 1 and `j` is the length of the list, as defined by the length
 --- operator (see §2.5.5).
----@overload fun<T>(list: T[]): T...
----@overload fun<T>(list: T[], i: number): T...
 ---@generic T
 ---@param list T[]
----@param i number
----@param j number
 ---@return T...
-function unpack(list, i, j)end
+function unpack(list) end
 
 ---
 --- A global variable (not a function) that holds a string containing the
 --- running Lua version. The current value of this variable is "`Lua 5.0`".
+---@type "Lua 5.0"
+
 _VERSION = "Lua 5.0"
 
 ---
 --- This function is similar to `pcall`, except that it sets a new message
 --- handler `msgh`.
----@overload fun(f: (fun: void), msgh: fun(message: any): any, ...: any): true | (false, any)
+---@overload fun(f:(fun: void),msgh:(fun(message:any):any)):true | (false, any)
+---@overload fun<T>(f:(fun: T),msgh:(fun(message:any):any)):(true, T) | (false, any)
 ---@generic T
----@param f fun: T
----@param msgh fun(message: any): any
----@vararg any
----@return (true, T) | (false, any)
-function xpcall(f, ...) end
+---@param f (fun: T) | (fun: void)
+---@param msgh fun(message:any):any
+---@return true | (true, T) | (false, any)
+function xpcall(f, msgh) end

@@ -1,17 +1,3 @@
--- Copyright (c) 2018. tangzx(love.tangzx@qq.com)
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 ---@class std__Debug
 debug = {}
 
@@ -26,17 +12,13 @@ debug = {}
 --- function, and so have no direct access to local variables.
 function debug.debug() end
 
---- Returns the environment of object `o`.
-function debug.getfenv(o) end
 
 ---
 --- Returns the current hook settings of the thread, as three values: the
 --- current hook function, the current hook mask, and the current hook count
 --- (as set by the `debug.sethook` function).
----@overload fun():thread
----@param thread thread
----@return thread
-function debug.gethook(thread) end
+---@return function | nil, string, number
+function debug.gethook() end
 
 ---@shape std__DebugInfo
 ---@field currentline number
@@ -66,9 +48,10 @@ function debug.gethook(thread) end
 --- the current function, if a reasonable name can be found, and
 --- `debug.getinfo(print)` returns a table with all available information about
 --- the `print` function.
----@overload fun(f: function | number): std__DebugInfo
+---@overload fun(f:function | number):std__DebugInfo
+---@overload fun(f:function | number,what:string):std__DebugInfo
 ---@param f function | number
----@param what string
+---@param what? string
 ---@return std__DebugInfo
 function debug.getinfo(f, what) end
 
@@ -92,12 +75,10 @@ function debug.getinfo(f, what) end
 ---
 --- The parameter `f` may also be a function. In that case, `getlocal` returns
 --- only the name of function parameters.
----@overload fun(f:table, var:string):table
----@param thread thread
----@param f table
----@param var string
----@return table
-function debug.getlocal(thread, f, var) end
+---@param level number
+---@param index number
+---@return nil | (string, any)
+function debug.getlocal(level, index) end
 
 ---
 --- This function returns the name and the value of the upvalue with index
@@ -106,10 +87,10 @@ function debug.getlocal(thread, f, var) end
 ---
 --- Variable names starting with '(' (open parenthesis) represent variables with
 --- no known names (variables from chunks saved without debug information).
----@param f number
+---@param func function
 ---@param up number
----@return table
-function debug.getupvalue(f, up) end
+---@return nil | (string, any)
+function debug.getupvalue(func, up) end
 
 ---
 --- Sets the given function as a hook. The string `mask` and the number `count`
@@ -132,12 +113,13 @@ function debug.getupvalue(f, up) end
 --- call `getinfo` with level 2 to get more information about the running
 --- function (level 0 is the `getinfo` function, and level 1 is the hook
 --- function)
----@overload fun(hook:(fun():any), mask:any):void
----@param thread thread
----@param hook fun():any
----@param mask string
----@param count number
-function debug.sethook(thread, hook, mask, count) end
+---@overload fun():void
+---@overload fun(hook:(fun():any),mask:string):void
+---@overload fun(hook:(fun():any),mask:string,count:number):void
+---@param hook? fun():any
+---@param mask? string
+---@param count? number
+function debug.sethook(hook, mask, count) end
 
 ---
 --- This function assigns the value `value` to the local variable with
@@ -146,28 +128,27 @@ function debug.sethook(thread, hook, mask, count) end
 --- raises an error when called with a `level` out of range. (You can call
 --- `getinfo` to check whether the level is valid.) Otherwise, it returns the
 --- name of the local variable.
----@overload fun(level:number, var:string, value:any):string
----@param thread thread
 ---@param level number
----@param var string
+---@param index number
 ---@param value any
----@return string
-function debug.setlocal(thread, level, var, value) end
+---@return string | nil
+function debug.setlocal(level, index, value) end
 
 ---
 --- This function assigns the value `value` to the upvalue with index `up`
 --- of the function `f`. The function returns **nil** if there is no upvalue
 --- with the given index. Otherwise, it returns the name of the upvalue.
----@param f fun():any
+---@param func function
 ---@param up number
 ---@param value any
----@return string
-function debug.setupvalue(f, up, value) end
+---@return string | nil
+function debug.setupvalue(func, up, value) end
 
 --- Returns a string with a traceback of the call stack. An optional `message`
 --- string is appended at the beginning of the traceback. This function is
 --- typically used with `xpcall` to produce better error messages.
----@overload fun(): string
----@param message string
+---@overload fun():string
+---@overload fun(message:string):string
+---@param message? string
 ---@return string
 function debug.traceback(message) end

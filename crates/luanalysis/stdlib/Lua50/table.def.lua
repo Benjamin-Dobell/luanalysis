@@ -1,17 +1,3 @@
--- Copyright (c) 2018. tangzx(love.tangzx@qq.com)
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 ---@class std__Table
 table = {}
 
@@ -23,10 +9,11 @@ table = {}
 ---@overload fun(list:string[]|number[]|(string|number)[]):string
 ---@overload fun(list:string[]|number[]|(string|number)[], sep:string):string
 ---@overload fun(list:string[]|number[]|(string|number)[], sep:string, i:number):string
+---@overload fun(list:string[]|number[]|(string|number)[],sep:string,i:number,j:number):string
 ---@param list string[]|number[]|(string|number)[]
----@param sep string
----@param i number
----@param j number
+---@param sep? string
+---@param i? number
+---@param j? number
 ---@return string
 function table.concat(list, sep, i, j) end
 
@@ -64,10 +51,11 @@ function table.getn(table) end
 --- value for `pos` is ``#list+1`, so that a call `table.insert(t,x)`` inserts
 --- `x` at the end of list `t`.
 ---@overload fun<T>(list:T[], value:T):void
+---@overload fun<T>(list:T[],pos:number,value:T):void
 ---@generic T
 ---@param list T[]
----@param pos number
----@param value T
+---@param pos number | T
+---@param value? T
 function table.insert(list, pos, value) end
 
 ---
@@ -80,11 +68,12 @@ function table.insert(list, pos, value) end
 ---
 --- The default value for `pos` is `#list`, so that a call `table.remove(l)`
 --- removes the last element of list `l`.
----@overload fun<V>(list:V[]):V
+---@overload fun<V>(list:V[]):V|nil
+---@overload fun<V>(list:V[],pos:number):V|nil
 ---@generic V
 ---@param list V[]
----@param pos number
----@return V
+---@param pos? number
+---@return V|nil
 function table.remove(list, pos) end
 
 ---
@@ -101,11 +90,12 @@ function table.remove(list, pos) end
 ---
 --- The sort algorithm is not stable: elements considered equal by the given
 --- order may have their relative positions changed by the sort.
----@overload fun<V>(list:V[]):number
+---@overload fun<V>(list:V[]):void
+---@overload fun<V>(list:V[],comp:(fun(a:V, b:V):boolean)):void
 ---@generic V
 ---@param list V[]
----@param comp fun(a:V, b:V):boolean
----@return number
+---@param comp? fun(a:V, b:V):boolean
+---@return void
 function table.sort(list, comp) end
 
 --- Updates the size of a `table`. If the `table` has a field "n" with a numerical

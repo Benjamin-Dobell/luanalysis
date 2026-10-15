@@ -1,17 +1,3 @@
--- Copyright (c) 2018. tangzx(love.tangzx@qq.com)
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 ---@class std__Io
 io = {}
 
@@ -19,7 +5,8 @@ io = {}
 --- Equivalent to `file:close()`. Without a file, closes the default output
 --- file.
 ---@overload fun():void
----@param file file
+---@overload fun(file:file):void
+---@param file? file
 function io.close(file) end
 
 ---
@@ -35,7 +22,8 @@ function io.flush() end
 --- In case of errors this function raises the error, instead of returning an
 --- error code.
 ---@overload fun():file
----@param file file | string
+---@overload fun(file:file | string):file
+---@param file? file | string
 ---@return file
 function io.input(file) end
 
@@ -52,10 +40,11 @@ function io.input(file) end
 ---
 --- In case of errors this function raises the error, instead of returning an
 --- error code.
----@overload fun():any
----@param filename string
----@return fun():any
-function io.lines(filename, ...) end
+---@overload fun():fun():nil | string
+---@overload fun(filename:string):fun():nil | string
+---@param filename? string
+---@return fun():nil | string
+function io.lines(filename) end
 
 ---
 --- This function opens a file, in the mode specified in the string `mode`.  In
@@ -73,15 +62,17 @@ function io.lines(filename, ...) end
 --- The `mode` string can also have a '`b`' at the end, which is needed in
 --- some systems to open the file in binary mode.
 ---@overload fun(filename:string):file
+---@overload fun(filename:string,mode:"r" | "w" | "a" | "r+" | "w+" | "a+" | "rb" | "wb" | "ab" | "rb+" | "wb+" | "ab+"):file
 ---@param filename string
----@param mode "r" | "w" | "a" | "r+" | "w+" | "a+" | "rb" | "wb" | "ab" | "rb+" | "wb+" | "ab+"
+---@param mode? "r" | "w" | "a" | "r+" | "w+" | "a+" | "rb" | "wb" | "ab" | "rb+" | "wb+" | "ab+"
 ---@return file
 function io.open(filename, mode) return file end
 
 ---
 --- Similar to `io.input`, but operates over the default output file.
 ---@overload fun():file
----@param file file | string
+---@overload fun(file:file | string):file
+---@param file? file | string
 ---@return file
 function io.output(file) end
 
@@ -92,18 +83,20 @@ function io.output(file) end
 --- you can use to read data from this program (if `mode` is "`r`", the default)
 --- or to write data to this program (if `mode` is "`w`").
 ---@overload fun(prog:string):file
+---@overload fun(prog:string,mode:"r" | "w"):file
 ---@param prog string
----@param mode "r" | "w"
+---@param mode? "r" | "w"
 ---@return file
 function io.popen(prog, mode) end
 
 ---
 --- Equivalent to `io.input():read(···)`.
----@overload fun(): nil | string
----@overload fun(format: "*a"): string
----@overload fun(...: "*n"): (nil | number), (nil | number)...
----@overload fun(...: "*l"): (nil | string), (nil | string)...
----@overload fun(...: number): (nil | string), (nil | string)...
+---@overload fun():nil | string
+---@overload fun(format:"*a"):string
+---@overload fun(...:"*n"):(nil | number), (nil | number)...
+---@overload fun(...:"*l"):(nil | string), (nil | string)...
+---@overload fun(...:number):(nil | string), (nil | string)...
+---@overload fun(...:"*a" | "*n" | "*l" | number):nil | string | number, (nil | string | number)...
 ---@vararg "*a" | "*n" | "*l" | number
 ---@return nil | string | number, (nil | string | number)...
 function io.read(...) end
@@ -153,8 +146,8 @@ function file:flush() end
 ---
 --- In case of errors this function raises the error, instead of returning an
 --- error code.
----@return fun():any
-function file:lines(...) end
+---@return fun():nil | string
+function file:lines() end
 
 ---
 --- Reads the file `file`, according to the given formats, which specify
@@ -180,11 +173,12 @@ function file:lines(...) end
 --- *number*: reads a string with up to this number of bytes, returning **nil**
 --- on end of file. If `number` is zero, it reads nothing and returns an
 --- empty string, or **nil** on end of file.
----@overload fun(): nil | string
----@overload fun(format: "*a"): string
----@overload fun(...: "*n"): (nil | number), (nil | number)...
----@overload fun(...: "*l"): (nil | string), (nil | string)...
----@overload fun(...: number): (nil | string), (nil | string)...
+---@overload fun():nil | string
+---@overload fun(format:"*a"):string
+---@overload fun(...:"*n"):(nil | number), (nil | number)...
+---@overload fun(...:"*l"):(nil | string), (nil | string)...
+---@overload fun(...:number):(nil | string), (nil | string)...
+---@overload fun(...:"*a" | "*n" | "*l" | number):nil | string | number, (nil | string | number)...
 ---@vararg "*a" | "*n" | "*l" | number
 ---@return nil | string | number, (nil | string | number)...
 function file:read(...) end
@@ -207,8 +201,9 @@ function file:read(...) end
 --- file (and returns 0); and the call `file:seek("end")` sets the position
 --- to the end of the file, and returns its size.
 ---@overload fun()
----@param whence "set" | "cur" | "end"
----@param offset number
+---@overload fun(whence:"set" | "cur" | "end",offset:number):void
+---@param whence? "set" | "cur" | "end"
+---@param offset? number
 function file:seek(whence, offset) end
 
 ---
@@ -224,8 +219,9 @@ function file:seek(whence, offset) end
 --- For the last two cases, `size` specifies the size of the buffer, in
 --- bytes. The default is an appropriate size.
 ---@overload fun(mode:string)
----@param mode "set" | "cur" | "end"
----@param size number
+---@overload fun(mode:"set" | "cur" | "end",size:number):void
+---@param mode "set" | "cur" | "end" | string
+---@param size? number
 function file:setvbuf(mode, size) end
 
 ---

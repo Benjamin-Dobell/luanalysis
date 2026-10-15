@@ -1,17 +1,3 @@
--- Copyright (c) 2018. tangzx(love.tangzx@qq.com)
---
--- Licensed under the Apache License, Version 2.0 (the "License"); you may not
--- use this file except in compliance with the License. You may obtain a copy of
--- the License at
---
--- http://www.apache.org/licenses/LICENSE-2.0
---
--- Unless required by applicable law or agreed to in writing, software
--- distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
--- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
--- License for the specific language governing permissions and limitations under
--- the License.
-
 ---@class std__Math
 ---@field huge number @The float value `HUGE_VAL`, a value larger than any other numeric value.
 ---@field pi number @The value of π.
@@ -100,7 +86,7 @@ function math.fmod(x, y) end
 --- Returns `m` and `e` such that *x = m2^e*, `e` is an integer and the
 --- absolute value of `m` is in the range *[0.5, 1)* (or zero when `x` is zero).
 ---@param x number
----@return number
+---@return number, number
 function math.frexp(x) end
 
 ---
@@ -118,6 +104,7 @@ function math.log10(x) end
 --- Returns the argument with the maximum value, according to the Lua operator
 --- `<`. (integer/float)
 ---@param x number
+---@vararg number
 ---@return number
 function math.max(x, ...) end
 
@@ -125,6 +112,7 @@ function math.max(x, ...) end
 --- Returns the argument with the minimum value, according to the Lua operator
 --- `<`. (integer/float)
 ---@param x number
+---@vararg number
 ---@return number
 function math.min(x, ...) end
 
@@ -132,7 +120,7 @@ function math.min(x, ...) end
 --- Returns the integral part of `x` and the fractional part of `x`. Its second
 --- result is always a float.
 ---@param x number
----@return number
+---@return number, number
 function math.modf(x) end
 
 ---
@@ -161,8 +149,9 @@ function math.rad(x) end
 --- .random`(1,n).
 ---@overload fun():number
 ---@overload fun(n: number):number
----@param m number
----@param n number
+---@overload fun(m:number,n:number):number
+---@param m? number
+---@param n? number
 ---@return number
 function math.random(m, n) end
 
