@@ -345,6 +345,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Preserve exact caller capabilities around delayed original arguments and establish canonical declaration frames for ordinary native signature provider callbacks.",
 } for path in ["call.rs", "decl.rs", "native_packs.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-method-variance.patch",
+    "reason": "Preserve original method bivariance while keeping Lua private overload implementations contravariant and constructing complete guarded native schemas before override validation.",
+} for path in ["infer.rs", "mod.rs", "native_named.rs", "native_tables.rs", "relate.rs", "shape.rs", "sink.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

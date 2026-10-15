@@ -1,0 +1,316 @@
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+index 37115c1..8b0be5f 100644
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -392,8 +392,8 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+         // `source.AsTypeReference().node != nil && target.AsTypeReference().node != nil`
+         let (original_source, original_target) = (source, target);
+-        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return };
+-        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return };
++        let source = match self.native_object_schema_resolved(source) { Ok(ty) => ty, Err(_) => return };
++        let target = match self.native_object_schema_resolved(target) { Ok(ty) => ty, Err(_) => return };
+         let are_both_deferred =
+             self.types().deferred(source).is_some() && self.types().deferred(target).is_some();
+         match (self.data(source), self.data(target)) {
+@@ -516,8 +516,8 @@ impl<'p, 's> Checker<'p, 's> {
+     /// Foreign structural objects use the same invokeOnce recursion and priority guard as TS
+     /// object inference. Keep the lazy declaration identity on its stack, not the expanded shape.
+     fn infer_native_object_types(&mut self, n: &mut Inference, source: TypeId, target: TypeId) {
+-        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return };
+-        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return };
++        let source = match self.native_object_schema_resolved(source) { Ok(ty) => ty, Err(_) => return };
++        let target = match self.native_object_schema_resolved(target) { Ok(ty) => ty, Err(_) => return };
+         match (self.data(source), self.data(target)) {
+             (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
+                 let mut sources = Vec::new();
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index e478ecd..19787b1 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -145,6 +145,9 @@ pub enum NativeTypeResult {
+ /// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
+ pub trait NativeFunctionProvider {
+     fn calling_convention(&self, _: NativeFunctionId) -> native_signatures::NativeCallingConvention { native_signatures::NativeCallingConvention::TypeScript }
++    /// Exact original method declaration syntax, not merely a callable property.
++    fn function_is_method(&self, _: NativeFunctionId) -> bool { false }
++    fn signature_is_method(&self, _: NativeSignatureId) -> bool { false }
+     fn contains_signature(&self, _: NativeSignatureId) -> bool { false }
+     fn signature_intrinsic(&self, _: NativeSignatureId) -> Option<native_intrinsics::NativeIntrinsicSite> { None }
+     fn signature_header(&self, _: NativeSignatureId) -> native_signatures::NativeSignatureHeader { panic!("native signature provider is not installed") }
+@@ -4230,7 +4233,7 @@ impl<'p, 's> Checker<'p, 's> {
+     pub fn array_element(&mut self, ty: TypeId) -> Option<TypeId> {
+         if let TypeData::NativeObject(reference) = *self.data(ty) {
+             if !self.native_object_is_array(reference) { return None }
+-            let resolved = self.native_object_resolved(ty).ok()?;
++            let resolved = self.native_object_schema_resolved(ty).ok()?;
+             let TypeData::NativeTable(table) = self.data(resolved) else { return None };
+             return table.indexers.first().map(|indexer| indexer.value);
+         }
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 39deb16..116b39b 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -148,6 +148,7 @@ pub enum NativeTypeDeclarationQuery {
+     IndexerKey(NativeTypeMemberId),
+     Bases(NativeTypeDeclarationId),
+     ObjectMembers(TypeId),
++    ObjectValidation(TypeId),
+     DefinitionContext(TypeId),
+ }
+ 
+@@ -254,6 +255,7 @@ pub(super) struct NativeNamedCache {
+     member_contexts: FxHashMap<NativeTypeMemberId, Option<TypeId>>,
+     definition_contexts: FxHashMap<TypeId, Result<TypeId, NativeNamedTypeError>>,
+     objects: FxHashMap<TypeId, Result<TypeId, NativeNamedTypeError>>,
++    schemas: FxHashMap<TypeId, Result<TypeId, NativeNamedTypeError>>,
+     bases: FxHashMap<NativeTypeDeclarationId, Result<Vec<TypeId>, NativeNamedTypeError>>,
+     mapped_bases: FxHashMap<TypeId, Vec<TypeId>>,
+     members: FxHashMap<TypeId, Vec<NativeObjectMember>>,
+@@ -288,6 +290,9 @@ impl NativeNamedCache {
+     fn object(&mut self, key: TypeId, value: Result<TypeId, NativeNamedTypeError>, _: Stored) {
+         self.objects.insert(key, value);
+     }
++    fn schema(&mut self, key: TypeId, value: Result<TypeId, NativeNamedTypeError>, _: Stored) {
++        self.schemas.insert(key, value);
++    }
+     fn bases(&mut self, key: NativeTypeDeclarationId, value: Result<Vec<TypeId>, NativeNamedTypeError>, _: Stored) { self.bases.insert(key, value); }
+     fn mapped_bases(&mut self, key: TypeId, value: Vec<TypeId>, _: Stored) { self.mapped_bases.insert(key, value); }
+     fn members(&mut self, key: TypeId, value: Vec<NativeObjectMember>, _: Stored) { self.members.insert(key, value); }
+@@ -647,7 +652,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 }
+                 if let Some(reference) = table.nominal_origin && reference.self_argument.is_none() {
+                     let object = self.intern(TypeData::NativeObject(NativeObjectReference { self_argument: Some(receiver), ..reference }));
+-                    return self.native_object_resolved(object).unwrap_or(TypeId::ERROR);
++                    return self.native_object_schema_resolved(object).unwrap_or(TypeId::ERROR);
+                 }
+                 ty
+             }
+@@ -870,15 +875,19 @@ impl<'p, 's> Checker<'p, 's> {
+         if let TypeData::NativeDefinition(reference) = *self.data(ty) { return Ok(self.native_definition_resolved(reference)) }
+         let TypeData::NativeObject(reference) = *self.data(ty) else { return Ok(ty) };
+         if let Some(&known) = self.native_named_cache.objects.get(&ty) { return known }
++        // Publish the complete declaration shape before comparing overrides.
++        // A method parameter can refer to this same class: the shared relation
++        // worker needs its shape without recursively validating the declaration.
++        self.native_object_schema_resolved(ty)?;
+         let members = self.native_object_members(reference)?;
+-        let native_query = NativeTypeDeclarationQuery::ObjectMembers(ty);
++        let native_query = NativeTypeDeclarationQuery::ObjectValidation(ty);
+         let query = Query::NativeNamed(native_query);
+         if !self.enter(query) {
+             let error = NativeNamedTypeError::TooDeep(native_query);
+             self.report_native_named(error);
+             return Err(error);
+         }
+-        let result = self.native_object_resolved_uncached(reference, &members);
++        let result = self.native_object_resolved_uncached(reference, &members, true);
+         match self.leave(query) {
+             Ok(stored) => self.native_named_cache.object(ty, result, stored),
+             Err(_) => {},
+@@ -887,10 +896,31 @@ impl<'p, 's> Checker<'p, 's> {
+         result
+     }
+ 
++    /// Complete declaration-space members for structural queries. Compatibility
++    /// validation is a separate demand, so recursive member types can use the
++    /// ordinary relation/inference guards after this shape has been published.
++    pub(super) fn native_object_schema_resolved(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
++        if let TypeData::NativeDefinition(reference) = *self.data(ty) { return Ok(self.native_definition_resolved(reference)) }
++        let TypeData::NativeObject(reference) = *self.data(ty) else { return Ok(ty) };
++        if let Some(&known) = self.native_named_cache.schemas.get(&ty) { return known }
++        let members = self.native_object_members(reference)?;
++        let native_query = NativeTypeDeclarationQuery::ObjectMembers(ty);
++        let query = Query::NativeNamed(native_query);
++        if !self.enter(query) {
++            let error = NativeNamedTypeError::TooDeep(native_query);
++            self.report_native_named(error);
++            return Err(error);
++        }
++        let result = self.native_object_resolved_uncached(reference, &members, false);
++        if let Ok(stored) = self.leave(query) { self.native_named_cache.schema(ty, result, stored); }
++        if let Err(error) = result { self.report_native_named(error); }
++        result
++    }
++
+     /// Callable named objects keep their original signature view in recursive
+     /// relations; exact Lua fields/keys still use the resolved table view.
+     pub(super) fn native_object_relation_view(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+-        let resolved = self.native_object_resolved(ty)?;
++        let resolved = self.native_object_schema_resolved(ty)?;
+         if self.native_object_has_call_signatures(ty) { return Ok(ty) }
+         Ok(resolved)
+     }
+@@ -939,11 +969,14 @@ impl<'p, 's> Checker<'p, 's> {
+         heads
+     }
+ 
+-    fn native_object_resolved_uncached(&mut self, reference: NativeObjectReference, members: &[NativeObjectMember]) -> Result<TypeId, NativeNamedTypeError> {
++    fn native_object_resolved_uncached(&mut self, reference: NativeObjectReference, members: &[NativeObjectMember], validate: bool) -> Result<TypeId, NativeNamedTypeError> {
+         let declaration = reference.declaration;
+         let provider = self.native_named_provider(declaration)?;
+         let header = provider.type_declaration_header(self, declaration);
+-        for base in self.native_object_bases(reference)? { self.native_object_resolved(base)?; }
++        for base in self.native_object_bases(reference)? {
++            if validate { self.native_object_resolved(base)?; }
++            else { self.native_object_schema_resolved(base)?; }
++        }
+         if let Some(NativeObjectDeclarationForm::Table { type_argument_count }) = header.object_form
+             && type_argument_count != 2 {
+             return Err(NativeNamedTypeError::TypeArgumentArity { declaration, actual: type_argument_count, minimum: 2, maximum: 2 });
+@@ -957,7 +990,7 @@ impl<'p, 's> Checker<'p, 's> {
+             let value_origin = provider.type_member_origin(origin.member);
+             let raw = self.native_object_member_demand(&origin)?;
+             let value = self.native_member_type(raw, origin.owner);
+-            if header.kind != NativeTypeDeclarationKind::Class {
++            if validate && header.kind != NativeTypeDeclarationKind::Class {
+                 if let Err(NativeTableError::ValueType { value: actual, expected }) = self.native_member_read(raw, origin.owner) {
+                     return Err(NativeNamedTypeError::InvalidReceiver { declaration, actual, expected });
+                 }
+@@ -972,6 +1005,7 @@ impl<'p, 's> Checker<'p, 's> {
+                         let actual = if previous.optional { self.optional(previous.value) } else { previous.value };
+                         if origin.via.is_none() { return Err(NativeNamedTypeError::Table { declaration, error: NativeTableError::DuplicateDeclaredField { key: field.key } }) }
+                         let (index, base) = origin.via.unwrap();
++                        if !validate { continue; }
+                         if previous_origin.via.is_none() {
+                             if previous.optional && !field.optional || !self.is_assignable(actual, expected) {
+                                 return Err(NativeNamedTypeError::IncompatibleOverride { declaration, member: previous_origin.member, base, expected, actual });
+@@ -1002,7 +1036,7 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+             indexer.value = self.union(&values);
+         }
+-        for (position, indexer) in indexers.iter().enumerate() {
++        for (position, indexer) in indexers.iter().enumerate().filter(|_| validate) {
+             let origin = &indexer_origins[position];
+             for (other_position, expected) in indexers.iter().enumerate().take(position) {
+                 let other = &indexer_origins[other_position];
+@@ -1142,7 +1176,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let members: Vec<_> = self.native_object_members(reference)?.into_iter()
+             .filter(|origin| origin.via.is_some() || provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared)
+             .collect();
+-        let schema = self.native_object_resolved_uncached(reference, &members)?;
++        let schema = self.native_object_resolved_uncached(reference, &members, true)?;
+         let TypeData::NativeTable(data) = self.data(schema) else { unreachable!() };
+         let fields: Vec<_> = data.fields.iter().map(|field| NativeTableField { optional: true, ..*field }).collect();
+         let mut context = (**data).clone_in(self.arena);
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+index c61bea8..4aa291a 100644
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -1005,7 +1005,7 @@ impl<'p, 's> Checker<'p, 's> {
+     /// native table relations without manufacturing JS names for numeric or boolean Lua keys.
+     pub(super) fn native_table_object_description(&mut self, ty: TypeId) -> Option<NativeTableData<'s>> {
+         let ty = self.native_runtime_carrier(ty);
+-        let ty = self.native_object_resolved(ty).ok()?;
++        let ty = self.native_object_schema_resolved(ty).ok()?;
+         if let TypeData::NativeTable(table) = self.data(ty) { return Some((**table).clone_in(self.arena)) }
+         if self.is_array_or_tuple(ty) { return None }
+         let members = self.structured_members(ty)?;
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+index 994a618..db4ca4e 100644
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -119,6 +119,9 @@ pub(super) const STRICT_TOP_SIGNATURE: u8 = 16;
+ pub(super) const CALLBACK: u8 = BIVARIANT_CALLBACK | STRICT_CALLBACK;
+ /// `incompatibleErrorReporter` is `reportIncompatibleConstructSignatureReturn`. Set with `reportErrors` only.
+ const CONSTRUCT_SIGNATURE: u8 = 32;
++/// Lua public overloads must all be accepted by the private implementation,
++/// including when the original declaration uses method syntax.
++const STRICT_FUNCTION_VARIANCE: u8 = 64;
+ 
+ /// `getRelationKey`: the source, the target, and flags. The flags hold the relation in the low four bits and the intersection
+ /// state above it.
+@@ -2795,7 +2798,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 && self.is_weak_type(target)
+                 && {
+                     let apparent = self.reduced_apparent_type_as_object(source);
+-                    let apparent = self.native_object_resolved(apparent).unwrap_or(apparent);
++                    let apparent = self.native_object_schema_resolved(apparent).unwrap_or(apparent);
+                     match self.data(apparent) {
+                         TypeData::NativeTable(table) => !table.fields.is_empty(),
+                         _ => self.members(apparent)
+@@ -2906,9 +2909,10 @@ impl<'p, 's> Checker<'p, 's> {
+                     _ => None,
+                 }
+             }));
+-        let target = if implementation_declaration.is_some_and(|declaration| {
++        let lua_implementation = implementation_declaration.is_some_and(|declaration| {
+             self.native_function_provider.is_some_and(|provider| provider.calling_convention(declaration) == super::native_signatures::NativeCallingConvention::Lua)
+-        }) {
++        });
++        let target = if lua_implementation {
+             // Erasure maps a generic parameter to any for the ordinary TS
+             // comparison. That must not make a missing physical nil satisfy a
+             // written nonnullable generic implementation parameter.
+@@ -2930,7 +2934,7 @@ impl<'p, 's> Checker<'p, 's> {
+             source,
+             target,
+             (implementation, overload),
+-            IGNORE_RETURN_TYPES,
++            IGNORE_RETURN_TYPES | if lua_implementation { STRICT_FUNCTION_VARIANCE } else { 0 },
+             0,
+         )
+         .holds()
+@@ -3236,8 +3240,8 @@ impl<'p, 's> Checker<'p, 's> {
+     /// `hasCommonProperties`
+     pub(super) fn has_common_properties(&mut self, source: TypeId, target: TypeId) -> bool {
+         let apparent = self.reduced_apparent_type_as_object(source);
+-        let apparent = match self.native_object_resolved(apparent) { Ok(ty) => ty, Err(_) => return false };
+-        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return false };
++        let apparent = match self.native_object_schema_resolved(apparent) { Ok(ty) => ty, Err(_) => return false };
++        let target = match self.native_object_schema_resolved(target) { Ok(ty) => ty, Err(_) => return false };
+         if let TypeData::NativeTable(source) = self.data(apparent) {
+             if let TypeData::NativeTable(target) = self.data(target) {
+                 return source.fields.iter().any(|field| target.fields.iter().any(|other| other.key == field.key));
+@@ -7236,10 +7240,15 @@ impl<'p, 's> Checker<'p, 's> {
+                 self.hir(file)[func].kind,
+                 FnKind::Method | FnKind::Constructor
+             ),
+-            None => false,
++            None => self.sig_native_signature_decl(declared).is_some_and(|(declaration, _)| {
++                self.native_signature_provider_for(declaration).signature_is_method(declaration)
++            }) || self.sig_native_decl(declared).is_some_and(|(declaration, _)| {
++                self.native_function_provider.is_some_and(|provider| provider.function_is_method(declaration))
++            }),
+         };
+         let strict_variance =
+-            check_mode & CALLBACK == 0 && self.p.files.options.strict_function_types && !is_method;
++            check_mode & CALLBACK == 0 && (check_mode & STRICT_FUNCTION_VARIANCE != 0
++                || self.p.files.options.strict_function_types && !is_method);
+         let mut result = Ternary::TRUE;
+         if let Some(source_this) = self.sig_this_type(source)
+             && source_this != TypeId::VOID
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+index df5687c..5010b0b 100644
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -494,7 +494,7 @@ impl<'p, 's> Checker<'p, 's> {
+         match self.data(ty) {
+             TypeData::NativeObject(_) => {
+                 let is_array = self.is_array(ty);
+-                let resolved = self.native_object_resolved(ty).ok()?;
++                let resolved = self.native_object_schema_resolved(ty).ok()?;
+                 if !is_array { return None }
+                 let TypeData::NativeTable(table) = self.data(resolved) else { return None };
+                 table.indexers.first().map(|indexer| std::slice::from_ref(&indexer.value))
+@@ -1394,7 +1394,7 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+             TypeData::NativeDefinition(_) | TypeData::NativeObject(_) => {
+                 let shape = self.shape_memo(ty, |c| {
+-                    let resolved = match c.native_object_resolved(ty) { Ok(ty) => ty, Err(_) => return Shape::new_in(c.arena) };
++                    let resolved = match c.native_object_schema_resolved(ty) { Ok(ty) => ty, Err(_) => return Shape::new_in(c.arena) };
+                     let mut shape = c.members(resolved).map(|m| m.whole_shape().clone_in(c.arena)).unwrap_or_else(|| Shape::new_in(c.arena));
+                     if matches!(c.data(ty), TypeData::NativeObject(_)) && shape.call.is_empty() {
+                         shape.call.extend(c.native_object_call_heads(ty));
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+index 7c3d248..d03bd42 100644
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -245,6 +245,7 @@ impl<'s> Sink<'s> {
+ fn is_task_independent(q: Query) -> bool {
+     match q {
+         Query::NativeNamed(super::native_named::NativeTypeDeclarationQuery::ObjectMembers(_)
++            | super::native_named::NativeTypeDeclarationQuery::ObjectValidation(_)
+             | super::native_named::NativeTypeDeclarationQuery::DefinitionContext(_)) => false,
+         Query::NativeNamed(_)
+         | Query::NativeProject(_) => true,

@@ -1416,6 +1416,48 @@
       "patch": "vendor/patches/bun-sema-native-caller-declaration-frames.patch",
       "reason": "Preserve exact caller capabilities around delayed original arguments and establish canonical declaration frames for ordinary native signature provider callbacks.",
       "patch_sha256": "ddbb5d64d42bf833e147f13bc14d8afe5fc25a8eacb79625edd13aa09745fc5b"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-method-variance.patch",
+      "reason": "Preserve original method bivariance while keeping Lua private overload implementations contravariant and constructing complete guarded native schemas before override validation.",
+      "patch_sha256": "bfd35000bc58c92fa3beaf183c59ce80bed92c8b1cabce1f242fc98262823b04"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-method-variance.patch",
+      "reason": "Preserve original method bivariance while keeping Lua private overload implementations contravariant and constructing complete guarded native schemas before override validation.",
+      "patch_sha256": "bfd35000bc58c92fa3beaf183c59ce80bed92c8b1cabce1f242fc98262823b04"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-method-variance.patch",
+      "reason": "Preserve original method bivariance while keeping Lua private overload implementations contravariant and constructing complete guarded native schemas before override validation.",
+      "patch_sha256": "bfd35000bc58c92fa3beaf183c59ce80bed92c8b1cabce1f242fc98262823b04"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-method-variance.patch",
+      "reason": "Preserve original method bivariance while keeping Lua private overload implementations contravariant and constructing complete guarded native schemas before override validation.",
+      "patch_sha256": "bfd35000bc58c92fa3beaf183c59ce80bed92c8b1cabce1f242fc98262823b04"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-method-variance.patch",
+      "reason": "Preserve original method bivariance while keeping Lua private overload implementations contravariant and constructing complete guarded native schemas before override validation.",
+      "patch_sha256": "bfd35000bc58c92fa3beaf183c59ce80bed92c8b1cabce1f242fc98262823b04"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-method-variance.patch",
+      "reason": "Preserve original method bivariance while keeping Lua private overload implementations contravariant and constructing complete guarded native schemas before override validation.",
+      "patch_sha256": "bfd35000bc58c92fa3beaf183c59ce80bed92c8b1cabce1f242fc98262823b04"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-method-variance.patch",
+      "reason": "Preserve original method bivariance while keeping Lua private overload implementations contravariant and constructing complete guarded native schemas before override validation.",
+      "patch_sha256": "bfd35000bc58c92fa3beaf183c59ce80bed92c8b1cabce1f242fc98262823b04"
     }
   ],
   "source_additions": {
@@ -1444,7 +1486,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "6c49a3e93fadb516ae75f41b1ae2a23022a39de016804bc8994183d846e886cd",
+      "extracted_sha256": "76140f654485dcfb97fa49f204f3c46581ed26eee24bdabc302cea23a64b8d21",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1464,7 +1506,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "40a626b86d4f2b653dd097e88f5a5a0c5cadf31eef5adb4fbc76351c06765b4a",
+      "extracted_sha256": "84bafdce097e3ec3006ebb831137befcbca81f446339c5d8439157f7e42ea514",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2387,7 +2429,7 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "0674f6aa4dca2fc20f1c05492344c9eaa3284ce5d8c7dd530b259f813e2e38ea"
+      "extracted_sha256": "d44e40dbf788c8cf2a34a58db44c9c400dff277b9359e9d19142c91ee9b31e32"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
@@ -2422,7 +2464,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "ab2612f8961b27ba4934577248ff4015422039286267079989620a30ea356898"
+      "extracted_sha256": "24aa650f2e0cb2a2522f2ca0b7d5fa4a00d724ece7a32f1793228d6ed026cb8a"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -2447,7 +2489,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "56c788a76ea156e89be85e43979526b7b0c35945588edd92e6713b5f1a1de956"
+      "extracted_sha256": "887a78a0d3b714eae415b70af39a00a02692f1dc60b6cd840ef835400de918c6"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -2502,12 +2544,12 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "6384a377095ef3e32643aadab52cf28a0dcde4db88360f0576c861a92b3e156e"
+      "extracted_sha256": "79adc8accb14ea53bed918757f5469f15eb3b57017c9d8d91a3ac3eb66478f08"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "2d6860ec0139e499d7980efc872ea3f709b2a9683eff5bc1db33106b6fda2c8f"
+      "extracted_sha256": "fd7a5669e3e75d95a247aad0d6d9e579adc31232409b8a790be6d71e694bbf2b"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",
