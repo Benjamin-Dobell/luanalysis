@@ -459,6 +459,39 @@ fn opaque_unknown_and_type_parameters_keep_the_nominal_root_intersection() {
                 graph.narrowed(queries, false).ty,
                 queries.regular_type(&formal)
             );
+            // Demand the category of the actual retained intersection too:
+            // the union-only parts API returns an intersection itself.
+            for (context, kind, matches) in [
+                (13, NativeRuntimeType::Userdata, true),
+                (14, NativeRuntimeType::Thread, false),
+                (15, NativeRuntimeType::Table, false),
+                (16, NativeRuntimeType::Function, false),
+            ] {
+                let graph = Graph {
+                    context,
+                    value: expected.clone(),
+                    kind,
+                };
+                let yes = graph.narrowed(queries, true);
+                let no = graph.narrowed(queries, false);
+                assert!(!yes.incomplete && !no.incomplete);
+                assert_eq!(
+                    yes.ty,
+                    if matches {
+                        expected.clone()
+                    } else {
+                        Type::Never
+                    }
+                );
+                assert_eq!(
+                    no.ty,
+                    if matches {
+                        Type::Never
+                    } else {
+                        expected.clone()
+                    }
+                );
+            }
         },
     );
 }

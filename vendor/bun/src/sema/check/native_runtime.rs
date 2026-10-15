@@ -75,8 +75,8 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     fn native_opaque_runtime_kind(&mut self, ty: TypeId) -> Result<NativeOpaqueRuntimeDomain, NativeNamedTypeError> {
-        if self.is_intersection(ty) {
-            for part in self.parts(ty).to_vec() {
+        if let TypeData::Intersection(parts) = self.data(ty) {
+            for part in parts.to_vec() {
                 match self.native_opaque_runtime_kind(part)? {
                     Complete(None) => {},
                     other => return Ok(other),
