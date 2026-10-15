@@ -227,6 +227,25 @@ impl NativeFlowProvider for StandardRecipes {
         }
     }
 
+    fn value_alias_environment_member(&self, original: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasEnvironmentMember> {
+        let (receiver, member, lookup) = match original.index {
+            60 => (1, 0, input),
+            61 => (20, 0, input), // An ordinary allocation with the same slot candidate.
+            62 => (7, 0, input), // A foreign environment cannot attest this binding.
+            63 => (1, 15, input), // A candidate from the wrong environment.
+            64 => (3, 0, input), // A callable value is not the environment object.
+            65 => (1, 0, at(0, 0)), // A saved read precedes the later replacement.
+            66 => (1, 0, at(0, 4)), // Receiver freezes first; lookup follows the write.
+            67 => (67, 0, input), // Incomplete receiver provenance must stay pending.
+            _ => return None,
+        };
+        Some(NativeAliasEnvironmentMember {
+            receiver: NativeAliasReturnValue { value: value(0, receiver), input: at(0, 0) },
+            reference: reference(0, member),
+            input: lookup,
+        })
+    }
+
     fn alias_call_source(&self, original: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> {
         let (callee, callee_input, arguments) = match original.index {
             100 => (value(0, 0), at(0, 0), vec![
@@ -343,6 +362,33 @@ fn written_callable_heads_and_forged_standard_membership_do_not_attest_runtime_i
             }
             assert_ne!(queries.flow_alias_relation(recipes, reference(0, 2), at(0, 0), value(0, 7), at(0, 0)), NativeAliasRelation::Same);
             assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, 0), at(0, 0)), StandardRecipes::selected());
+        });
+    }
+}
+
+#[test]
+fn fixed_member_identity_requires_the_actual_environment_and_uses_the_lookup_epoch() {
+    for routed in [false, true] {
+        Engine::new().with_native_provider(move || StandardRecipes::new(routed), |recipes, queries| {
+            assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, 60), at(0, 0)), StandardRecipes::selected());
+            for index in 61..=64 {
+                assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, index), at(0, 0)), NativeAliasIntrinsic::Unknown, "unproven receiver/candidate {index}");
+            }
+            assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, 60), at(0, 4)), NativeAliasIntrinsic::Unknown);
+            assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, 65), at(0, 4)), StandardRecipes::selected());
+            assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, 66), at(0, 4)), NativeAliasIntrinsic::Unknown);
+        });
+    }
+}
+
+#[test]
+fn fixed_member_identity_does_not_cache_incomplete_receiver_provenance_as_absent() {
+    for routed in [false, true] {
+        Engine::new().with_native_provider(move || StandardRecipes::new(routed), |recipes, queries| {
+            for _ in 0..2 {
+                assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, 67), at(0, 0)), NativeAliasIntrinsic::Pending);
+            }
+            assert_eq!(queries.flow_alias_intrinsic(recipes, value(0, 60), at(0, 0)), StandardRecipes::selected());
         });
     }
 }

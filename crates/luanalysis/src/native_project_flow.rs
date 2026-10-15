@@ -4,7 +4,7 @@ use super::ProjectRegistry;
 use crate::native_flow::FlowAdapter;
 use luanalysis_engine::{
     CallError, LuaKey, NativeAliasCall, NativeAliasDispatch, NativeAliasExecution,
-    NativeAliasInitial, NativeAliasReturn, NativeAliasReturnValue, NativeAliasValue,
+    NativeAliasInitial, NativeAliasReturn, NativeAliasReturnValue, NativeAliasValue, NativeAliasEnvironmentMember,
     NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeFlowProvider,
     NativeFunctionCreation, NativeFunctionKey, NativeGraphKey, NativeIteratorProjection,
     NativeIteratorStage, NativePackProjection, NativePredicate, NativeReferenceKey, NativeValueKey,
@@ -43,6 +43,7 @@ impl NativeFlowProvider for ProjectRegistry {
         fn reference_is_cell(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
         fn reference_written_contract(reference: NativeReferenceKey, queries: &mut dyn TypeQueries) -> Option<Type> { reference.graph.snapshot; None }
         fn value_alias_source(value: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue { value.snapshot; NativeAliasValue::Unknown }
+        fn value_alias_environment_member(value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasEnvironmentMember> { value.snapshot; None }
         fn value_alias_member_source(value: NativeValueKey, input: NativeFlowKey, key: &LuaKey) -> Option<NativeAliasReturnValue> { value.snapshot; None }
         fn function_alias_returns(function: NativeFunctionKey) -> Option<Vec<NativeAliasReturn>> { function.snapshot; None }
         fn function_alias_exit(function: NativeFunctionKey) -> Option<NativeFlowKey> { function.snapshot; None }

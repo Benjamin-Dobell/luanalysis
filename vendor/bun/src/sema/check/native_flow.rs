@@ -268,6 +268,9 @@ pub trait NativeFlowProvider {
     /// An invariant original written bound, never an inferred or narrowed view.
     fn reference_written_contract(&self, _: NativeReferenceKey, _: &mut Checker<'_, '_>) -> Option<TypeId> { None }
     fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> super::native_aliases::NativeAliasValue { super::native_aliases::NativeAliasValue::Unknown }
+    /// Candidate canonical slot for an original fixed-member read. Its frozen
+    /// receiver's environment identity is proved by the native alias worker.
+    fn value_alias_environment_member(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasEnvironmentMember> { None }
     /// A unique original literal field at its frozen evaluation input. A
     /// structural property type cannot establish runtime value provenance.
     fn value_alias_member_source(&self, _: NativeValueKey, _: NativeFlowKey, _: NativeTableKey, _: &Checker<'_, '_>) -> Option<super::native_aliases::NativeAliasReturnValue> { None }

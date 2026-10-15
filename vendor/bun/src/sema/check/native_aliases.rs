@@ -22,6 +22,14 @@ pub enum NativeAliasValue {
 }
 #[derive(Clone, Copy, Debug)]
 pub struct NativeAliasReturnValue { pub value: NativeValueKey, pub input: NativeFlowKey }
+/// An original fixed member read and its candidate physical environment slot.
+/// The native worker must prove the receiver before using the candidate slot.
+#[derive(Clone, Copy, Debug)]
+pub struct NativeAliasEnvironmentMember {
+    pub receiver: NativeAliasReturnValue,
+    pub reference: NativeReferenceKey,
+    pub input: NativeFlowKey,
+}
 #[derive(Clone, Debug)]
 pub struct NativeAliasReturn {
     pub at: NativeFlowKey,
@@ -555,7 +563,11 @@ impl<'p, 's> Checker<'p, 's> {
             });
             if complete.is_some() && !self.is_stack_low() { origin } else { None }
         } else { None };
-        let mut result = if let Some(environment) = environment {
+        let member = if column == 0 { provider.value_alias_environment_member(value, input) } else { None };
+        let member = member.and_then(|member| self.native_alias_environment_member(provider, member));
+        let mut result = if let Some(member) = member {
+            member
+        } else if let Some(environment) = environment {
             Origins::one(Origin::Environment(environment), false)
         } else { match provider.value_alias_source(value, input) {
             NativeAliasValue::Reference { reference, input } => if column == 0 { self.native_alias_reference(provider, reference, input) } else { Origins::non_table() },
@@ -582,6 +594,18 @@ impl<'p, 's> Checker<'p, 's> {
             _ => { result.unknown = true; result.uncertain = true; self.mark_tainted_from(0); },
         }
         result
+    }
+
+    fn native_alias_environment_member(&mut self, provider: &dyn NativeFlowProvider, member: NativeAliasEnvironmentMember) -> Option<Origins> {
+        if member.reference.graph != member.input.graph || !provider.contains_reference(member.reference) || provider.node(member.input).is_none() { return None }
+        let NativeAliasInitial::GlobalValue(binding) = provider.reference_alias_initial(member.reference) else { return None };
+        if !self.native_globals_provider.is_some_and(|globals| globals.contains_global_binding(binding) && globals.contains_global_environment(binding.environment)) { return None }
+        let receiver = self.native_alias_value(provider, member.receiver.value, member.receiver.input, 0);
+        if receiver.uncertain { self.mark_tainted_from(0); return Some(receiver) }
+        if receiver.unknown || receiver.non_table || receiver.tokens.len() != 1 || !receiver.tokens.contains(&Origin::Environment(binding.environment)) { return None }
+        // Resolve the physical slot at the lookup epoch, after evaluating a
+        // computed key, rather than at the receiver's earlier frozen input.
+        Some(self.native_alias_reference(provider, member.reference, member.input))
     }
 
     fn native_alias_projected_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey, column: usize, path: &[NativeTableKey]) -> Origins {

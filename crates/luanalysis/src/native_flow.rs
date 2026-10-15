@@ -1489,6 +1489,29 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             _=>NativeAliasValue::Unknown,
         }
     }
+    fn value_alias_environment_member(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasEnvironmentMember> {
+        let ValueRecipe::Evaluation(evaluation) = self.sources.value(value)? else { return None };
+        let evaluation = self.sources.program.evaluation(*evaluation);
+        let expression = &self.sources.program.expression(evaluation.expression).expression;
+        match &expression.kind {
+            ExprKind::Field { .. } => {},
+            ExprKind::Index { index, .. } if super::native_tables::literal_key(index).is_some() => {},
+            _ => return None,
+        }
+        let receiver = self.sources.program.evaluation(*evaluation.operands.first()?);
+        // This is only a candidate address. A matching spelling or a static
+        // assertion cannot prove that the frozen receiver is the environment.
+        let reference = self.sources.environment_member_reference(input.graph, expression)?;
+        let lookup = *self.sources.program.node(evaluation.completed).antecedents.first()?;
+        Some(luanalysis_engine::NativeAliasEnvironmentMember {
+            receiver: luanalysis_engine::NativeAliasReturnValue {
+                value: self.sources.evaluation_value(receiver.id),
+                input: self.sources.flow_key(receiver.input, input.graph.context),
+            },
+            reference,
+            input: self.sources.flow_key(lookup, input.graph.context),
+        })
+    }
     fn function_alias_returns(&self,function:NativeFunctionKey)->Option<Vec<luanalysis_engine::NativeAliasReturn>> {
         use luanalysis_engine::{NativeAliasReturn,NativeAliasReturnValue};
         let graph=self.sources.graph_for_function(function,None)?;

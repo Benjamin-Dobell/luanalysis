@@ -10,7 +10,7 @@ pub use core::{
     NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeValueKey, NativeWriteRelation, NativeIteratorProjection, NativeIteratorStage,
     NativeVariableDeclaration, NativeVariableWrite, NativeFunctionCreation,
 };
-pub use bun_sema::check::native_aliases::{NativeAliasRelation, NativeAliasReturn, NativeAliasReturnValue, NativeAliasExecution, NativeAliasCall, NativeAliasDispatch, NativeCallPreservation};
+pub use bun_sema::check::native_aliases::{NativeAliasRelation, NativeAliasReturn, NativeAliasReturnValue, NativeAliasEnvironmentMember, NativeAliasExecution, NativeAliasCall, NativeAliasDispatch, NativeCallPreservation};
 #[derive(Clone, Copy, Debug)]
 pub enum NativeAliasValue {
     Reference { reference: NativeReferenceKey, input: NativeFlowKey },
@@ -50,6 +50,7 @@ pub trait NativeFlowProvider {
     /// Original written binding/member contract, independent of flow epoch.
     fn reference_written_contract(&self, _: NativeReferenceKey, _: &mut dyn TypeQueries) -> Option<Type> { None }
     fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> NativeAliasValue { NativeAliasValue::Unknown }
+    fn value_alias_environment_member(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativeAliasEnvironmentMember> { None }
     fn value_alias_member_source(&self, _: NativeValueKey, _: NativeFlowKey, _: &super::LuaKey) -> Option<NativeAliasReturnValue> { None }
     /// Original heap-store receiver and its own frozen evaluation input.
     fn write_alias_receiver(&self, _: NativeFlowKey) -> Option<NativeAliasReturnValue> { None }
@@ -164,6 +165,9 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     }
     fn value_alias_member_source(&self, value: NativeValueKey, input: NativeFlowKey, key: bun_sema::types::NativeTableKey, checker: &Checker<'_, '_>) -> Option<NativeAliasReturnValue> {
         self.provider.value_alias_member_source(value, input, &super::native_tables::export_literal_key(checker, key))
+    }
+    fn value_alias_environment_member(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasEnvironmentMember> {
+        self.provider.value_alias_environment_member(value, input)
     }
     fn function_alias_returns(&self, function: bun_sema::types::NativeFunctionId) -> Option<Vec<NativeAliasReturn>> { self.provider.function_alias_returns(super::source_key(function)) }
     fn function_alias_exit(&self, function: bun_sema::types::NativeFunctionId) -> Option<NativeFlowKey> { self.provider.function_alias_exit(super::source_key(function)) }

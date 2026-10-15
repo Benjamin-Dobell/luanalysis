@@ -6,7 +6,7 @@ use super::native_flow::FlowProviderAdapter;
 use super::{Checker, NativeTypeProvider, ProviderAdapter};
 use bun_sema::check::native_aliases::{
     NativeAliasCall, NativeAliasDispatch, NativeAliasExecution, NativeAliasInitial,
-    NativeAliasReturn, NativeAliasReturnValue, NativeAliasValue,
+    NativeAliasReturn, NativeAliasReturnValue, NativeAliasValue, NativeAliasEnvironmentMember,
 };
 use bun_sema::check::native_flow::{
     self as core, NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode,
@@ -76,6 +76,9 @@ impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> 
 
     fn value_alias_source(&self, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue {
         self.project_flow_adapter().value_alias_source(value, input)
+    }
+    fn value_alias_environment_member(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasEnvironmentMember> {
+        self.project_flow_adapter().value_alias_environment_member(value, input)
     }
 
     fn value_alias_member_source(&self, value: NativeValueKey, input: NativeFlowKey, key: NativeTableKey, checker: &Checker<'_, '_>) -> Option<NativeAliasReturnValue> {

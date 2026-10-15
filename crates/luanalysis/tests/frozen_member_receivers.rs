@@ -88,7 +88,7 @@ fn rejects_checked_value(source: &str, output: &Output) {
 
 const ORDINARY: &str = r#"
 ---@param value any
----@return string
+---@return 'number'
 local function ordinary_type(value)
     return 'number'
 end
@@ -98,8 +98,11 @@ end
 fn asserted_environment_aliases_keep_runtime_origin_through_field_index_and_parentheses() {
     let fixture = Fixture::new();
     for access in [
+        "alias.type",
+        "((alias)).type",
         "((--[[---@type TypeView]] alias)).type",
         "((--[[---@type TypeView]] alias))['type']",
+        "_G.type",
     ] {
         let source = format!(
             r#"---@shape TypeView
@@ -119,7 +122,12 @@ use('text')
         );
         clean(&fixture.check(&source));
 
-        let ordinary = source.replace("local alias=_G", "local alias={type=ordinary_type}");
+        // The direct _G form also needs a real ordinary receiver control:
+        // a local with that spelling cannot certify the global capability.
+        let ordinary = source.replace(
+            "local alias=_G",
+            "local _G={type=ordinary_type}\nlocal alias=_G",
+        );
         rejects_checked_value(&ordinary, &fixture.check(&ordinary));
         let corrected = ordinary.replace(
             "---@type number\n        local checked=value",
@@ -127,6 +135,58 @@ use('text')
         );
         clean(&fixture.check(&corrected));
     }
+}
+
+#[test]
+fn replacing_environment_type_before_member_lookup_does_not_narrow() {
+    let fixture = Fixture::new();
+    let source = format!(
+        r#"{ORDINARY}
+local alias=_G
+alias.type=ordinary_type
+local kind=alias.type
+---@param value number|string
+local function use(value)
+    if kind(value)=='number' then
+        ---@type number
+        local checked=value
+    end
+end
+use('text')
+"#
+    );
+    rejects_checked_value(&source, &fixture.check(&source));
+    let corrected = source.replace(
+        "---@type number\n        local checked=value",
+        "---@type number|string\n        local checked=value",
+    );
+    clean(&fixture.check(&corrected));
+}
+
+#[test]
+fn saving_environment_type_before_member_replacement_keeps_the_original_predicate() {
+    let fixture = Fixture::new();
+    let source = format!(
+        r#"{ORDINARY}
+local alias=_G
+local kind=alias.type
+alias.type=ordinary_type
+---@param value number|string
+local function use(value)
+    if kind(value)=='number' then
+        ---@type number
+        local checked=value
+    end
+end
+use('text')
+"#
+    );
+    clean(&fixture.check(&source));
+    let rejected = source.replace(
+        "---@type number\n        local checked=value",
+        "---@type string\n        local checked=value",
+    );
+    rejects_checked_value(&rejected, &fixture.check(&rejected));
 }
 
 #[test]
