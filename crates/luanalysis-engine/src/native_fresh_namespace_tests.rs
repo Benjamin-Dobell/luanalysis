@@ -308,8 +308,10 @@ fn missing_field_dispatch_proof_refuses_unknown_operations_foreign_allocations_a
     for routed in [false, true] {
         for scenario in [Scenario::UnknownPass, Scenario::ForeignAllocation, Scenario::Loop] {
             Engine::new().with_native_provider(move || Namespace::new(scenario, routed), |source, queries| {
-                let expected = if matches!(scenario, Scenario::Loop) { NativeCallPreservation::Pending } else { NativeCallPreservation::Unknown };
-                assert_eq!(source.preserve(queries), expected, "{scenario:?}");
+                // A deliberately untraced backedge is a completed refusal,
+                // not an unfinished query. Genuine query reentry has separate
+                // Pending controls in the standard-call certificate suite.
+                assert_eq!(source.preserve(queries), NativeCallPreservation::Unknown, "{scenario:?}");
             });
         }
     }
