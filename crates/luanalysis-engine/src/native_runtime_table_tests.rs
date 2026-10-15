@@ -710,6 +710,8 @@ fn constructor_literal_reads_do_not_discover_inferred_or_unrelated_written_recei
             |provider, queries| {
                 let table = provider.allocation(queries);
                 let schema = queries.runtime_table_schema(&table).unwrap();
+                assert!(matches!(queries.table_lookup(&schema, &TableKey::Literal(LuaKey::Number(f64::NAN))), Err(TableError::InvalidKey { .. })));
+                assert_eq!(provider.seed_calls.get(), 0, "invalid keys preserve their native failure before seed discovery");
                 let value = queries.table_lookup(&schema, &access("value")).unwrap();
                 assert_eq!(queries.inspect_type(&value), if origin == TableFieldOrigin::Declared { Type::NumberLiteral(1.0) } else { Type::Number });
                 let optional = queries.table_lookup(&schema, &access("optional")).unwrap();

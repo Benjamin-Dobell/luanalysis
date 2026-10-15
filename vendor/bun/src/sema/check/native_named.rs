@@ -1413,6 +1413,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// Indexers and full structural operations use the ordinary NativeTable description worker.
     pub(super) fn native_named_read(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
         if self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_header(self, reference.declaration).kind == NativeTypeDeclarationKind::RuntimeTable) {
+            let key = self.native_table_access(key)?;
             let object = self.intern(TypeData::NativeObject(reference));
             if let Some(value) = self.native_runtime_seed_read(reference, key).map_err(|error| error.table_error(object))? { return Ok(value) }
             let resolved = self.native_object_resolved(object).map_err(|error| error.table_error(object))?;
