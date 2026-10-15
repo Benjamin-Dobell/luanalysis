@@ -356,6 +356,8 @@ impl Checker<'_> {
                 .then(|| function.annotations.params.iter().find(|tag| tag.name.text == "self")).flatten();
             let (ty, optional) = if let Some(tag) = tag {
                 (self.annotation(&tag.ty), tag.optional)
+            } else if let Some(ty) = self.native.and_then(|native| native.applied_method_self_type(native.key_for(function), self.engine)) {
+                (ty, false)
             } else if let Some(parameter) = context.as_ref().and_then(|context| context.params.first()) {
                 (parameter.ty.clone(), parameter.optional)
             } else if let Some(ty) = self.contextual_function.and_then(|context| self.engine.contextual_parameter_type(&context, 0)) {

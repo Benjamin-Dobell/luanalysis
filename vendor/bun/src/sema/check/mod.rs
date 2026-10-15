@@ -159,6 +159,9 @@ pub trait NativeFunctionProvider {
     fn signature_parameters(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<SigParam> { panic!("native signature provider is not installed") }
     fn signature_type_parameters(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<TypeId> { Vec::new() }
     fn signature_outer_type_parameters(&self, _: NativeSignatureId) -> Vec<NativeTypeParamId> { Vec::new() }
+    /// Original free parameter instances whose constraints already carry an outer mapping.
+    /// These are declaration metadata, not parameters inferred from a signature/body demand.
+    fn signature_outer_type_parameter_instances(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<TypeId> { Vec::new() }
     fn signature_return_pack_result(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> NativePackResult { panic!("native signature provider is not installed") }
     fn circular_signature_return(&self, _: NativeSignatureId) {}
     fn signature_return_type_too_deep(&self, _: NativeSignatureId) {}
@@ -203,6 +206,7 @@ pub trait NativeFunctionProvider {
     fn circular_type_parameter_constraint(&self, _: NativeTypeParamId) {}
     fn circular_type_parameter_default(&self, _: NativeTypeParamId) {}
     fn outer_type_parameters(&self, _: NativeFunctionId) -> Vec<NativeTypeParamId> { Vec::new() }
+    fn outer_type_parameter_instances(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Vec<TypeId> { Vec::new() }
     fn contains_expression(&self, _: NativeExpressionId) -> bool { false }
     fn is_context_sensitive(&self, _: NativeExpressionId) -> bool { false }
     fn has_context_sensitive_parameters(&self, _: NativeExpressionId) -> bool { false }

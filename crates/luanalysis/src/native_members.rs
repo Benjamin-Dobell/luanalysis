@@ -21,9 +21,16 @@ pub(super) enum OriginalMemberValue {
     Expression(NativeExpressionKey),
     Function(NativeFunctionKey),
 }
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct OriginalOwnerApplication {
+    pub annotation: TypeExpr,
+    pub context: Option<NativeTypeContext>,
+    pub binding: crate::bind::BindingId,
+}
 #[derive(Clone, Debug)]
 pub(super) struct OriginalMemberInput {
     pub owner: NativeNamedKey,
+    pub owner_application: Option<OriginalOwnerApplication>,
     /// This is only a candidate owner until the original metatable call is
     /// proved to invoke the selected standard function at its creation point.
     pub contextual_owner: Option<NativeFunctionKey>,
@@ -69,6 +76,7 @@ impl NativeMembers {
             if doc_priority { continue; }
             if let Some(previous) = result.sources.iter_mut().find(|source| {
                 source.candidates[0].owner == input.owner && source.candidates[0].key == input.key
+                    && source.candidates[0].owner_application == input.owner_application
             }) {
                 // An inactive earlier constructor scope must not erase a
                 // later declaration. Within the same scope, the first store
@@ -96,6 +104,14 @@ impl NativeMembers {
     }
     pub(super) fn members(&self, owner: NativeNamedKey) -> impl Iterator<Item = NativeTypeMemberKey> + '_ {
         self.sources.iter().filter(move |source| source.candidates[0].owner == owner).map(|source| source.key)
+    }
+    pub(super) fn member_candidates(&self, owner: NativeNamedKey) -> impl Iterator<Item = NativeTypeMemberKey> + '_ {
+        // An original written application may name an alias. Offer these finite
+        // candidates to the native canonical-owner/applicability worker.
+        self.sources.iter().filter(move |source| source.candidates[0].owner == owner || source.candidates[0].owner_application.is_some()).map(|source| source.key)
+    }
+    pub(super) fn applied_members(&self) -> impl Iterator<Item = NativeTypeMemberKey> + '_ {
+        self.sources.iter().filter(|source|source.candidates[0].owner_application.is_some()).map(|source|source.key)
     }
     pub(super) fn sources(&self) -> &[OriginalMemberSource] { &self.sources }
     pub(super) fn namespace_end(&self) -> u32 { self.base.checked_add(self.sources.len().try_into().expect("original member count fits u32")).expect("original member namespace fits u32") }
@@ -175,7 +191,7 @@ impl NativeRegistry {
                     OriginalMemberValue::Function(function)
                 } else { OriginalMemberValue::Expression(expression) };
                 inputs.push(OriginalMemberInput {
-                    owner: source.key, contextual_owner: None, key,
+                    owner: source.key, owner_application: None, contextual_owner: None, key,
                     origin: OriginalMemberOrigin::ConstructorField(field.span),
                     value, span: field.span,
                     lexical_context: root.owner.map(NativeTypeContext::Function),
@@ -201,6 +217,13 @@ impl NativeRegistry {
         Some(if self.members.get(key)?.candidates.iter().any(|input| matches!(input.value, OriginalMemberValue::Written(_))) {
             TableFieldOrigin::Declared
         } else { TableFieldOrigin::Inferred })
+    }
+    pub(super) fn original_member_owner_application(&self, key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::MemberOwnerApplication> {
+        let application = self.members.get(key)?.candidates[0].owner_application.as_ref()?;
+        Some(luanalysis_engine::MemberOwnerApplication {
+            reference: self.named_annotation(application.context, &[], &application.annotation, queries),
+            parameters: self.named_outer_parameters(application.context, &application.annotation),
+        })
     }
     pub(crate) fn original_member_effective_metadata(&self, key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypeMemberEffectiveMetadata> {
         let (_, candidates) = self.selected_original_member_candidates(key, queries)?;
@@ -312,7 +335,7 @@ impl NativeRegistry {
     pub(super) fn original_member_owner_scopes(&self) -> Vec<(NativeTypeContext, NativeNamedKey)> {
         let mut scopes = Vec::new();
         for input in self.members.inputs() {
-            if input.contextual_owner.is_some() { continue; }
+            if input.contextual_owner.is_some() || input.owner_application.is_some() { continue; }
             if let OriginalMemberValue::Function(function) = input.value { scopes.push((NativeTypeContext::Function(function), input.owner)); }
             if matches!(input.origin, OriginalMemberOrigin::AssignmentField(_))
                 && let OriginalMemberValue::Written(ty) = &input.value

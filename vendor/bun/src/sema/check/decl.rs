@@ -4623,12 +4623,12 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// Register a lazy function type without demanding its parameters or return type.
-    pub fn native_function_type(&self, declaration: NativeFunctionId) -> Option<TypeId> {
+    pub fn native_function_type(&mut self, declaration: NativeFunctionId) -> Option<TypeId> {
         let sig = self.native_function_implementation_signature(declaration)?;
         Some(self.native_function_overload_type(sig))
     }
 
-    pub fn native_function_implementation_signature(&self, declaration: NativeFunctionId) -> Option<SigId> {
+    pub fn native_function_implementation_signature(&mut self, declaration: NativeFunctionId) -> Option<SigId> {
         if !self.native_function_provider?.contains_function(declaration) {
             return None;
         }
@@ -4643,7 +4643,7 @@ impl<'p, 's> Checker<'p, 's> {
                 })
                 .collect()),
         });
-        Some(sig)
+        Some(self.native_signature_with_outer_instances(sig))
     }
 
     /// `getDefaultConstructSignatures`: the base signature that the default construct signature `sig` clones, instantiated with the

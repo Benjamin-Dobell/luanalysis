@@ -23,7 +23,7 @@
 
 use crate::atom::Atom;
 use crate::check::{Checker, Query};
-use crate::types::{CloneIn, MapperId, NativeFunctionId, NativeSignatureId, NativeTableKey, NativeTypeParamId, SigData, SigId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
+use crate::types::{CloneIn, MapperId, NativeFunctionId, NativeSignatureId, NativeTableKey, NativeTypeParamId, Shape, SigData, SigId, TypeId, TypeData, NativeTableField, NativeTableIndexer, NativeTableFlavor};
 use super::native_tables::{NativeTableAccessKey, NativeTableError};
 use super::relate::{Relation, Relater, STATE_NONE};
 use super::task::Stored;
@@ -164,6 +164,8 @@ pub enum NativeTypeDeclarationQuery {
     MemberType(NativeTypeMemberId),
     MemberContext(NativeTypeMemberId),
     IndexerKey(NativeTypeMemberId),
+    MemberOwnerApplication(NativeTypeMemberId),
+    MemberOwnerMatch { member: NativeTypeMemberId, owner: TypeId },
     Bases(NativeTypeDeclarationId),
     ObjectMembers(TypeId),
     ObjectValidation(TypeId),
@@ -235,6 +237,7 @@ pub trait NativeTypeDeclarationProvider {
     fn type_member_effective_metadata(&self, _: &mut Checker<'_, '_>, member: NativeTypeMemberId) -> NativeTypeMemberEffectiveMetadata {
         NativeTypeMemberEffectiveMetadata { origin: self.type_member_origin(member), is_assignment: self.type_member_is_assignment(member) }
     }
+    fn type_member_owner_application(&self, _: &mut Checker<'_, '_>, _: NativeTypeMemberId) -> Option<NativeMemberOwnerApplication> { None }
     fn type_member_is_assignment(&self, _: NativeTypeMemberId) -> bool { false }
     /// Pure written callable members, with no runtime implementation or body.
     fn type_member_signatures(&self, _: NativeTypeMemberId) -> Option<Vec<NativeSignatureId>> { None }
@@ -294,6 +297,12 @@ pub struct NativeObjectReference {
     pub runtime_context: Option<NativeRuntimeTableContext>,
 }
 
+#[derive(Clone, Debug)]
+pub struct NativeMemberOwnerApplication {
+    pub reference: TypeId,
+    pub parameters: Vec<NativeTypeParamId>,
+}
+
 
 /// These entries are checker-local because their provider belongs to that checker. Publication is
 /// still permitted only by the common query machinery's Stored token. No unfinished member result
@@ -310,6 +319,7 @@ pub(super) struct NativeNamedCache {
     bases: FxHashMap<NativeTypeDeclarationId, Result<Vec<TypeId>, NativeNamedTypeError>>,
     mapped_bases: FxHashMap<TypeId, Vec<TypeId>>,
     members: FxHashMap<TypeId, Vec<NativeObjectMember>>,
+    owner_applications: FxHashMap<NativeTypeMemberId, Option<NativeMemberOwnerApplication>>,
 }
 
 #[derive(Clone)]
@@ -662,6 +672,131 @@ impl<'p, 's> Checker<'p, 's> {
         Ok(metadata)
     }
 
+    fn native_member_owner_application(&mut self, member: NativeTypeMemberId) -> Result<Option<NativeMemberOwnerApplication>, NativeNamedTypeError> {
+        if let Some(known) = self.native_named_cache.owner_applications.get(&member) { return Ok(known.clone()) }
+        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
+        let native_query = NativeTypeDeclarationQuery::MemberOwnerApplication(member);
+        let query = Query::NativeNamed(native_query);
+        if !self.enter(query) {
+            let error = if self.found_cycle { NativeNamedTypeError::PendingContext { member } } else { NativeNamedTypeError::TooDeep(native_query) };
+            self.mark_tainted_from(0);
+            return Err(error);
+        }
+        let (application, completed) = self.run_memoizable(|checker| provider.type_member_owner_application(checker, member));
+        match self.leave(query) {
+            Ok(_) if completed.is_some() => { self.native_named_cache.owner_applications.insert(member, application.clone()); }
+            _ => {
+                self.mark_tainted_from(0);
+                return Err(NativeNamedTypeError::PendingContext { member });
+            }
+        }
+        Ok(application)
+    }
+
+    fn native_member_capture_mapper(&mut self, reference: NativeObjectReference, member: NativeTypeMemberId) -> Result<Option<MapperId>, NativeNamedTypeError> {
+        let owner = self.intern(TypeData::NativeObject(reference));
+        let query = Query::NativeNamed(NativeTypeDeclarationQuery::MemberOwnerMatch { member, owner });
+        if !self.enter(query) {
+            self.mark_tainted_from(0);
+            return Err(NativeNamedTypeError::PendingContext { member });
+        }
+        let (result, completed) = self.run_memoizable(|checker| checker.native_member_capture_mapper_uncached(reference, member));
+        let ended = self.leave(query);
+        if result.is_ok() && (completed.is_none() || ended.is_err()) {
+            self.mark_tainted_from(0);
+            return Err(NativeNamedTypeError::PendingContext { member });
+        }
+        result
+    }
+
+    fn native_member_capture_mapper_uncached(&mut self, reference: NativeObjectReference, member: NativeTypeMemberId) -> Result<Option<MapperId>, NativeNamedTypeError> {
+        use super::infer::{Inference, PRIORITY_ALWAYS_STRICT, PRIORITY_NO_CONSTRAINTS};
+        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
+        let metadata = provider.type_member_header(self, member);
+        if matches!(metadata.owner, NativeTypeMemberOwner::RuntimeStore(_)) { return Ok(Some(MapperId::IDENTITY)) }
+        let application = self.native_member_owner_application(member)?;
+        // Ordinary class-owned written contracts already use the canonical
+        // class formals. The normal member mapper supplies their arguments;
+        // discovering implementations or inferring an owner is unnecessary.
+        if application.is_none() && matches!(metadata.owner, NativeTypeMemberOwner::Declared(owner) if owner == reference.declaration) {
+            return Ok(Some(MapperId::IDENTITY));
+        }
+        let (owner, _) = self.native_named_member_origin(member)?;
+        if owner.declaration != reference.declaration { return Ok(None) }
+        let has_application = application.is_some();
+        let eligible = if let Some(application) = application {
+            application.parameters
+        } else {
+            match metadata.owner {
+                NativeTypeMemberOwner::Reference { candidates, .. } => match candidates.as_slice() {
+                    [alias] => provider.type_declaration_header(self, *alias).outer_parameters,
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            }
+        };
+        for &parameter in &eligible {
+            self.native_type_parameter(parameter).ok_or(NativeNamedTypeError::InvalidTypeParameter(parameter))?;
+        }
+        let header = provider.type_declaration_header(self, reference.declaration);
+        let mut class_parameters = header.parameters;
+        class_parameters.extend(header.outer_parameters);
+        let mut excluded = class_parameters.clone();
+        excluded.extend(provider.type_declaration_self_parameter(reference.declaration));
+        let mut equations = Vec::new();
+        let mut parameters = Vec::new();
+        for parameter in class_parameters {
+            let formal = self.native_type_parameter(parameter).ok_or(NativeNamedTypeError::InvalidTypeParameter(parameter))?;
+            let actual = self.instantiate(formal, reference.mapper);
+            let written = self.instantiate(formal, owner.mapper);
+            let written = self.instantiate(written, reference.mapper);
+            equations.push((actual, written));
+            if self.related(actual, written, Relation::Identity) { continue }
+            self.any_type_in(written, true, |part| {
+                if let TypeData::NativeTypeParam { declaration, .. } = self.data(part)
+                    && eligible.contains(declaration) && !excluded.contains(declaration)
+                    && !parameters.contains(&part)
+                { parameters.push(part); }
+                false
+            });
+        }
+        let mut inference = Inference::for_params(&parameters, None);
+        inference.around = reference.mapper;
+        for &(actual, written) in &equations {
+            self.infer(&mut inference, actual, written, PRIORITY_NO_CONSTRAINTS | PRIORITY_ALWAYS_STRICT);
+        }
+        let mut pairs = Vec::new();
+        for (index, &parameter) in parameters.iter().enumerate() {
+            let candidate = &inference.candidates[index];
+            if candidate.covariant.is_empty() && candidate.contravariant.is_empty() && candidate.fixed.is_none() { return Ok(None) }
+            let inferred = self.get_inferred_type(&inference, index, false);
+            pairs.push((parameter, inferred));
+            if let TypeData::NativeTypeParam { declaration, .. } = *self.data(parameter) {
+                let original = self.native_type_parameter(declaration).ok_or(NativeNamedTypeError::InvalidTypeParameter(declaration))?;
+                if original != parameter && !pairs.iter().any(|pair| pair.0 == original) { pairs.push((original, inferred)); }
+            }
+        }
+        // An applied instance's physical receiver/return annotation can use an
+        // existing mapped semantic-self parameter. Move that exact instance to
+        // the accessed class scope; the ordinary member mapper binds its self
+        // to the actual (possibly derived) receiver once, after this mapping.
+        if has_application && let Some(self_id) = provider.type_declaration_self_parameter(owner.declaration) {
+            let declared = self.native_type_parameter(self_id).ok_or(NativeNamedTypeError::InvalidTypeParameter(self_id))?;
+            let owner_mapping = self.types().mapping(owner.mapper).iter().copied().filter(|(from, to)| from != to).collect();
+            let original = self.cloned_native_type_param(self_id, self.types().mapper(owner_mapping));
+            if original != declared {
+                let accessed = self.cloned_native_type_param(self_id, reference.mapper);
+                pairs.push((original, accessed));
+            }
+        }
+        let mapper = self.types().mapper(pairs);
+        for (actual, written) in equations {
+            let matched = self.instantiate(written, mapper);
+            if !self.related(actual, matched, Relation::Identity) { return Ok(None) }
+        }
+        Ok(Some(mapper))
+    }
+
     fn native_object_member_effective_origin(&mut self, origin: &NativeObjectMember) -> Result<Option<crate::types::NativeTableFieldOrigin>, NativeNamedTypeError> {
         use crate::types::NativeTableFieldOrigin::{Declared, Inferred};
         let mut effective = None;
@@ -675,24 +810,28 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     fn native_object_member_demand(&mut self, origin: &NativeObjectMember) -> Result<Option<TypeId>, NativeNamedTypeError> {
-        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(origin.member))?;
         let mut active = Vec::new();
         for member in std::iter::once(origin.member).chain(origin.overloads.iter().copied()) {
             if !self.native_named_member_active(member)? { continue }
             // A store governed by an inherited contract is not another schema declaration.
             if self.native_named_member_effective_metadata(member)?.is_assignment && self.native_named_member_context(member)?.is_some() { continue }
-            active.push(member);
+            let Some(mapper) = self.native_member_capture_mapper(origin.owner, member)? else { continue };
+            active.push((member, mapper));
         }
-        let Some(&first) = active.first() else { return Ok(None) };
-        if origin.overloads.is_empty() { return self.native_named_member_demand(first, false).map(Some) }
-        let mut signatures = Vec::new();
-        for member in active {
+        let Some(&(first, mapper)) = active.first() else { return Ok(None) };
+        if origin.overloads.is_empty() {
+            let raw = self.native_named_member_demand(first, false)?;
+            return Ok(Some(self.instantiate(raw, mapper)));
+        }
+        let mut shape = Shape::new_in(self.arena);
+        for (member, mapper) in active {
             // Each contributor retains its original guarded query, including
             // diagnostics for an invalid signature from a later source file.
-            self.native_named_member_demand(member, false)?;
-            signatures.extend(provider.type_member_signatures(member).expect("grouped pure member metadata is immutable"));
+            let raw = self.native_named_member_demand(member, false)?;
+            let mapped = self.instantiate(raw, mapper);
+            shape.call.extend(self.signatures(mapped, false).iter().copied());
         }
-        Ok(Some(self.native_signature_group_type(&signatures).expect("validated original member heads")))
+        Ok(Some(self.synth(shape)))
     }
 
     fn native_named_member_origin(&mut self, member: NativeTypeMemberId) -> Result<(NativeObjectReference, NativeTypeMemberHeader), NativeNamedTypeError> {
@@ -700,7 +839,7 @@ impl<'p, 's> Checker<'p, 's> {
         if !provider.contains_type_member(member) { return Err(NativeNamedTypeError::InvalidMember(member)) }
         let header = provider.type_member_header(self, member);
         if header.visibility != NativeTypeMemberVisibility::Public { return Err(NativeNamedTypeError::UnsupportedVisibility(member)) }
-        let owner = match &header.owner {
+        let mut owner = match &header.owner {
             NativeTypeMemberOwner::Declared(owner) => {
                 let head = self.native_declared_head(*owner)?;
                 match *self.data(head) {
@@ -735,6 +874,11 @@ impl<'p, 's> Checker<'p, 's> {
                 self.native_runtime_table_ref(receiver).ok_or(NativeNamedTypeError::InvalidMember(member))?.schema
             },
         };
+        if let Some(application) = self.native_member_owner_application(member)? {
+            let TypeData::NativeObject(reference) = *self.data(application.reference) else { return Err(NativeNamedTypeError::InvalidMember(member)) };
+            if reference.declaration != owner.declaration { return Err(NativeNamedTypeError::InvalidMember(member)) }
+            owner = reference;
+        }
         Ok((owner, header))
     }
 
@@ -757,13 +901,8 @@ impl<'p, 's> Checker<'p, 's> {
             && !matches!(provider.type_declaration_owner_scope(self, candidate), NativeOwnerScopeRecipe::ResolvedHead)
             && self.native_named_member_scope_owner(member)? != reference.declaration
         { return Ok(None) }
-        let (owner, header) = self.native_named_member_origin(member)?;
+        let (owner, _) = self.native_named_member_origin(member)?;
         if owner.declaration != reference.declaration { return Ok(None) }
-        for (from, to) in self.types().mapping(owner.mapper).iter().copied() {
-            if from != to && self.instantiate(from, reference.mapper) != self.instantiate(to, reference.mapper) {
-                return Ok(None);
-            }
-        }
         Ok(Some(header))
     }
 
@@ -1177,6 +1316,8 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 NativeTypeMemberKey::Indexer { sparse } => {
                     let raw_key = self.native_named_member_demand(origin.member, true)?;
+                    let Some(capture) = self.native_member_capture_mapper(origin.owner, origin.member)? else { continue };
+                    let raw_key = self.instantiate(raw_key, capture);
                     let key = self.native_member_type(raw_key, origin.owner);
                     indexers.push(NativeTableIndexer { key, value, readonly: metadata.readonly, sparse, origin: value_origin });
                     indexer_origins.push(origin);

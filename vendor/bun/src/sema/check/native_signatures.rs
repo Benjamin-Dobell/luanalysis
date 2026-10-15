@@ -61,7 +61,34 @@ impl<'p, 's> Checker<'p, 's> {
         let sig = self.types().intern_sig(SigData::NativeDeclarationSignature {
             declaration, mapper: self.types().mapper(outer), implementation: None,
         });
+        let sig = self.native_signature_with_outer_instances(sig);
         Some(self.type_of_signature(sig, false))
+    }
+
+    /// Seed the exact free-instance domain before object flags and mapper
+    /// projection are computed. Resolving this original metadata never asks
+    /// for parameters, results or the function body.
+    pub(super) fn native_signature_with_outer_instances(&mut self, signature: SigId) -> SigId {
+        let (instances, mapper) = match *self.types().sig(signature) {
+            SigData::Native { declaration, mapper } => (self.native_function_provider.expect("native function provider").outer_type_parameter_instances(self, declaration), mapper),
+            SigData::NativeDeclarationSignature { declaration, mapper, .. } => (self.native_signature_provider_for(declaration).signature_outer_type_parameter_instances(self, declaration), mapper),
+            _ => return signature,
+        };
+        if instances.is_empty() { return signature; }
+        let own = self.sig_type_params(signature).into_vec();
+        let mut mapping = self.types().mapping(mapper).to_vec();
+        for parameter in instances {
+            let Some((declaration, _)) = self.native_type_parameter_decl(parameter) else { panic!("native outer instance must be a type parameter") };
+            assert!(!own.iter().any(|&own| self.native_type_parameter_decl(own).is_some_and(|(id, _)| id == declaration)), "native outer instance must not bind a callable's own parameter");
+            if !mapping.iter().any(|pair| pair.0 == parameter) { mapping.push((parameter, parameter)); }
+        }
+        let mapper = self.types().mapper(mapping);
+        let data = match *self.types().sig(signature) {
+            SigData::Native { declaration, .. } => SigData::Native { declaration, mapper },
+            SigData::NativeDeclarationSignature { declaration, implementation, .. } => SigData::NativeDeclarationSignature { declaration, mapper, implementation },
+            _ => unreachable!(),
+        };
+        self.types().intern_sig(data)
     }
 
     /// A declaration-only callable set. Original heads retain their own generic

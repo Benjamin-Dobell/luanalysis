@@ -467,6 +467,12 @@ impl NativeRegistry {
         (self.signatures.function_heads(function).contains(&key)
             && self.implicit_receiver(self.function(function)).is_some()).then_some(function)
     }
+    pub(crate) fn signature_applied_owner_function(&self, key: NativeSignatureKey) -> Option<NativeFunctionKey> {
+        let recipe = self.signatures.get(key);
+        if let Some(function) = recipe.ambient_function { return Some(function); }
+        let SignatureOwner::Function(function) = recipe.header.owner else { return None };
+        self.signatures.function_heads(function).contains(&key).then_some(function)
+    }
 }
 
 pub(super) struct SignatureRecipe {

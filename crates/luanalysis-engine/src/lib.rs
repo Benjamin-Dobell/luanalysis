@@ -39,6 +39,8 @@ mod native_alias_environment_tests;
 mod native_written_member_demand_tests;
 
 pub use native_named::*;
+#[cfg(test)]
+mod native_member_owner_application_tests;
 mod native_globals;
 pub use native_globals::*;
 #[cfg(test)]
@@ -378,6 +380,8 @@ pub trait NativeTypeProvider {
     fn function_exposes_implementation(&self, _: NativeFunctionKey) -> bool { false }
     fn signature_type_parameters(&self, _: NativeSignatureKey) -> Vec<NativeTypeParameterKey> { Vec::new() }
     fn signature_outer_type_parameters(&self, _: NativeSignatureKey) -> Vec<NativeTypeParameterKey> { Vec::new() }
+    /// Original mapped free parameter instances, independent of signature/body evaluation.
+    fn signature_outer_type_parameter_instances(&self, _: NativeSignatureKey, _: &mut dyn TypeQueries) -> Vec<Type> { Vec::new() }
     fn signature_parameters(&self, _: NativeSignatureKey, _: &mut dyn TypeQueries) -> Vec<Parameter> { panic!("native signature provider is not installed") }
     fn signature_rest_pack(&self, _: NativeSignatureKey, _: &mut dyn TypeQueries) -> Option<ValuePack> { None }
     fn signature_declared_return_pack(&self, _: NativeSignatureKey, _: &mut dyn TypeQueries) -> ValuePack { panic!("native signature provider is not installed") }
@@ -398,6 +402,7 @@ pub trait NativeTypeProvider {
     fn type_member_effective_metadata(&self, member: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> TypeMemberEffectiveMetadata {
         TypeMemberEffectiveMetadata { origin: self.type_member_origin(member), is_assignment: self.type_member_is_assignment(member) }
     }
+    fn type_member_owner_application(&self, _: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> Option<MemberOwnerApplication> { None }
     /// A store declares a new member only when no inherited contract exists.
     fn type_member_is_assignment(&self, _: NativeTypeMemberKey) -> bool { false }
     fn type_member_activation(&self, _: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> TypeMemberActivation { TypeMemberActivation::Active }
@@ -611,6 +616,7 @@ pub trait NativeTypeProvider {
     fn function_outer_type_parameters(&self, _: NativeFunctionKey) -> Vec<NativeTypeParameterKey> {
         Vec::new()
     }
+    fn function_outer_type_parameter_instances(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Type> { Vec::new() }
     fn contains_type_parameter(&self, _: NativeTypeParameterKey) -> bool {
         false
     }
@@ -2275,6 +2281,10 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     fn signature_parameters(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Vec<SigParam> { self.signature_parameters_core(checker, key) }
     fn signature_type_parameters(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Vec<TypeId> { self.provider.signature_type_parameters(source_signature_key(key)).into_iter().map(|key| import_type(checker, self.handles, &Type::NativeTypeParameter(key))).collect() }
     fn signature_outer_type_parameters(&self, key: bun_sema::types::NativeSignatureId) -> Vec<NativeTypeParamId> { self.provider.signature_outer_type_parameters(source_signature_key(key)).into_iter().map(core_parameter_key).collect() }
+    fn signature_outer_type_parameter_instances(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Vec<TypeId> {
+        let instances = self.provider.signature_outer_type_parameter_instances(source_signature_key(key), &mut SessionQueries { checker, handles: self.handles });
+        instances.iter().map(|ty| import_type(checker, self.handles, ty)).collect()
+    }
     fn signature_return_pack_result(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> NativePackResult { self.signature_return_pack_core(checker, key) }
     fn circular_signature_return(&self, key: bun_sema::types::NativeSignatureId) { self.provider.signature_return_cycle(source_signature_key(key)); }
     fn signature_return_type_too_deep(&self, key: bun_sema::types::NativeSignatureId) { self.provider.signature_return_type_too_deep(source_signature_key(key)); }
@@ -2639,6 +2649,10 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
             .into_iter()
             .map(core_parameter_key)
             .collect()
+    }
+    fn outer_type_parameter_instances(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Vec<TypeId> {
+        let instances = self.provider.function_outer_type_parameter_instances(source_key(key), &mut SessionQueries { checker, handles: self.handles });
+        instances.iter().map(|ty| import_type(checker, self.handles, ty)).collect()
     }
     fn type_parameters(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Vec<TypeId> {
         let keys = self.provider.function_type_parameters(

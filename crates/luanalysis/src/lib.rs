@@ -587,6 +587,10 @@ impl Checker<'_> {
                         };
                         if contextual_self
                             && let Some(function) = context.and_then(|context| native.metatable_annotation_function(context))
+                            && let Some(receiver) = native.applied_method_self_type(function, self.engine)
+                        { return receiver; }
+                        if contextual_self
+                            && let Some(function) = context.and_then(|context| native.metatable_annotation_function(context))
                             && native.method_owner(function).is_none()
                         {
                             match native.contextual_self_type(function, self.engine) {

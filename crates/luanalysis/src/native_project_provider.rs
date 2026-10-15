@@ -576,6 +576,7 @@ impl NativeTypeProvider for ProjectRegistry {
                     }),
             );
             members.extend(file.source.doc_members.keys());
+            members.extend(file.source.members.applied_members());
         }
         members
     }
@@ -613,7 +614,7 @@ impl NativeTypeProvider for ProjectRegistry {
                 | NamedTypeQuery::ObjectMembers(key)
                 | NamedTypeQuery::ObjectValidation(key) => key.snapshot,
                 NamedTypeQuery::DefinitionContext(key) => key.snapshot,
-                NamedTypeQuery::Member(key) | NamedTypeQuery::MemberContext(key) | NamedTypeQuery::Indexer(key) => key.snapshot,
+                NamedTypeQuery::Member(key) | NamedTypeQuery::MemberContext(key) | NamedTypeQuery::MemberOwnerApplication(key) | NamedTypeQuery::MemberOwnerMatch(key) | NamedTypeQuery::Indexer(key) => key.snapshot,
             },
         };
         self.owner(snapshot).type_declaration_error(error);
@@ -628,6 +629,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn function_exposes_implementation(key: NativeFunctionKey) -> bool;
         fn signature_type_parameters(key: NativeSignatureKey) -> Vec<NativeTypeParameterKey>;
         fn signature_outer_type_parameters(key: NativeSignatureKey) -> Vec<NativeTypeParameterKey>;
+        fn signature_outer_type_parameter_instances(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> Vec<Type>;
         fn signature_parameters(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> Vec<Parameter>;
         fn signature_rest_pack(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn signature_declared_return_pack(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> ValuePack;
@@ -639,6 +641,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn function_declared_scalar_contract_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn type_alias_target(key: NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Type;
         fn type_member_type(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Type;
+        fn type_member_owner_application(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::MemberOwnerApplication>;
         fn type_member_activation(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::TypeMemberActivation;
         fn type_member_effective_metadata(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::TypeMemberEffectiveMetadata;
         fn contextual_type_owner(key: NativeFunctionKey, input: luanalysis_engine::NativeFlowKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::ContextualTypeOwner;
@@ -674,6 +677,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn return_type_too_deep(key: NativeFunctionKey) -> ();
         fn function_type_parameters(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Vec<NativeTypeParameterKey>;
         fn function_outer_type_parameters(key: NativeFunctionKey) -> Vec<NativeTypeParameterKey>;
+        fn function_outer_type_parameter_instances(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Vec<Type>;
         fn type_parameter_name(key: NativeTypeParameterKey) -> String;
         fn has_type_parameter_constraint(key: NativeTypeParameterKey) -> bool;
         fn type_parameter_constraint(key: NativeTypeParameterKey, queries: &mut dyn TypeQueries) -> Option<Type>;

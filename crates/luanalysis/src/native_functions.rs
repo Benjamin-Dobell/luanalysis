@@ -171,7 +171,8 @@ impl NativeRegistry {
         let metatables = metatables::NativeMetatables::new(&expressions, &functions, &bound, &named);
         let methods = methods::NativeMethods::new(snapshot, &file, &functions, &function_spans, &bound, &named, &types, &metatables);
         for method in methods.sources() {
-            if method.contextual_owner.is_none() && let Some(owner) = method.class_owner { types.attach_method_scope(method.function, owner); }
+            if method.contextual_owner.is_none() && method.owner_application.is_none()
+                && let Some(owner) = method.class_owner { types.attach_method_scope(method.function, owner); }
         }
         let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
             expressions.key_for_span(expression.span)
@@ -2084,6 +2085,7 @@ impl NativeTypeProvider for NativeRegistry {
     }
     fn function_is_method(&self,key:NativeFunctionKey)->bool{self.methods.get(key).is_some_and(|method|method.declaration)}
     fn signature_is_method(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signature_has_method_origin(key)}
+    fn type_member_owner_application(&self,key:luanalysis_engine::NativeTypeMemberKey,queries:&mut dyn TypeQueries)->Option<luanalysis_engine::MemberOwnerApplication>{self.original_member_owner_application(key,queries)}
     fn contains_signature(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signature_available(key)}
     fn signature_header(&self,key:luanalysis_engine::NativeSignatureKey)->luanalysis_engine::SignatureHeader{self.signatures.get(key).header}
     fn function_overload_signatures(&self,key:NativeFunctionKey)->Vec<luanalysis_engine::NativeSignatureKey>{
@@ -2097,6 +2099,9 @@ impl NativeTypeProvider for NativeRegistry {
     }
     fn signature_type_parameters(&self,key:luanalysis_engine::NativeSignatureKey)->Vec<NativeTypeParameterKey>{self.signature_parameters_keys(key)}
     fn signature_outer_type_parameters(&self,key:luanalysis_engine::NativeSignatureKey)->Vec<NativeTypeParameterKey>{self.signature_outer_keys(key)}
+    fn signature_outer_type_parameter_instances(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->Vec<Type>{
+        self.signature_applied_owner_function(key).and_then(|function|self.applied_method_self_type(function,queries)).into_iter().collect()
+    }
     fn signature_parameters(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->Vec<Parameter>{self.source_signature_parameters(key,queries)}
     fn signature_rest_pack(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->Option<ValuePack>{self.source_signature_rest(key,queries)}
     fn signature_declared_return_pack(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->ValuePack{self.source_signature_return(key,queries)}
@@ -2342,6 +2347,7 @@ impl NativeTypeProvider for NativeRegistry {
         let offset = usize::from(self.implicit_receiver(function).is_some());
         let mut indices: Vec<_> = NativeExpressions::contextual_indices(function).into_iter().map(|index| index + offset).collect();
         if offset != 0 && function.annotations.type_annotation.is_none()
+            && !self.methods.get(key).is_some_and(|method| method.owner_application.is_some())
             && (!function.annotations.params.iter().any(|parameter| parameter.name.text=="self")
                 || function.params.iter().any(|parameter| parameter.text=="self")) {
             indices.insert(0, 0);
@@ -2433,6 +2439,9 @@ impl NativeTypeProvider for NativeRegistry {
         let mut outer = self.types.outer_parameters(key, &used);
         self.extend_contextual_self_dependencies(NativeTypeContext::Function(key), &used, &mut outer);
         outer
+    }
+    fn function_outer_type_parameter_instances(&self,key:NativeFunctionKey,queries:&mut dyn TypeQueries)->Vec<Type>{
+        self.applied_method_self_type(key,queries).into_iter().collect()
     }
 
     fn contains_type_parameter(&self, key: NativeTypeParameterKey) -> bool {

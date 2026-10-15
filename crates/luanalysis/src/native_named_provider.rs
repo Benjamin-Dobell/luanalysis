@@ -309,7 +309,7 @@ impl NativeRegistry {
                 .anonymous_member(anonymous_member_key(key))
                 .is_some()
     }
-    fn named_outer_parameters(
+    pub(crate) fn named_outer_parameters(
         &self,
         context: Option<NativeTypeContext>,
         ty: &TypeExpr,
@@ -489,7 +489,7 @@ impl NativeRegistry {
                 .collect()
         };
         // Canonical alias ownership and applicability belong to the core.
-        result.extend(self.members.members(named_key(key)));
+        result.extend(self.members.member_candidates(named_key(key)));
         result.extend(self.doc_members.keys());
         result.extend(
             self.named
@@ -801,7 +801,7 @@ impl NativeRegistry {
                     | NamedTypeQuery::ObjectMembers(key)
                     | NamedTypeQuery::ObjectValidation(key) => self.named_origin(key),
                     NamedTypeQuery::DefinitionContext(key) => self.named_origin(key),
-                    NamedTypeQuery::Member(key) | NamedTypeQuery::MemberContext(key) | NamedTypeQuery::Indexer(key) => {
+                    NamedTypeQuery::Member(key) | NamedTypeQuery::MemberContext(key) | NamedTypeQuery::MemberOwnerApplication(key) | NamedTypeQuery::MemberOwnerMatch(key) | NamedTypeQuery::Indexer(key) => {
                         self.named_member_origin(key)
                     }
                 },

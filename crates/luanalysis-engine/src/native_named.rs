@@ -57,6 +57,13 @@ pub struct NamedMemberOwner {
     pub declaration: NativeTypeDeclarationKey,
     pub reference: Type,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MemberOwnerApplication {
+    pub reference: Type,
+    /// Original lexical formals used by the written owner annotation.
+    pub parameters: Vec<NativeTypeParameterKey>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObjectDeclarationForm {
     Record,
@@ -112,6 +119,8 @@ pub enum NamedTypeQuery {
     Head(NativeTypeDeclarationKey),
     Member(NativeTypeMemberKey),
     MemberContext(NativeTypeMemberKey),
+    MemberOwnerApplication(NativeTypeMemberKey),
+    MemberOwnerMatch(NativeTypeMemberKey),
     Indexer(NativeTypeMemberKey),
     Bases(NativeTypeDeclarationKey),
     ObjectMembers(NativeTypeDeclarationKey),
@@ -415,6 +424,13 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
         );
         import_type(checker, self.handles, &ty)
     }
+    fn type_member_owner_application(&self, checker: &mut Checker<'_, '_>, key: NativeTypeMemberId) -> Option<bun_sema::check::native_named::NativeMemberOwnerApplication> {
+        let application = self.provider.type_member_owner_application(source_member(key), &mut SessionQueries { checker, handles: self.handles })?;
+        Some(bun_sema::check::native_named::NativeMemberOwnerApplication {
+            reference: import_type(checker, self.handles, &application.reference),
+            parameters: application.parameters.into_iter().map(core_parameter_key).collect(),
+        })
+    }
     fn type_indexer_key(&self, checker: &mut Checker<'_, '_>, key: NativeTypeMemberId) -> TypeId {
         let ty = self.provider.type_indexer_key(
             source_member(key),
@@ -601,6 +617,8 @@ pub(super) fn export_error(
             Q::DeclaredHead(key) => NamedTypeQuery::Head(source_declaration(key)),
             Q::MemberType(key) => NamedTypeQuery::Member(source_member(key)),
             Q::MemberContext(key) => NamedTypeQuery::MemberContext(source_member(key)),
+            Q::MemberOwnerApplication(key) => NamedTypeQuery::MemberOwnerApplication(source_member(key)),
+            Q::MemberOwnerMatch { member, .. } => NamedTypeQuery::MemberOwnerMatch(source_member(member)),
             Q::IndexerKey(key) => NamedTypeQuery::Indexer(source_member(key)),
             Q::RuntimeTableMember(_, key, indexer) => if indexer { NamedTypeQuery::Indexer(source_member(key)) } else { NamedTypeQuery::Member(source_member(key)) },
             Q::Bases(key) => NamedTypeQuery::Bases(source_declaration(key)),
