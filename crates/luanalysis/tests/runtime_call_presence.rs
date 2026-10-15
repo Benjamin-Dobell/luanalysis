@@ -1,8 +1,9 @@
 use luanalysis::check;
 
-fn clean(source: &str) {
+fn clean(source: &str) -> luanalysis::CheckReport {
     let report = check(source);
     assert!(report.diagnostics.is_empty(), "{source}\n{:#?}", report.diagnostics);
+    report
 }
 fn rejects_number(source: &str) {
     let report = check(source);
