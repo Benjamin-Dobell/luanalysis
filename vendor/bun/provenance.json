@@ -1017,38 +1017,141 @@
     {
       "path": "src/sema/check/mod.rs",
       "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
-      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
-      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
+      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements.",
+      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06"
     },
     {
       "path": "src/sema/check/native_named.rs",
       "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
-      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
-      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
+      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements.",
+      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06"
     },
     {
       "path": "src/sema/check/native_tables.rs",
       "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
-      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
-      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
+      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements.",
+      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06"
     },
     {
       "path": "src/sema/check/relate.rs",
       "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
-      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
-      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
+      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements.",
+      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06"
     },
     {
       "path": "src/sema/check/shape.rs",
       "patch": "vendor/patches/bun-sema-native-named-inheritance.patch",
-      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06",
-      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements."
+      "reason": "Resolve original declared record bases through guarded native queries, retain mapped ancestor identity and inherited member owners, and validate overrides without replacing partial definition views or complete instance requirements.",
+      "patch_sha256": "0d4674d35ad450bdad4d79cf08c978d67b20c2f5c13e616383fa39c4334a5f06"
     },
     {
       "path": "src/sema/check/call.rs",
       "patch": "vendor/patches/bun-sema-native-overload-failure-diagnostics.patch",
-      "patch_sha256": "e411833d345a23dfb6d1db8344675c1bb2e79164173a11b4b41352f3acc19466",
-      "reason": "Report native overload failures against actual failed public heads, retaining argument-type and arity correlation rather than checking a synthesized recovery signature; shared overload selection remains unchanged."
+      "reason": "Report native overload failures against actual failed public heads, retaining argument-type and arity correlation rather than checking a synthesized recovery signature; shared overload selection remains unchanged.",
+      "patch_sha256": "e411833d345a23dfb6d1db8344675c1bb2e79164173a11b4b41352f3acc19466"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/errors_call.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/native_intrinsics.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "added": true,
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/native_runtime.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/native_signatures.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+      "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+      "patch_sha256": "1b611549384b46b56c609fe2d0ed5deed685ec1022e89748100eb66a2e2875dd"
     }
   ],
   "source_additions": {
@@ -1061,23 +1164,27 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "d77465c501a7f28765b4fd4dbe8f3982c8d6d9024bd58805b8a805ac20df69f3",
+      "extracted_sha256": "d844a8a5ac3f2945d75ceaecbddeb845dc5c8f705aa1e750828f88e7326aba13",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "d2d699623db0bce017344fa5984c6204a44729df131e8e19a06c399ffc10a123",
+      "extracted_sha256": "5478a361da7e61020b1e196cba447f6272c9883437238daceff3020218efe3a9",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
+    },
+    "src/sema/check/native_intrinsics.rs": {
+      "extracted_sha256": "7f10726e03b7a575e864b47180bf726ba1e5b2344ed9c19ba979186da57d806e",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch"
     },
     "src/sema/check/native_iterators.rs": {
       "extracted_sha256": "02a1b75dc6fdf5747c6da51f7bcba961fd18db028921ce81f184d67488703d52",
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "ab6cbb7c6a39162a1bd14fb7c5f244d97591086430d551e619381e3e489f3944",
+      "extracted_sha256": "a2b5b8ec4bce738daee30bed762686eac5da10ee18b65897129940b298046f64",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "773d2771f263643a1baec872e645c81fdea47b85c1dc6ba15fa4adf2758bb246",
+      "extracted_sha256": "76425902b977e3d7bc828dc2d518c0e958903785c7f0ed364a01c14f856d4cf5",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
@@ -1085,15 +1192,15 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-module-queries.patch"
     },
     "src/sema/check/native_runtime.rs": {
-      "extracted_sha256": "bb166deb6ce755a3912a1d912ce4f7c6f41d4152da0d8941533749788483de25",
+      "extracted_sha256": "fcb57210f797af6b9e5415500856c1fc38b3af20db435a94e09f6ab498d0c5ec",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_signatures.rs": {
-      "extracted_sha256": "950cec7d323b907790ac2375311149b495e9907cc2d786c87c32ae2cefef6524",
+      "extracted_sha256": "9f5865323956265229588b7079f60f9661684481cedbd341ebba6f9b2d17dd2b",
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "6841efc251d9f8ae05bad1193fac0f6f8ca26acd46411c71841646414d9a111f",
+      "extracted_sha256": "ce5e236fb535eab32d22259e4352293ba399a8594a085d0b210ab5766b3d1a8f",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -1791,7 +1898,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "613e395eb8b20e42bda48596929fdb177b597b01bb4a438bf979563392e75abf"
+      "extracted_sha256": "dcf4a904b436f16df29dbaa854aba6601213e076310f4c2a485d65c9912b447c"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -1806,7 +1913,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "26873e0114b3ffd3f251a357593fa823ffbba479e006833a4e2c7e599691b864"
+      "extracted_sha256": "072b6192289b4f592a10b57279b31c6d7bdfe0eb1a1490911da1d8df998194ac"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -1841,7 +1948,7 @@
     "src/sema/check/errors_call.rs": {
       "upstream": "src/sema/check/errors_call.rs",
       "sha256": "d3afd92a719df2d061cc57fdbaaceab03111588613ea9748fe20a3a2cfab230f",
-      "extracted_sha256": "aa194849edc0f98e340ad100de22bf2d442e778cd579f4fdf44a058d5ab4f4dd"
+      "extracted_sha256": "eafc1d96bac6bfecfacc56488b2190eaada6dbbf06a363d50d0752c0c4ef4e2d"
     },
     "src/sema/check/errors_circular.rs": {
       "upstream": "src/sema/check/errors_circular.rs",
@@ -2016,12 +2123,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "90e92605b4fe81980050a03dd76ad61ac1953da1ad5821a1211a220fa07f12d3"
+      "extracted_sha256": "211dab8f6054c225db62ce36ff7ddc7e23a8aa76cdec761073e7d7af6f27b07d"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "a96c337ae3fb388954f38a86d1b03e33658c601d64b809914bd50d4c5e5fe268"
+      "extracted_sha256": "e769ad1e95477eb7bd4a9c611916c76243f1f8ed4b5baa6ec8aa7f53a218ebd7"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -2051,7 +2158,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "6078c89d5144fb23ba91ef0d88281922f15f40e8b7d296d1a6d06e3511a25efb"
+      "extracted_sha256": "fce40a981ac85489173dde9d1541ed5f96cd6ead19acbeabac59718f3e6c461a"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -2076,7 +2183,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "1470fe8a7a413e1fe804507ffd1c4e6026125ce8a38becf25de422b7ed082ebe"
+      "extracted_sha256": "3b859c429b731b0078053fa9e30f858781bd1d13805b134078180b5481cca2f4"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -2131,7 +2238,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "b6234289305dffcd2774a7fe06021f0caf46235e648c260145f1fb3d90d5662b"
+      "extracted_sha256": "21e38a129fff698cd62b3f9d3c1157fbaf2cff29dca08ad3ee64b75c58ccf275"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -2256,7 +2363,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "7f904439d000c00abbe5ac5c8d38ca366a1e6f2640510524935c19048955bd9d"
+      "extracted_sha256": "e5c8bb8a63b5c2df583028122a397940c1743d1db691a8b28deaf22e8aeb1a0e"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

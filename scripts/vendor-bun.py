@@ -240,6 +240,20 @@ SOURCE_ADAPTATIONS.append({
 })
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch",
+    "reason": "Record the consolidated receiver/self mapping, definition-write flow, declared field origins, primitive string namespace, trusted assertion result/continuation and fixed spread inference checkpoint; this provenance snapshot does not assert complete Lua type-checking equivalence.",
+    **({"added": True} if path == "check/native_intrinsics.rs" else {}),
+} for path in [
+    "check/call.rs", "check/decl.rs", "check/errors_call.rs", "check/infer.rs",
+    "check/instantiate.rs", "check/mod.rs", "check/native_flow.rs",
+    "check/native_globals.rs", "check/native_intrinsics.rs", "check/native_named.rs",
+    "check/native_packs.rs", "check/native_runtime.rs", "check/native_signatures.rs",
+    "check/native_tables.rs", "check/relate.rs", "check/shape.rs", "types.rs",
+])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 
