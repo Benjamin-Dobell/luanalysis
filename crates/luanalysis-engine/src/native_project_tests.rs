@@ -424,3 +424,73 @@ fn module_cache_separates_equal_chunk_indices_in_different_source_snapshots() {
         assert_eq!(provider.demands.get(), 2);
     });
 }
+
+#[test]
+fn module_fallback_keeps_nested_stack_refusal_distinct_from_ordinary_pending() {
+    use bun_sema::check::{native_flow as flow, native_named as named, native_project as project};
+    use bun_sema::types::{NativeResultPack, TypeId};
+
+    struct Source;
+    impl NativeTypeProvider for Source {
+        fn assumed_standard_environment(&self) -> Option<NativeEnvironmentKey> { Some(NativeEnvironmentKey { snapshot: SNAPSHOT, index: 0 }) }
+        fn contains_global_environment(&self, key: NativeEnvironmentKey) -> bool { self.assumed_standard_environment() == Some(key) }
+        fn contains_function(&self, key: NativeFunctionKey) -> bool { key == function(0) }
+        fn contextual_type_owner(&self, _: NativeFunctionKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> ContextualTypeOwner { ContextualTypeOwner::Pending }
+        fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> { panic!("no function type demand") }
+        fn function_declared_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> { panic!("no function type demand") }
+        fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type { panic!("no body inference") }
+        fn return_cycle(&self, _: NativeFunctionKey) { panic!("no return cycle") }
+        fn return_type_too_deep(&self, _: NativeFunctionKey) { panic!("no return depth demand") }
+    }
+    struct OriginalFlow;
+    fn input() -> NativeFlowKey { NativeFlowKey { graph: NativeGraphKey { snapshot: SNAPSHOT, region: 0, context: 0 }, node: 0 } }
+    impl flow::NativeFlowProvider for OriginalFlow {
+        fn contains_graph(&self, graph: NativeGraphKey) -> bool { graph == input().graph }
+        fn contains_reference(&self, reference: NativeReferenceKey) -> bool { reference.graph == input().graph && reference.reference == 0 }
+        fn node(&self, at: NativeFlowKey) -> Option<NativeFlowNode> { (at == input()).then_some(NativeFlowNode::Start) }
+        fn is_shared(&self, _: NativeFlowKey) -> bool { false }
+        fn write_affects(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> NativeWriteRelation { NativeWriteRelation::Unaffected }
+        fn value_type(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> TypeId { panic!("budget refusal precedes source type demands") }
+    }
+    #[derive(Default)]
+    struct Probe { errors: RefCell<Vec<project::NativeProjectError>> }
+    impl project::NativeProjectProvider for Probe {
+        fn contains_module(&self, module: project::NativeModuleId) -> bool { module.snapshot == SNAPSHOT && module.index <= 2 }
+        fn module_header(&self, _: project::NativeModuleId) -> project::NativeModuleHeader { project::NativeModuleHeader { role: project::NativeModuleSourceRole::Implementation } }
+        fn module_inferred_result_pack(&self, checker: &mut Checker<'_, '_>, module: project::NativeModuleId) -> NativeResultPack {
+            if module.index == 0 {
+                // Exercise the actual standard worker's early is_stack_low
+                // branch while a module query is already in flight.
+                checker.set_stack_limit(0);
+                let operation = checker.native_flow_standard_operation(&OriginalFlow, NativeValueKey { snapshot: SNAPSHOT, index: 0 }, input());
+                checker.set_stack_limit(8 << 20);
+                assert!(matches!(operation, bun_sema::check::native_aliases::NativeStandardOperation::Pending));
+            } else if module.index == 1 {
+                assert_eq!(checker.native_contextual_type_owner(core_key(function(0)), input()), named::NativeContextualTypeOwner::Pending);
+            }
+            checker.native_result_pack(&[bun_sema::check::native_packs::NativePackAlternative {
+                fixed: vec![bun_sema::check::native_packs::NativePackSlot { ty: TypeId::NUMBER, optional: false }], tail: None,
+            }])
+        }
+        fn project_query_error(&self, error: project::NativeProjectError) { self.errors.borrow_mut().push(error); }
+    }
+    with_program(|program, handles| {
+        let source = Source;
+        let adapter = ProviderAdapter { provider: &source, handles };
+        let probe = Probe::default();
+        let mut checker = program.checker_with_native_provider(&adapter);
+        checker.set_native_globals_provider(&adapter);
+        checker.set_native_project_provider(&probe);
+        checker.set_stack_limit(8 << 20);
+        let key = |index| project::NativeModuleId { snapshot: SNAPSHOT, index };
+        for _ in 0..2 {
+            assert!(matches!(checker.native_module_result_pack(key(0)), Err(project::NativeProjectError::TooDeep(_))));
+            assert!(matches!(checker.native_module_result_pack(key(1)), Err(project::NativeProjectError::UnresolvedQuery(_))));
+            let ordinary = checker.native_module_result_pack(key(2)).unwrap();
+            assert_eq!(checker.native_pack_slot(ordinary, 0), TypeId::NUMBER);
+        }
+        let errors = probe.errors.borrow();
+        assert!(!errors.iter().any(|error| matches!(error, project::NativeProjectError::TooDeep(project::NativeProjectQuery::ChunkResult(module)) if module.index == 1)));
+        assert!(!errors.iter().any(|error| matches!(error, project::NativeProjectError::UnresolvedQuery(project::NativeProjectQuery::ChunkResult(module)) if module.index == 0)));
+    });
+}

@@ -113,6 +113,10 @@ impl<'p, 's> Checker<'p, 's> {
             self.report_native_project(error);
             return Err(error);
         }
+        // A nested native worker can refuse before another project query is
+        // entered. Preserve that demand-local limit cause when it taints an
+        // otherwise successful fallback; unrelated Pending stays unresolved.
+        let cuts = self.cuts();
         let result = compute(self, provider);
         let left = self.leave(query);
         if self.left_a_cycle {
@@ -126,7 +130,8 @@ impl<'p, 's> Checker<'p, 's> {
             Err(open) => {
                 if let Ok(ty) = result {
                     self.cache_provisionally(query, u64::from(ty.0), open);
-                    let error = NativeProjectError::UnresolvedQuery(demand);
+                    let error = if self.cuts() != cuts { NativeProjectError::TooDeep(demand) }
+                        else { NativeProjectError::UnresolvedQuery(demand) };
                     self.report_native_project(error);
                     return Err(error);
                 }
