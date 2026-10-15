@@ -275,6 +275,16 @@ fn calls_and_loop_boundaries_cannot_reuse_a_projected_constructor_identity() {
             |_, queries| {
                 let source = Fields { history };
                 for _ in 0..2 {
+                    // The deliberate heap-history barrier is a completed
+                    // refusal of identity evidence, not an unfinished query.
+                    assert_eq!(
+                        queries.flow_alias_intrinsic(&source, value(24), node(0, 3)),
+                        NativeAliasIntrinsic::Unknown
+                    );
+                    assert_eq!(
+                        queries.flow_standard_operation(&source, value(24), node(0, 3)),
+                        NativeStandardOperation::Ordinary
+                    );
                     assert_eq!(
                         queries.flow_alias_relation(
                             &source,

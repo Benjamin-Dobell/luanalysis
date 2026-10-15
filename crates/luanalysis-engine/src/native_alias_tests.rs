@@ -477,6 +477,11 @@ fn loops_and_recursive_return_provenance_never_equate_repeated_allocation_sites(
             let mut source = Source::new();
             source.returns = Returns::Recursive;
             assert_eq!(
+                q.flow_alias_intrinsic(&source, value(9), at(0, 0)),
+                NativeAliasIntrinsic::Pending,
+                "an actual recursive return dependency is still unfinished"
+            );
+            assert_eq!(
                 q.flow_alias_relation(&source, reference(0, 0), at(0, 5), value(9), at(0, 0)),
                 NativeAliasRelation::Possible
             );
