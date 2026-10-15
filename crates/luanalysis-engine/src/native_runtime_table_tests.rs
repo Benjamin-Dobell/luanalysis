@@ -113,8 +113,12 @@ impl Provider {
         if let Some(context) = queries.current_contextual_function() {
             return queries.contextual_parameter_type(&context, 0).unwrap();
         }
-        if let Some(capture) = queries.current_captured_function() {
-            return queries.captured_binding(&capture, binding()).unwrap();
+        // Canonical declaration frames have lexical ancestry but no runtime
+        // binding capture. Only an actual captured value replaces the recipe.
+        if let Some(value) = queries.current_captured_function()
+            .and_then(|capture| queries.captured_binding(&capture, binding()))
+        {
+            return value;
         }
         if self.generic {
             Type::NativeTypeParameter(parameter())
