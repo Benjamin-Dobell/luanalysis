@@ -18,6 +18,17 @@ use luanalysis_syntax::{
 use std::collections::HashMap;
 
 impl NativeRegistry {
+    pub(super) fn signature_has_method_origin(&self, key: NativeSignatureKey) -> bool {
+        let recipe = self.signatures.get(key);
+        if let Some(source) = self.documentation_signature(key) {
+            return source.owner.is_some();
+        }
+        let SignatureOwner::Function(function) = recipe.header.owner else { return false };
+        luanalysis_engine::NativeTypeProvider::function_is_method(self, function)
+            && (recipe.ambient_function == Some(function)
+                || self.signatures.function_heads(function).contains(&key)
+                || self.implementation_annotation_signature(function) == Some(key))
+    }
     pub(super) fn signature_available(&self, key: NativeSignatureKey) -> bool {
         if !self.signatures.contains(key) { return false; }
         self.signatures.get(key).documentation.and_then(|id| self.doc_members.for_declaration(id))

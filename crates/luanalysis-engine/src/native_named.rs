@@ -113,6 +113,7 @@ pub enum NamedTypeQuery {
     Indexer(NativeTypeMemberKey),
     Bases(NativeTypeDeclarationKey),
     ObjectMembers(NativeTypeDeclarationKey),
+    ObjectValidation(NativeTypeDeclarationKey),
     DefinitionContext(NativeTypeDeclarationKey),
 }
 #[derive(Clone, Debug, PartialEq)]
@@ -555,12 +556,13 @@ pub(super) fn export_error(
             Q::MemberContext(key) => NamedTypeQuery::MemberContext(source_member(key)),
             Q::IndexerKey(key) => NamedTypeQuery::Indexer(source_member(key)),
             Q::Bases(key) => NamedTypeQuery::Bases(source_declaration(key)),
-            Q::ObjectMembers(ty) | Q::DefinitionContext(ty) => {
+            Q::ObjectMembers(ty) | Q::ObjectValidation(ty) | Q::DefinitionContext(ty) => {
                 let bun_sema::types::TypeData::NativeObject(reference) = checker.data(ty) else {
                     unreachable!("native object-members query owner")
                 };
                 let declaration = source_declaration(reference.declaration);
                 if matches!(query, Q::DefinitionContext(_)) { NamedTypeQuery::DefinitionContext(declaration) }
+                else if matches!(query, Q::ObjectValidation(_)) { NamedTypeQuery::ObjectValidation(declaration) }
                 else { NamedTypeQuery::ObjectMembers(declaration) }
             }
         }),

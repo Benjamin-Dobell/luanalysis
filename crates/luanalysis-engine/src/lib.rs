@@ -308,6 +308,9 @@ pub enum Type {
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
     fn function_calling_convention(&self, _: NativeFunctionKey) -> FunctionCallingConvention { FunctionCallingConvention::TypeScript }
+    /// Exact source method declaration provenance. Function-valued fields stay false.
+    fn function_is_method(&self, _: NativeFunctionKey) -> bool { false }
+    fn signature_is_method(&self, _: NativeSignatureKey) -> bool { false }
     /// The initial standard-library environment whose primitive metatables are selected.
     /// This is independent of the current lexical or global variable named `string`.
     fn primitive_member_environment(&self) -> Option<NativeEnvironmentKey> { None }
@@ -2109,6 +2112,8 @@ struct ProviderAdapter<'a, P> {
 }
 
 impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
+    fn function_is_method(&self, key: NativeFunctionId) -> bool { self.provider.function_is_method(source_key(key)) }
+    fn signature_is_method(&self, key: bun_sema::types::NativeSignatureId) -> bool { self.provider.signature_is_method(source_signature_key(key)) }
     fn calling_convention(&self, key: NativeFunctionId) -> bun_sema::check::native_signatures::NativeCallingConvention {
         match self.provider.function_calling_convention(source_key(key)) {
             FunctionCallingConvention::TypeScript => bun_sema::check::native_signatures::NativeCallingConvention::TypeScript,

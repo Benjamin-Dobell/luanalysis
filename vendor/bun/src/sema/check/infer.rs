@@ -392,8 +392,8 @@ impl<'p, 's> Checker<'p, 's> {
         }
         // `source.AsTypeReference().node != nil && target.AsTypeReference().node != nil`
         let (original_source, original_target) = (source, target);
-        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return };
-        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return };
+        let source = match self.native_object_schema_resolved(source) { Ok(ty) => ty, Err(_) => return };
+        let target = match self.native_object_schema_resolved(target) { Ok(ty) => ty, Err(_) => return };
         let are_both_deferred =
             self.types().deferred(source).is_some() && self.types().deferred(target).is_some();
         match (self.data(source), self.data(target)) {
@@ -516,8 +516,8 @@ impl<'p, 's> Checker<'p, 's> {
     /// Foreign structural objects use the same invokeOnce recursion and priority guard as TS
     /// object inference. Keep the lazy declaration identity on its stack, not the expanded shape.
     fn infer_native_object_types(&mut self, n: &mut Inference, source: TypeId, target: TypeId) {
-        let source = match self.native_object_resolved(source) { Ok(ty) => ty, Err(_) => return };
-        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return };
+        let source = match self.native_object_schema_resolved(source) { Ok(ty) => ty, Err(_) => return };
+        let target = match self.native_object_schema_resolved(target) { Ok(ty) => ty, Err(_) => return };
         match (self.data(source), self.data(target)) {
             (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
                 let mut sources = Vec::new();

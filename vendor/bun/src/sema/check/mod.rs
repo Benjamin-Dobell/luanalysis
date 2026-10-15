@@ -145,6 +145,9 @@ pub enum NativeTypeResult {
 /// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
 pub trait NativeFunctionProvider {
     fn calling_convention(&self, _: NativeFunctionId) -> native_signatures::NativeCallingConvention { native_signatures::NativeCallingConvention::TypeScript }
+    /// Exact original method declaration syntax, not merely a callable property.
+    fn function_is_method(&self, _: NativeFunctionId) -> bool { false }
+    fn signature_is_method(&self, _: NativeSignatureId) -> bool { false }
     fn contains_signature(&self, _: NativeSignatureId) -> bool { false }
     fn signature_intrinsic(&self, _: NativeSignatureId) -> Option<native_intrinsics::NativeIntrinsicSite> { None }
     fn signature_header(&self, _: NativeSignatureId) -> native_signatures::NativeSignatureHeader { panic!("native signature provider is not installed") }
@@ -4230,7 +4233,7 @@ impl<'p, 's> Checker<'p, 's> {
     pub fn array_element(&mut self, ty: TypeId) -> Option<TypeId> {
         if let TypeData::NativeObject(reference) = *self.data(ty) {
             if !self.native_object_is_array(reference) { return None }
-            let resolved = self.native_object_resolved(ty).ok()?;
+            let resolved = self.native_object_schema_resolved(ty).ok()?;
             let TypeData::NativeTable(table) = self.data(resolved) else { return None };
             return table.indexers.first().map(|indexer| indexer.value);
         }

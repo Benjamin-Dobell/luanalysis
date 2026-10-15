@@ -587,7 +587,8 @@ impl NativeTypeProvider for ProjectRegistry {
             NamedTypeError::TooDeep(query) => match query {
                 NamedTypeQuery::OwnerScope(key) | NamedTypeQuery::Head(key)
                 | NamedTypeQuery::Bases(key)
-                | NamedTypeQuery::ObjectMembers(key) => key.snapshot,
+                | NamedTypeQuery::ObjectMembers(key)
+                | NamedTypeQuery::ObjectValidation(key) => key.snapshot,
                 NamedTypeQuery::DefinitionContext(key) => key.snapshot,
                 NamedTypeQuery::Member(key) | NamedTypeQuery::MemberContext(key) | NamedTypeQuery::Indexer(key) => key.snapshot,
             },
@@ -597,6 +598,8 @@ impl NativeTypeProvider for ProjectRegistry {
 
     dispatch! {
         fn type_declaration_self_parameter(key: NativeTypeDeclarationKey) -> Option<NativeTypeParameterKey>;
+        fn function_is_method(key: NativeFunctionKey) -> bool;
+        fn signature_is_method(key: NativeSignatureKey) -> bool;
         fn signature_header(key: NativeSignatureKey) -> SignatureHeader;
         fn function_overload_signatures(key: NativeFunctionKey) -> Vec<NativeSignatureKey>;
         fn function_exposes_implementation(key: NativeFunctionKey) -> bool;

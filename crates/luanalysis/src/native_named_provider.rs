@@ -774,7 +774,8 @@ impl NativeRegistry {
                 match query {
                     NamedTypeQuery::OwnerScope(key) | NamedTypeQuery::Head(key)
                     | NamedTypeQuery::Bases(key)
-                    | NamedTypeQuery::ObjectMembers(key) => self.named_origin(key),
+                    | NamedTypeQuery::ObjectMembers(key)
+                    | NamedTypeQuery::ObjectValidation(key) => self.named_origin(key),
                     NamedTypeQuery::DefinitionContext(key) => self.named_origin(key),
                     NamedTypeQuery::Member(key) | NamedTypeQuery::MemberContext(key) | NamedTypeQuery::Indexer(key) => {
                         self.named_member_origin(key)

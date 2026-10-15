@@ -7,10 +7,10 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 #[test]
-fn recursive_ambient_parameter_overrides_report_the_contract_error_without_schema_recursion() {
+fn recursive_ambient_method_overrides_use_upstream_variance_without_schema_recursion() {
     for returned in ["number", "self"] {
         for callable in [false, true] {
-            for narrowed in ["Derived", "Derived|Sibling"] {
+            for narrowed in ["Derived", "Derived|Sibling", "Unrelated"] {
                 let directory = std::env::temp_dir().join(format!(
                     "luanalysis recursive override {} {}",
                     std::process::id(),
@@ -26,7 +26,7 @@ fn recursive_ambient_parameter_overrides_report_the_contract_error_without_schem
                     ""
                 };
                 let source = format!(
-                    "---@class Base\n{heads}Base={{}}\n---@class Derived:Base\nDerived={{}}\n---@class Sibling:Base\nSibling={{}}\n---@param object Base\n---@return {returned}\nfunction Base.putObject(object) end\n---@param object {narrowed}\n---@return {returned}\nfunction Derived.putObject(object) end\n",
+                    "---@class Base\n{heads}Base={{}}\n---@class Derived:Base\nDerived={{}}\n---@class Sibling:Base\nSibling={{}}\n---@class Unrelated\nUnrelated={{}}\n---@param object Base\n---@return {returned}\nfunction Base.putObject(object) end\n---@param object {narrowed}\n---@return {returned}\nfunction Derived.putObject(object) end\n",
                 );
                 let run = || {
                     Command::new(env!("CARGO_BIN_EXE_luanalysis"))
@@ -41,15 +41,22 @@ fn recursive_ambient_parameter_overrides_report_the_contract_error_without_schem
                 let report = String::from_utf8(output.stdout).unwrap();
                 assert_eq!(
                     output.status.code(),
-                    Some(1),
+                    Some(i32::from(narrowed == "Unrelated")),
                     "{returned}, callable={callable}: {report}"
                 );
-                assert_eq!(report.matches("\"code\":\"TS2416\"").count(), 1, "{report}");
+                assert_eq!(
+                    report.matches("\"code\":\"TS2416\"").count(),
+                    usize::from(narrowed == "Unrelated"),
+                    "{report}"
+                );
                 assert!(!report.contains("TS2589"), "{report}");
                 assert!(!report.contains("LUA2031"), "{report}");
                 fs::write(
                     &library,
-                    source.replace("---@param object Derived", "---@param object Base"),
+                    source.replace(
+                        &format!("---@param object {narrowed}"),
+                        "---@param object Base",
+                    ),
                 )
                 .unwrap();
                 let output = run();

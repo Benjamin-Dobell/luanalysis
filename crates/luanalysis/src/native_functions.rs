@@ -2028,6 +2028,8 @@ impl NativeTypeProvider for NativeRegistry {
         let directive = self.class_definition_directive(source).expect("supported class definition").expect("attached class declaration");
         luanalysis_engine::ClassDefinitionHeader { declaration: directive.declaration }
     }
+    fn function_is_method(&self,key:NativeFunctionKey)->bool{self.methods.get(key).is_some_and(|method|method.declaration)}
+    fn signature_is_method(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signature_has_method_origin(key)}
     fn contains_signature(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signature_available(key)}
     fn signature_header(&self,key:luanalysis_engine::NativeSignatureKey)->luanalysis_engine::SignatureHeader{self.signatures.get(key).header}
     fn function_overload_signatures(&self,key:NativeFunctionKey)->Vec<luanalysis_engine::NativeSignatureKey>{

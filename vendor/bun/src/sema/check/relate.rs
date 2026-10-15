@@ -119,6 +119,9 @@ pub(super) const STRICT_TOP_SIGNATURE: u8 = 16;
 pub(super) const CALLBACK: u8 = BIVARIANT_CALLBACK | STRICT_CALLBACK;
 /// `incompatibleErrorReporter` is `reportIncompatibleConstructSignatureReturn`. Set with `reportErrors` only.
 const CONSTRUCT_SIGNATURE: u8 = 32;
+/// Lua public overloads must all be accepted by the private implementation,
+/// including when the original declaration uses method syntax.
+const STRICT_FUNCTION_VARIANCE: u8 = 64;
 
 /// `getRelationKey`: the source, the target, and flags. The flags hold the relation in the low four bits and the intersection
 /// state above it.
@@ -2795,7 +2798,7 @@ impl<'p, 's> Checker<'p, 's> {
                 && self.is_weak_type(target)
                 && {
                     let apparent = self.reduced_apparent_type_as_object(source);
-                    let apparent = self.native_object_resolved(apparent).unwrap_or(apparent);
+                    let apparent = self.native_object_schema_resolved(apparent).unwrap_or(apparent);
                     match self.data(apparent) {
                         TypeData::NativeTable(table) => !table.fields.is_empty(),
                         _ => self.members(apparent)
@@ -2906,9 +2909,10 @@ impl<'p, 's> Checker<'p, 's> {
                     _ => None,
                 }
             }));
-        let target = if implementation_declaration.is_some_and(|declaration| {
+        let lua_implementation = implementation_declaration.is_some_and(|declaration| {
             self.native_function_provider.is_some_and(|provider| provider.calling_convention(declaration) == super::native_signatures::NativeCallingConvention::Lua)
-        }) {
+        });
+        let target = if lua_implementation {
             // Erasure maps a generic parameter to any for the ordinary TS
             // comparison. That must not make a missing physical nil satisfy a
             // written nonnullable generic implementation parameter.
@@ -2930,7 +2934,7 @@ impl<'p, 's> Checker<'p, 's> {
             source,
             target,
             (implementation, overload),
-            IGNORE_RETURN_TYPES,
+            IGNORE_RETURN_TYPES | if lua_implementation { STRICT_FUNCTION_VARIANCE } else { 0 },
             0,
         )
         .holds()
@@ -3236,8 +3240,8 @@ impl<'p, 's> Checker<'p, 's> {
     /// `hasCommonProperties`
     pub(super) fn has_common_properties(&mut self, source: TypeId, target: TypeId) -> bool {
         let apparent = self.reduced_apparent_type_as_object(source);
-        let apparent = match self.native_object_resolved(apparent) { Ok(ty) => ty, Err(_) => return false };
-        let target = match self.native_object_resolved(target) { Ok(ty) => ty, Err(_) => return false };
+        let apparent = match self.native_object_schema_resolved(apparent) { Ok(ty) => ty, Err(_) => return false };
+        let target = match self.native_object_schema_resolved(target) { Ok(ty) => ty, Err(_) => return false };
         if let TypeData::NativeTable(source) = self.data(apparent) {
             if let TypeData::NativeTable(target) = self.data(target) {
                 return source.fields.iter().any(|field| target.fields.iter().any(|other| other.key == field.key));
@@ -7236,10 +7240,15 @@ impl<'p, 's> Checker<'p, 's> {
                 self.hir(file)[func].kind,
                 FnKind::Method | FnKind::Constructor
             ),
-            None => false,
+            None => self.sig_native_signature_decl(declared).is_some_and(|(declaration, _)| {
+                self.native_signature_provider_for(declaration).signature_is_method(declaration)
+            }) || self.sig_native_decl(declared).is_some_and(|(declaration, _)| {
+                self.native_function_provider.is_some_and(|provider| provider.function_is_method(declaration))
+            }),
         };
         let strict_variance =
-            check_mode & CALLBACK == 0 && self.p.files.options.strict_function_types && !is_method;
+            check_mode & CALLBACK == 0 && (check_mode & STRICT_FUNCTION_VARIANCE != 0
+                || self.p.files.options.strict_function_types && !is_method);
         let mut result = Ternary::TRUE;
         if let Some(source_this) = self.sig_this_type(source)
             && source_this != TypeId::VOID

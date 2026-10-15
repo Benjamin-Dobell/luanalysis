@@ -16,6 +16,8 @@ pub(super) struct MethodSource {
     pub receiver: Expr,
     pub member: LuaKey,
     pub colon: Option<Span>,
+    /// Named member declaration syntax, distinct from assigning a function value.
+    pub declaration: bool,
     pub implicit_receiver: Option<BindingId>,
     /// Exact original attached class binding, never a matching runtime name.
     pub class_owner: Option<NativeNamedKey>,
@@ -167,13 +169,13 @@ impl NativeMethods {
                     target,
                     function,
                     method_span,
-                } => self.record(target, function, *method_span, spans, bound, owners, declaration_owners),
+                } => self.record(target, function, *method_span, true, spans, bound, owners, declaration_owners),
                 StmtKind::Assign {
                     targets, values, annotation,
                 } if targets.len() == values.len() => {
                     for (index, (target, value)) in targets.iter().zip(values).enumerate() {
                         if let Some(function) = function_literal(value) {
-                            self.record(target, function, None, spans, bound, owners, declaration_owners);
+                            self.record(target, function, None, false, spans, bound, owners, declaration_owners);
                         } else if let Some((receiver, key)) = fixed_member_target(target)
                             && let Some(owner) = local_class_owner(receiver, bound, owners)
                         {
@@ -209,6 +211,7 @@ impl NativeMethods {
         target: &Expr,
         function: &Function,
         colon: Option<Span>,
+        declaration: bool,
         spans: &HashMap<(usize, usize), u32>,
         bound: &BoundFile,
         owners: &HashMap<BindingId, Vec<NativeNamedKey>>,
@@ -236,6 +239,7 @@ impl NativeMethods {
             receiver: receiver.clone(),
             member,
             colon,
+            declaration,
             implicit_receiver: bound.implicit_receiver(function.span),
             class_owner,
             declaration_owner,
