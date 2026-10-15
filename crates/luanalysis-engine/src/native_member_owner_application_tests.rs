@@ -109,6 +109,7 @@ struct Provider {
     invalid_outer_instance: RefCell<Option<Type>>,
     unrelated_inference_function: Option<NativeFunctionKey>,
     inferred_return_demands: Cell<usize>,
+    assignments: Vec<NativeTypeMemberKey>,
 }
 
 impl Provider {
@@ -152,6 +153,7 @@ impl Provider {
             invalid_outer_instance: RefCell::new(None),
             unrelated_inference_function: None,
             inferred_return_demands: Cell::new(0),
+            assignments: vec![],
         }
     }
 
@@ -492,6 +494,12 @@ impl NativeTypeProvider for Provider {
             readonly: false,
         }
     }
+    fn type_member_is_assignment(&self, key: NativeTypeMemberKey) -> bool {
+        self.assignments.contains(&key)
+    }
+    fn type_member_origin(&self, key: NativeTypeMemberKey) -> TableFieldOrigin {
+        if self.assignments.contains(&key) { TableFieldOrigin::Inferred } else { TableFieldOrigin::Declared }
+    }
     fn type_member_owner_application(
         &self,
         key: NativeTypeMemberKey,
@@ -689,6 +697,41 @@ fn call(queries: &mut dyn TypeQueries, callable: &Type, arguments: &[Type]) -> T
     let result = queries.call(callable, arguments);
     assert!(result.errors.is_empty(), "{:#?}", result.errors);
     result.return_type
+}
+
+#[test]
+fn direct_indexer_store_context_maps_the_original_captured_key_before_matching() {
+    Engine::new().with_native_provider(
+        || {
+            let mut provider = Provider::new();
+            let lexical = provider.lexical(None);
+            let indexer = provider.field(
+                declaration(0), "indexer", Type::String,
+                Some(application(declaration(0), vec![formal(lexical)], vec![lexical])),
+            );
+            provider.members[indexer.index as usize].key = TypeMemberKeyRecipe::Indexer { sparse: false };
+            provider.members[indexer.index as usize].indexer_key = Some(formal(lexical));
+            let numeric = provider.field(
+                declaration(0), "numeric", Type::Never,
+                Some(application(declaration(0), vec![Type::Number], vec![])),
+            );
+            provider.members[numeric.index as usize].key = TypeMemberKeyRecipe::Fixed(LuaKey::Integer(3));
+            let outside = provider.field(
+                declaration(0), "outside", Type::Never,
+                Some(application(declaration(0), vec![Type::Number], vec![])),
+            );
+            provider.assignments.extend([numeric, outside]);
+            provider
+        },
+        |provider, queries| {
+            assert_eq!(queries.named_member_context(member(1)), Ok(Some(Type::String)));
+            assert_eq!(queries.named_member_context(member(2)), Ok(None));
+            let numeric = queries.named_type_reference(declaration(0), &[Type::Number]).unwrap();
+            assert_eq!(queries.table_lookup(&numeric, &TableKey::Literal(LuaKey::Integer(3))), Ok(Type::String));
+            assert_eq!(provider.reads.get(), 1, "the assignment RHS cannot define its written indexer contract");
+            assert!(provider.errors.borrow().is_empty(), "{:#?}", provider.errors.borrow());
+        },
+    );
 }
 
 #[test]

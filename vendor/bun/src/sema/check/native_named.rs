@@ -621,14 +621,18 @@ impl<'p, 's> Checker<'p, 's> {
                         || provider.type_member_origin(declared) != crate::types::NativeTableFieldOrigin::Declared { continue }
                     let metadata = provider.type_member_header(self, declared);
                     let matches = match metadata.key {
-                        NativeTypeMemberKey::Fixed(other) => other.normalize() == Ok(key),
+                        NativeTypeMemberKey::Fixed(other) => other.normalize() == Ok(key)
+                            && self.native_named_member_header(owner, declared)?.is_some(),
                         NativeTypeMemberKey::Indexer { .. } => {
+                            if self.native_named_member_header(owner, declared)?.is_none() { continue }
+                            let Some(capture) = self.native_member_capture_mapper(owner, declared)? else { continue };
                             let raw = self.native_named_member_demand(declared, true)?;
-                            let expected = self.instantiate(raw, owner.mapper);
+                            let captured = self.instantiate(raw, capture);
+                            let expected = self.native_member_type(captured, owner);
                             self.is_assignable(self.native_table_key_type(key), expected)
                         },
                     };
-                    if !matches || self.native_named_member_header(owner, declared)?.is_none() { continue }
+                    if !matches { continue }
                     let origin = NativeObjectMember { member: declared, overloads: Vec::new(), owner, via: None };
                     if let Some(raw) = self.native_object_member_demand(&origin)? {
                         let value = self.native_member_type(raw, owner);

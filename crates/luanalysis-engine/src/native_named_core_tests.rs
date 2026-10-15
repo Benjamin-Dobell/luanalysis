@@ -1036,9 +1036,12 @@ fn a_direct_written_contract_governs_a_store_without_demanding_its_rhs_or_unrela
                 assigned.value = None;
                 let mut unrelated = Member::field(0, LuaKey::String(b"unrelated".to_vec()), Type::Never);
                 unrelated.value = None;
+                let mut foreign_indexer = Member::indexer(1, Type::Never, Type::Never);
+                foreign_indexer.key = None;
+                foreign_indexer.value = None;
                 Provider {
-                    declarations: vec![Declaration::record(0, vec![0, 1, 2])],
-                    members: vec![Member::field(0, key.clone(), Type::Number), assigned, unrelated],
+                    declarations: vec![Declaration::record(0, vec![0, 1, 2, 3]), Declaration::record(1, vec![3])],
+                    members: vec![Member::field(0, key.clone(), Type::Number), assigned, unrelated, foreign_indexer],
                     assignments: vec![1],
                     ..Provider::default()
                 }
