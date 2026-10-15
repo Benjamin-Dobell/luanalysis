@@ -306,7 +306,7 @@ fn declaration_placeholders_never_supply_missing_contracts_and_metadata_is_valid
     let fixture = Fixture::new();
     fixture.file(
         "api.def.lua",
-        "untyped = 42\n---@param value Missing\n---@return number\nfunction parse(value) end\n",
+        "untyped = unresolved_placeholder()\n---@param value Missing\n---@return number\nfunction parse(value) end\n",
     );
     fixture.file("main.lua", "local value = 1\n");
     let output = fixture.check(&["api.def.lua"]);

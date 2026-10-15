@@ -16,6 +16,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 #[path = "native_namespace_members.rs"]
 mod namespace;
 use namespace::NamespaceTarget;
+#[path = "native_ambient_data.rs"]
+mod data;
 
 pub(super) struct GlobalDeclarationSource {
     pub key: NativeValueDeclarationKey,
@@ -60,13 +62,19 @@ impl NativeGlobals {
                     annotation,
                 } => {
                     for (index, target) in targets.iter().enumerate() {
-                        let ExprKind::Name(name) = &target.kind else {
+                        let Some((name, namespace)) = namespace::declaration_target(
+                            target,
+                            snapshot,
+                            member_start,
+                            result.declarations.iter().filter(|source| source.namespace.is_some()).count(),
+                        ) else {
                             result.unsupported.push(target.span);
                             continue;
                         };
-                        if bound.binding_at(name.span.start).is_some()
-                            || matches!(name.text.as_str(), "_G" | "_ENV")
-                            || nonstandard_environment(bound, name.span.start)
+                        let root = namespace.as_ref().map_or(&name, |target| &target.root);
+                        if bound.binding_at(root.span.start).is_some()
+                            || matches!(root.text.as_str(), "_G" | "_ENV")
+                            || nonstandard_environment(bound, root.span.start)
                         {
                             result.unsupported.push(target.span);
                             continue;
@@ -83,7 +91,7 @@ impl NativeGlobals {
                         };
                         result.declarations.push(GlobalDeclarationSource {
                             key,
-                            name: name.clone(),
+                            name,
                             statement: statement.span,
                             annotation: annotation
                                 .as_ref()
@@ -100,7 +108,7 @@ impl NativeGlobals {
                                             | ExprKind::Vararg
                                     )
                                 }),
-                            namespace: None,
+                            namespace,
                         });
                     }
                 }
@@ -320,8 +328,15 @@ impl NativeRegistry {
             }
             return None;
         }
-        self.global_attached_type(source)
-            .and_then(|declaration| queries.named_declared_type(declaration).ok())
+        if let Some(declaration) = self.global_attached_type(source) {
+            return queries.named_declared_type(declaration).ok();
+        }
+        if self.source_role() == SourceRole::Declaration {
+            return source.initializer.and_then(|expression| {
+                data::literal_contract(&self.expressions.get(expression).expression)
+            });
+        }
+        None
     }
     /// One pure original declaration contract for global and local namespace
     /// members. Placeholder values and bodies never supply inferred evidence.
@@ -409,7 +424,7 @@ impl NativeRegistry {
             GlobalQueryError::MissingDeclarationContract(_) => (
                 "LUA2035",
                 format!(
-                    "Declaration global '{}' requires a written type or complete function contract; placeholder bodies and initializers are not inferred.",
+                    "Declaration global '{}' requires a written type, complete function contract, or literal data declaration; executable placeholder initializers and bodies are not inferred.",
                     source.name.text
                 ),
             ),
