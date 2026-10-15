@@ -451,6 +451,12 @@ SOURCE_ADAPTATIONS.extend({
     "check/shape.rs", "types.rs",
 ])
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_tables.rs",
+    "patch": "vendor/patches/bun-sema-native-array-assertion-overlap.patch",
+    "reason": "Separate Comparable numeric array overlap from strict sequence assignment/inference and retain fixed numeric field checks even with a covering source indexer through kernel 3521d3b.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

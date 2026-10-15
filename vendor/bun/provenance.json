@@ -1980,6 +1980,12 @@
       "patch": "vendor/patches/bun-sema-native-structural-arrays-constructor-rows.patch",
       "reason": "Retain structural Lua array form and nil-inclusive constructor result rows through native sequence admission, relations, inference, reached writes, mapping, widening, traversal and printing through kernel 1296189.",
       "patch_sha256": "ae4856d3d77a6858c58add2363dcd63f78c188db7e7d34f764be46b924025e9b"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-array-assertion-overlap.patch",
+      "reason": "Separate Comparable numeric array overlap from strict sequence assignment/inference and retain fixed numeric field checks even with a covering source indexer through kernel 3521d3b.",
+      "patch_sha256": "973168a5bcf7f92a44eb74f36cc9d4c0109196be5df62bbe7c9ee328427b547b"
     }
   ],
   "source_additions": {
@@ -2052,7 +2058,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "68769df29b1c4a658378f15dfa32b0965bcb95a58f0ddbf4c5f3a41aa20ff998",
+      "extracted_sha256": "e7b67affd9da69e4e4ab088cc1fe0a4615dd845abc78680e1c146a872c91b379",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
