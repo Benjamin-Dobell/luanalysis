@@ -596,7 +596,7 @@ impl NativeRegistry {
     ) -> Option<NativeTypeDeclarationKey> {
         self.named.anonymous_key_at(ty.span).map(anonymous)
     }
-    pub(super) fn named_candidates(&self, name: &str) -> Vec<NativeTypeDeclarationKey> {
+    pub(crate) fn named_candidates(&self, name: &str) -> Vec<NativeTypeDeclarationKey> {
         if let Some(project) = &self.project_names {
             return project.candidates(name).to_vec();
         }

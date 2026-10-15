@@ -140,7 +140,7 @@ impl NativeRegistry {
                 .declarations()
                 .iter()
                 .map(|source| source.generic_scope.clone())
-                .chain(signatures.scopes())
+                .chain(signatures.scopes(&file))
                 .collect(),
         );
         for (function,signature) in signatures.implementation_scopes(&functions) {
@@ -206,6 +206,7 @@ impl NativeRegistry {
             report: RefCell::new(report),
         };
         registry.rebuild_original_members();
+        registry.attach_documentation_signature_owners();
         registry.project_globals = Some(std::rc::Rc::new(globals::ProjectGlobalIndex::new(
             luanalysis_engine::NativeEnvironmentKey { snapshot, index: 0 }, &[&registry],
         )));
@@ -481,6 +482,7 @@ impl NativeRegistry {
         self.key(index)
     }
     pub(super) fn named_metadata(&self) -> &NativeNamed { &self.named }
+    pub(crate) fn documentation_function(&self,id:luanalysis_syntax::DocFunctionDeclarationId)->Option<&luanalysis_syntax::DocFunctionDeclaration> { self.file.function_declarations.iter().find(|source|source.id==id) }
 
     fn key(&self, index: u32) -> NativeFunctionKey {
         NativeFunctionKey {
@@ -1964,6 +1966,7 @@ impl NativeTypeProvider for NativeRegistry {
     fn value_declaration_contract(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<Type> {
         self.global_contract(key, queries)
     }
+    fn value_declaration_signatures(&self,key:luanalysis_engine::NativeValueDeclarationKey)->Option<Vec<luanalysis_engine::NativeSignatureKey>> { self.global_declaration_signatures(key) }
     fn value_declaration_initializer(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Type {
         self.global_initializer(key, queries)
     }

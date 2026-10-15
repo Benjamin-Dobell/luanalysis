@@ -31,6 +31,7 @@ pub(super) struct TypeParameterSource {
     pub semantic_self: Option<NativeNamedKey>,
 }
 
+#[derive(Clone)]
 struct TypeScope {
     // A written generic function-type head supplies body-visible names without
     // changing their original Signature owner or creating a parent cycle.
@@ -50,6 +51,11 @@ pub(super) struct NativeTypes {
     diagnostics: Vec<Diagnostic>,
 }
 
+/// Immutable original identities visible only through an attached owner scope.
+/// Importing these scopes does not introduce any global generic parameter name.
+#[derive(Clone)]
+pub(super) struct OriginalTypeScopes(HashMap<NativeTypeContext,TypeScope>);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum TypeNameResolution {
     Missing,
@@ -59,6 +65,26 @@ pub(super) enum TypeNameResolution {
 }
 
 impl NativeTypes {
+    pub(super) fn original_scopes(&self) -> OriginalTypeScopes {
+        let mut pending:Vec<_>=self.scopes.keys().filter(|owner|matches!(owner,NativeTypeContext::NamedType(_))).copied().collect();
+        let mut scopes=HashMap::new();
+        while let Some(owner)=pending.pop() {
+            if scopes.contains_key(&owner) {continue;}
+            let scope=self.scopes.get(&owner).expect("original named enclosing scope");
+            pending.extend(scope.parent);
+            pending.extend(scope.method_owner);
+            pending.extend(scope.annotation_scope);
+            pending.extend(scope.documentation_parents.iter().copied());
+            scopes.insert(owner,scope.clone());
+        }
+        OriginalTypeScopes(scopes)
+    }
+    pub(super) fn import_original_scopes(&mut self, metadata: &OriginalTypeScopes) {
+        for (&owner,scope) in &metadata.0 { self.scopes.entry(owner).or_insert_with(||scope.clone()); }
+    }
+    pub(super) fn attach_documentation_owner(&mut self, signature:luanalysis_engine::NativeSignatureKey,owner:NativeNamedKey) {
+        self.scopes.get_mut(&NativeTypeContext::Signature(signature)).expect("original documentation signature scope").method_owner=Some(NativeTypeContext::NamedType(owner));
+    }
     pub(super) fn new(snapshot: u64, recipes: Vec<TypeScopeRecipe>) -> Self {
         Self::new_with_named(snapshot, recipes, Vec::new())
     }

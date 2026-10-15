@@ -114,6 +114,12 @@ impl ProjectRegistry {
             })
             .collect();
         let names = Rc::new(names);
+        let original_scopes:Vec<_>=files.iter().map(|file|file.source.types.original_scopes()).collect();
+        for file in &mut files {
+            for scopes in &original_scopes { file.source.types.import_original_scopes(scopes); }
+            file.source.project_names=Some(Rc::clone(&names));
+            file.source.attach_documentation_signature_owners();
+        }
         let environment = luanalysis_engine::NativeEnvironmentKey {
             snapshot: files.first().map_or_else(|| super::NEXT_SNAPSHOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), |file| file.source.snapshot),
             index: 0,
@@ -358,6 +364,7 @@ impl NativeTypeProvider for ProjectRegistry {
     fn contains_value_declaration(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> bool {
         self.owner_if(key.snapshot).is_some_and(|owner| owner.contains_global_declaration(key))
     }
+    fn value_declaration_signatures(&self,key:luanalysis_engine::NativeValueDeclarationKey)->Option<Vec<NativeSignatureKey>> { self.owner(key.snapshot).value_declaration_signatures(key) }
     fn value_declaration_header(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> luanalysis_engine::ValueDeclarationHeader {
         self.owner(key.snapshot).global_header(key)
     }

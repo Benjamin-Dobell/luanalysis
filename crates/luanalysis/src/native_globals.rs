@@ -6,11 +6,11 @@ use crate::{Checker, Diagnostic};
 use luanalysis_engine::{
     GlobalQuery, GlobalQueryError, GlobalSourceRole, GlobalValueKind, NativeEnvironmentKey,
     NativeExpressionKey, NativeFunctionKey, NativeGlobalBindingKey, NativeTypeDeclarationKey,
-    NativeTypeProvider, NativeValueDeclarationKey, PackFunctionType, Type, TypeQueries,
+    NativeTypeProvider, NativeValueDeclarationKey, NativeSignatureKey, PackFunctionType, Type, TypeQueries,
     ValueDeclarationHeader, ValuePack,
 };
 use luanalysis_project::SourceRole;
-use luanalysis_syntax::{ExprKind, File, Name, Span, StmtKind, TypeExpr};
+use luanalysis_syntax::{DocFunctionDeclarationId, ExprKind, File, Name, Span, StmtKind, TypeExpr};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[path = "native_namespace_members.rs"]
@@ -25,6 +25,7 @@ pub(super) struct GlobalDeclarationSource {
     pub statement: Span,
     pub annotation: Option<TypeExpr>,
     pub function: Option<NativeFunctionKey>,
+    pub documentation_function: Option<DocFunctionDeclarationId>,
     pub initializer: Option<NativeExpressionKey>,
     pub expanded_initializer: bool,
     pub namespace: Option<NamespaceTarget>,
@@ -98,6 +99,7 @@ impl NativeGlobals {
                                 .and_then(|annotation| annotation.types.get(index))
                                 .cloned(),
                             function: None,
+                            documentation_function: None,
                             initializer,
                             expanded_initializer: index >= values.len()
                                 && values.last().is_some_and(|value| {
@@ -151,6 +153,7 @@ impl NativeGlobals {
                             snapshot,
                             index: functions[&(function.span.start, function.span.end)],
                         }),
+                        documentation_function: None,
                         initializer: None,
                         expanded_initializer: false,
                         namespace,
@@ -158,6 +161,15 @@ impl NativeGlobals {
                 }
                 _ => result.unsupported.push(statement.span),
             }
+        }
+        for declaration in &file.function_declarations {
+            if declaration.invalid_owner || declaration.owner.is_some() { continue; }
+            let key=NativeValueDeclarationKey {snapshot,index:result.declarations.len() as u32};
+            result.declarations.push(GlobalDeclarationSource {
+                key,name:declaration.name.clone(),statement:declaration.span,annotation:None,
+                function:None,documentation_function:Some(declaration.id),initializer:None,
+                expanded_initializer:false,namespace:None,
+            });
         }
         result
     }
@@ -191,7 +203,7 @@ impl ProjectGlobalIndex {
                 if !explicit && !first {
                     continue;
                 }
-                if source.source_role() == SourceRole::Declaration {
+                if source.source_role() == SourceRole::Declaration || declaration.documentation_function.is_some() {
                     declaration_owners.insert(declaration.key);
                 }
                 by_name
@@ -246,7 +258,7 @@ impl ProjectGlobalIndex {
 
 impl NativeRegistry {
     fn is_global_contract_owner(&self, source: &GlobalDeclarationSource) -> bool {
-        self.source_role() == SourceRole::Declaration
+        source.documentation_function.is_some() || self.source_role() == SourceRole::Declaration
             || source.annotation.is_some()
             || self.global_attached_type(source).is_some()
             || source.function.is_some_and(|key| {
@@ -269,13 +281,13 @@ impl NativeRegistry {
             .declaration(key)
             .expect("original global declaration");
         ValueDeclarationHeader {
-            role: match self.source_role() {
+            role: if source.documentation_function.is_some() {GlobalSourceRole::Declaration} else {match self.source_role() {
                 SourceRole::Implementation => GlobalSourceRole::Implementation,
                 SourceRole::Declaration => GlobalSourceRole::Declaration,
-            },
+            }},
             kind: if source.namespace.is_some() {
                 GlobalValueKind::Member
-            } else if source.function.is_some() {
+            } else if source.function.is_some() || source.documentation_function.is_some() {
                 GlobalValueKind::Function
             } else {
                 GlobalValueKind::Variable
@@ -314,6 +326,9 @@ impl NativeRegistry {
         queries: &mut dyn TypeQueries,
     ) -> Option<Type> {
         let source = self.globals.declaration(key)?;
+        if let Some(id)=source.documentation_function {
+            return Some(queries.signature_group_type(&[self.doc_signature_key(id).expect("valid original doc head")]));
+        }
         if let Some(annotation) = &source.annotation {
             let mut checker = self.checker(queries);
             let ty = checker.annotation(annotation);
@@ -351,6 +366,10 @@ impl NativeRegistry {
             });
         }
         None
+    }
+    pub(super) fn global_declaration_signatures(&self,key:NativeValueDeclarationKey)->Option<Vec<NativeSignatureKey>> {
+        let declaration=self.globals.declaration(key)?.documentation_function?;
+        Some(vec![self.doc_signature_key(declaration).expect("valid original documentation function signature")])
     }
     /// One pure original declaration contract for global and local namespace
     /// members. Placeholder values and bodies never supply inferred evidence.
@@ -449,6 +468,8 @@ impl NativeRegistry {
                     source.name.text
                 ),
             ),
+            GlobalQueryError::MixedCallableDeclarations { .. } => ("LUA2034",format!("Global '{}' mixes bodyless function declarations with runtime or variable declarations; this combination is not supported.",source.name.text)),
+            GlobalQueryError::InvalidDeclarationSignatures { .. } => ("LUA2034",format!("Global '{}' has invalid original bodyless function signature identities.",source.name.text)),
             GlobalQueryError::CircularQuery(_) => (
                 "TS7022",
                 format!(
@@ -554,7 +575,8 @@ pub(super) fn query_declarations(error: &GlobalQueryError) -> Vec<NativeValueDec
     match error {
         GlobalQueryError::InvalidDeclaration(key)
         | GlobalQueryError::MissingDeclarationContract(key) => vec![*key],
-        GlobalQueryError::ConflictingDeclarations { declarations, .. } => declarations.clone(),
+        GlobalQueryError::ConflictingDeclarations { declarations, .. } | GlobalQueryError::MixedCallableDeclarations { declarations, .. } => declarations.clone(),
+        GlobalQueryError::InvalidDeclarationSignatures {declaration,..} => vec![*declaration],
         GlobalQueryError::CircularQuery(query)
         | GlobalQueryError::TooDeep(query)
         | GlobalQueryError::UnresolvedQuery(query) => match query {
