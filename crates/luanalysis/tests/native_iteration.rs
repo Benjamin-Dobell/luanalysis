@@ -65,6 +65,7 @@ fn independent_original_iterator_groups_do_not_share_rows() {
 #[test]
 fn iterator_reconstruction_preserves_written_and_asserted_state_views() {
     let header = r#"---@function hidden(): (fun(state:{payload:string,hidden:number},control:number):nil|(number,string)),{payload:string,hidden:number},0
+
 "#;
     for binding in [
         "---@type fun(state:{payload:string,hidden:number},control:number):nil|(number,string),{payload:string},number\nlocal step,state,control=hidden()\nfor key,value in step,state,control do end",
