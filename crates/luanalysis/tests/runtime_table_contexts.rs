@@ -25,11 +25,18 @@ fn written_callback_fields_keep_context_through_assignment_member_paths() {
 
 #[test]
 fn replacing_the_root_binding_does_not_contextualize_a_distinct_allocation() {
-    let source = "local record={old=1}\nrecord={new='word'}\n---@type string\nlocal result=record.new\n";
+    let source = "local record={}\nrecord={new='word'}\n---@type string\nlocal result=record.new\n";
     let report = check(source);
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     let bad = source.replace("---@type string", "---@type number");
     let report = check(&bad);
+    assert!(
+        report.diagnostics.iter().any(|error| error.code == "TS2322"),
+        "{:#?}",
+        report.diagnostics
+    );
+    let incompatible = "local record={old=1}\nrecord={new='word'}\n";
+    let report = check(incompatible);
     assert!(
         report.diagnostics.iter().any(|error| error.code == "TS2322"),
         "{:#?}",
