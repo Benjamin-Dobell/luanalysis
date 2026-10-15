@@ -802,3 +802,39 @@ fn replacing_or_deleting_an_original_number_does_not_freeze_the_constructor_valu
         }
     }
 }
+
+#[test]
+fn contextual_nullable_literal_elements_keep_their_literal_and_reject_other_numbers() {
+    let fixture = Fixture::new();
+    let source = "---@function take(values:(1|nil)[]):void\n---@type (1|nil)[]\nlocal values={nil,1}\ntake(values)\ntake({nil,1})\n";
+    let wrong_local = source.replace("local values={nil,1}", "local values={nil,2}");
+    let wrong_argument = source.replace("take({nil,1})", "take({nil,2})");
+    let inferred = "---@function take(values:(1|nil)[]):void\nlocal values={nil,1}\ntake(values)\n";
+    let corrected = inferred.replace("local values=", "---@type (1|nil)[]\nlocal values=");
+    for (profile, _) in PROFILES {
+        clean(&fixture.check(source, profile));
+        error_at(
+            &fixture.check(&wrong_local, profile),
+            &wrong_local,
+            "TS2322",
+            "local values={nil,2}",
+            "{nil,2}",
+        );
+        error_at(
+            &fixture.check(&wrong_argument, profile),
+            &wrong_argument,
+            "TS2345",
+            "take({nil,2})",
+            "{nil,2}",
+        );
+        clean(&fixture.check(source, profile));
+        error_at(
+            &fixture.check(inferred, profile),
+            inferred,
+            "TS2345",
+            "take(values)",
+            "values",
+        );
+        clean(&fixture.check(&corrected, profile));
+    }
+}

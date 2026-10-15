@@ -340,3 +340,30 @@ fn original_constructor_pack_maps_hidden_nil_and_generic_slots_before_export() {
         assert!(!q.is_assignable(&widened, &nonnullable));
     });
 }
+
+#[test]
+fn retained_constructor_rows_follow_the_same_literal_context_as_stored_fields() {
+    Engine::new().with_session(|q| {
+        let target = q.array_type(&Type::Union(vec![Type::NumberLiteral(1.0), Type::Nil]));
+        let description = |number| TableType {
+            fields: vec![
+                TableField::new(LuaKey::Integer(1), Type::Nil),
+                TableField::new(LuaKey::Integer(2), Type::NumberLiteral(number)),
+            ],
+            fresh: true,
+            ..Default::default()
+        };
+        let contextual = q.table_type_in_context(&description(1.0), &target).unwrap();
+        assert!(q.is_assignable(&contextual, &target));
+        let stored = q
+            .table_lookup(&contextual, &TableKey::Literal(LuaKey::Integer(2)))
+            .unwrap();
+        assert!(q.is_assignable(&stored, &Type::NumberLiteral(1.0)));
+        let wrong = q.table_type_in_context(&description(2.0), &target).unwrap();
+        assert!(!q.is_assignable(&wrong, &target));
+        let inferred = q.table_type(&description(1.0)).unwrap();
+        assert!(!q.is_assignable(&inferred, &target));
+        let broad = q.array_type(&Type::Union(vec![Type::Number, Type::Nil]));
+        assert!(q.is_assignable(&inferred, &broad));
+    });
+}
