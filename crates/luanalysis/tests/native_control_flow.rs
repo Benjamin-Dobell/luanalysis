@@ -259,20 +259,18 @@ fn simultaneous_owner_replacement_in_a_branch_keeps_old_field_addresses() {
 
 #[test]
 fn generic_iteration_checks_its_two_implicit_arguments_through_native_calls() {
-    let source =
+    let ignored =
         "local function iterator() return 1 end\nfor value in iterator do local copy=value end";
+    clean(ignored);
+    let source = "---@param state number\n---@param control nil|number\nlocal function iterator(state,control) return 1 end\nfor value in iterator,'wrong',nil do local copy=value end";
     let report = check(source);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
-    assert_eq!(report.diagnostics[0].code, "TS2554");
+    assert_eq!(report.diagnostics[0].code, "TS2345");
     assert_eq!(
         &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
-        "iterator"
+        "'wrong'"
     );
-    let corrected = format!(
-        "---@param state nil\n---@param control nil|number\n{}",
-        source.replace("iterator()", "iterator(state,control)")
-    );
-    clean(&corrected);
+    clean(&source.replace("iterator,'wrong',nil", "iterator,42,nil"));
 }
 
 #[test]

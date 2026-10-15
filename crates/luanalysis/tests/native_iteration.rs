@@ -57,6 +57,26 @@ fn hidden_iterator_invocation_keeps_typed_rest_and_required_third_parameters() {
     accepted(&third.replace("extra:number", "extra?:number"));
 }
 
+#[test]
+fn invariant_iterator_state_errors_keep_the_header_origin_while_feedback_uses_the_callee() {
+    let source = "---@function step(state:string,control:nil|string):nil|string\n\n---@type number\nlocal state=42\nfor value in step,state,nil do end\n";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    let error = &report.diagnostics[0];
+    assert_eq!(error.code, "TS2345");
+    assert_eq!(&source[error.span.start..error.span.end], "state");
+    accepted(&source.replace("---@type number\nlocal state=42", "---@type string\nlocal state='correct'"));
+
+    let feedback = "---@function step(state:string,control:number):nil|string\nfor value in step,'state',0 do end\n";
+    let report = check(feedback);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    let error = &report.diagnostics[0];
+    assert_eq!(error.code, "TS2345");
+    assert_eq!(&feedback[error.span.start..error.span.end], "step");
+    assert!(error.message.contains("previous first iterator result"), "{error:#?}");
+    accepted(&feedback.replace("control:number", "control:number|string"));
+}
+
 const LOCAL_ROW_HEADER: &str = r#"---@shape Packed<T>
 ---@field [number] T
 ---@field n number

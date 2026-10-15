@@ -2072,7 +2072,9 @@ impl FlowValueQueries for NativeRegistry {
         let arguments = if stage == luanalysis_engine::NativeIteratorStage::First {
             vec![origin(1), origin(2)]
         } else {
-            vec![callee_origin; 2]
+            // The invariant state is the same frozen header argument on every
+            // call. Only the control comes from the previous iterator result.
+            vec![origin(1), callee_origin]
         };
         let feedback = stage == luanalysis_engine::NativeIteratorStage::Next && matches!(&error, luanalysis_engine::CallError::Argument { index: 1, .. });
         let mut checker = self.checker_at_flow(at, queries);
