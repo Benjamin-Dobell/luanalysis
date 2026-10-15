@@ -1194,11 +1194,149 @@
       "patch": "vendor/patches/bun-sema-native-recursive-override-classification.patch",
       "reason": "Classify recursive nominal overrides using original lazy declaration metadata, suppressing inference side effects while preserving shared call, flow and relation workers.",
       "patch_sha256": "901257f7db3472018c065093bfb34c2c8fb7ecb84a3bd68ad18c84bed2b82e37"
+    },
+    {
+      "path": "src/sema/check/errors_heritage.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/errors_isolated_declarations.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/flow.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/flow_walk.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/mapped.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/native_intrinsics.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/native_signatures.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/related.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/services/symbols.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+      "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+      "patch_sha256": "e2705b5ef77e0a41ffe2d8f9415c7d7e86d8e1a0afdc9c879f313851b691bb33"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-bodyless-member-declarations.patch",
+      "reason": "Group pure written member overloads by their canonical original member keys while retaining each source declaration and guarded signature demand.",
+      "patch_sha256": "c9182d76f309388908893077501dc4d4083e9b42778a55117cdb9e6479799e7d"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-member-overload-visibility.patch",
+      "reason": "Require matching source visibility before grouping pure written member overloads.",
+      "patch_sha256": "7bb5cd4c6e49c1bd9f43360d09372a659d95c6653c5c658f11292d516fe9af4f"
     }
   ],
   "source_additions": {
     "src/sema/check/flow_walk.rs": {
-      "extracted_sha256": "04c423a44320448d9cbf075c8978e96abe61b2ee37567e7b5baef738938fc54c",
+      "extracted_sha256": "b48fa1bf956390019e30c23969f567816346233bd5d50d210d42401bcacd2894",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_assertions.rs": {
@@ -1206,15 +1344,15 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "d844a8a5ac3f2945d75ceaecbddeb845dc5c8f705aa1e750828f88e7326aba13",
+      "extracted_sha256": "27194863dcd52cb5a87f2a59dd5432d4d79be4273f32ee1bd21f4bde248fb4f6",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "5478a361da7e61020b1e196cba447f6272c9883437238daceff3020218efe3a9",
+      "extracted_sha256": "2ba84502c603020bd871ba2617f18a0c7e0ca97b8f3e6221abd565fd730e40f1",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
-      "extracted_sha256": "7f10726e03b7a575e864b47180bf726ba1e5b2344ed9c19ba979186da57d806e",
+      "extracted_sha256": "961d1a8973aef6fbd79851e48bf89d241c88e74c9d009136617a9ca4e339e1a7",
       "introduced_by_patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch"
     },
     "src/sema/check/native_iterators.rs": {
@@ -1222,7 +1360,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "cca932d366a088a4d8a29254963c770acf93c669fdb3282c4d49321b8b9bfd8f",
+      "extracted_sha256": "5b793e4bb4a1c56887f39630094a16a60c46f3c84df053584dafcb6ab4a66089",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1238,11 +1376,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_signatures.rs": {
-      "extracted_sha256": "9f5865323956265229588b7079f60f9661684481cedbd341ebba6f9b2d17dd2b",
+      "extracted_sha256": "1c270382f1e5e7bff71cb1614bb1e2967417866fb830bf92a9d493a8f2542954",
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "ce5e236fb535eab32d22259e4352293ba399a8594a085d0b210ab5766b3d1a8f",
+      "extracted_sha256": "2f75b047aff03fac9c40cb9200387c4a88e2474e92a1e81b51cf74a355261452",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2055,7 +2193,7 @@
     "src/sema/check/errors_heritage.rs": {
       "upstream": "src/sema/check/errors_heritage.rs",
       "sha256": "d331ed65686740b6f975acfe74c43957afe7d2c87c3830fa90896bb961804baf",
-      "extracted_sha256": "d331ed65686740b6f975acfe74c43957afe7d2c87c3830fa90896bb961804baf"
+      "extracted_sha256": "245f1d048e604741eadebbe2da307377d820b1473147d5618046a4cfa7e4f44c"
     },
     "src/sema/check/errors_implicit.rs": {
       "upstream": "src/sema/check/errors_implicit.rs",
@@ -2065,7 +2203,7 @@
     "src/sema/check/errors_isolated_declarations.rs": {
       "upstream": "src/sema/check/errors_isolated_declarations.rs",
       "sha256": "e3d727eb68c0bf4421e68dcc1170be89110ca4d15a5fc7dd593defe53a42a98d",
-      "extracted_sha256": "e3d727eb68c0bf4421e68dcc1170be89110ca4d15a5fc7dd593defe53a42a98d"
+      "extracted_sha256": "8c124b5218aa89bdd45a7262c886bb8c194485610a95e8a499779ba880774257"
     },
     "src/sema/check/errors_iteration.rs": {
       "upstream": "src/sema/check/errors_iteration.rs",
@@ -2155,7 +2293,7 @@
     "src/sema/check/flow.rs": {
       "upstream": "src/sema/check/flow.rs",
       "sha256": "eca4c6e84d836502b89074917574c1f0623497ab0b0f11b06b729296b4d2c467",
-      "extracted_sha256": "56e8b8ee032140adb094f8029d851984c1d7a8d8adbd551b2c28c71e686f7193"
+      "extracted_sha256": "9c9e36c5ecce3a884121127e1b82dffa7cf1688224b9714555759e8309101224"
     },
     "src/sema/check/grammarchecks.rs": {
       "upstream": "src/sema/check/grammarchecks.rs",
@@ -2165,12 +2303,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "211dab8f6054c225db62ce36ff7ddc7e23a8aa76cdec761073e7d7af6f27b07d"
+      "extracted_sha256": "0674f6aa4dca2fc20f1c05492344c9eaa3284ce5d8c7dd530b259f813e2e38ea"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "e769ad1e95477eb7bd4a9c611916c76243f1f8ed4b5baa6ec8aa7f53a218ebd7"
+      "extracted_sha256": "d10ec5f4282617f2beecf61acc2b52ec73e6511d59dc5324ed3b8f33d5f6c3e5"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -2195,12 +2333,12 @@
     "src/sema/check/mapped.rs": {
       "upstream": "src/sema/check/mapped.rs",
       "sha256": "4dd9deabe9cc5c9e6fd585457addae05eab3311270100ef682f9bbfece820361",
-      "extracted_sha256": "e9e44cb05ffb3e6f607710902a92e07c92c835835fd4f8adefbd4886675dc946"
+      "extracted_sha256": "5ddc848d22347d0c120f7620656b083906dd507236f9ec2314a1b7b81038d21e"
     },
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "fce40a981ac85489173dde9d1541ed5f96cd6ead19acbeabac59718f3e6c461a"
+      "extracted_sha256": "ab2612f8961b27ba4934577248ff4015422039286267079989620a30ea356898"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -2210,7 +2348,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "3ff7b53fabc905ca036421b8b18b434d46b362b43e6386f88609bd5da6abe5d3"
+      "extracted_sha256": "065599952b62727c8f58bb02ac64d4d1ea1c8cb300fc328b4f768c056e75c5f5"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -2225,12 +2363,12 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "e8cca7cb27628790822ef4ae7f1e6c0e5d022f27c05bcbaf8dfc6821a3280df0"
+      "extracted_sha256": "0d54290e48213b19f421ef58a70e178840990c97d0593c0a8ed490b0e6513d42"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
       "sha256": "a8c92830290b52bf4487babfd5e12ae64d52a85aa8d4d5482d8a4c7c6e61d196",
-      "extracted_sha256": "a8c92830290b52bf4487babfd5e12ae64d52a85aa8d4d5482d8a4c7c6e61d196"
+      "extracted_sha256": "62a23e2442c92e4d6a1d46784e384e44fa3e8022d6bf7a0eba142ab798e2fbbf"
     },
     "src/sema/check/related_expected.rs": {
       "upstream": "src/sema/check/related_expected.rs",
@@ -2255,7 +2393,7 @@
     "src/sema/check/services/symbols.rs": {
       "upstream": "src/sema/check/services/symbols.rs",
       "sha256": "176f6f67d6be0e910ac0ec71e8377b8b81d15dc411dcc539fcda7eafa987411a",
-      "extracted_sha256": "176f6f67d6be0e910ac0ec71e8377b8b81d15dc411dcc539fcda7eafa987411a"
+      "extracted_sha256": "bb18b89dcfd6c35caa816686f7ef3c57d5b7c273df39d32b66b8a30d636bf0ae"
     },
     "src/sema/check/services/type_at_location.rs": {
       "upstream": "src/sema/check/services/type_at_location.rs",
@@ -2280,12 +2418,12 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "21e38a129fff698cd62b3f9d3c1157fbaf2cff29dca08ad3ee64b75c58ccf275"
+      "extracted_sha256": "6384a377095ef3e32643aadab52cf28a0dcde4db88360f0576c861a92b3e156e"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "307df5f52afec0b2005151c6a6566babfb5cb0fe81b5bcf8e5ff1fc19d8fc6ac"
+      "extracted_sha256": "2d6860ec0139e499d7980efc872ea3f709b2a9683eff5bc1db33106b6fda2c8f"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",
@@ -2405,7 +2543,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "e5c8bb8a63b5c2df583028122a397940c1743d1db691a8b28deaf22e8aeb1a0e"
+      "extracted_sha256": "8d034704a2877355f527bedd69bff9d40c3e1e7f53b1d8e86a4429a4fee831c3"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

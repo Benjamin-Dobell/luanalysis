@@ -275,6 +275,34 @@ SOURCE_ADAPTATIONS.extend({
 } for path in ["call.rs", "flow.rs", "native_named.rs", "relate.rs"])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-environment-value-flow.patch",
+    "reason": "Preserve original runtime environment/function capabilities, guarded loop-owned call-effect provisionals and complete reachability, expose declaration-only callable contracts, and retain shared v2 overload compatibility and native table member behavior without changing TypeScript flow joins.",
+} for path in [
+    "check/errors_heritage.rs", "check/errors_isolated_declarations.rs",
+    "check/flow.rs", "check/flow_walk.rs", "check/infer.rs", "check/instantiate.rs",
+    "check/mapped.rs", "check/mod.rs", "check/native_flow.rs", "check/native_globals.rs",
+    "check/native_intrinsics.rs", "check/native_named.rs", "check/native_signatures.rs",
+    "check/native_tables.rs", "check/print.rs", "check/relate.rs", "check/related.rs",
+    "check/services/symbols.rs", "check/shape.rs", "check/sink.rs", "types.rs",
+])
+
+
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-native-bodyless-member-declarations.patch",
+    "reason": "Group pure written member overloads by their canonical original member keys while retaining each source declaration and guarded signature demand.",
+})
+
+
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-native-member-overload-visibility.patch",
+    "reason": "Require matching source visibility before grouping pure written member overloads.",
+})
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

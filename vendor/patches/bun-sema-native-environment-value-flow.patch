@@ -1,0 +1,1326 @@
+diff --git a/src/sema/check/errors_heritage.rs b/src/sema/check/errors_heritage.rs
+index ef276e5..0a58b66 100644
+--- a/src/sema/check/errors_heritage.rs
++++ b/src/sema/check/errors_heritage.rs
+@@ -484,6 +484,7 @@ impl Checker<'_, '_> {
+                 }
+             }
+             PropSource::Type(_)
++            | PropSource::NativeGlobalBinding(_)
+             | PropSource::Mapped(..)
+             | PropSource::Copy(_, _, false)
+             | PropSource::ReverseMapped(..) => SymFlags::PROPERTY,
+diff --git a/src/sema/check/errors_isolated_declarations.rs b/src/sema/check/errors_isolated_declarations.rs
+index 17fe2ca..bc8ff8e 100644
+--- a/src/sema/check/errors_isolated_declarations.rs
++++ b/src/sema/check/errors_isolated_declarations.rs
+@@ -1579,7 +1579,7 @@ impl<'p, 's> Checker<'p, 's> {
+             PropSource::Mapped(..) => (prop.declared_by_modifiers_property().iter())
+                 .map(|p| self.iso_declaration_count(p))
+                 .sum(),
+-            PropSource::Type(_) => 0,
++            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) => 0,
+         }
+     }
+ 
+diff --git a/src/sema/check/flow.rs b/src/sema/check/flow.rs
+index d080779..237db57 100644
+--- a/src/sema/check/flow.rs
++++ b/src/sema/check/flow.rs
+@@ -7461,7 +7461,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 })
+             }
+             // No `ValueDeclaration`.
+-            PropSource::Type(_) | PropSource::Copy(_, _, false) | PropSource::ReverseMapped(..) => {
++            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) | PropSource::Copy(_, _, false) | PropSource::ReverseMapped(..) => {
+                 return false;
+             }
+         };
+@@ -8133,6 +8133,7 @@ impl<'p, 's> Checker<'p, 's> {
+         self.rechecks_at = rechecks_at;
+         // Valid until the first check ends. A hit taints what computing it again would.
+         let entry = Provisional {
++            native_effect_epoch: None,
+             raw: u64::from(ty.0),
+             depth: first as u32,
+             from: first as u32 + 1,
+diff --git a/src/sema/check/flow_walk.rs b/src/sema/check/flow_walk.rs
+index 86de46d..1536032 100644
+--- a/src/sema/check/flow_walk.rs
++++ b/src/sema/check/flow_walk.rs
+@@ -110,6 +110,9 @@ pub(super) trait FlowDomain {
+     fn crossed(walk: &Self::Walk) -> u32;
+     fn set_crossed(walk: &mut Self::Walk, crossed: u32);
+     fn initial(&self, checker: &mut Checker<'_, '_>, walk: &mut Self::Walk) -> TypeId;
++    fn join(&self, checker: &mut Checker<'_, '_>, _: &Self::Walk, types: &[TypeId], initial: TypeId) -> TypeId {
++        checker.flow_join(types, initial)
++    }
+     fn starts_as_declared(&self, checker: &mut Checker<'_, '_>, walk: &mut Self::Walk) -> bool;
+     fn shared(&self, checker: &Checker<'_, '_>, node: Self::Node) -> bool;
+     fn step(
+@@ -351,7 +354,7 @@ impl<'s, 'p> Checker<'s, 'p> {
+                     } else {
+                         domain.initial(self, walk)
+                     };
+-                    break FlowType::new(self.flow_join(&types, initial), incomplete).ty;
++                    break FlowType::new(domain.join(self, walk, &types, initial), incomplete).ty;
+                 }
+                 FlowStep::Loop { edges } => {
+                     match *edges {
+@@ -422,7 +425,7 @@ impl<'s, 'p> Checker<'s, 'p> {
+                             break cached;
+                         }
+                     }
+-                    let result = FlowType::new(self.flow_join(&types, initial), incomplete);
++                    let result = FlowType::new(domain.join(self, walk, &types, initial), incomplete);
+                     if !incomplete
+                         && !D::state(walk).too_deep
+                         && D::state(walk).steps < MAX_STEPS
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+index e08f027..37115c1 100644
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -523,7 +523,10 @@ impl<'p, 's> Checker<'p, 's> {
+                 let mut sources = Vec::new();
+                 let mut targets = Vec::new();
+                 for field in &target.fields {
+-                    if let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) {
++                    if let Some(environment) = source.environment_origin {
++                        sources.push(self.native_global_environment_member(environment, NativeTableAccessKey::Literal(field.key)));
++                        targets.push(if field.optional { self.optional(field.value) } else { field.value });
++                    } else if let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) {
+                         sources.push(if actual.optional { self.optional(actual.value) } else { actual.value });
+                         targets.push(if field.optional { self.optional(field.value) } else { field.value });
+                     }
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+index aca5cfe..2160665 100644
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -719,6 +719,7 @@ impl<'p, 's> Checker<'p, 's> {
+                     declaration: origin.declaration, mapper: self.compose(origin.mapper, mapper), self_argument: origin.self_argument.map(|ty| self.instantiate(ty, mapper)),
+                 });
+                 self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++                    environment_origin: table.environment_origin,
+                     definition_origin,
+                     nominal_origin,
+                     fields: self.list(&fields),
+diff --git a/src/sema/check/mapped.rs b/src/sema/check/mapped.rs
+index 27c7049..3ece134 100644
+--- a/src/sema/check/mapped.rs
++++ b/src/sema/check/mapped.rs
+@@ -518,7 +518,7 @@ impl<'p, 's> Checker<'p, 's> {
+         // A `nameType` is stored for a late-bound name (`lateBindMember`), for a computed name in an
+         // object literal (`checkObjectLiteral`), and by a mapped type.
+         let is_stored = match &prop.source {
+-            PropSource::Type(_) => false,
++            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) => false,
+             PropSource::Symbol(sym) => {
+                 matches!(self.files().value_declaration(*sym), Some((file, Decl::Member(m)))
+                     if matches!(self.hir(file)[m].key, PropKey::Computed(_)))
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index c41258f..e478ecd 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -144,10 +144,12 @@ pub enum NativeTypeResult {
+ /// Language-specific declaration demands executed in the same checker and query scope.
+ /// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
+ pub trait NativeFunctionProvider {
++    fn calling_convention(&self, _: NativeFunctionId) -> native_signatures::NativeCallingConvention { native_signatures::NativeCallingConvention::TypeScript }
+     fn contains_signature(&self, _: NativeSignatureId) -> bool { false }
+     fn signature_intrinsic(&self, _: NativeSignatureId) -> Option<native_intrinsics::NativeIntrinsicSite> { None }
+     fn signature_header(&self, _: NativeSignatureId) -> native_signatures::NativeSignatureHeader { panic!("native signature provider is not installed") }
+     fn overload_signatures(&self, _: NativeFunctionId) -> Vec<NativeSignatureId> { Vec::new() }
++    fn exposes_implementation(&self, _: NativeFunctionId) -> bool { false }
+     fn signature_parameters(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<SigParam> { panic!("native signature provider is not installed") }
+     fn signature_type_parameters(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Vec<TypeId> { Vec::new() }
+     fn signature_outer_type_parameters(&self, _: NativeSignatureId) -> Vec<NativeTypeParamId> { Vec::new() }
+@@ -264,6 +266,9 @@ struct Provisional {
+     /// a request for members got those in place (32), which (1) does not include, `anySignature` was read (64).
+     moved: u8,
+     serial: u64,
++    /// Original native loop queries can outlive every TS query frame. Their
++    /// frozen backedge namespace, rather than a removed frame, owns the memo.
++    native_effect_epoch: Option<u64>,
+ }
+ 
+ /// Calls `$each!` with the names of the `Buffered` fields of `Program`, in the order in which a
+@@ -1045,6 +1050,7 @@ struct Scope {
+ /// A query that may be circular.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ enum Query {
++    NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
+     NativeGlobals(NativeGlobalsQuery),
+     NativeProject(NativeProjectQuery),
+     NativeNamed(NativeTypeDeclarationQuery),
+@@ -1138,6 +1144,7 @@ impl Query {
+             Query::Bases(sym) => (sym.file, 12),
+             Query::BaseConstructor(sym) => (sym.file, 13),
+             Query::ReturnOfSignature(_)
++            | Query::NativeFlowCallEffects(..)
+             | Query::NativeNamed(_)
+             | Query::NativeGlobals(_)
+             | Query::NativeProject(_)
+@@ -3481,16 +3488,14 @@ impl<'p, 's> Checker<'p, 's> {
+         // below the resolution (`is_flow_loop_visible`): its result is no more short-lived than that of any other
+         // non-cacheable frame. It is asked for from where the loop is not visible either, where a result that follows from a
+         // loop is no hit: every use would compute it again, and uses in uses cost uses ^ depth.
+-        let flow = frame.incomplete_flow
+-            && (self.flow_loops.last())
+-                .is_some_and(|innermost| self.is_flow_loop_visible(innermost.5));
++        let innermost_loop = self.innermost_visible_flow_loop_depth();
++        let flow = frame.incomplete_flow && innermost_loop.is_some();
+         // tsgo computes it again, and then finds in `flowLoopCache` the loop of which this
+         // computation saw the types collected so far.
+         if flow && self.is_flow_loop_cached_since(frame.serial) {
+             return;
+         }
+         let scope = if flow {
+-            let innermost_loop = self.flow_loops.last().map(|in_progress| in_progress.5);
+             let outermost = self.frames.iter().position(|frame| frame.incomplete_flow);
+             (outermost.zip(innermost_loop))
+                 .map(|(outermost, innermost_loop)| outermost.max(innermost_loop))
+@@ -3529,11 +3534,40 @@ impl<'p, 's> Checker<'p, 's> {
+                         | since(self.members_in_place_hit_at) << 5
+                         | since(self.any_signature_read_at) << 6,
+                     serial: scope.serial,
++                    native_effect_epoch: None,
+                 },
+             );
++        } else if flow && !frame.circular
++            && let Query::NativeFlowCallEffects(_, _, epoch) = q
++            && let Some(depth) = self.flow_memo.native_state.loops.last().map(|frame| frame.depth)
++            && self.is_flow_loop_visible(depth)
++        {
++            let since = |at: u64| u8::from(at >= frame.serial);
++            self.provisional.insert(q, Provisional {
++                raw,
++                depth: depth as u32,
++                from: depth as u32,
++                height: self.stack.len() as u32,
++                moved: since(self.cycle_at) | since(self.limit_at) << 1 | 4
++                    | since(self.refused_at) << 3 | since(self.members_in_place_hit_at) << 5
++                    | since(self.any_signature_read_at) << 6,
++                serial: 0,
++                native_effect_epoch: Some(epoch),
++            });
+         }
+     }
+ 
++    /// Both original-source domains use the same provisional-query lifetime.
++    /// A native graph loop is not represented on the TypeScript `flow_loops`
++    /// stack, but its incomplete type has exactly the same owning frame.
++    fn innermost_visible_flow_loop_depth(&self) -> Option<usize> {
++        self.flow_loops.last().map(|frame| frame.5)
++            .into_iter()
++            .chain(self.flow_memo.native_state.loops.last().map(|frame| frame.depth))
++            .filter(|&depth| self.is_flow_loop_visible(depth))
++            .max()
++    }
++
+     /// Whether `mark_cycle_from` refuses a cycle whose head is `stack[from - 1]` because of `eager`.
+     fn is_behind_barrier(&self, from: usize) -> bool {
+         let above = |barriers: &[usize]| barriers.iter().filter(|&&at| at >= from).count();
+@@ -3551,7 +3585,7 @@ impl<'p, 's> Checker<'p, 's> {
+ 
+     #[inline(never)]
+     fn provisional_hit(&mut self, q: Query) -> Option<u64> {
+-        if self.stack.is_empty() {
++        if self.stack.is_empty() && self.flow_memo.native_state.loops.is_empty() {
+             // `clear` costs O(capacity).
+             if self.provisional.capacity() > 1024 {
+                 self.provisional = FxHashMap::default();
+@@ -3560,8 +3594,17 @@ impl<'p, 's> Checker<'p, 's> {
+             return None;
+         }
+         let entry = *self.provisional.get(&q)?;
++        if self.stack.is_empty() && entry.native_effect_epoch.is_none() {
++            self.provisional.remove(&q);
++            return None;
++        }
+         let depth = entry.depth as usize;
+-        if self.frames.get(depth).map(|frame| frame.serial) != Some(entry.serial) {
++        let valid_owner = match entry.native_effect_epoch {
++            Some(epoch) => self.flow_memo.native_state.effect_epoch == epoch
++                && self.flow_memo.native_state.loops.last().is_some_and(|frame| frame.depth == depth),
++            None => self.frames.get(depth).map(|frame| frame.serial) == Some(entry.serial),
++        };
++        if !valid_owner {
+             self.provisional.remove(&q);
+             return None;
+         }
+@@ -3590,7 +3633,12 @@ impl<'p, 's> Checker<'p, 's> {
+         match (entry.from, entry.moved & 4) {
+             (u32::MAX, _) => {}
+             (from, 0) => self.mark_tainted_from(from as usize),
+-            (from, _) => self.taint_from(from as usize),
++            (from, _) => {
++                self.taint_from(from as usize);
++                if entry.native_effect_epoch.is_some() && from as usize >= self.frames.len() {
++                    self.note_cycle();
++                }
++            }
+         }
+         if entry.moved & 1 != 0 {
+             self.note_cycle();
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index c45b38c..773bff6 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -175,6 +175,15 @@ pub enum NativeCallEffects {
+     Unsupported(&'static str),
+ }
+ 
++#[derive(Clone, Copy)]
++enum NativeEffectResult {
++    Complete(NativeCallEffects),
++    Incomplete { _effects: NativeCallEffects },
++    /// An active query depends on the loop approximation being computed. The
++    /// caller retains its antecedent facts but cannot publish a final result.
++    Pending,
++}
++
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum NativeFlowError {
+     InvalidGraph(NativeGraphKey),
+@@ -237,6 +246,11 @@ pub struct NativeIteratorProjection {
+ }
+ 
+ pub trait NativeFlowProvider {
++    /// Value capabilities require the assigned runtime value rather than the
++    /// declaration-shape reduction used by ordinary TS variable flow.
++    fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
++    fn reference_follows_creation(&self, _: NativeReferenceKey) -> bool { false }
++    fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { true }
+     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
+     /// Original immutable predicate recipe for a verified assertion argument.
+     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
+@@ -263,6 +277,10 @@ pub trait NativeFlowProvider {
+         target: NativeReferenceKey,
+         at: NativeFlowKey,
+     ) -> NativeWriteRelation;
++    fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, _: &mut Checker<'_, '_>) -> NativeWriteRelation {
++        self.write_affects(reference, target, at)
++    }
++    fn call_invalidates_reference(&self, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { false }
+     fn value_type(
+         &self,
+         value: NativeValueKey,
+@@ -285,6 +303,7 @@ pub(super) struct NativeLoopFrame {
+     key: LoopKey,
+     ty: TypeId,
+     pub depth: usize,
++    outer_effect_epoch: u64,
+ }
+ 
+ /// Checker/task-owned native tables. The graph key includes source snapshot and
+@@ -295,13 +314,25 @@ pub(super) struct NativeFlowState {
+     pub loops: Vec<NativeLoopFrame>,
+     value_types: FxHashMap<ValueContext, TypeId>,
+     pack_types: FxHashMap<ValueContext, NativeResultPack>,
+-    call_effects: FxHashMap<ValueContext, NativeCallEffects>,
++    call_effects: FxHashMap<(ValueContext, u64), NativeCallEffects>,
++    // Provisional query handles name actual effect records, never TypeIds.
++    effect_records: Vec<NativeCallEffects>,
++    pub(super) effect_epoch: u64,
++    next_effect_epoch: u64,
+     reachable: FxHashMap<NativeFlowKey, bool>,
+     latest_reachable: Option<(NativeFlowKey, bool)>,
+     disabled: FxHashMap<NativeGraphKey, ()>,
+     capture_graphs: Vec<NativeGraphKey>,
+ }
+ 
++impl NativeFlowState {
++    fn fresh_effect_epoch(&mut self) {
++        self.next_effect_epoch = self.next_effect_epoch.checked_add(1)
++            .expect("native effect epoch overflow");
++        self.effect_epoch = self.next_effect_epoch;
++    }
++}
++
+ struct NativeWalk {
+     reference: NativeReferenceKey,
+     declared: TypeId,
+@@ -315,6 +346,7 @@ struct NativeDomain<'a> {
+ }
+ 
+ enum NativeTransfer {
++    IncompleteCall,
+     DefinitionWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey },
+     Predicate(NativePredicate, bool),
+     PackPredicate { predicate: NativePredicate, sense: bool, group: NativeReferenceKey },
+@@ -385,7 +417,7 @@ fn numeric_first_entry(
+ 
+ impl NativeDomain<'_> {
+     fn auto_at_start(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey) -> Option<FlowType> {
+-        if walk.declared != TypeId::AUTO { return None; }
++        if walk.declared != TypeId::AUTO && !self.provider.reference_follows_creation(walk.reference) { return None; }
+         let declaration = self.provider.reference_declaration(walk.reference)?;
+         let same_owner = |graph: NativeGraphKey| graph.snapshot == declaration.owner.snapshot && graph.region == declaration.owner.region;
+         if same_owner(at.graph) { return None; }
+@@ -393,13 +425,13 @@ impl NativeDomain<'_> {
+             self.provider.flow_error(at, NativeFlowError::InvalidReference(declaration.reference));
+             return Some(FlowType::new(TypeId::ERROR, false));
+         }
+-        let Some(creation) = self.provider.graph_creation(at.graph) else { return Some(FlowType::new(TypeId::AUTO, false)) };
++        let Some(creation) = self.provider.graph_creation(at.graph) else { return Some(FlowType::new(walk.declared, false)) };
+         if declaration.writes.iter().any(|write| !same_owner(write.owner)) {
+-            return Some(FlowType::new(TypeId::AUTO, false));
++            return Some(FlowType::new(walk.declared, false));
+         }
+         let last = declaration.writes.iter().map(|write| write.statement_end).max().unwrap_or(0);
+         if !Checker::is_past_last_assignment_position(last, creation.position) {
+-            return Some(FlowType::new(TypeId::AUTO, false));
++            return Some(FlowType::new(walk.declared, false));
+         }
+         if creation.input.graph.snapshot != at.graph.snapshot || !self.provider.contains_graph(creation.input.graph) {
+             self.provider.flow_error(at, NativeFlowError::InvalidGraph(creation.input.graph));
+@@ -518,6 +550,9 @@ impl NativeDomain<'_> {
+             }
+             NativePredicate::Equal { .. } => ReachStep::Follow(before),
+             NativePredicate::RuntimeType { value, input, kind, equals, .. } => {
++                // A lexical `type` candidate is insufficient after a real
++                // environment write. Source providers prove the original call.
++                if !self.provider.runtime_type_operation(value, input, checker) { return ReachStep::Follow(before); }
+                 let value = checker.native_flow_value(self.provider, value, input);
+                 if checker.native_runtime_type(value, &kind, equals == sense).is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
+             }
+@@ -560,6 +595,13 @@ impl FlowDomain for NativeDomain<'_> {
+     fn initial(&self, _: &mut Checker<'_, '_>, walk: &mut NativeWalk) -> TypeId {
+         walk.initial
+     }
++    fn join(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, types: &[TypeId], initial: TypeId) -> TypeId {
++        if self.provider.reference_tracks_runtime_value(walk.reference) {
++            // Structural subtyping cannot remove an alternative runtime value:
++            // an ordinary function may share assert's shape without its effect.
++            checker.union_or_evolving_with(types, false)
++        } else { checker.flow_join(types, initial) }
++    }
+     fn starts_as_declared(&self, _: &mut Checker<'_, '_>, walk: &mut NativeWalk) -> bool {
+         walk.initial == walk.declared
+     }
+@@ -612,10 +654,10 @@ impl FlowDomain for NativeDomain<'_> {
+                         .flow_error(at, NativeFlowError::InvalidReference(target));
+                     return FlowStep::Value(TypeId::ERROR);
+                 }
+-                match self.provider.write_affects(walk.reference, target, at) {
++                match self.provider.write_affects_with_types(walk.reference, target, at, checker) {
+                     NativeWriteRelation::Exact => {
+                         let assigned = checker.native_flow_value(self.provider, value, input);
+-                        FlowStep::Value(checker.resolved_assignment_type(walk.declared, assigned))
++                        FlowStep::Value(if self.provider.reference_tracks_runtime_value(walk.reference) { assigned } else { checker.resolved_assignment_type(walk.declared, assigned) })
+                     }
+                     NativeWriteRelation::Ancestor => FlowStep::Value(walk.declared),
+                     NativeWriteRelation::Descendant => FlowStep::Follow {
+@@ -683,19 +725,27 @@ impl FlowDomain for NativeDomain<'_> {
+                 if !self.edge(at, before) || !self.edge(at, input) {
+                     return FlowStep::Value(TypeId::ERROR);
+                 }
++                if self.provider.call_invalidates_reference(walk.reference, at, checker) {
++                    return FlowStep::Value(walk.declared);
++                }
+                 match checker.native_flow_call_effects(self.provider, value, input) {
+-                    NativeCallEffects::Never => FlowStep::Value(TypeId::UNREACHABLE_NEVER),
+-                    NativeCallEffects::Assert { condition, input } => match self.assertion_predicate(at, condition, input) {
++                    NativeEffectResult::Pending | NativeEffectResult::Incomplete { .. } => FlowStep::Follow {
++                        before,
++                        transfer: Some(NativeTransfer::IncompleteCall),
++                        count_passed: false,
++                    },
++                    NativeEffectResult::Complete(NativeCallEffects::Never) => FlowStep::Value(TypeId::UNREACHABLE_NEVER),
++                    NativeEffectResult::Complete(NativeCallEffects::Assert { condition, input }) => match self.assertion_predicate(at, condition, input) {
+                         Ok(Some(predicate)) => self.predicate_flow_step(at, before, predicate, true, walk),
+                         Ok(None) => FlowStep::Follow { before, transfer: None, count_passed: false },
+                         Err(()) => FlowStep::Value(TypeId::ERROR),
+                     },
+-                    NativeCallEffects::None => FlowStep::Follow {
++                    NativeEffectResult::Complete(NativeCallEffects::None) => FlowStep::Follow {
+                         before,
+                         transfer: None,
+                         count_passed: false,
+                     },
+-                    NativeCallEffects::Unsupported(feature) => {
++                    NativeEffectResult::Complete(NativeCallEffects::Unsupported(feature)) => {
+                         self.provider
+                             .flow_error(at, NativeFlowError::Unsupported(feature));
+                         FlowStep::Value(TypeId::ERROR)
+@@ -712,7 +762,11 @@ impl FlowDomain for NativeDomain<'_> {
+         transfer: NativeTransfer,
+         previous: FlowType,
+     ) -> FlowType {
++        if matches!(transfer, NativeTransfer::IncompleteCall) {
++            return FlowType::new(previous.ty, true);
++        }
+         let ty = match transfer {
++            NativeTransfer::IncompleteCall => unreachable!(),
+             NativeTransfer::DefinitionWrite { at, target, value, input } => {
+                 if checker.native_definition_flow_target(previous.ty)
+                     && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
+@@ -743,8 +797,8 @@ impl FlowDomain for NativeDomain<'_> {
+                 let other = checker.native_flow_value(self.provider, other, input);
+                 checker.native_equal_flow_type(previous.ty, other, equals == sense)
+             }
+-            NativeTransfer::Predicate(NativePredicate::RuntimeType { kind, equals, .. }, sense) => {
+-                checker.native_runtime_type(previous.ty, &kind, equals == sense)
++            NativeTransfer::Predicate(NativePredicate::RuntimeType { value, input, kind, equals, .. }, sense) => {
++                if self.provider.runtime_type_operation(value, input, checker) { checker.native_runtime_type(previous.ty, &kind, equals == sense) } else { previous.ty }
+             }
+             NativeTransfer::Predicate(NativePredicate::NumericIteration { .. }, _) => previous.ty,
+             NativeTransfer::Predicate(NativePredicate::GenericIteration { .. }, _) => previous.ty,
+@@ -812,15 +866,22 @@ impl FlowDomain for NativeDomain<'_> {
+             key: (node, walk.reference, walk.declared, initial),
+             ty,
+             depth: checker.stack.len(),
++            outer_effect_epoch: checker.flow_memo.native_state.effect_epoch,
+         });
++        checker.flow_memo.native_state.fresh_effect_epoch();
+     }
+     fn update_loop(&self, checker: &mut Checker<'_, '_>, ty: TypeId) {
+         if let Some(frame) = checker.flow_memo.native_state.loops.last_mut() {
+-            frame.ty = ty;
++            if frame.ty != ty {
++                frame.ty = ty;
++                checker.flow_memo.native_state.fresh_effect_epoch();
++            }
+         }
+     }
+     fn pop_loop(&self, checker: &mut Checker<'_, '_>) {
+-        checker.flow_memo.native_state.loops.pop();
++        if let Some(frame) = checker.flow_memo.native_state.loops.pop() {
++            checker.flow_memo.native_state.effect_epoch = frame.outer_effect_epoch;
++        }
+     }
+     fn save_loop(
+         &self,
+@@ -871,10 +932,13 @@ impl FlowDomain for NativeDomain<'_> {
+         let cache = std::mem::take(&mut checker.flow_memo.native_state.value_types);
+         let calls = std::mem::take(&mut checker.flow_memo.native_state.call_effects);
+         let packs = std::mem::take(&mut checker.flow_memo.native_state.pack_types);
++        let epoch = checker.flow_memo.native_state.effect_epoch;
++        checker.flow_memo.native_state.fresh_effect_epoch();
+         let result = work(checker);
+         checker.flow_memo.native_state.value_types = cache;
+         checker.flow_memo.native_state.call_effects = calls;
+         checker.flow_memo.native_state.pack_types = packs;
++        checker.flow_memo.native_state.effect_epoch = epoch;
+         result
+     }
+ }
+@@ -950,14 +1014,15 @@ impl ReachDomain for NativeDomain<'_> {
+                     return ReachStep::Value(false);
+                 }
+                 match checker.native_flow_call_effects(self.provider, value, input) {
+-                    NativeCallEffects::None => ReachStep::Follow(before),
+-                    NativeCallEffects::Never => ReachStep::Value(false),
+-                    NativeCallEffects::Assert { condition, input } => match self.assertion_predicate(at, condition, input) {
++                    NativeEffectResult::Pending | NativeEffectResult::Incomplete { .. } => ReachStep::Follow(before),
++                    NativeEffectResult::Complete(NativeCallEffects::None) => ReachStep::Follow(before),
++                    NativeEffectResult::Complete(NativeCallEffects::Never) => ReachStep::Value(false),
++                    NativeEffectResult::Complete(NativeCallEffects::Assert { condition, input }) => match self.assertion_predicate(at, condition, input) {
+                         Ok(Some(predicate)) => self.predicate_reach_step(checker, at, before, predicate, true),
+                         Ok(None) => ReachStep::Follow(before),
+                         Err(()) => ReachStep::Value(false),
+                     },
+-                    NativeCallEffects::Unsupported(feature) => {
++                    NativeEffectResult::Complete(NativeCallEffects::Unsupported(feature)) => {
+                         self.provider
+                             .flow_error(at, NativeFlowError::Unsupported(feature));
+                         ReachStep::Value(false)
+@@ -986,7 +1051,7 @@ impl<'s, 'p> Checker<'s, 'p> {
+             NativePredicate::Or(left, right) => if sense { self.native_predicate_possible(provider, left, true) || self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) && self.native_predicate_possible(provider, right, false) },
+             NativePredicate::Not(inner) => self.native_predicate_possible(provider, inner, !sense),
+             NativePredicate::Truthy { value, input, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.lua_truthiness_type(value, sense).is_never() },
+-            NativePredicate::RuntimeType { value, input, kind, equals, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.native_runtime_type(value, kind, *equals == sense).is_never() },
++            NativePredicate::RuntimeType { value, input, kind, equals, .. } => { if !provider.runtime_type_operation(*value, *input, self) { return true; } let value = self.native_flow_value(provider, *value, *input); !self.native_runtime_type(value, kind, *equals == sense).is_never() },
+             _ => true,
+         }
+     }
+@@ -1009,7 +1074,7 @@ impl<'s, 'p> Checker<'s, 'p> {
+             _ if predicate_subject(predicate) != Some(reference) => if self.native_predicate_possible(provider, predicate, sense) { ty } else { TypeId::NEVER },
+             NativePredicate::Truthy { .. } => self.lua_truthiness_type(ty, sense),
+             NativePredicate::Equal { other, input, equals, .. } => { let other = self.native_flow_value(provider, *other, *input); self.native_equal_flow_type(ty, other, *equals == sense) },
+-            NativePredicate::RuntimeType { kind, equals, .. } => self.native_runtime_type(ty, kind, *equals == sense),
++            NativePredicate::RuntimeType { value, input, kind, equals, .. } => if provider.runtime_type_operation(*value, *input, self) { self.native_runtime_type(ty, kind, *equals == sense) } else { ty },
+             _ => ty,
+         }
+     }
+@@ -1046,7 +1111,7 @@ impl<'s, 'p> Checker<'s, 'p> {
+                     let other = self.native_flow_value(provider, *other, *input);
+                     self.native_equal_flow_type(value, other, *equals == sense)
+                 }
+-                NativePredicate::RuntimeType { kind, equals, .. } => self.native_runtime_type(value, kind, *equals == sense),
++                NativePredicate::RuntimeType { value: operation, input, kind, equals, .. } => if provider.runtime_type_operation(*operation, *input, self) { self.native_runtime_type(value, kind, *equals == sense) } else { value },
+                 _ => value,
+             };
+             if value.is_never() { continue }
+@@ -1258,6 +1323,17 @@ impl<'s, 'p> Checker<'s, 'p> {
+         reachable
+     }
+ 
++    /// Source visitation can stop only after a completed reachability result.
++    /// A provisional false during a loop/query cycle must not hide diagnostics.
++    pub fn native_flow_definitely_unreachable(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        at: NativeFlowKey,
++    ) -> bool {
++        let (reachable, stored) = self.run_memoizable(|checker| checker.native_flow_reachable(provider, at));
++        !reachable && stored.is_some()
++    }
++
+     fn native_flow_value(
+         &mut self,
+         provider: &dyn NativeFlowProvider,
+@@ -1289,26 +1365,43 @@ impl<'s, 'p> Checker<'s, 'p> {
+         provider: &dyn NativeFlowProvider,
+         value: NativeValueKey,
+         input: NativeFlowKey,
+-    ) -> NativeCallEffects {
+-        let key = (value, input);
++    ) -> NativeEffectResult {
++        let epoch = self.flow_memo.native_state.effect_epoch;
++        let key = ((value, input), epoch);
+         if value.snapshot != input.graph.snapshot
+             || !provider.contains_graph(input.graph)
+             || provider.node(input).is_none()
+         {
+             provider.flow_error(input, NativeFlowError::InvalidValue(value));
+-            return NativeCallEffects::Unsupported("invalid frozen call context");
++            return NativeEffectResult::Complete(NativeCallEffects::Unsupported("invalid frozen call context"));
+         }
+         if let Some(&cached) = self.flow_memo.native_state.call_effects.get(&key) {
+-            return cached;
++            return NativeEffectResult::Complete(cached);
+         }
+-        let (effects, stored) =
+-            self.run_memoizable(|checker| provider.call_effects(value, input, checker));
+-        if stored.is_some() && !self.is_stack_low() {
+-            self.flow_memo
+-                .native_state
+-                .call_effects
+-                .insert(key, effects);
++        let query = super::Query::NativeFlowCallEffects(value, input, epoch);
++        if let Some(raw) = self.provisional(query) {
++            return NativeEffectResult::Incomplete { _effects: self.flow_memo.native_state.effect_records[raw as usize] };
++        }
++        if !self.enter(query) {
++            // `enter` has tainted the dependent queries. An effect that needs
++            // its own in-progress loop is unavailable, not proof of no effect.
++            return NativeEffectResult::Pending;
++        }
++        let begun = self.begin_memoizable();
++        let effects = provider.call_effects(value, input, self);
++        let stored = self.end_memoizable(begun);
++        match self.leave(query) {
++            Ok(_) if stored.is_some() && !self.is_stack_low() => {
++                self.flow_memo.native_state.call_effects.insert(key, effects);
++            }
++            Err(open) => {
++                let raw = self.flow_memo.native_state.effect_records.len() as u64;
++                self.flow_memo.native_state.effect_records.push(effects);
++                self.cache_provisionally(query, raw, open);
++                return NativeEffectResult::Incomplete { _effects: effects };
++            }
++            _ => return NativeEffectResult::Incomplete { _effects: effects },
+         }
+-        effects
++        NativeEffectResult::Complete(effects)
+     }
+ }
+diff --git a/src/sema/check/native_globals.rs b/src/sema/check/native_globals.rs
+index 04a89bf..54f8ef7 100644
+--- a/src/sema/check/native_globals.rs
++++ b/src/sema/check/native_globals.rs
+@@ -3,7 +3,8 @@
+ 
+ use super::{Checker, Query};
+ use super::task::Stored;
+-use crate::types::TypeId;
++use crate::types::{NativeSignatureId, TypeId};
++use crate::types::CloneIn;
+ use crate::util::FxHashMap;
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+@@ -38,6 +39,8 @@ pub enum NativeGlobalQueryError {
+     InvalidPrimitiveMemberNamespace { binding: NativeGlobalBindingId, kind: NativePrimitiveMemberKind },
+     MissingDeclarationContract(NativeValueDeclarationId),
+     ConflictingDeclarations { binding: NativeGlobalBindingId, declarations: Vec<NativeValueDeclarationId> },
++    MixedCallableDeclarations { binding: NativeGlobalBindingId, declarations: Vec<NativeValueDeclarationId> },
++    InvalidDeclarationSignatures { declaration: NativeValueDeclarationId, signature: Option<NativeSignatureId> },
+     CircularQuery(NativeGlobalsQuery),
+     TooDeep(NativeGlobalsQuery),
+     UnresolvedQuery(NativeGlobalsQuery),
+@@ -48,10 +51,18 @@ pub trait NativeGlobalsProvider {
+     fn primitive_member_environment(&self) -> Option<NativeEnvironmentId> { None }
+     fn primitive_member_binding(&self, _: NativeEnvironmentId, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingId> { None }
+     fn contains_global_environment(&self, environment: NativeEnvironmentId) -> bool;
++    fn global_environment_binding(&self, _: NativeEnvironmentId, _: &[u8]) -> Option<NativeGlobalBindingId> { None }
++    /// The selected initial self-reference, attested by declaration provenance.
++    fn global_environment_self_binding(&self, _: NativeEnvironmentId) -> Option<NativeGlobalBindingId> { None }
++    /// Names and original identities only; obtaining a table never reads all contracts.
++    fn global_environment_bindings(&self, _: NativeEnvironmentId) -> Vec<(Vec<u8>, NativeGlobalBindingId)> { Vec::new() }
+     fn contains_global_binding(&self, binding: NativeGlobalBindingId) -> bool;
+     fn global_binding_declarations(&self, binding: NativeGlobalBindingId) -> Vec<NativeValueDeclarationId>;
+     fn contains_value_declaration(&self, declaration: NativeValueDeclarationId) -> bool;
+     fn value_declaration_header(&self, declaration: NativeValueDeclarationId) -> NativeValueDeclarationHeader;
++    /// Pure original callable heads, independent of any runtime function/body.
++    /// `Some` must be nonempty; `None` retains ordinary value declaration rules.
++    fn value_declaration_signatures(&self, _: NativeValueDeclarationId) -> Option<Vec<NativeSignatureId>> { None }
+     /// Original annotation space; this must never inspect an ambient stub body.
+     fn value_declaration_contract(&self, checker: &mut Checker<'_, '_>, declaration: NativeValueDeclarationId) -> Option<TypeId>;
+     /// Executable source values only. The requesting checker owns every demand.
+@@ -78,6 +89,76 @@ impl NativeGlobalsCache {
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
++    /// The environment is an open Lua table, interned by its original environment identity.
++    /// Creating it does not enter any declaration query, including its own `_G` binding.
++    pub fn native_global_environment_type(&mut self, environment: NativeEnvironmentId) -> Result<TypeId, NativeGlobalQueryError> {
++        if !self.native_globals_provider.is_some_and(|provider| provider.contains_global_environment(environment)) {
++            let error = NativeGlobalQueryError::InvalidEnvironment(environment);
++            self.report_native_global(error.clone());
++            return Err(error);
++        }
++        let table = self.native_table(&[], &[crate::types::NativeTableIndexer {
++            key: TypeId::ANY, value: TypeId::ANY, readonly: false, sparse: true,
++            origin: crate::types::NativeTableFieldOrigin::Declared,
++        }], crate::types::NativeTableFlavor::Declared).expect("an environment has a valid open indexer");
++        let crate::types::TypeData::NativeTable(data) = self.data(table) else { unreachable!() };
++        let mut data = (**data).clone_in(self.arena);
++        data.environment_origin = Some(environment);
++        Ok(self.intern(crate::types::TypeData::NativeTable(self.boxed(data))))
++    }
++
++    pub(super) fn native_global_environment_member(&mut self, environment: NativeEnvironmentId, key: crate::types::NativeTableAccessKey) -> TypeId {
++        let Some(provider) = self.native_globals_provider else { return TypeId::ERROR };
++        let crate::types::NativeTableAccessKey::Literal(crate::types::NativeTableKey::String(name)) = key else { return TypeId::ANY };
++        let Some(binding) = provider.global_environment_binding(environment, self.atoms().bytes(name)) else { return TypeId::ANY };
++        if binding.environment != environment || !provider.contains_global_binding(binding) {
++            self.report_native_global(NativeGlobalQueryError::InvalidBinding(binding));
++            return TypeId::ERROR;
++        }
++        self.native_global_environment_binding_type(binding)
++    }
++
++    pub(super) fn native_global_environment_binding_type(&mut self, binding: NativeGlobalBindingId) -> TypeId {
++        let Some(provider) = self.native_globals_provider else { return TypeId::ERROR };
++        let environment = binding.environment;
++        if !provider.contains_global_environment(environment) || !provider.contains_global_binding(binding) {
++            self.report_native_global(NativeGlobalQueryError::InvalidBinding(binding));
++            return TypeId::ERROR;
++        }
++        if provider.global_environment_self_binding(environment) == Some(binding) {
++            return self.native_global_environment_type(environment).unwrap_or(TypeId::ERROR);
++        }
++        self.native_global_binding_type(binding).unwrap_or(TypeId::ERROR)
++    }
++
++    pub(super) fn native_global_environment_properties(&mut self, environment: NativeEnvironmentId) -> Vec<(crate::atom::Atom, NativeGlobalBindingId)> {
++        let Some(provider) = self.native_globals_provider else { return Vec::new() };
++        provider.global_environment_bindings(environment).into_iter().filter_map(|(name, binding)| {
++            if binding.environment != environment || !provider.contains_global_binding(binding) {
++                self.report_native_global(NativeGlobalQueryError::InvalidBinding(binding));
++                None
++            } else { Some((self.atoms().intern(&name), binding)) }
++        }).collect()
++    }
++
++    /// Full shape demand is explicit: preserve original global contracts in native inference
++    /// and structural relations, while ordinary property reads remain one-binding demands.
++    pub(super) fn native_global_environment_fields(&mut self, environment: NativeEnvironmentId) -> Vec<crate::types::NativeTableField> {
++        let Some(provider) = self.native_globals_provider else { return Vec::new() };
++        let mut fields = Vec::new();
++        for (name, binding) in provider.global_environment_bindings(environment) {
++            if binding.environment != environment {
++                self.report_native_global(NativeGlobalQueryError::InvalidBinding(binding));
++                continue;
++            }
++            let value = self.native_global_environment_binding_type(binding);
++            fields.push(crate::types::NativeTableField {
++                key: crate::types::NativeTableKey::String(self.atoms().intern(&name)), value,
++                optional: false, readonly: false, origin: crate::types::NativeTableFieldOrigin::Declared,
++            });
++        }
++        fields
++    }
+     /// None is the ordinary backend property path. Some(None) is an authoritative
+     /// absent Lua member and must not fall through to the TypeScript String library.
+     pub(super) fn native_primitive_property(&mut self, ty: TypeId, name: crate::atom::Atom) -> Option<Option<TypeId>> {
+@@ -192,12 +273,25 @@ impl<'p, 's> Checker<'p, 's> {
+     fn native_value_declaration_contract(&mut self, declaration: NativeValueDeclarationId) -> Result<Option<TypeId>, NativeGlobalQueryError> {
+         self.native_globals_demand(NativeGlobalsQuery::ValueDeclarationContract(declaration), |checker, provider| {
+             checker.native_globals_at_lexical_root(|checker| {
++                if let Some(signatures) = provider.value_declaration_signatures(declaration) {
++                    let ty = checker.native_global_declaration_signatures(declaration, &signatures)?;
++                    return Ok(NativeGlobalsValue::Type(ty));
++                }
+                 Ok(provider.value_declaration_contract(checker, declaration)
+                     .map_or(NativeGlobalsValue::NoContract, NativeGlobalsValue::Type))
+             })
+         }).map(|value| match value { NativeGlobalsValue::Type(ty) => Some(ty), NativeGlobalsValue::NoContract => None })
+     }
+ 
++    fn native_global_declaration_signatures(&mut self, declaration: NativeValueDeclarationId, signatures: &[NativeSignatureId]) -> Result<TypeId, NativeGlobalQueryError> {
++        if signatures.is_empty() {
++            return Err(NativeGlobalQueryError::InvalidDeclarationSignatures { declaration, signature: None });
++        }
++        self.native_signature_group_type(signatures).map_err(|signature| {
++            NativeGlobalQueryError::InvalidDeclarationSignatures { declaration, signature: Some(signature) }
++        })
++    }
++
+     pub fn native_value_declaration_type(&mut self, declaration: NativeValueDeclarationId) -> Result<TypeId, NativeGlobalQueryError> {
+         self.native_globals_demand(NativeGlobalsQuery::ValueDeclaration(declaration), |checker, provider| {
+             if let Some(contract) = checker.native_value_declaration_contract(declaration)? { return Ok(NativeGlobalsValue::Type(contract)); }
+@@ -217,6 +311,34 @@ impl<'p, 's> Checker<'p, 's> {
+             declarations.sort_unstable_by_key(|key| (key.snapshot, key.index));
+             declarations.dedup();
+             if declarations.is_empty() { return Err(NativeGlobalQueryError::InvalidBinding(binding)); }
++            let mut callable = Vec::new();
++            let mut ordinary = false;
++            for &declaration in &declarations {
++                if !provider.contains_value_declaration(declaration) {
++                    return Err(NativeGlobalQueryError::InvalidDeclaration(declaration));
++                }
++                if let Some(signatures) = provider.value_declaration_signatures(declaration) {
++                    callable.push((declaration, signatures));
++                } else {
++                    ordinary = true;
++                }
++            }
++            if !callable.is_empty() {
++                if ordinary {
++                    return Err(NativeGlobalQueryError::MixedCallableDeclarations { binding, declarations });
++                }
++                return checker.native_globals_at_lexical_root(|checker| {
++                    let mut signatures = Vec::new();
++                    for (declaration, heads) in callable {
++                        // Validate each original owner independently so errors
++                        // retain that declaration's source identity.
++                        checker.native_global_declaration_signatures(declaration, &heads)?;
++                        signatures.extend(heads);
++                    }
++                    let ty = checker.native_signature_group_type(&signatures).expect("validated original global heads");
++                    Ok(NativeGlobalsValue::Type(ty))
++                });
++            }
+             let mut values = Vec::with_capacity(declarations.len());
+             for &declaration in &declarations {
+                 if let Some(contract) = checker.native_value_declaration_contract(declaration)? {
+diff --git a/src/sema/check/native_intrinsics.rs b/src/sema/check/native_intrinsics.rs
+index 0391011..d3ad980 100644
+--- a/src/sema/check/native_intrinsics.rs
++++ b/src/sema/check/native_intrinsics.rs
+@@ -7,7 +7,7 @@ use super::native_packs::{NativePackAlternative, NativePackSlot};
+ use crate::types::{ElemFlags, NativeResultPack, SigId, TypeData, TypeId};
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+-pub enum NativeIntrinsicKind { Assert }
++pub enum NativeIntrinsicKind { Assert, Type, Require }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+ pub struct NativeIntrinsicSite {
+@@ -20,6 +20,16 @@ impl<'p, 's> Checker<'p, 's> {
+     /// Every public head must retain the same trusted original value identity.
+     /// Signature-shaped values and ambiguous unions acquire no intrinsic effect.
+     pub fn native_function_intrinsic(&mut self, function: TypeId) -> Option<NativeIntrinsicSite> {
++        if self.is_union(function) {
++            let parts = self.parts(function).to_vec();
++            let mut selected = None;
++            for part in parts {
++                let site = self.native_function_intrinsic(part)?;
++                if selected.is_some_and(|prior| prior != site) { return None }
++                selected = Some(site);
++            }
++            return selected;
++        }
+         // A callable table or an uninstantiated parameter constrained by a
+         // signature is not evidence of the original runtime function value.
+         if self.native_runtime_kind(function) != Some(crate::types::NativeRuntimeKind::Function) { return None }
+@@ -67,7 +77,8 @@ impl<'p, 's> Checker<'p, 's> {
+     /// A copying operation can use its result context for otherwise unconstrained
+     /// arguments. Precise instantiated parameter constraints remain authoritative.
+     pub(super) fn native_intrinsic_argument_context(&mut self, signature: SigId, expected_scalar: Option<TypeId>, expected_pack: Option<NativeResultPack>) -> Option<NativeResultPack> {
+-        let _site = self.native_intrinsic_site(signature)?;
++        let site = self.native_intrinsic_site(signature)?;
++        if site.kind != NativeIntrinsicKind::Assert { return None }
+         let expected = expected_pack.or_else(|| expected_scalar.map(|ty| self.native_scalar_pack(ty)))?;
+         let params = self.sig_params(signature);
+         let declared = NativeResultPack { ty: self.rest_type_at_position(&params, 0, false) };
+@@ -151,12 +162,14 @@ impl<'p, 's> Checker<'p, 's> {
+ 
+     pub(super) fn native_intrinsic_result_pack(&mut self, signature: SigId, args: &[Arg], expected_scalar: Option<TypeId>, expected_pack: Option<NativeResultPack>) -> Result<Option<NativeResultPack>, ResolvedTypeCallError> {
+         let Some(site) = self.native_intrinsic_site(signature) else { return Ok(None) };
++        if site.kind != NativeIntrinsicKind::Assert { return Ok(None) }
+         let params = self.sig_params(signature);
+         let context = self.native_intrinsic_argument_context(signature, expected_scalar, expected_pack)
+             .unwrap_or_else(|| NativeResultPack { ty: self.rest_type_at_position(&params, 0, false) });
+         let pack = self.native_intrinsic_argument_pack(args, context).ok_or(ResolvedTypeCallError::UnsupportedRest)?;
+         match site.kind {
+             NativeIntrinsicKind::Assert => self.native_assert_pack(pack).map(Some).ok_or(ResolvedTypeCallError::UnsupportedRest),
++            NativeIntrinsicKind::Type | NativeIntrinsicKind::Require => Ok(None),
+         }
+     }
+ }
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 1b41ca0..ad73745 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -191,6 +191,7 @@ pub trait NativeTypeDeclarationProvider {
+     fn contains_type_member(&self, declaration: NativeTypeMemberId) -> bool;
+     fn type_member_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeMemberId) -> NativeTypeMemberHeader;
+     fn type_member_origin(&self, _: NativeTypeMemberId) -> crate::types::NativeTableFieldOrigin { crate::types::NativeTableFieldOrigin::Declared }
++    fn type_member_is_assignment(&self, _: NativeTypeMemberId) -> bool { false }
+     /// Own declarations plus potential explicit-owner augmentations; the backend validates each
+     /// original owner candidate before publishing or inheriting its member origin.
+     fn type_declaration_members(&self, declaration: NativeTypeDeclarationId) -> Vec<NativeTypeMemberId>;
+@@ -680,6 +681,9 @@ impl<'p, 's> Checker<'p, 's> {
+             let provider = self.native_named_provider(reference.declaration)?;
+             let mut members = Vec::new();
+             for member in provider.type_declaration_members(reference.declaration) {
++                // A post-constructor store checks an inherited property; it does
++                // not replace that property's type, readonly flag or owner.
++                if provider.type_member_is_assignment(member) && self.native_named_member_context(member)?.is_some() { continue }
+                 if self.native_named_member_header(reference.declaration, member)?.is_some() { members.push(NativeObjectMember { member, owner: reference, via: None }); }
+             }
+             for (index, base) in bases.into_iter().enumerate() {
+@@ -1088,13 +1092,16 @@ impl<'p, 's> Checker<'p, 's> {
+         let Some(reference) = self.native_definition_ref(table) else { return Err(NativeTableError::NotTable { ty: table }) };
+         let key = key.normalize()?;
+         self.native_definition_write(reference, NativeTableAccessKey::Literal(key), value)?;
++        let declared = self.native_definition_value_context(reference, NativeTableAccessKey::Literal(key));
+         let TypeData::NativeTable(data) = self.data(reference.view) else { unreachable!("definition has a native actual view") };
+         let mut updated = (**data).clone_in(self.arena);
+         let mut fields = data.fields.to_vec();
+         let optional = self.contains_undefined(value);
+         let present = self.without_undefined(value);
+         if let Some(field) = fields.iter_mut().find(|field| field.key == key) {
+-            field.value = present;
++            field.value = if field.origin == crate::types::NativeTableFieldOrigin::Declared {
++                self.resolved_assignment_type(declared.unwrap_or(field.value), present)
++            } else { present };
+             field.optional = optional;
+         } else {
+             fields.push(NativeTableField { key, value: present, optional, readonly: false, origin: crate::types::NativeTableFieldOrigin::Inferred });
+diff --git a/src/sema/check/native_signatures.rs b/src/sema/check/native_signatures.rs
+index 7bb7536..b23868d 100644
+--- a/src/sema/check/native_signatures.rs
++++ b/src/sema/check/native_signatures.rs
+@@ -4,6 +4,11 @@ use super::{Checker, NativeFunctionProvider};
+ use super::native_named::NativeTypeDeclarationId;
+ use crate::types::{MapperId, NativeFunctionId, NativeSignatureId, Shape, SigData, SigId, TypeId};
+ 
++/// Physical runtime implementation arity is separate from written public
++/// callable contracts. Lua fills omitted fixed arguments with nil.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeCallingConvention { TypeScript, Lua }
++
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub enum NativeSignatureOwner {
+     Standalone,
+@@ -82,6 +87,9 @@ impl<'p, 's> Checker<'p, 's> {
+             self.native_signature_provider_for(declaration);
+             shape.call.push(self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper, implementation: Some(implementation) }));
+         }
++        if self.native_function_provider.expect("native function provider").exposes_implementation(function) {
++            shape.call.push(implementation);
++        }
+         self.synth(shape)
+     }
+ 
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+index 821f4e8..fe76064 100644
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -55,6 +55,8 @@ pub struct NativeTableSequenceTail {
+ 
+ #[derive(PartialEq, Eq, Hash, Debug)]
+ pub struct NativeTableData<'s> {
++    /// A selected original Lua environment, with member contracts demanded lazily.
++    pub environment_origin: Option<super::native_globals::NativeEnvironmentId>,
+     pub definition_origin: Option<NativeDefinitionRef>,
+     /// The original class declaration carried by a resolved native object. Ordinary table
+     /// construction never supplies an origin; it cannot infer one from equal fields.
+@@ -343,6 +345,7 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+         sequence_tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
+         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            environment_origin: None,
+             definition_origin: None,
+             nominal_origin: None,
+             fields: self.list(&fields), indexers: self.list(&indexers),
+@@ -494,6 +497,7 @@ impl<'p, 's> Checker<'p, 's> {
+         domains.sort_by_key(|indexer| indexer.key.0);
+         tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
+         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            environment_origin: None,
+             definition_origin: None,
+             nominal_origin: None,
+             fields: self.list(&merged),
+@@ -634,6 +638,9 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+             return Err(NativeTableError::NotTable { ty: table });
+         };
++        if let Some(environment) = data.environment_origin {
++            return Ok(self.native_global_environment_member(environment, key));
++        }
+         if let NativeTableAccessKey::Literal(literal) = key
+             && let Some(field) = data.fields.iter().find(|field| field.key == literal)
+         {
+@@ -728,6 +735,10 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+             return Err(NativeTableError::NotTable { ty: table });
+         };
++        if let Some(environment) = data.environment_origin {
++            let expected = self.native_global_environment_member(environment, key);
++            return if self.is_assignable(value, expected) { Ok(()) } else { Err(NativeTableError::ValueType { value, expected }) };
++        }
+         for tail in &data.sequence_tails {
+             if tail.readonly && self.native_sequence_access_matches(tail.start, key) {
+                 return Err(NativeTableError::ReadOnly { key });
+@@ -791,6 +802,26 @@ impl<'p, 's> Checker<'p, 's> {
+         target: &NativeTableData<'_>,
+         state: u8,
+     ) -> Ternary {
++        if r.relation == Relation::Identity && (source.environment_origin.is_some() || target.environment_origin.is_some()) {
++            return if source.environment_origin == target.environment_origin { Ternary::TRUE } else { Ternary::FALSE };
++        }
++        let mut target_description;
++        let target = if let Some(environment) = target.environment_origin {
++            target_description = target.clone_in(self.arena);
++            let fields = self.native_global_environment_fields(environment);
++            target_description.fields = self.list(&fields);
++            &target_description
++        } else { target };
++        let mut source_description;
++        let source = if let Some(environment) = source.environment_origin
++            && target.indexers.iter().any(|indexer| !self.is_any(indexer.value)
++                && !source.indexers.iter().any(|actual| self.is_assignable(indexer.key, actual.key)))
++        {
++            source_description = source.clone_in(self.arena);
++            let fields = self.native_global_environment_fields(environment);
++            source_description.fields = self.list(&fields);
++            &source_description
++        } else { source };
+         let identity = r.relation == Relation::Identity;
+         if let Some(target_origin) = target.nominal_origin {
+             if source.nominal_origin.is_none_or(|source_origin| !self.native_nominal_reference_compatible(source_origin, target_origin, identity)) {
+@@ -832,6 +863,14 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+         let mut result = Ternary::TRUE;
+         for field in &target.fields {
++            if let Some(environment) = source.environment_origin {
++                let actual = self.native_global_environment_member(environment, NativeTableAccessKey::Literal(field.key));
++                let expected = if field.optional { self.optional(field.value) } else { field.value };
++                let related = self.is_related_to_ex::<REPORT>(r, actual, expected, REC_BOTH, state);
++                if !related.holds() { return related }
++                result &= related;
++                continue;
++            }
+             let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) else {
+                 let mut values = Vec::new();
+                 for tail in &source.sequence_tails {
+@@ -860,6 +899,7 @@ impl<'p, 's> Checker<'p, 's> {
+         for indexer in &target.indexers {
+             let expected = indexer.value;
+             let mut matched = false;
++            let mut covering_domain = false;
+             for actual in &source.indexers {
+                 let matches = if identity {
+                     actual.readonly == indexer.readonly && actual.sparse == indexer.sparse
+@@ -875,8 +915,14 @@ impl<'p, 's> Checker<'p, 's> {
+                 let related = self.is_related_to_ex::<REPORT>(r, value, expected, REC_BOTH, state);
+                 if !related.holds() { return Ternary::FALSE }
+                 result &= related;
++                covering_domain |= self.is_assignable(indexer.key, actual.key);
+             }
+             if identity && !matched { return Ternary::FALSE }
++            // TypeScript's typeRelatedToIndexInfo uses an applicable explicit
++            // source index signature before inferring an index from properties.
++            // A covering Lua domain follows that same rule; merely overlapping
++            // domains still need their individual field/tail checks below.
++            if !identity && covering_domain { continue }
+             for actual in &source.fields {
+                 let key = self.native_table_key_type(actual.key);
+                 if !self.is_assignable(key, indexer.key) { continue }
+@@ -958,6 +1004,7 @@ impl<'p, 's> Checker<'p, 's> {
+             origin: if self.is_fresh_object_literal_type(ty) { NativeTableFieldOrigin::Inferred } else { NativeTableFieldOrigin::Declared },
+         }).collect::<Vec<_>>();
+         Some(NativeTableData {
++            environment_origin: None,
+             definition_origin: None,
+             nominal_origin: None,
+             fields: self.list(&fields), indexers: self.list(&indexers),
+@@ -980,6 +1027,7 @@ impl<'p, 's> Checker<'p, 's> {
+         }).collect::<Vec<_>>();
+         let definition_origin = table.definition_origin.map(|reference| NativeDefinitionRef { view: self.get_widened_type(reference.view), ..reference });
+         self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            environment_origin: table.environment_origin,
+             definition_origin,
+             nominal_origin: table.nominal_origin,
+             fields: self.list(&fields), indexers: self.list(&indexers),
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+index 4690a23..a07f379 100644
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1825,6 +1825,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
+                 crate::types::NativeRuntimeKind::Function => &b"function"[..],
+             }),
+             TypeData::NativeTable(table) => {
++                if table.environment_origin.is_some() { return Node::simple(b"global environment".to_vec()) }
+                 if let Some(reference) = table.definition_origin {
+                     let definition = self.c.intern(TypeData::NativeDefinition(reference));
+                     return self.type_to_node(definition);
+@@ -4679,7 +4680,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
+     /// `links.nameType != nil`
+     fn has_name_type(&mut self, prop: &Prop) -> bool {
+         match &prop.source {
+-            PropSource::Type(_) => false,
++            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) => false,
+             // `checkObjectLiteral` takes it from the member the property is created from, whatever
+             // else declares the name.
+             PropSource::Literal(file, member) => {
+@@ -4720,7 +4721,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
+             return false;
+         }
+         match &prop.source {
+-            PropSource::Type(_) | PropSource::Intersected(..) | PropSource::ReverseMapped(..) => {
++            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) | PropSource::Intersected(..) | PropSource::ReverseMapped(..) => {
+                 false
+             }
+             PropSource::Literal(..) | PropSource::Symbol(_) => self.has_name_type(prop),
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+index af9e0a2..89af5f6 100644
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -2896,6 +2896,32 @@ impl<'p, 's> Checker<'p, 's> {
+         {
+             return false;
+         }
++        // Compare the arguments each Lua overload physically supplies. Omitted
++        // fixed slots arrive as nil; accepting them requires the implementation's
++        // own written type to admit nil. Public and body signatures stay intact.
++        let implementation_declaration = self.sig_native_decl(implementation).map(|(declaration, _)| declaration)
++            .or_else(|| self.sig_native_signature_decl(implementation).and_then(|(declaration, _)| {
++                match self.native_signature_provider_for(declaration).signature_header(declaration).owner {
++                    super::native_signatures::NativeSignatureOwner::Function(function) => Some(function),
++                    _ => None,
++                }
++            }));
++        let target = if implementation_declaration.is_some_and(|declaration| {
++            self.native_function_provider.is_some_and(|provider| provider.calling_convention(declaration) == super::native_signatures::NativeCallingConvention::Lua)
++        }) {
++            // Erasure maps a generic parameter to any for the ordinary TS
++            // comparison. That must not make a missing physical nil satisfy a
++            // written nonnullable generic implementation parameter.
++            let original_source = self.sig_params(implementation);
++            let original_target = self.sig_params(overload);
++            let fixed = original_source.len() - usize::from(original_source.last().is_some_and(|parameter| parameter.rest));
++            let minimum = self.min_argument_count(&original_target);
++            for index in minimum..fixed {
++                let expected = self.get_type_of_parameter(&original_source[index]);
++                if !self.is_assignable(TypeId::UNDEFINED, expected) { return false }
++            }
++            self.lua_overload_argument_signature(source, target)
++        } else { target };
+         // `isSignatureAssignableTo`
+         let mut r = Relater::new(Relation::Assignable, self.cycles);
+         r.compares_types_assignable = true;
+@@ -2910,6 +2936,37 @@ impl<'p, 's> Checker<'p, 's> {
+         .holds()
+     }
+ 
++    fn lua_overload_argument_signature(&mut self, implementation: SigId, overload: SigId) -> SigId {
++        let source = self.sig_params(implementation);
++        let target = self.sig_params(overload);
++        let source_fixed = source.len() - usize::from(source.last().is_some_and(|parameter| parameter.rest));
++        let target_fixed = target.len() - usize::from(target.last().is_some_and(|parameter| parameter.rest));
++        let width = source_fixed.max(target_fixed);
++        let minimum = self.min_argument_count(&target);
++        let mut params = Vec::with_capacity(width + 1);
++        for index in 0..width {
++            let value = self.param_type_at(&target, index).unwrap_or(TypeId::UNDEFINED);
++            let value = if index >= minimum { self.optional(value) } else { value };
++            let original = target.get(index).filter(|parameter| !parameter.rest).copied();
++            params.push(SigParam {
++                name: original.map_or(Atom::NONE, |parameter| parameter.name), ty: value,
++                optional: false, rest: false, is_required_rest: false,
++                declaration: original.and_then(|parameter| parameter.declaration),
++            });
++        }
++        if let Some(rest) = target.last().filter(|parameter| parameter.rest)
++            && (self.has_effective_rest_parameter(&target) || width < self.parameter_count(&target)) {
++            params.push(SigParam { ty: self.rest_type_at_position(&target, width, false), ..*rest });
++        }
++        let type_params = self.sig_type_params(overload);
++        let this = self.sig_this_type(overload);
++        let ret = self.sig_return(overload);
++        self.types().intern_sig(SigData::Synth {
++            type_params: self.list(&type_params), params: self.list(&params), ret, this,
++            of: self.list(&[overload]), is_union: false,
++        })
++    }
++
+     /// `hasExcessProperties`
+     pub(super) fn has_excess_properties<const REPORT: bool>(
+         &mut self,
+diff --git a/src/sema/check/related.rs b/src/sema/check/related.rs
+index 1d8e844..e07a04b 100644
+--- a/src/sema/check/related.rs
++++ b/src/sema/check/related.rs
+@@ -54,6 +54,7 @@ impl Checker<'_, '_> {
+                 _ => self.place_of_symbol(sym),
+             },
+             PropSource::Type(_)
++            | PropSource::NativeGlobalBinding(_)
+             | PropSource::Intersected(..)
+             | PropSource::Mapped(..)
+             | PropSource::Copy(..)
+@@ -92,7 +93,7 @@ impl Checker<'_, '_> {
+                 .declared_by_modifiers_property()
+                 .iter()
+                 .find_map(|part| self.place_of_first_prop_declaration_within(part, depth + 1)),
+-            PropSource::Type(_) => None,
++            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) => None,
+         }
+     }
+ 
+diff --git a/src/sema/check/services/symbols.rs b/src/sema/check/services/symbols.rs
+index 9439609..79e2dcf 100644
+--- a/src/sema/check/services/symbols.rs
++++ b/src/sema/check/services/symbols.rs
+@@ -512,7 +512,7 @@ impl<'c, 'p, 's> Services<'c, 'p, 's> {
+                     self.push_declarations_of_prop(part, depth + 1, out);
+                 }
+             }
+-            PropSource::Type(_) => {}
++            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) => {}
+         }
+     }
+ 
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+index 63de0d2..df5687c 100644
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -1406,6 +1406,11 @@ impl<'p, 's> Checker<'p, 's> {
+             TypeData::NativeTable(table) => {
+                 let shape = self.shape_memo(ty, |c| {
+                     let mut shape = Shape::new_in(c.arena);
++                    if let Some(environment) = table.environment_origin {
++                        for (name, binding) in c.native_global_environment_properties(environment) {
++                            shape.props.push(Prop { name, flags: PropFlags::empty(), source: PropSource::NativeGlobalBinding(c.boxed(binding)), mapper: MapperId::IDENTITY, name_type: TypeId::UNRESOLVED });
++                        }
++                    }
+                     for field in &table.fields {
+                         if let NativeTableKey::String(name) = field.key {
+                             shape.props.push(Prop {
+@@ -3548,6 +3553,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 self.intern(TypeData::NativeDefinition(NativeDefinitionRef { view, ..reference }))
+             }
+             TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++                environment_origin: table.environment_origin,
+                 definition_origin: table.definition_origin,
+                 nominal_origin: table.nominal_origin,
+                 fields: self.list(&table.fields), indexers: self.list(&table.indexers),
+@@ -5245,6 +5251,7 @@ impl<'p, 's> Checker<'p, 's> {
+         // `base` is `links.resolvedType` of the instantiated symbol: the mapper has been applied.
+         let mut has_resolved_type = false;
+         let base = match &prop.source {
++            PropSource::NativeGlobalBinding(binding) => self.native_global_environment_binding_type(**binding),
+             PropSource::Type(t) | PropSource::Copy(t, ..) => *t,
+             PropSource::ReverseMapped(of, _) => self.type_of_reverse_mapped_prop(*of, prop.name),
+             // `getTypeOfMappedSymbol` instantiates the template with `prop.mapper` before it adjusts for optionality.
+@@ -5771,7 +5778,7 @@ impl<'p, 's> Checker<'p, 's> {
+                         matches!(decl, Decl::ExportsProperty(e) if self.is_readonly_assignment_declaration(file, e))
+                     });
+             }
+-            PropSource::Type(_) | PropSource::Literal(..) => return false,
++            PropSource::Type(_) | PropSource::NativeGlobalBinding(_) | PropSource::Literal(..) => return false,
+             PropSource::Copy(_, declared, _)
+             | PropSource::Intersected(_, declared)
+             | PropSource::ReverseMapped(_, declared) => &declared[..],
+@@ -6980,6 +6987,7 @@ impl<'p, 's> Checker<'p, 's> {
+         match &prop.source {
+             // `addMemberForKeyTypeWorker` links `Declarations` to a mapped property, never a `ValueDeclaration`.
+             PropSource::Type(_)
++            | PropSource::NativeGlobalBinding(_)
+             | PropSource::Mapped(..)
+             | PropSource::Copy(_, _, false)
+             | PropSource::ReverseMapped(..) => None,
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+index d62f66b..7c3d248 100644
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -266,6 +266,7 @@ fn is_task_independent(q: Query) -> bool {
+         | Query::WriteType(..)
+         | Query::Comparison(_) => true,
+         Query::NativeGlobals(_)
++        | Query::NativeFlowCallEffects(..)
+         | Query::ReturnOfSignature(_)
+         | Query::Shape(_)
+         | Query::Properties(_)
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+index 8bd0ce5..0172c9f 100644
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -90,6 +90,7 @@ pub use crate::check::native_tables::{
+     NativeTableIndexer, NativeTableKey, NativeTableSequenceTail,
+ };
+ pub use crate::check::native_named::{NativeDefinitionId, NativeDefinitionRef, NativeObjectReference, NativeTypeDeclarationId, NativeTypeMemberId};
++use crate::check::native_globals::{NativeEnvironmentId, NativeGlobalBindingId};
+ /// An interned list of `IndexComponent`s.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct ComponentsId(pub u32);
+@@ -614,6 +615,8 @@ bitflags::bitflags! {
+ /// The origin of the type of a property.
+ #[derive(PartialEq, Eq, Hash, Debug)]
+ pub enum PropSource<'s> {
++    /// A property of an original selected Lua environment; its contract is lazy.
++    NativeGlobalBinding(ArenaBox<'s, NativeGlobalBindingId>),
+     /// Synthesized: it has no declaration.
+     Type(TypeId),
+     /// A property of an object literal.
+@@ -3455,6 +3458,7 @@ follow_enum!(TypeData<'_> {
+     TypeData::StringMapping { kind, ty } => (kind, ty),
+ });
+ follow_enum!(PropSource<'_> {
++    PropSource::NativeGlobalBinding(a) => (a),
+     PropSource::Type(a) => (a),
+     PropSource::Literal(a, b) => (a, b),
+     PropSource::Symbol(a) => (a),
+@@ -3539,7 +3543,9 @@ follow_enum!(NativeTableFieldOrigin {
+ follow_struct!(NativeTableField { key, value, optional, readonly, origin });
+ follow_struct!(NativeTableIndexer { key, value, readonly, sparse, origin });
+ follow_struct!(NativeTableSequenceTail { start, value, readonly, origin });
+-follow_struct!(NativeTableData<'_> { definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
++follow_struct!(NativeEnvironmentId { snapshot, index });
++follow_struct!(NativeGlobalBindingId { environment, index });
++follow_struct!(NativeTableData<'_> { environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+ follow_struct!(NativeCapturedFunctionContext { signature });
+ follow_struct!(NativeResultPack { ty });
+ follow_enum!(NativeRuntimeKind {
+@@ -3596,6 +3602,8 @@ macro_rules! clone_in_is_copy {
+     )*};
+ }
+ clone_in_is_copy!(
++    NativeEnvironmentId,
++    NativeGlobalBindingId,
+     NativeRuntimeKind,
+     bool,
+     u8,
+@@ -3774,6 +3782,7 @@ clone_in_enum!(TypeData {
+     StringMapping { kind, ty },
+ });
+ clone_in_enum!(PropSource {
++    NativeGlobalBinding(a),
+     Type(a),
+     Literal(a, b),
+     Symbol(a),
+@@ -3812,7 +3821,7 @@ clone_in_struct!(Shape {
+     pattern_at,
+     mapper
+ });
+-clone_in_struct!(NativeTableData { definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
++clone_in_struct!(NativeTableData { environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+ clone_in_enum!(SigData {
+     NativeDeclarationSignature { declaration, mapper, implementation },
+     Native { declaration, mapper },
