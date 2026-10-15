@@ -72,6 +72,19 @@ fn primitive_aliases_and_generic_constraints_retain_runtime_domains() {
 }
 
 #[test]
+fn raw_table_generic_dictionary_calls_infer_their_existing_open_domains() {
+    let source = "---@generic K,V\n---@param tab table<K,V>\n---@return table<K,V>\nlocal function identity(tab) return tab end\n---@param tab table\nlocal function apply(tab)\nlocal dictionary=identity(tab)\nreturn dictionary[false]\nend\nlocal result=apply({[false]=42})";
+    let report = accepted(source);
+    assert_eq!(ty(&report, "result"), "any");
+    for argument in ["42", "function() end"] {
+        let wrong = source.replace("apply({[false]=42})", &format!("apply({argument})"));
+        let report = check(&wrong);
+        assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+        assert_eq!(report.diagnostics[0].code, "TS2345");
+    }
+}
+
+#[test]
 fn raw_function_generic_bound_retains_the_inferred_specific_callable() {
     let source = "---@alias Callable function\n---@generic F:Callable\n---@param callback F\n---@return F\nlocal function keep(callback) return callback end\n---@param value number\n---@return number\nlocal function numeric(value) return value end\nlocal specific=keep(numeric)\nlocal result=specific(42)";
     let report = accepted(source);

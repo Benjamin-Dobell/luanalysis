@@ -114,6 +114,30 @@ end
 "#;
 
 #[test]
+fn pairs_infers_the_original_open_table_key_and_value_domains() {
+    let fixture = Fixture::new();
+    let source = r#"
+---@param tab table
+local function entries(tab)
+    for key, value in pairs(tab) do
+        local entry = value
+    end
+end
+entries({[false] = 'value'})
+"#;
+    for profile in [StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua54] {
+        clean(&fixture.check(source, profile));
+        for replacement in ["entries(42)", "entries(function() end)"] {
+            let wrong = source.replace("entries({[false] = 'value'})", replacement);
+            let report = fixture.check(&wrong, profile);
+            let diagnostics: Vec<_> = report.files.iter().flat_map(|file| &file.report.diagnostics).collect();
+            assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+            assert_eq!(diagnostics[0].code, "TS2345", "{diagnostics:#?}");
+        }
+    }
+}
+
+#[test]
 fn generic_pairs_keys_exclude_lua_nil_without_inventing_a_javascript_null_branch() {
     let fixture = Fixture::new();
     for profile in [StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua54] {

@@ -1632,6 +1632,27 @@ mod tests {
     }
 
     #[test]
+    fn native_dictionary_inference_reads_the_runtime_table_top_carrier() {
+        Engine::new().with_native_provider(GenericTablePattern::default, |_, queries| {
+            let function = Type::NativeFunction(GenericTablePattern::function());
+            let called = queries.call(&function, &[Type::RuntimeTable]);
+            assert!(called.errors.is_empty(), "{:?}", called.errors);
+            let Type::Table(table) = queries.inspect_type(&called.return_type) else {
+                panic!("inferred dictionary retains a native table description")
+            };
+            assert_eq!(table.indexers.len(), 1);
+            assert_eq!(table.indexers[0].key, Type::Any);
+            assert_eq!(table.indexers[0].value, Type::Any);
+            assert_eq!(
+                queries.table_lookup(&called.return_type, &literal(LuaKey::Boolean(false))),
+                Ok(Type::Any)
+            );
+            let rejected = queries.call(&function, &[Type::RuntimeFunction]);
+            assert!(!rejected.errors.is_empty());
+        });
+    }
+
+    #[test]
     fn native_inference_reads_both_dictionary_domains_and_constructor_fields() {
         Engine::new().with_native_provider(GenericTablePattern::default, |_, queries| {
             let function = Type::NativeFunction(GenericTablePattern::function());

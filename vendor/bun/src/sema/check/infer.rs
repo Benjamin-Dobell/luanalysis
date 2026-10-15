@@ -398,6 +398,7 @@ impl<'p, 's> Checker<'p, 's> {
             self.types().deferred(source).is_some() && self.types().deferred(target).is_some();
         match (self.data(source), self.data(target)) {
             (TypeData::NativeTable(_), TypeData::NativeTable(_))
+            | (TypeData::NativeRuntimeTop { kind: crate::types::NativeRuntimeKind::Table, .. }, TypeData::NativeTable(_))
             | (TypeData::NativeArray { .. }, TypeData::NativeArray { .. }) => {
                 self.invoke_once(n, original_source, original_target, Self::infer_native_object_types);
             }
@@ -517,6 +518,10 @@ impl<'p, 's> Checker<'p, 's> {
     /// object inference. Keep the lazy declaration identity on its stack, not the expanded shape.
     fn infer_native_object_types(&mut self, n: &mut Inference, source: TypeId, target: TypeId) {
         let source = match self.native_object_schema_resolved(source) { Ok(ty) => ty, Err(_) => return };
+        // Bare type-parameter candidates retain the runtime top above. Once a
+        // table pattern needs its key/value domains, inspect its existing
+        // structural carrier under the original invokeOnce identity.
+        let source = self.native_runtime_carrier(source);
         let target = match self.native_object_schema_resolved(target) { Ok(ty) => ty, Err(_) => return };
         match (self.data(source), self.data(target)) {
             (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
