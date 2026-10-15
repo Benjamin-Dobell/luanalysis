@@ -11,6 +11,7 @@ impl Parser<'_> {
             self.pos += 1;
             if self.loop_depth == 0 {
                 self.diagnostics.push(Diagnostic {
+                    origin: crate::DiagnosticOrigin::LuaSyntax,
                     span: start,
                     message: "'break' is outside a loop in the current Lua function".to_owned(),
                 });
@@ -24,6 +25,7 @@ impl Parser<'_> {
         let (expr, depth) = self.expr_with_depth();
         if depth + wrapper_depth > 128 {
             self.diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::LuaSyntax,
                 span: expr.span,
                 message: "control expression nesting exceeds 128".to_owned(),
             });
@@ -34,6 +36,7 @@ impl Parser<'_> {
     fn control_body(&mut self, terminators: &[&str], loop_body: bool, start: Span, wrapper_depth: usize) -> Vec<Stmt> {
         if self.block_depth + self.depth >= 128 {
             self.diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::LuaSyntax,
                 span: start,
                 message: "control block nesting exceeds 128".to_owned(),
             });
@@ -48,6 +51,7 @@ impl Parser<'_> {
         self.block_depth -= 1;
         if statements_depth(&body) + wrapper_depth > 128 {
             self.diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::LuaSyntax,
                 span: start,
                 message: "control block nesting exceeds 128".to_owned(),
             });

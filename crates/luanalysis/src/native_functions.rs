@@ -165,6 +165,11 @@ impl NativeRegistry {
         let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
         let members = super::native_members::NativeMembers::new(snapshot, &named, Vec::new(), globals.member_namespace_end(named.next_member_index()));
         let mut report = CheckReport::default();
+        report.diagnostics.extend(file.diagnostics.iter().map(|diagnostic| Diagnostic {
+            code: "LUA1001",
+            span: diagnostic.span,
+            message: diagnostic.message.clone(),
+        }));
         report
             .diagnostics
             .extend(types.diagnostics().iter().cloned());

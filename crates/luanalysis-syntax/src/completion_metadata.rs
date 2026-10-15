@@ -89,6 +89,7 @@ pub(crate) fn validate(documentation: &ParsedDocumentation, diagnostics: &mut Ve
     while let Some((ty, companion)) = pending.pop() {
         match &ty.kind {
             TypeExprKind::CompletionHint(_) if !companion => diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
                 span: ty.span,
                 message: "completion hint requires an accompanying value type in its union".into(),
             }),

@@ -197,7 +197,7 @@ struct Checker<'a> {
 /// Checks the documented native subset without generating TypeScript source.
 pub fn check(source: &str) -> CheckReport {
     let file = luanalysis_syntax::parse(source);
-    if !file.diagnostics.is_empty() {
+    if file.has_lua_syntax_errors() {
         return CheckReport {
             diagnostics: file
                 .diagnostics

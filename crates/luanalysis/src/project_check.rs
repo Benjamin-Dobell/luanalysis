@@ -30,7 +30,7 @@ pub fn static_require_requests(source: &SourceFile) -> Vec<RequireRequest> {
         return Vec::new();
     }
     let file = luanalysis_syntax::parse(&source.source);
-    if !file.diagnostics.is_empty() {
+    if file.has_lua_syntax_errors() {
         return Vec::new();
     }
     let bound = crate::bind::bind(&file);
@@ -107,7 +107,7 @@ pub fn check_project_with_options(
     let mut files = Vec::new();
     for source in &project.files {
         let parsed = luanalysis_syntax::parse(&source.source);
-        if parsed.diagnostics.is_empty() {
+        if !parsed.has_lua_syntax_errors() {
             let bound = crate::bind::bind(&parsed);
             inputs.push(RegistryInput {
                 id: source.id,

@@ -152,6 +152,11 @@ impl Lexer<'_> {
     }
     fn error(&mut self, start: usize, message: String) {
         self.diagnostics.push(Diagnostic {
+            origin: if self.annotations {
+                crate::DiagnosticOrigin::Annotation
+            } else {
+                crate::DiagnosticOrigin::LuaSyntax
+            },
             span: Span::new(start, self.pos),
             message,
         });

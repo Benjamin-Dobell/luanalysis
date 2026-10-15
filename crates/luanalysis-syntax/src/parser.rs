@@ -128,8 +128,16 @@ impl Parser<'_> {
         }
     }
     fn error(&mut self, message: impl Into<String>) {
+        self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, self.current().span, message);
+    }
+    // Keep diagnostic construction outside recursive expression/table frames.
+    // Their stack budget must not depend on diagnostic metadata layout.
+    #[cold]
+    #[inline(never)]
+    fn diagnostic_at(&mut self, origin: crate::DiagnosticOrigin, span: Span, message: impl Into<String>) {
         self.diagnostics.push(Diagnostic {
-            span: self.current().span,
+            origin,
+            span,
             message: message.into(),
         });
     }
@@ -215,10 +223,7 @@ impl Parser<'_> {
         mut documentation: types::ParsedDocumentation,
     ) -> FunctionAnnotations {
         for annotation in &documentation.exclusions {
-            self.diagnostics.push(Diagnostic {
-                span: annotation.span,
-                message: "@not must annotate an expression".to_owned(),
-            });
+            self.diagnostic_at(crate::DiagnosticOrigin::Annotation, annotation.span, "@not must annotate an expression");
         }
         let contiguous = self.documentation_group.as_ref().is_some_and(|group| {
             let gap = &self.source[group.span.end..comment.span.start];
@@ -294,6 +299,7 @@ impl Parser<'_> {
                         group.extensions.push(index);
                     } else {
                         self.diagnostics.push(Diagnostic {
+                            origin: crate::DiagnosticOrigin::Annotation,
                             span: field.span, message: "@field has no preceding class, shape, module or explicit owner in its documentation group".to_owned(),
                         });
                     }
@@ -322,6 +328,7 @@ impl Parser<'_> {
                 continue;
             }
             self.diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
                 span,
                 message:
                     "Luanalysis annotation is not attached to a compatible declaration or function"
@@ -408,6 +415,7 @@ impl Parser<'_> {
                         self.documentation_group = outer;
                         for span in types::annotation_spans(&annotations) {
                             self.diagnostics.push(Diagnostic {
+                                origin: crate::DiagnosticOrigin::Annotation,
                                 span, message: "annotations inside expressions are unsupported unless attached to a function declaration".to_owned(),
                             });
                         }
@@ -455,10 +463,7 @@ impl Parser<'_> {
             let body_end = self.current().span.start;
             let end = self.expect_end();
             if statements_depth(&body) >= 128 {
-                self.diagnostics.push(Diagnostic {
-                    span: start.join(end),
-                    message: "block nesting exceeds 128".to_owned(),
-                });
+                self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, start.join(end), "block nesting exceeds 128");
                 body.clear();
             }
             return Some(Stmt {
@@ -590,10 +595,7 @@ impl Parser<'_> {
                 target.kind,
                 ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. }
             ) {
-                self.diagnostics.push(Diagnostic {
-                    span: target.span,
-                    message: "invalid assignment target".to_owned(),
-                });
+                self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, target.span, "invalid assignment target");
             }
         }
         let mut values = self.expr_list();
@@ -636,6 +638,7 @@ impl Parser<'_> {
                 }
                 _ => {
                     self.diagnostics.push(Diagnostic {
+                        origin: crate::DiagnosticOrigin::Annotation,
                         span: comment,
                         message: format!("named declarations cannot annotate {role}"),
                     });
@@ -801,10 +804,7 @@ impl Parser<'_> {
         let end = self.expect_end();
         let mut built_depth = statements_depth(&body) + 2;
         if built_depth > 128 {
-            self.diagnostics.push(Diagnostic {
-                span: start.join(end),
-                message: "function nesting exceeds 128".to_owned(),
-            });
+            self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, start.join(end), "function nesting exceeds 128");
             body.clear();
             built_depth = 2;
         }
@@ -849,10 +849,7 @@ impl Parser<'_> {
             let span = target.span.join(name.span);
             if exceeded || depth >= 128 {
                 if !exceeded {
-                    self.diagnostics.push(Diagnostic {
-                        span: separator.join(name.span),
-                        message: "function name nesting exceeds 128".to_owned(),
-                    });
+                    self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, separator.join(name.span), "function name nesting exceeds 128");
                 }
                 target = Expr {
                     kind: ExprKind::Error,
@@ -977,10 +974,7 @@ impl Parser<'_> {
             let span = expr.span.join(right.span);
             if binary_exceeded || built_depth.max(right_depth) >= 128 {
                 if !binary_exceeded {
-                    self.diagnostics.push(Diagnostic {
-                        span: op_span,
-                        message: "binary expression nesting exceeds 128".to_owned(),
-                    });
+                    self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, op_span, "binary expression nesting exceeds 128");
                 }
                 expr = Expr {
                     kind: ExprKind::Error,
@@ -1033,10 +1027,7 @@ impl Parser<'_> {
                 let span = op_span.join(value.span);
                 if unary_exceeded || value_depth >= 128 {
                     if !unary_exceeded {
-                        self.diagnostics.push(Diagnostic {
-                            span: op_span,
-                            message: "unary expression nesting exceeds 128".to_owned(),
-                        });
+                        self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, op_span, "unary expression nesting exceeds 128");
                     }
                     value = Expr {
                         kind: ExprKind::Error,
@@ -1110,10 +1101,7 @@ impl Parser<'_> {
                 TokenKind::Symbol(symbol) if symbol == "..." => {
                     self.pos += 1;
                     if !self.vararg_allowed {
-                        self.diagnostics.push(Diagnostic {
-                            span: start,
-                            message: "'...' is outside a variadic Lua function".to_owned(),
-                        });
+                        self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, start, "'...' is outside a variadic Lua function");
                     }
                     Expr {
                         kind: ExprKind::Vararg,
@@ -1127,10 +1115,7 @@ impl Parser<'_> {
                     let end = self.expect(")");
                     let span = start.join(end);
                     if inner_depth >= 128 {
-                        self.diagnostics.push(Diagnostic {
-                            span,
-                            message: "expression nesting exceeds 128".to_owned(),
-                        });
+                        self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, span, "expression nesting exceeds 128");
                         Expr {
                             kind: ExprKind::Error,
                             span,
@@ -1177,10 +1162,7 @@ impl Parser<'_> {
                 let span = expr.span.join(end);
                 if postfix_exceeded || built_depth.max(index_depth) >= 128 {
                     if !postfix_exceeded {
-                        self.diagnostics.push(Diagnostic {
-                            span: postfix_start.join(end),
-                            message: "indexed expression nesting exceeds 128".to_owned(),
-                        });
+                        self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, postfix_start.join(end), "indexed expression nesting exceeds 128");
                     }
                     expr = Expr {
                         kind: ExprKind::Error,
@@ -1213,10 +1195,7 @@ impl Parser<'_> {
                 let span = expr.span.join(args_span);
                 if postfix_exceeded || built_depth.max(args_depth) >= 128 {
                     if !postfix_exceeded {
-                        self.diagnostics.push(Diagnostic {
-                            span: postfix_start.join(args_span),
-                            message: "method call nesting exceeds 128".to_owned(),
-                        });
+                        self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, postfix_start.join(args_span), "method call nesting exceeds 128");
                     }
                     expr = Expr {
                         kind: ExprKind::Error,
@@ -1242,10 +1221,7 @@ impl Parser<'_> {
                 let span = expr.span.join(args_span);
                 if postfix_exceeded || built_depth.max(args_depth) >= 128 {
                     if !postfix_exceeded {
-                        self.diagnostics.push(Diagnostic {
-                            span: args_span,
-                            message: "call expression nesting exceeds 128".to_owned(),
-                        });
+                        self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, args_span, "call expression nesting exceeds 128");
                     }
                     expr = Expr {
                         kind: ExprKind::Error,
@@ -1272,10 +1248,7 @@ impl Parser<'_> {
             let span = expr.span.join(name.span);
             if postfix_exceeded || built_depth >= 128 {
                 if !postfix_exceeded {
-                    self.diagnostics.push(Diagnostic {
-                        span: postfix_start.join(name.span),
-                        message: "expression nesting exceeds 128".to_owned(),
-                    });
+                    self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, postfix_start.join(name.span), "expression nesting exceeds 128");
                 }
                 // Keep consuming the suffix without building or retaining an
                 // unbounded tree. Recovery resumes at the next Lua statement.
@@ -1387,10 +1360,7 @@ impl Parser<'_> {
             let kind = if self.take_symbol("[").is_some() {
                 let (mut key, key_depth) = self.expr_with_depth();
                 if key_depth >= 128 {
-                    self.diagnostics.push(Diagnostic {
-                        span: key.span,
-                        message: "table key nesting exceeds 128".to_owned(),
-                    });
+                    self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, key.span, "table key nesting exceeds 128");
                     key = Expr {
                         kind: ExprKind::Error,
                         span: key.span,
@@ -1441,10 +1411,7 @@ impl Parser<'_> {
                 function_annotations,
             );
             if value_depth >= 128 {
-                self.diagnostics.push(Diagnostic {
-                    span: value.span,
-                    message: "expression nesting exceeds 128".to_owned(),
-                });
+                self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, value.span, "expression nesting exceeds 128");
                 value = Expr {
                     kind: ExprKind::Error,
                     span: value.span,

@@ -14,6 +14,8 @@ mod completion_metadata;
 mod completion_metadata_tests;
 #[cfg(test)]
 mod documentation_reference_tests;
+#[cfg(test)]
+mod diagnostic_origin_tests;
 
 pub use lexer::{Lexed, Token, TokenKind, lex};
 pub use parser::parse;
@@ -39,6 +41,16 @@ impl Span {
 pub struct Diagnostic {
     pub span: Span,
     pub message: String,
+    pub origin: DiagnosticOrigin,
+}
+
+/// The language whose source grammar or metadata produced a diagnostic.
+/// Annotation failures retain their original nodes without invalidating the
+/// surrounding Lua grammar; both kinds remain reported to the caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagnosticOrigin {
+    LuaSyntax,
+    Annotation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +90,14 @@ pub struct File {
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
+}
+
+impl File {
+    pub fn has_lua_syntax_errors(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.origin == DiagnosticOrigin::LuaSyntax)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

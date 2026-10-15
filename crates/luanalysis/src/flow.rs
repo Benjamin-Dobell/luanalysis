@@ -305,8 +305,8 @@ impl ProgramFlow {
     }
 }
 
-/// Builds original-source recipes. Parse diagnostics are retained as explicit
-/// invalid-source metadata; callers must not type-check a recovered invalid AST.
+/// Builds original-source recipes. Lua syntax failures retain explicit invalid
+/// source metadata. Annotation failures preserve real Lua graphs and error types.
 pub fn build(file: &File, bound: &BoundFile) -> ProgramFlow {
     let snapshot = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
     assert_ne!(snapshot, u64::MAX, "source graph snapshots exhausted");
@@ -325,11 +325,11 @@ pub fn build(file: &File, bound: &BoundFile) -> ProgramFlow {
         expression_ids: HashMap::new(),
         assignment: 0,
     };
-    if !file.diagnostics.is_empty() {
+    if file.has_lua_syntax_errors() {
         builder.feature(PendingFeature::InvalidSource, file.span);
     }
     let graph = builder.new_graph(None, file.span);
-    if !file.diagnostics.is_empty() {
+    if file.has_lua_syntax_errors() {
         builder.program.graphs[graph as usize].shared = vec![false];
         return builder.program;
     }

@@ -86,6 +86,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     | "see"
             ) {
                 diagnostics.push(Diagnostic {
+                    origin: crate::DiagnosticOrigin::Annotation,
                     span: Span::new(tag_offset, tag_offset + 1 + tag_len),
                     message: format!("unsupported Luanalysis annotation @{tag_name}"),
                 });
@@ -164,7 +165,11 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                                 tag_span: Span::new(tag_offset, tag_offset + 1 + tag_len),
                             });
                         } else {
-                            parser.diagnostics.push(Diagnostic { span: ty.span, message: "@overload requires a function type".into() });
+                            parser.diagnostics.push(Diagnostic {
+                                origin: crate::DiagnosticOrigin::Annotation,
+                                span: ty.span,
+                                message: "@overload requires a function type".into(),
+                            });
                         }
                     }
                     "alias" | "shape" | "class" | "module" => {
@@ -333,6 +338,7 @@ pub(crate) fn merge_annotations(
             .any(|existing| existing.name.text == generic.name.text)
         {
             diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
                 span: generic.name.span,
                 message: format!("multiple @generic declarations for {}", generic.name.text),
             });
@@ -347,6 +353,7 @@ pub(crate) fn merge_annotations(
             .any(|existing| existing.name.text == param.name.text)
         {
             diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
                 span: param.span,
                 message: format!("multiple @param annotations for {}", param.name.text),
             });
@@ -357,6 +364,7 @@ pub(crate) fn merge_annotations(
     if let Some(vararg) = incoming.vararg {
         if target.vararg.is_some() {
             diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
                 span: vararg.span,
                 message: "multiple @vararg annotations for one function".to_owned(),
             });
@@ -367,6 +375,7 @@ pub(crate) fn merge_annotations(
     if let Some(returns) = incoming.returns {
         if target.returns.is_some() {
             diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
                 span: returns.span,
                 message: "multiple @return annotations for one function".to_owned(),
             });
@@ -377,6 +386,7 @@ pub(crate) fn merge_annotations(
     if let Some(annotation) = incoming.type_annotation {
         if target.type_annotation.is_some() {
             diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
                 span: annotation.span,
                 message: "multiple @type annotations for one declaration".to_owned(),
             });
@@ -560,6 +570,7 @@ impl TypeParser {
     }
     fn error(&mut self, message: String) {
         self.diagnostics.push(Diagnostic {
+            origin: crate::DiagnosticOrigin::Annotation,
             span: self.current().span,
             message,
         });
@@ -714,6 +725,7 @@ impl TypeParser {
                     ReturnUnit::Scalar(ty) => ty,
                     ReturnUnit::Pack(pack) => {
                         self.diagnostics.push(Diagnostic {
+                            origin: crate::DiagnosticOrigin::Annotation,
                             span: pack.span,
                             message: "a return pack cannot appear as a scalar result slot"
                                 .to_owned(),
@@ -952,6 +964,7 @@ impl TypeParser {
                 let span = base.span.join(end);
                 if args.iter().map(type_depth).max().unwrap_or(0) >= 128 {
                     self.diagnostics.push(Diagnostic {
+                        origin: crate::DiagnosticOrigin::Annotation,
                         span: args_span,
                         message: "generic type nesting exceeds 128".to_owned(),
                     });
@@ -986,6 +999,7 @@ impl TypeParser {
             if exceeded || depth >= 128 {
                 if !exceeded {
                     self.diagnostics.push(Diagnostic {
+                        origin: crate::DiagnosticOrigin::Annotation,
                         span: suffix_span,
                         message: "array type nesting exceeds 128".to_owned(),
                     });
@@ -1142,6 +1156,7 @@ impl TypeParser {
                 self.comma_ends_type -= 1;
                 if type_depth(&key) >= 128 {
                     self.diagnostics.push(Diagnostic {
+                        origin: crate::DiagnosticOrigin::Annotation,
                         span: key.span,
                         message: "record key type nesting exceeds 128".to_owned(),
                     });
@@ -1180,6 +1195,7 @@ impl TypeParser {
             self.comma_ends_type -= 1;
             if type_depth(&ty) >= 128 {
                 self.diagnostics.push(Diagnostic {
+                    origin: crate::DiagnosticOrigin::Annotation,
                     span: ty.span,
                     message: "record value type nesting exceeds 128".to_owned(),
                 });
