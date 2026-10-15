@@ -394,6 +394,32 @@ fn fixed_member_identity_does_not_cache_incomplete_receiver_provenance_as_absent
 }
 
 #[test]
+fn a_loop_provenance_barrier_is_completed_unknown_without_attesting_a_standard_operation() {
+    for routed in [false, true] {
+        Engine::new().with_native_provider(move || {
+            let mut source = StandardRecipes::new(routed);
+            source.nodes.insert(at(0, 11), NativeFlowNode::Loop { edges: vec![at(0, 1), at(0, 11)] });
+            source
+        }, |source, queries| {
+            for _ in 0..2 {
+                // The original standard value and its saved mutable copy
+                // cannot be identified across the conservative loop barrier.
+                // That completed lack of proof must not poison reachability
+                // with a Pending result, or borrow a callable type instead.
+                assert_eq!(queries.flow_alias_intrinsic(source, value(0, 0), at(0, 11)), NativeAliasIntrinsic::Unknown);
+                assert_eq!(queries.flow_alias_intrinsic(source, value(0, 50), at(0, 11)), NativeAliasIntrinsic::Unknown);
+                assert_eq!(queries.flow_alias_relation(source, reference(0, 0), at(0, 11), value(0, 0), at(0, 0)), NativeAliasRelation::Possible);
+            }
+            // Retain the earlier frozen read and keep genuine recursive
+            // metadata Pending; neither query may poison the other's memo.
+            assert_eq!(queries.flow_alias_intrinsic(source, value(0, 50), at(0, 1)), StandardRecipes::selected());
+            assert_eq!(queries.flow_alias_intrinsic(source, value(0, 67), at(0, 0)), NativeAliasIntrinsic::Pending);
+            assert_eq!(queries.flow_alias_intrinsic(source, value(0, 0), at(0, 11)), NativeAliasIntrinsic::Unknown);
+        });
+    }
+}
+
+#[test]
 fn future_implementation_owners_do_not_rewrite_the_initial_standard_origin() {
     for routed in [false, true] {
         for owner in [6, 3] {

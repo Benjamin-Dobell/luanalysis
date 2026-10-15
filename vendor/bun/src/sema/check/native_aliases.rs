@@ -817,7 +817,10 @@ impl<'p, 's> Checker<'p, 's> {
             }
             // A static allocation site on a backedge can denote another
             // physical object. Never equate iterations through a cycle token.
-            Some(NativeFlowNode::Loop { .. }) => Origins::unknown(),
+            // This is a completed limit of the provenance proof, not an
+            // unresolved query. The memo scope below still propagates any
+            // actual recursive dependency as uncertain.
+            Some(NativeFlowNode::Loop { .. }) => Origins::unavailable(),
             Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }) => {
                 if self.native_alias_stable_cell(provider, reference) || self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_reference(provider, reference, before) }
                 else { Origins::one(Origin::OpaqueReference(reference, at), true) }
