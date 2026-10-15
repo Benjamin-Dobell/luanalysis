@@ -61,6 +61,12 @@ impl NativeRegistry {
     pub(super) fn signature_key_for(&self, span: Span) -> Option<NativeSignatureKey> {
         self.signatures.key_for(span)
     }
+    /// The original long-form declaration remains private when overloads exist.
+    /// Compatibility checks can demand it without executing a placeholder body.
+    pub(crate) fn ambient_implementation_signature(&self, function: NativeFunctionKey) -> Option<NativeSignatureKey> {
+        (self.source_role() == luanalysis_project::SourceRole::Declaration)
+            .then(|| self.signatures.ambient_mains.get(&function).copied()).flatten()
+    }
     fn signature_checker<'a>(
         &'a self,
         key: NativeSignatureKey,
