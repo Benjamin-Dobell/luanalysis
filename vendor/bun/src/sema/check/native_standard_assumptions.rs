@@ -344,7 +344,13 @@ impl<'p, 's> Checker<'p, 's> {
                 Some(NativeFlowNode::Start) if Some(at) == entry => {},
                 Some(NativeFlowNode::Write { before, target, .. }) => {
                     let relation = if provider.reference_is_cell(reference) { provider.write_affects(reference, target, at) }
-                        else { provider.write_affects_with_types(reference, target, at, self) };
+                        else if let Some(invariant) = invariant {
+                            match self.native_standard_loop_environment_write(provider, reference, target, at, invariant) {
+                                Ok(Some(relation)) => relation,
+                                Ok(None) => provider.write_affects_with_types(reference, target, at, self),
+                                Err(()) => return NativeCallPreservation::Pending,
+                            }
+                        } else { provider.write_affects_with_types(reference, target, at, self) };
                     if matches!(relation, NativeWriteRelation::Exact | NativeWriteRelation::PossibleExact | NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor) {
                         return NativeCallPreservation::Unknown;
                     }
@@ -367,6 +373,28 @@ impl<'p, 's> Checker<'p, 's> {
             }
         }
         NativeCallPreservation::Preserved
+    }
+
+    fn native_standard_loop_environment_write(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, invariant: &StandardLoop) -> Result<Option<NativeWriteRelation>, ()> {
+        let NativeAliasInitial::GlobalValue(binding) = provider.reference_alias_initial(reference) else { return Ok(None) };
+        if self.native_assumed_environment() != Some(binding.environment) { return Ok(None) }
+        let Some(receiver) = provider.write_alias_receiver(at) else { return Ok(None) };
+        // Use the store's original frozen receiver, not its flowed type: typing
+        // a captured environment alias here can demand this loop's call effect.
+        // The local loop substitution is never published as physical evidence.
+        let receiver = self.native_standard_loop_value(provider, receiver.value, receiver.input, invariant, &mut HashSet::new());
+        if receiver.uncertain { return Err(()) }
+        if receiver.unknown || receiver.non_table || receiver.tokens.len() != 1
+            || !receiver.tokens.contains(&Origin::Environment(binding.environment)) { return Ok(None) }
+        let relation = match provider.write_member_key(reference, target, at, self) {
+            Some(NativeTableKey::String(name)) => {
+                let written = self.native_globals_provider.and_then(|globals| globals.global_environment_binding(binding.environment, self.atoms().bytes(name)));
+                if written == Some(binding) { NativeWriteRelation::Exact } else { NativeWriteRelation::Unaffected }
+            },
+            Some(_) => NativeWriteRelation::Unaffected,
+            None => NativeWriteRelation::PossibleExact,
+        };
+        Ok(Some(relation))
     }
 
     // Loop substitutions are local to this metadata walk. Only the watched
