@@ -254,7 +254,12 @@ impl crate::Checker<'_> {
         expected: Option<&Type>,
         actual: Type,
     ) -> Type {
-        if expected.is_some_and(|expected| expected != &Type::Any)
+        // An inferred property can supply its allocation schema as contextual
+        // guidance. That does not make the RHS a written shape: retain this
+        // constructor's own allocation key, rather than erasing its carrier or
+        // reusing the earlier property's allocation identity.
+        if expected.is_some_and(|expected| expected != &Type::Any
+            && self.engine.runtime_table_schema(expected).is_none())
             || !matches!(expression.kind, ExprKind::Table(_))
         {
             return actual;
