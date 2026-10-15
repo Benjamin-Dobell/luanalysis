@@ -1,0 +1,48 @@
+local type=type
+local _ENV=nil
+local function nop() end
+---@param src string | fun(): nil|string
+local function newparser(src)
+	---@type string, (fun(): void), number
+	local json, jsonnxt, rec_depth
+	local jsonlen, pos, acc = 0, 1, 0
+
+	-- `f` is the temporary for dispatcher[c] and
+	-- the dummy for the first return value of `find`
+	---@type {[number]: fun(): void}, fun(): void
+	local dispatcher, f
+
+	-- initialize
+	if type(src) == 'string' then
+		json = --[[---@type string]] src
+		jsonlen = #json
+		jsonnxt = function()
+			json = ''
+			jsonlen = 0
+			jsonnxt = nop
+		end
+	else
+		jsonnxt = function()
+			acc = acc + jsonlen
+			pos = 1
+
+			repeat
+				-- Don't like this cast, it's wrong. Ideally we'd have a local
+				-- var that's nillable, but lunajson is heavily optimized, so we
+				-- make do.
+				json = --[[---@not nil]] src()
+
+				if not json then
+					json = ''
+					jsonlen = 0
+					jsonnxt = nop
+					return
+				end
+
+				jsonlen = #json
+			until jsonlen > 0
+		end
+		jsonnxt()
+	end
+	return jsonnxt
+end

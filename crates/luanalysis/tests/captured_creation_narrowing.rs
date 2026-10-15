@@ -15,6 +15,7 @@ local function make(src)
     end
 end
 "#;
+const ORIGINAL_READER: &str = include_str!("fixtures/sax/reader-creation-flow.lua.fixture");
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -206,5 +207,36 @@ fn preexisting_closures_keep_their_environment_while_later_ones_capture_nil() {
             "{rejected}"
         );
         fixture.check(&corrected, version, 0);
+    }
+}
+
+#[test]
+fn original_sax_reader_keeps_creation_narrowing_through_its_saved_type_and_loop() {
+    let fixture = Fixture::new();
+    for version in ["5.2", "5.4"] {
+        fixture.check(ORIGINAL_READER, version, 0);
+        for (wrong, occurrence, expression, code) in [
+            (
+                ORIGINAL_READER.replace("src()", "src(42)"),
+                "src(42)",
+                "src(42)",
+                "TS2554",
+            ),
+            (
+                ORIGINAL_READER.replace("json = --[[---@not nil]] src()", "json = 42"),
+                "json = 42",
+                "42",
+                "TS2322",
+            ),
+        ] {
+            let rejected = fixture.check(&wrong, version, 1);
+            assert_eq!(
+                rejected.matches("\"severity\":\"error\"").count(),
+                1,
+                "{rejected}"
+            );
+            anchored(&rejected, &wrong, occurrence, expression, code);
+            fixture.check(ORIGINAL_READER, version, 0);
+        }
     }
 }
