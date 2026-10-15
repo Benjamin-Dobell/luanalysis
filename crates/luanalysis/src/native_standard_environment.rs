@@ -35,12 +35,17 @@ impl ProjectStandardEnvironment {
             setmetatable_operation: None,
             rejected_assert_declarations: Vec::new(),
         };
-        if profile != StandardEnvironmentProfile::Lua54 {
+        if !matches!(profile, StandardEnvironmentProfile::LegacyMinimal | StandardEnvironmentProfile::Lua54) {
             return result;
         }
         for (kind, source) in files {
             if source.source_role() != SourceRole::Declaration {
                 continue;
+            }
+            match profile {
+                StandardEnvironmentProfile::LegacyMinimal if kind != StandardLibrarySource::LegacyRequire => continue,
+                StandardEnvironmentProfile::Lua54 if kind == StandardLibrarySource::LegacyRequire => continue,
+                _ => {},
             }
             if let Some((capabilities, other_owners)) = source.original_standard_function("require") {
                 if other_owners.is_empty() && capabilities.len() == 1 { result.require_operation = capabilities.first().copied(); }

@@ -101,6 +101,67 @@ fn code(report: &ProjectCheckReport, code: &str) -> bool {
 const TYPE_GUARD: &str = "---@param value number|string\nlocal function check(value)\nif type(value)=='number' then\n---@type number\nlocal numeric=value\nend\nend\n";
 
 #[test]
+fn minimal_profile_attests_original_require_across_successive_imports_and_saved_aliases() {
+    let fixture = Fixture::new();
+    fixture.file("first.lua", "return 42\n");
+    fixture.file("second.lua", "return 'word'\n");
+    let source = "local loader=require\nlocal first=require('first')\nlocal second=loader('second')\n---@type number\nlocal numeric=first\n---@type string\nlocal textual=second\n";
+    let report = fixture.check(source, StandardEnvironmentProfile::LegacyMinimal);
+    clean(&report);
+    assert_eq!(report.standard_library_files.len(), 1);
+    assert_eq!(report.checked_file_count(), 3);
+    let standard = report.source(report.standard_library_files[0]).unwrap();
+    assert!(matches!(standard.origin, SourceOrigin::DeclarationLibrary { .. }));
+    assert_eq!(standard.path, PathBuf::from("stdlib/LegacyMinimal/require.def.lua"));
+    assert_eq!(standard.source, include_str!("../stdlib/LegacyMinimal/require.def.lua"));
+    let rejected = fixture.check(&source.replace("local textual=second", "local textual=first"), StandardEnvironmentProfile::LegacyMinimal);
+    assert!(code(&rejected, "TS2322"), "{:#?}", rejected.files);
+    clean(&fixture.check(source, StandardEnvironmentProfile::LegacyMinimal));
+    let cli = fixture.cli(&["--module-root", ".", "main.lua"]);
+    assert!(cli.status.success(), "{}{}", String::from_utf8_lossy(&cli.stdout), String::from_utf8_lossy(&cli.stderr));
+    assert!(String::from_utf8_lossy(&cli.stdout).contains("No type errors in 3 file(s)."));
+}
+
+#[test]
+fn minimal_require_registration_does_not_select_other_standard_capabilities_or_the_empty_profile() {
+    let fixture = Fixture::new();
+    clean(&fixture.check(TYPE_GUARD, StandardEnvironmentProfile::LegacyMinimal));
+    for source in ["local value=assert(true)\n", "local value=setmetatable({}, {})\n", "local value=('WORD'):lower()\n"] {
+        let report = fixture.check(source, StandardEnvironmentProfile::LegacyMinimal);
+        assert!(report.has_errors(), "the require-only resource must not grant another standard capability: {source}");
+        assert_eq!(report.standard_library_files.len(), 1);
+    }
+    let empty = fixture.check("local loader=require\n", StandardEnvironmentProfile::None);
+    assert!(code(&empty, "TS2304"), "{:#?}", empty.files);
+    assert!(empty.standard_library_files.is_empty());
+}
+
+#[test]
+fn a_compatible_replacement_does_not_inherit_the_minimal_loader_capability() {
+    let fixture = Fixture::new();
+    let source = "---@param modname string\n---@return any\nlocal function ordinary(modname) return 42 end\nrequire=ordinary\nlocal value=require('absent')\n";
+    let report = fixture.check(source, StandardEnvironmentProfile::LegacyMinimal);
+    assert!(code(&report, "LUA2036"), "{:#?}", report.files);
+    assert!(!code(&report, "TS2307"), "a rejected runtime callee must not publish its host candidate failure: {:#?}", report.files);
+}
+
+#[test]
+fn matching_minimal_resource_text_and_display_path_do_not_attest_an_unselected_require() {
+    let fixture = Fixture::new();
+    fixture.file("first.lua", "---@type number\nlocal poison='wrong'\nreturn 42\n");
+    let mut project = fixture.project("local value=require('first')\n");
+    project.add_declaration_source(DeclarationSource {
+        identity: "user-minimal-require".into(),
+        path: PathBuf::from("stdlib/LegacyMinimal/require.def.lua"),
+        source: include_str!("../stdlib/LegacyMinimal/require.def.lua").to_owned(),
+    }).unwrap();
+    let report = check_project_with_options(project, ProjectCheckOptions { environment: StandardEnvironmentProfile::None, ..Default::default() });
+    assert!(report.standard_library_files.is_empty());
+    assert!(code(&report, "LUA2036"), "{:#?}", report.files);
+    assert!(!code(&report, "TS2322"), "an unselected loader cannot schedule the candidate's poison body: {:#?}", report.files);
+}
+
+#[test]
 fn selected_profile_registers_active_declarations_without_runtime_membership_or_count_noise()
  {
     let fixture = Fixture::new();

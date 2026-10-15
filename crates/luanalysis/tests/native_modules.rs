@@ -75,7 +75,7 @@ fn actual_chunk_scalar_and_table_exports_are_checked_in_the_importer() {
     fixture.file("record.lua", "return {id=42,label='item'}");
     let report=fixture.check("local count=require('count')\nlocal record=require('record')\n---@type number\nlocal accepted=count\n---@type string\nlocal label=record.label\n---@type number\nlocal id=record.id\n");
     clean(&report);
-    assert_eq!(report.project.files.len(), 3);
+    assert_eq!(report.project.files.len() - report.standard_library_files.len(), 3);
     assert_eq!(ty(&report, "count"), "number");
     assert_eq!(ty(&report, "label"), "string");
 }
@@ -296,7 +296,7 @@ fn shadowed_require_and_environment_loader_mutation_do_not_publish_phantom_modul
     let fixture = Fixture::new();
     let shadow=fixture.check("---@param name string\nlocal function require(name) return 42 end\nlocal value=require('absent')");
     clean(&shadow);
-    assert_eq!(shadow.project.files.len(), 1);
+    assert_eq!(shadow.project.files.len() - shadow.standard_library_files.len(), 1);
     assert!(shadow.project.dependencies.is_empty());
     for source in [
         "local _ENV={}\nlocal value=require('absent')",
@@ -305,7 +305,7 @@ fn shadowed_require_and_environment_loader_mutation_do_not_publish_phantom_modul
     ] {
         let report = fixture.check(source);
         assert!(report.has_errors());
-        assert_eq!(report.project.files.len(), 1, "{source}: {:#?}", report.project.files);
+        assert_eq!(report.project.files.len() - report.standard_library_files.len(), 1, "{source}: {:#?}", report.project.files);
         assert!(!report.files.iter().flat_map(|file| &file.report.diagnostics).any(|error| error.code == "TS2307"), "{source}: {:#?}", report.files);
     }
 }

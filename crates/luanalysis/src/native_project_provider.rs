@@ -183,9 +183,9 @@ impl ProjectRegistry {
             imports,
             required_files: Default::default(),
         });
-        // The sparse legacy compatibility API has no original standard value
-        // declarations. Keep its conservative historical policy isolated from
-        // the selected native standard environment and its per-reference flow.
+        // Keep the historical type fallback separate from selected standard
+        // capabilities. The minimal project loader has its own declaration;
+        // that source does not grant type or other standard operations.
         let legacy_type_replaced = environment_profile == StandardEnvironmentProfile::LegacyMinimal && files.iter().any(|file| file.role == SourceRole::Implementation && file.source.bound.has_modified_type_intrinsic());
         let legacy_builtins = if environment_profile != StandardEnvironmentProfile::LegacyMinimal || legacy_type_replaced {
             crate::builtins::LegacyBuiltinPolicy::Disabled

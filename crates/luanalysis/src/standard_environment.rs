@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StandardEnvironmentProfile {
-    /// Preserve the original low-level API's sole implicit type operation.
+    /// Historical type compatibility and an original standard file-loader declaration.
     #[default]
     LegacyMinimal,
     /// No declaration profile or implicit builtin fallback.
@@ -16,6 +16,7 @@ pub enum StandardEnvironmentProfile {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StandardLibrarySource {
+    LegacyRequire,
     Base,
     Builtin,
     Coroutine,
@@ -31,6 +32,7 @@ pub(crate) enum StandardLibrarySource {
 impl StandardLibrarySource {
     fn name(self) -> &'static str {
         match self {
+            Self::LegacyRequire => "require",
             Self::Base => "global",
             Self::Builtin => "builtin",
             Self::Coroutine => "coroutine",
@@ -46,6 +48,7 @@ impl StandardLibrarySource {
     }
     fn source(self) -> &'static str {
         match self {
+            Self::LegacyRequire => include_str!("../stdlib/LegacyMinimal/require.def.lua"),
             Self::Base => include_str!("../stdlib/Lua54/global.def.lua"),
             Self::Builtin => include_str!("../stdlib/Lua54/builtin.def.lua"),
             Self::Coroutine => include_str!("../stdlib/Lua54/coroutine.def.lua"),
@@ -74,6 +77,15 @@ impl StandardEnvironmentSelection {
         profile: StandardEnvironmentProfile,
     ) -> Result<Self, DeclarationSourceError> {
         let mut files = Vec::new();
+        if profile == StandardEnvironmentProfile::LegacyMinimal {
+            let kind = StandardLibrarySource::LegacyRequire;
+            let file = project.add_declaration_source(DeclarationSource {
+                identity: format!("luanalysis.std.LegacyMinimal.require@{}", env!("CARGO_PKG_VERSION")),
+                path: PathBuf::from("stdlib/LegacyMinimal/require.def.lua"),
+                source: kind.source().to_owned(),
+            })?;
+            files.push((file, kind));
+        }
         if profile == StandardEnvironmentProfile::Lua54 {
             for kind in [
                 StandardLibrarySource::Base,
