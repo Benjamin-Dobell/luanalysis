@@ -1,24 +1,23 @@
-# Fixture provenance
+# Maintained checking inputs
 
-Source: Benjamin Dobell's IntelliJ-Luanalysis, retaining its EmmyLua ancestry.
-Repository: https://github.com/Benjamin-Dobell/IntelliJ-Luanalysis
-Revision: `d796bb67d5135d152b9f627b69e57377c83d1a66`.
-Original repository license: Apache 2.0, reproduced in `LICENSE.txt`.
+These Lua files are owned fixtures for the standalone checker. Their source,
+markers and expected behavior are maintained together with the implementation.
 
-`local_def_assignment.lua`, `lambda_params.lua`, `trailing_type.lua` and `snippet.lua` are copied byte-for-byte from
-their respective `src/test/resources/inspections/` paths. Marker removal is
-performed by the tested importer; the expected range is in the cleaned Lua.
+`local_def_assignment.lua`, `lambda_params.lua`, `trailing_type.lua` and
+`snippet.lua` are complete checking inputs. Marker removal preserves every
+non-marker byte, and expected ranges refer to the resulting clean Lua. Negative
+cases also run with temporary in-memory corrections; those corrections leave the
+stored marked input intact.
 
-The three other files are reduced/adapted positive cases, not whole legacy
-fixture passes:
+Three files exercise deliberately smaller primitive contracts:
 
-- `number-assignment.lua`: `numbers.lua:1,8`, with immediate initialization and
-  another compatible assignment. Calls, arithmetic and literal-only types are omitted.
-- `boolean-assignment.lua`: `boolean.lua:1,16,17`, with immediate initialization
-  rather than an uninitialized annotated local. Literal-only declarations are omitted.
-- `string-assignment.lua`: `string_literals.lua:1,8`, with immediate
-  initialization and another compatible string assignment. Literal-only types are omitted.
+- `number-assignment.lua`: immediate numeric initialization followed by another
+  compatible assignment. It omits calls, arithmetic and literal-only types.
+- `boolean-assignment.lua`: immediate initialization of a boolean value. It
+  isolates the primitive contract from uninitialized-local and literal policies.
+- `string-assignment.lua`: immediate initialization followed by another
+  compatible string assignment. It omits literal-only declarations.
 
-Their reductions avoid unresolved declaration/inference policies; those whole
-fixtures remain separate pending coverage. Corrections of the negative case
-are temporary in-memory sources and do not modify its imported bytes.
+These reductions establish their own assignments and displayed types. Broader
+operator, inference, literal and declaration behavior needs additional cases;
+a reduction is not evidence that an entire feature family is complete.
