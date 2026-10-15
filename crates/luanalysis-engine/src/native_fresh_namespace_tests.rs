@@ -19,7 +19,7 @@ fn standard() -> NativeIntrinsicSite {
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Scenario { Single, Multiple, MultipleReceivers, RawRead, NonNilRawSlot, NilRawSlot, MetatableOnClass, MetatableBeforeClass, UnknownPass, ForeignAllocation, Loop }
+enum Scenario { Single, Multiple, MultipleReceivers, RawRead, Captured, CapturedMetatable, NonNilRawSlot, NilRawSlot, MetatableOnClass, MetatableBeforeClass, UnknownPass, ForeignAllocation, Loop }
 
 /// Original execution recipes for a factory with `local Class = {}` and
 /// function-literal field stores. Heap stores deliberately remain dispatch
@@ -57,7 +57,17 @@ impl Namespace {
             source.local(4, 2);
             source.install_metatable(12);
         }
-        source.local(1, 1);
+        if source.captured() {
+            source.nodes.insert(at(0, 1), NativeFlowNode::Write { before: at(0, 0), target: reference(0, 1), value: value(1), input: at(0, 0) });
+            if matches!(scenario, Scenario::CapturedMetatable) {
+                source.standard_calls.insert(value(100), NativeAliasCall {
+                    callee: NativeAliasReturnValue { value: value(0), input: at(0, 1) },
+                    arguments: vec![NativeAliasReturnValue { value: value(11), input: at(0, 1) }, NativeAliasReturnValue { value: value(50), input: at(0, 1) }],
+                    execution_input: at(0, 1),
+                });
+                source.nodes.insert(at(0, 2), NativeFlowNode::Call { before: at(0, 1), value: value(100), input: at(0, 1) });
+            }
+        } else { source.local(1, 1); }
         match scenario {
             Scenario::MetatableOnClass | Scenario::NonNilRawSlot | Scenario::NilRawSlot => source.install_metatable(11),
             Scenario::MultipleReceivers => {
@@ -133,8 +143,11 @@ impl Namespace {
     }
 
     fn preserve(&self, queries: &mut dyn TypeQueries) -> NativeCallPreservation {
-        queries.flow_call_preservation(self, reference(0, 0), value(200), at(0, 0))
+        let input = if matches!(self.scenario, Scenario::CapturedMetatable) { at(0, 2) } else { self.creation() };
+        queries.flow_call_preservation(self, reference(0, 0), value(200), input)
     }
+    fn captured(&self) -> bool { matches!(self.scenario, Scenario::Captured | Scenario::CapturedMetatable) }
+    fn creation(&self) -> NativeFlowKey { if self.captured() { at(0, 1) } else { at(0, 0) } }
 }
 
 impl NativeTypeProvider for Namespace {
@@ -178,7 +191,7 @@ impl NativeFlowProvider for Namespace {
             0 => NativeAliasValue::Reference { reference: NativeReferenceKey { graph: input.graph, reference: 0 }, input },
             1 if matches!(self.scenario, Scenario::ForeignAllocation) => NativeAliasValue::Reference { reference: reference(2, 1), input: at(2, 1) },
             1 | 2 | 50 => NativeAliasValue::Allocation,
-            10 => NativeAliasValue::Function { function: function(), creation: at(0, 0) },
+            10 => NativeAliasValue::Function { function: function(), creation: self.creation() },
             11 | 12 | 13 => NativeAliasValue::Reference { reference: NativeReferenceKey { graph: input.graph, reference: match original.index { 11 if matches!(self.scenario, Scenario::MultipleReceivers) => 5, 11 | 13 => 1, _ => 4 } }, input },
             40 => NativeAliasValue::NonNilScalar,
             41 => NativeAliasValue::NotTable,
@@ -190,14 +203,14 @@ impl NativeFlowProvider for Namespace {
     fn alias_call_source(&self, original: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> {
         if original == value(200) {
             return Some(NativeAliasCall {
-                callee: NativeAliasReturnValue { value: value(10), input: at(0, 0) },
+                callee: NativeAliasReturnValue { value: value(10), input: self.creation() },
                 arguments: vec![], execution_input: input,
             });
         }
         self.standard_calls.get(&original).filter(|recipe| recipe.execution_input == input).cloned()
     }
     fn function_alias_execution(&self, original: NativeFunctionKey, creation: NativeFlowKey) -> Option<NativeAliasExecution> {
-        (original == function() && creation == at(0, 0)).then_some(NativeAliasExecution { entry: at(1, 0), terminals: vec![self.terminal] })
+        (original == function() && creation == self.creation()).then_some(NativeAliasExecution { entry: at(1, 0), terminals: vec![self.terminal] })
     }
     fn alias_node_dispatch(&self, original: NativeFlowKey) -> NativeAliasDispatch {
         if let Some(&target) = self.method_targets.get(&original) { return NativeAliasDispatch::ReferenceRead(target); }
@@ -225,17 +238,18 @@ impl NativeFlowProvider for Namespace {
     }
     fn reference_is_cell(&self, original: NativeReferenceKey) -> bool { matches!(original.reference, 1 | 4 | 5) }
     fn reference_declaration(&self, original: NativeReferenceKey) -> Option<NativeVariableDeclaration> {
-        self.reference_is_cell(original).then_some(NativeVariableDeclaration { owner: original.graph, reference: original, writes: vec![] })
+        let owner = if self.captured() && original.reference == 1 { graph(0) } else { original.graph };
+        self.reference_is_cell(original).then_some(NativeVariableDeclaration { owner, reference: original, writes: vec![] })
     }
     fn reference_in_graph(&self, original: NativeReferenceKey, target: NativeGraphKey) -> Option<NativeReferenceKey> {
-        if original.graph != target && original.reference != 0 { return None; }
+        if original.graph != target && original.reference != 0 && !(self.captured() && original.reference <= 3) { return None; }
         let projected = NativeReferenceKey { graph: target, reference: original.reference };
         (self.contains_reference(original) && self.contains_reference(projected)).then_some(projected)
     }
     fn contains_graph(&self, original: NativeGraphKey) -> bool { self.nodes.contains_key(&NativeFlowKey { graph: original, node: 0 }) }
     fn contains_reference(&self, original: NativeReferenceKey) -> bool {
         self.contains_graph(original.graph) && match original.graph.region {
-            0 => original.reference == 0,
+            0 => original.reference == 0 || self.captured() && original.reference <= 3,
             1 => original.reference < 6,
             2 => matches!(original.reference, 0 | 1),
             _ => false,
@@ -330,5 +344,17 @@ fn a_proven_raw_read_preserves_metatable_absence_for_a_later_missing_slot_store(
         Engine::new().with_native_provider(move || Namespace::new(Scenario::RawRead, routed), |source, queries| {
             assert_eq!(source.preserve(queries), NativeCallPreservation::Preserved);
         });
+    }
+}
+
+#[test]
+fn captured_fresh_tables_use_actual_execution_entry_without_ignoring_prior_setmetatable() {
+    for routed in [false, true] {
+        for scenario in [Scenario::Captured, Scenario::CapturedMetatable] {
+            Engine::new().with_native_provider(move || Namespace::new(scenario, routed), |source, queries| {
+                let expected = if matches!(scenario, Scenario::Captured) { NativeCallPreservation::Preserved } else { NativeCallPreservation::Unknown };
+                assert_eq!(source.preserve(queries), expected, "{scenario:?}");
+            });
+        }
     }
 }

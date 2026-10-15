@@ -671,6 +671,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn signature_header(key: NativeSignatureKey) -> SignatureHeader;
         fn function_overload_signatures(key: NativeFunctionKey) -> Vec<NativeSignatureKey>;
         fn function_exposes_implementation(key: NativeFunctionKey) -> bool;
+        fn function_flow_execution(key: NativeFunctionKey, creation: luanalysis_engine::NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::NativeAliasExecution>;
         fn signature_type_parameters(key: NativeSignatureKey) -> Vec<NativeTypeParameterKey>;
         fn signature_outer_type_parameters(key: NativeSignatureKey) -> Vec<NativeTypeParameterKey>;
         fn signature_outer_type_parameter_instances(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> Vec<Type>;
