@@ -1,0 +1,316 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+index fcdddda..b962b41 100644
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -279,19 +279,42 @@ impl<'p, 's> Checker<'p, 's> {
+         self.native_function_overload_type(context.signature)
+     }
+ 
++    /// Extract the actual implementation capability without demanding its signature.
++    pub fn native_function_capture_context(&mut self, function: TypeId) -> Option<NativeCapturedFunctionContext> {
++        let signature = self.native_implementation_signature(function)?;
++        self.sig_native_decl(signature)?;
++        Some(NativeCapturedFunctionContext { signature })
++    }
++
++    pub fn native_captured_function_parent(&self, context: NativeCapturedFunctionContext) -> Option<NativeCapturedFunctionContext> {
++        match *self.types().sig(context.signature) {
++            SigData::NativeCaptured { lexical_parent, .. }
++            | SigData::NativeContextual { lexical_parent, .. } => lexical_parent.map(|signature| NativeCapturedFunctionContext { signature }),
++            SigData::WithReturn { sig, .. } | SigData::WithNativeResultPack { sig, .. } => {
++                self.native_captured_function_parent(NativeCapturedFunctionContext { signature: sig })
++            }
++            _ => None,
++        }
++    }
++
++    pub fn native_captured_function_context(&self, context: NativeCapturedFunctionContext) -> Option<NativeFunctionContext> {
++        self.sig_native_context(context.signature)
++    }
++
+     /// Apply a signature substitution once to a written source type used inside its body.
+     pub fn instantiate_in_native_capture(&mut self, context: NativeCapturedFunctionContext, ty: TypeId) -> TypeId {
+-        let mapper = match self.types().sig(context.signature) {
+-            SigData::NativeCaptured { mapper, .. }
+-            | SigData::NativeContextual { mapper, .. } => *mapper,
+-            _ => return ty,
+-        };
++        let Some((_, mapper)) = self.sig_native_decl(context.signature) else { return ty; };
+         self.instantiate(ty, mapper)
+     }
+ 
+     pub fn native_captured_function(&mut self, declaration: NativeFunctionId, environment: &[NativeCapturedBinding]) -> Option<TypeId> {
++        self.native_captured_function_with_parent(declaration, environment, None)
++    }
++
++    pub fn native_captured_function_with_parent(&mut self, declaration: NativeFunctionId, environment: &[NativeCapturedBinding], parent: Option<NativeCapturedFunctionContext>) -> Option<TypeId> {
+         if !self.native_function_provider?.contains_function(declaration)
+             || !environment.iter().all(|entry| self.contains_native_binding(entry.declaration))
++            || parent.is_some_and(|parent| self.sig_native_decl(parent.signature).is_none())
+         {
+             return None;
+         }
+@@ -327,6 +350,7 @@ impl<'p, 's> Checker<'p, 's> {
+             declaration,
+             mapper: self.types().mapper(outer),
+             environment: self.list(&environment),
++            lexical_parent: parent.map(|parent| parent.signature),
+         });
+         Some(self.native_function_overload_type(sig))
+     }
+@@ -370,6 +394,8 @@ impl<'p, 's> Checker<'p, 's> {
+             | SigData::NativeContextual { environment, .. } => self.list(environment),
+             _ => ArenaBox::empty(),
+         };
++        let lexical_parent = self.native_captured_function_parent(NativeCapturedFunctionContext { signature })
++            .map(|parent| parent.signature);
+         if !self.contains_native_expression(expression)
+             || !self.native_function_provider?.contains_function(declaration)
+         {
+@@ -403,6 +429,7 @@ impl<'p, 's> Checker<'p, 's> {
+             mapper,
+             context,
+             environment,
++            lexical_parent,
+         });
+         Some(self.native_function_overload_type(sig))
+     }
+diff --git a/src/sema/check/context.rs b/src/sema/check/context.rs
+index 93e63bf..20e8cb3 100644
+--- a/src/sema/check/context.rs
++++ b/src/sema/check/context.rs
+@@ -2571,20 +2571,22 @@ impl<'p, 's> Checker<'p, 's> {
+                 });
+                 self.is_resolving(Query::ReturnOfSignature(declared))
+             }
+-            SigData::NativeContextual { declaration, context, ref environment, .. } => {
++            SigData::NativeContextual { declaration, context, ref environment, lexical_parent, .. } => {
+                 let declared = self.types().intern_sig(SigData::NativeContextual {
+                     declaration,
+                     mapper: MapperId::IDENTITY,
+                     context,
+                     environment: self.list(environment),
++                    lexical_parent,
+                 });
+                 self.is_resolving(Query::ReturnOfSignature(declared))
+             }
+-            SigData::NativeCaptured { declaration, ref environment, .. } => {
++            SigData::NativeCaptured { declaration, ref environment, lexical_parent, .. } => {
+                 let declared = self.types().intern_sig(SigData::NativeCaptured {
+                     declaration,
+                     mapper: MapperId::IDENTITY,
+                     environment: self.list(environment),
++                    lexical_parent,
+                 });
+                 self.is_resolving(Query::ReturnOfSignature(declared))
+             }
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+index 2160665..1c37a10 100644
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -1131,6 +1131,16 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     pub fn instantiate_sig(&mut self, sig: SigId, mapper: MapperId) -> SigId {
++        self.instantiate_sig_with_native_parent(sig, mapper, true)
++    }
++
++    /// Signature.target reapplies only the child's stored outer mapping. Its
++    /// creation frame already contains that mapping and must remain unchanged.
++    pub(super) fn instantiate_sig_preserving_native_parent(&mut self, sig: SigId, mapper: MapperId) -> SigId {
++        self.instantiate_sig_with_native_parent(sig, mapper, false)
++    }
++
++    fn instantiate_sig_with_native_parent(&mut self, sig: SigId, mapper: MapperId, map_parent: bool) -> SigId {
+         if mapper == MapperId::IDENTITY {
+             return sig;
+         }
+@@ -1140,13 +1150,13 @@ impl<'p, 's> Checker<'p, 's> {
+                 let own = *own;
+                 let implementation = *implementation;
+                 let declared = self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper: MapperId::IDENTITY, implementation: None });
+-                SigData::NativeDeclarationSignature { declaration, mapper: self.native_signature_mapper(declared, own, mapper), implementation: implementation.map(|sig| self.instantiate_sig(sig, mapper)) }
++                SigData::NativeDeclarationSignature { declaration, mapper: self.native_signature_mapper(declared, own, mapper), implementation: implementation.map(|sig| self.instantiate_sig_with_native_parent(sig, mapper, map_parent)) }
+             }
+             SigData::Native { declaration, mapper: own } => SigData::Native {
+                 declaration: *declaration,
+                 mapper: self.native_sig_mapper(*declaration, *own, mapper),
+             },
+-            SigData::NativeContextual { declaration, mapper: own, context, environment } => {
++            SigData::NativeContextual { declaration, mapper: own, context, environment, lexical_parent } => {
+                 SigData::NativeContextual {
+                     declaration: *declaration,
+                     mapper: self.native_sig_mapper(*declaration, *own, mapper),
+@@ -1155,13 +1165,15 @@ impl<'p, 's> Checker<'p, 's> {
+                         ..*context
+                     },
+                     environment: self.list(environment),
++                    lexical_parent: if map_parent { lexical_parent.map(|parent| self.instantiate_sig(parent, mapper)) } else { *lexical_parent },
+                 }
+             }
+-            SigData::NativeCaptured { declaration, mapper: own, environment } => {
++            SigData::NativeCaptured { declaration, mapper: own, environment, lexical_parent } => {
+                 SigData::NativeCaptured {
+                     declaration: *declaration,
+                     mapper: self.native_sig_mapper(*declaration, *own, mapper),
+                     environment: self.list(environment),
++                    lexical_parent: if map_parent { lexical_parent.map(|parent| self.instantiate_sig(parent, mapper)) } else { *lexical_parent },
+                 }
+             }
+             SigData::Decl {
+@@ -1260,13 +1272,13 @@ impl<'p, 's> Checker<'p, 's> {
+             // as the rest.
+             SigData::WithNativeResultPack { sig: inner, pack } => {
+                 SigData::WithNativeResultPack {
+-                    sig: self.instantiate_sig(*inner, mapper),
++                    sig: self.instantiate_sig_with_native_parent(*inner, mapper, map_parent),
+                     pack: self.instantiate_native_pack(*pack, mapper),
+                 }
+             }
+             SigData::WithReturn { sig: inner, ret } => {
+                 let (inner, ret) = (*inner, *ret);
+-                let sig = self.instantiate_sig(inner, mapper);
++                let sig = self.instantiate_sig_with_native_parent(inner, mapper, map_parent);
+                 // That mapper begins with the cloned type parameters.
+                 let (old, new) = (self.sig_type_params(inner), self.sig_type_params(sig));
+                 let mapper = if old.len() == new.len() && old != new {
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+index 89af5f6..862cc42 100644
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -6772,16 +6772,18 @@ impl<'p, 's> Checker<'p, 's> {
+                 declaration,
+                 mapper: extended(self, mapper),
+             },
+-            SigData::NativeContextual { declaration, mapper, context, ref environment } => SigData::NativeContextual {
++            SigData::NativeContextual { declaration, mapper, context, ref environment, lexical_parent } => SigData::NativeContextual {
+                 declaration,
+                 mapper: extended(self, mapper),
+                 context,
+                 environment: self.list(environment),
++                lexical_parent,
+             },
+-            SigData::NativeCaptured { declaration, mapper, ref environment } => SigData::NativeCaptured {
++            SigData::NativeCaptured { declaration, mapper, ref environment, lexical_parent } => SigData::NativeCaptured {
+                 declaration,
+                 mapper: extended(self, mapper),
+                 environment: self.list(environment),
++                lexical_parent,
+             },
+             SigData::Decl { file, func, mapper } => SigData::Decl {
+                 file,
+@@ -6901,7 +6903,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 if own.iter().all(|&param| self.types().map(mapper, param).is_none()) { return (declared != sig).then_some(declared); }
+                 let outer = self.types().mapping(mapper).iter().copied().filter(|pair| !own.contains(&pair.0)).collect();
+                 let outer = self.types().mapper(outer);
+-                Some(self.instantiate_sig(declared, outer))
++                Some(self.instantiate_sig_preserving_native_parent(declared, outer))
+             }
+             SigData::Native { declaration, mapper } => {
+                 let declared = self.types().intern_sig(SigData::Native {
+@@ -6918,12 +6920,13 @@ impl<'p, 's> Checker<'p, 's> {
+                 let outer = self.types().mapper(outer);
+                 Some(self.instantiate_sig(declared, outer))
+             }
+-            SigData::NativeContextual { declaration, mapper, context, ref environment } => {
++            SigData::NativeContextual { declaration, mapper, context, ref environment, lexical_parent } => {
+                 let declared = self.types().intern_sig(SigData::NativeContextual {
+                     declaration,
+                     mapper: MapperId::IDENTITY,
+                     context,
+                     environment: self.list(environment),
++                    lexical_parent,
+                 });
+                 let own = self.sig_type_params(declared);
+                 if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {
+@@ -6933,13 +6936,14 @@ impl<'p, 's> Checker<'p, 's> {
+                     .filter(|pair| !own.contains(&pair.0))
+                     .collect();
+                 let outer = self.types().mapper(outer);
+-                Some(self.instantiate_sig(declared, outer))
++                Some(self.instantiate_sig_preserving_native_parent(declared, outer))
+             }
+-            SigData::NativeCaptured { declaration, mapper, ref environment } => {
++            SigData::NativeCaptured { declaration, mapper, ref environment, lexical_parent } => {
+                 let declared = self.types().intern_sig(SigData::NativeCaptured {
+                     declaration,
+                     mapper: MapperId::IDENTITY,
+                     environment: self.list(environment),
++                    lexical_parent,
+                 });
+                 let own = self.sig_type_params(declared);
+                 if own.iter().all(|&param| self.types().map(mapper, param).is_none()) {
+@@ -6949,7 +6953,7 @@ impl<'p, 's> Checker<'p, 's> {
+                     .filter(|pair| !own.contains(&pair.0))
+                     .collect();
+                 let outer = self.types().mapper(outer);
+-                Some(self.instantiate_sig(declared, outer))
++                Some(self.instantiate_sig_preserving_native_parent(declared, outer))
+             }
+             // `cloneSignature` preserves the target.
+             SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => self.sig_target(inner),
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+index 0172c9f..839259d 100644
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -934,6 +934,8 @@ pub enum SigData<'s> {
+         declaration: NativeFunctionId,
+         mapper: MapperId,
+         environment: List<'s, NativeCapturedBinding>,
++        /// Exact lexical creation frame, attested by the original-source provider.
++        lexical_parent: Option<SigId>,
+     },
+     /// A native declaration checked under one contextual demand, with caches of its own.
+     NativeContextual {
+@@ -941,6 +943,7 @@ pub enum SigData<'s> {
+         mapper: MapperId,
+         context: NativeFunctionContext,
+         environment: List<'s, NativeCapturedBinding>,
++        lexical_parent: Option<SigId>,
+     },
+     /// As declared, with `mapper` applied.
+     Decl {
+@@ -2523,11 +2526,17 @@ impl<'p, 's> Types<'p, 's> {
+ 
+     pub fn sig_flags(&self, sig: SigId) -> ObjectFlags {
+         match self.sig(sig) {
+-            SigData::NativeContextual { mapper, context, environment, .. } => {
+-                environment.iter().fold(self.mapper_record(*mapper).1 | self.sig_flags(context.expected), |flags, binding| flags | self.object_flags(binding.ty))
++            SigData::NativeContextual { mapper, context, environment, lexical_parent, .. } => {
++                // Instantiation must reach frame mappers, even though creation
++                // provenance is excluded from semantic dependency/inference walks.
++                let flags = self.mapper_record(*mapper).1 | self.sig_flags(context.expected)
++                    | lexical_parent.map_or(ObjectFlags::empty(), |parent| self.sig_flags(parent));
++                environment.iter().fold(flags, |flags, binding| flags | self.object_flags(binding.ty))
+             }
+-            SigData::NativeCaptured { mapper, environment, .. } => {
+-                environment.iter().fold(self.mapper_record(*mapper).1, |flags, binding| flags | self.object_flags(binding.ty))
++            SigData::NativeCaptured { mapper, environment, lexical_parent, .. } => {
++                let flags = self.mapper_record(*mapper).1
++                    | lexical_parent.map_or(ObjectFlags::empty(), |parent| self.sig_flags(parent));
++                environment.iter().fold(flags, |flags, binding| flags | self.object_flags(binding.ty))
+             }
+             SigData::Native { mapper, .. }
+             | SigData::NativeDeclarationSignature { mapper, .. }
+@@ -3524,8 +3533,8 @@ follow_struct!(SigParam {
+ follow_enum!(SigData<'_> {
+     SigData::NativeDeclarationSignature { declaration, mapper, implementation } => (declaration, mapper, implementation),
+     SigData::Native { declaration, mapper } => (declaration, mapper),
+-    SigData::NativeContextual { declaration, mapper, context, environment } => (declaration, mapper, context, environment),
+-    SigData::NativeCaptured { declaration, mapper, environment } => (declaration, mapper, environment),
++    SigData::NativeContextual { declaration, mapper, context, environment, lexical_parent } => (declaration, mapper, context, environment, lexical_parent),
++    SigData::NativeCaptured { declaration, mapper, environment, lexical_parent } => (declaration, mapper, environment, lexical_parent),
+     SigData::Decl { file, func, mapper } => (file, func, mapper),
+     SigData::DefaultConstruct { class, base, mapper } => (class, base, mapper),
+     SigData::Construct { class, file, func, mapper } => (class, file, func, mapper),
+@@ -3825,8 +3834,8 @@ clone_in_struct!(NativeTableData { environment_origin, definition_origin, nomina
+ clone_in_enum!(SigData {
+     NativeDeclarationSignature { declaration, mapper, implementation },
+     Native { declaration, mapper },
+-    NativeContextual { declaration, mapper, context, environment },
+-    NativeCaptured { declaration, mapper, environment },
++    NativeContextual { declaration, mapper, context, environment, lexical_parent },
++    NativeCaptured { declaration, mapper, environment, lexical_parent },
+     Decl { file, func, mapper },
+     DefaultConstruct { class, base, mapper },
+     Construct { class, file, func, mapper },

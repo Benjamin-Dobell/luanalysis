@@ -1350,6 +1350,54 @@
       "patch": "vendor/patches/bun-sema-setmetatable-provenance.patch",
       "reason": "Carry selected original setmetatable value identity without replacing its declared call signature or adding assertion effects.",
       "patch_sha256": "fefa4d64386abfce83a74066aedf760f927883372764088636d73feba334ceb8"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-lexical-parent-capabilities.patch",
+      "reason": "Preserve exact lexical creation signature provenance through mapping and cloning without treating parent provenance as a semantic inference dependency.",
+      "patch_sha256": "523c0ce8c58b54877750db7234205ebd522d90722cccd94bb7bb5764045203f0"
+    },
+    {
+      "path": "src/sema/check/context.rs",
+      "patch": "vendor/patches/bun-sema-native-lexical-parent-capabilities.patch",
+      "reason": "Preserve exact lexical creation signature provenance through mapping and cloning without treating parent provenance as a semantic inference dependency.",
+      "patch_sha256": "523c0ce8c58b54877750db7234205ebd522d90722cccd94bb7bb5764045203f0"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-lexical-parent-capabilities.patch",
+      "reason": "Preserve exact lexical creation signature provenance through mapping and cloning without treating parent provenance as a semantic inference dependency.",
+      "patch_sha256": "523c0ce8c58b54877750db7234205ebd522d90722cccd94bb7bb5764045203f0"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-lexical-parent-capabilities.patch",
+      "reason": "Preserve exact lexical creation signature provenance through mapping and cloning without treating parent provenance as a semantic inference dependency.",
+      "patch_sha256": "523c0ce8c58b54877750db7234205ebd522d90722cccd94bb7bb5764045203f0"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-lexical-parent-capabilities.patch",
+      "reason": "Preserve exact lexical creation signature provenance through mapping and cloning without treating parent provenance as a semantic inference dependency.",
+      "patch_sha256": "523c0ce8c58b54877750db7234205ebd522d90722cccd94bb7bb5764045203f0"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-union-table-reads.patch",
+      "reason": "Preserve Lua nil for absent union table members and filter original parent references using existing native flow truthiness and equality workers.",
+      "patch_sha256": "041be22c28cd4ca81bab8ff1d239e266cdd719adf40ce56a23caffd9ff38d6a6"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-union-table-reads.patch",
+      "reason": "Preserve Lua nil for absent union table members and filter original parent references using existing native flow truthiness and equality workers.",
+      "patch_sha256": "041be22c28cd4ca81bab8ff1d239e266cdd719adf40ce56a23caffd9ff38d6a6"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-fixed-alias-method-owners.patch",
+      "reason": "Prepare canonical original owner scopes before publication and apply fixed alias augmentations only to matching native argument mappings.",
+      "patch_sha256": "4cfb20646ff3ebcecd61c6dbe9d698de1cbbe1c37633d8c3300ea47488fc9536"
     }
   ],
   "source_additions": {
@@ -1362,7 +1410,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "27194863dcd52cb5a87f2a59dd5432d4d79be4273f32ee1bd21f4bde248fb4f6",
+      "extracted_sha256": "2f2f48b5046be844d3f79f26dafa951c1156add8f19ea06b0a64220fa15fa559",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
@@ -1378,7 +1426,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "5b793e4bb4a1c56887f39630094a16a60c46f3c84df053584dafcb6ab4a66089",
+      "extracted_sha256": "6c49a3e93fadb516ae75f41b1ae2a23022a39de016804bc8994183d846e886cd",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1398,7 +1446,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "2f75b047aff03fac9c40cb9200387c4a88e2474e92a1e81b51cf74a355261452",
+      "extracted_sha256": "40a626b86d4f2b653dd097e88f5a5a0c5cadf31eef5adb4fbc76351c06765b4a",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2096,7 +2144,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "594aaaf7ab4a6b79604c30a4a52f5611f1deb162f3bd6738266d24e03384e6e1"
+      "extracted_sha256": "eeeeaa363fe6c3116c55f02a9e9441db2a3a327cf940a09e142c1bb4933a7060"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -2106,7 +2154,7 @@
     "src/sema/check/context.rs": {
       "upstream": "src/sema/check/context.rs",
       "sha256": "38ce21bc5a1016ca18ed46af9e6cc93927640ed24b869c5c8ee91147f6505601",
-      "extracted_sha256": "c4cdd82046390a9df1ec2f2299951347e2694f4cf7c4ab29cf6144eddee83620"
+      "extracted_sha256": "9d421d315f4f541a7b44304a9e2268a3f4424d2d87e69e8ed1b5a56fb12968e8"
     },
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
@@ -2326,7 +2374,7 @@
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "d10ec5f4282617f2beecf61acc2b52ec73e6511d59dc5324ed3b8f33d5f6c3e5"
+      "extracted_sha256": "511c192122ffd3adadde3bb7478b23952b8d783440658b9a65218ade468407d0"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -2381,7 +2429,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "9767a8e75fa76ac3e029d6d7e9a68f2ab58c693b249260b200aa313e6043c5eb"
+      "extracted_sha256": "56c788a76ea156e89be85e43979526b7b0c35945588edd92e6713b5f1a1de956"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -2561,7 +2609,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "8d034704a2877355f527bedd69bff9d40c3e1e7f53b1d8e86a4429a4fee831c3"
+      "extracted_sha256": "72f689fae29dd4bd56fccb5c81833a29b1e5422eb63644282df50b5754873b9a"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

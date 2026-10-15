@@ -1,0 +1,184 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index a4cfe1a..39deb16 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -141,6 +141,7 @@ pub struct NativeTypeMemberHeader {
+ /// declaration recipe; instantiated object shapes remain keyed by their native object TypeId.
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub enum NativeTypeDeclarationQuery {
++    OwnerScope(NativeTypeDeclarationId),
+     DeclaredHead(NativeTypeDeclarationId),
+     MemberType(NativeTypeMemberId),
+     MemberContext(NativeTypeMemberId),
+@@ -150,6 +151,14 @@ pub enum NativeTypeDeclarationQuery {
+     DefinitionContext(TypeId),
+ }
+ 
++/// One original alias-head edge. The provider never follows the target alias.
++pub enum NativeOwnerScopeRecipe {
++    ResolvedHead,
++    Original(NativeTypeDeclarationKind),
++    AliasReference { candidates: Vec<NativeTypeDeclarationId> },
++    UnsupportedAlias,
++}
++
+ #[derive(Copy, Clone, PartialEq, Eq, Debug)]
+ pub enum NativeNamedTypeError {
+     InvalidDefinition(NativeDefinitionId),
+@@ -188,6 +197,10 @@ pub trait NativeTypeDeclarationProvider {
+     fn contains_type_declaration(&self, declaration: NativeTypeDeclarationId) -> bool;
+     fn type_declaration_self_parameter(&self, _: NativeTypeDeclarationId) -> Option<NativeTypeParamId> { None }
+     fn type_declaration_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeTypeDeclarationHeader;
++    fn type_declaration_owner_scope(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeOwnerScopeRecipe {
++        let _ = (checker, declaration);
++        NativeOwnerScopeRecipe::ResolvedHead
++    }
+ 
+     fn contains_type_member(&self, declaration: NativeTypeMemberId) -> bool;
+     fn type_member_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeMemberId) -> NativeTypeMemberHeader;
+@@ -235,6 +248,7 @@ pub struct NativeObjectReference {
+ /// is silently retained as a completed declaration.
+ #[derive(Default)]
+ pub(super) struct NativeNamedCache {
++    owner_scopes: FxHashMap<NativeTypeDeclarationId, Result<NativeTypeDeclarationId, NativeNamedTypeError>>,
+     heads: FxHashMap<NativeTypeDeclarationId, Result<TypeId, NativeNamedTypeError>>,
+     types: FxHashMap<NativeTypeDeclarationQuery, TypeId>,
+     member_contexts: FxHashMap<NativeTypeMemberId, Option<TypeId>>,
+@@ -256,6 +270,9 @@ struct NativeObjectMember {
+ }
+ 
+ impl NativeNamedCache {
++    fn owner_scope(&mut self, declaration: NativeTypeDeclarationId, value: Result<NativeTypeDeclarationId, NativeNamedTypeError>, _: Stored) {
++        self.owner_scopes.insert(declaration, value);
++    }
+     fn head(&mut self, key: NativeTypeDeclarationId, value: Result<TypeId, NativeNamedTypeError>, _: Stored) {
+         self.heads.insert(key, value);
+     }
+@@ -299,6 +316,65 @@ impl<'p, 's> Checker<'p, 's> {
+         provider.type_declaration_error(self, error);
+     }
+ 
++    fn native_owner_scope(&mut self, declaration: NativeTypeDeclarationId) -> Result<NativeTypeDeclarationId, NativeNamedTypeError> {
++        if let Some(&known) = self.native_named_cache.owner_scopes.get(&declaration) { return known }
++        let provider = self.native_named_provider(declaration)?;
++        let demand = NativeTypeDeclarationQuery::OwnerScope(declaration);
++        let query = Query::NativeNamed(demand);
++        if !self.enter(query) {
++            let error = if self.found_cycle { NativeNamedTypeError::CircularAlias(declaration) }
++                else { NativeNamedTypeError::TooDeep(demand) };
++            self.report_native_named(error);
++            return Err(error);
++        }
++        let result = match provider.type_declaration_owner_scope(self, declaration) {
++            NativeOwnerScopeRecipe::ResolvedHead => self.native_declared_head(declaration).and_then(|head| match self.data(head) {
++                TypeData::NativeObject(reference) => Ok(reference.declaration),
++                _ => Err(NativeNamedTypeError::InvalidDeclaration(declaration)),
++            }),
++            NativeOwnerScopeRecipe::Original(NativeTypeDeclarationKind::Class | NativeTypeDeclarationKind::Shape) => Ok(declaration),
++            NativeOwnerScopeRecipe::Original(kind) => Err(NativeNamedTypeError::UnsupportedKind { declaration, kind }),
++            NativeOwnerScopeRecipe::AliasReference { candidates } => match candidates.as_slice() {
++                [target] => self.native_owner_scope(*target),
++                _ => Err(NativeNamedTypeError::InvalidDeclaration(declaration)),
++            },
++            NativeOwnerScopeRecipe::UnsupportedAlias => Err(NativeNamedTypeError::InvalidDeclaration(declaration)),
++        };
++        let left = self.leave(query);
++        let result = if self.left_a_cycle { Err(NativeNamedTypeError::CircularAlias(declaration)) } else { result };
++        if let Ok(stored) = left {
++            self.native_named_cache.owner_scope(declaration, result, stored);
++        }
++        if let Err(error) = result { self.report_native_named(error); }
++        result
++    }
++
++    pub fn native_named_member_scope_owner(&mut self, member: NativeTypeMemberId) -> Result<NativeTypeDeclarationId, NativeNamedTypeError> {
++        let result = (|| {
++        let provider = self.native_type_declaration_provider.filter(|provider| provider.contains_type_member(member))
++            .ok_or(NativeNamedTypeError::InvalidMember(member))?;
++        let header = provider.type_member_header(self, member);
++        let declaration = match header.owner {
++            NativeTypeMemberOwner::Declared(owner) => owner,
++            NativeTypeMemberOwner::Reference { name, candidates } => match candidates.as_slice() {
++                [owner] => *owner,
++                [] => return Err(NativeNamedTypeError::UnknownOwner { member, name }),
++                _ => return Err(NativeNamedTypeError::AmbiguousOwner { member, name }),
++            },
++        };
++        self.native_owner_scope(declaration)
++        })();
++        if let Err(error) = result { self.report_native_named(error); }
++        result
++    }
++
++    pub fn native_named_member_owner(&mut self, member: NativeTypeMemberId) -> Result<(NativeTypeDeclarationId, TypeId), NativeNamedTypeError> {
++        let result = self.native_named_member_origin(member)
++            .map(|(owner, _)| (owner.declaration, self.intern(TypeData::NativeObject(owner))));
++        if let Err(error) = result { self.report_native_named(error); }
++        result
++    }
++
+     pub fn native_declared_head(&mut self, declaration: NativeTypeDeclarationId) -> Result<TypeId, NativeNamedTypeError> {
+         if let Some(&known) = self.native_named_cache.heads.get(&declaration) { return known }
+         let provider = self.native_named_provider(declaration).map_err(|error| { self.report_native_named(error); error })?;
+@@ -479,13 +555,19 @@ impl<'p, 's> Checker<'p, 's> {
+             NativeTypeMemberOwner::Reference { name, candidates } => match candidates.as_slice() {
+                 [] => return Err(NativeNamedTypeError::UnknownOwner { member, name: *name }),
+                 [owner] => {
++                    let declared = provider.type_declaration_header(self, *owner);
++                    if declared.kind == NativeTypeDeclarationKind::Alias && !declared.parameters.is_empty() {
++                        return Err(NativeNamedTypeError::UnsupportedOwnerInstantiation(member));
++                    }
+                     let target = self.native_declared_head(*owner)?;
+                     match self.data(target) {
+                         TypeData::NativeObject(reference) => {
+-                            if self.types().mapping(reference.mapper).iter().any(|(from, to)| from != to) {
+-                                return Err(NativeNamedTypeError::UnsupportedOwnerInstantiation(member));
++                            let reference = *reference;
++                            let scope = self.native_owner_scope(*owner)?;
++                            if reference.declaration != scope {
++                                return Err(NativeNamedTypeError::InvalidMember(member));
+                             }
+-                            *reference
++                            reference
+                         },
+                         _ => return Err(NativeNamedTypeError::UnknownOwner { member, name: *name }),
+                     }
+@@ -496,9 +578,27 @@ impl<'p, 's> Checker<'p, 's> {
+         Ok((owner, header))
+     }
+ 
+-    fn native_named_member_header(&mut self, declaration: NativeTypeDeclarationId, member: NativeTypeMemberId) -> Result<Option<NativeTypeMemberHeader>, NativeNamedTypeError> {
++    fn native_named_member_header(&mut self, reference: NativeObjectReference, member: NativeTypeMemberId) -> Result<Option<NativeTypeMemberHeader>, NativeNamedTypeError> {
++        // Unrelated augmentation arguments must not be resolved while checking
++        // another owner's constraints. Their original scope identity is enough.
++        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
++        let metadata = provider.type_member_header(self, member);
++        let candidate = match &metadata.owner {
++            NativeTypeMemberOwner::Declared(owner) => Some(*owner),
++            NativeTypeMemberOwner::Reference { candidates, .. } => match candidates.as_slice() { [owner] => Some(*owner), _ => None },
++        };
++        if let Some(candidate) = candidate
++            && !matches!(provider.type_declaration_owner_scope(self, candidate), NativeOwnerScopeRecipe::ResolvedHead)
++            && self.native_named_member_scope_owner(member)? != reference.declaration
++        { return Ok(None) }
+         let (owner, header) = self.native_named_member_origin(member)?;
+-        Ok((owner.declaration == declaration).then_some(header))
++        if owner.declaration != reference.declaration { return Ok(None) }
++        for (from, to) in self.types().mapping(owner.mapper).iter().copied() {
++            if from != to && self.instantiate(from, reference.mapper) != self.instantiate(to, reference.mapper) {
++                return Ok(None);
++            }
++        }
++        Ok(Some(header))
+     }
+ 
+     /// Validate a raw field or augmentation even if no object demand would otherwise reach it.
+@@ -711,7 +811,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 // A post-constructor store checks an inherited property; it does
+                 // not replace that property's type, readonly flag or owner.
+                 if provider.type_member_is_assignment(member) && self.native_named_member_context(member)?.is_some() { continue }
+-                let Some(metadata) = self.native_named_member_header(reference.declaration, member)? else { continue };
++                let Some(metadata) = self.native_named_member_header(reference, member)? else { continue };
+                 if provider.type_member_signatures(member).is_some()
+                     && provider.type_member_origin(member) == crate::types::NativeTableFieldOrigin::Declared
+                     && let NativeTypeMemberKey::Fixed(key) = metadata.key

@@ -315,6 +315,30 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Carry selected original setmetatable value identity without replacing its declared call signature or adding assertion effects.",
 })
 
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-native-lexical-parent-capabilities.patch",
+    "reason": "Preserve exact lexical creation signature provenance through mapping and cloning without treating parent provenance as a semantic inference dependency.",
+} for path in [
+    "src/sema/check/call.rs",
+    "src/sema/check/context.rs",
+    "src/sema/check/instantiate.rs",
+    "src/sema/check/relate.rs",
+    "src/sema/types.rs",
+])
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-union-table-reads.patch",
+    "reason": "Preserve Lua nil for absent union table members and filter original parent references using existing native flow truthiness and equality workers.",
+} for path in ["native_tables.rs", "native_flow.rs"])
+
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-native-fixed-alias-method-owners.patch",
+    "reason": "Prepare canonical original owner scopes before publication and apply fixed alias augmentations only to matching native argument mappings.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
