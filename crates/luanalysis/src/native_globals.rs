@@ -316,55 +316,50 @@ impl NativeRegistry {
                 return complete.then_some(Type::NativeFunction(function));
             }
             if self.source_role() == SourceRole::Declaration {
-                let heads = self.function_overload_signatures(function);
-                if !heads.is_empty() {
-                    self.validate_ambient_function_annotations(function, queries);
-                    return Some(queries.signature_group_type(&heads));
-                }
-                if let Some(annotation) = original
-                    .annotations
-                    .type_annotation
-                    .as_ref()
-                    .and_then(|annotation| annotation.types.first())
-                {
-                    // Validate the original definition metadata even when the
-                    // annotation itself supplies the complete callable schema.
-                    self.metadata(function, queries);
-                    let mut checker = self.checker(queries);
-                    checker.type_context = Some(function);
-                    let ty = checker.annotation(annotation);
-                    self.merge_report(checker.report);
-                    // Bare `fun` is the canonical raw runtime function domain,
-                    // not a concrete signature with a known physical result.
-                    if matches!(ty, Type::RuntimeFunction) {
-                        return Some(ty);
-                    }
-                    if let Some(head) = self.implementation_annotation_signature(function) {
-                        return Some(queries.signature_group_type(&[head]));
-                    }
-                    return Some(ty);
-                }
-                let params = self.metadata(function, queries).0;
-                // Original empty declaration stubs without a return annotation
-                // have an empty result contract. This is a syntax convention,
-                // never an inferred return from executable placeholder code.
-                let raw_returns = self.declared_pack_contract(function, queries)
-                    .or_else(|| original.body.is_empty().then(ValuePack::empty))?;
-                let returns = queries.declared_result_pack(&raw_returns);
-                let returns = queries.pack_with_implicit_empty(&returns);
-                let rest = self.source_rest_pack(function, queries);
-                let type_parameters = self.function_type_parameters(function, queries);
-                return Some(queries.pack_function(&PackFunctionType {
-                    params,
-                    rest,
-                    type_parameters,
-                    returns,
-                }));
+                return self.ambient_function_contract(function, queries);
             }
             return None;
         }
         self.global_attached_type(source)
             .and_then(|declaration| queries.named_declared_type(declaration).ok())
+    }
+    /// One pure original declaration contract for global and local namespace
+    /// members. Placeholder values and bodies never supply inferred evidence.
+    pub(super) fn ambient_function_contract(
+        &self,
+        function: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        assert_eq!(self.source_role(), SourceRole::Declaration);
+        let original = self.function(function);
+        let heads = self.function_overload_signatures(function);
+        if !heads.is_empty() {
+            self.validate_ambient_function_annotations(function, queries);
+            return Some(queries.signature_group_type(&heads));
+        }
+        if let Some(annotation) = original.annotations.type_annotation.as_ref()
+            .and_then(|annotation| annotation.types.first())
+        {
+            self.metadata(function, queries);
+            let mut checker = self.checker(queries);
+            checker.type_context = Some(function);
+            let ty = checker.annotation(annotation);
+            self.merge_report(checker.report);
+            if matches!(ty, Type::RuntimeFunction) { return Some(ty) }
+            if let Some(head) = self.implementation_annotation_signature(function) {
+                return Some(queries.signature_group_type(&[head]));
+            }
+            return Some(ty);
+        }
+        let params = self.metadata(function, queries).0;
+        // This syntax convention does not infer executable placeholder code.
+        let raw_returns = self.declared_pack_contract(function, queries)
+            .or_else(|| original.body.is_empty().then(ValuePack::empty))?;
+        let returns = queries.declared_result_pack(&raw_returns);
+        let returns = queries.pack_with_implicit_empty(&returns);
+        let rest = self.source_rest_pack(function, queries);
+        let type_parameters = self.function_type_parameters(function, queries);
+        Some(queries.pack_function(&PackFunctionType { params, rest, type_parameters, returns }))
     }
     pub(super) fn global_initializer(
         &self,
