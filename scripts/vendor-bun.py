@@ -351,6 +351,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Preserve original method bivariance while keeping Lua private overload implementations contravariant and constructing complete guarded native schemas before override validation.",
 } for path in ["infer.rs", "mod.rs", "native_named.rs", "native_tables.rs", "relate.rs", "shape.rs", "sink.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-complete-provider-frames.patch",
+    "reason": "Retain pure original lexical parent chains in canonical signature frames and isolate both contextual and captured capabilities for every native provider callback.",
+} for path in ["call.rs", "decl.rs", "mod.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

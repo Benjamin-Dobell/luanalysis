@@ -1458,6 +1458,24 @@
       "patch": "vendor/patches/bun-sema-native-method-variance.patch",
       "reason": "Preserve original method bivariance while keeping Lua private overload implementations contravariant and constructing complete guarded native schemas before override validation.",
       "patch_sha256": "bfd35000bc58c92fa3beaf183c59ce80bed92c8b1cabce1f242fc98262823b04"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-complete-provider-frames.patch",
+      "reason": "Retain pure original lexical parent chains in canonical signature frames and isolate both contextual and captured capabilities for every native provider callback.",
+      "patch_sha256": "5706a1522d2ab6ebed6260a216d1b752183949e8ab1464a89a57d17334ba52ec"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-complete-provider-frames.patch",
+      "reason": "Retain pure original lexical parent chains in canonical signature frames and isolate both contextual and captured capabilities for every native provider callback.",
+      "patch_sha256": "5706a1522d2ab6ebed6260a216d1b752183949e8ab1464a89a57d17334ba52ec"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-complete-provider-frames.patch",
+      "reason": "Retain pure original lexical parent chains in canonical signature frames and isolate both contextual and captured capabilities for every native provider callback.",
+      "patch_sha256": "5706a1522d2ab6ebed6260a216d1b752183949e8ab1464a89a57d17334ba52ec"
     }
   ],
   "source_additions": {
@@ -2204,7 +2222,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "0d54a91d97d42c9a9ab64ed767a01aefa77e2ace18ceb7dae103b52293fb5a9a"
+      "extracted_sha256": "5e581c2e4bcc9a51754f6f919d961051544cbe08a537014322d85de3b79e8687"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -2219,7 +2237,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "f91d04c26c46ea07d0f46cdddc641784ba21447d9adc09a769e0fa12935fc18d"
+      "extracted_sha256": "0dd4702eb1dceb9b9e2bd79329307b8b54a970d8b93308ac6552a4893676495d"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -2464,7 +2482,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "24aa650f2e0cb2a2522f2ca0b7d5fa4a00d724ece7a32f1793228d6ed026cb8a"
+      "extracted_sha256": "bbf404afe4a442fb4ad9f605676894f18eecdd0cf0b334860ebd31d668d867f8"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
