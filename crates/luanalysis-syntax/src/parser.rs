@@ -226,7 +226,7 @@ impl Parser<'_> {
             })
             .count();
         for &index in &group.functions {
-            let declaration = &self.function_declarations[index];
+            let declaration = &mut self.function_declarations[index];
             if declaration.owner.is_some() {
                 continue;
             }
@@ -237,6 +237,7 @@ impl Parser<'_> {
             } else {
                 None
             };
+            declaration.invalid_owner = message.is_some();
             if let Some(message) = message {
                 self.diagnostics.push(Diagnostic {
                     origin: crate::DiagnosticOrigin::Annotation,
@@ -334,6 +335,7 @@ impl Parser<'_> {
                         id,
                         name,
                         owner: explicit_owner.map(crate::DocFunctionOwner::Explicit),
+                        invalid_owner: false,
                         method_colon,
                         signature: *signature,
                         annotations,

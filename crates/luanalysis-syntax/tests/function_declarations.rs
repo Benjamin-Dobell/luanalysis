@@ -73,6 +73,7 @@ fn bodyless_globals_have_declaration_identity_and_no_runtime_body() {
     let declaration = &file.function_declarations[0];
     assert_eq!(declaration.id, DocFunctionDeclarationId(0));
     assert_eq!(declaration.owner, None);
+    assert!(!declaration.invalid_owner);
     assert_eq!(text(source, declaration.name.span), "callback");
     assert_eq!(text(source, declaration.tag_span), "@function");
     assert_eq!(
@@ -99,6 +100,7 @@ fn explicit_dot_and_colon_members_preserve_only_original_parameters() {
             panic!("explicit owner")
         };
         assert_eq!(owner.text, "Example");
+        assert!(!declaration.invalid_owner);
         assert_eq!(text(source, owner.span), "Example");
         assert_eq!(declaration.signature.params.len(), 1);
         assert_eq!(declaration.signature.params[0].name.text, "value");
@@ -121,6 +123,7 @@ fn contextual_owners_use_the_complete_same_class_or_shape_documentation_block() 
     ] {
         let file = checked(source);
         for declaration in &file.function_declarations {
+            assert!(!declaration.invalid_owner);
             assert_eq!(
                 declaration.owner,
                 Some(DocFunctionOwner::Contextual(file.type_declarations[0].id))
@@ -152,6 +155,8 @@ fn ambiguous_contextual_owners_are_diagnosed_but_explicit_owners_win() {
     );
     assert_eq!(text(source, diagnostic.span), "callback");
     assert_eq!(file.function_declarations[0].owner, None);
+    assert!(file.function_declarations[0].invalid_owner);
+    assert!(!file.function_declarations[1].invalid_owner);
     assert!(
         matches!(&file.function_declarations[1].owner, Some(DocFunctionOwner::Explicit(owner)) if owner.text == "Explicit")
     );
@@ -179,6 +184,8 @@ fn colon_without_an_owner_is_an_annotation_error_and_does_not_consume_a_tag() {
     let source = "---@function :callback():number\n---@function next(value:string):string";
     let file = parse(source);
     assert_eq!(file.function_declarations.len(), 2);
+    assert!(file.function_declarations[0].invalid_owner);
+    assert!(!file.function_declarations[1].invalid_owner);
     assert_eq!(file.diagnostics.len(), 1, "{:#?}", file.diagnostics);
     assert!(
         file.diagnostics[0]

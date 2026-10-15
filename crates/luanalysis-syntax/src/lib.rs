@@ -172,6 +172,9 @@ pub struct DocFunctionDeclaration {
     pub id: DocFunctionDeclarationId,
     pub name: Name,
     pub owner: Option<DocFunctionOwner>,
+    /// An ambiguous contextual owner or ownerless colon is retained for
+    /// recovery, and must not publish an ordinary global declaration.
+    pub invalid_owner: bool,
     /// Original `:` before the member name; implicit self is semantic metadata,
     /// never an invented source parameter.
     pub method_colon: Option<Span>,
