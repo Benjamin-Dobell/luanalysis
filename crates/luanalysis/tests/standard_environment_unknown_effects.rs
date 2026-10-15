@@ -1,0 +1,243 @@
+use std::{
+    fs,
+    path::PathBuf,
+    process::{Command, Output},
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+static NEXT: AtomicU64 = AtomicU64::new(0);
+const HOST: &str = "---@return nil\nfunction hostEffect() end\n---@class HostObject\n---@field value number\n---@type HostObject\nhostObject=nil\n---@type number\nhostNumber=nil\n";
+const CUSTOM: &str = "---@param value unknown\n---@return string\nfunction type(value) end\n---@param name string\n---@return number\nfunction require(name) end\n";
+
+struct Fixture(PathBuf);
+impl Fixture {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "luanalysis standard unknown effects {} {}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("host.def.lua"), HOST).unwrap();
+        fs::write(path.join("module.lua"), "return {value=42}\n").unwrap();
+        Self(path)
+    }
+
+    fn check(&self, source: &str, standard: bool, custom: Option<&str>) -> Output {
+        fs::write(self.0.join("main.lua"), source).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+        command.current_dir(&self.0).args([
+            "check",
+            "--format",
+            "json",
+            "--module-root",
+            ".",
+            "--library",
+            "host.def.lua",
+        ]);
+        if standard {
+            command.args(["--lua-version", "5.4"]);
+        } else {
+            command.arg("--no-stdlib");
+        }
+        if let Some(custom) = custom {
+            fs::write(self.0.join("custom.def.lua"), custom).unwrap();
+            command.args(["--library", "custom.def.lua"]);
+        }
+        command.arg("main.lua").output().unwrap()
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn report(output: Output, exit: i32) -> String {
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(exit), "{stdout}\n{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    assert!(stdout.starts_with("{\"formatVersion\":1,"), "{stdout}");
+    stdout
+}
+fn clean(output: Output) {
+    let report = report(output, 0);
+    assert!(report.contains("\"diagnostics\":[]"), "{report}");
+}
+fn error_on(report: &str, source: &str, code: &str, statement: &str, expression: &str) {
+    let start = source.find(statement).unwrap() + statement.rfind(expression).unwrap();
+    let range = format!(
+        "\"range\":{{\"start\":{start},\"end\":{}}}",
+        start + expression.len()
+    );
+    let code = format!("\"code\":\"{code}\"");
+    assert!(
+        report
+            .split("},{\"path\":")
+            .any(|diagnostic| diagnostic.contains(&code) && diagnostic.contains(&range)),
+        "{report}"
+    );
+}
+
+fn probe(effect: &str, loader: &str, kind: &str) -> String {
+    format!(
+        "---@param value number|string\nlocal function probe(value)\n{effect}\nlocal module={loader}('module')\n---@type number\nlocal checked_module=module.value\nif {kind}(value)=='number' then\n---@type number\nlocal checked_type=value\nend\nend\nprobe(42)\n"
+    )
+}
+
+fn trusted_controls(fixture: &Fixture, source: &str) {
+    clean(fixture.check(source, true, None));
+    let wrong_module = source.replace(
+        "---@type number\nlocal checked_module",
+        "---@type string\nlocal checked_module",
+    );
+    let rejected = report(fixture.check(&wrong_module, true, None), 1);
+    error_on(
+        &rejected,
+        &wrong_module,
+        "TS2322",
+        "local checked_module=module.value",
+        "module.value",
+    );
+    let wrong_type = source.replace(
+        "---@type number\nlocal checked_type",
+        "---@type string\nlocal checked_type",
+    );
+    let rejected = report(fixture.check(&wrong_type, true, None), 1);
+    error_on(
+        &rejected,
+        &wrong_type,
+        "TS2322",
+        "local checked_type=value",
+        "value",
+    );
+}
+
+#[test]
+fn unknown_host_calls_property_reads_and_arithmetic_keep_standard_assumptions() {
+    let fixture = Fixture::new();
+    for effect in [
+        "hostEffect()",
+        "local ignored=hostObject.value",
+        "local ignored=hostNumber+1",
+    ] {
+        trusted_controls(&fixture, &probe(effect, "require", "type"));
+    }
+}
+
+#[test]
+fn explicit_direct_alias_and_captured_replacements_survive_later_unknown_calls() {
+    let fixture = Fixture::new();
+    for replacement in [
+        "_G.require=function(name) return 42 end\n_G.type=function(value) return 'number' end\n",
+        "local env=_G\nenv.require=function(name) return 42 end\nenv.type=function(value) return 'number' end\n",
+        "local env=_G\nlocal function replace()\nenv.require=function(name) return 42 end\nenv.type=function(value) return 'number' end\nend\nreplace()\n",
+    ] {
+        let source = format!("{replacement}{}", probe("hostEffect()", "require", "type"));
+        let rejected = report(fixture.check(&source, true, None), 1);
+        error_on(
+            &rejected,
+            &source,
+            "LUA2036",
+            "local module=require('module')",
+            "require",
+        );
+        error_on(
+            &rejected,
+            &source,
+            "TS2322",
+            "local checked_type=value",
+            "value",
+        );
+    }
+}
+
+#[test]
+fn replaced_local_callees_remain_ordinary_after_an_unknown_call() {
+    let fixture = Fixture::new();
+    let source = "local loader=require\nlocal kind=type\nloader=function(name) return 42 end\nkind=function(value) return 'number' end\nhostEffect()\nlocal result=loader('absent')\n---@type number\nlocal checked_result=result\n---@param value number|string\nlocal function probe(value)\nif kind(value)=='number' then\n---@type number\nlocal checked_type=42\nend\nend\nprobe('text')\n";
+    clean(fixture.check(source, true, None));
+    let wrong = source.replace("local checked_type=42", "local checked_type=value");
+    let rejected = report(fixture.check(&wrong, true, None), 1);
+    error_on(
+        &rejected,
+        &wrong,
+        "TS2322",
+        "local checked_type=value",
+        "value",
+    );
+}
+
+#[test]
+fn saved_original_values_keep_their_effects_across_replacement_and_unknown_calls() {
+    let fixture = Fixture::new();
+    let prefix = "local savedLoader=require\nlocal savedKind=type\n_G.require=function(name) return 42 end\n_G.type=function(value) return 'number' end\nhostEffect()\n";
+    trusted_controls(
+        &fixture,
+        &format!(
+            "{prefix}{}",
+            probe("hostEffect()", "savedLoader", "savedKind")
+        ),
+    );
+}
+
+#[test]
+fn no_standard_environment_does_not_seed_missing_builtin_names_after_unknown_calls() {
+    let fixture = Fixture::new();
+    let source = "hostEffect()\nlocal kind=type(42)\nlocal module=require('module')\n";
+    let rejected = report(fixture.check(source, false, None), 1);
+    error_on(&rejected, source, "TS2304", "local kind=type(42)", "type");
+    error_on(
+        &rejected,
+        source,
+        "TS2304",
+        "local module=require('module')",
+        "require",
+    );
+}
+
+#[test]
+fn custom_same_name_declarations_keep_ordinary_results_and_no_type_predicate() {
+    let fixture = Fixture::new();
+    let source = "hostEffect()\nlocal module=require('absent')\n---@type number\nlocal checked_module=module\n---@param value number|string\nlocal function probe(value)\nif type(value)=='number' then\n---@type number\nlocal checked_type=42\nend\nend\nprobe('text')\n";
+    clean(fixture.check(source, false, Some(CUSTOM)));
+    let wrong_module = source.replace(
+        "---@type number\nlocal checked_module",
+        "---@type string\nlocal checked_module",
+    );
+    let rejected = report(fixture.check(&wrong_module, false, Some(CUSTOM)), 1);
+    error_on(
+        &rejected,
+        &wrong_module,
+        "TS2322",
+        "local checked_module=module",
+        "module",
+    );
+    let wrong_type = source.replace("local checked_type=42", "local checked_type=value");
+    let rejected = report(fixture.check(&wrong_type, false, Some(CUSTOM)), 1);
+    error_on(
+        &rejected,
+        &wrong_type,
+        "TS2322",
+        "local checked_type=value",
+        "value",
+    );
+}
+
+#[test]
+fn a_custom_type_declaration_cannot_regain_standard_narrowing_from_unknown_effects() {
+    let fixture = Fixture::new();
+    let custom = "---@param value unknown\n---@return string\nfunction type(value) end\n";
+    let source = probe("hostEffect()", "require", "type");
+    let rejected = report(fixture.check(&source, true, Some(custom)), 1);
+    error_on(
+        &rejected,
+        &source,
+        "TS2322",
+        "local checked_type=value",
+        "value",
+    );
+    let corrected = source.replace("local checked_type=value", "local checked_type=42");
+    clean(fixture.check(&corrected, true, Some(custom)));
+}
