@@ -45,7 +45,7 @@ fn an_anonymous_written_member_contract_renders_its_actual_singleton_fields() {
 fn genuine_named_classes_shapes_and_aliases_called_record_keep_their_identity() {
     for declaration in [
         "---@class record\n---@field value number\nlocal record={}\n",
-        "---@shape record\n---@field value number\nlocal record={}\n",
+        "---@shape record\n---@field value number\nlocal record={value=1}\n",
         "---@alias record {value:number}\n",
     ] {
         let source = format!("{declaration}\n---@type record\nlocal rejected=42\n");
