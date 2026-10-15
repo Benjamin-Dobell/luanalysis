@@ -147,10 +147,18 @@ impl ProjectRegistry {
             }
         }
         let modules = Rc::new(ProjectModuleIndex { policy, imports });
+        let legacy_builtins = if files.iter().any(|file| {
+            file.role == SourceRole::Implementation && file.source.bound.has_modified_type_intrinsic()
+        }) {
+            crate::builtins::LegacyBuiltinPolicy::Disabled
+        } else {
+            crate::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility
+        };
         for file in &mut files {
             file.source.project_names = Some(Rc::clone(&names));
             file.source.project_modules = Some(Rc::clone(&modules));
             file.source.project_globals = Some(Rc::clone(&globals));
+            file.source.set_legacy_builtin_policy(legacy_builtins);
             for declaration in file.source.named.declarations() {
                 if names.candidates(&declaration.syntax.name.text).len() > 1 {
                     file.source

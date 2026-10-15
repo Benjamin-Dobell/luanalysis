@@ -52,12 +52,17 @@ pub(super) struct NativeFlowSources {
     binding_owners: HashMap<BindingId, u32>,
     expression_evaluations: HashMap<(u32, usize, usize), flow::EvaluationId>,
     runtime_type_calls: HashSet<flow::SourceExpressionId>,
+    runtime_type_intrinsic_enabled: bool,
     pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
     iterator_projections: HashMap<BindingId, (flow::IteratorId, usize)>,
     contexts: RefCell<HashMap<FlowContext, u64>>,
 }
 
 impl NativeFlowSources {
+    pub(super) fn set_runtime_type_intrinsic_enabled(&mut self, enabled: bool) {
+        self.runtime_type_intrinsic_enabled = enabled;
+    }
+
     pub(super) fn new(
         file: &File,
         bound: &super::bind::BoundFile,
@@ -77,6 +82,7 @@ impl NativeFlowSources {
             binding_owners: HashMap::new(),
             expression_evaluations: HashMap::new(),
             runtime_type_calls: HashSet::new(),
+            runtime_type_intrinsic_enabled: false,
             pack_projections: HashMap::new(),
             iterator_projections: HashMap::new(),
             contexts: RefCell::new(HashMap::new()),
@@ -100,7 +106,8 @@ impl NativeFlowSources {
                     callee = inner;
                 }
                 if args.len() == 1
-                    && matches!(&callee.kind, ExprKind::Name(name) if name.text == "type" && bound.binding_at(name.span.start).is_none())
+                    && matches!(&callee.kind, ExprKind::Name(_))
+                    && bound.intrinsic_at(callee.span.start) == Some(crate::bind::BuiltinIntrinsic::LuaType)
                 {
                     result.runtime_type_calls.insert(evaluation.expression);
                 }
@@ -681,6 +688,7 @@ impl NativeFlowSources {
         literal: &flow::Evaluation,
         equals: bool,
     ) -> Option<NativePredicate> {
+        if !self.runtime_type_intrinsic_enabled { return None; }
         let mut call = call;
         while matches!(
             self.program.expression(call.expression).expression.kind,

@@ -53,6 +53,7 @@ enum DeclarationSource {
 pub(super) struct NativeRegistry {
     snapshot: u64,
     source_role: luanalysis_project::SourceRole,
+    legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy,
     file: File,
     bound: BoundFile,
     functions: Vec<Function>,
@@ -131,6 +132,7 @@ impl NativeRegistry {
         let mut registry = Self {
             snapshot,
             source_role: luanalysis_project::SourceRole::Implementation,
+            legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy::Disabled,
             file,
             bound,
             functions,
@@ -165,6 +167,21 @@ impl NativeRegistry {
 
     pub(crate) fn source_role(&self) -> luanalysis_project::SourceRole { self.source_role }
     pub(crate) fn set_source_role(&mut self, role: luanalysis_project::SourceRole) { self.source_role = role; }
+
+    pub(crate) fn set_legacy_builtin_policy(&mut self, policy: super::builtins::LegacyBuiltinPolicy) {
+        let enabled = policy == super::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility
+            && self.global_binding("type").is_none()
+            && !self.bound.has_modified_type_intrinsic();
+        self.legacy_builtin_policy = if enabled { policy } else { super::builtins::LegacyBuiltinPolicy::Disabled };
+        self.flow.set_runtime_type_intrinsic_enabled(enabled);
+    }
+
+    pub(crate) fn legacy_builtin_value(&self, name: &Name) -> Option<Type> {
+        if self.legacy_builtin_policy != super::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility
+            || self.bound.intrinsic_at(name.span.start) != Some(crate::bind::BuiltinIntrinsic::LuaType)
+        { return None; }
+        super::builtins::value(&name.text)
+    }
 
     pub(super) fn statements(&self) -> &[Stmt] {
         &self.file.statements

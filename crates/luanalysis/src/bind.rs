@@ -82,6 +82,7 @@ pub struct NameOccurrence {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuiltinIntrinsic {
     LuaRequire,
+    LuaType,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,6 +99,7 @@ pub struct BoundFile {
     pub occurrences: Vec<NameOccurrence>,
     intrinsic_occurrences: Vec<IntrinsicOccurrence>,
     modified_module_environment: bool,
+    modified_type_intrinsic: bool,
 }
 
 impl BoundFile {
@@ -127,18 +129,23 @@ impl BoundFile {
 
     /// Identifies a standard operation under an original name byte offset.
     ///
-    /// A file that directly changes the global module loader cannot establish
-    /// the standard `require` identity, including at earlier occurrences.
+    /// Direct replacement of an initially standard value invalidates its
+    /// candidate, including at earlier occurrences. Loader and type-operation
+    /// facts are independent; the checker still selects actual value identity.
     pub fn intrinsic_at(&self, byte_offset: usize) -> Option<BuiltinIntrinsic> {
-        if self.modified_module_environment {
-            return None;
-        }
         let after = self
             .intrinsic_occurrences
             .partition_point(|occurrence| occurrence.span.start <= byte_offset);
         after.checked_sub(1).and_then(|index| {
             let occurrence = &self.intrinsic_occurrences[index];
-            (byte_offset < occurrence.span.end).then_some(occurrence.intrinsic)
+            if byte_offset >= occurrence.span.end {
+                return None;
+            }
+            match occurrence.intrinsic {
+                BuiltinIntrinsic::LuaRequire if self.modified_module_environment => None,
+                BuiltinIntrinsic::LuaType if self.modified_type_intrinsic => None,
+                intrinsic => Some(intrinsic),
+            }
         })
     }
 
@@ -146,6 +153,12 @@ impl BoundFile {
     /// Project hosts can combine this fact across files before resolving imports.
     pub fn has_modified_module_environment(&self) -> bool {
         self.modified_module_environment
+    }
+
+    /// Direct replacement of the initially standard `type` value. This is a
+    /// lexical fact; the project still selects the actual environment identity.
+    pub fn has_modified_type_intrinsic(&self) -> bool {
+        self.modified_type_intrinsic
     }
 
     pub fn scope_at(&self, byte_offset: usize) -> Option<ScopeId> {
@@ -175,6 +188,7 @@ pub fn bind(file: &File) -> BoundFile {
             occurrences: Vec::new(),
             intrinsic_occurrences: Vec::new(),
             modified_module_environment: false,
+            modified_type_intrinsic: false,
         },
         active: Vec::new(),
     };
@@ -288,14 +302,20 @@ impl Binder {
     fn name(&mut self, name: &Name, kind: OccurrenceKind) {
         let binding = self.resolve(&name.text);
         if kind == OccurrenceKind::Read
-            && name.text == "require"
             && binding.is_none()
             && self.resolve("_ENV").is_none()
         {
-            self.file.intrinsic_occurrences.push(IntrinsicOccurrence {
-                span: name.span,
-                intrinsic: BuiltinIntrinsic::LuaRequire,
-            });
+            let intrinsic = match name.text.as_str() {
+                "require" => Some(BuiltinIntrinsic::LuaRequire),
+                "type" => Some(BuiltinIntrinsic::LuaType),
+                _ => None,
+            };
+            if let Some(intrinsic) = intrinsic {
+                self.file.intrinsic_occurrences.push(IntrinsicOccurrence {
+                    span: name.span,
+                    intrinsic,
+                });
+            }
         }
         self.occurrence(name, kind, binding);
     }
@@ -421,6 +441,9 @@ impl Binder {
         if self.modifies_module_environment(expression) {
             self.file.modified_module_environment = true;
         }
+        if self.modifies_type_intrinsic(expression) {
+            self.file.modified_type_intrinsic = true;
+        }
         match &expression.kind {
             ExprKind::Name(name) => self.name(name, OccurrenceKind::Write),
             ExprKind::Field { base, .. } => self.expression(base),
@@ -439,6 +462,39 @@ impl Binder {
             return false;
         };
         self.global_path_modifies_module_environment(root, &keys)
+    }
+
+    fn modifies_type_intrinsic(&self, expression: &Expr) -> bool {
+        let mut keys = Vec::new();
+        let Some(root) = access_path(expression, &mut keys) else { return false; };
+        self.global_path_modifies_type_intrinsic(root, &keys)
+    }
+
+    fn global_path_modifies_type_intrinsic(&self, root: &Name, keys: &[Option<&[u8]>]) -> bool {
+        if self.resolve("_ENV").is_some() || self.resolve(&root.text).is_some() {
+            return false;
+        }
+        match root.text.as_str() {
+            "type" => keys.is_empty(),
+            "_ENV" | "_G" if keys.is_empty() => true,
+            "_G" | "_ENV" => matches!(keys, [None] | [Some(b"type")]),
+            _ => false,
+        }
+    }
+
+    fn call_modifies_type_intrinsic(&self, callee: &Expr, args: &[Expr]) -> bool {
+        let mut keys = Vec::new();
+        let Some(root) = access_path(callee, &mut keys) else { return false; };
+        if self.resolve("_ENV").is_some() || self.resolve(&root.text).is_some() {
+            return false;
+        }
+        let rawset = matches!((root.text.as_str(), keys.as_slice()),
+            ("rawset", []) | ("_G" | "_ENV", [Some(b"rawset")]));
+        if !rawset || args.len() < 2 { return false; }
+        let mut target_keys = Vec::new();
+        let Some(target) = access_path(&args[0], &mut target_keys) else { return false; };
+        target_keys.push(string_key(&args[1]));
+        self.global_path_modifies_type_intrinsic(target, &target_keys)
     }
 
     fn global_path_modifies_module_environment(&self, root: &Name, keys: &[Option<&[u8]>]) -> bool {
@@ -517,6 +573,9 @@ impl Binder {
             ExprKind::Call { callee, args } => {
                 if self.call_modifies_module_environment(callee, args) {
                     self.file.modified_module_environment = true;
+                }
+                if self.call_modifies_type_intrinsic(callee, args) {
+                    self.file.modified_type_intrinsic = true;
                 }
                 self.expression(callee);
                 for argument in args {

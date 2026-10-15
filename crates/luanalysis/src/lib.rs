@@ -214,7 +214,11 @@ pub fn check(source: &str) -> CheckReport {
     }
     let bound = bind::bind(&file);
     Engine::new().with_native_provider(
-        move || NativeRegistry::new(file, bound),
+        move || {
+            let mut registry = NativeRegistry::new(file, bound);
+            registry.set_legacy_builtin_policy(builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility);
+            registry
+        },
         |registry, engine| {
             registry.check_named_declarations(engine);
             registry.check_global_declarations(engine);
@@ -659,7 +663,7 @@ impl Checker<'_> {
                             self.record_expression_type(expr.span, &ty);
                             return ty;
                         }
-                        if let Some(ty) = builtins::value(&name.text) {
+                        if let Some(ty) = self.native.and_then(|native| native.legacy_builtin_value(name)) {
                             self.record_expression_type(expr.span, &ty);
                             return ty;
                         }
