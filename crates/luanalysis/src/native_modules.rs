@@ -135,6 +135,11 @@ impl Checker<'_> {
     pub(crate) fn native_require_pack(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Option<ValuePack> {
         let (policy, recipe) = self.native?.module_import(span)?;
         let has_original_contract = self.native?.global_binding("require").is_some();
+        if has_original_contract && !self.native?.flow.has_original_require_capability() {
+            // An unselected same-name declaration is an ordinary callable.
+            // Its signature cannot seed a standard module-loader operation.
+            return None;
+        }
         if has_original_contract {
             let value = self.expression(callee);
             let mut trusted = self.engine.function_intrinsic(&value)

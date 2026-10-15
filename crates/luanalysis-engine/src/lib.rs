@@ -956,6 +956,10 @@ pub trait TypeQueries {
     fn current_contextual_function(&mut self) -> Option<ContextualFunctionContext>;
     fn flow_alias_relation(&mut self, provider: &dyn NativeFlowProvider, left: NativeReferenceKey, left_at: NativeFlowKey, right: NativeValueKey, right_at: NativeFlowKey) -> NativeAliasRelation;
     fn flow_call_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation;
+    /// Policy-aware standard-slot continuation, separate from a raw effect certificate.
+    fn flow_standard_call_continuation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
+        self.flow_call_preservation(provider, reference, call, input)
+    }
     /// True only for the exact original graph/facet in active call-state replay.
     fn is_native_call_execution(&self, graph: NativeGraphKey) -> bool;
     fn flow_alias_intrinsic(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasIntrinsic;
@@ -1642,6 +1646,10 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn flow_call_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
         let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
         self.checker.native_flow_call_preservation(&adapter, reference, call, input)
+    }
+    fn flow_standard_call_continuation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
+        let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
+        self.checker.native_flow_standard_call_continuation(&adapter, reference, call, input)
     }
     fn is_native_call_execution(&self, graph: NativeGraphKey) -> bool {
         self.checker.is_native_call_execution(graph)

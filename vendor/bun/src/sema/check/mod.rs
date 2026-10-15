@@ -1068,6 +1068,9 @@ enum Query {
     NativeContextualTypeOwner(NativeFunctionId, native_flow::NativeFlowKey, u64),
     NativeAlias(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u64),
     NativeAliasValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u64),
+    NativeStandardReference(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u64, u64),
+    NativeStandardValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
+    NativeStandardCall(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
     NativeAliasProjectedReference(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u32, u64, u64),
     NativeAliasProjectedValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u32, u64, u64),
     NativeAliasReturn(crate::types::NativeFunctionId, usize),
@@ -1178,6 +1181,7 @@ impl Query {
             | Query::NativeAliasLoaderState(..)
             | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
             | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
+            | Query::NativeStandardReference(..) | Query::NativeStandardValue(..) | Query::NativeStandardCall(..)
             | Query::NativeNamed(_)
             | Query::NativeGlobals(_)
             | Query::NativeProject(_)

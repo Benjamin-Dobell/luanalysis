@@ -106,6 +106,7 @@ impl NativeFlowSources {
         self.runtime_type_intrinsic_enabled = enabled;
     }
     pub(super) fn set_original_require_capability(&mut self, enabled: bool) { self.original_require_capability = enabled; }
+    pub(super) fn has_original_require_capability(&self) -> bool { self.original_require_capability }
     pub(super) fn environment_cell_is_immutable(&self) -> bool { !self.environment_cell_written }
     fn loader_address_invalidates(&self, address: &flow::CapturedAddress) -> bool {
         if !self.loader_mutations.contains(&(address.span.start, address.span.end)) { return false; }
@@ -1734,7 +1735,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         let Some(node) = self.sources.source_node(at) else { return true; };
         if self.sources.loader_mutations.contains(&(node.span.start, node.span.end)) { return true; }
         let Some(NativeFlowNode::Call { value, input, .. }) = self.sources.node(at) else { return true; };
-        queries.flow_call_preservation(self, reference, value, input)
+        queries.flow_standard_call_continuation(self, reference, value, input)
             != luanalysis_engine::NativeCallPreservation::Preserved
     }
     fn write_member_key(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<luanalysis_engine::LuaKey> {
