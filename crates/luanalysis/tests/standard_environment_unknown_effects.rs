@@ -24,6 +24,16 @@ impl Fixture {
     }
 
     fn check(&self, source: &str, standard: bool, custom: Option<&str>) -> Output {
+        self.check_options(source, standard, custom, false)
+    }
+
+    fn check_options(
+        &self,
+        source: &str,
+        standard: bool,
+        custom: Option<&str>,
+        strict: bool,
+    ) -> Output {
         fs::write(self.0.join("main.lua"), source).unwrap();
         let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
         command.current_dir(&self.0).args([
@@ -43,6 +53,9 @@ impl Fixture {
         if let Some(custom) = custom {
             fs::write(self.0.join("custom.def.lua"), custom).unwrap();
             command.args(["--library", "custom.def.lua"]);
+        }
+        if strict {
+            command.arg("--strict-standard-effects");
         }
         command.arg("main.lua").output().unwrap()
     }
@@ -179,6 +192,61 @@ fn saved_original_values_keep_their_effects_across_replacement_and_unknown_calls
             "{prefix}{}",
             probe("hostEffect()", "savedLoader", "savedKind")
         ),
+    );
+}
+
+#[test]
+fn literal_field_and_function_return_aliases_keep_original_standard_operations() {
+    let fixture = Fixture::new();
+    for prefix in [
+        "local operations={loader=require,kind=type}\nhostEffect()\nlocal savedLoader=operations.loader\nlocal savedKind=operations.kind\n",
+        "local function getLoader() return require end\nlocal function getKind() return type end\nhostEffect()\nlocal savedLoader=getLoader()\nlocal savedKind=getKind()\n",
+    ] {
+        trusted_controls(
+            &fixture,
+            &format!(
+                "{prefix}{}",
+                probe("hostEffect()", "savedLoader", "savedKind")
+            ),
+        );
+    }
+}
+
+#[test]
+fn replaced_literal_fields_keep_ordinary_results_after_unknown_calls() {
+    let fixture = Fixture::new();
+    let source = "local operations={loader=require,kind=type}\noperations.loader=function(name) return 42 end\noperations.kind=function(value) return 'number' end\nhostEffect()\nlocal loader=operations.loader\nlocal kind=operations.kind\nlocal result=loader('absent')\n---@type number\nlocal checked_result=result\n---@param value number|string\nlocal function probe(value)\nif kind(value)=='number' then\n---@type number\nlocal checked_type=42\nend\nend\nprobe('text')\n";
+    clean(fixture.check(source, true, None));
+    let wrong = source.replace("local checked_type=42", "local checked_type=value");
+    let rejected = report(fixture.check(&wrong, true, None), 1);
+    error_on(
+        &rejected,
+        &wrong,
+        "TS2322",
+        "local checked_type=value",
+        "value",
+    );
+}
+
+#[test]
+fn the_strict_option_keeps_unknown_calls_as_standard_effect_barriers() {
+    let fixture = Fixture::new();
+    let source = probe("hostEffect()", "require", "type");
+    clean(fixture.check(&source, true, None));
+    let rejected = report(fixture.check_options(&source, true, None, true), 1);
+    error_on(
+        &rejected,
+        &source,
+        "LUA2036",
+        "local module=require('module')",
+        "require",
+    );
+    error_on(
+        &rejected,
+        &source,
+        "TS2322",
+        "local checked_type=value",
+        "value",
     );
 }
 
