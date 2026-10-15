@@ -565,6 +565,43 @@ fn runtime_table_flow_keeps_presence_deletion_exact_replacement_and_branch_alter
 }
 
 #[test]
+fn written_runtime_storage_bounds_do_not_become_previous_reached_values() {
+    Engine::new().with_native_provider(
+        || {
+            let mut provider = Provider::new();
+            provider.seed.fields.push(TableField::declared(key("value"), Type::Union(vec![Type::Number, Type::String, Type::Nil])));
+            provider
+        },
+        |provider, queries| {
+            let actual = queries.table_type(&provider.seed).unwrap();
+            let table = queries.runtime_table_value(declaration(0), &actual).unwrap();
+            let schema = queries.runtime_table_schema(&table).unwrap();
+            let assigned = vec![Type::NumberLiteral(1.0), Type::StringLiteral(b"word".to_vec()), Type::Nil, Type::NumberLiteral(2.0)];
+            let flow = Flow {
+                nodes: vec![NativeFlowNode::Start, Flow::write(0, 0, 1), Flow::write(1, 1, 1), Flow::write(2, 2, 1), Flow::write(3, 3, 1)],
+                values: assigned.clone(), weak: None,
+            };
+            for declared in [&schema, &table] {
+                for (index, expected) in assigned.iter().enumerate() {
+                    let reached = queries.flow_type(&flow, at(index as u32 + 1), reference(0), declared, &table);
+                    assert!(!reached.incomplete);
+                    let value = queries.table_lookup(&reached.ty, &access("value")).unwrap();
+                    assert_eq!(queries.inspect_type(&value), *expected);
+                    assert!(!queries.is_assignable(&value, &Type::Boolean), "an erased slot restored to a number must not become Never");
+                    let context = queries.table_value_context(&reached.ty, &access("value")).unwrap();
+                    assert!(queries.is_assignable(&Type::Number, &context));
+                    assert!(queries.is_assignable(&Type::String, &context));
+                    assert!(!queries.is_assignable(&Type::Boolean, &context), "RHS context retains the invariant original written bound");
+                    assert!(queries.table_write(&reached.ty, &access("value"), &Type::Number).is_ok());
+                    assert!(queries.table_write(&reached.ty, &access("value"), &Type::String).is_ok());
+                    assert!(queries.table_write(&reached.ty, &access("value"), &Type::Boolean).is_err());
+                }
+            }
+        },
+    );
+}
+
+#[test]
 fn original_runtime_schemas_remain_structural_and_actual_views_do_not_gain_future_members() {
     Engine::new().with_native_provider(Provider::new, |provider, q| {
         let actual = q

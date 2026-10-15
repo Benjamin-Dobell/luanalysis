@@ -176,6 +176,21 @@ fn captured_constructor_reads_keep_the_original_bound_when_a_later_store_is_wron
 }
 
 #[test]
+fn written_fields_keep_their_storage_bound_across_repeated_narrowing_and_deletion() {
+    let source = "local value={\n---@type number|string|nil\ncurrent=1,\n}\nvalue.current=1\nvalue.current='word'\nlocal text=value.current\nvalue.current=nil\nlocal gone=value.current\nvalue.current=2\nlocal restored=value.current\n";
+    let report = clean(source);
+    assert_eq!(report.type_at(source.find("text=value").unwrap()), Some("string"));
+    assert_eq!(report.type_at(source.find("gone=value").unwrap()), Some("nil"));
+    assert_eq!(report.type_at(source.find("restored=value").unwrap()), Some("number"));
+    let wrong = format!("{source}value.current=true\n");
+    let report = check(&wrong);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(&wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "true");
+    clean(&wrong.replace("value.current=true", "value.current='corrected'"));
+}
+
+#[test]
 fn original_result_projections_preserve_shared_and_distinct_factory_allocations() {
     let shared = "local function pair() local value={} return value,value end\nlocal first,second=pair()\nfirst.item=1\nlocal shared=second.item\n";
     assert_eq!(

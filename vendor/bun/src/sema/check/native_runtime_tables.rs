@@ -220,8 +220,17 @@ impl<'p, 's> Checker<'p, 's> {
         let key = self.native_table_access(key).ok()?;
         if let NativeTableAccessKey::Literal(key) = key {
             if let TypeData::NativeTable(data) = self.data(reference.view)
-                && let Some(field) = data.fields.iter().find(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared)
-            { return Some(field.value) }
+                && data.fields.iter().any(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared)
+            {
+                // The reached value may have been narrowed or deleted by an
+                // earlier store. Its origin retains the written constructor
+                // recipe, whose invariant bound supplies RHS context instead.
+                let seed = self.native_runtime_table_seed(reference.schema).ok()?;
+                let seed = self.instantiate(seed, reference.schema.mapper);
+                if let TypeData::NativeTable(data) = self.data(seed)
+                    && let Some(field) = data.fields.iter().find(|field| field.key == key && field.origin == NativeTableFieldOrigin::Declared)
+                { return Some(field.value) }
+            }
             let object = self.intern(TypeData::NativeObject(reference.schema));
             let query = Query::NativeNamed(NativeTypeDeclarationQuery::RuntimeTableWrittenContext(object, key));
             if !self.enter(query) { self.mark_tainted_from(0); return None }
@@ -261,7 +270,10 @@ impl<'p, 's> Checker<'p, 's> {
         let optional = self.contains_undefined(value);
         let present = self.without_undefined(value);
         if let Some(field) = fields.iter_mut().find(|field| field.key == key) {
-            field.value = if field.origin == NativeTableFieldOrigin::Declared { self.resolved_assignment_type(field.value, present) } else { present };
+            // Validation uses the original storage schema. This view records
+            // only the reached value; a prior narrowing (including Never after
+            // deletion) cannot become the bound of the next assignment.
+            field.value = present;
             field.optional = optional;
         } else {
             fields.push(NativeTableField { key, value: present, optional, readonly: false, origin: NativeTableFieldOrigin::Inferred });

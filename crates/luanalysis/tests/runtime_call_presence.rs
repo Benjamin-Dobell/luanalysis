@@ -50,8 +50,9 @@ fn repeated_original_calls_keep_each_actual_entry_state_separate() {
 
 #[test]
 fn original_callee_order_keeps_nil_deletion_and_later_replacement() {
-    let source = "local value={\n---@type number|nil\ncount=1,\n}\nlocal function erase() value.count=nil end\nerase()\n---@type nil\nlocal gone=value.count\nlocal function restore() value.count=2 end\nrestore()\n---@type number\nlocal restored=value.count\n";
-    clean(source);
+    let source = "local value={\n---@type number|nil\ncount=1,\n}\nlocal function erase() value.count=nil end\nerase()\n---@type nil\nlocal gone=value.count\nlocal function restore() value.count=2 end\nrestore()\nlocal raw=value.count\n---@type number\nlocal restored=value.count\n";
+    let report = clean(source);
+    assert_eq!(report.type_at(source.find("raw=value").unwrap()), Some("number"));
     rejects_number(&source.replace("---@type nil", "---@type number"));
     rejects_number(&source.replace("---@type number\nlocal restored", "---@type string\nlocal restored"));
 }
