@@ -48,6 +48,7 @@ impl NativeFlowProvider for ProjectRegistry {
         fn alias_value_type(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { value.snapshot; queries.error_type() }
         fn alias_environment_candidate(value: NativeValueKey, input: NativeFlowKey) -> bool { value.snapshot; false }
         fn write_alias_receiver(at: NativeFlowKey) -> Option<NativeAliasReturnValue> { at.graph.snapshot; None }
+        fn read_alias_receiver(at: NativeFlowKey) -> Option<NativeAliasReturnValue> { at.graph.snapshot; None }
         fn reference_member_path(reference: NativeReferenceKey, member: NativeReferenceKey) -> Option<Vec<LuaKey>> { reference.graph.snapshot; None }
         fn reference_alias_initial(reference: NativeReferenceKey) -> NativeAliasInitial { reference.graph.snapshot; NativeAliasInitial::Opaque }
         fn alias_call_source(value: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> { value.snapshot; None }
@@ -239,6 +240,49 @@ mod tests {
             assert_eq!(execution.entry.graph, body);
             assert!(project.function_alias_returns(function).is_some());
             assert!(project.function_alias_exit(function).is_some());
+        }
+    }
+
+    #[test]
+    fn original_read_receivers_keep_their_flow_owner_and_pre_key_evaluation_input() {
+        let syntax = luanalysis_syntax::parse("local independent={}\n");
+        let bound = crate::bind::bind(&syntax);
+        let independent = crate::flow::build(&syntax, &bound);
+        let project = ProjectRegistry::new(vec![
+            input(0, "local value={}\nlocal function replace() value={} return 'count' end\nlocal field=value.count\nlocal indexed=value[replace()]\nlocal plain=value\n"),
+            input(1, "local other={}\nlocal function replace() other={} return 'slot' end\nlocal field=other.slot\nlocal indexed=other[replace()]\nlocal plain=other\n"),
+        ]);
+        for file in &project.files {
+            let sources = file.source.iterator_sources();
+            assert_ne!(sources.program.snapshot, independent.snapshot);
+            let mut reads = 0;
+            for node in &sources.program.graphs[0].nodes {
+                let at = sources.flow_key(node.id, 0);
+                let actual = project.read_alias_receiver(at);
+                let crate::flow::NodeKind::Eval(evaluation) = node.kind else {
+                    assert!(actual.is_none(), "only an original field/index read supplies a receiver");
+                    continue;
+                };
+                let evaluation = sources.program.evaluation(evaluation);
+                let expression = &sources.program.expression(evaluation.expression).expression;
+                if !matches!(expression.kind, luanalysis_syntax::ExprKind::Field { .. } | luanalysis_syntax::ExprKind::Index { .. }) {
+                    assert!(actual.is_none(), "ordinary name reads do not manufacture heap receivers");
+                    continue;
+                }
+                reads += 1;
+                let receiver = sources.program.evaluation(evaluation.operands[0]);
+                let actual = actual.expect("the original field/index read retains its first operand");
+                assert_eq!(actual.value, sources.evaluation_value(receiver.id));
+                assert_eq!(actual.input, sources.flow_key(receiver.input, at.graph.context));
+                assert_eq!(actual.value.snapshot, sources.program.snapshot);
+                if matches!(expression.kind, luanalysis_syntax::ExprKind::Index { .. }) {
+                    let key = sources.program.evaluation(evaluation.operands[1]);
+                    assert!(matches!(sources.program.expression(key.expression).expression.kind, luanalysis_syntax::ExprKind::Call { .. }));
+                    assert_ne!(actual.input, sources.flow_key(key.completed, at.graph.context), "the receiver is frozen before the key call can replace its lexical root");
+                    assert!(receiver.input.index < key.completed.index);
+                }
+            }
+            assert_eq!(reads, 2);
         }
     }
 }

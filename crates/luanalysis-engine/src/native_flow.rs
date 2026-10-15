@@ -64,6 +64,8 @@ pub trait NativeFlowProvider {
     fn value_alias_member_absent(&self, _: NativeValueKey, _: NativeFlowKey, _: &super::LuaKey) -> bool { false }
     /// Original heap-store receiver and its own frozen evaluation input.
     fn write_alias_receiver(&self, _: NativeFlowKey) -> Option<NativeAliasReturnValue> { None }
+    /// Original field/index receiver, frozen before any index-key evaluation.
+    fn read_alias_receiver(&self, _: NativeFlowKey) -> Option<NativeAliasReturnValue> { None }
     fn function_alias_returns(&self, _: super::NativeFunctionKey) -> Option<Vec<NativeAliasReturn>> { None }
     fn function_alias_exit(&self, _: super::NativeFunctionKey) -> Option<NativeFlowKey> { None }
     fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
@@ -139,6 +141,7 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
         import_type(checker, self.handles, &value)
     }
     fn write_alias_receiver(&self, at: NativeFlowKey) -> Option<NativeAliasReturnValue> { self.provider.write_alias_receiver(at) }
+    fn read_alias_receiver(&self, at: NativeFlowKey) -> Option<NativeAliasReturnValue> { self.provider.read_alias_receiver(at) }
     fn reference_alias_initial(&self, reference: NativeReferenceKey) -> bun_sema::check::native_aliases::NativeAliasInitial {
         use bun_sema::check::native_aliases::NativeAliasInitial as C;
         match self.provider.reference_alias_initial(reference) {

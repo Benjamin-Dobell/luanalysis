@@ -1784,6 +1784,16 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             input: self.sources.flow_key(receiver.input, at.graph.context),
         })
     }
+    fn read_alias_receiver(&self, at: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasReturnValue> {
+        let flow::NodeKind::Eval(evaluation) = &self.sources.source_node(at)?.kind else { return None };
+        let evaluation = self.sources.program.evaluation(*evaluation);
+        if !matches!(self.sources.program.expression(evaluation.expression).expression.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) { return None }
+        let receiver = self.sources.program.evaluation(*evaluation.operands.first()?);
+        Some(luanalysis_engine::NativeAliasReturnValue {
+            value: self.sources.evaluation_value(receiver.id),
+            input: self.sources.flow_key(receiver.input, at.graph.context),
+        })
+    }
     fn value_type(
         &self,
         value: NativeValueKey,

@@ -295,6 +295,8 @@ pub trait NativeFlowProvider {
     fn value_alias_member_absent(&self, _: NativeValueKey, _: NativeFlowKey, _: NativeTableKey, _: &Checker<'_, '_>) -> bool { false }
     /// Original receiver evaluation for a heap store, frozen before its RHS.
     fn write_alias_receiver(&self, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasReturnValue> { None }
+    /// Original field/index receiver, frozen before an index key is evaluated.
+    fn read_alias_receiver(&self, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasReturnValue> { None }
     fn function_alias_returns(&self, _: crate::types::NativeFunctionId) -> Option<Vec<super::native_aliases::NativeAliasReturn>> { None }
     fn function_alias_exit(&self, _: crate::types::NativeFunctionId) -> Option<NativeFlowKey> { None }
     /// Value capabilities require the assigned runtime value rather than the
