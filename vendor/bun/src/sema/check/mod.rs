@@ -59,6 +59,7 @@ pub mod native_iterators;
 pub mod native_packs;
 pub mod native_assertions;
 pub mod native_signatures;
+pub mod native_runtime;
 pub mod native_named;
 mod grammarchecks;
 mod infer;
@@ -758,6 +759,7 @@ impl<'s> Program<'s> {
             native_function_provider: None,
             native_type_declaration_provider: None,
             native_named_cache: NativeNamedCache::default(),
+            native_runtime_tops: [None; 2],
             native_arrays: false,
             native_function_contexts: Vec::new(),
             native_capture_contexts: Vec::new(),
@@ -1267,6 +1269,7 @@ pub struct Checker<'p, 's> {
     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
     native_type_declaration_provider: Option<&'p dyn NativeTypeDeclarationProvider>,
     native_named_cache: NativeNamedCache,
+    native_runtime_tops: [Option<TypeId>; 2],
     native_arrays: bool,
     native_function_contexts: Vec<NativeFunctionContext>,
     native_capture_contexts: Vec<NativeCapturedFunctionContext>,

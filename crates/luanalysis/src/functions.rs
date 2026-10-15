@@ -204,6 +204,9 @@ impl Checker<'_> {
         &mut self,
         function: &luanalysis_syntax::FunctionType,
     ) -> Type {
+        if function.parameters_span.is_none() && function.returns.is_empty() && function.generics.is_empty() {
+            return Type::RuntimeFunction;
+        }
         if let Some(native)=self.native {
             if let Some(key)=native.signature_key_for(function.span) {
                 return self.engine.signature_type(key);
@@ -252,7 +255,8 @@ impl Checker<'_> {
         let rest = function
             .vararg
             .as_ref()
-            .map(|vararg| ValuePack::variadic(self.annotation(&vararg.ty)));
+            .map(|vararg| ValuePack::variadic(self.annotation(&vararg.ty)))
+            .or_else(|| function.parameters_span.is_none().then(|| ValuePack::variadic(Type::Any)));
         self.engine.pack_function(&PackFunctionType {
             params,
             rest,

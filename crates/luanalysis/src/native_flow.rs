@@ -703,7 +703,9 @@ impl NativeFlowSources {
             b"boolean" => NativeRuntimeType::Boolean,
             b"number" => NativeRuntimeType::Number,
             b"string" => NativeRuntimeType::String,
-            b"table" | b"function" | b"userdata" | b"thread" => {
+            b"table" => NativeRuntimeType::Table,
+            b"function" => NativeRuntimeType::Function,
+            b"userdata" | b"thread" => {
                 return Some(NativePredicate::Unsupported(
                     "nonprimitive Lua runtime type predicates require native runtime-domain types",
                 ));

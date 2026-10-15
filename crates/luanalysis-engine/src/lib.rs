@@ -7,6 +7,8 @@
 
 mod native;
 mod native_assertions;
+#[cfg(test)]
+mod native_runtime_primitive_tests;
 mod native_flow;
 pub use native_flow::*;
 #[cfg(test)]
@@ -254,6 +256,8 @@ pub enum Type {
     Boolean,
     Number,
     String,
+    RuntimeTable,
+    RuntimeFunction,
     BooleanLiteral(bool),
     NumberLiteral(f64),
     StringLiteral(Vec<u8>),
@@ -1399,6 +1403,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn inspect_type(&mut self, ty: &Type) -> Type {
         let id = import_type(self.checker, self.handles, ty);
+        if matches!(self.checker.data(id), TypeData::NativeRuntimeTop { .. }) {
+            return export_type(self.checker, self.handles, id);
+        }
         let signatures = self.checker.signatures(id, false);
         if signatures.len() == 1 {
             Type::Function(export_signature(self.checker, self.handles, signatures[0]))
@@ -2408,6 +2415,8 @@ fn import_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: &Type) 
         Type::Boolean => TypeId::BOOLEAN,
         Type::Number => TypeId::NUMBER,
         Type::String => TypeId::STRING,
+        Type::RuntimeTable => checker.native_runtime_top(bun_sema::types::NativeRuntimeKind::Table),
+        Type::RuntimeFunction => checker.native_runtime_top(bun_sema::types::NativeRuntimeKind::Function),
         Type::SessionType(reference) => handles.resolve(*reference),
         Type::Table(table) => native_tables::import_table(checker, handles, table),
         Type::BooleanLiteral(value) => checker.bool_literal(*value, true),
@@ -2500,6 +2509,10 @@ fn export_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: TypeId)
         return Type::Boolean;
     }
     match checker.data(ty) {
+        TypeData::NativeRuntimeTop { kind, .. } => match kind {
+            bun_sema::types::NativeRuntimeKind::Table => Type::RuntimeTable,
+            bun_sema::types::NativeRuntimeKind::Function => Type::RuntimeFunction,
+        },
         TypeData::NativeObject(..) => handles.retain(ty),
         TypeData::NativeTable(_) => native_tables::export_table(checker, handles, ty)
             .map(Type::Table)

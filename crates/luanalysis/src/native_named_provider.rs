@@ -159,7 +159,7 @@ impl NativeRegistry {
             // Match annotation name-binding precedence for primitive keywords.
             if matches!(
                 name,
-                "any" | "unknown" | "never" | "nil" | "boolean" | "number" | "string" | "void"
+                "any" | "unknown" | "never" | "nil" | "boolean" | "number" | "string" | "void" | "table" | "function"
             ) {
                 continue;
             }

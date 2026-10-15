@@ -339,6 +339,7 @@ pub(super) fn is_object_kind(data: &TypeData) -> bool {
         TypeData::Ref { .. }
             | TypeData::NativeArray { .. }
             | TypeData::NativeTable(_)
+            | TypeData::NativeRuntimeTop { .. }
             | TypeData::NativeObject(_)
             | TypeData::Tuple { .. }
             | TypeData::Anon { .. }
@@ -1000,6 +1001,7 @@ impl<'p, 's> Checker<'p, 's> {
         if source == target {
             return true;
         }
+        if !self.native_runtime_types_compatible(source, target) { return false }
         if !self.native_nominal_objects_compatible(source, target, relation) { return false }
         // A relation check made while a type is being simplified does not go through `enter`.
         if self.is_stack_low() {
@@ -2630,10 +2632,24 @@ impl<'p, 's> Checker<'p, 's> {
         if original_source == original_target {
             return Ternary::TRUE;
         }
+        if !self.native_runtime_types_compatible(original_source, original_target) { return Ternary::FALSE }
         let head = if REPORT { r.head_message.take() } else { None };
         if !self.native_nominal_objects_compatible(original_source, original_target, r.relation) {
             if REPORT { self.report_relation_error(r, head, original_source, original_target) }
             return Ternary::FALSE;
+        }
+        if let Some(related) = self.native_runtime_top_target_relation(original_source, original_target, r.relation) {
+            return if related { Ternary::TRUE } else { Ternary::FALSE };
+        }
+        // Preserve runtime tops until the shared relation worker distributes
+        // unions/intersections and resolves constraints. Erasing a top first
+        // would allow a callable table constituent through a function carrier.
+        let source_deferred = self.is_union(original_source) || self.is_intersection(original_source) || self.is_instantiable(original_source);
+        let target_deferred = self.is_union(original_target) || self.is_intersection(original_target) || self.is_instantiable(original_target);
+        let source_carrier = if target_deferred { original_source } else { self.native_runtime_carrier(original_source) };
+        let target_carrier = if source_deferred { original_target } else { self.native_runtime_carrier(original_target) };
+        if source_carrier != original_source || target_carrier != original_target {
+            return self.is_related_to_ex::<REPORT>(r, source_carrier, target_carrier, recursion, state);
         }
         let (original_sd, original_td) = (self.data(original_source), self.data(original_target));
         let relation = r.relation;
@@ -2688,6 +2704,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let (source, sd) = self.normalized_as(original_source, original_sd, false);
         let (mut target, mut td) = self.normalized_as(original_target, original_td, true);
+        if !self.native_runtime_types_compatible(source, target) { return Ternary::FALSE }
         if !self.native_nominal_objects_compatible(source, target, relation) {
             if REPORT { self.report_relation_error(r, head, source, target) }
             return Ternary::FALSE;

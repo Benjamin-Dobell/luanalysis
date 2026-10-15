@@ -118,7 +118,10 @@ impl NativeRegistry {
         key: NativeSignatureKey,
         queries: &mut dyn TypeQueries,
     ) -> Option<ValuePack> {
-        let source = self.signatures.get(key).signature.vararg.as_ref()?;
+        let signature = &self.signatures.get(key).signature;
+        let Some(source) = signature.vararg.as_ref() else {
+            return signature.parameters_span.is_none().then(|| ValuePack::variadic(Type::Any));
+        };
         let mut checker = self.signature_checker(key, queries);
         let pack = ValuePack::variadic(checker.annotation(&source.ty));
         self.merge_report(checker.report);
@@ -130,6 +133,9 @@ impl NativeRegistry {
         queries: &mut dyn TypeQueries,
     ) -> ValuePack {
         let source = &self.signatures.get(key).signature;
+        if source.parameters_span.is_none() && source.returns.is_empty() {
+            return ValuePack::variadic(Type::Any);
+        }
         let mut checker = self.signature_checker(key, queries);
         let pack = AnnotationPack::new(&source.returns, source.packs.as_deref(), source.span)
             .lower(&mut |ty| checker.annotation(ty));

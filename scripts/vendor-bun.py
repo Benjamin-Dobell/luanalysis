@@ -189,6 +189,17 @@ SOURCE_ADAPTATIONS.extend({
 ])
 
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch",
+    "reason": "Add distinct broad Lua table/function runtime categories with native structural carriers, recursive relation guards and original-source runtime narrowing, preserving named table origins even when callable.",
+    **({"added": True} if path == "check/native_runtime.rs" else {}),
+} for path in [
+    "types.rs", "check/mod.rs", "check/native_runtime.rs", "check/native_flow.rs",
+    "check/native_tables.rs", "check/relate.rs", "check/shape.rs", "check/print.rs",
+])
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

@@ -69,6 +69,13 @@ pub struct NativeCapturedFunctionContext {
 pub struct NativeResultPack {
     pub(crate) ty: TypeId,
 }
+/// Lua runtime categories retain their identity independently of structural
+/// member and call signatures used by the TypeScript checker.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum NativeRuntimeKind {
+    Table,
+    Function,
+}
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeFunctionContext {
     pub expression: NativeExpressionId,
@@ -485,6 +492,7 @@ pub enum TypeData<'s> {
         readonly: bool,
     },
     NativeTable(ArenaBox<'s, NativeTableData<'s>>),
+    NativeRuntimeTop { kind: NativeRuntimeKind, carrier: TypeId },
     NativeObject(NativeObjectReference),
     Anon {
         origin: Origin,
@@ -3426,6 +3434,7 @@ follow_enum!(TypeData<'_> {
     TypeData::Tuple { elems, flags, readonly } => (elems, flags, readonly),
     TypeData::NativeArray { element, readonly } => (element, readonly),
     TypeData::NativeTable(table) => (table),
+    TypeData::NativeRuntimeTop { kind, carrier } => (kind, carrier),
     TypeData::NativeObject(reference) => (reference),
     TypeData::Anon { origin, mapper } => (origin, mapper),
     TypeData::Fns { decls, mapper } => (decls, mapper),
@@ -3521,6 +3530,10 @@ follow_struct!(NativeTableSequenceTail { start, value, readonly });
 follow_struct!(NativeTableData<'_> { nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
 follow_struct!(NativeCapturedFunctionContext { signature });
 follow_struct!(NativeResultPack { ty });
+follow_enum!(NativeRuntimeKind {
+    NativeRuntimeKind::Table => (),
+    NativeRuntimeKind::Function => (),
+});
 follow_struct!(NativeFunctionContext {
     expression,
     expected,
@@ -3571,6 +3584,7 @@ macro_rules! clone_in_is_copy {
     )*};
 }
 clone_in_is_copy!(
+    NativeRuntimeKind,
     bool,
     u8,
     u32,
@@ -3730,6 +3744,7 @@ clone_in_enum!(TypeData {
     Tuple { elems, flags, readonly },
     NativeArray { element, readonly },
     NativeTable(table),
+    NativeRuntimeTop { kind, carrier },
     NativeObject(reference),
     Anon { origin, mapper },
     Fns { decls, mapper },

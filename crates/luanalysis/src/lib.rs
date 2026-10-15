@@ -518,6 +518,8 @@ impl Checker<'_> {
                 "boolean" => Type::Boolean,
                 "number" => Type::Number,
                 "string" => Type::String,
+                "table" => Type::RuntimeTable,
+                "function" => Type::RuntimeFunction,
                 "void" => Type::Void,
                 _ => {
                     if let Some(native)=self.native {
@@ -1001,6 +1003,8 @@ fn number(spelling: &str) -> Option<f64> {
 /// Lua-oriented presentation of resolved type descriptions.
 pub fn describe(ty: &Type) -> String {
     match ty {
+        Type::RuntimeTable => "table".to_owned(),
+        Type::RuntimeFunction => "function".to_owned(),
         Type::Any => "any".into(),
         Type::Unknown => "unknown".into(),
         Type::Never => "never".into(),

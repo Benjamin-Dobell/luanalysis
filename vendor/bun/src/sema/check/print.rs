@@ -1815,6 +1815,10 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 }
                 Node::simple(text)
             }
+            TypeData::NativeRuntimeTop { kind, .. } => Node::simple(match kind {
+                crate::types::NativeRuntimeKind::Table => &b"table"[..],
+                crate::types::NativeRuntimeKind::Function => &b"function"[..],
+            }),
             TypeData::NativeTable(table) => {
                 if let Some(origin) = table.nominal_origin {
                     let reference = self.c.intern(TypeData::NativeObject(origin));

@@ -242,7 +242,7 @@ impl Checker<'_> {
 
     fn length_operand(&mut self, ty: &Type) -> bool {
         match ty {
-            Type::Any | Type::Never | Type::Shape(_) | Type::FreshShape(_) | Type::Table(_) => true,
+            Type::Any | Type::Never | Type::RuntimeTable | Type::Shape(_) | Type::FreshShape(_) | Type::Table(_) => true,
             Type::Union(types) => types.iter().all(|ty| self.length_operand(ty)),
             Type::Intersection(types) => types.iter().any(|ty| self.length_operand(ty)),
             // A structural empty-object target also accepts non-table values in

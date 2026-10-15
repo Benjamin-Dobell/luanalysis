@@ -429,6 +429,8 @@ pub enum TypeExprKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FunctionType {
     pub generics: Vec<GenericParameter>,
+    /// Absent for bare `fun`; `fun()` has an explicit zero-parameter header.
+    pub parameters_span: Option<Span>,
     pub params: Vec<FunctionTypeParam>,
     pub vararg: Option<Box<VarargAnnotation>>,
     pub returns: Vec<TypeExpr>,
@@ -513,6 +515,8 @@ pub enum TypeFieldKey {
 
 #[cfg(test)]
 mod assertion_tests;
+#[cfg(test)]
+mod runtime_primitive_tests;
 #[cfg(test)]
 mod tests;
 

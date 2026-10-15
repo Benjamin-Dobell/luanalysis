@@ -860,6 +860,55 @@
       "patch": "vendor/patches/bun-sema-source-callable-signatures.patch",
       "reason": "Add original-source callable declaration signatures and overload groups with independent runtime implementations, shared overload selection and compatibility checks, and preserved generic owner/mapper contexts.",
       "patch_sha256": "c01ba97a7deeba846656c629a91145757ef3128873c923de0ad7f05529ff59ee"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch",
+      "reason": "Add distinct broad Lua table/function runtime categories with native structural carriers, recursive relation guards and original-source runtime narrowing, preserving named table origins even when callable.",
+      "patch_sha256": "ddf15a169e73cc31898036c645303386325ba088c5da82be7fbe63359a37aaf3"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch",
+      "reason": "Add distinct broad Lua table/function runtime categories with native structural carriers, recursive relation guards and original-source runtime narrowing, preserving named table origins even when callable.",
+      "patch_sha256": "ddf15a169e73cc31898036c645303386325ba088c5da82be7fbe63359a37aaf3"
+    },
+    {
+      "path": "src/sema/check/native_runtime.rs",
+      "patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch",
+      "reason": "Add distinct broad Lua table/function runtime categories with native structural carriers, recursive relation guards and original-source runtime narrowing, preserving named table origins even when callable.",
+      "added": true,
+      "patch_sha256": "ddf15a169e73cc31898036c645303386325ba088c5da82be7fbe63359a37aaf3"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch",
+      "reason": "Add distinct broad Lua table/function runtime categories with native structural carriers, recursive relation guards and original-source runtime narrowing, preserving named table origins even when callable.",
+      "patch_sha256": "ddf15a169e73cc31898036c645303386325ba088c5da82be7fbe63359a37aaf3"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch",
+      "reason": "Add distinct broad Lua table/function runtime categories with native structural carriers, recursive relation guards and original-source runtime narrowing, preserving named table origins even when callable.",
+      "patch_sha256": "ddf15a169e73cc31898036c645303386325ba088c5da82be7fbe63359a37aaf3"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch",
+      "reason": "Add distinct broad Lua table/function runtime categories with native structural carriers, recursive relation guards and original-source runtime narrowing, preserving named table origins even when callable.",
+      "patch_sha256": "ddf15a169e73cc31898036c645303386325ba088c5da82be7fbe63359a37aaf3"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch",
+      "reason": "Add distinct broad Lua table/function runtime categories with native structural carriers, recursive relation guards and original-source runtime narrowing, preserving named table origins even when callable.",
+      "patch_sha256": "ddf15a169e73cc31898036c645303386325ba088c5da82be7fbe63359a37aaf3"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch",
+      "reason": "Add distinct broad Lua table/function runtime categories with native structural carriers, recursive relation guards and original-source runtime narrowing, preserving named table origins even when callable.",
+      "patch_sha256": "ddf15a169e73cc31898036c645303386325ba088c5da82be7fbe63359a37aaf3"
     }
   ],
   "source_additions": {
@@ -872,7 +921,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "bac3705bf81a34c0a897920cb3f8df2867f0c3f6058b741750bd846edd4c4031",
+      "extracted_sha256": "d77465c501a7f28765b4fd4dbe8f3982c8d6d9024bd58805b8a805ac20df69f3",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_iterators.rs": {
@@ -887,12 +936,16 @@
       "extracted_sha256": "773d2771f263643a1baec872e645c81fdea47b85c1dc6ba15fa4adf2758bb246",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
+    "src/sema/check/native_runtime.rs": {
+      "extracted_sha256": "28d4b4ca43e7810b828715e33ebbfd0b2f0325413e907c109f667c134111ee6a",
+      "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
+    },
     "src/sema/check/native_signatures.rs": {
       "extracted_sha256": "4836b3fc101fd87b79d5b7717c87ea3bbd7371e06c480c537cb9ebf94e351201",
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "f8210e054be31509554f872b62d41c554ae3c13cf174892999ea04279ad11756",
+      "extracted_sha256": "b7f74105f0df5bb4eabd052ca6e0509b317111ea998929f990415bb436b4eb95",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -1850,7 +1903,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "b362e86a2da5aa716f27b2d38b8049c437d51a3139e2d2d5056f70392e4ff4be"
+      "extracted_sha256": "620ff71100fe523fd4dbc77e5e6fbedc889dbbaaedcb3e0967e05ce8dcfde30d"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -1860,7 +1913,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "a724a08e60f3c05f97202a93189a54e75b4f11da9011c0a5af4b98a49ccef054"
+      "extracted_sha256": "62adb4be65fb21735ee9f105b76ac737d39552e832b93f14aed5380c7135a9b3"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -1875,7 +1928,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "4ff8434910f2b9c64ef38b7e9985ac8d1798deacce74d8527b43d2f2ccdf9d5a"
+      "extracted_sha256": "fa46a09c597430a70c0c8facd9b662f4b0120997862e0c168a2e09160803492f"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -1930,7 +1983,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "2148bba508bb17b1bd676cc413b45475f9c8a76c2d2f396ed29a9f3b39f4f823"
+      "extracted_sha256": "0cb27d4eed55e65f63b13bf9e4df616f3293e72d7cc4174898684daaa084cee5"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -2055,7 +2108,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "f9d5cfcd63e1ba4d3f866fd0fc48ecc9ff0ff0a68bbaaa721f8df6b52d6b0add"
+      "extracted_sha256": "3ffe12a70a8771f41b4ca844dd8ba20bded61a272e0850f68e5d045dd9571f7c"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

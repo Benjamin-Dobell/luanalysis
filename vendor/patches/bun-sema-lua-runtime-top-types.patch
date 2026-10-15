@@ -1,0 +1,319 @@
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -68,6 +68,13 @@
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeResultPack {
+     pub(crate) ty: TypeId,
++}
++/// Lua runtime categories retain their identity independently of structural
++/// member and call signatures used by the TypeScript checker.
++#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
++pub enum NativeRuntimeKind {
++    Table,
++    Function,
+ }
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct NativeFunctionContext {
+@@ -485,6 +492,7 @@
+         readonly: bool,
+     },
+     NativeTable(ArenaBox<'s, NativeTableData<'s>>),
++    NativeRuntimeTop { kind: NativeRuntimeKind, carrier: TypeId },
+     NativeObject(NativeObjectReference),
+     Anon {
+         origin: Origin,
+@@ -3426,6 +3434,7 @@
+     TypeData::Tuple { elems, flags, readonly } => (elems, flags, readonly),
+     TypeData::NativeArray { element, readonly } => (element, readonly),
+     TypeData::NativeTable(table) => (table),
++    TypeData::NativeRuntimeTop { kind, carrier } => (kind, carrier),
+     TypeData::NativeObject(reference) => (reference),
+     TypeData::Anon { origin, mapper } => (origin, mapper),
+     TypeData::Fns { decls, mapper } => (decls, mapper),
+@@ -3521,6 +3530,10 @@
+ follow_struct!(NativeTableData<'_> { nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+ follow_struct!(NativeCapturedFunctionContext { signature });
+ follow_struct!(NativeResultPack { ty });
++follow_enum!(NativeRuntimeKind {
++    NativeRuntimeKind::Table => (),
++    NativeRuntimeKind::Function => (),
++});
+ follow_struct!(NativeFunctionContext {
+     expression,
+     expected,
+@@ -3571,6 +3584,7 @@
+     )*};
+ }
+ clone_in_is_copy!(
++    NativeRuntimeKind,
+     bool,
+     u8,
+     u32,
+@@ -3730,6 +3744,7 @@
+     Tuple { elems, flags, readonly },
+     NativeArray { element, readonly },
+     NativeTable(table),
++    NativeRuntimeTop { kind, carrier },
+     NativeObject(reference),
+     Anon { origin, mapper },
+     Fns { decls, mapper },
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -59,6 +59,7 @@
+ pub mod native_packs;
+ pub mod native_assertions;
+ pub mod native_signatures;
++pub mod native_runtime;
+ pub mod native_named;
+ mod grammarchecks;
+ mod infer;
+@@ -758,6 +759,7 @@
+             native_function_provider: None,
+             native_type_declaration_provider: None,
+             native_named_cache: NativeNamedCache::default(),
++            native_runtime_tops: [None; 2],
+             native_arrays: false,
+             native_function_contexts: Vec::new(),
+             native_capture_contexts: Vec::new(),
+@@ -1267,6 +1269,7 @@
+     native_function_provider: Option<&'p dyn NativeFunctionProvider>,
+     native_type_declaration_provider: Option<&'p dyn NativeTypeDeclarationProvider>,
+     native_named_cache: NativeNamedCache,
++    native_runtime_tops: [Option<TypeId>; 2],
+     native_arrays: bool,
+     native_function_contexts: Vec<NativeFunctionContext>,
+     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
+diff --git a/src/sema/check/native_runtime.rs b/src/sema/check/native_runtime.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/native_runtime.rs
+@@ -0,0 +1,91 @@
++//! Lua runtime top types. Structural carriers supply existing table/call
++//! operations without erasing the distinction between functions and tables.
++use super::Checker;
++use crate::types::{NativeRuntimeKind, NativeResultPack, NativeTableIndexer, NativeTableFlavor, SigParam, TypeData, TypeId};
++
++impl<'p, 's> Checker<'p, 's> {
++    pub fn native_runtime_top(&mut self, kind: NativeRuntimeKind) -> TypeId {
++        let index = match kind { NativeRuntimeKind::Table => 0, NativeRuntimeKind::Function => 1 };
++        if let Some(known) = self.native_runtime_tops[index] { return known }
++        let carrier = match kind {
++            NativeRuntimeKind::Table => self.native_table(&[], &[NativeTableIndexer {
++                key: TypeId::ANY, value: TypeId::ANY, readonly: false, sparse: false,
++            }], NativeTableFlavor::Declared).expect("any is a valid table key domain"),
++            NativeRuntimeKind::Function => {
++                let pack = self.native_result_pack(&[super::native_packs::NativePackAlternative { fixed: Vec::new(), tail: Some(TypeId::ANY) }]);
++                let param = SigParam {
++                    name: self.atoms().intern(b"..."), ty: self.native_pack_type(pack),
++                    optional: false, rest: true, is_required_rest: false, declaration: None,
++                };
++                self.native_pack_function(&[param], &[], NativeResultPack { ty: TypeId::ANY })
++            }
++        };
++        let ty = self.intern(TypeData::NativeRuntimeTop { kind, carrier });
++        self.native_runtime_tops[index] = Some(ty);
++        ty
++    }
++
++    pub(super) fn native_runtime_kind(&mut self, ty: TypeId) -> Option<NativeRuntimeKind> {
++        if !self.is_object_type(ty) { return None }
++        match self.data(ty) {
++            TypeData::NativeRuntimeTop { kind, .. } => Some(*kind),
++            // A named table can also have call signatures. Its origin takes
++            // precedence over structural callability in the Lua runtime.
++            TypeData::NativeObject(_) | TypeData::NativeTable(_) => Some(NativeRuntimeKind::Table),
++            _ => {
++                let members = self.structured_members(ty)?;
++                Some(if members.call_signatures().is_empty() && members.construct_signatures().is_empty() {
++                    NativeRuntimeKind::Table
++                } else { NativeRuntimeKind::Function })
++            }
++        }
++    }
++
++    /// This gate runs inside recursive relations, including member/union and
++    /// generic-constraint checks. Composite types retain the shared traversal.
++    pub(super) fn native_runtime_types_compatible(&mut self, source: TypeId, target: TypeId) -> bool {
++        let (source_top, target_top) = match (self.data(source), self.data(target)) {
++            (TypeData::NativeRuntimeTop { kind: s, .. }, TypeData::NativeRuntimeTop { kind: t, .. }) => return s == t,
++            (TypeData::NativeRuntimeTop { kind, .. }, _) => (Some(*kind), None),
++            (_, TypeData::NativeRuntimeTop { kind, .. }) => (None, Some(*kind)),
++            _ => return true,
++        };
++        let (other, expected) = if let Some(kind) = target_top { (source, kind) } else { (target, source_top.unwrap()) };
++        if self.is_any(other) || other == TypeId::UNKNOWN || other.is_never() { return true }
++        if self.is_union(other) || self.is_intersection(other) || self.is_instantiable(other) { return true }
++        self.native_runtime_kind(other).is_some_and(|kind| kind == expected)
++    }
++
++    pub(super) fn native_runtime_carrier(&self, ty: TypeId) -> TypeId {
++        if let TypeData::NativeRuntimeTop { carrier, .. } = self.data(ty) { *carrier } else { ty }
++    }
++
++    /// A runtime top accepts every value in its category, including named
++    /// tables with call signatures. Structural carriers impose no additional
++    /// TypeScript object requirements on these category comparisons.
++    pub(super) fn native_runtime_top_target_relation(&mut self, source: TypeId, target: TypeId, relation: super::relate::Relation) -> Option<bool> {
++        let TypeData::NativeRuntimeTop { kind, .. } = *self.data(target) else { return None };
++        if self.is_union(source) || self.is_intersection(source) || self.is_instantiable(source) { return None }
++        let actual = self.native_runtime_kind(source)?;
++        Some(actual == kind && relation != super::relate::Relation::Identity)
++    }
++
++    pub(super) fn native_narrow_runtime_kind(&mut self, ty: TypeId, kind: NativeRuntimeKind, sense: bool) -> TypeId {
++        if self.is_any(ty) { return ty }
++        if ty == TypeId::UNKNOWN { return if sense { self.native_runtime_top(kind) } else { ty } }
++        self.map_type(ty, |checker, part| {
++            let apparent = checker.base_constraint_of(part).unwrap_or(part);
++            if let Some(actual) = checker.native_runtime_kind(apparent) {
++                return if (actual == kind) == sense { part } else { TypeId::NEVER }
++            }
++            if checker.flags(part) & crate::types::tf::TYPE_PARAMETER != 0 {
++                if sense {
++                    let narrowed = checker.native_runtime_top(kind);
++                    return checker.intersection(&[part, narrowed]);
++                }
++                return part;
++            }
++            if apparent == TypeId::UNKNOWN || !sense { part } else { TypeId::NEVER }
++        })
++    }
++}
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -47,6 +47,8 @@
+     Boolean,
+     Number,
+     String,
++    Table,
++    Function,
+ }
+ 
+ /// Lua lexical number facts preserve integer precision separately from the
+@@ -1130,11 +1132,17 @@
+     }
+ 
+     pub(super) fn native_runtime_type(&mut self, ty: TypeId, kind: &NativeRuntimeType, sense: bool) -> TypeId {
++        match kind {
++            NativeRuntimeType::Table => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Table, sense),
++            NativeRuntimeType::Function => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Function, sense),
++            _ => {}
++        }
+         let name = match kind {
+             NativeRuntimeType::Nil => known::undefined,
+             NativeRuntimeType::Boolean => known::boolean,
+             NativeRuntimeType::Number => known::number,
+             NativeRuntimeType::String => known::string,
++            NativeRuntimeType::Table | NativeRuntimeType::Function => unreachable!(),
+         };
+         self.narrow_type_by_typeof_name(ty, name, sense)
+     }
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -545,6 +545,7 @@
+     }
+ 
+     pub fn native_table_read(&mut self, table: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
++        let table = self.native_runtime_carrier(table);
+         if let TypeData::NativeObject(reference) = *self.data(table) {
+             return self.native_named_read(reference, key);
+         }
+@@ -642,6 +643,7 @@
+     }
+ 
+     pub fn native_table_write(&mut self, table: TypeId, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
++        let table = self.native_runtime_carrier(table);
+         let table = self.native_object_resolved(table).map_err(|_| NativeTableError::NotTable { ty: table })?;
+         if let Some(error) = self.native_table_description_error(table) { return Err(error) }
+         let key = self.native_table_access(key)?;
+@@ -872,6 +874,7 @@
+     /// Old/native class namespaces expose genuine byte-string names. They can participate in
+     /// native table relations without manufacturing JS names for numeric or boolean Lua keys.
+     pub(super) fn native_table_object_description(&mut self, ty: TypeId) -> Option<NativeTableData<'s>> {
++        let ty = self.native_runtime_carrier(ty);
+         let ty = self.native_object_resolved(ty).ok()?;
+         if let TypeData::NativeTable(table) = self.data(ty) { return Some((**table).clone_in(self.arena)) }
+         if self.is_array_or_tuple(ty) { return None }
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -339,6 +339,7 @@
+         TypeData::Ref { .. }
+             | TypeData::NativeArray { .. }
+             | TypeData::NativeTable(_)
++            | TypeData::NativeRuntimeTop { .. }
+             | TypeData::NativeObject(_)
+             | TypeData::Tuple { .. }
+             | TypeData::Anon { .. }
+@@ -1000,6 +1001,7 @@
+         if source == target {
+             return true;
+         }
++        if !self.native_runtime_types_compatible(source, target) { return false }
+         if !self.native_nominal_objects_compatible(source, target, relation) { return false }
+         // A relation check made while a type is being simplified does not go through `enter`.
+         if self.is_stack_low() {
+@@ -2630,10 +2632,24 @@
+         if original_source == original_target {
+             return Ternary::TRUE;
+         }
++        if !self.native_runtime_types_compatible(original_source, original_target) { return Ternary::FALSE }
+         let head = if REPORT { r.head_message.take() } else { None };
+         if !self.native_nominal_objects_compatible(original_source, original_target, r.relation) {
+             if REPORT { self.report_relation_error(r, head, original_source, original_target) }
+             return Ternary::FALSE;
++        }
++        if let Some(related) = self.native_runtime_top_target_relation(original_source, original_target, r.relation) {
++            return if related { Ternary::TRUE } else { Ternary::FALSE };
++        }
++        // Preserve runtime tops until the shared relation worker distributes
++        // unions/intersections and resolves constraints. Erasing a top first
++        // would allow a callable table constituent through a function carrier.
++        let source_deferred = self.is_union(original_source) || self.is_intersection(original_source) || self.is_instantiable(original_source);
++        let target_deferred = self.is_union(original_target) || self.is_intersection(original_target) || self.is_instantiable(original_target);
++        let source_carrier = if target_deferred { original_source } else { self.native_runtime_carrier(original_source) };
++        let target_carrier = if source_deferred { original_target } else { self.native_runtime_carrier(original_target) };
++        if source_carrier != original_source || target_carrier != original_target {
++            return self.is_related_to_ex::<REPORT>(r, source_carrier, target_carrier, recursion, state);
+         }
+         let (original_sd, original_td) = (self.data(original_source), self.data(original_target));
+         let relation = r.relation;
+@@ -2688,6 +2704,7 @@
+         }
+         let (source, sd) = self.normalized_as(original_source, original_sd, false);
+         let (mut target, mut td) = self.normalized_as(original_target, original_td, true);
++        if !self.native_runtime_types_compatible(source, target) { return Ternary::FALSE }
+         if !self.native_nominal_objects_compatible(source, target, relation) {
+             if REPORT { self.report_relation_error(r, head, source, target) }
+             return Ternary::FALSE;
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -1036,6 +1036,9 @@
+     /// `None` for anything else.
+     #[inline]
+     pub fn members(&mut self, ty: TypeId) -> Option<Members<'p>> {
++        if let TypeData::NativeRuntimeTop { carrier, .. } = self.data(ty) {
++            return self.members(*carrier);
++        }
+         let recent = self.recent_members[ty.0 as usize % RECENT_MEMBERS];
+         if recent.ty == ty && self.unresolved_members.is_empty() {
+             return recent.resolved.map(|resolved| Members {
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1815,6 +1815,10 @@
+                 }
+                 Node::simple(text)
+             }
++            TypeData::NativeRuntimeTop { kind, .. } => Node::simple(match kind {
++                crate::types::NativeRuntimeKind::Table => &b"table"[..],
++                crate::types::NativeRuntimeKind::Function => &b"function"[..],
++            }),
+             TypeData::NativeTable(table) => {
+                 if let Some(origin) = table.nominal_origin {
+                     let reference = self.c.intern(TypeData::NativeObject(origin));

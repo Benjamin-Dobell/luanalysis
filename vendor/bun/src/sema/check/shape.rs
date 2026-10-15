@@ -1036,6 +1036,9 @@ impl<'p, 's> Checker<'p, 's> {
     /// `None` for anything else.
     #[inline]
     pub fn members(&mut self, ty: TypeId) -> Option<Members<'p>> {
+        if let TypeData::NativeRuntimeTop { carrier, .. } = self.data(ty) {
+            return self.members(*carrier);
+        }
         let recent = self.recent_members[ty.0 as usize % RECENT_MEMBERS];
         if recent.ty == ty && self.unresolved_members.is_empty() {
             return recent.resolved.map(|resolved| Members {

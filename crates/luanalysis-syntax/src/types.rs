@@ -986,7 +986,8 @@ impl TypeParser {
         let mut params = Vec::new();
         let mut vararg = None;
         let generics = self.declaration_parameters();
-        if self.take("(").is_some() {
+        let mut parameters_span = None;
+        if let Some(open) = self.take("(") {
             while !self.eof() && !self.symbol(")") {
                 let param_start = self.current().span;
                 let ellipsis = self.symbol("...");
@@ -1059,7 +1060,8 @@ impl TypeParser {
                 }
                 break;
             }
-            self.expect(")");
+            let close = self.expect(")");
+            parameters_span = Some(open.join(close));
         }
         let (returns, packs) = if self.take(":").is_some() {
             self.return_packs()
@@ -1075,6 +1077,7 @@ impl TypeParser {
         TypeExpr {
             kind: TypeExprKind::Function(FunctionType {
                 generics,
+                parameters_span,
                 params,
                 vararg,
                 returns,

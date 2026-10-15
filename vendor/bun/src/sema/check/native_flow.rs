@@ -47,6 +47,8 @@ pub enum NativeRuntimeType {
     Boolean,
     Number,
     String,
+    Table,
+    Function,
 }
 
 /// Lua lexical number facts preserve integer precision separately from the
@@ -1130,11 +1132,17 @@ impl<'s, 'p> Checker<'s, 'p> {
     }
 
     pub(super) fn native_runtime_type(&mut self, ty: TypeId, kind: &NativeRuntimeType, sense: bool) -> TypeId {
+        match kind {
+            NativeRuntimeType::Table => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Table, sense),
+            NativeRuntimeType::Function => return self.native_narrow_runtime_kind(ty, crate::types::NativeRuntimeKind::Function, sense),
+            _ => {}
+        }
         let name = match kind {
             NativeRuntimeType::Nil => known::undefined,
             NativeRuntimeType::Boolean => known::boolean,
             NativeRuntimeType::Number => known::number,
             NativeRuntimeType::String => known::string,
+            NativeRuntimeType::Table | NativeRuntimeType::Function => unreachable!(),
         };
         self.narrow_type_by_typeof_name(ty, name, sense)
     }
