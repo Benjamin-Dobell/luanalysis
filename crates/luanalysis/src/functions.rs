@@ -573,10 +573,11 @@ impl Checker<'_> {
         let pack = self.return_expression_pack(values, span, context.as_ref());
         if let Some(expected) = expected_pack {
             if !self.engine.pack_assignable(&pack, &expected) {
-                self.error(
+                self.error_packs(
                     "TS2322",
                     self.return_contract_origin(span).unwrap_or_else(|| values.first().map_or(span, |value| value.span)),
-                    "Lua result pack is not assignable to the declared result pack.",
+                    "Lua result pack is not assignable to the declared result pack. Actual: {}. Expected: {}.",
+                    &[&pack, &expected],
                 );
             }
         } else if let Some(expected) = self.return_type.clone() {

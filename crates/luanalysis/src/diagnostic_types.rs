@@ -2,13 +2,20 @@
 //! publication. Recording an error must not infer another function's body just
 //! to print its type while the original semantic query is still active.
 use crate::{CheckReport, Checker, Diagnostic, Type, TypeQueries};
+use luanalysis_engine::ValuePack;
 use luanalysis_syntax::Span;
+
+#[derive(Clone, Debug)]
+enum DiagnosticOperand {
+    Type(Type),
+    Pack(ValuePack),
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct PendingDiagnostic {
     pub(crate) index: usize,
     template: String,
-    types: Vec<Type>,
+    operands: Vec<DiagnosticOperand>,
 }
 
 impl CheckReport {
@@ -19,10 +26,45 @@ impl CheckReport {
         template: impl Into<String>,
         types: &[&Type],
     ) {
-        let template = template.into();
+        self.push_diagnostic_operands(
+            code,
+            span,
+            template.into(),
+            types
+                .iter()
+                .map(|ty| DiagnosticOperand::Type((**ty).clone()))
+                .collect(),
+        );
+    }
+
+    pub(crate) fn push_pack_diagnostic(
+        &mut self,
+        code: &'static str,
+        span: Span,
+        template: impl Into<String>,
+        packs: &[&ValuePack],
+    ) {
+        self.push_diagnostic_operands(
+            code,
+            span,
+            template.into(),
+            packs
+                .iter()
+                .map(|pack| DiagnosticOperand::Pack((**pack).clone()))
+                .collect(),
+        );
+    }
+
+    fn push_diagnostic_operands(
+        &mut self,
+        code: &'static str,
+        span: Span,
+        template: String,
+        operands: Vec<DiagnosticOperand>,
+    ) {
         assert_eq!(
             template.matches("{}").count(),
-            types.len(),
+            operands.len(),
             "typed diagnostic operands match their template"
         );
         let index = self.diagnostics.len();
@@ -34,7 +76,7 @@ impl CheckReport {
         self.pending_diagnostics.push(PendingDiagnostic {
             index,
             template,
-            types: types.iter().map(|ty| (**ty).clone()).collect(),
+            operands,
         });
     }
 
@@ -42,10 +84,17 @@ impl CheckReport {
         for pending in std::mem::take(&mut self.pending_diagnostics) {
             let mut parts = pending.template.split("{}");
             let mut message = parts.next().unwrap_or_default().to_owned();
-            for (ty, suffix) in pending.types.iter().zip(parts) {
+            for (operand, suffix) in pending.operands.iter().zip(parts) {
                 // The native printer retains named declarations, generic names,
                 // mapped signatures and unions; no owned inspection erases them.
-                message.push_str(&crate::describe_diagnostic_type(ty, engine));
+                let displayed = match operand {
+                    DiagnosticOperand::Type(ty) => crate::describe_diagnostic_type(ty, engine),
+                    DiagnosticOperand::Pack(pack) => {
+                        crate::describe_native_pack(pack, engine, &mut Vec::new(), true)
+                            .unwrap_or_else(|| "<uninstantiated variadic result pack>".into())
+                    }
+                };
+                message.push_str(&displayed);
                 message.push_str(suffix);
             }
             self.diagnostics[pending.index].message = message;
@@ -87,6 +136,17 @@ pub(crate) fn named_error_description(
 }
 
 impl Checker<'_> {
+    pub(crate) fn error_packs(
+        &mut self,
+        code: &'static str,
+        span: Span,
+        template: impl Into<String>,
+        packs: &[&ValuePack],
+    ) {
+        self.report
+            .push_pack_diagnostic(code, span, template, packs);
+    }
+
     pub(crate) fn error_types(
         &mut self,
         code: &'static str,
@@ -103,6 +163,76 @@ impl Checker<'_> {
 mod tests {
     use super::*;
     use luanalysis_engine::{Engine, LuaKey};
+
+    #[test]
+    fn retained_pack_operands_preserve_correlated_rows_optional_slots_and_variadic_tails() {
+        use luanalysis_engine::{PackAlternative, PackSlot};
+        Engine::new().with_session(|queries| {
+            let actual = queries.retain_pack(&ValuePack::Alternatives(vec![
+                PackAlternative {
+                    fixed: vec![
+                        PackSlot::required(Type::Number),
+                        PackSlot::required(Type::String),
+                    ],
+                    tail: None,
+                },
+                PackAlternative {
+                    fixed: vec![
+                        PackSlot::required(Type::Nil),
+                        PackSlot::required(Type::Boolean),
+                    ],
+                    tail: Some(Box::new(Type::String)),
+                },
+            ]));
+            let expected = queries.retain_pack(&ValuePack::Alternatives(vec![PackAlternative {
+                fixed: vec![
+                    PackSlot::required(Type::Number),
+                    PackSlot {
+                        ty: Type::String,
+                        optional: true,
+                    },
+                ],
+                tail: None,
+            }]));
+            assert!(matches!(actual, ValuePack::Session(_)));
+            let mut report = CheckReport::default();
+            report.push_pack_diagnostic(
+                "TS2322",
+                Span { start: 3, end: 8 },
+                "Actual: {}. Expected: {}.",
+                &[&actual, &expected],
+            );
+            report.render_diagnostics(queries);
+            let message = &report.diagnostics[0].message;
+            assert!(message.contains("(number, string)"), "{message}");
+            assert!(message.contains("(nil, boolean, string...)"), "{message}");
+            assert!(message.contains(" | "), "{message}");
+            let expected_text = message.split("Expected: ").nth(1).unwrap();
+            assert!(expected_text.contains("number") && expected_text.contains("string") && expected_text.contains('?'), "{message}");
+            assert!(
+                !message.contains("undefined") && !message.contains("SessionPack"),
+                "{message}"
+            );
+        });
+    }
+
+    #[test]
+    fn result_pack_diagnostics_keep_zero_values_distinct_from_one_nil_value() {
+        Engine::new().with_session(|queries| {
+            let mut report = CheckReport::default();
+            report.push_pack_diagnostic(
+                "TS2322",
+                Span { start: 0, end: 1 },
+                "Actual: {}. Expected: {}.",
+                &[&ValuePack::empty(), &ValuePack::single(Type::Nil)],
+            );
+            report.render_diagnostics(queries);
+            assert_eq!(
+                report.diagnostics[0].message,
+                "Actual: void. Expected: nil."
+            );
+        });
+    }
 
     #[test]
     fn printing_a_named_operand_does_not_demand_its_unrelated_member_bodies() {
