@@ -20,7 +20,11 @@ fn error_at(report: &CheckReport, source: &str, code: &str, statement: &str, exp
 fn has_parts(report: &CheckReport, source: &str, binding: &str, parts: &[&str]) {
     let ty = report.type_at(source.find(binding).unwrap()).unwrap();
     for part in parts {
-        assert!(ty.contains(part), "{binding}: {ty}, missing {part}");
+        let present = ty.contains(part)
+            || (*part == "boolean"
+                && ty.split(" | ").any(|term| term == "false")
+                && ty.split(" | ").any(|term| term == "true"));
+        assert!(present, "{binding}: {ty}, missing {part}");
     }
     assert!(!ty.contains("any") && !ty.contains("unknown"), "{binding}: {ty}");
 }
@@ -71,7 +75,10 @@ fn numeric_reads_use_reached_stores_without_future_value_pollution() {
     let source = "---@param index number\n---@param other number\nlocal function fill(index,other)\n local ary={}\n ary[index]='word'\n local earlier=ary[other]\n ---@type nil|string\n local accepted=earlier\n ary[index]=true\n local later=ary[other]\nend\n";
     let report = clean(source);
     has_parts(&report, source, "earlier=", &["nil", "string"]);
-    assert!(!report.type_at(source.find("earlier=").unwrap()).unwrap().contains("boolean"));
+    let earlier = report.type_at(source.find("earlier=").unwrap()).unwrap();
+    for boolean in ["boolean", "false", "true"] {
+        assert!(!earlier.split(" | ").any(|term| term == boolean), "{earlier}");
+    }
     has_parts(&report, source, "later=", &["nil", "string", "boolean"]);
 
     let before = "---@param index number\nlocal function fill(index)\n local ary={}\n local before=ary[index]\n ary[index]='word'\nend\n";
@@ -133,7 +140,8 @@ fn numeric_stores_join_overlapping_literal_values_without_widening_other_key_dom
     assert!(!report.type_at(source.find("overlap=").unwrap()).unwrap().contains("nil"));
     has_parts(&report, source, "deleted=", &["nil", "number", "string"]);
     for binding in ["named=", "stillNamed="] {
-        assert_eq!(report.type_at(source.find(binding).unwrap()), Some("boolean"));
+        let local = format!("local {binding}");
+        assert_eq!(report.type_at(source.find(&local).unwrap() + "local ".len()), Some("boolean"));
     }
     for binding in ["flag=", "stillFlag="] {
         assert_eq!(report.type_at(source.find(binding).unwrap()), Some("string"));
