@@ -227,6 +227,9 @@ impl NativeRegistry {
     pub(super) fn rebuild_original_members(&mut self) {
         let mut inputs = self.original_constructor_member_inputs();
         inputs.extend(self.methods.original_members());
+        if self.source_role() == luanalysis_project::SourceRole::Implementation {
+            inputs.extend(self.methods.original_assignment_members(&self.expressions));
+        }
         self.members = super::native_members::NativeMembers::new(self.snapshot, &self.named, inputs, self.globals.member_namespace_end(self.named.next_member_index()));
         for (context, owner) in self.original_member_owner_scopes() {
             self.types.attach_owner_scope(context, owner);
@@ -1957,6 +1960,9 @@ impl NativeTypeProvider for NativeRegistry {
     }
     fn type_member_origin(&self, key: luanalysis_engine::NativeTypeMemberKey) -> luanalysis_engine::TableFieldOrigin {
         self.original_member_origin(key).unwrap_or(luanalysis_engine::TableFieldOrigin::Declared)
+    }
+    fn type_member_is_assignment(&self, key: luanalysis_engine::NativeTypeMemberKey) -> bool {
+        self.members.get(key).is_some_and(|source| matches!(source.candidates[0].origin, crate::native_members::OriginalMemberOrigin::AssignmentField(_)))
     }
     fn type_declaration_members(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> Vec<luanalysis_engine::NativeTypeMemberKey> {
         self.named_declaration_members(key)

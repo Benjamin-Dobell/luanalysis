@@ -454,6 +454,9 @@ impl NativeTypeProvider for ProjectRegistry {
     fn type_member_origin(&self, key: NativeTypeMemberKey) -> luanalysis_engine::TableFieldOrigin {
         self.owner(key.snapshot).type_member_origin(key)
     }
+    fn type_member_is_assignment(&self, key: NativeTypeMemberKey) -> bool {
+        self.owner(key.snapshot).type_member_is_assignment(key)
+    }
     fn type_declaration_members(&self, key: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> {
         let mut members = self.owner(key.snapshot).type_declaration_members(key);
         // Applicability, aliases, specialized owners and canonical object

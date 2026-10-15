@@ -191,6 +191,7 @@ pub trait NativeTypeDeclarationProvider {
     fn contains_type_member(&self, declaration: NativeTypeMemberId) -> bool;
     fn type_member_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeMemberId) -> NativeTypeMemberHeader;
     fn type_member_origin(&self, _: NativeTypeMemberId) -> crate::types::NativeTableFieldOrigin { crate::types::NativeTableFieldOrigin::Declared }
+    fn type_member_is_assignment(&self, _: NativeTypeMemberId) -> bool { false }
     /// Own declarations plus potential explicit-owner augmentations; the backend validates each
     /// original owner candidate before publishing or inheriting its member origin.
     fn type_declaration_members(&self, declaration: NativeTypeDeclarationId) -> Vec<NativeTypeMemberId>;
@@ -680,6 +681,9 @@ impl<'p, 's> Checker<'p, 's> {
             let provider = self.native_named_provider(reference.declaration)?;
             let mut members = Vec::new();
             for member in provider.type_declaration_members(reference.declaration) {
+                // A post-constructor store checks an inherited property; it does
+                // not replace that property's type, readonly flag or owner.
+                if provider.type_member_is_assignment(member) && self.native_named_member_context(member)?.is_some() { continue }
                 if self.native_named_member_header(reference.declaration, member)?.is_some() { members.push(NativeObjectMember { member, owner: reference, via: None }); }
             }
             for (index, base) in bases.into_iter().enumerate() {
@@ -1088,13 +1092,16 @@ impl<'p, 's> Checker<'p, 's> {
         let Some(reference) = self.native_definition_ref(table) else { return Err(NativeTableError::NotTable { ty: table }) };
         let key = key.normalize()?;
         self.native_definition_write(reference, NativeTableAccessKey::Literal(key), value)?;
+        let declared = self.native_definition_value_context(reference, NativeTableAccessKey::Literal(key));
         let TypeData::NativeTable(data) = self.data(reference.view) else { unreachable!("definition has a native actual view") };
         let mut updated = (**data).clone_in(self.arena);
         let mut fields = data.fields.to_vec();
         let optional = self.contains_undefined(value);
         let present = self.without_undefined(value);
         if let Some(field) = fields.iter_mut().find(|field| field.key == key) {
-            field.value = present;
+            field.value = if field.origin == crate::types::NativeTableFieldOrigin::Declared {
+                self.resolved_assignment_type(declared.unwrap_or(field.value), present)
+            } else { present };
             field.optional = optional;
         } else {
             fields.push(NativeTableField { key, value: present, optional, readonly: false, origin: crate::types::NativeTableFieldOrigin::Inferred });

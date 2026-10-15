@@ -131,6 +131,31 @@ fn fixed_method_store_updates_actual_definition_presence_without_promoting_missi
     });
 }
 
+#[test]
+fn fixed_definition_data_stores_preserve_written_literal_and_broad_schema_semantics() {
+    for (declared, copied, permits_two) in [
+        (Type::NumberLiteral(1.0), "1", false),
+        (Type::Number, "number", true),
+        (Type::Union(vec![Type::NumberLiteral(1.0), Type::NumberLiteral(2.0)]), "1", true),
+    ] {
+        Engine::new().with_native_provider(
+            || provider(vec![Head::class(vec![declared])]),
+            |_, q| {
+                let class = q.named_type_reference(key(0), &[]).unwrap();
+                let partial = q.class_definition_value(owner(0), &class, &Type::Table(TableType::default())).unwrap();
+                let member = LuaKey::String(b"value".to_vec());
+                let first = q.definition_field_write(&partial, &member, &Type::NumberLiteral(1.0)).unwrap();
+                let read = q.property_type(&first, "value").unwrap();
+                let copy = q.widen(&read);
+                assert_eq!(q.format(&copy), copied);
+                let second = q.definition_field_write(&first, &member, &Type::NumberLiteral(2.0));
+                assert_eq!(second.is_ok(), permits_two, "a previous flow value must not replace the written mutable schema");
+                assert!(!q.is_assignable(&Type::Table(TableType::default()), &class));
+            },
+        );
+    }
+}
+
 struct DefinitionWrites { method:Type, demands:Cell<usize> }
 fn write_graph()->NativeGraphKey {NativeGraphKey{snapshot:92002,region:0,context:0}}
 fn write_node(node:u32)->NativeFlowKey {NativeFlowKey{graph:write_graph(),node}}

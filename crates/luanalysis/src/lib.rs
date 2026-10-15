@@ -839,7 +839,8 @@ impl Checker<'_> {
 
     fn assign(&mut self, targets: &[Expr], values: &[Expr], annotation: Option<&TypeAnnotation>) {
         if let Some(annotation) = annotation
-            && !targets.iter().all(|target| self.is_global_annotation_target(target))
+            && !targets.iter().all(|target| self.is_global_annotation_target(target)
+                || self.native.is_some_and(|native| native.is_original_assignment_field(target.span)))
         {
             self.error(
                 "LUA2004",
@@ -909,6 +910,10 @@ impl Checker<'_> {
                     }
                 }
                 ExprKind::Field { .. } | ExprKind::Index { .. } => {
+                    if let Some(native) = self.native
+                        && let Some(written) = native.original_assignment_annotation(target.span, self.engine)
+                        && !self.compatible(&value, &written, origin)
+                    { continue; }
                     let base = match &target.kind {
                         ExprKind::Field { base, .. } | ExprKind::Index { base, .. } => {
                             base.as_ref()

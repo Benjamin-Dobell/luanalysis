@@ -12,6 +12,7 @@ pub(super) enum OriginalMemberKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum OriginalMemberOrigin {
     ConstructorField(Span),
+    AssignmentField(Span),
     Method(NativeFunctionKey),
 }
 #[derive(Clone, Debug)]
@@ -96,6 +97,21 @@ use luanalysis_syntax::{ExprKind, TableFieldKind};
 use std::collections::HashSet;
 
 impl NativeRegistry {
+    pub(crate) fn is_original_assignment_field(&self, target: Span) -> bool {
+        self.members.inputs().iter().any(|input| input.origin == OriginalMemberOrigin::AssignmentField(target))
+    }
+    pub(crate) fn original_assignment_annotation(&self, target: Span, queries: &mut dyn TypeQueries) -> Option<Type> {
+        let input = self.members.inputs().iter().find(|input| input.origin == OriginalMemberOrigin::AssignmentField(target))?;
+        let OriginalMemberValue::Written(ty) = &input.value else { return None };
+        Some(self.named_annotation(input.lexical_context, &input.documentation_contexts, ty, queries))
+    }
+    pub(crate) fn validate_original_assignment_annotations(&self, queries: &mut dyn TypeQueries) {
+        for input in self.members.inputs() {
+            if matches!(input.origin, OriginalMemberOrigin::AssignmentField(_))
+                && let OriginalMemberValue::Written(ty) = &input.value
+            { self.named_annotation(input.lexical_context, &input.documentation_contexts, ty, queries); }
+        }
+    }
     pub(super) fn original_constructor_member_inputs(&self) -> Vec<OriginalMemberInput> {
         let mut inputs = Vec::new();
         for source in self.named_metadata().declarations() {
@@ -220,6 +236,15 @@ impl NativeRegistry {
         let mut scopes = Vec::new();
         for input in self.members.inputs() {
             if let OriginalMemberValue::Function(function) = input.value { scopes.push((NativeTypeContext::Function(function), input.owner)); }
+            if matches!(input.origin, OriginalMemberOrigin::AssignmentField(_))
+                && let OriginalMemberValue::Written(ty) = &input.value
+            {
+                let mut ty = ty.value_syntax();
+                while let luanalysis_syntax::TypeExprKind::Parenthesized(inner) = &ty.kind { ty = inner.value_syntax(); }
+                if let luanalysis_syntax::TypeExprKind::Function(function) = &ty.kind
+                    && let Some(key) = self.signature_key_for(function.span)
+                { scopes.push((NativeTypeContext::Signature(key), input.owner)); }
+            }
             if let OriginalMemberOrigin::ConstructorField(span) = input.origin {
                 if let Some(source) = self.named_metadata().field_annotations().iter().find(|source| source.field_span == span) {
                     if let Some(function) = self.expressions().function_for(self.expressions().key_for_span(source.value_span)) {

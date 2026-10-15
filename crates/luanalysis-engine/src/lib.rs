@@ -350,6 +350,8 @@ pub trait NativeTypeProvider {
         panic!("native named member provider is not installed")
     }
     fn type_member_origin(&self, _: NativeTypeMemberKey) -> TableFieldOrigin { TableFieldOrigin::Declared }
+    /// A store declares a new member only when no inherited contract exists.
+    fn type_member_is_assignment(&self, _: NativeTypeMemberKey) -> bool { false }
     fn type_declaration_members(&self, _: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> { Vec::new() }
     fn type_declaration_call_signatures(&self, _: NativeTypeDeclarationKey) -> Vec<NativeSignatureKey> { Vec::new() }
     fn type_alias_target(&self, _: NativeTypeDeclarationKey, _: &mut dyn TypeQueries) -> Type {

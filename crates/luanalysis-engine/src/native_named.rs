@@ -260,6 +260,9 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
             super::TableFieldOrigin::Declared => bun_sema::types::NativeTableFieldOrigin::Declared,
         }
     }
+    fn type_member_is_assignment(&self, key: NativeTypeMemberId) -> bool {
+        self.provider.type_member_is_assignment(source_member(key))
+    }
     fn type_member_header(
         &self,
         checker: &Checker<'_, '_>,

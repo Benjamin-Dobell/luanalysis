@@ -5,7 +5,7 @@ use crate::native_named::{NativeNamed, NativeNamedKey, RuntimeAttachmentKind};
 use crate::native_members::{OriginalMemberInput, OriginalMemberKey, OriginalMemberOrigin, OriginalMemberValue};
 use luanalysis_engine::{LuaKey, NativeFunctionKey, Type, TypeQueries, NativeCheckMode};
 use luanalysis_syntax::{
-    Expr, ExprKind, File, Function, NamedRecordKind, NamedTypeDeclarationKind, Span, Stmt, StmtKind,
+    Expr, ExprKind, File, Function, NamedRecordKind, NamedTypeDeclarationKind, Span, Stmt, StmtKind, TypeExpr,
 };
 use std::collections::HashMap;
 
@@ -26,6 +26,14 @@ pub(super) struct MethodSource {
 pub(super) struct NativeMethods {
     snapshot: u64,
     sources: Vec<Option<MethodSource>>,
+    fields: Vec<AssignmentFieldSource>,
+}
+struct AssignmentFieldSource {
+    owner: NativeNamedKey,
+    key: LuaKey,
+    target: Span,
+    value: Span,
+    annotation: Option<TypeExpr>,
 }
 impl NativeMethods {
     pub(super) fn new(
@@ -79,6 +87,7 @@ impl NativeMethods {
         let mut methods = Self {
             snapshot,
             sources: vec![None; functions.len()],
+            fields: Vec::new(),
         };
         methods.statements(&file.statements, spans, bound, &owners, &declaration_owners);
         // Each original function body is indexed once; expression nesting was
@@ -111,6 +120,20 @@ impl NativeMethods {
             })
         }).collect()
     }
+    pub(super) fn original_assignment_members(&self, expressions: &super::NativeExpressions) -> Vec<OriginalMemberInput> {
+        self.fields.iter().map(|field| {
+            let expression = expressions.key_for_span(field.value);
+            OriginalMemberInput {
+                owner: field.owner,
+                key: OriginalMemberKey::Fixed(field.key.clone()),
+                origin: OriginalMemberOrigin::AssignmentField(field.target),
+                value: field.annotation.as_ref().map_or(OriginalMemberValue::Expression(expression), |ty| OriginalMemberValue::Written(ty.clone())),
+                span: field.target,
+                lexical_context: expressions.get(expression).owner.map(crate::native_named::NativeTypeContext::Function),
+                documentation_contexts: vec![field.owner],
+            }
+        }).collect()
+    }
     fn statements(
         &mut self,
         statements: &[Stmt],
@@ -127,11 +150,18 @@ impl NativeMethods {
                     method_span,
                 } => self.record(target, function, *method_span, spans, bound, owners, declaration_owners),
                 StmtKind::Assign {
-                    targets, values, ..
+                    targets, values, annotation,
                 } if targets.len() == values.len() => {
-                    for (target, value) in targets.iter().zip(values) {
+                    for (index, (target, value)) in targets.iter().zip(values).enumerate() {
                         if let Some(function) = function_literal(value) {
                             self.record(target, function, None, spans, bound, owners, declaration_owners);
+                        } else if let Some((receiver, key)) = fixed_member_target(target)
+                            && let Some(owner) = local_class_owner(receiver, bound, owners)
+                        {
+                            self.fields.push(AssignmentFieldSource {
+                                owner, key, target: target.span, value: value.span,
+                                annotation: annotation.as_ref().and_then(|annotation| annotation.types.get(index)).cloned(),
+                            });
                         }
                     }
                 }
@@ -165,16 +195,7 @@ impl NativeMethods {
         owners: &HashMap<BindingId, Vec<NativeNamedKey>>,
         declaration_owners: &HashMap<String, Vec<NativeNamedKey>>,
     ) {
-        let (receiver, member) = match &target.kind {
-            ExprKind::Field { base, name } => {
-                (base.as_ref(), LuaKey::String(name.text.as_bytes().to_vec()))
-            }
-            ExprKind::Index { base, index } => match crate::native_tables::literal_key(index) {
-                Some(key) => (base.as_ref(), key),
-                None => return,
-            },
-            _ => return,
-        };
+        let Some((receiver, member)) = fixed_member_target(target) else { return };
         let index = *spans
             .get(&(function.span.start, function.span.end))
             .expect("original method function was allocated first");
@@ -182,16 +203,7 @@ impl NativeMethods {
             snapshot: self.snapshot,
             index,
         };
-        let class_owner = match &receiver.kind {
-            ExprKind::Name(name) => bound
-                .binding_at(name.span.start)
-                .and_then(|binding| owners.get(&binding))
-                .and_then(|owners| match owners.as_slice() {
-                    [owner] => Some(*owner),
-                    _ => None,
-                }),
-            _ => None,
-        };
+        let class_owner = local_class_owner(receiver, bound, owners);
         let declaration_owner = match &receiver.kind {
             ExprKind::Name(name) if bound.binding_at(name.span.start).is_none() =>
                 declaration_owners.get(&name.text).and_then(|owners| match owners.as_slice() {
@@ -210,6 +222,18 @@ impl NativeMethods {
             declaration_owner,
         });
     }
+}
+fn fixed_member_target(target: &Expr) -> Option<(&Expr, LuaKey)> {
+    match &target.kind {
+        ExprKind::Field { base, name } => Some((base, LuaKey::String(name.text.as_bytes().to_vec()))),
+        ExprKind::Index { base, index } => Some((base, crate::native_tables::literal_key(index)?)),
+        _ => None,
+    }
+}
+fn local_class_owner(receiver: &Expr, bound: &BoundFile, owners: &HashMap<BindingId, Vec<NativeNamedKey>>) -> Option<NativeNamedKey> {
+    let ExprKind::Name(name) = &receiver.kind else { return None };
+    let [owner] = owners.get(&bound.binding_at(name.span.start)?)?.as_slice() else { return None };
+    Some(*owner)
 }
 fn function_literal(value: &Expr) -> Option<&Function> {
     match &value.kind {

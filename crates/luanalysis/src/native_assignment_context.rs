@@ -6,6 +6,9 @@ use luanalysis_syntax::{Expr, ExprKind};
 
 impl Checker<'_> {
     pub(crate) fn assignment_target_context(&mut self, target: &Expr) -> Option<Type> {
+        if let Some(native) = self.native
+            && let Some(written) = native.original_assignment_annotation(target.span, self.engine)
+        { return Some(written); }
         self.assignment_declaration_path(target)
     }
 
