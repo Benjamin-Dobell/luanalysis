@@ -402,6 +402,17 @@ impl<'p, 's> Checker<'p, 's> {
             | (TypeData::NativeArray { .. }, TypeData::NativeArray { .. }) => {
                 self.invoke_once(n, original_source, original_target, Self::infer_native_object_types);
             }
+            (TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }, TypeData::NativeTable(_))
+                if n.priority & PRIORITY_NO_CONSTRAINTS == 0 =>
+            {
+                // A native table pattern needs the source's apparent bound,
+                // just as TS index inference does. Bare type-variable targets
+                // have already retained the original source identity above.
+                let apparent = self.apparent_type(source);
+                if apparent != source {
+                    self.infer_types(n, apparent, original_target);
+                }
+            }
             // Two deferred references go through `invokeOnce`; otherwise inference might not
             // terminate.
             (TypeData::Ref { target: st, .. }, TypeData::Ref { target: tt, .. })
@@ -537,22 +548,33 @@ impl<'p, 's> Checker<'p, 's> {
                     }
                 }
                 for indexer in &target.indexers {
+                    let mut values = Vec::new();
                     for actual in &source.indexers {
                         if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
-                        sources.extend([actual.key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
-                        targets.extend([indexer.key, indexer.value]);
+                        sources.push(actual.key);
+                        targets.push(indexer.key);
+                        values.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
                     }
                     for actual in &source.fields {
                         let key = self.native_table_key_type(actual.key);
                         if !self.native_table_inference_key_matches(key, indexer.key) { continue }
-                        sources.extend([key, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
-                        targets.extend([indexer.key, indexer.value]);
+                        sources.push(key);
+                        targets.push(indexer.key);
+                        values.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
                     }
                     for actual in &source.sequence_tails {
                         if !self.native_table_inference_key_matches(TypeId::NUMBER, indexer.key)
                             || !self.could_contain_type_variables(indexer.key) && !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
-                        sources.extend([TypeId::NUMBER, if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value }]);
-                        targets.extend([indexer.key, indexer.value]);
+                        sources.push(TypeId::NUMBER);
+                        targets.push(indexer.key);
+                        values.push(if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value });
+                    }
+                    if !values.is_empty() {
+                        // Index entries are alternatives, not competing guesses
+                        // for one common supertype. Match infer_from_index_types
+                        // by inferring from their combined present-value domain.
+                        sources.push(self.union(&values));
+                        targets.push(indexer.value);
                     }
                 }
                 for tail in &target.sequence_tails {
