@@ -698,6 +698,17 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     fn native_member_capture_mapper(&mut self, reference: NativeObjectReference, member: NativeTypeMemberId) -> Result<Option<MapperId>, NativeNamedTypeError> {
+        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
+        let metadata = provider.type_member_header(self, member);
+        // A canonical written owner with no application needs no matching
+        // query. The ordinary member mapper supplies its class arguments.
+        // Keep the application demand guarded: a typed-local contribution may
+        // share this owner while still requiring its captured application.
+        if matches!(metadata.owner, NativeTypeMemberOwner::Declared(owner) if owner == reference.declaration)
+            && self.native_member_owner_application(member)?.is_none()
+        {
+            return Ok(Some(MapperId::IDENTITY));
+        }
         let owner = self.intern(TypeData::NativeObject(reference));
         let query = Query::NativeNamed(NativeTypeDeclarationQuery::MemberOwnerMatch { member, owner });
         if !self.enter(query) {

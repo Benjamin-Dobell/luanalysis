@@ -607,7 +607,7 @@ impl<'p, 's> Checker<'p, 's> {
         // namespace and preserve its original member/signature capability.
         if let Ok(NativeTableAccessKey::Literal(NativeTableKey::String(name))) = self.native_table_access(key)
             && let Some(member) = self.native_primitive_property(table, name)
-        { return member.ok_or(NativeTableError::MissingKey { key }); }
+        { return member; }
         let table = self.native_runtime_carrier(table);
         if let Some(reference) = self.native_runtime_table_ref(table) { return self.native_runtime_table_read(reference, key) }
         if let Some(reference) = self.native_definition_ref(table) { return self.native_definition_member_read(reference, table, key) }

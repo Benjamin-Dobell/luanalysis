@@ -58,6 +58,7 @@ struct Strings {
     contract_reads: Cell<usize>,
     initializers: Cell<usize>,
     errors: RefCell<Vec<GlobalQueryError>>,
+    pending_member: Cell<bool>,
 }
 impl Default for Strings {
     fn default() -> Self {
@@ -68,10 +69,18 @@ impl Default for Strings {
             contract_reads: Cell::new(0),
             initializers: Cell::new(0),
             errors: RefCell::new(vec![]),
+            pending_member: Cell::new(false),
         }
     }
 }
 impl NativeTypeProvider for Strings {
+    fn type_member_activation(&self, key: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> TypeMemberActivation {
+        if key == member(0) && self.pending_member.get() {
+            TypeMemberActivation::Pending
+        } else {
+            TypeMemberActivation::Active
+        }
+    }
     fn primitive_member_environment(&self) -> Option<NativeEnvironmentKey> {
         self.selected
     }
@@ -323,6 +332,23 @@ fn primitive_string_members_retain_the_original_namespace_signature_capability()
         assert_eq!(provider.initializers.get(), 0);
         assert!(provider.errors.borrow().is_empty());
     });
+}
+
+#[test]
+fn primitive_member_pending_context_stays_typed_and_is_not_cached_as_missing() {
+    Engine::new().with_native_provider(
+        || Strings { pending_member: Cell::new(true), ..Default::default() },
+        |provider, queries| {
+            let key = TableKey::Literal(LuaKey::String(b"lower".to_vec()));
+            assert_eq!(queries.table_lookup(&Type::String, &key), Err(TableError::PendingContext));
+            assert_eq!(queries.property_type_checked(&Type::String, "lower"), Err(TableError::PendingContext));
+            provider.pending_member.set(false);
+            let method = queries.table_lookup(&Type::String, &key).unwrap();
+            let result = queries.call(&method, &[Type::String]);
+            assert!(result.errors.is_empty(), "{:?}", result.errors);
+            assert_eq!(result.return_type, Type::String);
+        },
+    );
 }
 
 #[test]

@@ -166,11 +166,14 @@ impl<'p, 's> Checker<'p, 's> {
         }
         fields
     }
-    /// None is the ordinary backend property path. Some(None) is an authoritative
-    /// absent Lua member and must not fall through to the TypeScript String library.
-    pub(super) fn native_primitive_property(&mut self, ty: TypeId, name: crate::atom::Atom) -> Option<Option<TypeId>> {
+    /// None is the ordinary backend property path. A selected Lua namespace
+    /// keeps its typed lookup errors, including provisional member context.
+    pub(super) fn native_primitive_property(&mut self, ty: TypeId, name: crate::atom::Atom) -> Option<Result<TypeId, super::native_tables::NativeTableError>> {
+        use super::native_tables::NativeTableError;
+        use crate::types::{NativeTableAccessKey, NativeTableKey};
         let provider = self.native_globals_provider?;
         let environment = provider.primitive_member_environment()?;
+        let key = NativeTableAccessKey::Literal(NativeTableKey::String(name));
         let apparent = self.base_constraint_of(ty).unwrap_or(ty);
         if self.is_union(apparent) {
             let parts = self.parts(apparent).to_vec();
@@ -180,29 +183,38 @@ impl<'p, 's> Checker<'p, 's> {
             }) { return None }
             let mut values = Vec::with_capacity(parts.len());
             for part in parts {
-                let Some(value) = self.type_of_property(part, name) else { return Some(None) };
-                values.push(value);
+                let value = if let Some(value) = self.native_primitive_property(part, name) {
+                    value
+                } else if matches!(self.data(part), crate::types::TypeData::NativeTable(_) | crate::types::TypeData::NativeObject(_) | crate::types::TypeData::NativeDefinition(_)) {
+                    self.native_table_read(part, key)
+                } else {
+                    self.type_of_property(part, name).ok_or(NativeTableError::MissingKey { key })
+                };
+                match value {
+                    Ok(value) => values.push(value),
+                    Err(error) => return Some(Err(error)),
+                }
             }
-            return Some(Some(self.union(&values)));
+            return Some(Ok(self.union(&values)));
         }
         if self.flags(apparent) & crate::types::tf::STRING_LIKE == 0 { return None }
         if !provider.contains_global_environment(environment) {
             self.report_native_global(NativeGlobalQueryError::InvalidEnvironment(environment));
-            return Some(None);
+            return Some(Err(NativeTableError::MissingKey { key }));
         }
         let Some(binding) = provider.primitive_member_binding(environment, NativePrimitiveMemberKind::String) else { return None };
         if binding.environment != environment {
             self.report_native_global(NativeGlobalQueryError::InvalidBinding(binding));
-            return Some(None);
+            return Some(Err(NativeTableError::MissingKey { key }));
         }
-        let Ok(namespace) = self.native_global_binding_type(binding) else { return Some(None) };
+        let Ok(namespace) = self.native_global_binding_type(binding) else { return Some(Err(NativeTableError::MissingKey { key })) };
         // Only original native table/object namespaces qualify. In particular, a
         // string/any contract cannot recurse back into this primitive lookup.
         if !matches!(self.data(namespace), crate::types::TypeData::NativeTable(_) | crate::types::TypeData::NativeObject(_)) {
             self.report_native_global(NativeGlobalQueryError::InvalidPrimitiveMemberNamespace { binding, kind: NativePrimitiveMemberKind::String });
-            return Some(None);
+            return Some(Err(NativeTableError::MissingKey { key }));
         }
-        Some(self.type_of_property(namespace, name))
+        Some(self.native_table_read(namespace, key))
     }
 
     pub fn set_native_globals_provider(&mut self, provider: &'p dyn NativeGlobalsProvider) {

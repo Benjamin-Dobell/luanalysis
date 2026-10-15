@@ -7506,7 +7506,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// The type of `ty.name`. `None`: there is no such property.
     pub fn type_of_property(&mut self, ty: TypeId, name: Atom) -> Option<TypeId> {
-        if let Some(member) = self.native_primitive_property(ty, name) { return member; }
+        if let Some(member) = self.native_primitive_property(ty, name) { return member.ok(); }
         if matches!(self.data(ty), TypeData::NativeTable(_) | TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) {
             return self.native_table_read(ty, NativeTableAccessKey::Literal(NativeTableKey::String(name))).ok();
         }
