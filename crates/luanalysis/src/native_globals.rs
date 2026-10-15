@@ -625,6 +625,14 @@ pub(super) fn query_declarations(error: &GlobalQueryError) -> Vec<NativeValueDec
 }
 
 impl Checker<'_> {
+    fn standard_callable_declaration_type(&mut self, declaration: NativeValueDeclarationKey) -> Option<Type> {
+        match self.engine.value_declaration_type(declaration) {
+            Ok(written) => Some(written),
+            Err(GlobalQueryError::UnresolvedQuery(_)) => { self.incomplete_flow = true; None },
+            Err(_) => None,
+        }
+    }
+
     /// This is an ordinary written type view, never physical value evidence.
     pub(crate) fn standard_callable_read(&mut self, expression: &luanalysis_syntax::Expr, at: luanalysis_engine::NativeFlowKey) -> Option<Type> {
         if self.runtime_value { return None; }
@@ -638,7 +646,7 @@ impl Checker<'_> {
             luanalysis_engine::NativeStandardOperation::Standard(site) => {
                 // A builtin assigned another builtin takes the replacement's
                 // exact original public heads, not the old binding's contract.
-                self.engine.value_declaration_type(site.declaration).ok()
+                self.standard_callable_declaration_type(site.declaration)
             },
             luanalysis_engine::NativeStandardOperation::Pending => { self.incomplete_flow = true; None },
             luanalysis_engine::NativeStandardOperation::Ordinary => None,
@@ -762,4 +770,60 @@ fn nonstandard_environment(bound: &BoundFile, offset: usize) -> bool {
         scope = node.parent;
     }
     false
+}
+
+#[cfg(test)]
+mod standard_callable_pending_tests {
+    use super::*;
+    use luanalysis_engine::{ContextualTypeOwner, Engine, NativeFlowKey, NativeGraphKey, Parameter};
+    use std::cell::RefCell;
+
+    const DECLARATION: NativeValueDeclarationKey = NativeValueDeclarationKey { snapshot: 99731, index: 0 };
+    const FUNCTION: NativeFunctionKey = NativeFunctionKey { snapshot: 99731, index: 0 };
+
+    struct Provider { ready: bool, errors: RefCell<Vec<GlobalQueryError>> }
+    impl NativeTypeProvider for Provider {
+        fn contains_value_declaration(&self, key: NativeValueDeclarationKey) -> bool { key == DECLARATION }
+        fn value_declaration_header(&self, _: NativeValueDeclarationKey) -> ValueDeclarationHeader {
+            ValueDeclarationHeader { role: GlobalSourceRole::Declaration, kind: GlobalValueKind::Function }
+        }
+        fn value_declaration_contract(&self, _: NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<Type> {
+            let _ = queries.contextual_type_owner(FUNCTION, NativeFlowKey {
+                graph: NativeGraphKey { snapshot: 99731, region: 0, context: 0 }, node: 0,
+            });
+            // Even a provider that ignores Pending cannot publish this fallback.
+            Some(Type::RuntimeFunction)
+        }
+        fn global_query_error(&self, error: GlobalQueryError, _: &mut dyn TypeQueries) { self.errors.borrow_mut().push(error); }
+        fn contains_function(&self, key: NativeFunctionKey) -> bool { key == FUNCTION }
+        fn contextual_type_owner(&self, _: NativeFunctionKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> ContextualTypeOwner {
+            if self.ready { ContextualTypeOwner::Absent } else { ContextualTypeOwner::Pending }
+        }
+        fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> { panic!("declaration lookup must not demand a runtime body") }
+        fn function_declared_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> { panic!("declaration lookup must not demand a runtime body") }
+        fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type { panic!("declaration lookup must not infer a runtime body") }
+        fn return_cycle(&self, _: NativeFunctionKey) { panic!("no runtime return query") }
+        fn return_type_too_deep(&self, _: NativeFunctionKey) { panic!("no runtime return query") }
+    }
+
+    #[test]
+    fn a_pending_standard_declaration_cannot_become_a_completed_unknown_read() {
+        for ready in [false, true] {
+            Engine::new().with_native_provider(
+                move || Provider { ready, errors: RefCell::new(Vec::new()) },
+                |provider, queries| {
+                    let file = luanalysis_syntax::parse("");
+                    let bound = crate::bind::bind(&file);
+                    let registry = NativeRegistry::new(file, bound);
+                    let mut reader = registry.checker(queries);
+                    assert_eq!(reader.standard_callable_declaration_type(DECLARATION).is_some(), provider.ready);
+                    assert_eq!(reader.incomplete_flow, !provider.ready);
+                    // A completed fallback read cannot clear the earlier source flag.
+                    assert_eq!(reader.engine.regular_type(&Type::Unknown), Type::Unknown);
+                    assert_eq!(reader.incomplete_flow, !provider.ready);
+                    assert_eq!(provider.errors.borrow().iter().any(|error| matches!(error, GlobalQueryError::UnresolvedQuery(_))), !provider.ready);
+                },
+            );
+        }
+    }
 }
