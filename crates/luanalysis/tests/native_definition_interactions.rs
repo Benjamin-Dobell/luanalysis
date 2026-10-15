@@ -352,11 +352,10 @@ fn inherited_base_argument_errors_keep_one_original_diagnostic_and_accept_correc
             .replace("Base<string>", "Base<number>")
             .replace("definition={}", "definition={value='wrong'}"),
     );
-    fail(
-        &fixture.check(&["base.def.lua"]),
-        "TS2322",
-        "derived.lua:2:",
-    );
+    let output = fixture.check(&["base.def.lua"]);
+    fail(&output, "TS2416", "derived.lua:2:");
+    assert_eq!(text(&output).matches("error[TS2416]").count(), 1, "{}", text(&output));
+    assert!(!text(&output).contains("LUA2031"), "{}", text(&output));
 }
 
 #[test]

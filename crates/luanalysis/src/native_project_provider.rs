@@ -510,7 +510,8 @@ impl NativeTypeProvider for ProjectRegistry {
                 NamedTypeQuery::Head(key)
                 | NamedTypeQuery::Bases(key)
                 | NamedTypeQuery::ObjectMembers(key) => key.snapshot,
-                NamedTypeQuery::Member(key) | NamedTypeQuery::Indexer(key) => key.snapshot,
+                NamedTypeQuery::DefinitionContext(key) => key.snapshot,
+                NamedTypeQuery::Member(key) | NamedTypeQuery::MemberContext(key) | NamedTypeQuery::Indexer(key) => key.snapshot,
             },
         };
         self.owner(snapshot).type_declaration_error(error);

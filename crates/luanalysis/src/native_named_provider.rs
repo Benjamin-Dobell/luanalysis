@@ -657,6 +657,14 @@ impl NativeRegistry {
                     .anonymous_member(anonymous_member_key(key))
                     .map(|source| source.span)
             })
+            .or_else(|| self.members.get(key).map(|source| {
+                use crate::native_members::OriginalMemberValue;
+                match &source.candidates[0].value {
+                    OriginalMemberValue::Written(ty) => ty.span,
+                    OriginalMemberValue::Expression(expression) => self.expressions().get(*expression).expression.span,
+                    OriginalMemberValue::Function(function) => self.function(*function).span,
+                }
+            }))
             .unwrap_or_else(|| self.named_member_origin(key))
     }
     pub(super) fn named_declaration_error(&self, error: NamedTypeError) {
@@ -731,7 +739,8 @@ impl NativeRegistry {
                     NamedTypeQuery::Head(key)
                     | NamedTypeQuery::Bases(key)
                     | NamedTypeQuery::ObjectMembers(key) => self.named_origin(key),
-                    NamedTypeQuery::Member(key) | NamedTypeQuery::Indexer(key) => {
+                    NamedTypeQuery::DefinitionContext(key) => self.named_origin(key),
+                    NamedTypeQuery::Member(key) | NamedTypeQuery::MemberContext(key) | NamedTypeQuery::Indexer(key) => {
                         self.named_member_origin(key)
                     }
                 },

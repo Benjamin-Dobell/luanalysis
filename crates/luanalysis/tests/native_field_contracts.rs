@@ -184,6 +184,7 @@ fn inferred_function_fields_keep_their_public_overload_heads() {
 ---@return any
 identity = function(value) return value end,
 }
+
 local numeric = functions.identity(1)
 local textual = functions.identity("word")
 "#;
@@ -192,6 +193,44 @@ local textual = functions.identity("word")
     assert_eq!(binding(&report, "textual"), "string");
 }
 
+#[test]
+fn inherited_constructor_function_contexts_keep_sibling_generic_base_mappers() {
+    let source = r#"---@alias Base<T> {callback:fun(value:T):T}
+---@class Numeric:Base<number>
+local Numeric={callback=function(value) return value+1 end}
+---@class Textual:Base<string>
+local Textual={callback=function(value) return value.."!" end}
+---@type Numeric
+local numeric
+---@type Textual
+local textual
+---@type number
+local number=numeric.callback(1)
+---@type string
+local string=textual.callback("word")
+"#;
+    let report = accepted(source);
+    assert_eq!(report.type_at(source.find("function(value)").unwrap() + "function(".len()), Some("number"));
+    assert_eq!(report.type_at(source.rfind("function(value)").unwrap() + "function(".len()), Some("string"));
+    let bad = source.replace("return value+1", "return 'wrong'");
+    let report = check(&bad);
+    let failure = report.diagnostics.iter().find(|error| error.code == "TS2416").unwrap_or_else(|| panic!("{:#?}", report.diagnostics));
+    assert_eq!(&bad[failure.span.start..failure.span.end], "function(value) return 'wrong' end");
+    assert!(report.diagnostics.iter().all(|error| error.code != "TS7006"), "{:#?}", report.diagnostics);
+    assert_eq!(report.type_at(bad.find("function(value)").unwrap() + "function(".len()), Some("number"));
+    accepted(&bad.replace("return 'wrong'", "return value+1"));
+}
+
+#[test]
+fn inferred_constructor_override_reports_the_original_value_once() {
+    let source = "---@alias Base {value:number}\n---@class Derived:Base\nlocal Derived={value='wrong'}\n";
+    let report = check(source);
+    let failures: Vec<_> = report.diagnostics.iter().filter(|error| error.code == "TS2416").collect();
+    assert_eq!(failures.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(&source[failures[0].span.start..failures[0].span.end], "'wrong'");
+    assert!(report.diagnostics.iter().all(|error| error.code != "LUA2031"), "{:#?}", report.diagnostics);
+    accepted(&source.replace("'wrong'", "42"));
+}
 #[test]
 fn cli_checks_original_field_initializer_and_accepts_its_source_correction() {
     let directory = std::env::temp_dir().join(format!("luanalysis original field contracts {}", std::process::id()));

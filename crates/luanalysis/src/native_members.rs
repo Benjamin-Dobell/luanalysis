@@ -155,7 +155,7 @@ impl NativeRegistry {
         if !incomplete { self.merge_report(report); }
         ty
     }
-    fn original_member_candidate_type(&self, input: &OriginalMemberInput, queries: &mut dyn TypeQueries) -> Type {
+    fn original_member_candidate_type(&self, member: NativeTypeMemberKey, input: &OriginalMemberInput, queries: &mut dyn TypeQueries) -> Type {
         match &input.value {
             OriginalMemberValue::Written(ty) => {
                 if let OriginalMemberOrigin::ConstructorField(span) = input.origin {
@@ -174,18 +174,23 @@ impl NativeRegistry {
             }
             OriginalMemberValue::Function(key) => {
                 if self.source_role() == luanalysis_project::SourceRole::Declaration {
-                    self.ambient_function_contract(*key, queries).unwrap_or_else(|| queries.error_type())
-                } else { Type::NativeFunction(*key) }
-            }
+                    return self.ambient_function_contract(*key, queries).unwrap_or_else(|| queries.error_type());
+                }
+                let value = Type::NativeFunction(*key);
+                if let Ok(Some(expected)) = queries.named_member_context(member) {
+                    let expression = self.expressions().key_for_span(self.function(*key).span);
+                    self.source_check_expression(expression, Some(&expected), luanalysis_engine::NativeCheckMode::empty(), queries)
+                } else { value }
+            },
         }
     }
     pub(super) fn original_member_type(&self, key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Option<Type> {
         let source = self.members.get(key)?;
-        if source.candidates.len() == 1 { return Some(self.original_member_candidate_type(&source.candidates[0], queries)); }
+        if source.candidates.len() == 1 { return Some(self.original_member_candidate_type(key, &source.candidates[0], queries)); }
         let OriginalMemberKey::Fixed(member_key) = &source.candidates[0].key else { unreachable!("separate computed source addresses") };
         let mut table = TableType { fresh: true, ..Default::default() };
         for input in &source.candidates {
-            let value = self.original_member_candidate_type(input, queries);
+            let value = self.original_member_candidate_type(key, input, queries);
             table.fields.push(if matches!(input.value, OriginalMemberValue::Written(_)) {
                 luanalysis_engine::TableField::declared(member_key.clone(), value)
             } else { luanalysis_engine::TableField::new(member_key.clone(), value) });

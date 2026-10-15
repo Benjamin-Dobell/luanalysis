@@ -200,6 +200,14 @@ impl Checker<'_> {
     }
     fn class_definition_error(&mut self, error: NamedTypeError, span: Span) {
         match error {
+            // Native declaration queries report these at the original member
+            // or base. Repeated initializer demands must not add wrapper errors
+            // at the class name and constructor on top of that diagnostic.
+            NamedTypeError::IncompatibleOverride { .. }
+            | NamedTypeError::IncompatibleBase { .. }
+            | NamedTypeError::InvalidBase { .. }
+            | NamedTypeError::CircularBase(_)
+            | NamedTypeError::TypeArgumentConstraint { .. } => {},
             NamedTypeError::DefinitionField {
                 error: luanalysis_engine::TableError::ValueType { value, expected },
                 ..

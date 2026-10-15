@@ -933,6 +933,7 @@ pub trait TypeQueries {
     fn named_object_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey>;
     fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
     fn named_receiver_type(&mut self, class: &Type, receiver: &Type) -> Result<Type, NamedTypeError>;
+    fn named_member_context(&mut self, member: NativeTypeMemberKey) -> Result<Option<Type>, NamedTypeError>;
     fn validate_named_declaration(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
     fn validate_named_member(&mut self, member: NativeTypeMemberKey) -> Result<Type, NamedTypeError>;
 }
@@ -1726,6 +1727,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         native_named::declared(self, declaration, false)
     }
     fn named_receiver_type(&mut self, class: &Type, receiver: &Type) -> Result<Type, NamedTypeError> { native_named::receiver(self, class, receiver) }
+    fn named_member_context(&mut self, member: NativeTypeMemberKey) -> Result<Option<Type>, NamedTypeError> {
+        native_named::member_context(self, member)
+    }
     fn validate_named_declaration(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError> {
         native_named::declared(self, declaration, true)
     }

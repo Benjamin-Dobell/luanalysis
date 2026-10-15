@@ -110,15 +110,15 @@ fn unrelated_origins_and_ordinary_raw_tables_remain_nominal_failures() {
 }
 
 #[test]
-fn inferred_runtime_members_are_view_only_and_do_not_promote_named_schema() {
+fn original_constructor_members_are_part_of_the_instance_schema() {
     let report = clean(
         "---@class Point\n---@field x number\nlocal point={x=42,extra=\"runtime\"}\nlocal value=point.extra",
     );
     assert_eq!(ty(&report, "value"), "string");
-    rejects(
+    let report = clean(
         "---@class Point\n---@field x number\nlocal point={x=42,extra=\"runtime\"}\n---@param instance Point\nlocal function read(instance) return instance.extra end",
-        "TS2339",
     );
+    assert!(ty(&report, "read").contains("string"));
 }
 
 #[test]

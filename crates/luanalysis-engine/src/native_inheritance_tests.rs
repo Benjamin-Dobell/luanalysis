@@ -10,9 +10,9 @@ fn reference(index:u32,args:Vec<Type>)->Type {Type::NativeNamedReference{declara
 fn owner(index:u32)->NativeClassDefinitionKey {NativeClassDefinitionKey{snapshot:92001,index}}
 fn signature(index:u32)->NativeSignatureKey {NativeSignatureKey{snapshot:92001,index}}
 fn array(value:Type)->Type {Type::Table(TableType{indexers:vec![TableIndexer::new(Type::Number,value)],..Default::default()})}
-struct Head {kind:TypeDeclarationKind,generic:bool,fields:Vec<Type>,bases:Vec<Type>,optional:bool,indexer:Option<Type>}
+struct Head {kind:TypeDeclarationKind,generic:bool,fields:Vec<Type>,bases:Vec<Type>,optional:bool,indexer:Option<Type>,inferred:bool}
 impl Head {
-    fn class(fields:Vec<Type>)->Self {Self{kind:TypeDeclarationKind::Class,generic:false,fields,bases:vec![],optional:false,indexer:None}}
+    fn class(fields:Vec<Type>)->Self {Self{kind:TypeDeclarationKind::Class,generic:false,fields,bases:vec![],optional:false,indexer:None,inferred:false}}
 }
 struct Provider {heads:Vec<Head>,calls:bool,bases:Cell<usize>,reads:Cell<usize>,errors:RefCell<Vec<NamedTypeError>>}
 impl Provider {fn new(heads:Vec<Head>)->Self {Self{heads,calls:false,bases:Cell::new(0),reads:Cell::new(0),errors:RefCell::new(vec![])}}}
@@ -24,6 +24,7 @@ impl NativeTypeProvider for Provider {
     fn contains_type_member(&self,id:NativeTypeMemberKey)->bool {id.snapshot==92001&&((id.index/100)as usize)<self.heads.len()&&((id.index%100)as usize)<self.heads[(id.index/100)as usize].fields.len()}
     fn type_member_header(&self,id:NativeTypeMemberKey)->TypeMemberHeader {TypeMemberHeader{owner:TypeMemberOwner::Declared(key(id.index/100)),key:if self.heads[(id.index/100)as usize].indexer.is_some(){TypeMemberKeyRecipe::Indexer{sparse:false}}else{TypeMemberKeyRecipe::Fixed(LuaKey::String(if id.index%100==0{b"value".to_vec()}else{b"other".to_vec()}))},visibility:TypeMemberVisibility::Public,optional:self.heads[(id.index/100)as usize].optional,readonly:false}}
     fn type_indexer_key(&self,id:NativeTypeMemberKey,_:&mut dyn TypeQueries)->Type {self.heads[(id.index/100)as usize].indexer.clone().unwrap()}
+    fn type_member_origin(&self,id:NativeTypeMemberKey)->TableFieldOrigin {if self.heads[(id.index/100)as usize].inferred{TableFieldOrigin::Inferred}else{TableFieldOrigin::Declared}}
     fn type_member_type(&self,id:NativeTypeMemberKey,_:&mut dyn TypeQueries)->Type {self.reads.set(self.reads.get()+1);self.heads[(id.index/100)as usize].fields[(id.index%100)as usize].clone()}
     fn contains_type_parameter(&self,id:NativeTypeParameterKey)->bool {id.snapshot==92001&&(id.index as usize)<self.heads.len()}
     fn type_parameter_name(&self,id:NativeTypeParameterKey)->String {format!("T{}",id.index)}
@@ -59,6 +60,58 @@ fn mapped_ancestors_preserve_lazy_member_owner_and_nested_arguments() {
         let wrong=q.named_type_reference(key(0),&[array(Type::String)]).unwrap();assert!(!q.is_assignable(&derived,&wrong));
         let unrelated=q.named_type_reference(key(2),&[]).unwrap();assert!(!q.is_assignable(&derived,&unrelated));
         let count=p.bases.get();assert_eq!(q.property_type(&derived,"other"),Some(Type::String));assert_eq!(p.bases.get(),count,"base recipes are cached in original declaration space");
+    });
+}
+
+#[test]
+fn inherited_member_context_preserves_owner_mapper_and_caches_absence() {
+    Engine::new().with_native_provider(|| {
+        let mut base = Head::class(vec![Type::NativeTypeParameter(param(0)), Type::String]);
+        base.generic = true;
+        let mut derived = Head::class(vec![Type::Unknown]);
+        derived.generic = true;
+        derived.bases = vec![reference(0, vec![array(Type::NativeTypeParameter(param(1)))])];
+        Provider::new(vec![base, derived])
+    }, |provider, queries| {
+        let member = NativeTypeMemberKey { snapshot: 92001, index: 100 };
+        let expected = array(Type::NativeTypeParameter(param(1)));
+        let context = queries.named_member_context(member).unwrap().unwrap();
+        assert!(queries.is_assignable(&context, &expected));
+        assert!(queries.is_assignable(&expected, &context));
+        assert_eq!(provider.reads.get(), 1, "only the matching inherited member is demanded");
+        let reads = provider.reads.get();
+        assert_eq!(queries.named_member_context(member).unwrap(), Some(context));
+        assert_eq!(provider.reads.get(), reads, "completed context is cached");
+        let base_member = NativeTypeMemberKey { snapshot: 92001, index: 0 };
+        assert_eq!(queries.named_member_context(base_member).unwrap(), None);
+        assert_eq!(queries.named_member_context(base_member).unwrap(), None);
+        assert_eq!(provider.reads.get(), reads, "absence does not demand the member's own initializer");
+        let foreign = NativeTypeMemberKey { snapshot: 92002, index: 100 };
+        assert!(matches!(queries.named_member_context(foreign), Err(NamedTypeError::InvalidMember(key)) if key == foreign));
+        assert_eq!(provider.reads.get(), reads);
+    });
+}
+
+#[test]
+fn definition_context_uses_inherited_contract_before_an_invalid_inferred_override() {
+    Engine::new().with_native_provider(|| {
+        let base = Head::class(vec![Type::Number]);
+        let mut derived = Head::class(vec![Type::String]);
+        derived.inferred = true;
+        derived.bases = vec![reference(0, vec![])];
+        Provider::new(vec![base, derived])
+    }, |provider, queries| {
+        let derived = queries.named_declared_type(key(1)).unwrap();
+        let context = queries.class_definition_context(owner(1), &derived).unwrap();
+        assert_eq!(provider.reads.get(), 1, "the initializer context does not demand its own inferred member");
+        let value = queries.property_type(&context, "value").unwrap();
+        assert!(queries.is_assignable(&Type::Number, &value));
+        assert!(queries.is_assignable(&Type::Nil, &value));
+        assert!(!queries.is_assignable(&Type::String, &value));
+        assert!(matches!(queries.validate_named_declaration(key(1)), Err(NamedTypeError::IncompatibleOverride { .. })));
+        let reads = provider.reads.get();
+        assert_eq!(queries.class_definition_context(owner(1), &derived).unwrap(), context);
+        assert_eq!(provider.reads.get(), reads, "a later full-schema error does not invalidate the completed initializer context");
     });
 }
 

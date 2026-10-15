@@ -90,9 +90,11 @@ pub struct TypeMemberHeader {
 pub enum NamedTypeQuery {
     Head(NativeTypeDeclarationKey),
     Member(NativeTypeMemberKey),
+    MemberContext(NativeTypeMemberKey),
     Indexer(NativeTypeMemberKey),
     Bases(NativeTypeDeclarationKey),
     ObjectMembers(NativeTypeDeclarationKey),
+    DefinitionContext(NativeTypeDeclarationKey),
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum NamedTypeError {
@@ -181,6 +183,12 @@ fn source_member(key: NativeTypeMemberId) -> NativeTypeMemberKey {
         snapshot: key.snapshot,
         index: key.index,
     }
+}
+
+pub(super) fn member_context(queries: &mut SessionQueries<'_, '_, '_>, member: NativeTypeMemberKey) -> Result<Option<Type>, NamedTypeError> {
+    queries.checker.native_named_member_context(core_member(member))
+        .map(|context| context.map(|ty| export_type(queries.checker, queries.handles, ty)))
+        .map_err(|error| export_error(queries.checker, queries.handles, error))
 }
 fn source_kind(kind: NativeTypeDeclarationKind) -> TypeDeclarationKind {
     match kind {
@@ -487,13 +495,16 @@ pub(super) fn export_error(
         NativeNamedTypeError::TooDeep(query) => NamedTypeError::TooDeep(match query {
             Q::DeclaredHead(key) => NamedTypeQuery::Head(source_declaration(key)),
             Q::MemberType(key) => NamedTypeQuery::Member(source_member(key)),
+            Q::MemberContext(key) => NamedTypeQuery::MemberContext(source_member(key)),
             Q::IndexerKey(key) => NamedTypeQuery::Indexer(source_member(key)),
             Q::Bases(key) => NamedTypeQuery::Bases(source_declaration(key)),
-            Q::ObjectMembers(ty) => {
+            Q::ObjectMembers(ty) | Q::DefinitionContext(ty) => {
                 let bun_sema::types::TypeData::NativeObject(reference) = checker.data(ty) else {
                     unreachable!("native object-members query owner")
                 };
-                NamedTypeQuery::ObjectMembers(source_declaration(reference.declaration))
+                let declaration = source_declaration(reference.declaration);
+                if matches!(query, Q::DefinitionContext(_)) { NamedTypeQuery::DefinitionContext(declaration) }
+                else { NamedTypeQuery::ObjectMembers(declaration) }
             }
         }),
         NativeNamedTypeError::UnsupportedKind { declaration, kind } => {
