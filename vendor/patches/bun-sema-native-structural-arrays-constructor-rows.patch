@@ -1,0 +1,372 @@
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+index ecea532..080e71b 100644
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -536,6 +536,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let target = match self.native_object_schema_resolved(target) { Ok(ty) => ty, Err(_) => return };
+         match (self.data(source), self.data(target)) {
+             (TypeData::NativeTable(source), TypeData::NativeTable(target)) => {
++                if target.is_array && !self.native_array_source_is_sequence(source) { return }
+                 let mut sources = Vec::new();
+                 let mut targets = Vec::new();
+                 for field in &target.fields {
+@@ -549,6 +550,13 @@ impl<'p, 's> Checker<'p, 's> {
+                 }
+                 for indexer in &target.indexers {
+                     let mut values = Vec::new();
++                    if target.is_array && let Some(pack) = source.constructor_sequence
++                        && let Some(rows) = self.native_pack_alternatives(pack) {
++                        for row in rows {
++                            values.extend(row.fixed.iter().map(|slot| slot.ty));
++                            values.extend(row.tail);
++                        }
++                    }
+                     for actual in &source.indexers {
+                         if !self.native_table_inference_key_matches(actual.key, indexer.key) { continue }
+                         sources.push(actual.key);
+@@ -3248,6 +3256,7 @@ impl<'p, 's> Checker<'p, 's> {
+                     left.extend(reference.schema.self_argument);
+                 }
+                 TypeData::NativeTable(table) => {
++                    left.extend(table.constructor_sequence.map(|pack| pack.ty));
+                     left.extend(table.fields.iter().map(|field| field.value));
+                     for indexer in &table.indexers { left.extend([indexer.key, indexer.value]); }
+                     left.extend(table.sequence_tails.iter().map(|tail| tail.value));
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+index 568116f..44826b3 100644
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -725,7 +725,10 @@ impl<'p, 's> Checker<'p, 's> {
+                 let nominal_origin = table.nominal_origin.map(|origin| NativeObjectReference {
+                     declaration: origin.declaration, mapper: self.compose(origin.mapper, mapper), self_argument: origin.self_argument.map(|ty| self.instantiate(ty, mapper)), runtime_context: origin.runtime_context,
+                 });
++                let constructor_sequence = table.constructor_sequence.map(|pack| self.instantiate_native_pack(pack, mapper));
+                 self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++                    is_array: table.is_array,
++                    constructor_sequence,
+                     environment_origin: table.environment_origin,
+                     definition_origin,
+                     nominal_origin,
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 8acf94b..9716ba5 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -7,7 +7,7 @@
+ //! Raw member annotations remain in declaration space and are substituted once for an object
+ //! mapper. Literal member reads request only the selected field. Full structural demands build
+ //! ordinary NativeTable descriptions, preserving Lua numeric, boolean and typed key domains.
+-//! Source array heads also describe Lua numeric tables; intrinsic NativeArray remains available
++//! Source array heads retain their structural sequence form; intrinsic NativeArray remains available
+ //! to the existing rest/tuple normalization workers. Generic applications use fill_type_args,
+ //! mapper_from and type_alias_instantiation, including the ordinary instantiation cache.
+ //!
+@@ -1447,7 +1447,9 @@ impl<'p, 's> Checker<'p, 's> {
+                 return Err(NativeNamedTypeError::InvalidDeclaration(declaration));
+             }
+         }
+-        let table = self.native_table(&fields, &indexers, NativeTableFlavor::Declared)
++        let table = if header.object_form == Some(NativeObjectDeclarationForm::Array) {
++            self.native_array_table(indexers[0].value, indexers[0].readonly)
++        } else { self.native_table(&fields, &indexers, NativeTableFlavor::Declared) }
+             .map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
+         if header.kind != NativeTypeDeclarationKind::Class { return Ok(table) }
+         let TypeData::NativeTable(data) = self.data(table) else { unreachable!() };
+diff --git a/src/sema/check/native_runtime_tables.rs b/src/sema/check/native_runtime_tables.rs
+index 6a79204..1a6d112 100644
+--- a/src/sema/check/native_runtime_tables.rs
++++ b/src/sema/check/native_runtime_tables.rs
+@@ -1,6 +1,6 @@
+ //! Original Lua allocation schemas and persistent structural value views.
+ use super::*;
+-use crate::types::{NativeRuntimeTableRef, NativeTableFieldOrigin};
++use crate::types::{NativeResultPack, NativeRuntimeTableRef, NativeTableFieldOrigin};
+ 
+ impl<'p, 's> Checker<'p, 's> {
+     pub(super) fn with_runtime_table_context<R>(&mut self, reference: NativeObjectReference, work: impl FnOnce(&mut Self) -> R) -> R {
+@@ -116,6 +116,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let seed_keys: Vec<_> = fields.iter().map(|field| field.key).collect();
+         let mut indexers = data.indexers.to_vec();
+         let mut tails = data.sequence_tails.to_vec();
++        let constructor_sequence = data.constructor_sequence.map(|pack| NativeResultPack { ty: self.get_widened_type(pack.ty) });
+         for field in &mut fields {
+             field.value = if field.origin == NativeTableFieldOrigin::Declared { self.regular(field.value) } else { self.widened(field.value) };
+         }
+@@ -175,10 +176,11 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+         let constructed = self.native_table(&fields, &indexers, NativeTableFlavor::Declared)
+             .map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
+-        if tails.is_empty() { return Ok(constructed) }
++        if tails.is_empty() && constructor_sequence.is_none() { return Ok(constructed) }
+         let TypeData::NativeTable(table) = self.data(constructed) else { unreachable!() };
+         let mut description = (**table).clone_in(self.arena);
+         description.sequence_tails = self.list(&tails);
++        description.constructor_sequence = constructor_sequence;
+         Ok(self.intern(TypeData::NativeTable(self.boxed(description))))
+     }
+ 
+@@ -291,6 +293,18 @@ impl<'p, 's> Checker<'p, 's> {
+                 origin: if bound.is_some() { NativeTableFieldOrigin::Declared } else { NativeTableFieldOrigin::Inferred } });
+         }
+         description.fields = self.list(&fields);
++        if let (Some(pack), NativeTableKey::Integer(index)) = (description.constructor_sequence, key)
++            && index >= 1 && let Some(mut rows) = self.native_pack_alternatives(pack) {
++            let current = if optional { self.optional(reached) } else { reached };
++            for row in &mut rows {
++                if let Ok(offset) = usize::try_from(index - 1)
++                    && let Some(slot) = row.fixed.get_mut(offset) {
++                    slot.ty = current;
++                    slot.optional = false;
++                }
++            }
++            description.constructor_sequence = Some(self.native_result_pack(&rows));
++        }
+         description.fresh = false;
+         let view = self.intern(TypeData::NativeTable(self.boxed(description)));
+         self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { view, ..reference }))
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+index 9dcf84f..951d08e 100644
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -55,6 +55,13 @@ pub struct NativeTableSequenceTail {
+ 
+ #[derive(PartialEq, Eq, Hash, Debug)]
+ pub struct NativeTableData<'s> {
++    /// A written Lua sequence contract (`T[]`), rather than a numeric dictionary.
++    /// This is structural syntax information, independent of nominal class identity.
++    pub is_array: bool,
++    /// An original dense constructor row whose nil-capable slots would be
++    /// erased from stored fields. This is a physical result row, not an array
++    /// contract or a promise inferred from a sparse dictionary.
++    pub constructor_sequence: Option<NativeResultPack>,
+     /// A selected original Lua environment, with member contracts demanded lazily.
+     pub environment_origin: Option<super::native_globals::NativeEnvironmentId>,
+     pub definition_origin: Option<NativeDefinitionRef>,
+@@ -108,6 +115,80 @@ impl NativeTableKey {
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
++    /// Lua arrays have no JS members, but their sequence contract must survive
++    /// structural materialization, inference and mapper substitution.
++    pub fn native_array_table(&mut self, element: TypeId, readonly: bool) -> Result<TypeId, NativeTableError> {
++        let table = self.native_table(&[], &[NativeTableIndexer {
++            key: TypeId::NUMBER, value: element, readonly, sparse: false,
++            origin: NativeTableFieldOrigin::Declared,
++        }], NativeTableFlavor::Declared)?;
++        let TypeData::NativeTable(table) = self.data(table) else { unreachable!() };
++        let mut table = (**table).clone_in(self.arena);
++        table.is_array = true;
++        Ok(self.intern(TypeData::NativeTable(self.boxed(table))))
++    }
++
++    /// Admission to a Lua array is a sequence question, not vacuous numeric
++    /// index-signature compatibility. Values still use the shared relation and
++    /// inference workers after this metadata-only check.
++    pub(super) fn native_array_source_is_sequence(&mut self, source: &NativeTableData<'_>) -> bool {
++        if source.nominal_origin.is_some() || source.definition_origin.is_some() || source.environment_origin.is_some() {
++            return false;
++        }
++        if source.is_array { return true }
++        if !source.indexers.is_empty() { return false }
++        let prefix = if let Some(pack) = source.constructor_sequence {
++            let Some(rows) = self.native_pack_alternatives(pack) else { return false };
++            let [row] = rows.as_slice() else { return false };
++            if row.fixed.iter().any(|slot| slot.optional) { return false }
++            row.fixed.len() as i64
++        } else { 0 };
++        let mut count = prefix;
++        let mut maximum = prefix;
++        for field in &source.fields {
++            if field.optional && field.value.is_never() { continue }
++            let NativeTableKey::Integer(index) = field.key else { return false };
++            if index < 1 { return false }
++            if index <= prefix { continue }
++            if field.optional { return false }
++            count += 1;
++            maximum = maximum.max(index);
++        }
++        if count != maximum { return false }
++        source.sequence_tails.iter().all(|tail| tail.start <= count + 1)
++    }
++
++    fn native_constructor_sequence(&mut self, fields: &[NativeTableField], indexers: &[NativeTableIndexer], tails: &[NativeTableSequenceTail], fresh: bool, expected: Option<TypeId>) -> Option<NativeResultPack> {
++        if !indexers.is_empty() || tails.len() > 1
++            || !fields.iter().any(|field| self.contains_undefined(field.value))
++                && !tails.iter().any(|tail| self.contains_undefined(tail.value)) { return None }
++        let mut entries = Vec::with_capacity(fields.len());
++        for field in fields {
++            let NativeTableKey::Integer(index) = field.key.normalize().ok()? else { return None };
++            if field.optional || index < 1 { return None }
++            let mut ty = field.value;
++            if field.origin == NativeTableFieldOrigin::Declared { ty = self.regular(ty); }
++            else if fresh {
++                let context = expected.and_then(|expected| self.native_table_value_context(expected, NativeTableAccessKey::Literal(field.key)));
++                ty = self.widen_literal_for_context(ty, context);
++                ty = self.get_widened_type(ty);
++            }
++            entries.push((index, ty));
++        }
++        entries.sort_by_key(|(index, _)| *index);
++        if entries.iter().enumerate().any(|(offset, (index, _))| *index != offset as i64 + 1) { return None }
++        let tail = if let Some(tail) = tails.first() {
++            if tail.start != entries.len() as i64 + 1 { return None }
++            let mut ty = tail.value;
++            if tail.origin == NativeTableFieldOrigin::Declared { ty = self.regular(ty); }
++            else if fresh { ty = self.get_widened_type(ty); }
++            Some(ty)
++        } else { None };
++        Some(self.native_result_pack(&[NativePackAlternative {
++            fixed: entries.into_iter().map(|(_, ty)| NativePackSlot { ty, optional: false }).collect(), tail,
++        }]))
++    }
++
+     pub(super) fn native_sequence_contains(start: i64, key: NativeTableKey) -> bool {
+         matches!(key, NativeTableKey::Integer(index) if index >= start)
+     }
+@@ -247,7 +328,13 @@ impl<'p, 's> Checker<'p, 's> {
+                 _ => {}
+             }
+         }
+-        self.native_table_from_description_with_policy(&fields, &data.indexers, &tails, data.fresh, data.collision_candidates)
++        let constructor_sequence = data.constructor_sequence;
++        let result = self.native_table_from_description_with_policy(&fields, &data.indexers, &tails, data.fresh, data.collision_candidates)?;
++        if constructor_sequence.is_none() { return Ok(result) }
++        let TypeData::NativeTable(result) = self.data(result) else { unreachable!() };
++        let mut result = (**result).clone_in(self.arena);
++        result.constructor_sequence = constructor_sequence;
++        Ok(self.intern(TypeData::NativeTable(self.boxed(result))))
+     }
+ 
+     /// Context remains a union of whole numeric rows, including gaps and optional presence.
+@@ -346,6 +433,8 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+         sequence_tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
+         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            is_array: false,
++            constructor_sequence: None,
+             environment_origin: None,
+             definition_origin: None,
+             nominal_origin: None,
+@@ -394,6 +483,9 @@ impl<'p, 's> Checker<'p, 's> {
+         expected: Option<TypeId>,
+     ) -> Result<TypeId, NativeTableError> {
+         let fresh = flavor == NativeTableFlavor::Literal;
++        let constructor_sequence = if collision_candidates {
++            self.native_constructor_sequence(fields, indexers, sequence_tails, fresh, expected)
++        } else { None };
+         let mut merged: Vec<NativeTableField> = Vec::with_capacity(fields.len());
+         for &field in fields {
+             let key = field.key.normalize()?;
+@@ -498,6 +590,8 @@ impl<'p, 's> Checker<'p, 's> {
+         domains.sort_by_key(|indexer| indexer.key.0);
+         tails.sort_by_key(|tail| (tail.start, tail.value.0, tail.readonly));
+         Ok(self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            is_array: false,
++            constructor_sequence,
+             environment_origin: None,
+             definition_origin: None,
+             nominal_origin: None,
+@@ -853,6 +947,10 @@ impl<'p, 's> Checker<'p, 's> {
+             &source_description
+         } else { source };
+         let identity = r.relation == Relation::Identity;
++        if identity && source.is_array != target.is_array
++            || target.is_array && !self.native_array_source_is_sequence(source) {
++            return Ternary::FALSE;
++        }
+         if let Some(target_origin) = target.nominal_origin {
+             if source.nominal_origin.is_none_or(|source_origin| !self.native_nominal_reference_compatible(source_origin, target_origin, identity)) {
+                 return Ternary::FALSE;
+@@ -896,6 +994,12 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+         }
+         let mut result = Ternary::TRUE;
++        if target.is_array && let Some(pack) = source.constructor_sequence {
++            let expected = self.native_result_pack(&[NativePackAlternative { fixed: Vec::new(), tail: Some(target.indexers[0].value) }]);
++            let related = self.is_related_to_ex::<REPORT>(r, pack.ty, expected.ty, REC_BOTH, state);
++            if !related.holds() { return related }
++            result &= related;
++        }
+         for field in &target.fields {
+             if let Some(environment) = source.environment_origin {
+                 let actual = self.native_global_environment_member(environment, NativeTableAccessKey::Literal(field.key));
+@@ -1040,6 +1144,8 @@ impl<'p, 's> Checker<'p, 's> {
+             origin: if self.is_fresh_object_literal_type(ty) { NativeTableFieldOrigin::Inferred } else { NativeTableFieldOrigin::Declared },
+         }).collect::<Vec<_>>();
+         Some(NativeTableData {
++            is_array: false,
++            constructor_sequence: None,
+             environment_origin: None,
+             definition_origin: None,
+             nominal_origin: None,
+@@ -1062,7 +1168,10 @@ impl<'p, 's> Checker<'p, 's> {
+             value: if tail.origin == NativeTableFieldOrigin::Declared { self.regular(tail.value) } else { self.get_widened_type(tail.value) }, ..*tail
+         }).collect::<Vec<_>>();
+         let definition_origin = table.definition_origin.map(|reference| NativeDefinitionRef { view: self.get_widened_type(reference.view), ..reference });
++        let constructor_sequence = table.constructor_sequence.map(|pack| NativeResultPack { ty: self.get_widened_type(pack.ty) });
+         self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++            is_array: table.is_array,
++            constructor_sequence,
+             environment_origin: table.environment_origin,
+             definition_origin,
+             nominal_origin: table.nominal_origin,
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+index 4a58148..2ef8852 100644
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1894,6 +1894,13 @@ impl<'p, 's> Printer<'_, 'p, 's> {
+                     let reference = self.c.intern(TypeData::NativeObject(origin));
+                     return self.type_to_node(reference);
+                 }
++                if table.is_array && table.indexers.len() == 1 {
++                    let indexer = table.indexers[0];
++                    let element = self.type_to_node(indexer.value);
++                    let array = cat!(element.emit(POSTFIX), b"[]");
++                    return if indexer.readonly { Node::new(cat!(b"readonly ", array), TYPE_OPERATOR) }
++                        else { Node::new(array, POSTFIX) };
++                }
+                 let mut members = Vec::new();
+                 for field in &table.fields {
+                     let key = match field.key {
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+index 85ac011..0e5402e 100644
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -3558,6 +3558,8 @@ impl<'p, 's> Checker<'p, 's> {
+                 self.intern(TypeData::NativeDefinition(NativeDefinitionRef { view, ..reference }))
+             }
+             TypeData::NativeTable(table) if table.fresh => self.intern(TypeData::NativeTable(self.boxed(NativeTableData {
++                is_array: table.is_array,
++                constructor_sequence: table.constructor_sequence,
+                 environment_origin: table.environment_origin,
+                 definition_origin: table.definition_origin,
+                 nominal_origin: table.nominal_origin,
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+index 7ed22f2..b3a6e52 100644
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -2407,6 +2407,7 @@ impl<'p, 's> Types<'p, 's> {
+                 let flags = table.fields.iter().fold(origin_flags, |flags, field| flags | self.object_flags(field.value));
+                 let flags = table.indexers.iter().fold(flags, |flags, indexer| flags | self.object_flags(indexer.key) | self.object_flags(indexer.value));
+                 let flags = table.sequence_tails.iter().fold(flags, |flags, tail| flags | self.object_flags(tail.value));
++                let flags = flags | table.constructor_sequence.map_or(ObjectFlags::empty(), |pack| self.object_flags(pack.ty));
+                 if table.fresh { flags | ObjectFlags::CONTAINS_OBJECT_OR_ARRAY_LITERAL } else { flags }
+             }
+             TypeData::Anon {
+@@ -3562,7 +3563,7 @@ follow_struct!(NativeTableIndexer { key, value, readonly, sparse, origin });
+ follow_struct!(NativeTableSequenceTail { start, value, readonly, origin });
+ follow_struct!(NativeEnvironmentId { snapshot, index });
+ follow_struct!(NativeGlobalBindingId { environment, index });
+-follow_struct!(NativeTableData<'_> { environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
++follow_struct!(NativeTableData<'_> { is_array, constructor_sequence, environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+ follow_struct!(NativeCapturedFunctionContext { signature });
+ follow_struct!(NativeResultPack { ty });
+ follow_enum!(NativeRuntimeKind {
+@@ -3841,7 +3842,7 @@ clone_in_struct!(Shape {
+     pattern_at,
+     mapper
+ });
+-clone_in_struct!(NativeTableData { environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
++clone_in_struct!(NativeTableData { is_array, constructor_sequence, environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });
+ clone_in_enum!(SigData {
+     NativeDeclarationSignature { declaration, mapper, implementation },
+     Native { declaration, mapper },

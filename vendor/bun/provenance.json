@@ -1932,6 +1932,54 @@
       "patch": "vendor/patches/bun-sema-native-iterator-packs-display-inference.patch",
       "reason": "Separate hidden iterator arity, expose fixed written return cardinality, render original anonymous/container/generic contracts, infer full dictionary value domains, and retain reference types for unrelated predicates through kernel d389359.",
       "patch_sha256": "c419b5467534b059d43ab708c9afabd4d999b5d296bb81550e10676de70fb1f5"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-structural-arrays-constructor-rows.patch",
+      "reason": "Retain structural Lua array form and nil-inclusive constructor result rows through native sequence admission, relations, inference, reached writes, mapping, widening, traversal and printing through kernel 1296189.",
+      "patch_sha256": "ae4856d3d77a6858c58add2363dcd63f78c188db7e7d34f764be46b924025e9b"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-structural-arrays-constructor-rows.patch",
+      "reason": "Retain structural Lua array form and nil-inclusive constructor result rows through native sequence admission, relations, inference, reached writes, mapping, widening, traversal and printing through kernel 1296189.",
+      "patch_sha256": "ae4856d3d77a6858c58add2363dcd63f78c188db7e7d34f764be46b924025e9b"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-structural-arrays-constructor-rows.patch",
+      "reason": "Retain structural Lua array form and nil-inclusive constructor result rows through native sequence admission, relations, inference, reached writes, mapping, widening, traversal and printing through kernel 1296189.",
+      "patch_sha256": "ae4856d3d77a6858c58add2363dcd63f78c188db7e7d34f764be46b924025e9b"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-structural-arrays-constructor-rows.patch",
+      "reason": "Retain structural Lua array form and nil-inclusive constructor result rows through native sequence admission, relations, inference, reached writes, mapping, widening, traversal and printing through kernel 1296189.",
+      "patch_sha256": "ae4856d3d77a6858c58add2363dcd63f78c188db7e7d34f764be46b924025e9b"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-structural-arrays-constructor-rows.patch",
+      "reason": "Retain structural Lua array form and nil-inclusive constructor result rows through native sequence admission, relations, inference, reached writes, mapping, widening, traversal and printing through kernel 1296189.",
+      "patch_sha256": "ae4856d3d77a6858c58add2363dcd63f78c188db7e7d34f764be46b924025e9b"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-structural-arrays-constructor-rows.patch",
+      "reason": "Retain structural Lua array form and nil-inclusive constructor result rows through native sequence admission, relations, inference, reached writes, mapping, widening, traversal and printing through kernel 1296189.",
+      "patch_sha256": "ae4856d3d77a6858c58add2363dcd63f78c188db7e7d34f764be46b924025e9b"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-structural-arrays-constructor-rows.patch",
+      "reason": "Retain structural Lua array form and nil-inclusive constructor result rows through native sequence admission, relations, inference, reached writes, mapping, widening, traversal and printing through kernel 1296189.",
+      "patch_sha256": "ae4856d3d77a6858c58add2363dcd63f78c188db7e7d34f764be46b924025e9b"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-structural-arrays-constructor-rows.patch",
+      "reason": "Retain structural Lua array form and nil-inclusive constructor result rows through native sequence admission, relations, inference, reached writes, mapping, widening, traversal and printing through kernel 1296189.",
+      "patch_sha256": "ae4856d3d77a6858c58add2363dcd63f78c188db7e7d34f764be46b924025e9b"
     }
   ],
   "source_additions": {
@@ -1972,7 +2020,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "6ef9c545597435b864937889875166ed46546fa2530d6c9941f7f83c579b072e",
+      "extracted_sha256": "ee15742c490958045a429a7a53067bd2d34934b0542906d53de8940596244a75",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1992,7 +2040,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "64106d9ecd5f6b5934e2de32f2879d50ac02f86450e5383afd3436c102d006d9",
+      "extracted_sha256": "607fa38ee9d99a4b39bd8d49801eff8a7faedb2d0b785099eceda6e0a5833571",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -2004,7 +2052,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "8c22d80d242cfeaee017a886f80b68d6f78bdadd3e16b8040231862c8b2bce0e",
+      "extracted_sha256": "68769df29b1c4a658378f15dfa32b0965bcb95a58f0ddbf4c5f3a41aa20ff998",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2927,12 +2975,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "28a66ac78520509a4354a1bf9b0d61d1a900759c58e571799e0ccc255eba675c"
+      "extracted_sha256": "4da5ebbea023a3560f7642f99fef4c1b5c1b050002f47138506ed20f0e100421"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "667b3c47296cfeaa37204fe3137a94d99e221cc49b9f83dd28a3700a14ebedc5"
+      "extracted_sha256": "cad1c3aacf136565172acbf95923080a7aec65bd9a26641130052c7976528ad2"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -2972,7 +3020,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "f9501e397cd7cd9d5e9400f5ac82206c07089d9732dd1d1637abbbeeb573e398"
+      "extracted_sha256": "0b0f33d27b337115d1cb90c8fb9598152480fe0040e57df81d26983bdb998a56"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -3042,7 +3090,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "0bdc181cc5e3761c7729e6fa35c87eac5ebad928ee85f4096c201cfa1a85660f"
+      "extracted_sha256": "9fc8b750d79e1d7a26b5ba3c3ee6c97e9ae76a17d744bc957c1363dc6e66b286"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -3167,7 +3215,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "3332af7133ddc2eb1efc11c8b0d5a09a1c43d0d43fa3d359ee8ce71ccb2702be"
+      "extracted_sha256": "c688d3f962275f836d8d4101653d304611814a09ba6a3e718dce018d78f31c0d"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

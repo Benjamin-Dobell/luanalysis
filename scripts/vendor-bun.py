@@ -441,6 +441,16 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Separate hidden iterator arity, expose fixed written return cardinality, render original anonymous/container/generic contracts, infer full dictionary value domains, and retain reference types for unrelated predicates through kernel d389359.",
 } for path in ["call.rs", "infer.rs", "native_flow.rs", "native_iterators.rs", "native_packs.rs", "print.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-structural-arrays-constructor-rows.patch",
+    "reason": "Retain structural Lua array form and nil-inclusive constructor result rows through native sequence admission, relations, inference, reached writes, mapping, widening, traversal and printing through kernel 1296189.",
+} for path in [
+    "check/infer.rs", "check/instantiate.rs", "check/native_named.rs",
+    "check/native_runtime_tables.rs", "check/native_tables.rs", "check/print.rs",
+    "check/shape.rs", "types.rs",
+])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
