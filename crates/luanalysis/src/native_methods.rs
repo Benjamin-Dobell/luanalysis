@@ -98,9 +98,10 @@ impl NativeMethods {
         // Closure-based Lua constructors declare their instance through an
         // original local @type contract, then install functions on that value.
         // These definitions belong to the written class, just as functions on
-        // an attached @class local do. Do not infer an owner from a variable's
-        // spelling, an arbitrary alias, a parameter, or a declaration without
-        // an initializer.
+        // an attached @class local do. A written local contract also identifies
+        // its owner before a later assignment; value initialization remains a
+        // separate flow check. Do not infer ownership from a variable's spelling,
+        // an arbitrary alias, or a parameter.
         let assertions: HashMap<_, _> = file.expression_assertions.iter().filter_map(|assertion| {
             if assertion.kind != luanalysis_syntax::ExpressionAssertionKind::Type { return None; }
             let [ty] = assertion.annotation.types.as_slice() else { return None };
@@ -277,9 +278,9 @@ fn collect_written_local_owners(
     for statement in statements {
         match &statement.kind {
             StmtKind::Local { names, values, annotation } => {
-                for (index, (name, value)) in names.iter().zip(values).enumerate() {
+                for (index, name) in names.iter().enumerate() {
                     let written = annotation.as_ref().and_then(|annotation| annotation.types.get(index))
-                        .or_else(|| assertions.get(&(value.span.start, value.span.end)).copied());
+                        .or_else(|| values.get(index).and_then(|value| assertions.get(&(value.span.start, value.span.end)).copied()));
                     let Some(written) = written else { continue };
                     let mut ty = written.value_syntax();
                     while let luanalysis_syntax::TypeExprKind::Parenthesized(inner) = &ty.kind {
@@ -301,7 +302,7 @@ fn collect_written_local_owners(
                         }
                         let Some((scope, source)) = metatables.context_scope(function, types) else { continue };
                         let Some(owner) = source.candidate_owner else { continue };
-                        let binding = bound.binding_at(name.span.start).expect("original initialized contextual local");
+                        let binding = bound.binding_at(name.span.start).expect("original annotated contextual local");
                         owners.entry(binding).or_default().push(owner);
                         contextual_owners.insert(binding, scope);
                         continue;
@@ -313,7 +314,7 @@ fn collect_written_local_owners(
                     if !alias && !matches!(declaration.syntax.kind,
                         NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. }
                     ) { continue; }
-                    let binding = bound.binding_at(name.span.start).expect("original initialized local");
+                    let binding = bound.binding_at(name.span.start).expect("original annotated local");
                     let candidates = owners.entry(binding).or_default();
                     if !candidates.contains(owner) { candidates.push(*owner); }
                     if applied || alias {
