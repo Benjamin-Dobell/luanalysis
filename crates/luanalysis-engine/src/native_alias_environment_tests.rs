@@ -74,6 +74,27 @@ struct Flow {
     recursive_probe: bool,
 }
 impl NativeFlowProvider for Flow {
+    fn alias_node_dispatch(&self, key: NativeFlowKey) -> NativeAliasDispatch {
+        if !self.contains_graph(key.graph) { return NativeAliasDispatch::Unknown; }
+        match self.node(key) {
+            Some(NativeFlowNode::Start | NativeFlowNode::Write { .. }
+                | NativeFlowNode::Return { .. } | NativeFlowNode::Unreachable) => NativeAliasDispatch::NoDispatch,
+            _ => NativeAliasDispatch::Unknown,
+        }
+    }
+    fn alias_call_source(&self, key: NativeValueKey, input: NativeFlowKey) -> Option<NativeAliasCall> {
+        (key == value(1) || key == value(2)).then_some(NativeAliasCall {
+            callee: NativeAliasReturnValue { value: value(3), input: at(0, 0) },
+            arguments: vec![],
+            execution_input: input,
+        })
+    }
+    fn function_alias_execution(&self, key: NativeFunctionKey, creation: NativeFlowKey) -> Option<NativeAliasExecution> {
+        (key == function() && creation == at(0, 0)).then_some(NativeAliasExecution {
+            entry: at(1, 0),
+            terminals: vec![at(1, 1), at(1, 2)],
+        })
+    }
     fn contains_graph(&self, key: NativeGraphKey) -> bool {
         key == graph(0) || key == graph(1)
     }
@@ -127,6 +148,7 @@ impl NativeFlowProvider for Flow {
                 callee: value(3),
                 input: at(0, 0),
             },
+            3 => NativeAliasValue::Function { function: function(), creation: at(0, 0) },
             4 => NativeAliasValue::Allocation,
             _ => NativeAliasValue::Unknown,
         }
@@ -168,7 +190,7 @@ impl NativeFlowProvider for Flow {
                 }
                 queries.global_environment_type(environment(0)).unwrap()
             }
-            3 => Type::NativeFunction(function()),
+            3 => panic!("original callee identity must come from its function recipe"),
             4 => queries.table_type(&TableType::default()).unwrap(),
             5 => queries.global_environment_type(environment(1)).unwrap(),
             _ => panic!("only original callee and environment values are inspected"),

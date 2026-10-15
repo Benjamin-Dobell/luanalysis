@@ -26,6 +26,17 @@ fn cell(context: u64, index: u32) -> NativeReferenceKey {
     }
 }
 impl NativeFlowProvider for Fields {
+    fn alias_node_dispatch(&self, at: NativeFlowKey) -> NativeAliasDispatch {
+        match self.node(at) {
+            Some(NativeFlowNode::Write { target, .. }) if !self.reference_is_cell(target) => {
+                // This store replaces the existing original constructor field;
+                // the native read guard must prove its raw presence.
+                NativeAliasDispatch::ReferenceRead(target)
+            },
+            Some(_) => NativeAliasDispatch::NoDispatch,
+            None => NativeAliasDispatch::Unknown,
+        }
+    }
     fn reference_is_cell(&self, reference: NativeReferenceKey) -> bool {
         reference.reference < 2
     }
