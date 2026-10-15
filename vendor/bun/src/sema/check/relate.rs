@@ -5713,6 +5713,13 @@ impl<'p, 's> Checker<'p, 's> {
         target: TypeId,
         state: u8,
     ) -> Ternary {
+        // A structural discriminant match cannot establish a Lua class origin.
+        // Apply the same atomic nominal gate before looking at any union
+        // member's properties; those properties may be the recursive override
+        // contract currently under validation.
+        if !self.parts(target).iter().any(|&part| self.native_nominal_objects_compatible(source, part, r.relation)) {
+            return Ternary::FALSE;
+        }
         let Some(sm) = self.members(source) else {
             return Ternary::FALSE;
         };

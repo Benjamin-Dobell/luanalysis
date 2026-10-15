@@ -3591,6 +3591,16 @@ impl<'p, 's> Checker<'p, 's> {
         if !self.is_object_type(ty) {
             return None;
         }
+        if matches!(self.data(ty), TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) {
+            // Original Lua heads expose call contracts separately from field
+            // types. Keep this classification lazy while recursive override
+            // relations are checking those fields.
+            if kind == SignatureKind::Construct { return None }
+            let heads = self.native_object_call_heads(ty);
+            if heads.len() != 1 || allow_members == AllowMembers::No
+                && self.native_object_has_non_signature_members(ty).ok()? { return None }
+            return Some(heads[0]);
+        }
         let members = self.members(ty)?;
         let shape = members.whole_shape();
         let construct = kind == SignatureKind::Construct;

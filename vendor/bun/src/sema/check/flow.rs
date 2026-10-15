@@ -1198,6 +1198,9 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `isFunctionObjectType`
     fn is_function_object_type(&mut self, ty: TypeId) -> bool {
+        if matches!(self.data(ty), TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) {
+            return self.native_object_has_call_signatures(ty);
+        }
         let Some(members) = self.members(ty) else {
             return false;
         };

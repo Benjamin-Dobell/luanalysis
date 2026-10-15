@@ -759,6 +759,21 @@ impl<'p, 's> Checker<'p, 's> {
         !self.native_object_call_heads(ty).is_empty()
     }
 
+    /// Signature classification needs the presence of original members, not
+    /// their types. A member type may itself be a class whose override contract
+    /// is currently being compared, so materializing it here would recurse into
+    /// the declaration's own unfinished schema.
+    pub(super) fn native_object_has_non_signature_members(&mut self, ty: TypeId) -> Result<bool, NativeNamedTypeError> {
+        match *self.data(ty) {
+            TypeData::NativeObject(reference) => Ok(!self.native_object_members(reference)?.is_empty()),
+            TypeData::NativeDefinition(reference) => {
+                let TypeData::NativeTable(table) = self.data(reference.view) else { unreachable!("definition has its original table view") };
+                Ok(!table.fields.is_empty() || !table.indexers.is_empty() || !table.sequence_tails.is_empty())
+            }
+            _ => unreachable!("native object signature classification"),
+        }
+    }
+
     pub(super) fn native_object_call_heads(&mut self, ty: TypeId) -> Vec<SigId> {
         let Some(reference) = self.native_object_call_reference(ty) else { return Vec::new() };
         let Ok(provider) = self.native_named_provider(reference.declaration) else { return Vec::new() };
