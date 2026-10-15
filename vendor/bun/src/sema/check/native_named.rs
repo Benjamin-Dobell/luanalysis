@@ -941,7 +941,12 @@ impl<'p, 's> Checker<'p, 's> {
     fn native_definition_schema(&mut self, class: TypeId) -> Result<TypeId, NativeNamedTypeError> {
         let TypeData::NativeObject(reference) = *self.data(class) else { return Ok(class) };
         let Some(id) = self.native_named_provider(reference.declaration)?.type_declaration_self_parameter(reference.declaration) else { return Ok(class) };
-        let formal = self.cloned_native_type_param(id, reference.mapper);
+        // A declared class head retains T -> T pairs as dependency evidence. They
+        // do not change self's constraint, and must not create a distinct rigid
+        // self parameter when an original method is stored on that definition.
+        // Keep real substitutions so captured and instantiated bounds still map.
+        let mapping = self.types().mapping(reference.mapper).iter().copied().filter(|(parameter, value)| parameter != value).collect();
+        let formal = self.cloned_native_type_param(id, self.types().mapper(mapping));
         Ok(self.native_with_receiver(class, formal))
     }
 
