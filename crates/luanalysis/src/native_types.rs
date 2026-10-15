@@ -212,6 +212,12 @@ impl NativeTypes {
         self.scopes.get(&NativeTypeContext::NamedType(owner)).and_then(|scope| scope.self_parameter)
     }
 
+    /// Imported scopes preserve their original canonical self key. Its owning
+    /// parameter recipe remains in the original file, not this local allocator.
+    pub(super) fn is_semantic_self_parameter(&self, key: NativeTypeParameterKey) -> bool {
+        self.scopes.values().any(|scope| scope.self_parameter == Some(key))
+    }
+
     pub(crate) fn lexical_function_parent(&self, function: NativeFunctionKey) -> Option<NativeFunctionKey> {
         match self.scopes.get(&NativeTypeContext::Function(function))?.parent? {
             NativeTypeContext::Function(parent) => Some(parent),

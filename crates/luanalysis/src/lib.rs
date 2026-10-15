@@ -580,12 +580,12 @@ impl Checker<'_> {
                             .or_else(||self.named_type_context.map(native_named::NativeTypeContext::NamedType))
                             .or_else(||self.type_context.map(native_named::NativeTypeContext::Function));
                         let resolution = native.annotation_parameter_resolution(context,name);
-                        let contextual_self = match &resolution {
-                            native_types::TypeNameResolution::Parameter(key) => native.types.parameter(*key).semantic_self.is_some(),
+                        let contextual_self = name == "self" && match &resolution {
+                            native_types::TypeNameResolution::Parameter(key) => native.types.is_semantic_self_parameter(*key),
                             native_types::TypeNameResolution::Missing => true,
                             native_types::TypeNameResolution::Ambiguous(_) => false,
                         };
-                        if name == "self" && contextual_self
+                        if contextual_self
                             && let Some(function) = context.and_then(|context| native.metatable_annotation_function(context))
                             && native.method_owner(function).is_none()
                         {

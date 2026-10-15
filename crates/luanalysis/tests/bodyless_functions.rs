@@ -432,3 +432,23 @@ fn foreign_doc_members_capture_original_enclosing_generic_scopes() {
         output(&result)
     );
 }
+
+#[test]
+fn foreign_doc_self_retains_original_owner_and_generic_member_contracts() {
+    let fixture = Fixture::new();
+    fixture.file("owner.def.lua", "---@class Box<T>\n---@field value T\n");
+    fixture.file("member.def.lua", "---@function Box:replace(value:T):self\n");
+    let source = "---@param box Box<number>\nlocal function inspect(box)\n local again=box:replace(1)\n ---@type Box<number>\n local checked=again\n ---@type number\n local value=again.value\n return value\nend\n";
+    fixture.file("main.lua", source);
+    let args = ["--library", "owner.def.lua", "--library", "member.def.lua", "main.lua"];
+    let good = fixture.run(&args);
+    assert_eq!(good.status.code(), Some(0), "{}", output(&good));
+    assert!(output(&good).contains("value: number"), "{}", output(&good));
+    fixture.file("main.lua", &source.replace("box:replace(1)", "box:replace('wrong')"));
+    let bad = fixture.run(&args);
+    assert_eq!(bad.status.code(), Some(1), "{}", output(&bad));
+    assert!(output(&bad).contains("TS2345"), "{}", output(&bad));
+    fixture.file("main.lua", source);
+    let corrected = fixture.run(&args);
+    assert_eq!(corrected.status.code(), Some(0), "{}", output(&corrected));
+}

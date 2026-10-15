@@ -201,7 +201,7 @@ impl NativeRegistry {
                 && let Some(candidate) = self.contextual_self_dependency(function)
             {
                 let explicit = match self.types.resolve_name_in_context(context, name) {
-                    TypeNameResolution::Parameter(key) => self.types.parameter(key).semantic_self.is_none(),
+                    TypeNameResolution::Parameter(key) => !self.types.is_semantic_self_parameter(key),
                     TypeNameResolution::Ambiguous(_) => true,
                     TypeNameResolution::Missing => false,
                 };
