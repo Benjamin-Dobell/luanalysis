@@ -349,6 +349,9 @@ pub trait NativeTypeProvider {
     fn signature_return_cycle(&self, _: NativeSignatureKey) {}
     fn signature_return_type_too_deep(&self, _: NativeSignatureKey) {}
     fn contains_type_declaration(&self, _: NativeTypeDeclarationKey) -> bool { false }
+    fn type_declaration_owner_scope(&self, _: NativeTypeDeclarationKey) -> OwnerScopeRecipe {
+        OwnerScopeRecipe::ResolvedHead
+    }
     fn type_declaration_header(&self, _: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
         panic!("native named declaration provider is not installed")
     }
@@ -966,6 +969,8 @@ pub trait TypeQueries {
     fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
     fn named_receiver_type(&mut self, class: &Type, receiver: &Type) -> Result<Type, NamedTypeError>;
     fn named_member_context(&mut self, member: NativeTypeMemberKey) -> Result<Option<Type>, NamedTypeError>;
+    fn named_member_scope_owner(&mut self, member: NativeTypeMemberKey) -> Result<NativeTypeDeclarationKey, NamedTypeError>;
+    fn named_member_owner(&mut self, member: NativeTypeMemberKey) -> Result<NamedMemberOwner, NamedTypeError>;
     fn validate_named_declaration(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
     fn validate_named_member(&mut self, member: NativeTypeMemberKey) -> Result<Type, NamedTypeError>;
 }
@@ -1804,6 +1809,12 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn named_receiver_type(&mut self, class: &Type, receiver: &Type) -> Result<Type, NamedTypeError> { native_named::receiver(self, class, receiver) }
     fn named_member_context(&mut self, member: NativeTypeMemberKey) -> Result<Option<Type>, NamedTypeError> {
         native_named::member_context(self, member)
+    }
+    fn named_member_scope_owner(&mut self, member: NativeTypeMemberKey) -> Result<NativeTypeDeclarationKey, NamedTypeError> {
+        native_named::member_scope_owner(self, member)
+    }
+    fn named_member_owner(&mut self, member: NativeTypeMemberKey) -> Result<NamedMemberOwner, NamedTypeError> {
+        native_named::member_owner(self, member)
     }
     fn validate_named_declaration(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError> {
         native_named::declared(self, declaration, true)

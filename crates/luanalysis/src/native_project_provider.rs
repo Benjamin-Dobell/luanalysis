@@ -248,6 +248,10 @@ impl ProjectRegistry {
     }
 
     pub(crate) fn check_roots(&self, queries: &mut dyn TypeQueries, roots: &[FileId]) -> Vec<FileCheckReport> {
+        // Canonical scope identities must exist for every sibling extension
+        // before any alias head can publish a class's captured outer mapper.
+        for file in &self.files { file.source.prepare_documentation_scope_keys(queries); }
+        for file in &self.files { file.source.validate_documentation_scope_owners(queries); }
         // Candidate registration establishes every identity/name, but only
         // explicit roots and proven original require targets schedule checks.
         self.modules.required_files.borrow_mut().extend(roots.iter().copied());
@@ -517,6 +521,9 @@ impl NativeTypeProvider for ProjectRegistry {
         header.outer_parameters.dedup();
         header
     }
+    fn type_declaration_owner_scope(&self, key: NativeTypeDeclarationKey) -> luanalysis_engine::OwnerScopeRecipe {
+        self.owner(key.snapshot).named_owner_scope_recipe(key)
+    }
     fn type_member_origin(&self, key: NativeTypeMemberKey) -> luanalysis_engine::TableFieldOrigin {
         self.owner(key.snapshot).type_member_origin(key)
     }
@@ -578,7 +585,7 @@ impl NativeTypeProvider for ProjectRegistry {
             | NamedTypeError::IncompatibleBase { declaration, .. }
             | NamedTypeError::Table { declaration, .. } => declaration.snapshot,
             NamedTypeError::TooDeep(query) => match query {
-                NamedTypeQuery::Head(key)
+                NamedTypeQuery::OwnerScope(key) | NamedTypeQuery::Head(key)
                 | NamedTypeQuery::Bases(key)
                 | NamedTypeQuery::ObjectMembers(key) => key.snapshot,
                 NamedTypeQuery::DefinitionContext(key) => key.snapshot,

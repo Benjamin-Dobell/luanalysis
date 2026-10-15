@@ -18,6 +18,57 @@ use luanalysis_syntax::{
 use std::collections::HashMap;
 
 impl NativeRegistry {
+    pub(super) fn signature_available(&self, key: NativeSignatureKey) -> bool {
+        if !self.signatures.contains(key) { return false; }
+        self.signatures.get(key).documentation.and_then(|id| self.doc_members.for_declaration(id))
+            .is_none_or(|source| matches!(source.scope.get(), crate::native_doc_members::DocOwnerScope::Scoped(_) | crate::native_doc_members::DocOwnerScope::Ready(_)))
+    }
+    pub(crate) fn prepare_documentation_scope_keys(&self, queries: &mut dyn TypeQueries) {
+        use crate::native_doc_members::DocOwnerScope;
+        for source in self.doc_members.sources() {
+            if source.scope.get() != DocOwnerScope::Unprepared { continue; }
+            let signature = self.doc_signature_key(source.declaration).expect("original documentation signature");
+            self.types.clear_documentation_owner(signature);
+            match queries.named_member_scope_owner(source.key) {
+                Ok(owner) => {
+                    let owner = NativeNamedKey { snapshot: owner.snapshot, index: owner.index };
+                    let doc = self.documentation_function(source.declaration).unwrap();
+                    if doc.method_colon.is_some() && self.types.self_parameter(owner).is_none()
+                        && !doc.annotations.params.iter().any(|tag| tag.name.text == "self")
+                    {
+                        self.merge_report(super::CheckReport { diagnostics: vec![Diagnostic {
+                            code: "LUA2034", span: source.owner_span,
+                            message: "Bodyless colon declaration has no original class or shape receiver scope.".into(),
+                        }], ..Default::default() });
+                        source.scope.set(DocOwnerScope::Failed);
+                        continue;
+                    }
+                    self.types.attach_documentation_owner(signature, owner);
+                    source.scope.set(DocOwnerScope::Scoped(owner));
+                }
+                Err(_) => source.scope.set(DocOwnerScope::Failed),
+            }
+        }
+    }
+    pub(crate) fn validate_documentation_scope_owners(&self, queries: &mut dyn TypeQueries) {
+        use crate::native_doc_members::DocOwnerScope;
+        for source in self.doc_members.sources() {
+            let DocOwnerScope::Scoped(expected) = source.scope.get() else { continue; };
+            match queries.named_member_owner(source.key) {
+                Ok(owner) if owner.declaration.snapshot == expected.snapshot && owner.declaration.index == expected.index => {
+                    source.scope.set(DocOwnerScope::Ready(expected));
+                }
+                _ => {
+                    source.scope.set(DocOwnerScope::Failed);
+                    self.types.clear_documentation_owner(self.doc_signature_key(source.declaration).unwrap());
+                }
+            }
+        }
+    }
+    pub(crate) fn prepare_documentation_scopes(&self, queries: &mut dyn TypeQueries) {
+        self.prepare_documentation_scope_keys(queries);
+        self.validate_documentation_scope_owners(queries);
+    }
     pub(crate) fn doc_signature_key(&self, id: DocFunctionDeclarationId) -> Option<NativeSignatureKey> {
         self.signatures.documentation.get(&id).copied()
     }
@@ -26,6 +77,13 @@ impl NativeRegistry {
         self.documentation_function(id)
     }
     pub(super) fn documentation_signature_owner(&self, key: NativeSignatureKey) -> Option<NativeNamedKey> {
+        if let Some(source) = self.signatures.get(key).documentation.and_then(|id| self.doc_members.for_declaration(id)) {
+            match source.scope.get() {
+                crate::native_doc_members::DocOwnerScope::Scoped(owner) | crate::native_doc_members::DocOwnerScope::Ready(owner) => return Some(owner),
+                crate::native_doc_members::DocOwnerScope::Failed => return None,
+                crate::native_doc_members::DocOwnerScope::Unprepared => {}
+            }
+        }
         match self.documentation_signature(key)?.owner.as_ref()? {
             DocFunctionOwner::Contextual(id) => self.named_metadata().key_for_syntax(*id),
             DocFunctionOwner::Explicit(name) => {
@@ -154,14 +212,7 @@ impl NativeRegistry {
             let explicit = self.documentation_signature(key).unwrap().annotations.params.iter().find(|tag| tag.name.text == "self");
             let ty = explicit.map(|tag| checker.annotation(&tag.ty)).or_else(|| {
                 self.documentation_signature_owner(key).and_then(|owner| self.types.self_parameter(owner)).map(Type::NativeTypeParameter)
-            }).unwrap_or_else(|| {
-                if self.documentation_signature_owner(key).is_some() {
-                    let doc=self.documentation_signature(key).unwrap();
-                    let span=match doc.owner.as_ref() {Some(DocFunctionOwner::Explicit(owner))=>owner.span,_=>doc.name.span};
-                    checker.error("LUA2034",span,"Bodyless colon declarations require an original class or shape receiver scope; alias or module receiver scopes are not supported.");
-                }
-                checker.engine.error_type()
-            });
+            }).expect("a published bodyless colon signature has a prepared original receiver contract");
             parameters.insert(0,Parameter {name:"self".into(),ty,optional:false});
         }
         if let Some(function) = self.signature_method_function(key) {
@@ -225,6 +276,7 @@ impl NativeRegistry {
     }
     pub(super) fn check_signature_declarations(&self, queries: &mut dyn TypeQueries) {
         for recipe in &self.signatures.recipes {
+            if !self.signature_available(recipe.key) { continue; }
             if recipe.ambient_function.is_some() && self.source_role() != luanalysis_project::SourceRole::Declaration {
                 continue;
             }

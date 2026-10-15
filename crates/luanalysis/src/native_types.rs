@@ -8,6 +8,8 @@ use super::native_named::{NamedGenericScopeRecipe, NativeNamedKey, NativeTypeCon
 use luanalysis_engine::{NativeFunctionKey, NativeTypeParameterKey, Type};
 use luanalysis_syntax::{Name, Span, TypeExpr, TypeExprKind};
 use std::collections::{HashMap, HashSet};
+use std::cell::Cell;
+use std::rc::Rc;
 
 pub(super) struct TypeParameterRecipe {
     pub name: Name,
@@ -36,7 +38,8 @@ struct TypeScope {
     // A written generic function-type head supplies body-visible names without
     // changing their original Signature owner or creating a parent cycle.
     annotation_scope: Option<NativeTypeContext>,
-    method_owner: Option<NativeTypeContext>,
+    // Imported copies retain this original scope's key-only preparation state.
+    method_owner: Rc<Cell<Option<NativeTypeContext>>>,
     self_parameter: Option<NativeTypeParameterKey>,
     parent: Option<NativeTypeContext>,
     documentation_parents: Vec<NativeTypeContext>,
@@ -72,7 +75,7 @@ impl NativeTypes {
             if scopes.contains_key(&owner) {continue;}
             let scope=self.scopes.get(&owner).expect("original named enclosing scope");
             pending.extend(scope.parent);
-            pending.extend(scope.method_owner);
+            pending.extend(scope.method_owner.get());
             pending.extend(scope.annotation_scope);
             pending.extend(scope.documentation_parents.iter().copied());
             scopes.insert(owner,scope.clone());
@@ -82,8 +85,11 @@ impl NativeTypes {
     pub(super) fn import_original_scopes(&mut self, metadata: &OriginalTypeScopes) {
         for (&owner,scope) in &metadata.0 { self.scopes.entry(owner).or_insert_with(||scope.clone()); }
     }
-    pub(super) fn attach_documentation_owner(&mut self, signature:luanalysis_engine::NativeSignatureKey,owner:NativeNamedKey) {
-        self.scopes.get_mut(&NativeTypeContext::Signature(signature)).expect("original documentation signature scope").method_owner=Some(NativeTypeContext::NamedType(owner));
+    pub(super) fn attach_documentation_owner(&self, signature:luanalysis_engine::NativeSignatureKey,owner:NativeNamedKey) {
+        self.scopes[&NativeTypeContext::Signature(signature)].method_owner.set(Some(NativeTypeContext::NamedType(owner)));
+    }
+    pub(super) fn clear_documentation_owner(&self, signature:luanalysis_engine::NativeSignatureKey) {
+        self.scopes[&NativeTypeContext::Signature(signature)].method_owner.set(None);
     }
     pub(super) fn new(snapshot: u64, recipes: Vec<TypeScopeRecipe>) -> Self {
         Self::new_with_named(snapshot, recipes, Vec::new())
@@ -143,7 +149,7 @@ impl NativeTypes {
             );
             let mut scope = TypeScope {
                 annotation_scope: None,
-                method_owner: None,
+                method_owner: Rc::new(Cell::new(None)),
                 self_parameter: None,
                 parent,
                 documentation_parents,
@@ -213,7 +219,7 @@ impl NativeTypes {
     pub(super) fn attach_owner_scope(&mut self, member: NativeTypeContext, owner: NativeNamedKey) {
         let context = NativeTypeContext::NamedType(owner);
         assert!(self.scopes.contains_key(&context), "original class scope");
-        self.scopes.get_mut(&member).expect("original member scope").method_owner = Some(context);
+        self.scopes[&member].method_owner.set(Some(context));
     }
 
     pub(super) fn attach_signature_scope(&mut self,function:NativeFunctionKey,signature:luanalysis_engine::NativeSignatureKey) {
@@ -308,7 +314,7 @@ impl NativeTypes {
                 _ => return TypeNameResolution::Ambiguous(candidates),
             }
             if let Some(parent) = scope.parent { pending.push(parent); }
-            if let Some(owner) = scope.method_owner { pending.push(owner); }
+            if let Some(owner) = scope.method_owner.get() { pending.push(owner); }
         }
         TypeNameResolution::Missing
     }
@@ -401,7 +407,7 @@ impl NativeTypes {
             .scopes
             .get(&owner)
             .expect("original generic owner scope");
-        let mut pending: Vec<_> = scope.parent.into_iter().chain(scope.method_owner).chain(scope.documentation_parents.iter().copied()).collect();
+        let mut pending: Vec<_> = scope.parent.into_iter().chain(scope.method_owner.get()).chain(scope.documentation_parents.iter().copied()).collect();
         let mut visited = HashSet::new();
         let mut parameters = Vec::new();
         while let Some(owner) = pending.pop() {
@@ -409,7 +415,7 @@ impl NativeTypes {
             let scope = self.scopes.get(&owner).expect("original enclosing generic owner scope");
             parameters.extend(scope.parameters.iter().copied().chain(scope.self_parameter));
             pending.extend(scope.parent);
-            pending.extend(scope.method_owner);
+            pending.extend(scope.method_owner.get());
             pending.extend(scope.documentation_parents.iter().copied());
         }
         parameters.retain(|key| used.contains(key));

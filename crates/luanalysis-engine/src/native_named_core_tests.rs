@@ -991,3 +991,31 @@ fn specialized_alias_augmentation_owner_mapping_remains_an_explicit_gate() {
         },
     );
 }
+
+#[test]
+fn fixed_alias_owner_scope_and_reference_keep_only_matching_instantiations() {
+    Engine::new().with_native_provider(
+        || {
+            let mut shape = Declaration::record(0, vec![0]);
+            shape.header.parameters = vec![parameter(0)];
+            let alias = Declaration::alias(1, reference(0, vec![Type::Number]));
+            let mut extension = Member::field(0, LuaKey::String(b"extra".to_vec()), Type::NativeTypeParameter(parameter(0)));
+            extension.header.owner = TypeMemberOwner::Reference { name: "Numbers".into(), candidates: vec![declaration(1)] };
+            Provider { declarations: vec![shape, alias], parameters: 1, members: vec![extension], ..Provider::default() }
+        },
+        |provider, q| {
+            assert_eq!(q.named_member_scope_owner(member(0)).unwrap(), declaration(0));
+            assert!(provider.demands.borrow().is_empty(), "scope lookup must not materialize member signatures or values");
+            let owner = q.named_member_owner(member(0)).unwrap();
+            assert_eq!(owner.declaration, declaration(0));
+            assert!(provider.demands.borrow().is_empty());
+            assert_eq!(q.property_type(&owner.reference, "extra"), Some(Type::Number));
+            let numeric = q.named_type_reference(declaration(0), &[Type::Number]).unwrap();
+            let textual = q.named_type_reference(declaration(0), &[Type::String]).unwrap();
+            assert_eq!(q.property_type(&numeric, "extra"), Some(Type::Number));
+            assert_eq!(q.property_type(&textual, "extra"), None);
+            assert_eq!(q.validate_named_member(member(0)).unwrap(), Type::Number);
+            assert!(provider.errors.borrow().is_empty(), "{:?}", provider.errors.borrow());
+        },
+    );
+}

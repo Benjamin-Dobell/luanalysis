@@ -337,8 +337,8 @@ fn alias_colon_owner_never_uses_error_type_as_a_valid_receiver_contract() {
         report
             .diagnostics
             .iter()
-            .any(|error| error.code == "LUA2034"
-                && &source[error.span.start..error.span.end] == "Alias"),
+            .any(|error| error.code == "TS2345"
+                && &source[error.span.start..error.span.end] == "'wrong receiver'"),
         "{:#?}",
         report.diagnostics
     );
@@ -352,6 +352,57 @@ fn alias_colon_owner_never_uses_error_type_as_a_valid_receiver_contract() {
         check(&direct).diagnostics
     );
     clean(&direct.replace("box.read('wrong receiver')", "box:read()"));
+}
+
+#[test]
+fn specialized_alias_colon_heads_keep_real_formals_self_and_derived_receivers() {
+    let source = "---@class Box<T>\n---@field value T\n\n---@alias Alias Box<string>\n\n---@function Alias:replace(value:T):self\n\n---@class Derived:Box<string>\n---@field extra number\n\n---@param box Derived\nlocal function use(box)\n local result=box:replace('text')\n ---@type Derived\n local kept=result\n ---@type string\n local value=result.value\n return result.extra\nend\n";
+    clean(source);
+    let invalid = source.replace("box:replace('text')", "box:replace(42)");
+    assert!(check(&invalid).diagnostics.iter().any(|error| error.code == "TS2345"), "{:#?}", check(&invalid).diagnostics);
+    let unrelated = format!("{source}\n---@param other Box<number>\nlocal function wrong(other) return other:replace(42) end\n");
+    assert!(check(&unrelated).diagnostics.iter().any(|error| error.code == "TS2339"), "{:#?}", check(&unrelated).diagnostics);
+}
+
+#[test]
+fn all_alias_member_scopes_are_prepared_before_a_class_captures_outer_parameters() {
+    let fixture = Fixture::new();
+    fixture.file("member.def.lua", "---@function Alias:read():T\n---@function Alias:again():{value:T}\n");
+    fixture.file("main.lua", "---@generic T\n---@param value T\nlocal function make(value)\n ---@class Captured\n local Captured={}\n ---@alias Alias Captured\n ---@type Captured\n local instance\n local first=instance:read()\n local second=instance:again()\n return first,second.value\nend\nlocal count,other=make(1)\nlocal text,more=make('x')\n");
+    let result = fixture.run(&["--library", "member.def.lua", "main.lua"]);
+    assert_eq!(result.status.code(), Some(0), "{}", output(&result));
+    for expected in ["count: number", "other: number", "text: string", "more: string"] {
+        assert!(output(&result).contains(expected), "{}", output(&result));
+    }
+}
+
+#[test]
+fn alias_owner_cycles_fail_without_publishing_a_receiver_signature() {
+    let source = "---@alias First Second\n---@alias Second First\n---@function First:read():self\n";
+    let report = check(source);
+    assert!(report.diagnostics.iter().any(|error| matches!(error.code, "TS2456" | "TS2589")), "{:#?}", report.diagnostics);
+    assert!(!report.diagnostics.iter().any(|error| error.code == "TS7006"), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn alias_constraints_can_demand_a_sibling_original_signature_after_scope_preparation() {
+    clean("---@shape HasRead\n---@field read fun(value:number):number\n\n---@shape Good\n\n---@class Box<T:HasRead>\n\n---@alias Alias Box<Good>\n\n---@function Alias:copy():self\n---@function Good.read(value:number):number\n\n---@param value Alias\nlocal function use(value) return value:copy() end\n");
+}
+
+#[test]
+fn cli_specialized_alias_colon_receiver_rejects_original_wrong_value_and_accepts_correction() {
+    let fixture = Fixture::new();
+    fixture.file("owner.def.lua", "---@class Box<T>\n---@field value T\n\n---@class Derived:Box<string>\n---@field extra number\n");
+    fixture.file("alias.def.lua", "---@alias Alias Box<string>\n");
+    fixture.file("members.def.lua", "---@function Alias:replace(value:T):self\n");
+    fixture.file("main.lua", "-- café\r\n---@param box Derived\r\nlocal function use(box)\r\n return box.replace('wrong receiver','text')\r\nend\r\n");
+    let args = ["--library", "owner.def.lua", "--library", "alias.def.lua", "--library", "members.def.lua", "main.lua"];
+    let invalid = fixture.run(&args);
+    assert_eq!(invalid.status.code(), Some(1), "{}", output(&invalid));
+    assert!(output(&invalid).contains("main.lua:4:21: error[TS2345]"), "{}", output(&invalid));
+    fixture.file("main.lua", "---@param box Derived\nlocal function use(box)\n local result=box:replace('text')\n ---@type Derived\n local kept=result\n ---@type string\n local value=result.value\n ---@type number\n local extra=result.extra\n return extra\nend\n");
+    let corrected = fixture.run(&args);
+    assert_eq!(corrected.status.code(), Some(0), "{}", output(&corrected));
 }
 
 #[test]

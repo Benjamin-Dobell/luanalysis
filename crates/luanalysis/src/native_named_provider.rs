@@ -102,6 +102,35 @@ fn key_recipe(key: &TypeFieldKey) -> TypeMemberKeyRecipe {
 }
 
 impl NativeRegistry {
+    pub(crate) fn named_owner_scope_recipe(&self, key: NativeTypeDeclarationKey) -> luanalysis_engine::OwnerScopeRecipe {
+        use luanalysis_engine::OwnerScopeRecipe;
+        let Some(source) = self.named.declaration(named_key(key)) else {
+            return OwnerScopeRecipe::Original(TypeDeclarationKind::Shape);
+        };
+        match &source.syntax.kind {
+            NamedTypeDeclarationKind::Record { flavor, .. } => OwnerScopeRecipe::Original(match flavor {
+                NamedRecordKind::Class => TypeDeclarationKind::Class,
+                NamedRecordKind::Shape => TypeDeclarationKind::Shape,
+                NamedRecordKind::Module => TypeDeclarationKind::Module,
+            }),
+            NamedTypeDeclarationKind::Alias { target } => {
+                let mut target = target;
+                while let TypeExprKind::Parenthesized(inner) = &target.kind { target = inner; }
+                let name = match &target.kind {
+                    TypeExprKind::Named(name) => Some(name.as_str()),
+                    TypeExprKind::Generic { base, .. } => Some(base.text.as_str()),
+                    _ => None,
+                };
+                if let Some(key) = self.named.anonymous_key_at(target.span) {
+                    OwnerScopeRecipe::AliasReference { candidates: vec![anonymous(key)] }
+                } else if let Some(name) = name {
+                    OwnerScopeRecipe::AliasReference { candidates: self.named_candidates(name) }
+                } else {
+                    OwnerScopeRecipe::UnsupportedAlias
+                }
+            }
+        }
+    }
     fn signature_aware_head_context(&self,head:&AnonymousHeadSource)->Option<NativeTypeContext> {
         self.signature_context_for_annotation(head.syntax.span)
             .map(NativeTypeContext::Signature).or_else(||head_context(head))
@@ -743,7 +772,7 @@ impl NativeRegistry {
             NamedTypeError::TooDeep(query) => (
                 "TS2589",
                 match query {
-                    NamedTypeQuery::Head(key)
+                    NamedTypeQuery::OwnerScope(key) | NamedTypeQuery::Head(key)
                     | NamedTypeQuery::Bases(key)
                     | NamedTypeQuery::ObjectMembers(key) => self.named_origin(key),
                     NamedTypeQuery::DefinitionContext(key) => self.named_origin(key),
@@ -766,6 +795,7 @@ impl NativeRegistry {
         });
     }
     pub(crate) fn check_named_declarations(&self, queries: &mut dyn TypeQueries) {
+        self.prepare_documentation_scopes(queries);
         self.doc_members.validate(queries);
         self.validate_return_annotations(queries);
         self.validate_original_assignment_annotations(queries);

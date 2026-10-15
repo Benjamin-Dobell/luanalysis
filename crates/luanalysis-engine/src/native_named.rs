@@ -42,6 +42,20 @@ pub enum TypeDeclarationKind {
     Class,
     Module,
 }
+
+#[derive(Clone, Debug)]
+pub enum OwnerScopeRecipe {
+    ResolvedHead,
+    Original(TypeDeclarationKind),
+    AliasReference { candidates: Vec<NativeTypeDeclarationKey> },
+    UnsupportedAlias,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedMemberOwner {
+    pub declaration: NativeTypeDeclarationKey,
+    pub reference: Type,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObjectDeclarationForm {
     Record,
@@ -92,6 +106,7 @@ pub struct TypeMemberHeader {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NamedTypeQuery {
+    OwnerScope(NativeTypeDeclarationKey),
     Head(NativeTypeDeclarationKey),
     Member(NativeTypeMemberKey),
     MemberContext(NativeTypeMemberKey),
@@ -205,6 +220,20 @@ fn source_kind(kind: NativeTypeDeclarationKind) -> TypeDeclarationKind {
 }
 
 impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_, P> {
+    fn type_declaration_owner_scope(&self, _: &Checker<'_, '_>, key: NativeTypeDeclarationId) -> bun_sema::check::native_named::NativeOwnerScopeRecipe {
+        use bun_sema::check::native_named::NativeOwnerScopeRecipe as Core;
+        match self.provider.type_declaration_owner_scope(source_declaration(key)) {
+            OwnerScopeRecipe::ResolvedHead => Core::ResolvedHead,
+            OwnerScopeRecipe::Original(kind) => Core::Original(match kind {
+                TypeDeclarationKind::Alias => NativeTypeDeclarationKind::Alias,
+                TypeDeclarationKind::Class => NativeTypeDeclarationKind::Class,
+                TypeDeclarationKind::Shape => NativeTypeDeclarationKind::Shape,
+                TypeDeclarationKind::Module => NativeTypeDeclarationKind::Module,
+            }),
+            OwnerScopeRecipe::AliasReference { candidates } => Core::AliasReference { candidates: candidates.into_iter().map(core_declaration).collect() },
+            OwnerScopeRecipe::UnsupportedAlias => Core::UnsupportedAlias,
+        }
+    }
     fn type_declaration_self_parameter(&self, key: NativeTypeDeclarationId) -> Option<bun_sema::types::NativeTypeParamId> { self.provider.type_declaration_self_parameter(source_declaration(key)).map(super::core_parameter_key) }
     fn contains_class_definition(&self, key: NativeDefinitionId) -> bool {
         self.provider.contains_class_definition(source_definition(key))
@@ -442,6 +471,18 @@ pub(super) fn validate_member(
         .map_err(|error| export_error(queries.checker, queries.handles, error))
 }
 
+pub(super) fn member_scope_owner(queries: &mut SessionQueries<'_, '_, '_>, member: NativeTypeMemberKey) -> Result<NativeTypeDeclarationKey, NamedTypeError> {
+    queries.checker.native_named_member_scope_owner(core_member(member))
+        .map(source_declaration)
+        .map_err(|error| export_error(queries.checker, queries.handles, error))
+}
+
+pub(super) fn member_owner(queries: &mut SessionQueries<'_, '_, '_>, member: NativeTypeMemberKey) -> Result<NamedMemberOwner, NamedTypeError> {
+    queries.checker.native_named_member_owner(core_member(member))
+        .map(|(declaration, reference)| NamedMemberOwner { declaration: source_declaration(declaration), reference: export_type(queries.checker, queries.handles, reference) })
+        .map_err(|error| export_error(queries.checker, queries.handles, error))
+}
+
 pub(super) fn export_error(
     checker: &mut Checker<'_, '_>,
     handles: &TypeHandles,
@@ -508,6 +549,7 @@ pub(super) fn export_error(
         NativeNamedTypeError::IncompatibleOverride { declaration, member, base, expected, actual } => NamedTypeError::IncompatibleOverride { declaration: source_declaration(declaration), member: source_member(member), base: export_type(checker, handles, base), expected: export_type(checker, handles, expected), actual: export_type(checker, handles, actual) },
         NativeNamedTypeError::IncompatibleBase { declaration, index, base, expected, actual } => NamedTypeError::IncompatibleBase { declaration: source_declaration(declaration), index, base: export_type(checker, handles, base), expected: export_type(checker, handles, expected), actual: export_type(checker, handles, actual) },
         NativeNamedTypeError::TooDeep(query) => NamedTypeError::TooDeep(match query {
+            Q::OwnerScope(key) => NamedTypeQuery::OwnerScope(source_declaration(key)),
             Q::DeclaredHead(key) => NamedTypeQuery::Head(source_declaration(key)),
             Q::MemberType(key) => NamedTypeQuery::Member(source_member(key)),
             Q::MemberContext(key) => NamedTypeQuery::MemberContext(source_member(key)),

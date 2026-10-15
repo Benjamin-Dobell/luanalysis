@@ -187,12 +187,12 @@ fn transparent_alias_owner_augmentations_resolve_in_the_core() {
 }
 
 #[test]
-fn unknown_primitive_ambiguous_and_specialized_augmentation_owners_are_rejected() {
+fn unknown_primitive_ambiguous_and_unbound_generic_alias_owners_are_rejected() {
     for source in [
         "---@field <Missing> x number\n",
         "---@alias Primitive number\n---@field <Primitive> x number\n",
         "---@shape Same\n---@shape Same\n---@field <Same> x number\n",
-        "---@shape Box<T>\n---@field value T\n---@alias Specialized Box<number>\n---@field <Specialized> extra number\n",
+        "---@shape Box<T>\n---@field value T\n---@alias Generic<U> Box<U>\n---@field <Generic> extra U\n",
     ] {
         let report = check(source);
         assert!(!report.diagnostics.is_empty(), "{source}");
@@ -205,6 +205,14 @@ fn unknown_primitive_ambiguous_and_specialized_augmentation_owners_are_rejected(
             report.diagnostics
         );
     }
+}
+
+#[test]
+fn fixed_alias_fields_apply_only_to_the_canonical_matching_arguments() {
+    let source = "---@shape Box<T>\n---@field value T\n\n---@alias Specialized Box<number>\n---@field <Specialized> extra number\n\n---@param value Box<number>\nlocal function use(value)\n---@type number\nlocal checked=value.extra\nend\n";
+    passes(source);
+    let unrelated = source.replace("value Box<number>", "value Box<string>");
+    assert!(check(&unrelated).diagnostics.iter().any(|error| error.code == "TS2339"), "{:#?}", check(&unrelated).diagnostics);
 }
 
 #[test]

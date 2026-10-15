@@ -2028,7 +2028,7 @@ impl NativeTypeProvider for NativeRegistry {
         let directive = self.class_definition_directive(source).expect("supported class definition").expect("attached class declaration");
         luanalysis_engine::ClassDefinitionHeader { declaration: directive.declaration }
     }
-    fn contains_signature(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signatures.contains(key)}
+    fn contains_signature(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signature_available(key)}
     fn signature_header(&self,key:luanalysis_engine::NativeSignatureKey)->luanalysis_engine::SignatureHeader{self.signatures.get(key).header}
     fn function_overload_signatures(&self,key:NativeFunctionKey)->Vec<luanalysis_engine::NativeSignatureKey>{
         if self.source_role() == luanalysis_project::SourceRole::Declaration {
@@ -2061,6 +2061,9 @@ impl NativeTypeProvider for NativeRegistry {
     }
     fn type_declaration_header(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> luanalysis_engine::TypeDeclarationHeader {
         self.named_declaration_header(key)
+    }
+    fn type_declaration_owner_scope(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> luanalysis_engine::OwnerScopeRecipe {
+        self.named_owner_scope_recipe(key)
     }
     fn contains_type_member(&self, key: luanalysis_engine::NativeTypeMemberKey) -> bool {
         self.named_contains_member(key)

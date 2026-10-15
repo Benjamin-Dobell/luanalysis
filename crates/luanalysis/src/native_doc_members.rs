@@ -9,6 +9,10 @@ use luanalysis_engine::{
 };
 use luanalysis_syntax::{DocFunctionDeclarationId, DocFunctionOwner, File, Span};
 use std::collections::HashSet;
+use std::cell::Cell;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DocOwnerScope { Unprepared, Scoped(NativeNamedKey), Ready(NativeNamedKey), Failed }
 
 #[derive(Clone, Debug)]
 pub(super) struct DocMemberSource {
@@ -22,6 +26,7 @@ pub(super) struct DocMemberSource {
     pub name_span: Span,
     /// Override/signature errors retain the complete original header span.
     pub signature_span: Span,
+    pub scope: Cell<DocOwnerScope>,
 }
 
 pub(super) struct NativeDocMembers {
@@ -86,6 +91,7 @@ impl NativeDocMembers {
                 owner_span,
                 name_span: source.name.span,
                 signature_span: source.span,
+                scope: Cell::new(DocOwnerScope::Unprepared),
             });
         }
         Self {
@@ -102,6 +108,9 @@ impl NativeDocMembers {
     }
     pub(super) fn sources(&self) -> &[DocMemberSource] {
         &self.sources
+    }
+    pub(super) fn for_declaration(&self, id: DocFunctionDeclarationId) -> Option<&DocMemberSource> {
+        self.sources.iter().find(|source| source.declaration == id)
     }
     /// Reference ownership must be resolved by the native core. Do not select
     /// an apparent source owner or filter aliases in this immutable index.
@@ -159,9 +168,13 @@ impl NativeDocMembers {
             index: owner.index,
         };
         for source in &self.sources {
-            let applicable = match &source.owner {
+            let applicable = match source.scope.get() {
+                DocOwnerScope::Scoped(canonical) | DocOwnerScope::Ready(canonical) => canonical.snapshot == owner.snapshot && canonical.index == owner.index,
+                DocOwnerScope::Failed => false,
+                DocOwnerScope::Unprepared => match &source.owner {
                 TypeMemberOwner::Declared(declaration) => *declaration == owner,
                 TypeMemberOwner::Reference { candidates, .. } => candidates.contains(&owner),
+                },
             };
             if applicable {
                 let signature =
@@ -172,6 +185,7 @@ impl NativeDocMembers {
     }
     pub(super) fn validate(&self, queries: &mut dyn TypeQueries) {
         for key in self.keys() {
+            if self.get(key).is_some_and(|source| source.scope.get() == DocOwnerScope::Failed) { continue; }
             let _ = queries.validate_named_member(key);
         }
     }
