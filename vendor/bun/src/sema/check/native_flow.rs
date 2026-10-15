@@ -1548,12 +1548,16 @@ impl<'s, 'p> Checker<'s, 'p> {
             // its own in-progress loop is unavailable, not proof of no effect.
             return NativeEffectResult::Pending;
         }
+        let context = self.native_query_context();
         let begun = self.begin_memoizable();
         let effects = provider.call_effects(value, input, self);
         let stored = self.end_memoizable(begun);
         match self.leave(query) {
             Ok(_) if stored.is_some() && !self.is_stack_low() => {
                 self.flow_memo.native_state.call_effects.insert(key, effects);
+            }
+            Err(_) if self.native_complete_without_cache(context, stored.is_some()) => {
+                return NativeEffectResult::Complete(effects);
             }
             Err(open) => {
                 let raw = self.flow_memo.native_state.effect_records.len() as u64;

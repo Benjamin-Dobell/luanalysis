@@ -55,6 +55,7 @@ mod expr;
 mod flow;
 mod flow_walk;
 pub mod native_flow;
+mod native_query_context;
 pub mod native_aliases;
 pub mod native_iterators;
 pub mod native_packs;

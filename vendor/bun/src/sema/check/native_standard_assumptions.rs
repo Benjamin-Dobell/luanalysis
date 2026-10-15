@@ -119,6 +119,7 @@ impl<'p, 's> Checker<'p, 's> {
         if let Some(result) = self.native_alias_cache.standard_values.get(&key) { return result.clone() }
         let query = Query::NativeStandardValue(value, input, key.2, key.3);
         if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
+        let context = self.native_query_context();
         let (mut result, completed) = self.run_memoizable(|checker| {
             if let Some(member) = provider.value_alias_environment_member(value, input)
                 && let NativeAliasInitial::GlobalValue(binding) = provider.reference_alias_initial(member.reference)
@@ -141,8 +142,12 @@ impl<'p, 's> Checker<'p, 's> {
                 _ => Origins::unavailable(),
             }
         });
-        if self.leave(query).is_err() || completed.is_none() { result.uncertain = true; self.mark_tainted_from(0); }
-        if !result.uncertain && !self.is_stack_low() { self.native_alias_cache.standard_values.insert(key, result.clone()); }
+        let cacheable = match self.leave(query) {
+            Ok(_) if completed.is_some() => true,
+            Err(_) if self.native_complete_without_cache(context, completed.is_some()) => false,
+            _ => { result.uncertain = true; self.mark_tainted_from(0); false },
+        };
+        if cacheable && !result.uncertain && !self.is_stack_low() { self.native_alias_cache.standard_values.insert(key, result.clone()); }
         result
     }
 
@@ -205,9 +210,14 @@ impl<'p, 's> Checker<'p, 's> {
         if let Some(result) = self.native_alias_cache.standard_references.get(&key) { return result.clone() }
         let query = Query::NativeStandardReference(reference, at, key.2, key.3);
         if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
+        let context = self.native_query_context();
         let (mut result, completed) = self.run_memoizable(|checker| checker.native_standard_reference_worker(provider, reference, at));
-        if self.leave(query).is_err() || completed.is_none() { result.uncertain = true; self.mark_tainted_from(0); }
-        if !result.uncertain && !self.is_stack_low() { self.native_alias_cache.standard_references.insert(key, result.clone()); }
+        let cacheable = match self.leave(query) {
+            Ok(_) if completed.is_some() => true,
+            Err(_) if self.native_complete_without_cache(context, completed.is_some()) => false,
+            _ => { result.uncertain = true; self.mark_tainted_from(0); false },
+        };
+        if cacheable && !result.uncertain && !self.is_stack_low() { self.native_alias_cache.standard_references.insert(key, result.clone()); }
         result
     }
 

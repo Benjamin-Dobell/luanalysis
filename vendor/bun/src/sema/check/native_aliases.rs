@@ -998,6 +998,7 @@ impl<'p, 's> Checker<'p, 's> {
         if let Some(result) = self.native_alias_cache.projected_references.get(&key) { return result.clone() }
         let query = Query::NativeAliasProjectedReference(reference, at, path_id, epoch, frame);
         if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
+        let context = self.native_query_context();
         let begun = self.begin_memoizable();
         let mut result = match provider.node(at) {
             // An immutable captured cell preserves its table identity, not
@@ -1035,6 +1036,7 @@ impl<'p, 's> Checker<'p, 's> {
         match self.leave(query) {
             Ok(stored) if memoizable.is_some() && !result.uncertain && !self.is_stack_low() => self.native_alias_cache.projected_reference(key, result.clone(), stored),
             Ok(_) if memoizable.is_some() => {},
+            Err(_) if self.native_complete_without_cache(context, memoizable.is_some()) => {},
             _ => { result.unknown = true; result.uncertain = true; self.mark_tainted_from(0); },
         }
         result
