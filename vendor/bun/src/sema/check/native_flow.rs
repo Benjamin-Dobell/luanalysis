@@ -270,6 +270,11 @@ pub trait NativeFlowProvider {
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
     /// A tested fixed child of this original receiver, independent of write metadata.
     fn reference_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
+    /// An original fixed descendant path. This metadata does not evaluate a
+    /// property or infer the identity of an intermediate receiver.
+    fn reference_member_path(&self, reference: NativeReferenceKey, member: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<Vec<NativeTableKey>> {
+        self.reference_member_key(reference, member, checker).map(|key| vec![key])
+    }
     /// Original immutable predicate recipe for a verified assertion argument.
     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }

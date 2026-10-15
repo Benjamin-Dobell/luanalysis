@@ -145,8 +145,15 @@ impl<'p, 's> Checker<'p, 's> {
                     previous
                 }
                 NativeWriteRelation::Ancestor => {
-                    let projected = provider.reference_member_key(target, reference, self)
-                        .and_then(|key| provider.value_alias_member_source(value, input, key, self));
+                    let projected = provider.reference_member_path(target, reference, self)
+                        .filter(|path| !path.is_empty())
+                        .and_then(|path| {
+                            let mut projected = NativeAliasReturnValue { value, input };
+                            for key in path {
+                                projected = provider.value_alias_member_source(projected.value, projected.input, key, self)?;
+                            }
+                            Some(projected)
+                        });
                     projected.map_or_else(Origins::unknown, |value| self.native_alias_value(provider, value.value, value.input, 0))
                 },
                 NativeWriteRelation::PossibleAncestor => Origins::unknown(),

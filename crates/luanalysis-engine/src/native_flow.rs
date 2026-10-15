@@ -73,6 +73,10 @@ pub trait NativeFlowProvider {
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> Option<super::LuaKey> { None }
     /// A tested fixed child of the same original receiver.
     fn reference_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey) -> Option<super::LuaKey> { None }
+    /// A fixed original descendant path, without inferred receiver values.
+    fn reference_member_path(&self, reference: NativeReferenceKey, member: NativeReferenceKey) -> Option<Vec<super::LuaKey>> {
+        self.reference_member_key(reference, member).map(|key| vec![key])
+    }
     fn value_type(
         &self,
         value: NativeValueKey,
@@ -179,6 +183,10 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     fn reference_member_key(&self, reference: NativeReferenceKey, member: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::NativeTableKey> {
         let key = self.provider.reference_member_key(reference, member)?;
         Some(super::native_tables::import_literal_key(checker, &key))
+    }
+    fn reference_member_path(&self, reference: NativeReferenceKey, member: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<Vec<bun_sema::types::NativeTableKey>> {
+        self.provider.reference_member_path(reference, member)
+            .map(|path| path.iter().map(|key| super::native_tables::import_literal_key(checker, key)).collect())
     }
     fn value_type(
         &self,

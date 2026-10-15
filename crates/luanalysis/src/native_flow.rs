@@ -1567,6 +1567,20 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             flow::Key::Dynamic(_) => return None,
         })
     }
+    fn reference_member_path(&self, reference: NativeReferenceKey, member: NativeReferenceKey) -> Option<Vec<luanalysis_engine::LuaKey>> {
+        if reference.graph != member.graph { return None; }
+        let reference = self.sources.source_reference(reference)?;
+        let member = self.sources.source_reference(member)?;
+        if reference.root != member.root || member.path.len() <= reference.path.len()
+            || !member.path.starts_with(&reference.path) { return None; }
+        member.path[reference.path.len()..].iter().map(|key| Some(match key {
+            flow::Key::String(value) => luanalysis_engine::LuaKey::String(value.clone()),
+            flow::Key::Boolean(value) => luanalysis_engine::LuaKey::Boolean(*value),
+            flow::Key::Integer(value) => luanalysis_engine::LuaKey::Integer(*value),
+            flow::Key::Float(value) => luanalysis_engine::LuaKey::Number(f64::from_bits(*value)),
+            flow::Key::Dynamic(_) => return None,
+        })).collect()
+    }
     fn value_type(
         &self,
         value: NativeValueKey,
