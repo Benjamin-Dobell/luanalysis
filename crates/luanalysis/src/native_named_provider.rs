@@ -14,7 +14,25 @@ use luanalysis_syntax::{
     FieldVisibility, NamedRecordKind, NamedTypeDeclarationKind, Span, TypeExpr, TypeExprKind,
     TypeFieldKey,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+/// Completed original-source headers only: kinds, names and parameter keys.
+/// No checker type, inferred result, mapper or query permission is retained.
+#[derive(Default)]
+pub(super) struct SourceHeaderMetadata {
+    scope_revisions: Vec<u64>,
+    headers: HashMap<NativeTypeDeclarationKey, TypeDeclarationHeader>,
+}
+impl SourceHeaderMetadata {
+    pub(super) fn invalidate(&mut self) { self.headers.clear(); }
+    fn get(&mut self, revisions: &[u64], key: NativeTypeDeclarationKey) -> Option<TypeDeclarationHeader> {
+        if self.scope_revisions != revisions {
+            self.headers.clear();
+            self.scope_revisions = revisions.to_vec();
+        }
+        self.headers.get(&key).cloned()
+    }
+}
 
 fn declaration(key: NativeNamedKey) -> NativeTypeDeclarationKey {
     NativeTypeDeclarationKey {
@@ -327,6 +345,20 @@ impl NativeRegistry {
             .collect()
     }
     pub(super) fn named_declaration_header(
+        &self,
+        key: NativeTypeDeclarationKey,
+    ) -> TypeDeclarationHeader {
+        let revisions = self.types.metadata_revisions();
+        if let Some(header) = self.header_metadata.borrow_mut().get(&revisions, key) { return header; }
+        // Each original owner is traversed with the existing fresh visited
+        // sets. A recursive sub-traversal never publishes a partial closure.
+        let header = self.named_declaration_header_uncached(key);
+        assert_eq!(self.types.metadata_revisions(), revisions,
+            "header dependency discovery only reads original scope metadata");
+        self.header_metadata.borrow_mut().headers.insert(key, header.clone());
+        header
+    }
+    fn named_declaration_header_uncached(
         &self,
         key: NativeTypeDeclarationKey,
     ) -> TypeDeclarationHeader {
@@ -999,5 +1031,62 @@ mod dependency_tests {
             vec![registry.types.own_parameters(outer)[0]]
         );
         assert!(registry.report.borrow().diagnostics.is_empty()); // Metadata collection emits no alias cycle/type diagnostics.
+    }
+
+    #[test]
+    fn completed_owner_headers_preserve_cyclic_original_parameter_dependencies() {
+        let registry = registry(
+            "---@generic T,U\nlocal function outer()\n---@alias First Second\n---@alias Second {next:First|nil,value:T}\n---@alias Unused U\nend",
+        );
+        let key = registry.named_candidates("First")[0];
+        let expected = registry.types.own_parameters(function(&registry, "outer"))[0];
+        let header = registry.named_declaration_header(key);
+        assert_eq!(header.outer_parameters, vec![expected]);
+        assert_eq!(registry.named_declaration_header(key), header);
+        assert_eq!(registry.named_declaration_header_uncached(key), header);
+        assert_eq!(registry.header_metadata.borrow().headers.len(), 1);
+        assert!(registry.report.borrow().diagnostics.is_empty());
+    }
+
+    #[test]
+    fn documentation_owner_preparation_invalidates_completed_anonymous_headers() {
+        let registry = registry("---@class Owner<T>\n---@function Owner.read():{value:T}\n");
+        let owner = registry.named_candidates("Owner")[0];
+        let owner = NativeNamedKey { snapshot: owner.snapshot, index: owner.index };
+        let parameter = registry.types.own_parameters_in_context(NativeTypeContext::NamedType(owner))[0];
+        let source = registry.named.anonymous_heads().iter().find(|head| {
+            matches!(head.syntax.kind, TypeExprKind::Record(_))
+        }).expect("original written return record");
+        let key = anonymous(source.key);
+        let signature = registry.signature_context_for_annotation(source.syntax.span)
+            .expect("return record retains its original signature context");
+        let header = registry.named_declaration_header(key);
+        assert_eq!(header.outer_parameters, vec![parameter]);
+        registry.types.clear_documentation_owner(signature);
+        assert!(registry.named_declaration_header(key).outer_parameters.is_empty());
+        registry.types.attach_documentation_owner(signature, owner);
+        assert_eq!(registry.named_declaration_header(key), header);
+    }
+
+    #[test]
+    fn imported_original_scope_preparation_invalidates_observers_and_role_rebuilds() {
+        let mut source = registry("---@class Owner<U>\n---@generic T\nlocal function outer()\n---@class Nested\nend\n");
+        let mut observer = registry("");
+        observer.types.import_original_scopes(&source.types.original_scopes());
+        let outer = function(&source, "outer");
+        let context = NativeTypeContext::Function(outer);
+        assert!(matches!(observer.types.resolve_name_in_context(Some(context), "U"), TypeNameResolution::Missing));
+        let revisions = observer.types.metadata_revisions();
+        let owner = source.named_candidates("Owner")[0];
+        let owner = NativeNamedKey { snapshot: owner.snapshot, index: owner.index };
+        source.types.attach_owner_scope(context, owner);
+        assert_ne!(observer.types.metadata_revisions(), revisions);
+        assert!(matches!(observer.types.resolve_name_in_context(Some(context), "U"), TypeNameResolution::Parameter(_)));
+        let key = source.named_candidates("Nested")[0];
+        let header = source.named_declaration_header(key);
+        assert!(!source.header_metadata.borrow().headers.is_empty());
+        source.set_source_role(luanalysis_project::SourceRole::Declaration);
+        assert!(source.header_metadata.borrow().headers.is_empty());
+        assert_eq!(source.named_declaration_header(key), header);
     }
 }

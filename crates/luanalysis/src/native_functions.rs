@@ -80,6 +80,7 @@ pub(super) struct NativeRegistry {
     declarations: HashMap<BindingId, DeclarationSource>,
     pub(super) types: NativeTypes,
     named: NativeNamed,
+    header_metadata: RefCell<named_provider::SourceHeaderMetadata>,
     pub(super) members: super::native_members::NativeMembers,
     pub(super) doc_members: super::native_doc_members::NativeDocMembers,
     pub(super) runtime_tables: super::native_runtime_tables::NativeRuntimeTables,
@@ -207,6 +208,7 @@ impl NativeRegistry {
             declarations,
             types,
             named,
+            header_metadata: RefCell::new(named_provider::SourceHeaderMetadata::default()),
             members,
             doc_members,
             runtime_tables,
@@ -261,9 +263,15 @@ impl NativeRegistry {
         }
     }
 
+    pub(super) fn set_project_names(&mut self, names: std::rc::Rc<project_provider::ProjectNamedIndex>) {
+        self.header_metadata.get_mut().invalidate();
+        self.project_names = Some(names);
+    }
+
     // Setup only: project roles are assigned before the provider is installed
     // into a native session, so no member query can retain the previous IDs.
     pub(super) fn rebuild_original_members(&mut self) {
+        self.header_metadata.get_mut().invalidate();
         let mut inputs = self.original_constructor_member_inputs();
         inputs.extend(self.methods.original_members());
         if self.source_role() == luanalysis_project::SourceRole::Implementation {
@@ -276,6 +284,7 @@ impl NativeRegistry {
         }
     }
     pub(super) fn rebuild_documentation_members(&mut self) {
+        self.header_metadata.get_mut().invalidate();
         self.doc_members=super::native_doc_members::NativeDocMembers::new(self.snapshot,&self.file,&self.named,self.members.namespace_end(),|name|self.named_candidates(name));
         self.runtime_tables.register_keys(self.snapshot,(self.named.declarations().len()+self.named.anonymous_heads().len()).try_into().expect("original declaration namespace fits u32"),self.doc_members.namespace_end());
     }

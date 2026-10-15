@@ -35,6 +35,8 @@ pub(super) struct TypeParameterSource {
 
 #[derive(Clone)]
 struct TypeScope {
+    // Imported scopes share owner preparation changes and their source epoch.
+    metadata_epoch: Rc<Cell<u64>>,
     // A written generic function-type head supplies body-visible names without
     // changing their original Signature owner or creating a parent cycle.
     annotation_scope: Option<NativeTypeContext>,
@@ -52,12 +54,13 @@ pub(super) struct NativeTypes {
     scopes: HashMap<NativeTypeContext, TypeScope>,
     parameters: Vec<TypeParameterSource>,
     diagnostics: Vec<Diagnostic>,
+    metadata_epochs: Vec<Rc<Cell<u64>>>,
 }
 
 /// Immutable original identities visible only through an attached owner scope.
 /// Importing these scopes does not introduce any global generic parameter name.
 #[derive(Clone)]
-pub(super) struct OriginalTypeScopes(HashMap<NativeTypeContext,TypeScope>);
+pub(super) struct OriginalTypeScopes(HashMap<NativeTypeContext,TypeScope>, Vec<Rc<Cell<u64>>>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum TypeNameResolution {
@@ -80,16 +83,39 @@ impl NativeTypes {
             pending.extend(scope.documentation_parents.iter().copied());
             scopes.insert(owner,scope.clone());
         }
-        OriginalTypeScopes(scopes)
+        OriginalTypeScopes(scopes, self.metadata_epochs.clone())
     }
     pub(super) fn import_original_scopes(&mut self, metadata: &OriginalTypeScopes) {
-        for (&owner,scope) in &metadata.0 { self.scopes.entry(owner).or_insert_with(||scope.clone()); }
+        let mut changed = false;
+        for (&owner,scope) in &metadata.0 {
+            if let std::collections::hash_map::Entry::Vacant(entry) = self.scopes.entry(owner) {
+                entry.insert(scope.clone());
+                changed = true;
+            }
+        }
+        for epoch in &metadata.1 {
+            if !self.metadata_epochs.iter().any(|known| Rc::ptr_eq(known, epoch)) {
+                self.metadata_epochs.push(Rc::clone(epoch));
+                changed = true;
+            }
+        }
+        if changed { Self::advance_metadata(&self.metadata_epochs[0]); }
     }
     pub(super) fn attach_documentation_owner(&self, signature:luanalysis_engine::NativeSignatureKey,owner:NativeNamedKey) {
-        self.scopes[&NativeTypeContext::Signature(signature)].method_owner.set(Some(NativeTypeContext::NamedType(owner)));
+        let scope = &self.scopes[&NativeTypeContext::Signature(signature)];
+        let owner = Some(NativeTypeContext::NamedType(owner));
+        if scope.method_owner.replace(owner) != owner { Self::advance_metadata(&scope.metadata_epoch); }
     }
     pub(super) fn clear_documentation_owner(&self, signature:luanalysis_engine::NativeSignatureKey) {
-        self.scopes[&NativeTypeContext::Signature(signature)].method_owner.set(None);
+        let scope = &self.scopes[&NativeTypeContext::Signature(signature)];
+        if scope.method_owner.replace(None).is_some() { Self::advance_metadata(&scope.metadata_epoch); }
+    }
+    fn advance_metadata(epoch: &Cell<u64>) {
+        epoch.set(epoch.get().checked_add(1).expect("original scope metadata epoch fits u64"));
+    }
+    /// Original scope revisions only; these never name inferred checker types.
+    pub(super) fn metadata_revisions(&self) -> Vec<u64> {
+        self.metadata_epochs.iter().map(|epoch| epoch.get()).collect()
     }
     pub(super) fn new(snapshot: u64, recipes: Vec<TypeScopeRecipe>) -> Self {
         Self::new_with_named(snapshot, recipes, Vec::new())
@@ -107,6 +133,7 @@ impl NativeTypes {
             scopes: HashMap::new(),
             parameters: Vec::new(),
             diagnostics: Vec::new(),
+            metadata_epochs: vec![Rc::new(Cell::new(0))],
         };
         // Every sibling identity exists before any callback can ask for a
         // constraint, including valid forward references between parameters.
@@ -148,6 +175,7 @@ impl NativeTypes {
                     .all(|&context| context_snapshot(context) == snapshot)
             );
             let mut scope = TypeScope {
+                metadata_epoch: Rc::clone(&result.metadata_epochs[0]),
                 annotation_scope: None,
                 method_owner: Rc::new(Cell::new(None)),
                 self_parameter: None,
@@ -205,6 +233,7 @@ impl NativeTypes {
             semantic_self: Some(owner),
         });
         self.scopes.get_mut(&context).expect("original class type scope").self_parameter = Some(key);
+        Self::advance_metadata(&self.metadata_epochs[0]);
         key
     }
 
@@ -232,14 +261,19 @@ impl NativeTypes {
     pub(super) fn attach_owner_scope(&mut self, member: NativeTypeContext, owner: NativeNamedKey) {
         let context = NativeTypeContext::NamedType(owner);
         assert!(self.scopes.contains_key(&context), "original class scope");
-        self.scopes[&member].method_owner.set(Some(context));
+        let scope = &self.scopes[&member];
+        if scope.method_owner.replace(Some(context)) != Some(context) { Self::advance_metadata(&scope.metadata_epoch); }
     }
 
     pub(super) fn attach_signature_scope(&mut self,function:NativeFunctionKey,signature:luanalysis_engine::NativeSignatureKey) {
         let context=NativeTypeContext::Signature(signature);
         assert!(self.scopes.contains_key(&context),"original annotation signature scope");
-        self.scopes.get_mut(&NativeTypeContext::Function(function))
-            .expect("original runtime function scope").annotation_scope=Some(context);
+        let scope = self.scopes.get_mut(&NativeTypeContext::Function(function))
+            .expect("original runtime function scope");
+        if scope.annotation_scope != Some(context) {
+            scope.annotation_scope = Some(context);
+            Self::advance_metadata(&scope.metadata_epoch);
+        }
     }
 
     pub(super) fn diagnostics(&self) -> &[Diagnostic] {

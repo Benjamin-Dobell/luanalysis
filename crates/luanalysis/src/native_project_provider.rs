@@ -121,7 +121,7 @@ impl ProjectRegistry {
         let original_scopes:Vec<_>=files.iter().map(|file|file.source.types.original_scopes()).collect();
         for file in &mut files {
             for scopes in &original_scopes { file.source.types.import_original_scopes(scopes); }
-            file.source.project_names=Some(Rc::clone(&names));
+            file.source.set_project_names(Rc::clone(&names));
             file.source.attach_documentation_signature_owners();
             file.source.rebuild_documentation_members();
         }
@@ -196,7 +196,7 @@ impl ProjectRegistry {
         );
         for file in &mut files {
             file.source.flow.set_original_require_capability(standard_environment.require_operation.is_some());
-            file.source.project_names = Some(Rc::clone(&names));
+            file.source.set_project_names(Rc::clone(&names));
             file.source.project_modules = Some(Rc::clone(&modules));
             file.source.project_globals = Some(Rc::clone(&globals));
             file.source.set_legacy_builtin_policy(legacy_builtins);
