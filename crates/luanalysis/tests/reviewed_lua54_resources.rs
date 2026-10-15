@@ -144,9 +144,16 @@ fn practical_string_dot_contracts_keep_nullable_captures_and_dynamic_formatting(
 }
 
 #[test]
-fn unsupported_pack_forwarding_and_format_dependent_apis_have_no_fake_fallbacks() {
-    let fixture = Fixture::new("local rejected = pcall(function() end)\n");
-    fail(&fixture.check(), "TS2304");
-    fixture.source("local rejected = string.pack('i',42)\n");
-    fail(&fixture.check(), "TS2339");
+fn original_pack_related_declarations_are_available_with_their_written_contracts() {
+    // This checks declaration coverage and ordinary argument/result contracts.
+    // It does not establish protected-call result correlation, arbitrary pack
+    // forwarding, or inference of pack/unpack values from a format string.
+    let fixture = Fixture::new(
+        "---@return number\nlocal function callback() return 42 end\n---@type boolean\nlocal succeeded = pcall(callback)\n---@type string\nlocal packed = string.pack('zz','first','second')\n---@type number\nlocal size = string.packsize('i')\n",
+    );
+    pass(&fixture.check());
+    fixture.source("local rejected = string.packsize(42)\n");
+    fail(&fixture.check(), "TS2345");
+    fixture.source("---@type number\nlocal corrected = string.packsize('i')\n");
+    pass(&fixture.check());
 }

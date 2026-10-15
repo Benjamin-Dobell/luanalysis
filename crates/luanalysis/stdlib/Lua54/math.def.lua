@@ -11,6 +11,7 @@
 -- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 -- License for the specific language governing permissions and limitations under
 -- the License.
+-- Modified for standalone Luanalysis; see README.md and the replay patch.
 
 ---@class std__Math
 ---@field huge number @The float value `HUGE_VAL`, a value larger than any other numeric value.
@@ -101,6 +102,7 @@ function math.log(x, base) end
 --- Returns the argument with the maximum value, according to the Lua operator
 --- `<`. (integer/float)
 ---@param x number
+---@vararg number
 ---@return number
 function math.max(x, ...) end
 
@@ -108,6 +110,7 @@ function math.max(x, ...) end
 --- Returns the argument with the minimum value, according to the Lua operator
 --- `<`. (integer/float)
 ---@param x number
+---@vararg number
 ---@return number
 function math.min(x, ...) end
 
@@ -115,7 +118,7 @@ function math.min(x, ...) end
 --- Returns the integral part of `x` and the fractional part of `x`. Its second
 --- result is always a float.
 ---@param x number
----@return number
+---@return number, number
 function math.modf(x) end
 
 ---
@@ -152,6 +155,7 @@ function math.random(m, n) end
 --- To ensure a required level of randomness to the initial state (or
 --- contrarily, to have a deterministic sequence, for instance when debugging a
 --- program), you should call math.randomseed with explicit arguments.
+---@overload fun(): number, number
 ---@overload fun(x: number): number, number
 ---@param x number
 ---@param y number
@@ -180,14 +184,14 @@ function math.tan(x) return 0 end
 ---
 --- If the value `x` is convertible to an integer, returns that integer.
 --- Otherwise, returns `nil`.
----@param x number
----@return number
+---@param x unknown
+---@return number | nil
 function math.tointeger(x) end
 
 ---
 --- Returns "`integer`" if `x` is an integer, "`float`" if it is a float, or
 --- **nil** if `x` is not a number.
----@param x number
+---@param x unknown
 ---@return nil | "integer" | "float"
 function math.type(x) end
 

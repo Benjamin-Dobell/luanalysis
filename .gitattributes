@@ -2,3 +2,4 @@
 vendor/patches/*.patch -whitespace
 # Preserve the exact bytes of imported upstream declaration sources.
 vendor/luanalysis-stdlib/upstream/** -whitespace
+vendor/luanalysis-stdlib/patches/*.patch -whitespace

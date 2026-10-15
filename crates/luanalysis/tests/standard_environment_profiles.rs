@@ -61,12 +61,35 @@ impl Drop for Fixture {
     }
 }
 fn clean(report: &ProjectCheckReport) {
-    assert!(
-        !report.has_errors(),
-        "{:#?}\n{:#?}",
-        report.files,
-        report.environment_errors
-    );
+    if report.has_errors() {
+        let diagnostics: Vec<_> = report
+            .files
+            .iter()
+            .filter(|file| !file.report.diagnostics.is_empty())
+            .map(|file| {
+                (
+                    report.source(file.file).map(|source| &source.path),
+                    &file.report.diagnostics,
+                )
+            })
+            .collect();
+        panic!(
+            "source diagnostics: {diagnostics:#?}\nenvironment errors: {:#?}\nentry errors: {:#?}\nlibrary errors: {:#?}\nrole conflicts: {:#?}\nunresolved dependencies: {:#?}",
+            report.environment_errors,
+            report.project.entry_errors,
+            report.project.library_errors,
+            report.project.role_conflicts,
+            report
+                .project
+                .dependencies
+                .iter()
+                .filter(|dependency| !matches!(
+                    dependency.outcome,
+                    luanalysis_project::DependencyOutcome::Resolved(_)
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 fn code(report: &ProjectCheckReport, code: &str) -> bool {
     report
@@ -78,7 +101,15 @@ fn code(report: &ProjectCheckReport, code: &str) -> bool {
 const TYPE_GUARD: &str = "---@param value number|string\nlocal function check(value)\nif type(value)=='number' then\n---@type number\nlocal numeric=value\nend\nend\n";
 
 #[test]
-fn selected_profile_registers_exact_original_declarations_without_runtime_membership_or_count_noise()
+fn bundled_lua54_resources_match_exact_pristine_import_and_documented_patch_replay() {
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/stdlib-lua54.sh");
+    let output = Command::new("bash").arg(script).arg("--verify").output().unwrap();
+    assert!(output.status.success(), "{}{}",
+        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+}
+
+#[test]
+fn selected_profile_registers_exact_replayed_declarations_without_runtime_membership_or_count_noise()
  {
     let fixture = Fixture::new();
     let report = fixture.check(
@@ -98,9 +129,8 @@ fn selected_profile_registers_exact_original_declarations_without_runtime_member
         ));
         assert!(!report.project.entries.contains(id));
         let name = source.path.file_name().unwrap();
-        let original = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../vendor/luanalysis-stdlib/upstream/Lua54").join(name);
-        assert_eq!(source.source, fs::read_to_string(original).unwrap());
+        let replayed = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib/Lua54").join(name);
+        assert_eq!(source.source, fs::read_to_string(replayed).unwrap());
     }
 }
 

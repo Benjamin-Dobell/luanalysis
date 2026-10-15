@@ -11,13 +11,14 @@
 -- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 -- License for the specific language governing permissions and limitations under
 -- the License.
+-- Modified for standalone Luanalysis; see README.md and the replay patch.
 
 ---
 --- Calls error if the value of its argument `v` is false (i.e., **nil** or
 --- **false**); otherwise, returns all its arguments. In case of error,
 --- `message` is the error object; when absent, it defaults to "assertion
 --- failed!"
----@overload fun<T>(v: T): T
+---@overload fun<T>(v: T, ...: unknown): T
 ---@generic T
 ---@param v T
 ---@param message string
@@ -82,11 +83,10 @@ function dofile(filename) end
 --- that called `error` was called; and so on. Passing a level 0 avoids the
 --- addition of error position information to the message.
 ---
---- _**Note**: Return type is inaccurate. This function never returns._
----@overload fun(message: any): void
+---@overload fun(message: any): never
 ---@param message string
 ---@param level number
----@return void
+---@return never
 function error(message, level) end
 
 ---
@@ -112,7 +112,7 @@ function getmetatable(object) end
 --- the first absent index.
 ---@generic V
 ---@param t V[]
----@return (fun(tab: V[], k: nil | number): nil | (number, V)), V[], number
+---@return (fun(tab: V[], k: nil | number): nil | (number, V)), V[], 0
 function ipairs(t) end
 
 ---
@@ -203,7 +203,7 @@ function next(table, index) end
 --- traversal.
 ---@generic K, V
 ---@param t table<K, V>
----@return (fun(tab: table<K, V>, k: nil | K): nil | (K, V)), table<K, V>, K
+---@return (fun(tab: table<K, V>, k: nil | K): nil | (K, V)), table<K, V>, nil
 function pairs(t) end
 
 ---
@@ -322,6 +322,7 @@ function type(v) end
 ---
 --- A global variable (not a function) that holds a string containing the
 --- running Lua version. The current value of this variable is "`Lua 5.4`".
+---@type "Lua 5.4"
 _VERSION = "Lua 5.4"
 
 ---
@@ -333,4 +334,4 @@ _VERSION = "Lua 5.4"
 ---@param msgh fun(message: any): any
 ---@vararg any
 ---@return (true, T) | (false, any)
-function xpcall(f, ...) end
+function xpcall(f, msgh, ...) end

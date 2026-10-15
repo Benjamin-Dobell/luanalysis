@@ -11,6 +11,7 @@
 -- WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 -- License for the specific language governing permissions and limitations under
 -- the License.
+-- Modified for standalone Luanalysis; see README.md and the replay patch.
 
 ---@class std__Table
 table = {}
@@ -81,11 +82,11 @@ function table.pack(...) end
 ---
 --- The default value for `pos` is `#list`, so that a call `table.remove(l)`
 --- removes the last element of list `l`.
----@overload fun<V>(list:V[]):V
+---@overload fun<V>(list:V[]):V|nil
 ---@generic V
 ---@param list V[]
 ---@param pos number
----@return V
+---@return V|nil
 function table.remove(list, pos) end
 
 ---
@@ -102,11 +103,11 @@ function table.remove(list, pos) end
 ---
 --- The sort algorithm is not stable: elements considered equal by the given
 --- order may have their relative positions changed by the sort.
----@overload fun<V>(list:V[]):number
+---@overload fun<V>(list:V[]):void
 ---@generic V
 ---@param list V[]
 ---@param comp fun(a:V, b:V):boolean
----@return number
+---@return void
 function table.sort(list, comp) end
 
 ---
