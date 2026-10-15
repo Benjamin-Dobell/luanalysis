@@ -196,6 +196,9 @@ struct Checker<'a> {
     contextual_function: Option<ContextualFunctionContext>,
     captured_function: Option<CapturedFunctionContext>,
     incomplete_flow: bool,
+    /// A value capability demand must retain possible runtime alternatives even
+    /// when their callable shapes would reduce to the same structural type.
+    runtime_value: bool,
     annotation_depth: usize,
     active_assertions: HashSet<(usize,usize)>,
     check_mode: NativeCheckMode,
@@ -259,6 +262,7 @@ pub fn check_with_overload_mode(source: &str, overload_mode: OverloadMode) -> Ch
                     contextual_function: None,
                     captured_function: None,
                     incomplete_flow: false,
+                    runtime_value: false,
                     annotation_depth: 0,
                     check_mode: NativeCheckMode::empty(),
                     flow_at: Some(registry.flow_entry(None, None)),
@@ -274,8 +278,11 @@ pub fn check_with_overload_mode(source: &str, overload_mode: OverloadMode) -> Ch
                 checker.report
             };
             registry.check_all_bodies(engine);
+            while registry.retry_contextual_owner_validations(engine) {}
             report.append(registry.take_report());
             report.render(engine);
+            while registry.retry_contextual_owner_validations(engine) {}
+            registry.report_unresolved_contextual_owners();
             // Explicit display demands can complete a previously unqueried signature.
             report.append(registry.take_report());
             report.diagnostics.sort_by(|a, b| {
@@ -572,7 +579,26 @@ impl Checker<'_> {
                         let context=self.signature_type_context.map(native_named::NativeTypeContext::Signature)
                             .or_else(||self.named_type_context.map(native_named::NativeTypeContext::NamedType))
                             .or_else(||self.type_context.map(native_named::NativeTypeContext::Function));
-                        match native.annotation_parameter_resolution(context,name) {
+                        let resolution = native.annotation_parameter_resolution(context,name);
+                        let contextual_self = match &resolution {
+                            native_types::TypeNameResolution::Parameter(key) => native.types.parameter(*key).semantic_self.is_some(),
+                            native_types::TypeNameResolution::Missing => true,
+                            native_types::TypeNameResolution::Ambiguous(_) => false,
+                        };
+                        if name == "self" && contextual_self
+                            && let Some(function) = context.and_then(|context| native.metatable_annotation_function(context))
+                            && native.method_owner(function).is_none()
+                        {
+                            match native.contextual_self_type(function, self.engine) {
+                                luanalysis_engine::ContextualTypeOwner::Owner(ty) => return ty,
+                                luanalysis_engine::ContextualTypeOwner::Pending => {
+                                    self.incomplete_flow = true;
+                                    return self.engine.error_type();
+                                }
+                                luanalysis_engine::ContextualTypeOwner::Absent => {},
+                            }
+                        }
+                        match resolution {
                             native_types::TypeNameResolution::Parameter(key)=>return Type::NativeTypeParameter(key),
                             native_types::TypeNameResolution::Ambiguous(_)=>{
                                 self.error("TS2300",ty.span,format!("Ambiguous generic parameter '{name}'."));

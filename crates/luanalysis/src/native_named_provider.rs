@@ -195,6 +195,18 @@ impl NativeRegistry {
             ) {
                 continue;
             }
+            if name == "self"
+                && let Some(function) = context.and_then(|context| self.metatable_annotation_function(context))
+                && self.method_owner(function).is_none()
+                && let Some(candidate) = self.contextual_self_dependency(function)
+            {
+                let explicit = match self.types.resolve_name_in_context(context, name) {
+                    TypeNameResolution::Parameter(key) => self.types.parameter(key).semantic_self.is_none(),
+                    TypeNameResolution::Ambiguous(_) => true,
+                    TypeNameResolution::Missing => false,
+                };
+                if !explicit { used.insert(candidate); }
+            }
             match self.types.resolve_name_in_context(context, name) {
                 TypeNameResolution::Parameter(key) => {
                     used.insert(key);
@@ -711,6 +723,7 @@ impl NativeRegistry {
     }
     pub(super) fn named_declaration_error(&self, error: NamedTypeError) {
         let (code, span, message) = match error {
+            NamedTypeError::PendingContext { .. } => return,
             NamedTypeError::InvalidMemberSignatures {member,..} => ("LUA2034",self.named_member_type_origin(member),"Bodyless member has invalid original signature identities.".into()),
             // Actual application spans are supplied by the annotation caller.
             NamedTypeError::TypeArgumentArity { .. }

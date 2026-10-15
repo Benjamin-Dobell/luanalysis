@@ -120,6 +120,7 @@ pub enum NamedTypeQuery {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum NamedTypeError {
+    PendingContext { member: NativeTypeMemberKey },
     InvalidDefinition(NativeClassDefinitionKey),
     InvalidReceiver { declaration: NativeTypeDeclarationKey, expected: Type, actual: Type },
     UnsupportedReceiverType { actual: Type },
@@ -164,6 +165,18 @@ pub enum NamedTypeError {
         declaration: NativeTypeDeclarationKey,
         error: TableError,
     },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContextualTypeOwner { Pending, Absent, Owner(Type) }
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TypeMemberActivation { Pending, Active, Inactive }
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct TypeMemberEffectiveMetadata {
+    pub origin: super::TableFieldOrigin,
+    pub is_assignment: bool,
 }
 
 fn core_definition(key: NativeClassDefinitionKey) -> NativeDefinitionId { NativeDefinitionId { snapshot:key.snapshot,index:key.index } }
@@ -312,8 +325,23 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
             super::TableFieldOrigin::Declared => bun_sema::types::NativeTableFieldOrigin::Declared,
         }
     }
+    fn type_member_effective_metadata(&self, checker: &mut Checker<'_, '_>, key: NativeTypeMemberId) -> bun_sema::check::native_named::NativeTypeMemberEffectiveMetadata {
+        let metadata = self.provider.type_member_effective_metadata(source_member(key), &mut SessionQueries { checker, handles: self.handles });
+        bun_sema::check::native_named::NativeTypeMemberEffectiveMetadata {
+            origin: match metadata.origin { super::TableFieldOrigin::Declared => bun_sema::types::NativeTableFieldOrigin::Declared, super::TableFieldOrigin::Inferred => bun_sema::types::NativeTableFieldOrigin::Inferred },
+            is_assignment: metadata.is_assignment,
+        }
+    }
     fn type_member_is_assignment(&self, key: NativeTypeMemberId) -> bool {
         self.provider.type_member_is_assignment(source_member(key))
+    }
+    fn type_member_activation(&self, checker: &mut Checker<'_, '_>, key: NativeTypeMemberId) -> bun_sema::check::native_named::NativeTypeMemberActivation {
+        use bun_sema::check::native_named::NativeTypeMemberActivation as Core;
+        match self.provider.type_member_activation(source_member(key), &mut SessionQueries { checker, handles: self.handles }) {
+            TypeMemberActivation::Pending => Core::Pending,
+            TypeMemberActivation::Active => Core::Active,
+            TypeMemberActivation::Inactive => Core::Inactive,
+        }
     }
     fn type_member_signatures(&self, key: NativeTypeMemberId) -> Option<Vec<bun_sema::types::NativeSignatureId>> {
         self.provider.type_member_signatures(source_member(key))
@@ -509,6 +537,7 @@ pub(super) fn export_error(
 ) -> NamedTypeError {
     use bun_sema::check::native_named::NativeTypeDeclarationQuery as Q;
     match error {
+        NativeNamedTypeError::PendingContext { member } => NamedTypeError::PendingContext { member: source_member(member) },
         NativeNamedTypeError::InvalidReceiver { declaration, expected, actual } => NamedTypeError::InvalidReceiver { declaration: source_declaration(declaration), expected: export_type(checker, handles, expected), actual: export_type(checker, handles, actual) },
         NativeNamedTypeError::UnsupportedReceiverType { actual } => NamedTypeError::UnsupportedReceiverType { actual: export_type(checker, handles, actual) },
         NativeNamedTypeError::InvalidDefinition(owner) => NamedTypeError::InvalidDefinition(source_definition(owner)),

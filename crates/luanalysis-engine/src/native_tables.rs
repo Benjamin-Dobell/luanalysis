@@ -121,6 +121,7 @@ pub struct TableType {
 /// this boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TableError {
+    PendingContext,
     InvalidKey { key: TableKey },
     NotTable { ty: Type },
     MissingKey { key: TableKey },
@@ -471,6 +472,7 @@ pub(super) fn export_error(
     error: NativeTableError,
 ) -> TableError {
     match error {
+        NativeTableError::PendingContext => TableError::PendingContext,
         NativeTableError::InvalidKey { key } => TableError::InvalidKey {
             key: export_access_key(checker, handles, key),
         },

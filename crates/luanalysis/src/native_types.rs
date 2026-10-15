@@ -212,6 +212,13 @@ impl NativeTypes {
         self.scopes.get(&NativeTypeContext::NamedType(owner)).and_then(|scope| scope.self_parameter)
     }
 
+    pub(crate) fn lexical_function_parent(&self, function: NativeFunctionKey) -> Option<NativeFunctionKey> {
+        match self.scopes.get(&NativeTypeContext::Function(function))?.parent? {
+            NativeTypeContext::Function(parent) => Some(parent),
+            _ => None,
+        }
+    }
+
     pub(super) fn attach_method_scope(&mut self, function: NativeFunctionKey, owner: NativeNamedKey) {
         self.attach_owner_scope(NativeTypeContext::Function(function), owner);
     }

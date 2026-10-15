@@ -17,7 +17,7 @@ use luanalysis_engine::{
     NativeTypeParameterKey, NativeTypeProvider, Parameter, Type, TypeQueries, ValuePack,
 };
 use luanalysis_syntax::{Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TypeExpr};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -33,6 +33,8 @@ mod ambient_locals;
 mod assignment_context;
 #[path = "native_methods.rs"]
 mod methods;
+#[path = "native_metatables.rs"]
+mod metatables;
 #[path = "native_project_provider.rs"]
 pub(crate) mod project_provider;
 #[path = "native_globals.rs"]
@@ -79,6 +81,7 @@ pub(super) struct NativeRegistry {
     pub(super) runtime_tables: super::native_runtime_tables::NativeRuntimeTables,
     class_definitions: class_definitions::NativeClassDefinitions,
     methods: methods::NativeMethods,
+    metatables: metatables::NativeMetatables,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
     globals: globals::NativeGlobals,
     project_globals: Option<std::rc::Rc<globals::ProjectGlobalIndex>>,
@@ -93,6 +96,9 @@ pub(super) struct NativeRegistry {
     checked_bodies: RefCell<HashSet<NativeFunctionKey>>,
     checked_contextual_bodies: RefCell<HashSet<(NativeFunctionKey, ContextualFunctionContext, Option<CapturedFunctionContext>)>>,
     checked_captured_bodies: RefCell<HashSet<(NativeFunctionKey, CapturedFunctionContext)>>,
+    pending_contextual_owners: RefCell<HashSet<(NativeFunctionKey, NativeFlowKey)>>,
+    pending_owner_observations: Cell<u64>,
+    pending_owner_bodies: RefCell<HashSet<(NativeFunctionKey, Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
     report: RefCell<CheckReport>,
 }
 
@@ -159,11 +165,12 @@ impl NativeRegistry {
                 types.register_self_parameter(source.key, source.syntax.name.span);
             }
         }
-        let methods = methods::NativeMethods::new(snapshot, &file, &functions, &function_spans, &bound, &named, &types);
-        for method in methods.sources() {
-            if let Some(owner) = method.class_owner { types.attach_method_scope(method.function, owner); }
-        }
         let expressions = NativeExpressions::new(snapshot, &file, &function_spans);
+        let metatables = metatables::NativeMetatables::new(&expressions, &functions, &bound, &named);
+        let methods = methods::NativeMethods::new(snapshot, &file, &functions, &function_spans, &bound, &named, &types, &metatables);
+        for method in methods.sources() {
+            if method.contextual_owner.is_none() && let Some(owner) = method.class_owner { types.attach_method_scope(method.function, owner); }
+        }
         let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
             expressions.key_for_span(expression.span)
         });
@@ -200,6 +207,7 @@ impl NativeRegistry {
             runtime_tables,
             class_definitions,
             methods,
+            metatables,
             project_names: None,
             globals,
             project_globals: None,
@@ -212,6 +220,9 @@ impl NativeRegistry {
             checked_bodies: RefCell::new(HashSet::new()),
             checked_contextual_bodies: RefCell::new(HashSet::new()),
             checked_captured_bodies: RefCell::new(HashSet::new()),
+            pending_contextual_owners: RefCell::new(HashSet::new()),
+            pending_owner_observations: Cell::new(0),
+            pending_owner_bodies: RefCell::new(HashSet::new()),
             report: RefCell::new(report),
         };
         registry.rebuild_original_members();
@@ -535,6 +546,7 @@ impl NativeRegistry {
             check_mode: luanalysis_engine::NativeCheckMode::empty(),
             flow_at: None,
             incomplete_flow: false,
+            runtime_value: false,
             annotation_depth: 0,
         }
     }
@@ -1057,7 +1069,7 @@ impl NativeRegistry {
             // the same lexical capture mapper as the written return contract.
             let written_receiver = !function.params.iter().any(|parameter| parameter.text == "self")
                 && function.annotations.params.iter().any(|parameter| parameter.name.text == "self");
-            let parameter_type = (!written_receiver && self.method_owner(self.key_for(function)).is_some())
+            let parameter_type = (!written_receiver && self.has_polymorphic_method_owner(self.key_for(function)))
                 .then(|| self.default_receiver_type(function, checker.engine).map(|ty| {
                     checker.captured_function.map_or(ty.clone(), |capture| checker.engine.instantiate_in_capture(&capture, &ty))
                 })).flatten()
@@ -1294,6 +1306,7 @@ impl NativeRegistry {
         contextual: Option<ContextualFunctionContext>,
         captured: Option<CapturedFunctionContext>,
     ) -> Type {
+        let pending_before = self.pending_owner_observations.get();
         let function = self.function(key);
         let (parameters, mut declared_return) = if let Some(context) = contextual {
             self.metadata_in_context(key, &context, queries)
@@ -1374,6 +1387,14 @@ impl NativeRegistry {
             !terminated,
             declared_return.as_ref(),
         );
+        // A contextual owner can depend on an open native flow query. The
+        // provisional body is neither a diagnostic result nor a completed
+        // validation; a later demand must check it in the completed context.
+        if checker.incomplete_flow || self.pending_owner_observations.get() != pending_before {
+            self.pending_owner_bodies.borrow_mut().insert((key, contextual, captured));
+            return result;
+        }
+        self.pending_owner_bodies.borrow_mut().remove(&(key, contextual, captured));
         if let Some(context) = contextual {
             self.contextual_report(&context, checker.report);
             self.checked_contextual_bodies
@@ -1466,6 +1487,7 @@ impl NativeRegistry {
         }
         if let Some(method) = self.methods.get(key) {
             if method.implicit_receiver.is_some() {
+                if method.contextual_owner.is_some() && let Some(parameter) = self.contextual_self_dependency(key) { used.insert(parameter); }
                 if let Some(owner) = self.method_owner(key) {
                     if let Some(parameter) = self.types.self_parameter(owner) { used.insert(parameter); }
                     used.extend(self.types.own_parameters_in_context(NativeTypeContext::NamedType(owner)));
@@ -1765,6 +1787,7 @@ impl NativeRegistry {
                     .expression(sources.program.evaluation(*evaluation).expression)
                     .expression;
                 let mut checker = self.checker_at_flow(input, queries);
+                checker.runtime_value = true;
                 let expected = self.flow_initializer_context(expression, true, &mut checker);
                 let pack = checker.expression_pack(expression, expected.as_ref());
                 let value = checker.engine.pack_slot(&pack, *index);
@@ -1794,6 +1817,7 @@ impl NativeRegistry {
                 let evaluation = sources.program.evaluation(*evaluation);
                 let expression = &sources.program.expression(evaluation.expression).expression;
                 let mut checker = self.checker_at_flow(input, queries);
+                checker.runtime_value = true;
                 let expected = self.flow_initializer_context(expression, false, &mut checker);
                 let expected = expected.as_ref().map(|pack| checker.engine.pack_slot(pack, 0));
                 let result = checker.expression_with_expected(expression, expected.as_ref());
@@ -1984,6 +2008,12 @@ impl FlowValueQueries for NativeRegistry {
 }
 
 impl NativeTypeProvider for NativeRegistry {
+    fn contextual_type_owner(&self, scope: NativeFunctionKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::ContextualTypeOwner {
+        self.source_contextual_type_owner(scope, input, queries)
+    }
+    fn type_member_activation(&self, member: luanalysis_engine::NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::TypeMemberActivation {
+        self.source_member_activation(member, queries)
+    }
     fn global_environment_binding(&self, environment: luanalysis_engine::NativeEnvironmentKey, name: &[u8]) -> Option<luanalysis_engine::NativeGlobalBindingKey> {
         let globals = self.project_globals.as_ref()?;
         if environment != globals.environment { return None; }
@@ -2094,6 +2124,11 @@ impl NativeTypeProvider for NativeRegistry {
     fn type_member_origin(&self, key: luanalysis_engine::NativeTypeMemberKey) -> luanalysis_engine::TableFieldOrigin {
         if let Some(source)=self.runtime_tables.member(key) {return if source.annotation.is_some() {luanalysis_engine::TableFieldOrigin::Declared} else {luanalysis_engine::TableFieldOrigin::Inferred};}
         self.original_member_origin(key).unwrap_or(luanalysis_engine::TableFieldOrigin::Declared)
+    }
+    fn type_member_effective_metadata(&self, key: luanalysis_engine::NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::TypeMemberEffectiveMetadata {
+        self.original_member_effective_metadata(key, queries).unwrap_or(luanalysis_engine::TypeMemberEffectiveMetadata {
+            origin: luanalysis_engine::TableFieldOrigin::Declared, is_assignment: false,
+        })
     }
     fn type_member_is_assignment(&self, key: luanalysis_engine::NativeTypeMemberKey) -> bool {
         self.members.get(key).is_some_and(|source| matches!(source.candidates[0].origin, crate::native_members::OriginalMemberOrigin::AssignmentField(_)))
@@ -2382,7 +2417,9 @@ impl NativeTypeProvider for NativeRegistry {
     ) -> Vec<NativeTypeParameterKey> {
         let mut used = HashSet::new();
         self.function_type_dependencies(key, &mut used, &mut HashSet::new(), &mut HashSet::new());
-        self.types.outer_parameters(key, &used)
+        let mut outer = self.types.outer_parameters(key, &used);
+        self.extend_contextual_self_dependencies(NativeTypeContext::Function(key), &used, &mut outer);
+        outer
     }
 
     fn contains_type_parameter(&self, key: NativeTypeParameterKey) -> bool {

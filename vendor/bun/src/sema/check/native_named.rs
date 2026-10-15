@@ -182,6 +182,7 @@ pub enum NativeOwnerScopeRecipe {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum NativeNamedTypeError {
+    PendingContext { member: NativeTypeMemberId },
     InvalidDefinition(NativeDefinitionId),
     InvalidReceiver { declaration: NativeTypeDeclarationId, expected: TypeId, actual: TypeId },
     UnsupportedReceiverType { actual: TypeId },
@@ -213,6 +214,7 @@ pub enum NativeNamedTypeError {
 /// is in declaration space, including member/indexer/bases queries. The backend owns resolving,
 /// substitution, recursive publication, inference, relation checks and semantic diagnostics.
 pub trait NativeTypeDeclarationProvider {
+    fn type_member_activation(&self, _: &mut Checker<'_, '_>, _: NativeTypeMemberId) -> NativeTypeMemberActivation { NativeTypeMemberActivation::Active }
     fn contains_class_definition(&self, _: NativeDefinitionId) -> bool { false }
     fn class_definition_header(&self, _: NativeDefinitionId) -> NativeDefinitionHeader { panic!("class definition provider absent") }
     fn runtime_table_constructor(&self, _: NativeTypeDeclarationId) -> Option<crate::types::NativeExpressionId> { None }
@@ -230,6 +232,9 @@ pub trait NativeTypeDeclarationProvider {
     fn contains_type_member(&self, declaration: NativeTypeMemberId) -> bool;
     fn type_member_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeMemberId) -> NativeTypeMemberHeader;
     fn type_member_origin(&self, _: NativeTypeMemberId) -> crate::types::NativeTableFieldOrigin { crate::types::NativeTableFieldOrigin::Declared }
+    fn type_member_effective_metadata(&self, _: &mut Checker<'_, '_>, member: NativeTypeMemberId) -> NativeTypeMemberEffectiveMetadata {
+        NativeTypeMemberEffectiveMetadata { origin: self.type_member_origin(member), is_assignment: self.type_member_is_assignment(member) }
+    }
     fn type_member_is_assignment(&self, _: NativeTypeMemberId) -> bool { false }
     /// Pure written callable members, with no runtime implementation or body.
     fn type_member_signatures(&self, _: NativeTypeMemberId) -> Option<Vec<NativeSignatureId>> { None }
@@ -256,6 +261,27 @@ pub trait NativeTypeDeclarationProvider {
     fn circular_type_base(&self, _: NativeTypeDeclarationId) {}
     fn type_declaration_too_deep(&self, _: NativeTypeDeclarationQuery) {}
     fn type_declaration_error(&self, _: &mut Checker<'_, '_>, _: NativeNamedTypeError) {}
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum NativeContextualTypeOwner { Pending, Absent, Owner(TypeId) }
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum NativeTypeMemberActivation { Pending, Active, Inactive }
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct NativeTypeMemberEffectiveMetadata {
+    pub origin: crate::types::NativeTableFieldOrigin,
+    pub is_assignment: bool,
+}
+
+impl NativeNamedTypeError {
+    pub(super) fn table_error(self, ty: TypeId) -> NativeTableError {
+        match self {
+            Self::PendingContext { .. } => NativeTableError::PendingContext,
+            _ => NativeTableError::NotTable { ty },
+        }
+    }
 }
 
 /// Constructor metadata for the native object TypeData. The mapper must preserve
@@ -333,6 +359,57 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn native_named_provider(&self, declaration: NativeTypeDeclarationId) -> Result<&'p dyn NativeTypeDeclarationProvider, NativeNamedTypeError> {
         self.native_type_declaration_provider.filter(|p| p.contains_type_declaration(declaration))
             .ok_or(NativeNamedTypeError::InvalidDeclaration(declaration))
+    }
+
+    /// The original frozen owner recipe runs under the ordinary query guard.
+    /// Pending is neither a negative owner result nor permission to publish a schema.
+    pub fn native_contextual_type_owner(&mut self, scope: NativeFunctionId, input: super::native_flow::NativeFlowKey) -> NativeContextualTypeOwner {
+        let Some(provider) = self.native_function_provider.filter(|provider| provider.contains_function(scope)) else { return NativeContextualTypeOwner::Absent };
+        let epoch = self.flow_memo.native_state.effect_epoch;
+        let key = (scope, input, epoch);
+        if let Some(&owner) = self.flow_memo.native_state.contextual_owners.get(&key) {
+            return owner.map_or(NativeContextualTypeOwner::Absent, NativeContextualTypeOwner::Owner);
+        }
+        let query = Query::NativeContextualTypeOwner(scope, input, epoch);
+        if !self.enter(query) {
+            self.mark_tainted_from(0);
+            return NativeContextualTypeOwner::Pending;
+        }
+        let begun = self.begin_memoizable();
+        let owner = provider.contextual_type_owner(self, scope, input);
+        if owner == NativeContextualTypeOwner::Pending { self.mark_tainted_from(0); }
+        let stored = self.end_memoizable(begun);
+        let left = self.leave(query);
+        if left.is_err() || stored.is_none() || self.is_stack_low() {
+            self.mark_tainted_from(0);
+            return NativeContextualTypeOwner::Pending;
+        }
+        let complete = match owner {
+            NativeContextualTypeOwner::Pending => return owner,
+            NativeContextualTypeOwner::Absent => None,
+            NativeContextualTypeOwner::Owner(owner) => Some(owner),
+        };
+        self.flow_memo.native_state.contextual_owners.insert(key, complete);
+        owner
+    }
+
+    /// Reuse the owner's existing semantic-self parameter and exact mapper.
+    pub fn native_contextual_owner_self_type(&mut self, owner: TypeId) -> Option<TypeId> {
+        let owner = self.native_runtime_carrier(owner);
+        let reference = match *self.data(owner) {
+            TypeData::NativeObject(reference) => reference,
+            TypeData::NativeDefinition(reference) => reference.class,
+            TypeData::NativeTypeParam { declaration, .. } => {
+                let provider = self.native_type_declaration_provider?;
+                let super::native_named::NativeTypeDeclarationOwner::NamedType(class) = provider.type_parameter_owner(declaration)? else { return None };
+                return (provider.type_declaration_self_parameter(class) == Some(declaration)).then_some(owner);
+            }
+            _ => return None,
+        };
+        if let Some(receiver) = reference.self_argument { return Some(receiver) }
+        let parameter = self.native_named_provider(reference.declaration).ok()?.type_declaration_self_parameter(reference.declaration)?;
+        let mapping = self.types().mapping(reference.mapper).iter().copied().filter(|(from, to)| from != to).collect();
+        Some(self.cloned_native_type_param(parameter, self.types().mapper(mapping)))
     }
 
     fn report_native_named(&mut self, error: NativeNamedTypeError) {
@@ -559,18 +636,63 @@ impl<'p, 's> Checker<'p, 's> {
         result
     }
 
-    fn native_object_member_demand(&mut self, origin: &NativeObjectMember) -> Result<TypeId, NativeNamedTypeError> {
-        let original = self.native_named_member_demand(origin.member, false)?;
-        if origin.overloads.is_empty() { return Ok(original) }
-        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(origin.member))?;
-        let mut signatures = Vec::new();
+    fn native_named_member_active(&mut self, member: NativeTypeMemberId) -> Result<bool, NativeNamedTypeError> {
+        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
+        let scope = self.begin_scope();
+        let (activation, stored) = self.run_memoizable(|checker| provider.type_member_activation(checker, member));
+        let settled = self.end_scope(scope).is_ok();
+        match if settled && stored.is_some() { activation } else { NativeTypeMemberActivation::Pending } {
+            NativeTypeMemberActivation::Active => Ok(true),
+            NativeTypeMemberActivation::Inactive => Ok(false),
+            NativeTypeMemberActivation::Pending => {
+                self.mark_tainted_from(0);
+                Err(NativeNamedTypeError::PendingContext { member })
+            }
+        }
+    }
+
+    fn native_named_member_effective_metadata(&mut self, member: NativeTypeMemberId) -> Result<NativeTypeMemberEffectiveMetadata, NativeNamedTypeError> {
+        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
+        let scope = self.begin_scope();
+        let (metadata, stored) = self.run_memoizable(|checker| provider.type_member_effective_metadata(checker, member));
+        if self.end_scope(scope).is_err() || stored.is_none() {
+            self.mark_tainted_from(0);
+            return Err(NativeNamedTypeError::PendingContext { member });
+        }
+        Ok(metadata)
+    }
+
+    fn native_object_member_effective_origin(&mut self, origin: &NativeObjectMember) -> Result<Option<crate::types::NativeTableFieldOrigin>, NativeNamedTypeError> {
+        use crate::types::NativeTableFieldOrigin::{Declared, Inferred};
+        let mut effective = None;
         for member in std::iter::once(origin.member).chain(origin.overloads.iter().copied()) {
+            if !self.native_named_member_active(member)? { continue }
+            let metadata = self.native_named_member_effective_metadata(member)?;
+            if metadata.is_assignment && self.native_named_member_context(member)?.is_some() { continue }
+            effective = Some(if metadata.origin == Declared || effective == Some(Declared) { Declared } else { Inferred });
+        }
+        Ok(effective)
+    }
+
+    fn native_object_member_demand(&mut self, origin: &NativeObjectMember) -> Result<Option<TypeId>, NativeNamedTypeError> {
+        let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(origin.member))?;
+        let mut active = Vec::new();
+        for member in std::iter::once(origin.member).chain(origin.overloads.iter().copied()) {
+            if !self.native_named_member_active(member)? { continue }
+            // A store governed by an inherited contract is not another schema declaration.
+            if self.native_named_member_effective_metadata(member)?.is_assignment && self.native_named_member_context(member)?.is_some() { continue }
+            active.push(member);
+        }
+        let Some(&first) = active.first() else { return Ok(None) };
+        if origin.overloads.is_empty() { return self.native_named_member_demand(first, false).map(Some) }
+        let mut signatures = Vec::new();
+        for member in active {
             // Each contributor retains its original guarded query, including
             // diagnostics for an invalid signature from a later source file.
             self.native_named_member_demand(member, false)?;
             signatures.extend(provider.type_member_signatures(member).expect("grouped pure member metadata is immutable"));
         }
-        Ok(self.native_signature_group_type(&signatures).expect("validated original member heads"))
+        Ok(Some(self.native_signature_group_type(&signatures).expect("validated original member heads")))
     }
 
     fn native_named_member_origin(&mut self, member: NativeTypeMemberId) -> Result<(NativeObjectReference, NativeTypeMemberHeader), NativeNamedTypeError> {
@@ -852,9 +974,6 @@ impl<'p, 's> Checker<'p, 's> {
             let provider = self.native_named_provider(reference.declaration)?;
             let mut members: Vec<NativeObjectMember> = Vec::new();
             for member in provider.type_declaration_members(reference.declaration) {
-                // A post-constructor store checks an inherited property; it does
-                // not replace that property's type, readonly flag or owner.
-                if provider.type_member_is_assignment(member) && self.native_named_member_context(member)?.is_some() { continue }
                 let Some(metadata) = self.native_named_member_header(reference, member)? else { continue };
                 if provider.type_member_signatures(member).is_some()
                     && provider.type_member_origin(member) == crate::types::NativeTableFieldOrigin::Declared
@@ -880,13 +999,9 @@ impl<'p, 's> Checker<'p, 's> {
             for (index, base) in bases.into_iter().enumerate() {
                 if self.is_error_type(base) { continue }
                 let TypeData::NativeObject(owner) = *self.data(base) else { unreachable!() };
-                let mut visible = Vec::new();
                 for member in self.native_object_members(owner)? {
-                    if let NativeTypeMemberKey::Fixed(key) = provider.type_member_header(self, member.member).key {
-                        let key = key.normalize().map_err(|error| NativeNamedTypeError::Table { declaration: reference.declaration, error })?;
-                        if visible.contains(&key) { continue }
-                        visible.push(key);
-                    }
+                    // Candidate origins are immutable. An inactive override
+                    // must not hide its inherited active fallback.
                     members.push(NativeObjectMember { via: Some((index, base)), ..member });
                 }
             }
@@ -1028,8 +1143,8 @@ impl<'p, 's> Checker<'p, 's> {
         let mut indexer_origins: Vec<NativeObjectMember> = Vec::new();
         for origin in members.iter().cloned() {
             let metadata = provider.type_member_header(self, origin.member);
-            let value_origin = provider.type_member_origin(origin.member);
-            let raw = self.native_object_member_demand(&origin)?;
+            let Some(raw) = self.native_object_member_demand(&origin)? else { continue };
+            let Some(value_origin) = self.native_object_member_effective_origin(&origin)? else { continue };
             let value = self.native_member_type(raw, origin.owner);
             if validate && header.kind != NativeTypeDeclarationKind::Class {
                 if let Err(NativeTableError::ValueType { value: actual, expected }) = self.native_member_read(raw, origin.owner) {
@@ -1042,6 +1157,9 @@ impl<'p, 's> Checker<'p, 's> {
                     if let Some(position) = fields.iter().position(|other: &NativeTableField| other.key == field.key) {
                         let previous = fields[position];
                         let previous_origin = &field_origins[position];
+                        // The direct base has already checked its effective
+                        // override layers; these are candidates from that same base.
+                        if origin.via.is_some() && origin.via == previous_origin.via { continue }
                         let expected = if field.optional { self.optional(field.value) } else { field.value };
                         let actual = if previous.optional { self.optional(previous.value) } else { previous.value };
                         if origin.via.is_none() { return Err(NativeNamedTypeError::Table { declaration, error: NativeTableError::DuplicateDeclaredField { key: field.key } }) }
@@ -1135,15 +1253,17 @@ impl<'p, 's> Checker<'p, 's> {
         }
         if let NativeTableAccessKey::Literal(key) = key {
             let key = key.normalize()?;
-            let members = self.native_object_members(reference).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
-            let provider = self.native_named_provider(reference.declaration).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
+            let members = self.native_object_members(reference).map_err(|error| error.table_error(TypeId::ERROR))?;
+            let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(TypeId::ERROR))?;
             let mut found: Option<(NativeObjectMember, NativeTypeMemberHeader, TypeId)> = None;
             for origin in members {
                 let metadata = provider.type_member_header(self, origin.member);
                 if let NativeTypeMemberKey::Fixed(member_key) = metadata.key && member_key.normalize()? == key {
-                    let raw = self.native_object_member_demand(&origin).map_err(|_| NativeTableError::NotTable { ty: TypeId::ERROR })?;
+                    if let Some((previous, _, _)) = &found
+                        && origin.via.is_some() && origin.via == previous.via { continue }
+                    let Some(raw) = self.native_object_member_demand(&origin).map_err(|error| error.table_error(TypeId::ERROR))? else { continue };
                     let value = self.native_member_read(raw, origin.owner)?;
-                    let value = if provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared { self.regular(value) } else { value };
+                    let value = if self.native_object_member_effective_origin(&origin).map_err(|error| error.table_error(TypeId::ERROR))? == Some(crate::types::NativeTableFieldOrigin::Declared) { self.regular(value) } else { value };
                     let value = if let Some((_, base)) = origin.via {
                         let TypeData::NativeObject(owner) = *self.data(base) else { unreachable!() };
                         self.native_named_read(owner, NativeTableAccessKey::Literal(key))?
@@ -1163,7 +1283,7 @@ impl<'p, 's> Checker<'p, 's> {
             if let Some((_, _, value)) = found { return Ok(value) }
         }
         let object = self.intern(TypeData::NativeObject(reference));
-        let resolved = self.native_object_resolved(object).map_err(|_| NativeTableError::NotTable { ty: object })?;
+        let resolved = self.native_object_resolved(object).map_err(|error| error.table_error(object))?;
         self.native_table_read(resolved, key)
     }
 }
@@ -1214,14 +1334,14 @@ impl<'p, 's> Checker<'p, 's> {
         let class = self.intern(TypeData::NativeObject(reference));
         let schema_class = self.native_definition_schema(class)?;
         let TypeData::NativeObject(reference) = *self.data(schema_class) else { unreachable!("definition schema has its original class") };
-        let provider = self.native_named_provider(reference.declaration)?;
         // An initializer receives written own contracts and inherited contracts.
         // Its own inferred recipes are results of that check, never the expected
         // type used to perform it. In particular a bad inferred override must not
         // discard an inherited callback's parameter/return context.
-        let members: Vec<_> = self.native_object_members(reference)?.into_iter()
-            .filter(|origin| origin.via.is_some() || provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared)
-            .collect();
+        let mut members = Vec::new();
+        for origin in self.native_object_members(reference)? {
+            if origin.via.is_some() || self.native_object_member_effective_origin(&origin)? == Some(crate::types::NativeTableFieldOrigin::Declared) { members.push(origin); }
+        }
         let schema = self.native_object_resolved_uncached(reference, &members, true)?;
         let TypeData::NativeTable(data) = self.data(schema) else { unreachable!() };
         let fields: Vec<_> = data.fields.iter().map(|field| NativeTableField { optional: true, ..*field }).collect();
@@ -1362,8 +1482,8 @@ impl<'p, 's> Checker<'p, 's> {
             return Ok(());
         }
         let class = self.intern(TypeData::NativeObject(reference.class));
-        let class = self.native_definition_schema(class).map_err(|_| NativeTableError::NotTable { ty: class })?;
-        let schema = self.native_object_resolved(class).map_err(|_| NativeTableError::NotTable { ty: class })?;
+        let class = self.native_definition_schema(class).map_err(|error| error.table_error(class))?;
+        let schema = self.native_object_resolved(class).map_err(|error| error.table_error(class))?;
         let TypeData::NativeTable(data) = self.data(schema) else { unreachable!() };
         if let NativeTableAccessKey::Literal(literal) = key
             && let Some(field) = data.fields.iter().find(|field| field.key == literal) {

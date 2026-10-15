@@ -77,6 +77,7 @@ pub enum NativeTableFlavor {
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum NativeTableError {
+    PendingContext,
     InvalidKey { key: NativeTableAccessKey },
     NotTable { ty: TypeId },
     MissingKey { key: NativeTableAccessKey },
@@ -738,7 +739,7 @@ impl<'p, 's> Checker<'p, 's> {
         let table = self.native_runtime_carrier(table);
         if let Some(reference) = self.native_runtime_table_ref(table) { return self.native_runtime_table_write(reference, key, value) }
         if let Some(reference) = self.native_definition_ref(table) { return self.native_definition_write(reference, key, value) }
-        let table = self.native_object_resolved(table).map_err(|_| NativeTableError::NotTable { ty: table })?;
+        let table = self.native_object_resolved(table).map_err(|error| error.table_error(table))?;
         if let Some(error) = self.native_table_description_error(table) { return Err(error) }
         let key = self.native_table_access(key)?;
         if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {

@@ -311,6 +311,7 @@ pub enum Type {
 /// Source recipes may use thread-local interior state; release its borrows
 /// before reentering the query capability supplied to a callback.
 pub trait NativeTypeProvider {
+    fn contextual_type_owner(&self, _: NativeFunctionKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> ContextualTypeOwner { ContextualTypeOwner::Absent }
     fn function_calling_convention(&self, _: NativeFunctionKey) -> FunctionCallingConvention { FunctionCallingConvention::TypeScript }
     /// Exact source method declaration provenance. Function-valued fields stay false.
     fn function_is_method(&self, _: NativeFunctionKey) -> bool { false }
@@ -379,8 +380,12 @@ pub trait NativeTypeProvider {
         panic!("native named member provider is not installed")
     }
     fn type_member_origin(&self, _: NativeTypeMemberKey) -> TableFieldOrigin { TableFieldOrigin::Declared }
+    fn type_member_effective_metadata(&self, member: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> TypeMemberEffectiveMetadata {
+        TypeMemberEffectiveMetadata { origin: self.type_member_origin(member), is_assignment: self.type_member_is_assignment(member) }
+    }
     /// A store declares a new member only when no inherited contract exists.
     fn type_member_is_assignment(&self, _: NativeTypeMemberKey) -> bool { false }
+    fn type_member_activation(&self, _: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> TypeMemberActivation { TypeMemberActivation::Active }
     /// Pure original callable members; no runtime implementation is implied.
     fn type_member_signatures(&self, _: NativeTypeMemberKey) -> Option<Vec<NativeSignatureKey>> { None }
     fn type_declaration_members(&self, _: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> { Vec::new() }
@@ -870,6 +875,8 @@ pub trait TypeQueries {
     fn captured_function_context(&mut self, context: &CapturedFunctionContext)
     -> Option<ContextualFunctionContext>;
     fn native_function_key(&mut self, function: &Type) -> Option<NativeFunctionKey>;
+    fn contextual_type_owner(&mut self, scope: NativeFunctionKey, input: NativeFlowKey) -> ContextualTypeOwner;
+    fn contextual_owner_self_type(&mut self, owner: &Type) -> Option<Type>;
     fn instantiate_in_function(&mut self, function: &Type, declaration_type: &Type)
     -> Option<Type>;
     fn captured_parameter_type(
@@ -969,6 +976,7 @@ pub trait TypeQueries {
     /// Partition with the same Lua nil/false policy used by native graph flow.
     fn lua_truthiness_type(&mut self, ty: &Type, sense: bool) -> Type;
     fn union_reduced(&mut self, types: &[Type]) -> Type;
+    fn runtime_value_union(&mut self, types: &[Type]) -> Type;
     fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type>;
     fn property_type_checked(&mut self, ty: &Type, name: &str) -> Result<Option<Type>, TableError>;
     fn assignment_value(&mut self, declared: &Type, assigned: &Type) -> Type;
@@ -1419,6 +1427,19 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             .sig_native_decl(signature)
             .map(|(key, _)| source_key(key))
     }
+    fn contextual_type_owner(&mut self, scope: NativeFunctionKey, input: NativeFlowKey) -> ContextualTypeOwner {
+        use bun_sema::check::native_named::NativeContextualTypeOwner as Core;
+        match self.checker.native_contextual_type_owner(core_key(scope), input) {
+            Core::Pending => ContextualTypeOwner::Pending,
+            Core::Absent => ContextualTypeOwner::Absent,
+            Core::Owner(owner) => ContextualTypeOwner::Owner(self.handles.retain(owner)),
+        }
+    }
+    fn contextual_owner_self_type(&mut self, owner: &Type) -> Option<Type> {
+        let owner = import_type(self.checker, self.handles, owner);
+        let ty = self.checker.native_contextual_owner_self_type(owner)?;
+        Some(self.handles.retain(ty))
+    }
     fn instantiate_in_function(
         &mut self,
         function: &Type,
@@ -1794,6 +1815,11 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let ty = self.checker.lua_truthiness_type(ty, sense);
         export_type(self.checker, self.handles, ty)
     }
+    fn runtime_value_union(&mut self, types: &[Type]) -> Type {
+        let types = types.iter().map(|ty| import_type(self.checker, self.handles, ty)).collect::<Vec<_>>();
+        let ty = self.checker.native_runtime_value_union(&types);
+        export_type(self.checker, self.handles, ty)
+    }
 
     fn property_type(&mut self, ty: &Type, name: &str) -> Option<Type> {
         let ty = import_type(self.checker, self.handles, ty);
@@ -1878,6 +1904,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let ty = import_type(self.checker, self.handles, ty);
         match self.checker.data(ty) {
             TypeData::NativeObject(reference) => Some(native_named::source_declaration(reference.declaration)),
+            TypeData::NativeDefinition(reference) => Some(native_named::source_declaration(reference.class.declaration)),
             _ => None,
         }
     }
@@ -2146,6 +2173,14 @@ struct ProviderAdapter<'a, P> {
 }
 
 impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
+    fn contextual_type_owner(&self, checker: &mut Checker<'_, '_>, scope: NativeFunctionId, input: NativeFlowKey) -> bun_sema::check::native_named::NativeContextualTypeOwner {
+        use bun_sema::check::native_named::NativeContextualTypeOwner as Core;
+        match self.provider.contextual_type_owner(source_key(scope), input, &mut SessionQueries { checker, handles: self.handles }) {
+            ContextualTypeOwner::Pending => Core::Pending,
+            ContextualTypeOwner::Absent => Core::Absent,
+            ContextualTypeOwner::Owner(owner) => Core::Owner(import_type(checker, self.handles, &owner)),
+        }
+    }
     fn function_is_method(&self, key: NativeFunctionId) -> bool { self.provider.function_is_method(source_key(key)) }
     fn signature_is_method(&self, key: bun_sema::types::NativeSignatureId) -> bool { self.provider.signature_is_method(source_signature_key(key)) }
     fn calling_convention(&self, key: NativeFunctionId) -> bun_sema::check::native_signatures::NativeCallingConvention {
@@ -3074,6 +3109,8 @@ impl Host for TypeCoreHost {
 
 #[cfg(test)]
 mod native_named_core_tests;
+#[cfg(test)]
+mod contextual_type_owner_tests;
 
 #[cfg(test)]
 mod class_nominal_tests;

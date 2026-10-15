@@ -201,6 +201,10 @@ impl Checker<'_> {
     ) -> Type {
         match self.engine.table_lookup(receiver, key) {
             Ok(ty) => ty,
+            Err(TableError::PendingContext) => {
+                self.incomplete_flow = true;
+                self.engine.error_type()
+            }
             Err(error) => {
                 self.native_table_error(error, span, span);
                 Type::Unknown
@@ -217,6 +221,10 @@ impl Checker<'_> {
         let key = TableKey::Literal(LuaKey::String(name.text.as_bytes().to_vec()));
         match self.engine.table_lookup(receiver, &key) {
             Ok(ty) => ty,
+            Err(TableError::PendingContext) => {
+                self.incomplete_flow = true;
+                self.engine.error_type()
+            }
             Err(
                 TableError::KeyType { .. }
                 | TableError::NotTable { .. }
@@ -296,7 +304,12 @@ impl Checker<'_> {
     }
 
     pub(super) fn native_table_error(&mut self, error: TableError, key_span: Span, value_span: Span) {
+        if matches!(error, TableError::PendingContext) {
+            self.incomplete_flow = true;
+            return;
+        }
         let (code, origin, message) = match error {
+            TableError::PendingContext => unreachable!("pending member context handled above"),
             TableError::InvalidKey { key } => (
                 "TS2538",
                 key_span,

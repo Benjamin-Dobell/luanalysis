@@ -115,7 +115,11 @@ impl Checker<'_> {
             } else {
                 self.expression(right)
             };
-            return self.engine.union_reduced(&[kept, right_type]);
+            return if self.runtime_value {
+                self.engine.runtime_value_union(&[kept, right_type])
+            } else {
+                self.engine.union_reduced(&[kept, right_type])
+            };
         }
 
         let right_type = self.expression(right);

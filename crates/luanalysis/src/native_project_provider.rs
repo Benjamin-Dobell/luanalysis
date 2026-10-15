@@ -280,6 +280,9 @@ impl ProjectRegistry {
                 }
             }
             let mut published = false;
+            for (index, file) in self.files.iter().enumerate() {
+                if checked.contains(&index) { published |= file.source.retry_contextual_owner_validations(queries); }
+            }
             for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
                 if !checked.contains(&index) { continue; }
                 let pending = file.source.take_report();
@@ -302,6 +305,8 @@ impl ProjectRegistry {
         }
         for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
             if !checked.contains(&index) { continue; }
+            file.source.report_unresolved_contextual_owners();
+            report.report.append(file.source.take_report());
             report.report.diagnostics.sort_by(|left, right| {
                 (left.span.start, left.span.end, left.code, &left.message).cmp(&(
                     right.span.start,
@@ -589,7 +594,8 @@ impl NativeTypeProvider for ProjectRegistry {
             | NamedTypeError::UnsupportedVisibility(key)
             | NamedTypeError::UnsupportedOwnerInstantiation(key) => key.snapshot,
             NamedTypeError::InvalidTypeParameter(key) => key.snapshot,
-            NamedTypeError::UnknownOwner { member, .. }
+            NamedTypeError::PendingContext { member }
+            | NamedTypeError::UnknownOwner { member, .. }
             | NamedTypeError::AmbiguousOwner { member, .. } => member.snapshot,
             NamedTypeError::TypeArgumentArity { declaration, .. }
             | NamedTypeError::TypeArgumentConstraint { declaration, .. }
@@ -629,6 +635,9 @@ impl NativeTypeProvider for ProjectRegistry {
         fn function_declared_scalar_contract_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn type_alias_target(key: NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Type;
         fn type_member_type(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Type;
+        fn type_member_activation(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::TypeMemberActivation;
+        fn type_member_effective_metadata(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::TypeMemberEffectiveMetadata;
+        fn contextual_type_owner(key: NativeFunctionKey, input: luanalysis_engine::NativeFlowKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::ContextualTypeOwner;
         fn type_indexer_key(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Type;
         fn type_declaration_bases(key: NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Vec<Type>;
         fn type_parameter_owner(key: NativeTypeParameterKey) -> Option<TypeDeclarationOwner>;

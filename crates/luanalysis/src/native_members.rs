@@ -24,6 +24,9 @@ pub(super) enum OriginalMemberValue {
 #[derive(Clone, Debug)]
 pub(super) struct OriginalMemberInput {
     pub owner: NativeNamedKey,
+    /// This is only a candidate owner until the original metatable call is
+    /// proved to invoke the selected standard function at its creation point.
+    pub contextual_owner: Option<NativeFunctionKey>,
     pub key: OriginalMemberKey,
     pub origin: OriginalMemberOrigin,
     pub value: OriginalMemberValue,
@@ -34,8 +37,9 @@ pub(super) struct OriginalMemberInput {
 #[derive(Clone, Debug)]
 pub(super) struct OriginalMemberSource {
     pub key: NativeTypeMemberKey,
-    /// Duplicate constructor stores remain separate original candidates. The
-    /// native table constructor combines them using its Lua collision policy.
+    /// Original declaration groups occur in source order, identified by their
+    /// contextual-owner guard. Duplicate constructor stores within a group
+    /// retain Lua collision handling; later writes do not redefine its contract.
     pub candidates: Vec<OriginalMemberInput>,
 }
 pub(super) struct NativeMembers {
@@ -66,11 +70,17 @@ impl NativeMembers {
             if let Some(previous) = result.sources.iter_mut().find(|source| {
                 source.candidates[0].owner == input.owner && source.candidates[0].key == input.key
             }) {
-                // The constructor defines the property contract. A subsequent
-                // method declaration is a checked write to that same member.
-                if matches!(input.origin, OriginalMemberOrigin::ConstructorField(_))
-                    && matches!(previous.candidates[0].origin, OriginalMemberOrigin::ConstructorField(_))
-                {
+                // An inactive earlier constructor scope must not erase a
+                // later declaration. Within the same scope, the first store
+                // still defines the contract and later methods are checked
+                // writes rather than additional overloads or union members.
+                let group = previous.candidates.iter().find(|candidate| {
+                    candidate.contextual_owner == input.contextual_owner
+                });
+                if group.is_none_or(|first| {
+                    matches!(input.origin, OriginalMemberOrigin::ConstructorField(_))
+                        && matches!(first.origin, OriginalMemberOrigin::ConstructorField(_))
+                }) {
                     previous.candidates.push(input);
                 }
                 continue;
@@ -98,6 +108,36 @@ use luanalysis_syntax::{ExprKind, TableFieldKind};
 use std::collections::HashSet;
 
 impl NativeRegistry {
+    /// Choose the first completed active original declaration group. A pending
+    /// earlier group cannot be bypassed by publishing a later group's type.
+    pub(crate) fn selected_original_member_candidates<'a>(
+        &'a self,
+        key: NativeTypeMemberKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<(luanalysis_engine::TypeMemberActivation, Vec<&'a OriginalMemberInput>)> {
+        use luanalysis_engine::{ContextualTypeOwner, TypeMemberActivation};
+        let source = self.members.get(key)?;
+        let mut visited = HashSet::new();
+        for input in &source.candidates {
+            if !visited.insert(input.contextual_owner) { continue; }
+            if let Some(scope) = input.contextual_owner {
+                match self.contextual_owner_at_creation(scope, queries) {
+                    ContextualTypeOwner::Pending => return Some((TypeMemberActivation::Pending, Vec::new())),
+                    ContextualTypeOwner::Absent => continue,
+                    ContextualTypeOwner::Owner(owner) => {
+                        if queries.named_object_declaration(&owner) != Some(luanalysis_engine::NativeTypeDeclarationKey {
+                            snapshot: input.owner.snapshot, index: input.owner.index,
+                        }) { continue; }
+                    }
+                }
+            }
+            let selected = source.candidates.iter().filter(|candidate| {
+                candidate.contextual_owner == input.contextual_owner
+            }).collect();
+            return Some((TypeMemberActivation::Active, selected));
+        }
+        Some((TypeMemberActivation::Inactive, Vec::new()))
+    }
     pub(crate) fn is_original_assignment_field(&self, target: Span) -> bool {
         self.members.inputs().iter().any(|input| input.origin == OriginalMemberOrigin::AssignmentField(target))
     }
@@ -135,7 +175,7 @@ impl NativeRegistry {
                     OriginalMemberValue::Function(function)
                 } else { OriginalMemberValue::Expression(expression) };
                 inputs.push(OriginalMemberInput {
-                    owner: source.key, key,
+                    owner: source.key, contextual_owner: None, key,
                     origin: OriginalMemberOrigin::ConstructorField(field.span),
                     value, span: field.span,
                     lexical_context: root.owner.map(NativeTypeContext::Function),
@@ -162,6 +202,15 @@ impl NativeRegistry {
             TableFieldOrigin::Declared
         } else { TableFieldOrigin::Inferred })
     }
+    pub(crate) fn original_member_effective_metadata(&self, key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypeMemberEffectiveMetadata> {
+        let (_, candidates) = self.selected_original_member_candidates(key, queries)?;
+        Some(luanalysis_engine::TypeMemberEffectiveMetadata {
+            origin: if candidates.iter().any(|input| matches!(input.value, OriginalMemberValue::Written(_))) {
+                TableFieldOrigin::Declared
+            } else { TableFieldOrigin::Inferred },
+            is_assignment: candidates.first().is_some_and(|input| matches!(input.origin, OriginalMemberOrigin::AssignmentField(_))),
+        })
+    }
     fn original_member_expression_type(&self, key: NativeExpressionKey, queries: &mut dyn TypeQueries) -> Type {
         let expression = &self.expressions().get(key).expression;
         let (ty, report, incomplete) = {
@@ -186,6 +235,17 @@ impl NativeRegistry {
                 self.named_annotation(input.lexical_context, &input.documentation_contexts, ty, queries)
             }
             OriginalMemberValue::Expression(key) => {
+                // An ordinary assignment to an inherited property uses that
+                // property's existing contract. Reinferring it from its RHS
+                // can demand this same class through a read such as self.x.
+                // The original write still checks its actual RHS separately.
+                if matches!(input.origin, OriginalMemberOrigin::AssignmentField(_)) {
+                    match queries.named_member_context(member) {
+                        Ok(Some(expected)) => return expected,
+                        Err(luanalysis_engine::NamedTypeError::PendingContext { .. }) => return queries.error_type(),
+                        _ => {},
+                    }
+                }
                 let ty = self.original_member_expression_type(*key, queries);
                 queries.widen(&ty)
             }
@@ -194,7 +254,12 @@ impl NativeRegistry {
                     return self.ambient_function_contract(*key, queries).unwrap_or_else(|| queries.error_type());
                 }
                 let value = Type::NativeFunction(*key);
-                if let Ok(Some(expected)) = queries.named_member_context(member) {
+                let expected = match queries.named_member_context(member) {
+                    Ok(expected) => expected,
+                    Err(luanalysis_engine::NamedTypeError::PendingContext { .. }) => return queries.error_type(),
+                    Err(_) => None,
+                };
+                if let Some(expected) = expected {
                     if let OriginalMemberOrigin::Method(_) = input.origin {
                         let target = self.original_method_target(*key).expect("original named member definition");
                         // A schema demand describes this declaration, not a
@@ -208,11 +273,16 @@ impl NativeRegistry {
         }
     }
     pub(super) fn original_member_type(&self, key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Option<Type> {
-        let source = self.members.get(key)?;
-        if source.candidates.len() == 1 { return Some(self.original_member_candidate_type(key, &source.candidates[0], queries)); }
-        let OriginalMemberKey::Fixed(member_key) = &source.candidates[0].key else { unreachable!("separate computed source addresses") };
+        let (activation, candidates) = self.selected_original_member_candidates(key, queries)?;
+        if activation != luanalysis_engine::TypeMemberActivation::Active {
+            // The native owner query taints pending demands. Neither an
+            // unresolved nor an inactive group may contribute a source type.
+            return Some(queries.error_type());
+        }
+        if candidates.len() == 1 { return Some(self.original_member_candidate_type(key, candidates[0], queries)); }
+        let OriginalMemberKey::Fixed(member_key) = &candidates[0].key else { unreachable!("separate computed source addresses") };
         let mut table = TableType { fresh: true, ..Default::default() };
-        for input in &source.candidates {
+        for input in candidates {
             let value = self.original_member_candidate_type(key, input, queries);
             table.fields.push(if matches!(input.value, OriginalMemberValue::Written(_)) {
                 luanalysis_engine::TableField::declared(member_key.clone(), value)
@@ -242,6 +312,7 @@ impl NativeRegistry {
     pub(super) fn original_member_owner_scopes(&self) -> Vec<(NativeTypeContext, NativeNamedKey)> {
         let mut scopes = Vec::new();
         for input in self.members.inputs() {
+            if input.contextual_owner.is_some() { continue; }
             if let OriginalMemberValue::Function(function) = input.value { scopes.push((NativeTypeContext::Function(function), input.owner)); }
             if matches!(input.origin, OriginalMemberOrigin::AssignmentField(_))
                 && let OriginalMemberValue::Written(ty) = &input.value

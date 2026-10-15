@@ -71,6 +71,9 @@ impl NativeExpressions {
         assert!(self.contains(key), "foreign original Lua expression");
         &self.expressions[key.node as usize]
     }
+    pub(super) fn original_sources(&self) -> &[SourceExpression] {
+        &self.expressions
+    }
     pub(super) fn key_for_span(&self, span: Span) -> NativeExpressionKey {
         *self
             .spans
@@ -458,7 +461,7 @@ impl NativeRegistry {
         }
     }
 
-    fn retain_capture_ancestry(
+    pub(crate) fn retain_capture_ancestry(
         &self,
         context: &CapturedFunctionContext,
         queries: &mut dyn TypeQueries,

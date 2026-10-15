@@ -399,13 +399,20 @@ impl NativeRegistry {
                 if let Some(parameter) = self.types.self_parameter(owner) { used.insert(parameter); }
                 used.extend(self.types.own_parameters_in_context(NativeTypeContext::NamedType(owner)));
             }
-            return self.types.outer_parameters(function, &used);
+            if self.implicit_receiver(source).is_some()
+                && self.method_owner(function).is_none()
+                && let Some(parameter) = self.contextual_self_dependency(function)
+            { used.insert(parameter); }
+            let mut outer = self.types.outer_parameters(function, &used);
+            self.extend_contextual_self_dependencies(NativeTypeContext::Function(function), &used, &mut outer);
+            return outer;
         }
         let source = recipe.signature.as_ref().expect("original function-type annotation");
         let mut used = std::collections::HashSet::new();
         if let Some(function) = self.signature_method_function(key)
-            && let Some(owner) = self.method_owner(function)
-            && let Some(parameter) = self.types.self_parameter(owner)
+            && let Some(parameter) = self.method_owner(function)
+                .and_then(|owner| self.types.self_parameter(owner))
+                .or_else(|| self.contextual_self_dependency(function))
         {
             used.insert(parameter);
         }
@@ -436,6 +443,7 @@ impl NativeRegistry {
         let mut outer = self
             .types
             .outer_parameters_in_context(NativeTypeContext::Signature(key), &used);
+        self.extend_contextual_self_dependencies(NativeTypeContext::Signature(key), &used, &mut outer);
         if self.ambient_annotation_function(key).is_some() {
             let formals = self.signature_parameters_keys(key);
             outer.retain(|key| !formals.contains(key));

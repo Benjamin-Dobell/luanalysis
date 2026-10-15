@@ -346,19 +346,19 @@ impl NativeFlowSources {
                     let flow::NodeKind::Write { address, value: flow::ValueDemand::Evaluation(value), .. } = &node.kind else { continue; };
                     let flow::ReferenceRoot::Binding(binding) = address.reference.root else { continue; };
                     if !address.reference.path.is_empty() { continue; }
-                    let value = result.program.evaluation(*value);
-                    let Some(reference) = result.program.references.get(&value.expression) else { continue; };
-                    let paths = result.environment_candidate_paths(reference);
-                    for path in paths {
-                        if matches!(path.as_slice(), [flow::Key::String(name)] if matches!(name.as_slice(), b"require" | b"type" | b"assert" | b"setmetatable")) { result.capability_bindings.insert(binding); }
-                        result.environment_candidates.entry(binding).or_default().insert(path);
+                    for reference in result.value_reference_candidates(*value) {
+                        let paths = result.environment_candidate_paths(&reference);
+                        for path in paths {
+                            if matches!(path.as_slice(), [flow::Key::String(name)] if matches!(name.as_slice(), b"require" | b"type" | b"assert" | b"setmetatable")) { result.capability_bindings.insert(binding); }
+                            result.environment_candidates.entry(binding).or_default().insert(path);
+                        }
+                        let candidate = match (&reference.root, reference.path.as_slice()) {
+                            (flow::ReferenceRoot::EnvironmentCell, [flow::Key::String(name)]) => matches!(name.as_slice(), b"require" | b"type" | b"assert" | b"setmetatable"),
+                            (flow::ReferenceRoot::Binding(parent), []) => result.capability_bindings.contains(parent),
+                            _ => false,
+                        };
+                        if candidate { result.capability_bindings.insert(binding); }
                     }
-                    let candidate = match (&reference.root, reference.path.as_slice()) {
-                        (flow::ReferenceRoot::EnvironmentCell, [flow::Key::String(name)]) => matches!(name.as_slice(), b"require" | b"type" | b"assert" | b"setmetatable"),
-                        (flow::ReferenceRoot::Binding(parent), []) => result.capability_bindings.contains(parent),
-                        _ => false,
-                    };
-                    if candidate { result.capability_bindings.insert(binding); }
                 }
             }
             let after = result.capability_bindings.len() + result.environment_candidates.values().map(HashSet::len).sum::<usize>();
@@ -400,6 +400,28 @@ impl NativeFlowSources {
             flow::ReferenceRoot::Binding(binding) => self.environment_candidates.get(binding).into_iter().flatten().map(|parent| parent.iter().chain(&reference.path).take(2).cloned().collect()).collect(),
             _ => Vec::new(),
         }
+    }
+
+    /// Only possible original value sources, never an intrinsic attestation.
+    /// Lua's logical operators select either operand's runtime value; treating
+    /// their result as an ordinary type can erase a structurally equal callee.
+    fn value_reference_candidates(&self, evaluation: flow::EvaluationId) -> Vec<flow::Reference> {
+        let mut pending = vec![evaluation];
+        let mut references = Vec::new();
+        while let Some(evaluation) = pending.pop() {
+            let evaluation = self.program.evaluation(evaluation);
+            if let Some(reference) = self.program.references.get(&evaluation.expression) {
+                references.push(reference.clone());
+                continue;
+            }
+            match &self.program.expression(evaluation.expression).expression.kind {
+                ExprKind::Parenthesized(_) | ExprKind::Binary {
+                    op: BinaryOperator::And | BinaryOperator::Or, ..
+                } => pending.extend(evaluation.operands.iter().copied()),
+                _ => {},
+            }
+        }
+        references
     }
     pub(super) fn loader_reference(&self, graph: NativeGraphKey) -> NativeReferenceKey {
         self.reference_key(graph, &flow::Reference { root: flow::ReferenceRoot::LoaderState, path: Vec::new() }).expect("each original graph has its loader state")

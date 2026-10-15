@@ -21,6 +21,7 @@ pub(super) struct MethodSource {
     pub implicit_receiver: Option<BindingId>,
     /// Exact original attached class binding, never a matching runtime name.
     pub class_owner: Option<NativeNamedKey>,
+    pub contextual_owner: Option<NativeFunctionKey>,
     /// Original global attachment, used only for declaration-library recipes.
     pub declaration_owner: Option<NativeNamedKey>,
 }
@@ -32,6 +33,7 @@ pub(super) struct NativeMethods {
 }
 struct AssignmentFieldSource {
     owner: NativeNamedKey,
+    contextual_owner: Option<NativeFunctionKey>,
     key: LuaKey,
     target: Span,
     value: Span,
@@ -46,8 +48,10 @@ impl NativeMethods {
         bound: &BoundFile,
         named: &NativeNamed,
         types: &crate::native_types::NativeTypes,
+        metatables: &super::metatables::NativeMetatables,
     ) -> Self {
         let mut owners: HashMap<BindingId, Vec<NativeNamedKey>> = HashMap::new();
+        let mut contextual_owners = HashMap::new();
         let mut declaration_owners: HashMap<String, Vec<NativeNamedKey>> = HashMap::new();
         for declaration in named.declarations() {
             if !matches!(
@@ -98,23 +102,23 @@ impl NativeMethods {
             let [ty] = assertion.annotation.types.as_slice() else { return None };
             Some(((assertion.expression.start, assertion.expression.end), ty))
         }).collect();
-        collect_written_local_owners(&file.statements, None, &assertions, bound, named, types, &mut owners);
+        collect_written_local_owners(&file.statements, None, &assertions, bound, named, types, metatables, &mut owners, &mut contextual_owners);
         for function in functions {
             let context = crate::native_named::NativeTypeContext::Function(NativeFunctionKey {
                 snapshot, index: spans[&(function.span.start, function.span.end)],
             });
-            collect_written_local_owners(&function.body, Some(context), &assertions, bound, named, types, &mut owners);
+            collect_written_local_owners(&function.body, Some(context), &assertions, bound, named, types, metatables, &mut owners, &mut contextual_owners);
         }
         let mut methods = Self {
             snapshot,
             sources: vec![None; functions.len()],
             fields: Vec::new(),
         };
-        methods.statements(&file.statements, spans, bound, &owners, &declaration_owners);
+        methods.statements(&file.statements, spans, bound, &owners, &declaration_owners, &contextual_owners);
         // Each original function body is indexed once; expression nesting was
         // already traversed by the original function identity collector.
         for function in functions {
-            methods.statements(&function.body, spans, bound, &owners, &declaration_owners);
+            methods.statements(&function.body, spans, bound, &owners, &declaration_owners, &contextual_owners);
         }
         methods
     }
@@ -132,6 +136,7 @@ impl NativeMethods {
             let owner = method.class_owner?;
             Some(OriginalMemberInput {
                 owner,
+                contextual_owner: method.contextual_owner,
                 key: OriginalMemberKey::Fixed(method.member.clone()),
                 origin: OriginalMemberOrigin::Method(method.function),
                 value: OriginalMemberValue::Function(method.function),
@@ -145,7 +150,7 @@ impl NativeMethods {
         self.fields.iter().map(|field| {
             let expression = expressions.key_for_span(field.value);
             OriginalMemberInput {
-                owner: field.owner,
+                owner: field.owner, contextual_owner: field.contextual_owner,
                 key: OriginalMemberKey::Fixed(field.key.clone()),
                 origin: OriginalMemberOrigin::AssignmentField(field.target),
                 value: field.annotation.as_ref().map_or(OriginalMemberValue::Expression(expression), |ty| OriginalMemberValue::Written(ty.clone())),
@@ -162,6 +167,7 @@ impl NativeMethods {
         bound: &BoundFile,
         owners: &HashMap<BindingId, Vec<NativeNamedKey>>,
         declaration_owners: &HashMap<String, Vec<NativeNamedKey>>,
+        contextual_owners: &HashMap<BindingId, NativeFunctionKey>,
     ) {
         for statement in statements {
             match &statement.kind {
@@ -169,18 +175,18 @@ impl NativeMethods {
                     target,
                     function,
                     method_span,
-                } => self.record(target, function, *method_span, true, spans, bound, owners, declaration_owners),
+                } => self.record(target, function, *method_span, true, spans, bound, owners, declaration_owners, contextual_owners),
                 StmtKind::Assign {
                     targets, values, annotation,
                 } if targets.len() == values.len() => {
                     for (index, (target, value)) in targets.iter().zip(values).enumerate() {
                         if let Some(function) = function_literal(value) {
-                            self.record(target, function, None, false, spans, bound, owners, declaration_owners);
+                            self.record(target, function, None, false, spans, bound, owners, declaration_owners, contextual_owners);
                         } else if let Some((receiver, key)) = fixed_member_target(target)
                             && let Some(owner) = local_class_owner(receiver, bound, owners)
                         {
                             self.fields.push(AssignmentFieldSource {
-                                owner, key, target: target.span, value: value.span,
+                                owner, contextual_owner: receiver_binding(receiver, bound).and_then(|binding| contextual_owners.get(&binding).copied()), key, target: target.span, value: value.span,
                                 annotation: annotation.as_ref().and_then(|annotation| annotation.types.get(index)).cloned(),
                             });
                         }
@@ -190,16 +196,16 @@ impl NativeMethods {
                 | StmtKind::While { body, .. }
                 | StmtKind::Repeat { body, .. }
                 | StmtKind::NumericFor { body, .. }
-                | StmtKind::GenericFor { body, .. } => self.statements(body, spans, bound, owners, declaration_owners),
+                | StmtKind::GenericFor { body, .. } => self.statements(body, spans, bound, owners, declaration_owners, contextual_owners),
                 StmtKind::If {
                     branches,
                     else_branch,
                 } => {
                     for branch in branches {
-                        self.statements(&branch.body, spans, bound, owners, declaration_owners);
+                        self.statements(&branch.body, spans, bound, owners, declaration_owners, contextual_owners);
                     }
                     if let Some(branch) = else_branch {
-                        self.statements(&branch.body, spans, bound, owners, declaration_owners);
+                        self.statements(&branch.body, spans, bound, owners, declaration_owners, contextual_owners);
                     }
                 }
                 _ => {}
@@ -216,6 +222,7 @@ impl NativeMethods {
         bound: &BoundFile,
         owners: &HashMap<BindingId, Vec<NativeNamedKey>>,
         declaration_owners: &HashMap<String, Vec<NativeNamedKey>>,
+        contextual_owners: &HashMap<BindingId, NativeFunctionKey>,
     ) {
         let Some((receiver, member)) = fixed_member_target(target) else { return };
         let index = *spans
@@ -242,6 +249,7 @@ impl NativeMethods {
             declaration,
             implicit_receiver: bound.implicit_receiver(function.span),
             class_owner,
+            contextual_owner: receiver_binding(receiver, bound).and_then(|binding| contextual_owners.get(&binding).copied()),
             declaration_owner,
         });
     }
@@ -253,7 +261,9 @@ fn collect_written_local_owners(
     bound: &BoundFile,
     named: &NativeNamed,
     types: &crate::native_types::NativeTypes,
+    metatables: &super::metatables::NativeMetatables,
     owners: &mut HashMap<BindingId, Vec<NativeNamedKey>>,
+    contextual_owners: &mut HashMap<BindingId, NativeFunctionKey>,
 ) {
     for statement in statements {
         match &statement.kind {
@@ -267,6 +277,22 @@ fn collect_written_local_owners(
                         ty = inner.value_syntax();
                     }
                     let luanalysis_syntax::TypeExprKind::Named(type_name) = &ty.kind else { continue };
+                    if type_name == "self" {
+                        let Some(crate::native_named::NativeTypeContext::Function(function)) = context else { continue };
+                        // Explicit generic parameters called self retain their
+                        // lexical meaning; this indexes only contextual self.
+                        match types.resolve_name_in_context(context, type_name) {
+                            crate::native_types::TypeNameResolution::Parameter(key) if types.parameter(key).semantic_self.is_none() => continue,
+                            crate::native_types::TypeNameResolution::Ambiguous(_) => continue,
+                            _ => {},
+                        }
+                        let Some((scope, source)) = metatables.context_scope(function, types) else { continue };
+                        let Some(owner) = source.candidate_owner else { continue };
+                        let binding = bound.binding_at(name.span.start).expect("original initialized contextual local");
+                        owners.entry(binding).or_default().push(owner);
+                        contextual_owners.insert(binding, scope);
+                        continue;
+                    }
                     if types.resolve_name_in_context(context, type_name) != crate::native_types::TypeNameResolution::Missing { continue; }
                     let [owner] = named.candidates(type_name) else { continue };
                     if !named.declaration(*owner).is_some_and(|declaration| matches!(
@@ -280,10 +306,10 @@ fn collect_written_local_owners(
             }
             StmtKind::Block { body, .. } | StmtKind::While { body, .. }
             | StmtKind::Repeat { body, .. } | StmtKind::NumericFor { body, .. }
-            | StmtKind::GenericFor { body, .. } => collect_written_local_owners(body, context, assertions, bound, named, types, owners),
+            | StmtKind::GenericFor { body, .. } => collect_written_local_owners(body, context, assertions, bound, named, types, metatables, owners, contextual_owners),
             StmtKind::If { branches, else_branch } => {
-                for branch in branches { collect_written_local_owners(&branch.body, context, assertions, bound, named, types, owners); }
-                if let Some(branch) = else_branch { collect_written_local_owners(&branch.body, context, assertions, bound, named, types, owners); }
+                for branch in branches { collect_written_local_owners(&branch.body, context, assertions, bound, named, types, metatables, owners, contextual_owners); }
+                if let Some(branch) = else_branch { collect_written_local_owners(&branch.body, context, assertions, bound, named, types, metatables, owners, contextual_owners); }
             }
             _ => {}
         }
@@ -297,9 +323,12 @@ fn fixed_member_target(target: &Expr) -> Option<(&Expr, LuaKey)> {
     }
 }
 fn local_class_owner(receiver: &Expr, bound: &BoundFile, owners: &HashMap<BindingId, Vec<NativeNamedKey>>) -> Option<NativeNamedKey> {
-    let ExprKind::Name(name) = &receiver.kind else { return None };
-    let [owner] = owners.get(&bound.binding_at(name.span.start)?)?.as_slice() else { return None };
+    let [owner] = owners.get(&receiver_binding(receiver, bound)?)?.as_slice() else { return None };
     Some(*owner)
+}
+fn receiver_binding(receiver: &Expr, bound: &BoundFile) -> Option<BindingId> {
+    let ExprKind::Name(name) = &receiver.kind else { return None };
+    bound.binding_at(name.span.start)
 }
 fn function_literal(value: &Expr) -> Option<&Function> {
     match &value.kind {
@@ -310,11 +339,15 @@ fn function_literal(value: &Expr) -> Option<&Function> {
 }
 
 impl super::NativeRegistry {
+    pub(crate) fn has_polymorphic_method_owner(&self, key: NativeFunctionKey) -> bool {
+        self.method_owner(key).is_some() || self.methods.get(key).is_some_and(|method| method.contextual_owner.is_some())
+    }
     pub(crate) fn original_method_target(&self, key: NativeFunctionKey) -> Option<&Expr> {
         Some(&self.methods.get(key)?.target)
     }
     pub(crate) fn method_owner(&self, key: NativeFunctionKey) -> Option<NativeNamedKey> {
         let method = self.methods.get(key)?;
+        if method.contextual_owner.is_some() { return None; }
         method.class_owner.or_else(|| (self.source_role() == luanalysis_project::SourceRole::Declaration)
             .then_some(method.declaration_owner).flatten())
     }
@@ -325,6 +358,13 @@ impl super::NativeRegistry {
     pub(crate) fn default_receiver_type(&self, function: &Function, queries: &mut dyn TypeQueries) -> Option<Type> {
         let key = self.key_for(function);
         let method = self.methods.get(key)?;
+        if method.contextual_owner.is_some() {
+            match self.contextual_self_type(key, queries) {
+                luanalysis_engine::ContextualTypeOwner::Owner(ty) => return Some(ty),
+                luanalysis_engine::ContextualTypeOwner::Pending => return Some(queries.error_type()),
+                luanalysis_engine::ContextualTypeOwner::Absent => {},
+            }
+        }
         if let Some(owner) = self.method_owner(key) {
             return self.types.self_parameter(owner).map(Type::NativeTypeParameter);
         }

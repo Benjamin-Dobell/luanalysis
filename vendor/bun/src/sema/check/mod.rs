@@ -145,6 +145,7 @@ pub enum NativeTypeResult {
 /// Language-specific declaration demands executed in the same checker and query scope.
 /// Returned ids must belong to this checker session; no frontend nodes are interpreted as TS HIR.
 pub trait NativeFunctionProvider {
+    fn contextual_type_owner(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId, _: native_flow::NativeFlowKey) -> native_named::NativeContextualTypeOwner { native_named::NativeContextualTypeOwner::Absent }
     fn calling_convention(&self, _: NativeFunctionId) -> native_signatures::NativeCallingConvention { native_signatures::NativeCallingConvention::TypeScript }
     /// Exact original method declaration syntax, not merely a callable property.
     fn function_is_method(&self, _: NativeFunctionId) -> bool { false }
@@ -1056,6 +1057,7 @@ struct Scope {
 /// A query that may be circular.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 enum Query {
+    NativeContextualTypeOwner(NativeFunctionId, native_flow::NativeFlowKey, u64),
     NativeAlias(native_flow::NativeReferenceKey, native_flow::NativeFlowKey),
     NativeAliasValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize),
     NativeAliasReturn(crate::types::NativeFunctionId, usize),
@@ -1153,6 +1155,7 @@ impl Query {
             Query::Bases(sym) => (sym.file, 12),
             Query::BaseConstructor(sym) => (sym.file, 13),
             Query::ReturnOfSignature(_)
+            | Query::NativeContextualTypeOwner(..)
             | Query::NativeFlowCallEffects(..)
             | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..)
             | Query::NativeNamed(_)

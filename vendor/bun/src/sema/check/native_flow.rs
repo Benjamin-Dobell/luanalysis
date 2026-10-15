@@ -323,6 +323,7 @@ pub(super) struct NativeFlowState {
     value_types: FxHashMap<ValueContext, TypeId>,
     pack_types: FxHashMap<ValueContext, NativeResultPack>,
     call_effects: FxHashMap<(ValueContext, u64), NativeCallEffects>,
+    pub(super) contextual_owners: FxHashMap<(NativeFunctionId, NativeFlowKey, u64), Option<TypeId>>,
     // Provisional query handles name actual effect records, never TypeIds.
     effect_records: Vec<NativeCallEffects>,
     pub(super) effect_epoch: u64,
@@ -1055,6 +1056,12 @@ impl ReachDomain for NativeDomain<'_> {
 }
 
 impl<'s, 'p> Checker<'s, 'p> {
+    /// Original runtime capabilities must not lose a structurally redundant
+    /// alternative before intrinsic provenance is classified.
+    pub fn native_runtime_value_union(&mut self, types: &[TypeId]) -> TypeId {
+        self.union_or_evolving_with(types, false)
+    }
+
     fn native_predicate_possible(&mut self, provider: &dyn NativeFlowProvider, predicate: &NativePredicate, sense: bool) -> bool {
         match predicate {
             NativePredicate::And(left, right) => if sense { self.native_predicate_possible(provider, left, true) && self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) || self.native_predicate_possible(provider, right, false) },
