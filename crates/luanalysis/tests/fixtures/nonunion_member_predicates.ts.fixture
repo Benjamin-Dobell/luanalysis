@@ -20,3 +20,17 @@ function discriminated(record: { tag: 'a'; a: number } | { tag: 'b'; b: string }
         }
     }
 }
+function unrelated(record: { spawning: boolean; getPosition(): number }, other: true) {
+    if (record.spawning && false) {
+        const position: number = record.getPosition();
+        record.getPosition('wrong'); // TS2554: original call contract remains.
+    }
+    if (record.spawning && !other) {
+        const position: number = record.getPosition();
+        const wrong: number = 'wrong'; // TS2322: unreachable body is still checked.
+    }
+    if (record.spawning || true) {
+    } else {
+        const position: number = record.getPosition();
+    }
+}

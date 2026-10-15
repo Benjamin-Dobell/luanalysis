@@ -18,6 +18,119 @@ local function nullableGuard(nullable)
 end
 "#;
 
+const UNRELATED: &str = r#"---@param object {spawning:boolean,getPosition:fun():number}
+---@param unrelated true
+local function enter(object, unrelated)
+    if CONDITION then
+        ---@type number
+        local position = object.getPosition()
+    end
+end
+"#;
+
+const ZONE_CONDITION: &str = r#"---@class HostObject : userdata
+---@field spawning boolean
+---@field isSmoothMoving fun():boolean
+---@field held_by_color nil|string
+---@field getPosition fun():number
+
+---@shape Zone
+---@field enabled boolean
+
+---@type table<HostObject, Zone>
+local objectOccupyingZoneMap = {}
+
+---@param object HostObject
+local function enter(object)
+    if object.spawning and not object.isSmoothMoving() and not object.held_by_color and not objectOccupyingZoneMap[object] then
+        ---@type number
+        local position = object.getPosition()
+    end
+end
+"#;
+
+fn clean(source: &str) {
+    let report = check(source);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn an_unrelated_impossible_operand_does_not_erase_a_compound_guard_receiver() {
+    for condition in [
+        "object.spawning and false",
+        "false and object.spawning",
+        "object.spawning and not unrelated",
+        "not unrelated and object.spawning",
+    ] {
+        clean(&UNRELATED.replace("CONDITION", condition));
+    }
+    let alternative = UNRELATED
+        .replace("CONDITION", "object.spawning or true")
+        .replace("then\n", "then\n    else\n");
+    clean(&alternative);
+}
+
+#[test]
+fn a_typed_zone_map_predicate_does_not_erase_the_nominal_object_used_as_its_key() {
+    clean(ZONE_CONDITION);
+}
+
+#[test]
+fn unrelated_impossible_operands_keep_actual_call_arguments_and_body_checks() {
+    for source in [
+        UNRELATED.replace("CONDITION", "object.spawning and false"),
+        UNRELATED.replace("CONDITION", "object.spawning and not unrelated"),
+        ZONE_CONDITION.to_owned(),
+    ] {
+        for (original, wrong, code, rejected) in [
+            (
+                "object.getPosition()",
+                "object.getPosition('wrong')",
+                "TS2554",
+                "object.getPosition('wrong')",
+            ),
+            (
+                "local position = object.getPosition()",
+                "local position = 'wrong'",
+                "TS2322",
+                "'wrong'",
+            ),
+        ] {
+            let bad = source.replace(original, wrong);
+            let report = check(&bad);
+            assert!(
+                report.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.code == code
+                        && &bad[diagnostic.span.start..diagnostic.span.end] == rejected
+                }),
+                "{wrong}: {:#?}", report.diagnostics
+            );
+            assert!(
+                report.diagnostics.iter().all(|diagnostic| {
+                    !matches!(diagnostic.code, "TS2339" | "TS2349" | "LUA2041")
+                }),
+                "{:#?}", report.diagnostics
+            );
+            clean(&bad.replace(wrong, original));
+        }
+    }
+}
+
+#[test]
+fn an_unrelated_operand_does_not_restore_a_genuine_discriminated_union_never() {
+    let source = "---@param record {tag:'a',a:number}|{tag:'b',b:string}\nlocal function read(record)\n if record.tag=='a' then\n  if record.tag=='b' and true then\n   local impossible=record.a\n  end\n end\nend\n";
+    let report = check(source);
+    assert!(
+        report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "TS2339"
+                && diagnostic.message.contains("'never'")
+                && &source[diagnostic.span.start..diagnostic.span.end] == "a"
+        }),
+        "{:#?}", report.diagnostics
+    );
+    clean(&source.replace("if record.tag=='b'", "if record.tag=='a'"));
+}
+
 #[test]
 fn an_impossible_member_branch_does_not_turn_a_nonunion_receiver_into_never() {
     let report = check(RECORDS);

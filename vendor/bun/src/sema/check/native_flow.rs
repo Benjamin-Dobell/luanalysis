@@ -1217,7 +1217,11 @@ impl<'s, 'p> Checker<'s, 'p> {
                         !checker.native_narrow_predicate(provider, member, predicate, sense, subject, member).is_never()
                     });
                 }
-                if self.native_predicate_possible(provider, predicate, sense) { ty } else { TypeId::NEVER }
+                // Reachability checks the whole predicate separately. An
+                // impossible operand about a different reference does not
+                // erase this reference's type inside an otherwise related
+                // compound condition (for example, object.flag && false).
+                ty
             }
             NativePredicate::Truthy { .. } => self.lua_truthiness_type(ty, sense),
             NativePredicate::Equal { other, input, equals, .. } => { let other = self.native_flow_value(provider, *other, *input); self.native_equal_flow_type(ty, other, *equals == sense) },
