@@ -80,7 +80,11 @@ impl NativeRegistry {
         key: NativeSignatureKey,
         queries: &mut dyn TypeQueries,
     ) -> Vec<Parameter> {
-        let source = &self.signatures.get(key).signature;
+        let recipe = self.signatures.get(key);
+        if let Some(function) = recipe.ambient_function {
+            return self.metadata(function, queries).0;
+        }
+        let source = recipe.signature.as_ref().expect("original function-type annotation");
         let mut checker = self.signature_checker(key, queries);
         let mut optional = false;
         let mut parameters: Vec<_> = source
@@ -132,7 +136,11 @@ impl NativeRegistry {
         key: NativeSignatureKey,
         queries: &mut dyn TypeQueries,
     ) -> Option<ValuePack> {
-        let signature = &self.signatures.get(key).signature;
+        let recipe = self.signatures.get(key);
+        if let Some(function) = recipe.ambient_function {
+            return self.source_rest_pack(function, queries);
+        }
+        let signature = recipe.signature.as_ref().expect("original function-type annotation");
         let Some(source) = signature.vararg.as_ref() else {
             return signature.parameters_span.is_none().then(|| ValuePack::variadic(Type::Any));
         };
@@ -146,7 +154,14 @@ impl NativeRegistry {
         key: NativeSignatureKey,
         queries: &mut dyn TypeQueries,
     ) -> ValuePack {
-        let source = &self.signatures.get(key).signature;
+        let recipe = self.signatures.get(key);
+        if let Some(function) = recipe.ambient_function {
+            let contract = self.declared_pack_contract(function, queries)
+                .or_else(|| self.function(function).body.is_empty().then(ValuePack::empty))
+                .expect("public ambient main has a written or syntactically empty contract");
+            return queries.declared_result_pack(&contract);
+        }
+        let source = recipe.signature.as_ref().expect("original function-type annotation");
         if source.parameters_span.is_none() && source.returns.is_empty() {
             return ValuePack::variadic(Type::Any);
         }
@@ -158,6 +173,9 @@ impl NativeRegistry {
     }
     pub(super) fn check_signature_declarations(&self, queries: &mut dyn TypeQueries) {
         for recipe in &self.signatures.recipes {
+            if recipe.ambient_function.is_some() && self.source_role() != luanalysis_project::SourceRole::Declaration {
+                continue;
+            }
             for parameter in self.signature_parameters_keys(recipe.key) {
                 queries.type_parameter_constraint(parameter);
             }
@@ -198,6 +216,9 @@ impl NativeRegistry {
         &self,
         key: NativeSignatureKey,
     ) -> Vec<NativeTypeParameterKey> {
+        if let Some(function) = self.signatures.get(key).ambient_function {
+            return self.implementation_type_parameters(function);
+        }
         let mut parameters = self
             .types
             .own_parameters_in_context(NativeTypeContext::Signature(key));
@@ -212,7 +233,32 @@ impl NativeRegistry {
         &self,
         key: NativeSignatureKey,
     ) -> Vec<NativeTypeParameterKey> {
-        let source = &self.signatures.get(key).signature;
+        let recipe = self.signatures.get(key);
+        if let Some(function) = recipe.ambient_function {
+            let source = self.function(function);
+            let context = Some(NativeTypeContext::Function(function));
+            let mut used = std::collections::HashSet::new();
+            for constraint in source.annotations.generics.iter().filter_map(|parameter| parameter.constraint.as_ref()) {
+                self.annotation_parameter_dependencies(context, constraint, &mut used);
+            }
+            for parameter in &source.annotations.params {
+                self.annotation_parameter_dependencies(context, &parameter.ty, &mut used);
+            }
+            if let Some(vararg) = &source.annotations.vararg {
+                self.annotation_parameter_dependencies(context, &vararg.ty, &mut used);
+            }
+            for annotation in source.annotations.returns.iter().chain(source.annotations.type_annotation.iter()) {
+                for ty in &annotation.types { self.annotation_parameter_dependencies(context, ty, &mut used); }
+            }
+            if self.implicit_receiver(source).is_some()
+                && let Some(owner) = self.method_owner(function)
+            {
+                if let Some(parameter) = self.types.self_parameter(owner) { used.insert(parameter); }
+                used.extend(self.types.own_parameters_in_context(NativeTypeContext::NamedType(owner)));
+            }
+            return self.types.outer_parameters(function, &used);
+        }
+        let source = recipe.signature.as_ref().expect("original function-type annotation");
         let mut used = std::collections::HashSet::new();
         if let Some(function) = self.signature_method_function(key)
             && let Some(owner) = self.method_owner(function)
@@ -269,7 +315,10 @@ pub(super) struct SignatureRecipe {
     pub key: NativeSignatureKey,
     pub header: SignatureHeader,
     pub context: Option<NativeTypeContext>,
-    pub signature: FunctionType,
+    pub signature: Option<FunctionType>,
+    /// A real ambient function declaration's written parameter/result tags.
+    /// It has an original key and source span, not a synthesized function AST.
+    pub ambient_function: Option<NativeFunctionKey>,
     pub span: Span,
 }
 
@@ -279,6 +328,7 @@ pub(super) struct NativeSignatures {
     spans: HashMap<(usize, usize), NativeSignatureKey>,
     type_contexts: HashMap<(usize, usize), NativeSignatureKey>,
     functions: HashMap<NativeFunctionKey, Vec<NativeSignatureKey>>,
+    ambient_mains: HashMap<NativeFunctionKey, NativeSignatureKey>,
     named: HashMap<NativeNamedKey, Vec<NativeSignatureKey>>,
     sites: HashMap<(usize, usize), SignatureSite>,
     pub diagnostics: Vec<Diagnostic>,
@@ -297,6 +347,7 @@ impl NativeSignatures {
             spans: HashMap::new(),
             type_contexts: HashMap::new(),
             functions: HashMap::new(),
+            ambient_mains: HashMap::new(),
             named: HashMap::new(),
             sites: HashMap::new(),
             diagnostics: Vec::new(),
@@ -498,6 +549,45 @@ impl NativeSignatures {
                 result.visit_type(owner, context, None, &field.ty);
             }
         }
+        for (index, function) in functions.iter().enumerate() {
+            let owner = NativeFunctionKey { snapshot, index: index as u32 };
+            if let Some(annotation) = function.annotations.type_annotation.as_ref() {
+                if let [ty] = annotation.types.as_slice() {
+                    let mut ty = ty.value_syntax();
+                    while let TypeExprKind::Parenthesized(inner) = &ty.kind { ty = inner.value_syntax(); }
+                    if let TypeExprKind::Function(signature) = &ty.kind
+                        && signature.parameters_span.is_some()
+                        && let Some(key) = result.key_for(signature.span)
+                    {
+                        result.ambient_mains.insert(owner, key);
+                    }
+                }
+                continue;
+            }
+            let complete = function.params.iter().all(|parameter| function.annotations.params.iter()
+                .any(|tag| tag.name.text == parameter.text))
+                && (function.vararg.is_none() || function.annotations.vararg.is_some())
+                && (function.annotations.returns.is_some() || function.body.is_empty());
+            if !complete { continue; }
+            let key = NativeSignatureKey { snapshot, index: result.recipes.len() as u32 };
+            let next_site = SignatureSite { snapshot, index: result.sites.len() as u32 };
+            let site = result.functions.get(&owner).and_then(|heads| heads.first())
+                .map(|key| result.get(*key).header.site)
+                .unwrap_or_else(|| *result.sites.entry((function.span.start, function.span.end)).or_insert(next_site));
+            let literal = function.annotations.params.iter().any(|parameter| {
+                let ty = parameter.ty.value_syntax();
+                matches!(ty.kind, TypeExprKind::Literal(_)) || matches!(&ty.kind, TypeExprKind::Named(name) if name == "nil")
+            });
+            result.recipes.push(SignatureRecipe {
+                key,
+                header: SignatureHeader { owner: SignatureOwner::Function(owner), site, parent: None, has_direct_literal_parameter: literal },
+                context: Some(NativeTypeContext::Function(owner)),
+                signature: None,
+                ambient_function: Some(owner),
+                span: function.span,
+            });
+            result.ambient_mains.insert(owner, key);
+        }
         result
     }
 
@@ -581,7 +671,8 @@ impl NativeSignatures {
                 has_direct_literal_parameter: literal,
             },
             context,
-            signature: signature.clone(),
+            signature: Some(signature.clone()),
+            ambient_function: None,
             span,
         });
         let nested = Some(NativeTypeContext::Signature(key));
@@ -689,18 +780,27 @@ impl NativeSignatures {
     pub(super) fn function_heads(&self, key: NativeFunctionKey) -> Vec<NativeSignatureKey> {
         self.functions.get(&key).cloned().unwrap_or_default()
     }
+    pub(super) fn ambient_function_heads(&self, key: NativeFunctionKey) -> Vec<NativeSignatureKey> {
+        let mut heads = self.function_heads(key);
+        if let Some(&main) = self.ambient_mains.get(&key)
+            && !heads.contains(&main)
+        {
+            heads.push(main);
+        }
+        heads
+    }
     pub(super) fn named_heads(&self, key: NativeNamedKey) -> Vec<NativeSignatureKey> {
         self.named.get(&key).cloned().unwrap_or_default()
     }
     pub(super) fn scopes(&self) -> Vec<NamedGenericScopeRecipe> {
         self.recipes
             .iter()
-            .map(|recipe| NamedGenericScopeRecipe {
+            .filter_map(|recipe| Some(NamedGenericScopeRecipe {
                 owner: NativeTypeContext::Signature(recipe.key),
                 parent: recipe.context,
                 documentation_parents: Vec::new(),
                 parameters: recipe
-                    .signature
+                    .signature.as_ref()?
                     .generics
                     .iter()
                     .enumerate()
@@ -711,7 +811,7 @@ impl NativeSignatures {
                         constraint: generic.constraint.clone(),
                     })
                     .collect(),
-            })
+            }))
             .collect()
     }
 }

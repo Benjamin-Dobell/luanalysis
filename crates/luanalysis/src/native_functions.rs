@@ -1918,7 +1918,11 @@ impl NativeTypeProvider for NativeRegistry {
     }
     fn contains_signature(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signatures.contains(key)}
     fn signature_header(&self,key:luanalysis_engine::NativeSignatureKey)->luanalysis_engine::SignatureHeader{self.signatures.get(key).header}
-    fn function_overload_signatures(&self,key:NativeFunctionKey)->Vec<luanalysis_engine::NativeSignatureKey>{self.signatures.function_heads(key)}
+    fn function_overload_signatures(&self,key:NativeFunctionKey)->Vec<luanalysis_engine::NativeSignatureKey>{
+        if self.source_role() == luanalysis_project::SourceRole::Declaration {
+            self.signatures.ambient_function_heads(key)
+        } else { self.signatures.function_heads(key) }
+    }
     fn signature_type_parameters(&self,key:luanalysis_engine::NativeSignatureKey)->Vec<NativeTypeParameterKey>{self.signature_parameters_keys(key)}
     fn signature_outer_type_parameters(&self,key:luanalysis_engine::NativeSignatureKey)->Vec<NativeTypeParameterKey>{self.signature_outer_keys(key)}
     fn signature_parameters(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->Vec<Parameter>{self.source_signature_parameters(key,queries)}

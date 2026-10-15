@@ -210,7 +210,8 @@ impl NativeRegistry {
                 // through this same visited worklist (including recursive heads).
                 for signature in self.signatures.named_heads(key) {
                     let context = Some(NativeTypeContext::Signature(signature));
-                    let signature = &self.signatures.get(signature).signature;
+                    let signature = self.signatures.get(signature).signature.as_ref()
+                        .expect("named callable head retains its original function-type annotation");
                     pending.extend(signature.generics.iter().filter_map(|parameter| parameter.constraint.as_ref()).map(|ty| (context, ty)));
                     pending.extend(signature.params.iter().filter_map(|parameter| parameter.ty.as_ref()).map(|ty| (context, ty)));
                     pending.extend(signature.returns.iter().map(|ty| (context, ty)));
