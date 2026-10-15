@@ -239,3 +239,58 @@ fn unselected_same_name_classes_cannot_fabricate_opaque_runtime_domains() {
         );
     clean(&fixture.check(&corrected, StandardEnvironmentProfile::None));
 }
+
+#[test]
+fn a_captured_generic_iterator_loop_checks_the_narrowed_host_body() {
+    let fixture = Fixture::new();
+    let source = format!(
+        "{HOST}{}",
+        r#"---@generic T
+---@param items T[]
+---@param value Host|string
+local function make(items,value)
+    local callback=function()
+        for _,item in ipairs(items) do
+            ---@type T
+            local copied=item
+            if type(value)=='userdata' then
+                ---@type number
+                local checked=value.value
+            else
+                ---@type string
+                local text=value
+            end
+        end
+    end
+    return callback
+end
+
+---@param value Host|string
+local function run(value)
+    local callback=make({1,2},value)
+    callback()
+end
+"#
+    );
+    let profile = StandardEnvironmentProfile::Lua52;
+    clean(&fixture.check(&source, profile));
+    let wrong = source.replacen(
+        "---@type number\n                local checked",
+        "---@type string\n                local checked",
+        1,
+    );
+    assert_ne!(wrong, source);
+    api_error(
+        &fixture.check(&wrong, profile),
+        &wrong,
+        "local checked=value.value",
+        "value.value",
+    );
+    let corrected = wrong.replacen(
+        "---@type string\n                local checked",
+        "---@type number\n                local checked",
+        1,
+    );
+    assert_eq!(corrected, source);
+    clean(&fixture.check(&corrected, profile));
+}
