@@ -139,14 +139,6 @@ impl NativeExpressions {
 
     fn has_contextual_parameters(function: &Function) -> bool {
         !Self::contextual_indices(function).is_empty()
-            // Explicit semantic self still needs its expected owner context;
-            // unlike an ordinary written parameter type it cannot be finalized
-            // during the context-insensitive inference pass.
-            || (!function.annotations.generics.iter().any(|parameter| parameter.name.text == "self")
-                && function.annotations.params.iter().any(|parameter| matches!(
-                    &parameter.ty.value_syntax().kind,
-                    luanalysis_syntax::TypeExprKind::Named(name) if name == "self"
-                )))
             || (function.vararg.is_some()
                 && function.annotations.vararg.is_none()
                 && function.annotations.type_annotation.is_none())

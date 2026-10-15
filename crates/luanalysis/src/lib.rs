@@ -606,16 +606,6 @@ impl Checker<'_> {
                             && let Some(function) = context.and_then(|context| native.metatable_annotation_function(context))
                             && let Some(receiver) = native.applied_method_self_type(function, self.engine)
                         { return receiver; }
-                        // Expected callback types can carry the original class
-                        // self through native generic inference. Select only this
-                        // exact function's frame; this grants no runtime owner.
-                        if contextual_self
-                            && let Some(function) = context.and_then(|context| native.metatable_annotation_function(context))
-                            && native.method_owner(function).is_none()
-                            && let Some(frame) = self.contextual_function.or_else(|| self.engine.current_contextual_function())
-                            && native.expressions().function_for(frame.expression) == Some(function)
-                            && let Some(receiver) = self.engine.contextual_signature_self_type(&frame)
-                        { return receiver; }
                         if contextual_self
                             && let Some(function) = context.and_then(|context| native.metatable_annotation_function(context))
                             && native.method_owner(function).is_none()

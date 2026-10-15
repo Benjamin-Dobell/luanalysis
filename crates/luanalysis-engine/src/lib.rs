@@ -1020,8 +1020,6 @@ pub trait TypeQueries {
         context: &ContextualFunctionContext,
         index: usize,
     ) -> Option<Type>;
-    /// Original semantic self carried by a contextual signature, without runtime provenance.
-    fn contextual_signature_self_type(&mut self, _: &ContextualFunctionContext) -> Option<Type> { None }
     fn contextual_return_type(&mut self, context: &ContextualFunctionContext) -> Type;
     fn call_expression_native(
         &mut self,
@@ -1771,11 +1769,6 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         self.checker
             .contextual_parameter_type(native, index)
             .map(|ty| export_type(self.checker, self.handles, ty))
-    }
-    fn contextual_signature_self_type(&mut self, context: &ContextualFunctionContext) -> Option<Type> {
-        let native = self.handles.resolve_context(context);
-        let ty = self.checker.native_contextual_signature_self_type(native)?;
-        Some(self.handles.retain(ty))
     }
     fn contextual_return_type(&mut self, context: &ContextualFunctionContext) -> Type {
         let native = self.handles.resolve_context(context);
