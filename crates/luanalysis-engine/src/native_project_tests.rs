@@ -481,6 +481,7 @@ fn module_fallback_keeps_nested_stack_refusal_distinct_from_ordinary_pending() {
         let adapter = ProviderAdapter { provider: &source, handles };
         let probe = Probe::default();
         let mut checker = program.checker_with_native_provider(&adapter);
+        checker.enable_native_arrays();
         checker.set_native_globals_provider(&adapter);
         checker.set_native_project_provider(&probe);
         checker.set_stack_limit(8 << 20);

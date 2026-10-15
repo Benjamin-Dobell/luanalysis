@@ -157,7 +157,9 @@ fn matching_minimal_resource_text_and_display_path_do_not_attest_an_unselected_r
     }).unwrap();
     let report = check_project_with_options(project, ProjectCheckOptions { environment: StandardEnvironmentProfile::None, ..Default::default() });
     assert!(report.standard_library_files.is_empty());
-    assert!(code(&report, "LUA2036"), "{:#?}", report.files);
+    clean(&report);
+    let main = report.file(report.project.entries[0]).unwrap();
+    assert_eq!(main.report.bindings.iter().find(|binding| binding.name == "value").unwrap().ty, "any", "the unselected declaration's result must not become the module's number export");
     assert!(!code(&report, "TS2322"), "an unselected loader cannot schedule the candidate's poison body: {:#?}", report.files);
 }
 

@@ -165,10 +165,9 @@ impl Checker<'_> {
             }
         }
         if has_original_contract && !self.native?.flow.has_original_require_capability() {
-            // A source import candidate cannot borrow the selected loader's
-            // exports merely by copying its declaration text or display path.
-            self.error("LUA2036", callee.span, "Standard require cannot be assumed from an unselected loader declaration; custom loader effects require an explicit module contract.");
-            return Some(ValuePack::single(Type::Unknown));
+            // An unselected declaration supplies its ordinary callable type;
+            // its spelling cannot activate a source module or borrow exports.
+            return None;
         }
         if has_original_contract {
             let operation = if recipe.discovery == RequireDiscovery::Value { operation }
