@@ -22,6 +22,7 @@ pub struct NativeFlowResult {
 /// Immutable graph recipes and source-value demands. No graph join, loop
 /// iteration, or narrowing algorithm is performed by this interface.
 pub trait NativeFlowProvider {
+    fn alias_callee_type(&self, value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { self.value_type(value, input, queries) }
     /// Immutable source classification: a lexical cell, not a mutable heap slot.
     fn reference_is_cell(&self, _: NativeReferenceKey) -> bool { false }
     /// Original written binding/member contract, independent of flow epoch.
@@ -93,6 +94,10 @@ pub(super) struct FlowProviderAdapter<'a> {
 }
 
 impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
+    fn alias_callee_type(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> bun_sema::types::TypeId {
+        let value = self.provider.alias_callee_type(value, input, &mut SessionQueries { checker, handles: self.handles });
+        import_type(checker, self.handles, &value)
+    }
     fn reference_is_cell(&self, reference: NativeReferenceKey) -> bool { self.provider.reference_is_cell(reference) }
     fn reference_written_contract(&self, reference: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::TypeId> {
         let contract = self.provider.reference_written_contract(reference, &mut SessionQueries { checker, handles: self.handles })?;

@@ -249,6 +249,9 @@ pub struct NativeIteratorProjection {
 }
 
 pub trait NativeFlowProvider {
+    /// Inspect a callee for identity analysis without publishing speculative
+    /// source diagnostics; ordinary call checking remains a separate demand.
+    fn alias_callee_type(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> TypeId { self.value_type(value, input, checker) }
     /// A lexical variable cell, rather than a slot in a mutable heap object.
     fn reference_is_cell(&self, _: NativeReferenceKey) -> bool { false }
     /// An invariant original written bound, never an inferred or narrowed view.
@@ -676,7 +679,8 @@ impl FlowDomain for NativeDomain<'_> {
                 match self.provider.write_affects_with_types(walk.reference, target, at, checker) {
                     NativeWriteRelation::Exact => {
                         let assigned = checker.native_flow_value(self.provider, value, input);
-                        let runtime = checker.native_has_runtime_table(walk.declared);
+                        let runtime = checker.native_has_runtime_table(walk.declared)
+                            || checker.native_runtime_table_schema(walk.declared).is_some();
                         let assigned = if runtime || checker.native_has_runtime_table(assigned) { checker.regular_type_of_object_literal(assigned) } else { assigned };
                         FlowStep::Value(if self.provider.reference_tracks_runtime_value(walk.reference) || runtime { assigned } else {
                             // Runtime RHS queries retain original capability alternatives.

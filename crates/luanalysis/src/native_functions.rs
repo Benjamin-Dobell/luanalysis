@@ -12,7 +12,7 @@ use super::native_types::{NativeTypes, TypeNameResolution, TypeParameterRecipe, 
 use super::{Binding, CheckReport, Checker, Diagnostic, bind};
 use bind::{BindingId, BoundFile};
 use luanalysis_engine::{
-    CapturedFunctionContext, ContextualFunctionContext, NativeBindingKey, NativeCallEffects,
+    CapturedFunctionContext, ContextualFunctionContext, NativeBindingKey, NativeCallEffects, NativeCheckMode,
     NativeExpressionKey, NativeFlowError, NativeFlowKey, NativeFlowResult, NativeFunctionKey,
     NativeTypeParameterKey, NativeTypeProvider, Parameter, Type, TypeQueries, ValuePack,
 };
@@ -1780,6 +1780,7 @@ impl NativeRegistry {
         value: &ValueRecipe,
         input: NativeFlowKey,
         queries: &mut dyn TypeQueries,
+        mode: NativeCheckMode,
     ) -> Type {
         match value {
             ValueRecipe::Nil => Type::Nil,
@@ -1789,6 +1790,7 @@ impl NativeRegistry {
                     .expression(sources.program.evaluation(*evaluation).expression)
                     .expression;
                 let mut checker = self.checker_at_flow(input, queries);
+                checker.check_mode |= mode;
                 checker.runtime_value = true;
                 let expected = self.flow_initializer_context(expression, true, &mut checker);
                 let pack = checker.expression_pack(expression, expected.as_ref());
@@ -1802,7 +1804,7 @@ impl NativeRegistry {
                 let key = sources
                     .function_for_graph(sources.graph(*region, 0))
                     .expect("an original function graph has a source declaration");
-                let mode = sources
+                let mode = mode | sources
                     .contextual(input.graph)
                     .map_or_else(luanalysis_engine::NativeCheckMode::empty, |context| {
                         context.mode
@@ -1819,6 +1821,7 @@ impl NativeRegistry {
                 let evaluation = sources.program.evaluation(*evaluation);
                 let expression = &sources.program.expression(evaluation.expression).expression;
                 let mut checker = self.checker_at_flow(input, queries);
+                checker.check_mode |= mode;
                 checker.runtime_value = true;
                 let expected = self.flow_initializer_context(expression, false, &mut checker);
                 let expected = expected.as_ref().map(|pack| checker.engine.pack_slot(pack, 0));
@@ -1891,6 +1894,11 @@ impl NativeRegistry {
 }
 
 impl FlowValueQueries for NativeRegistry {
+    fn alias_callee_type(&self, sources:&NativeFlowSources, value:&ValueRecipe, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {
+        self.with_flow_context(input, queries, &mut |queries| {
+            self.flow_value_type_in_context(sources,value,input,queries,NativeCheckMode::TYPE_ONLY)
+        })
+    }
     fn written_binding_contract(&self, binding: BindingId, queries: &mut dyn TypeQueries) -> Option<Type> {
         self.original_written_binding_contract(binding, queries)
     }
@@ -1962,7 +1970,7 @@ impl FlowValueQueries for NativeRegistry {
             }
 
             let ValueRecipe::Evaluation(evaluation) = value else {
-                return ValuePack::single(self.flow_value_type_in_context(sources, value, input, queries));
+                return ValuePack::single(self.flow_value_type_in_context(sources, value, input, queries, NativeCheckMode::empty()));
             };
             let evaluation = sources.program.evaluation(*evaluation);
             let expression = &sources.program.expression(evaluation.expression).expression;
@@ -1981,7 +1989,7 @@ impl FlowValueQueries for NativeRegistry {
         queries: &mut dyn TypeQueries,
     ) -> Type {
         self.with_flow_context(input, queries, &mut |queries| {
-            self.flow_value_type_in_context(sources, value, input, queries)
+            self.flow_value_type_in_context(sources, value, input, queries, NativeCheckMode::empty())
         })
     }
     fn flow_call_effects(

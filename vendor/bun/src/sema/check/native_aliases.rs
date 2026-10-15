@@ -205,7 +205,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_alias_call(&mut self, provider: &dyn NativeFlowProvider, call: NativeValueKey, input: NativeFlowKey, column: usize, callee: NativeValueKey, callee_input: NativeFlowKey) -> Origins {
         let opaque = || Origins::one(Origin::OpaqueValue(call, input, column), true);
-        let callee_type = provider.value_type(callee, callee_input, self);
+        let callee_type = provider.alias_callee_type(callee, callee_input, self);
         let Some(signature) = self.native_implementation_signature(callee_type) else { return opaque() };
         let Some((function, _)) = self.sig_native_decl(signature) else { return opaque() };
         let Some(rows) = provider.function_alias_returns(function) else { return opaque() };

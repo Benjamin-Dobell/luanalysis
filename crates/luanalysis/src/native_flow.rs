@@ -1190,6 +1190,7 @@ fn intern_reference(
 }
 
 pub(super) trait FlowValueQueries {
+    fn alias_callee_type(&self, sources:&NativeFlowSources, value:&ValueRecipe, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {self.flow_value_type(sources,value,input,queries)}
     fn written_binding_contract(&self, _: BindingId, _: &mut dyn TypeQueries) -> Option<Type> { None }
     fn environment_access_path(&self, expression: &Expr, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<Vec<flow::Key>>;
     fn original_type_operation(&self, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool;
@@ -1278,6 +1279,10 @@ impl FlowAdapter<'_> {
 }
 
 impl NativeFlowProvider for FlowAdapter<'_> {
+    fn alias_callee_type(&self, value:NativeValueKey, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {
+        let recipe=self.sources.value(value).expect("original alias callee value");
+        self.values.alias_callee_type(self.sources,recipe,input,queries)
+    }
     fn reference_is_cell(&self, reference: NativeReferenceKey) -> bool {
         self.sources.source_reference(reference).is_some_and(|reference| {
             matches!(reference.root, flow::ReferenceRoot::Binding(_)) && reference.path.is_empty()
