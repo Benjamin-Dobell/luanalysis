@@ -8,7 +8,7 @@ use crate::{CheckReport, Diagnostic};
 use crate::standard_environment::{StandardEnvironmentProfile, StandardLibrarySource};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NamedTypeError, NamedTypeQuery,
-    NativeBindingKey, NativeCheckMode, NativeExpressionKey, NativeFunctionKey, NativeSignatureKey, SignatureHeader,
+    NativeBindingKey, NativeCheckMode, NativeExpressionKey, NativeFunctionKey, NativeOpaqueRuntimeKind, NativeSignatureKey, SignatureHeader,
     NativeTypeDeclarationKey, NativeTypeMemberKey, NativeTypeParameterKey, Parameter, Type,
     TypeDeclarationHeader, TypeDeclarationOwner, TypeMemberHeader, TypeMemberOwner, TypeQueries,
     ValuePack,
@@ -205,6 +205,11 @@ impl ProjectRegistry {
         );
         for file in &mut files {
             file.source.flow.set_original_require_capability(standard_environment.require_operation.is_some());
+            for kind in [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread] {
+                file.source.flow.set_opaque_runtime_type_enabled(
+                    kind, standard_environment.runtime_type_declaration(kind).is_some(),
+                );
+            }
             file.source.set_project_names(Rc::clone(&names));
             file.source.project_modules = Some(Rc::clone(&modules));
             file.source.project_globals = Some(Rc::clone(&globals));
@@ -400,6 +405,9 @@ macro_rules! dispatch {
 }
 
 impl NativeTypeProvider for ProjectRegistry {
+    fn runtime_type_declaration(&self, kind: NativeOpaqueRuntimeKind) -> Option<NativeTypeDeclarationKey> {
+        self.standard_environment.runtime_type_declaration(kind)
+    }
     fn assumed_standard_environment(&self) -> Option<luanalysis_engine::NativeEnvironmentKey> {
         self.standard_environment.assume_unknown_effects.then_some(self.globals.environment)
     }
@@ -747,6 +755,64 @@ impl NativeTypeProvider for ProjectRegistry {
 mod tests {
     use super::*;
     use luanalysis_engine::Engine;
+
+    #[test]
+    fn selected_builtin_opaque_roots_retain_original_declaration_keys() {
+        for profile in [
+            StandardEnvironmentProfile::Lua50,
+            StandardEnvironmentProfile::Lua51,
+            StandardEnvironmentProfile::Lua52,
+            StandardEnvironmentProfile::Lua53,
+            StandardEnvironmentProfile::Lua54,
+        ] {
+            let mut builtin = input(0, "---@class userdata\n\n---@class thread\n");
+            builtin.role = SourceRole::Declaration;
+            builtin.standard_library = Some(StandardLibrarySource::Builtin);
+            let provider = ProjectRegistry::new_with_environment(
+                vec![builtin], Vec::new(), NativeLoaderPolicy::Lua54StandardFile, profile,
+            );
+            for (kind, name) in [
+                (NativeOpaqueRuntimeKind::Userdata, "userdata"),
+                (NativeOpaqueRuntimeKind::Thread, "thread"),
+            ] {
+                assert_eq!(provider.runtime_type_declaration(kind), provider.names.candidates(name).first().copied());
+                assert!(provider.runtime_type_declaration(kind).is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn opaque_runtime_roots_require_selected_builtin_zero_parameter_classes() {
+        let classes = "---@class userdata\n\n---@class thread\n";
+        for (profile, role, library, source) in [
+            (StandardEnvironmentProfile::Lua54, SourceRole::Implementation, Some(StandardLibrarySource::Builtin), classes),
+            (StandardEnvironmentProfile::Lua54, SourceRole::Declaration, None, classes),
+            (StandardEnvironmentProfile::Lua54, SourceRole::Declaration, Some(StandardLibrarySource::Base), classes),
+            (StandardEnvironmentProfile::None, SourceRole::Declaration, Some(StandardLibrarySource::Builtin), classes),
+            (StandardEnvironmentProfile::LegacyMinimal, SourceRole::Declaration, Some(StandardLibrarySource::Builtin), classes),
+            (StandardEnvironmentProfile::Lua54, SourceRole::Declaration, Some(StandardLibrarySource::Builtin), "---@alias userdata string\n\n---@class thread<T>\n"),
+            (StandardEnvironmentProfile::Lua54, SourceRole::Declaration, Some(StandardLibrarySource::Builtin), "---@class userdata<T>\n\n---@alias thread string\n"),
+        ] {
+            let mut builtin = input(0, source);
+            builtin.role = role;
+            builtin.standard_library = library;
+            let provider = ProjectRegistry::new_with_environment(
+                vec![builtin], Vec::new(), NativeLoaderPolicy::Lua54StandardFile, profile,
+            );
+            assert_eq!(provider.runtime_type_declaration(NativeOpaqueRuntimeKind::Userdata), None);
+            assert_eq!(provider.runtime_type_declaration(NativeOpaqueRuntimeKind::Thread), None);
+        }
+
+        let mut builtin = input(0, "---@class userdata\n\n---@class thread<T>\n");
+        builtin.role = SourceRole::Declaration;
+        builtin.standard_library = Some(StandardLibrarySource::Builtin);
+        let provider = ProjectRegistry::new_with_environment(
+            vec![builtin], Vec::new(), NativeLoaderPolicy::Lua54StandardFile,
+            StandardEnvironmentProfile::Lua54,
+        );
+        assert!(provider.runtime_type_declaration(NativeOpaqueRuntimeKind::Userdata).is_some());
+        assert_eq!(provider.runtime_type_declaration(NativeOpaqueRuntimeKind::Thread), None);
+    }
 
     #[test]
     fn merged_header_metadata_tracks_documentation_preparation_and_recovery() {

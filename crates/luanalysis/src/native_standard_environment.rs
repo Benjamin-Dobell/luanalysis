@@ -3,9 +3,11 @@
 use super::NativeRegistry;
 use crate::standard_environment::{StandardEnvironmentProfile, StandardLibrarySource};
 use luanalysis_engine::{
-    NativeGlobalBindingKey, NativeSignatureKey, NativeTypeProvider, NativeValueDeclarationKey,
+    NativeGlobalBindingKey, NativeOpaqueRuntimeKind, NativeSignatureKey,
+    NativeTypeDeclarationKey, NativeTypeProvider, NativeValueDeclarationKey,
 };
 use luanalysis_project::SourceRole;
+use luanalysis_syntax::{NamedRecordKind, NamedTypeDeclarationKind};
 
 #[derive(Clone, Copy)]
 pub(crate) struct OriginalStandardFunction {
@@ -22,8 +24,20 @@ pub(crate) struct ProjectStandardEnvironment {
     pub require_operation: Option<OriginalStandardFunction>,
     pub setmetatable_operation: Option<OriginalStandardFunction>,
     pub rejected_assert_declarations: Vec<NativeValueDeclarationKey>,
+    userdata: Option<NativeTypeDeclarationKey>,
+    thread: Option<NativeTypeDeclarationKey>,
 }
 impl ProjectStandardEnvironment {
+    pub(super) fn runtime_type_declaration(
+        &self,
+        kind: NativeOpaqueRuntimeKind,
+    ) -> Option<NativeTypeDeclarationKey> {
+        match kind {
+            NativeOpaqueRuntimeKind::Userdata => self.userdata,
+            NativeOpaqueRuntimeKind::Thread => self.thread,
+        }
+    }
+
     pub(super) fn new<'a>(
         profile: StandardEnvironmentProfile,
         files: impl Iterator<Item = (StandardLibrarySource, &'a NativeRegistry)>,
@@ -36,6 +50,8 @@ impl ProjectStandardEnvironment {
             require_operation: None,
             setmetatable_operation: None,
             rejected_assert_declarations: Vec::new(),
+            userdata: None,
+            thread: None,
         };
         if !profile.is_selected_standard() {
             return result;
@@ -48,6 +64,10 @@ impl ProjectStandardEnvironment {
                 StandardEnvironmentProfile::LegacyMinimal if kind != StandardLibrarySource::LegacyRequire => continue,
                 _ if profile.is_full_lua() && kind == StandardLibrarySource::LegacyRequire => continue,
                 _ => {},
+            }
+            if kind == StandardLibrarySource::Builtin {
+                result.userdata = source.original_opaque_runtime_declaration("userdata");
+                result.thread = source.original_opaque_runtime_declaration("thread");
             }
             if let Some((capabilities, other_owners)) = source.original_standard_function("require") {
                 if other_owners.is_empty() && capabilities.len() == 1 { result.require_operation = capabilities.first().copied(); }
@@ -87,6 +107,24 @@ impl ProjectStandardEnvironment {
 }
 
 impl NativeRegistry {
+    /// Only the selected original builtin file calls this index-only lookup.
+    /// A similarly named user class cannot supply a runtime-domain root.
+    fn original_opaque_runtime_declaration(&self, name: &str) -> Option<NativeTypeDeclarationKey> {
+        let mut declarations = self.named.declarations().iter()
+            .filter(|source| source.syntax.name.text == name);
+        let declaration = declarations.next()?;
+        if declarations.next().is_some() || !declaration.syntax.generics.is_empty()
+            || !matches!(declaration.syntax.kind,
+                NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. })
+        {
+            return None;
+        }
+        Some(NativeTypeDeclarationKey {
+            snapshot: declaration.key.snapshot,
+            index: declaration.key.index,
+        })
+    }
+
     fn original_standard_function(
         &self,
         name: &str,

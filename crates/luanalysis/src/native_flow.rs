@@ -14,7 +14,7 @@ use super::{bind::BindingId, flow};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NativeCallEffects, NativeFlowError,
     NativeFlowKey, NativeFlowNode, NativeFlowProvider, NativeFunctionKey, NativeGraphKey,
-    NativeIteratorProjection, NativeIteratorStage, NativeNumericConstant, NativeNumericInput,
+    NativeIteratorProjection, NativeIteratorStage, NativeNumericConstant, NativeNumericInput, NativeOpaqueRuntimeKind,
     NativeNumericIterationStage, NativePackProjection, NativePredicate, NativeReferenceKey,
     NativeRuntimeType, NativeValueKey, NativeWriteRelation, Type, TypeQueries, ValuePack,
     NativeFunctionCreation, NativeVariableDeclaration, NativeVariableWrite,
@@ -78,6 +78,8 @@ pub(super) struct NativeFlowSources {
     runtime_type_calls: HashSet<flow::SourceExpressionId>,
     runtime_type_operations: HashMap<flow::EvaluationId, flow::EvaluationId>,
     runtime_type_intrinsic_enabled: bool,
+    runtime_userdata_enabled: bool,
+    runtime_thread_enabled: bool,
     loader_mutations: HashSet<(usize, usize)>,
     original_require_capability: bool,
     capability_bindings: HashSet<BindingId>,
@@ -104,6 +106,12 @@ impl NativeFlowSources {
     }
     pub(super) fn set_runtime_type_intrinsic_enabled(&mut self, enabled: bool) {
         self.runtime_type_intrinsic_enabled = enabled;
+    }
+    pub(super) fn set_opaque_runtime_type_enabled(&mut self, kind: NativeOpaqueRuntimeKind, enabled: bool) {
+        match kind {
+            NativeOpaqueRuntimeKind::Userdata => self.runtime_userdata_enabled = enabled,
+            NativeOpaqueRuntimeKind::Thread => self.runtime_thread_enabled = enabled,
+        }
     }
     pub(super) fn set_original_require_capability(&mut self, enabled: bool) { self.original_require_capability = enabled; }
     pub(super) fn has_original_require_capability(&self) -> bool { self.original_require_capability }
@@ -145,6 +153,8 @@ impl NativeFlowSources {
             runtime_type_calls: HashSet::new(),
             runtime_type_operations: HashMap::new(),
             runtime_type_intrinsic_enabled: false,
+            runtime_userdata_enabled: false,
+            runtime_thread_enabled: false,
             loader_mutations: bound.module_environment_mutations().iter().map(|span| (span.start, span.end)).collect(),
             original_require_capability: false,
             capability_bindings: HashSet::new(),
@@ -1016,6 +1026,8 @@ impl NativeFlowSources {
             b"string" => NativeRuntimeType::String,
             b"table" => NativeRuntimeType::Table,
             b"function" => NativeRuntimeType::Function,
+            b"userdata" if self.runtime_userdata_enabled => NativeRuntimeType::Userdata,
+            b"thread" if self.runtime_thread_enabled => NativeRuntimeType::Thread,
             b"userdata" | b"thread" => {
                 return Some(NativePredicate::Unsupported(
                     "nonprimitive Lua runtime type predicates require native runtime-domain types",
