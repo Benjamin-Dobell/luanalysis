@@ -190,6 +190,37 @@ use('text')
 }
 
 #[test]
+fn overloaded_body_type_predicates_keep_the_original_frozen_flow_frame() {
+    let fixture = Fixture::new();
+    let source = r#"---@overload fun(value:number):number
+---@overload fun(value:string):number
+---@param value number|string|boolean
+---@return number
+local function measure(value)
+    if type(value)=='number' then
+        return value
+    elseif type(value)=='string' then
+        ---@type string
+        local checked=value
+        return #value
+    else
+        return 0
+    end
+end
+---@type number
+local numeric=measure(42)
+---@type number
+local textual=measure('Lua')
+"#;
+    clean(&fixture.check(source));
+    let rejected = source.replace(
+        "---@type string\n        local checked=value",
+        "---@type number\n        local checked=value",
+    );
+    rejects_checked_value(&rejected, &fixture.check(&rejected));
+}
+
+#[test]
 fn computed_member_read_freezes_global_receiver_before_key_rebinds_its_base_to_an_ordinary_table() {
     let fixture = Fixture::new();
     // Check the receiver's concrete static view across key evaluation. The

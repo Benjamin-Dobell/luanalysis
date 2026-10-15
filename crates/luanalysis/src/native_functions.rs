@@ -1931,12 +1931,14 @@ impl FlowValueQueries for NativeRegistry {
         // The static callable view can be an asserted ordinary function shape.
         // Runtime identity comes from its original value and frozen input,
         // including saved aliases and intervening replacements.
-        matches!(queries.flow_alias_intrinsic(
-            &FlowAdapter { sources: &self.flow, values: self },
-            self.flow.evaluation_value(*evaluation),
-            input,
-        ), luanalysis_engine::NativeAliasIntrinsic::Standard(site)
-            if site.kind == luanalysis_engine::NativeIntrinsicKind::Type)
+        self.with_flow_context(input, queries, &mut |queries| {
+            matches!(queries.flow_alias_intrinsic(
+                &FlowAdapter { sources: &self.flow, values: self },
+                self.flow.evaluation_value(*evaluation),
+                input,
+            ), luanalysis_engine::NativeAliasIntrinsic::Standard(site)
+                if site.kind == luanalysis_engine::NativeIntrinsicKind::Type)
+        })
     }
     fn environment_value(&self, binding: Option<BindingId>, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type {
         let mut checker = self.checker_at_flow(input, queries);
