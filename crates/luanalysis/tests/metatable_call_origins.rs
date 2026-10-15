@@ -163,3 +163,35 @@ local result = instance.read()
     assert!(text(&output).contains("TS2322"), "{}", text(&output));
     clean(&fixture.check(source));
 }
+
+#[test]
+fn a_copied_member_cannot_recover_standard_identity_across_an_implicit_getter() {
+    let fixture = Fixture::new();
+    let prefix = r#"---@shape Holder
+---@field attach fun<T>(value:T, meta:nil|table):T
+
+---@type Holder
+local holder
+
+---@shape Probe
+---@field missing number | nil
+
+local trigger = --[[---@type Probe]] setmetatable({}, {
+    ---@param ignored table
+    ---@param key string
+    ---@return number
+    __index=function(ignored, key) holder.attach=ordinary; return 1 end,
+})
+holder={attach=setmetatable}
+local observed=trigger.missing
+local alias=holder
+
+"#;
+    let source = format!(
+        "{ORDINARY}{prefix}{}",
+        FACTORY.replace("setmetatable(Static", "alias.attach(Static")
+    );
+    no_owner(&fixture.check(&source));
+    let corrected = source.replace("local observed=trigger.missing", "local observed=1");
+    clean(&fixture.check(&corrected));
+}
