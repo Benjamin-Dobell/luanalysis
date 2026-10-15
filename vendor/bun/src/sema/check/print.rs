@@ -1814,10 +1814,36 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             }
             TypeData::NativeObject(reference) => {
                 let reference = *reference;
-                let name = self.c.native_type_declaration_provider
+                let header = self.c.native_type_declaration_provider
                     .filter(|p| p.contains_type_declaration(reference.declaration))
-                    .map(|p| p.type_declaration_header(self.c, reference.declaration).name)
-                    .unwrap_or(Atom::NONE);
+                    .map(|p| p.type_declaration_header(self.c, reference.declaration));
+                if header.as_ref().is_some_and(|header|
+                    header.kind == super::native_named::NativeTypeDeclarationKind::Shape
+                    && header.object_form == Some(super::native_named::NativeObjectDeclarationForm::Record)
+                    && self.c.atoms().bytes(header.name).is_empty()) {
+                    if self.visited_types.contains(&ty) { return self.elided_information_placeholder(); }
+                    let depth = self.visited_types.len();
+                    self.visited_types.push(ty);
+                    let node = match self.c.native_object_schema_resolved(ty) {
+                        Ok(schema) => match self.c.data(schema) {
+                            TypeData::NativeTable(table) => {
+                                // This is a print-only structural view. The
+                                // original declaration and relation keep their
+                                // stable identity and mapped member contracts.
+                                let mut table = (**table).clone_in(self.c.arena);
+                                table.nominal_origin = None;
+                                table.definition_origin = None;
+                                let display = self.c.intern(TypeData::NativeTable(self.c.boxed(table)));
+                                self.type_to_node(display)
+                            }
+                            _ => self.type_to_node(schema),
+                        },
+                        Err(_) => self.elided_information_placeholder(),
+                    };
+                    self.visited_types.truncate(depth);
+                    return node;
+                }
+                let name = header.map(|header| header.name).unwrap_or(Atom::NONE);
                 let mut text = self.text(name);
                 let pairs = self.c.mapping_in_declaration_order(reference.mapper);
                 let arguments: Vec<_> = pairs.iter().map(|pair| pair.1).collect();

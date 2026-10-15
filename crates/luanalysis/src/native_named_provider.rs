@@ -436,7 +436,9 @@ impl NativeRegistry {
                 _ => None,
             })
             .unwrap_or_else(|| match source.kind {
-                AnonymousHeadKind::Record => "record".into(),
+                // An anonymous written record has no printable declaration
+                // name. Its original key still owns the exact same schema.
+                AnonymousHeadKind::Record => String::new(),
                 AnonymousHeadKind::Array => "array".into(),
                 AnonymousHeadKind::Table => "table".into(),
             });
