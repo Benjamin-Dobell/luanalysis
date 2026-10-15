@@ -1914,8 +1914,16 @@ impl FlowValueQueries for NativeRegistry {
             while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
             return matches!(expression.kind, ExprKind::Name(_)) && self.bound.standard_candidate_at(expression.span.start) == Some(super::bind::BuiltinIntrinsic::LuaType);
         }
-        let callee = self.flow_value_type(&self.flow, value, input, queries);
-        queries.function_intrinsic(&callee).is_some_and(|site| site.kind == luanalysis_engine::NativeIntrinsicKind::Type)
+        let ValueRecipe::Evaluation(evaluation) = value else { return false; };
+        // The static callable view can be an asserted ordinary function shape.
+        // Runtime identity comes from its original value and frozen input,
+        // including saved aliases and intervening replacements.
+        matches!(queries.flow_alias_intrinsic(
+            &FlowAdapter { sources: &self.flow, values: self },
+            self.flow.evaluation_value(*evaluation),
+            input,
+        ), luanalysis_engine::NativeAliasIntrinsic::Standard(site)
+            if site.kind == luanalysis_engine::NativeIntrinsicKind::Type)
     }
     fn environment_value(&self, binding: Option<BindingId>, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type {
         let mut checker = self.checker_at_flow(input, queries);
