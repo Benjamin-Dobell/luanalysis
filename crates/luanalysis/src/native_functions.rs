@@ -74,6 +74,7 @@ pub(super) struct NativeRegistry {
     pub(super) types: NativeTypes,
     named: NativeNamed,
     pub(super) members: super::native_members::NativeMembers,
+    pub(super) doc_members: super::native_doc_members::NativeDocMembers,
     class_definitions: class_definitions::NativeClassDefinitions,
     methods: methods::NativeMethods,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
@@ -165,6 +166,7 @@ impl NativeRegistry {
         let flow = NativeFlowSources::new(&file, &bound, snapshot, &function_spans);
         let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
         let members = super::native_members::NativeMembers::new(snapshot, &named, Vec::new(), globals.member_namespace_end(named.next_member_index()));
+        let doc_members = super::native_doc_members::NativeDocMembers::new(snapshot,&file,&named,members.namespace_end(),|name|named.candidates(name).iter().map(|key|luanalysis_engine::NativeTypeDeclarationKey {snapshot:key.snapshot,index:key.index}).collect());
         let mut report = CheckReport::default();
         report.diagnostics.extend(file.diagnostics.iter().map(|diagnostic| Diagnostic {
             code: "LUA1001",
@@ -189,6 +191,7 @@ impl NativeRegistry {
             types,
             named,
             members,
+            doc_members,
             class_definitions,
             methods,
             project_names: None,
@@ -244,9 +247,13 @@ impl NativeRegistry {
             inputs.extend(self.methods.original_assignment_members(&self.expressions));
         }
         self.members = super::native_members::NativeMembers::new(self.snapshot, &self.named, inputs, self.globals.member_namespace_end(self.named.next_member_index()));
+        self.rebuild_documentation_members();
         for (context, owner) in self.original_member_owner_scopes() {
             self.types.attach_owner_scope(context, owner);
         }
+    }
+    pub(super) fn rebuild_documentation_members(&mut self) {
+        self.doc_members=super::native_doc_members::NativeDocMembers::new(self.snapshot,&self.file,&self.named,self.members.namespace_end(),|name|self.named_candidates(name));
     }
 
     pub(crate) fn set_legacy_builtin_policy(&mut self, policy: super::builtins::LegacyBuiltinPolicy) {
@@ -2028,6 +2035,9 @@ impl NativeTypeProvider for NativeRegistry {
     }
     fn type_member_header(&self, key: luanalysis_engine::NativeTypeMemberKey) -> luanalysis_engine::TypeMemberHeader {
         self.named_member_header(key)
+    }
+    fn type_member_signatures(&self,key:luanalysis_engine::NativeTypeMemberKey)->Option<Vec<luanalysis_engine::NativeSignatureKey>> {
+        self.doc_members.signature_keys(key,|id|self.doc_signature_key(id))
     }
     fn type_member_origin(&self, key: luanalysis_engine::NativeTypeMemberKey) -> luanalysis_engine::TableFieldOrigin {
         self.original_member_origin(key).unwrap_or(luanalysis_engine::TableFieldOrigin::Declared)

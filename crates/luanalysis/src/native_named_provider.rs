@@ -261,7 +261,7 @@ impl NativeRegistry {
             || self.named.anonymous_head(anonymous_key(key)).is_some()
     }
     pub(super) fn named_contains_member(&self, key: NativeTypeMemberKey) -> bool {
-        self.members.get(key).is_some() || self.namespace_contains_member(key)
+        self.doc_members.get(key).is_some() || self.members.get(key).is_some() || self.namespace_contains_member(key)
             || self.named.member(member_key(key)).is_some()
             || self
                 .named
@@ -330,6 +330,7 @@ impl NativeRegistry {
                 used.extend(self.signature_outer_keys(signature));
             }
             self.original_member_dependencies(source.key, &mut used);
+            self.doc_members.dependencies(source.key,&mut used,|id|self.doc_signature_key(id),|key|self.signature_outer_keys(key));
             return TypeDeclarationHeader {
                 kind,
                 name: source.syntax.name.text.clone(),
@@ -374,6 +375,7 @@ impl NativeRegistry {
         }
     }
     pub(super) fn named_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
+        if let Some(header)=self.doc_members.header(key) {return header;}
         if let Some(header) = self.original_member_header(key) { return header; }
         if let Some(header) = self.namespace_member_header(key) { return header; }
         if let Some(source) = self.named.member(member_key(key)) {
@@ -440,6 +442,7 @@ impl NativeRegistry {
         };
         // Canonical alias ownership and applicability belong to the core.
         result.extend(self.members.members(named_key(key)));
+        result.extend(self.doc_members.keys());
         result.extend(
             self.named
                 .augmentations()
@@ -492,6 +495,7 @@ impl NativeRegistry {
         key: NativeTypeMemberKey,
         queries: &mut dyn TypeQueries,
     ) -> Type {
+        if let Some(ty)=self.doc_members.ty(key,queries,|id|self.doc_signature_key(id)) {return ty;}
         if let Some(ty) = self.original_member_type(key, queries) { return ty; }
         if let Some(ty) = self.namespace_member_type(key, queries) { return ty; }
         if let Some(source) = self.named.member(member_key(key)) {
@@ -619,6 +623,7 @@ impl NativeRegistry {
             .unwrap_or(self.file.span)
     }
     fn named_member_origin(&self, key: NativeTypeMemberKey) -> Span {
+        if let Some(source)=self.doc_members.get(key) {return source.owner_span;}
         if let Some(span) = self.namespace_member_origin(key) { return span; }
         self.named
             .member(member_key(key))
@@ -649,6 +654,7 @@ impl NativeRegistry {
             .unwrap_or_else(|| self.named_origin(key))
     }
     fn named_member_type_origin(&self, key: NativeTypeMemberKey) -> Span {
+        if let Some(source)=self.doc_members.get(key) {return source.signature_span;}
         self.named
             .member(member_key(key))
             .map(|source| source.field.ty.span)
@@ -669,6 +675,7 @@ impl NativeRegistry {
     }
     pub(super) fn named_declaration_error(&self, error: NamedTypeError) {
         let (code, span, message) = match error {
+            NamedTypeError::InvalidMemberSignatures {member,..} => ("LUA2034",self.named_member_type_origin(member),"Bodyless member has invalid original signature identities.".into()),
             // Actual application spans are supplied by the annotation caller.
             NamedTypeError::TypeArgumentArity { .. }
             | NamedTypeError::TypeArgumentConstraint { .. } => return,
@@ -759,6 +766,7 @@ impl NativeRegistry {
         });
     }
     pub(crate) fn check_named_declarations(&self, queries: &mut dyn TypeQueries) {
+        self.doc_members.validate(queries);
         self.validate_return_annotations(queries);
         self.validate_original_assignment_annotations(queries);
         let mut seen = HashSet::new();

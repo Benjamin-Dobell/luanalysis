@@ -120,6 +120,7 @@ impl ProjectRegistry {
             for scopes in &original_scopes { file.source.types.import_original_scopes(scopes); }
             file.source.project_names=Some(Rc::clone(&names));
             file.source.attach_documentation_signature_owners();
+            file.source.rebuild_documentation_members();
         }
         let environment = luanalysis_engine::NativeEnvironmentKey {
             snapshot: files.first().map_or_else(|| super::NEXT_SNAPSHOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), |file| file.source.snapshot),
@@ -498,6 +499,23 @@ impl NativeTypeProvider for ProjectRegistry {
         }
         header
     }
+    fn type_member_signatures(&self,key:NativeTypeMemberKey)->Option<Vec<NativeSignatureKey>> {
+        self.owner(key.snapshot).type_member_signatures(key)
+    }
+    fn type_declaration_header(&self,key:NativeTypeDeclarationKey)->TypeDeclarationHeader {
+        let owner=self.owner(key.snapshot);
+        let mut header=owner.type_declaration_header(key);
+        let named=crate::native_named::NativeNamedKey {snapshot:key.snapshot,index:key.index};
+        if owner.named_metadata().declaration(named).is_none() {return header;}
+        let mut used=std::collections::HashSet::new();
+        for file in &self.files {
+            file.source.doc_members.dependencies(named,&mut used,|id|file.source.doc_signature_key(id),|signature|file.source.signature_outer_keys(signature));
+        }
+        header.outer_parameters.extend(owner.types.outer_parameters_in_context(crate::native_named::NativeTypeContext::NamedType(named),&used));
+        header.outer_parameters.sort_by_key(|key|(key.snapshot,key.index));
+        header.outer_parameters.dedup();
+        header
+    }
     fn type_member_origin(&self, key: NativeTypeMemberKey) -> luanalysis_engine::TableFieldOrigin {
         self.owner(key.snapshot).type_member_origin(key)
     }
@@ -527,6 +545,7 @@ impl NativeTypeProvider for ProjectRegistry {
                             })
                     }),
             );
+            members.extend(file.source.doc_members.keys());
         }
         members
     }
@@ -545,6 +564,7 @@ impl NativeTypeProvider for ProjectRegistry {
             | NamedTypeError::UnsupportedKind(key, _)
             | NamedTypeError::UnsupportedBases(key) => key.snapshot,
             NamedTypeError::InvalidMember(key)
+            | NamedTypeError::InvalidMemberSignatures {member:key,..}
             | NamedTypeError::UnsupportedVisibility(key)
             | NamedTypeError::UnsupportedOwnerInstantiation(key) => key.snapshot,
             NamedTypeError::InvalidTypeParameter(key) => key.snapshot,
@@ -583,7 +603,6 @@ impl NativeTypeProvider for ProjectRegistry {
         fn function_declared_scalar_contract(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn function_declared_scalar_contract_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn function_declared_scalar_contract_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
-        fn type_declaration_header(key: NativeTypeDeclarationKey) -> TypeDeclarationHeader;
         fn type_alias_target(key: NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Type;
         fn type_member_type(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Type;
         fn type_indexer_key(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Type;

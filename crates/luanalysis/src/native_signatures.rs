@@ -154,7 +154,14 @@ impl NativeRegistry {
             let explicit = self.documentation_signature(key).unwrap().annotations.params.iter().find(|tag| tag.name.text == "self");
             let ty = explicit.map(|tag| checker.annotation(&tag.ty)).or_else(|| {
                 self.documentation_signature_owner(key).and_then(|owner| self.types.self_parameter(owner)).map(Type::NativeTypeParameter)
-            }).unwrap_or_else(|| checker.engine.error_type());
+            }).unwrap_or_else(|| {
+                if self.documentation_signature_owner(key).is_some() {
+                    let doc=self.documentation_signature(key).unwrap();
+                    let span=match doc.owner.as_ref() {Some(DocFunctionOwner::Explicit(owner))=>owner.span,_=>doc.name.span};
+                    checker.error("LUA2034",span,"Bodyless colon declarations require an original class or shape receiver scope; alias or module receiver scopes are not supported.");
+                }
+                checker.engine.error_type()
+            });
             parameters.insert(0,Parameter {name:"self".into(),ty,optional:false});
         }
         if let Some(function) = self.signature_method_function(key) {

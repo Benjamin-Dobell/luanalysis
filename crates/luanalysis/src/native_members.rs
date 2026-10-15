@@ -88,6 +88,7 @@ impl NativeMembers {
         self.sources.iter().filter(move |source| source.candidates[0].owner == owner).map(|source| source.key)
     }
     pub(super) fn sources(&self) -> &[OriginalMemberSource] { &self.sources }
+    pub(super) fn namespace_end(&self) -> u32 { self.base.checked_add(self.sources.len().try_into().expect("original member count fits u32")).expect("original member namespace fits u32") }
     pub(super) fn inputs(&self) -> &[OriginalMemberInput] { &self.inputs }
 }
 
