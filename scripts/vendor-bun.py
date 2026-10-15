@@ -394,6 +394,16 @@ SOURCE_ADAPTATIONS.extend({
     "check/sink.rs", "types.rs",
 ])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+    "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+    **({"added": True} if path == "native_standard_assumptions.rs" else {}),
+} for path in [
+    "mod.rs", "native_aliases.rs", "native_flow.rs", "native_globals.rs", "native_named.rs",
+    "native_project.rs", "native_standard_assumptions.rs", "native_tables.rs", "shape.rs", "sink.rs",
+])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

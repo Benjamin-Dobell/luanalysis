@@ -1702,6 +1702,67 @@
       "patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch",
       "reason": "Record original captured call-state replay, correlated result packs, reached metatable proofs, runtime storage bounds and bounded loop provenance through kernel 0cbe803; expose the host policy API without later policy behavior.",
       "patch_sha256": "158cb110c307f5386ac2704286697b798879aaa9987020e34cf178fb182d3ae6"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+      "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+      "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
+    },
+    {
+      "path": "src/sema/check/native_aliases.rs",
+      "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+      "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+      "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+      "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+      "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+      "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+      "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+      "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+      "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
+    },
+    {
+      "path": "src/sema/check/native_project.rs",
+      "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+      "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+      "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
+    },
+    {
+      "path": "src/sema/check/native_standard_assumptions.rs",
+      "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+      "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+      "added": true,
+      "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+      "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+      "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+      "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+      "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch",
+      "reason": "Separate selected host standard-operation assumptions from strict physical provenance, retain reached loader and explicit loop-write invalidation, preserve primitive member query errors and guarded declared owners, and report demand-local project limits through kernel bf8b84a.",
+      "patch_sha256": "6a24bfbacdcb507d8b9ee1c625f40798714fd733c705f5837ca1caa1f45207b0"
     }
   ],
   "source_additions": {
@@ -1714,7 +1775,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
     },
     "src/sema/check/native_aliases.rs": {
-      "extracted_sha256": "16b80c4c6d35a8246c698ca7f0668910feee3d003cc9f0857198f4053fd0662a",
+      "extracted_sha256": "82a7bcaaf038bf4c772a37c406d453311bb076f1753cbdac1442c252d1233579",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_assertions.rs": {
@@ -1722,7 +1783,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "d6c38d02f92acfb51f75b093614091df8040d8a0fffe2ea36a9e290a73775ca4",
+      "extracted_sha256": "6e239bfa71995ceb6d6f430929022875f273f8cb6e7b0704d3e0a3625a130c0e",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_flow_calls.rs": {
@@ -1730,7 +1791,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "4acb62aca5482f3094cf2cb61b5dd0b4091c1267deb00a4b6bdd3cbca54426da",
+      "extracted_sha256": "c18c9df405d1285404bf7051f81dab7c95d74c0f48df2c3dc8c76447b9cf39ea",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -1742,7 +1803,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "be46d86b4e2b64d8dcb6812712e7340f26ed3422abb37f24413ffa72ae0f7cce",
+      "extracted_sha256": "b3ad265dbc300f80104141e13ccd6966bbc6b32aa60ebec09d2f06841ea52122",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -1750,7 +1811,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
-      "extracted_sha256": "c6dc9a9bab11e5a5362d6b6daaacf9677f33f8052b2dd11400c7e9c51a66aff7",
+      "extracted_sha256": "17f1124e6fe2361a7ca2c40123239994a9a8f51557fb4b11e6f9245a9cd5ef96",
       "introduced_by_patch": "vendor/patches/bun-sema-native-module-queries.patch"
     },
     "src/sema/check/native_runtime.rs": {
@@ -1765,8 +1826,12 @@
       "extracted_sha256": "fdfbefefc6809c47c8aacc3cc217c53ec32168a2e1ba223b66510e7e66cc01ef",
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
+    "src/sema/check/native_standard_assumptions.rs": {
+      "extracted_sha256": "f5197a993f7ef800e49bad03c3ac1091050c3b0ee94365b02f7e14868ccd5334",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
+    },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "84dc5212954da3701d567c0769182a8c82bf071b18095a4f1004472ec4160fbe",
+      "extracted_sha256": "fe6bfd2e36dbd624012222bad673d6157d1acdebf3cd799ba6b43173a435e833",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2724,7 +2789,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "46b357992cdf2f6771324d508603aa0acd00fdd369f8cdf65e03475372ea0ab2"
+      "extracted_sha256": "ea7fc6e7ebe5f5cf8f7397ed223b52b86fe64d56989eceae18708d4cdd43cdb7"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -2804,12 +2869,12 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "6ac29924687cf6b760a9e7793bbd749b04df03a6c9873d8e2107c6d4c218f1fd"
+      "extracted_sha256": "0bdc181cc5e3761c7729e6fa35c87eac5ebad928ee85f4096c201cfa1a85660f"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "3c4afc917b32c8e5f7fd20545548d1534c0c3b29d755f5832a542c4334455c3d"
+      "extracted_sha256": "43c046c241d7ccaafd262ffddf38a939559af60aa904fe8503d6d0e1e855ba5d"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",
