@@ -673,8 +673,8 @@ impl FlowDomain for NativeDomain<'_> {
                 match self.provider.write_affects_with_types(walk.reference, target, at, checker) {
                     NativeWriteRelation::Exact => {
                         let assigned = checker.native_flow_value(self.provider, value, input);
-                        let runtime = checker.native_has_runtime_table(assigned) || checker.native_has_runtime_table(walk.declared);
-                        let assigned = if runtime { checker.regular_type_of_object_literal(assigned) } else { assigned };
+                        let runtime = checker.native_has_runtime_table(walk.declared);
+                        let assigned = if runtime || checker.native_has_runtime_table(assigned) { checker.regular_type_of_object_literal(assigned) } else { assigned };
                         FlowStep::Value(if self.provider.reference_tracks_runtime_value(walk.reference) || runtime { assigned } else { checker.resolved_assignment_type(walk.declared, assigned) })
                     }
                     NativeWriteRelation::Ancestor => FlowStep::Value(walk.declared),
