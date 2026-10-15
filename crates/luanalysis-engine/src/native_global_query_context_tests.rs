@@ -31,6 +31,9 @@ fn binding() -> NativeGlobalBindingKey {
 fn declaration() -> NativeValueDeclarationKey {
     NativeValueDeclarationKey { snapshot: SNAPSHOT, index: 0 }
 }
+fn chained_declaration(index: u32) -> NativeValueDeclarationKey {
+    NativeValueDeclarationKey { snapshot: SNAPSHOT, index }
+}
 fn member_declaration(index: u32) -> NativeTypeDeclarationKey {
     NativeTypeDeclarationKey { snapshot: SNAPSHOT, index }
 }
@@ -51,6 +54,7 @@ enum Contract {
     Recursive,
     Missing,
     Implementation,
+    DepthRefusal,
 }
 
 struct GlobalContexts {
@@ -115,6 +119,10 @@ impl GlobalContexts {
                     assert!(matches!(result, Err(GlobalQueryError::UnresolvedQuery(_))),
                         "a fresh dependency or implementation must remain unresolved: {result:?}");
                 }
+                Contract::DepthRefusal => assert!(matches!(
+                    result,
+                    Err(GlobalQueryError::TooDeep(_) | GlobalQueryError::UnresolvedQuery(_))
+                ), "a refused declaration must not expose the provider's fallback: {result:?}"),
             }
         }
         if self.contract == Contract::Constant {
@@ -123,7 +131,7 @@ impl GlobalContexts {
         }
         // A current-only declaration must not clear its parent's real pending
         // dependency. Read it again while the same inference scope is active.
-        if self.inherited == Inherited::Member {
+        if self.inherited == Inherited::Member && self.contract != Contract::DepthRefusal {
             self.pending_member(0, queries);
         }
     }
@@ -182,7 +190,10 @@ impl NativeTypeProvider for GlobalContexts {
     fn contains_global_environment(&self, key: NativeEnvironmentKey) -> bool { key == environment() }
     fn contains_global_binding(&self, key: NativeGlobalBindingKey) -> bool { key == binding() }
     fn global_binding_declarations(&self, _: NativeGlobalBindingKey) -> Vec<NativeValueDeclarationKey> { vec![declaration()] }
-    fn contains_value_declaration(&self, key: NativeValueDeclarationKey) -> bool { key == declaration() }
+    fn contains_value_declaration(&self, key: NativeValueDeclarationKey) -> bool {
+        key == declaration()
+            || (self.contract == Contract::DepthRefusal && key.snapshot == SNAPSHOT && key.index < 2010)
+    }
     fn value_declaration_header(&self, _: NativeValueDeclarationKey) -> ValueDeclarationHeader {
         ValueDeclarationHeader {
             role: if self.contract == Contract::Implementation { GlobalSourceRole::Implementation } else { GlobalSourceRole::Declaration },
@@ -190,8 +201,20 @@ impl NativeTypeProvider for GlobalContexts {
         }
     }
     fn value_declaration_contract(&self, key: NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<Type> {
-        assert_eq!(key, declaration());
         self.contract_calls.set(self.contract_calls.get() + 1);
+        if self.contract == Contract::DepthRefusal {
+            // Distinct original declarations exceed the checker's MAX_DEPTH;
+            // this is a refused finite chain, not a recursive identity cycle.
+            // A provider may keep computing after refusal, but its fallback
+            // must never become a completed declaration value.
+            return Some(if self.pending_dependency.get() && key.index < 2009 {
+                queries.value_declaration_type(chained_declaration(key.index + 1))
+                    .unwrap_or(Type::Number)
+            } else {
+                Type::StringLiteral(b"settled".to_vec())
+            });
+        }
+        assert_eq!(key, declaration());
         match self.contract {
             Contract::PendingMember => self.pending_member(1, queries),
             Contract::FlowDependency if self.pending_dependency.get() => {
@@ -362,5 +385,34 @@ fn implementation_global_contracts_do_not_use_declaration_only_completion() {
     Engine::new().with_native_provider(
         || GlobalContexts::new(Inherited::Member, Contract::Implementation),
         |provider, queries| inherited_argument(provider, queries),
+    );
+}
+
+#[test]
+fn refused_global_contracts_do_not_complete_or_cache_a_provider_fallback() {
+    Engine::new().with_native_provider(
+        || GlobalContexts::new(Inherited::Member, Contract::DepthRefusal),
+        |provider, queries| {
+            inherited_argument(provider, queries);
+            assert!(provider.errors.borrow().iter().any(|error| matches!(error, GlobalQueryError::TooDeep(_))),
+                "the distinct declaration chain must actually reach a native query refusal");
+            assert!(!provider.errors.borrow().iter().any(|error| matches!(error, GlobalQueryError::CircularQuery(_))),
+                "distinct original declaration identities must not form a recursive query");
+
+            provider.pending_dependency.set(false);
+            let before = provider.contract_calls.get();
+            for _ in 0..2 {
+                for ty in [
+                    queries.value_declaration_type(declaration()).unwrap(),
+                    queries.global_binding_type(binding()).unwrap(),
+                ] {
+                    assert_eq!(queries.inspect_type(&ty), Type::StringLiteral(b"settled".to_vec()));
+                    assert!(!queries.is_assignable(&Type::Number, &ty),
+                        "the refused provider's fallback must not survive in a completed cache");
+                }
+            }
+            assert_eq!(provider.contract_calls.get(), before + 1,
+                "the later short chain must recompute once and then use the completed cache");
+        },
     );
 }
