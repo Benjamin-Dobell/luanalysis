@@ -8,6 +8,14 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(0);
 const HOST: &str = "---@return nil\nfunction hostEffect() end\n---@class HostObject\n---@field value number\n---@type HostObject\nhostObject=nil\n---@type number\nhostNumber=nil\n";
 const CUSTOM: &str = "---@param value unknown\n---@return string\nfunction type(value) end\n---@param name string\n---@return number\nfunction require(name) end\n";
+const ORDINARY: &str = r#"---@param name string
+---@return number
+local function ordinaryLoader(name) return 42 end
+---@param value unknown
+---@return "number"
+local function ordinaryKind(value) return 'number' end
+
+"#;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -143,11 +151,11 @@ fn unknown_host_calls_property_reads_and_arithmetic_keep_standard_assumptions() 
 fn explicit_direct_alias_and_captured_replacements_survive_later_unknown_calls() {
     let fixture = Fixture::new();
     for replacement in [
-        "_G.require=function(name) return 42 end\n_G.type=function(value) return 'number' end\n",
-        "local env=_G\nenv.require=function(name) return 42 end\nenv.type=function(value) return 'number' end\n",
-        "local env=_G\nlocal function replace()\nenv.require=function(name) return 42 end\nenv.type=function(value) return 'number' end\nend\nreplace()\n",
+        "_G.require=ordinaryLoader\n_G.type=ordinaryKind\n",
+        "local env=_G\nenv.require=ordinaryLoader\nenv.type=ordinaryKind\n",
+        "local env=_G\nlocal function replace()\nenv.require=ordinaryLoader\nenv.type=ordinaryKind\nend\nreplace()\n",
     ] {
-        let source = format!("{replacement}{}", probe("hostEffect()", "require", "type"));
+        let source = format!("{ORDINARY}{replacement}{}", probe("hostEffect()", "require", "type"));
         let rejected = report(fixture.check(&source, true, None), 1);
         error_on(
             &rejected,
@@ -169,8 +177,8 @@ fn explicit_direct_alias_and_captured_replacements_survive_later_unknown_calls()
 #[test]
 fn replaced_local_callees_remain_ordinary_after_an_unknown_call() {
     let fixture = Fixture::new();
-    let source = "local loader=require\nlocal kind=type\nloader=function(name) return 42 end\nkind=function(value) return 'number' end\nhostEffect()\nlocal result=loader('absent')\n---@type number\nlocal checked_result=result\n---@param value number|string\nlocal function probe(value)\nif kind(value)=='number' then\n---@type number\nlocal checked_type=42\nend\nend\nprobe('text')\n";
-    clean(fixture.check(source, true, None));
+    let source = format!("{ORDINARY}local loader=require\nlocal kind=type\nloader=ordinaryLoader\nkind=ordinaryKind\nhostEffect()\nlocal result=loader('absent')\n---@type number\nlocal checked_result=result\n---@param value number|string\nlocal function probe(value)\nif kind(value)=='number' then\n---@type number\nlocal checked_type=42\nend\nend\nprobe('text')\n");
+    clean(fixture.check(&source, true, None));
     let wrong = source.replace("local checked_type=42", "local checked_type=value");
     let rejected = report(fixture.check(&wrong, true, None), 1);
     error_on(
@@ -185,7 +193,7 @@ fn replaced_local_callees_remain_ordinary_after_an_unknown_call() {
 #[test]
 fn saved_original_values_keep_their_effects_across_replacement_and_unknown_calls() {
     let fixture = Fixture::new();
-    let prefix = "local savedLoader=require\nlocal savedKind=type\n_G.require=function(name) return 42 end\n_G.type=function(value) return 'number' end\nhostEffect()\n";
+    let prefix = format!("{ORDINARY}local savedLoader=require\nlocal savedKind=type\n_G.require=ordinaryLoader\n_G.type=ordinaryKind\nhostEffect()\n");
     trusted_controls(
         &fixture,
         &format!(
@@ -215,8 +223,8 @@ fn literal_field_and_function_return_aliases_keep_original_standard_operations()
 #[test]
 fn replaced_literal_fields_keep_ordinary_results_after_unknown_calls() {
     let fixture = Fixture::new();
-    let source = "local operations={loader=require,kind=type}\noperations.loader=function(name) return 42 end\noperations.kind=function(value) return 'number' end\nhostEffect()\nlocal loader=operations.loader\nlocal kind=operations.kind\nlocal result=loader('absent')\n---@type number\nlocal checked_result=result\n---@param value number|string\nlocal function probe(value)\nif kind(value)=='number' then\n---@type number\nlocal checked_type=42\nend\nend\nprobe('text')\n";
-    clean(fixture.check(source, true, None));
+    let source = format!("{ORDINARY}local operations={{loader=require,kind=type}}\noperations.loader=ordinaryLoader\noperations.kind=ordinaryKind\nhostEffect()\nlocal loader=operations.loader\nlocal kind=operations.kind\nlocal result=loader('absent')\n---@type number\nlocal checked_result=result\n---@param value number|string\nlocal function probe(value)\nif kind(value)=='number' then\n---@type number\nlocal checked_type=42\nend\nend\nprobe('text')\n");
+    clean(fixture.check(&source, true, None));
     let wrong = source.replace("local checked_type=42", "local checked_type=value");
     let rejected = report(fixture.check(&wrong, true, None), 1);
     error_on(
@@ -259,7 +267,9 @@ fn no_standard_environment_does_not_seed_missing_builtin_names_after_unknown_cal
     error_on(
         &rejected,
         source,
-        "TS2304",
+        // The module host still recognizes a require request without library
+        // declarations; the unknown effect must block its loader contract.
+        "LUA2036",
         "local module=require('module')",
         "require",
     );
@@ -296,7 +306,9 @@ fn custom_same_name_declarations_keep_ordinary_results_and_no_type_predicate() {
 #[test]
 fn a_custom_type_declaration_cannot_regain_standard_narrowing_from_unknown_effects() {
     let fixture = Fixture::new();
-    let custom = "---@param value unknown\n---@return string\nfunction type(value) end\n";
+    // An ordinary declaration can match the API without inheriting the
+    // selected original declaration's runtime predicate capability.
+    let custom = "---@param v any\n---@return 'nil'|'number'|'string'|'boolean'|'table'|'function'|'thread'|'userdata'\nfunction type(v) end\n";
     let source = probe("hostEffect()", "require", "type");
     let rejected = report(fixture.check(&source, true, Some(custom)), 1);
     error_on(
