@@ -9,20 +9,29 @@ impl Checker<'_> {
         if let Some(native) = self.native
             && let Some(written) = native.original_assignment_annotation(target.span, self.engine)
         { return Some(written); }
-        self.assignment_declaration_path(target)
+        let context = self.assignment_declaration_path(target)?;
+        let mut root = target;
+        while let ExprKind::Parenthesized(inner) = &root.kind {
+            root = inner;
+        }
+        // Only replacing the binding creates a distinct allocation. Member
+        // stores still use written field contracts on its original table.
+        if matches!(root.kind, ExprKind::Name(_))
+            && self.engine.runtime_table_schema(&context).is_some()
+        {
+            None
+        } else {
+            Some(context)
+        }
     }
 
     fn assignment_declaration_path(&mut self, expression: &Expr) -> Option<Type> {
         match &expression.kind {
             ExprKind::Name(name) => {
                 if let Some(binding) = self.bound.binding_at(name.span.start) {
-                    let constraint = self.resolve_local(binding)
+                    self.resolve_local(binding)
                         .filter(|binding| !binding.evolves_from_nil)
-                        .map(|binding| binding.constraint.clone())?;
-                    // An inferred allocation schema describes that original
-                    // table. It is not a written contract for a later, distinct
-                    // constructor assigned to the same variable.
-                    self.engine.runtime_table_schema(&constraint).is_none().then_some(constraint)
+                        .map(|binding| binding.constraint.clone())
                 } else {
                     if name.text == "_ENV" { return Some(Type::Unknown); }
                     self.global_read(name)

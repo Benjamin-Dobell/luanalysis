@@ -249,6 +249,11 @@ impl crate::Checker<'_> {
         {
             return actual;
         }
+        // Constructor checking already reported its error. Its recovery value
+        // has no actual table view to retain as an allocation carrier.
+        if actual == Type::Unknown || actual == self.engine.error_type() {
+            return actual;
+        }
         let Some(native) = self.native else {
             return actual;
         };
