@@ -114,10 +114,12 @@ fn original_callback_body_errors_are_anchored_and_accept_correction() {
 fn a_written_global_contract_does_not_restore_an_explicitly_replaced_builtin() {
     let fixture = Fixture::new();
     let source = format!(
-        "---@param value unknown\n---@return 'number'\nlocal function ordinaryKind(value) return 'number' end\ntype = ordinaryKind\n---@param value number | string\nlocal function probe(value)\n{}\nend\nprobe('text')\n",
+        "---@param value unknown\n---@return 'number'\nlocal function ordinaryKind(value) return 'number' end\n---@param value number | string\nlocal function probe(value)\n{}\nend\nprobe('text')\n",
         ORIGINAL.replace(
             "    print('done')",
-            "    print('done')\n    if type(value) == 'number' then\n        ---@type number\n        local wrong = value\n    end",
+            // A dynamic environment store can replace an earlier callable.
+            // Establish this explicit replacement after the loop's stores.
+            "    print('done')\n    type = ordinaryKind\n    if type(value) == 'number' then\n        ---@type number\n        local wrong = value\n    end",
         )
     );
     for version in ["5.2", "5.4"] {
