@@ -71,7 +71,7 @@ struct Asserts {
 
 #[test]
 fn provenance_only_intrinsics_retain_original_identity_without_assert_result_effects() {
-    for kind in [NativeIntrinsicKind::Type, NativeIntrinsicKind::Require] {
+    for kind in [NativeIntrinsicKind::Type, NativeIntrinsicKind::Require, NativeIntrinsicKind::SetMetatable] {
         Engine::new().with_native_provider(
             || Asserts {
                 tag: Some(NativeIntrinsicSite { binding: binding(0), declaration: declaration(0), kind }),

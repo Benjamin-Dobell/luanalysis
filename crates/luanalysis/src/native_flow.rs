@@ -339,11 +339,11 @@ impl NativeFlowSources {
                     let Some(reference) = result.program.references.get(&value.expression) else { continue; };
                     let paths = result.environment_candidate_paths(reference);
                     for path in paths {
-                        if matches!(path.as_slice(), [flow::Key::String(name)] if matches!(name.as_slice(), b"require" | b"type" | b"assert")) { result.capability_bindings.insert(binding); }
+                        if matches!(path.as_slice(), [flow::Key::String(name)] if matches!(name.as_slice(), b"require" | b"type" | b"assert" | b"setmetatable")) { result.capability_bindings.insert(binding); }
                         result.environment_candidates.entry(binding).or_default().insert(path);
                     }
                     let candidate = match (&reference.root, reference.path.as_slice()) {
-                        (flow::ReferenceRoot::EnvironmentCell, [flow::Key::String(name)]) => matches!(name.as_slice(), b"require" | b"type" | b"assert"),
+                        (flow::ReferenceRoot::EnvironmentCell, [flow::Key::String(name)]) => matches!(name.as_slice(), b"require" | b"type" | b"assert" | b"setmetatable"),
                         (flow::ReferenceRoot::Binding(parent), []) => result.capability_bindings.contains(parent),
                         _ => false,
                     };
@@ -1151,7 +1151,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         let Some(reference) = self.sources.source_reference(reference) else { return false; };
         match (&reference.root, reference.path.as_slice()) {
             (flow::ReferenceRoot::EnvironmentCell | flow::ReferenceRoot::LoaderState, []) => true,
-            (flow::ReferenceRoot::EnvironmentObject, [flow::Key::String(name)]) => matches!(name.as_slice(), b"_G" | b"require" | b"type" | b"assert"),
+            (flow::ReferenceRoot::EnvironmentObject, [flow::Key::String(name)]) => matches!(name.as_slice(), b"_G" | b"require" | b"type" | b"assert" | b"setmetatable"),
             (flow::ReferenceRoot::Binding(binding), []) => self.sources.capability_bindings.contains(binding),
             _ => false,
         }

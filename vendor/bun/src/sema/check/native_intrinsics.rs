@@ -7,7 +7,7 @@ use super::native_packs::{NativePackAlternative, NativePackSlot};
 use crate::types::{ElemFlags, NativeResultPack, SigId, TypeData, TypeId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NativeIntrinsicKind { Assert, Type, Require }
+pub enum NativeIntrinsicKind { Assert, Type, Require, SetMetatable }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeIntrinsicSite {
@@ -169,7 +169,7 @@ impl<'p, 's> Checker<'p, 's> {
         let pack = self.native_intrinsic_argument_pack(args, context).ok_or(ResolvedTypeCallError::UnsupportedRest)?;
         match site.kind {
             NativeIntrinsicKind::Assert => self.native_assert_pack(pack).map(Some).ok_or(ResolvedTypeCallError::UnsupportedRest),
-            NativeIntrinsicKind::Type | NativeIntrinsicKind::Require => Ok(None),
+            NativeIntrinsicKind::Type | NativeIntrinsicKind::Require | NativeIntrinsicKind::SetMetatable => Ok(None),
         }
     }
 }

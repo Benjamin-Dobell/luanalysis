@@ -22,7 +22,7 @@ pub struct NativeSignatureKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NativeIntrinsicKind { Assert, Type, Require }
+pub enum NativeIntrinsicKind { Assert, Type, Require, SetMetatable }
 
 /// Trusted operation identity attached to an original written signature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -43,6 +43,7 @@ pub(super) fn source_intrinsic_site(site: bun_sema::check::native_intrinsics::Na
             bun_sema::check::native_intrinsics::NativeIntrinsicKind::Assert => NativeIntrinsicKind::Assert,
             bun_sema::check::native_intrinsics::NativeIntrinsicKind::Type => NativeIntrinsicKind::Type,
             bun_sema::check::native_intrinsics::NativeIntrinsicKind::Require => NativeIntrinsicKind::Require,
+            bun_sema::check::native_intrinsics::NativeIntrinsicKind::SetMetatable => NativeIntrinsicKind::SetMetatable,
         },
     }
 }

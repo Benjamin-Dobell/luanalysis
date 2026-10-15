@@ -2037,6 +2037,7 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
                 NativeIntrinsicKind::Assert => bun_sema::check::native_intrinsics::NativeIntrinsicKind::Assert,
                 NativeIntrinsicKind::Type => bun_sema::check::native_intrinsics::NativeIntrinsicKind::Type,
                 NativeIntrinsicKind::Require => bun_sema::check::native_intrinsics::NativeIntrinsicKind::Require,
+                NativeIntrinsicKind::SetMetatable => bun_sema::check::native_intrinsics::NativeIntrinsicKind::SetMetatable,
             },
         })
     }

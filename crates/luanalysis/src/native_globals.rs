@@ -639,7 +639,7 @@ impl Checker<'_> {
                     // a computed write may replace it even if the declaration's
                     // callable shape remains valid. Ordinary globals keep TS's
                     // declaration-based transfer policy.
-                    let declared = if matches!(name.text.as_str(), "_G" | "type" | "assert" | "require") { Type::Unknown } else { initial.clone() };
+                    let declared = if matches!(name.text.as_str(), "_G" | "type" | "assert" | "require" | "setmetatable") { Type::Unknown } else { initial.clone() };
                     let result = self.engine.flow_type(&crate::native_flow::FlowAdapter { sources: &native.flow, values: native }, at, reference, &declared, &initial);
                     self.incomplete_flow |= result.incomplete;
                     return Some(result.ty);

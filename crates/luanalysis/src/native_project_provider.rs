@@ -361,6 +361,7 @@ impl NativeTypeProvider for ProjectRegistry {
         for (original, kind) in [
             (self.standard_environment.type_operation, luanalysis_engine::NativeIntrinsicKind::Type),
             (self.standard_environment.require_operation, luanalysis_engine::NativeIntrinsicKind::Require),
+            (self.standard_environment.setmetatable_operation, luanalysis_engine::NativeIntrinsicKind::SetMetatable),
         ] {
             if let Some(original) = original && original.signature == signature {
                 return Some(luanalysis_engine::NativeIntrinsicSite { binding: original.binding, declaration: original.declaration, kind });
@@ -689,6 +690,38 @@ mod tests {
             assert!(
                 implementation.contains(&format!("fn {name}(")),
                 "native hook {name} must be explicitly transported; a default may drop context or physical result count"
+            );
+        }
+    }
+
+    #[test]
+    fn selected_setmetatable_capability_tracks_actual_alias_values_and_shadowing() {
+        let standard = "---@generic T:table\n---@param value T\n---@param meta table|nil\n---@return T\nfunction setmetatable(value,meta) end";
+        let source = "local cap=setmetatable\nlocal original=cap\n---@type fun(value:table,meta:table|nil):table\nlocal ordinary\ncap=ordinary\nlocal replaced=cap\ncap=setmetatable\nlocal restored=cap\n---@param value table\n---@param meta table|nil\n---@return table\nlocal function setmetatable(value,meta) return value end\nlocal shadowed=setmetatable\n";
+        for selected in [false, true] {
+            Engine::new().with_native_provider(
+                || {
+                    let mut library = input(0, standard);
+                    library.role = SourceRole::Declaration;
+                    library.standard_library = selected.then_some(StandardLibrarySource::Base);
+                    ProjectRegistry::new_with_environment(vec![library, input(1, source)], Vec::new(), NativeLoaderPolicy::Lua54StandardFile, StandardEnvironmentProfile::Lua54)
+                },
+                |provider, queries| {
+                    let registry = &provider.files[1].source;
+                    for (prefix, name, expected) in [
+                        ("original=", "cap", selected),
+                        ("replaced=", "cap", false),
+                        ("restored=", "cap", selected),
+                        ("shadowed=", "setmetatable", false),
+                    ] {
+                        let start = source.find(prefix).unwrap() + prefix.len();
+                        let key = registry.expression_key_for_span(luanalysis_syntax::Span { start, end: start + name.len() });
+                        let value = registry.source_check_expression(key, None, luanalysis_engine::NativeCheckMode::empty(), queries);
+                        let site = queries.function_intrinsic(&value);
+                        assert_eq!(site.is_some(), expected, "{prefix}{name}, selected={selected}");
+                        if let Some(site) = site { assert_eq!(site.kind, luanalysis_engine::NativeIntrinsicKind::SetMetatable); }
+                    }
+                },
             );
         }
     }

@@ -19,6 +19,7 @@ pub(crate) struct ProjectStandardEnvironment {
     pub type_operation: Option<OriginalStandardFunction>,
     pub assert_operations: Vec<OriginalStandardFunction>,
     pub require_operation: Option<OriginalStandardFunction>,
+    pub setmetatable_operation: Option<OriginalStandardFunction>,
     pub rejected_assert_declarations: Vec<NativeValueDeclarationKey>,
 }
 impl ProjectStandardEnvironment {
@@ -31,6 +32,7 @@ impl ProjectStandardEnvironment {
             type_operation: None,
             assert_operations: Vec::new(),
             require_operation: None,
+            setmetatable_operation: None,
             rejected_assert_declarations: Vec::new(),
         };
         if profile != StandardEnvironmentProfile::Lua54 {
@@ -52,6 +54,11 @@ impl ProjectStandardEnvironment {
                 }
             }
             if kind == StandardLibrarySource::Base {
+                if let Some((capabilities, other_owners)) = source.original_standard_function("setmetatable") {
+                    if other_owners.is_empty() && capabilities.len() == 1 {
+                        result.setmetatable_operation = capabilities.first().copied();
+                    }
+                }
                 if let Some((capabilities, other_owners)) = source.original_standard_function("type")
                 {
                     if other_owners.is_empty() && capabilities.len() == 1 {

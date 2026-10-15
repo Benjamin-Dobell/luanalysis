@@ -606,7 +606,7 @@ impl NativeRegistry {
     pub(super) fn flow_environment_member_type(&self, expression: &Expr, at: NativeFlowKey, initial: &Type, queries: &mut dyn TypeQueries) -> Option<NativeFlowResult> {
         let reference = self.flow.environment_member_reference(at.graph, expression)?;
         let key = self.flow.source_reference(reference)?.path.last();
-        let capability = matches!(key, Some(super::flow::Key::String(name)) if matches!(name.as_slice(), b"_G" | b"require" | b"type" | b"assert"));
+        let capability = matches!(key, Some(super::flow::Key::String(name)) if matches!(name.as_slice(), b"_G" | b"require" | b"type" | b"assert" | b"setmetatable"));
         let declared = if capability { Type::Unknown } else { initial.clone() };
         Some(queries.flow_type(&FlowAdapter { sources: &self.flow, values: self }, at, reference, &declared, initial))
     }
@@ -1794,7 +1794,7 @@ impl NativeRegistry {
             let effects = if checker.incomplete_flow { NativeCallEffects::None } else {
                 match intrinsic.kind {
                     luanalysis_engine::NativeIntrinsicKind::Assert => sources.assertion_call_effect(evaluation, input),
-                    luanalysis_engine::NativeIntrinsicKind::Type | luanalysis_engine::NativeIntrinsicKind::Require => NativeCallEffects::None,
+                    luanalysis_engine::NativeIntrinsicKind::Type | luanalysis_engine::NativeIntrinsicKind::Require | luanalysis_engine::NativeIntrinsicKind::SetMetatable => NativeCallEffects::None,
                 }
             };
             if !checker.incomplete_flow { self.merge_flow_report(input, checker.check_mode, checker.report); }
