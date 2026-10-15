@@ -785,6 +785,7 @@ pub trait TypeQueries {
     fn signature_implementation_compatible(&mut self, declaration: NativeSignatureKey, implementation: &Type) -> bool;
     fn pack_function(&mut self, function: &PackFunctionType) -> Type;
     fn declared_result_pack(&mut self, pack: &ValuePack) -> ValuePack;
+    fn return_pack_has_fixed_cardinality(&mut self, pack: &ValuePack) -> bool;
     fn return_pack_with_cardinality(&mut self, declared: &ValuePack, actual: &ValuePack) -> ValuePack;
     fn function_declared_scalar_return(&mut self, function: &Type) -> Option<Type>;
     fn call_native_arguments_scalar(
@@ -1260,6 +1261,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn declared_result_pack(&mut self, pack: &ValuePack) -> ValuePack {
         self.declared_result_pack_native(pack)
+    }
+    fn return_pack_has_fixed_cardinality(&mut self, pack: &ValuePack) -> bool {
+        self.return_pack_has_fixed_cardinality_native(pack)
     }
     fn return_pack_with_cardinality(&mut self, declared: &ValuePack, actual: &ValuePack) -> ValuePack {
         self.return_pack_with_cardinality_native(declared, actual)

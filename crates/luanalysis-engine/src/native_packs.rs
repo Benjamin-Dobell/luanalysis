@@ -189,6 +189,10 @@ impl SessionQueries<'_, '_, '_> {
         let pack = import_declared_pack(self.checker, self.handles, pack);
         self.handles.retain_pack(self.checker, pack)
     }
+    pub(super) fn return_pack_has_fixed_cardinality_native(&mut self, pack: &ValuePack) -> bool {
+        let pack = import_pack(self.checker, self.handles, pack);
+        self.checker.native_return_pack_has_fixed_cardinality(pack)
+    }
     pub(super) fn return_pack_with_cardinality_native(
         &mut self,
         declared: &ValuePack,

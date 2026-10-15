@@ -414,6 +414,13 @@ impl NativeRegistry {
     ) -> Option<ValuePack> {
         let raw = self.declared_pack_contract(key, queries)?;
         let declared = queries.declared_result_pack(&raw);
+        // A written fixed physical row already establishes the public result.
+        // Inferring it again would make recursive calls depend on callback bodies
+        // that the contract was meant to separate. check_all_bodies independently
+        // validates the implementation, including its return expressions.
+        if queries.return_pack_has_fixed_cardinality(&declared) {
+            return Some(declared);
+        }
         let actual = self.inferred_return_pack_with_context(key, queries, contextual, captured);
         Some(queries.return_pack_with_cardinality(&declared, &actual))
     }

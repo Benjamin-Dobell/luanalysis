@@ -477,6 +477,16 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_result_pack(&rows)
     }
 
+    /// A single required physical row cannot be refined by inspecting an implementation.
+    /// Apply the same void/implicit-empty policy as return refinement before deciding this;
+    /// a nullable scalar, optional slot or variadic tail still needs its body cardinality.
+    pub fn native_return_pack_has_fixed_cardinality(&mut self, pack: NativeResultPack) -> bool {
+        let pack = self.native_declared_result_pack(pack);
+        let pack = self.native_pack_with_implicit_empty(pack);
+        let Some(rows) = self.native_pack_alternatives(pack) else { return false };
+        matches!(rows.as_slice(), [row] if row.tail.is_none() && row.fixed.iter().all(|slot| !slot.optional))
+    }
+
     /// Keep the declared value types while refining only physical rows established by the body.
     /// Invalid or still-symbolic body rows retain the contract for diagnostic recovery.
     pub fn native_return_pack_with_cardinality(&mut self, declared: NativeResultPack, actual: NativeResultPack) -> NativeResultPack {

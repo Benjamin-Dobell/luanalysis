@@ -374,6 +374,48 @@ fn native_return_contract_types_retain_complete_actual_cardinality_rows() {
 }
 
 #[test]
+fn written_return_cardinality_demand_follows_native_physical_rows() {
+    Engine::new().with_session(|queries| {
+        for pack in [
+            ValuePack::single(Type::Number),
+            fixed(vec![Type::Number, Type::String]),
+            ValuePack::empty(),
+            ValuePack::single(Type::Void),
+        ] {
+            assert!(queries.return_pack_has_fixed_cardinality(&pack), "{pack:?}");
+        }
+        for pack in [
+            ValuePack::single(Type::Nil),
+            ValuePack::single(Type::Any),
+            ValuePack::single(Type::Union(vec![Type::Number, Type::Void])),
+            ValuePack::variadic(Type::Number),
+            ValuePack::Alternatives(vec![PackAlternative {
+                fixed: vec![PackSlot {
+                    ty: Type::Number,
+                    optional: true,
+                }],
+                tail: None,
+            }]),
+            ValuePack::Alternatives(vec![
+                PackAlternative {
+                    fixed: Vec::new(),
+                    tail: None,
+                },
+                PackAlternative {
+                    fixed: vec![PackSlot::required(Type::Number)],
+                    tail: None,
+                },
+            ]),
+        ] {
+            assert!(
+                !queries.return_pack_has_fixed_cardinality(&pack),
+                "{pack:?}"
+            );
+        }
+    });
+}
+
+#[test]
 fn captured_and_contextual_pure_scalar_contracts_map_annotations_exactly_once() {
     crate::with_program(|program, handles| {
         let provider = Contracts::default();
