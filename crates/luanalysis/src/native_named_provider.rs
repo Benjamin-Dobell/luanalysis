@@ -766,6 +766,21 @@ impl NativeRegistry {
             .unwrap_or_else(|| self.named_member_origin(key))
     }
     pub(super) fn named_declaration_error(&self, error: NamedTypeError) {
+        let typed_origin = match &error {
+            NamedTypeError::InvalidBase { declaration, index, .. } => Some(("TS2312", self.named_base_origin(*declaration, *index))),
+            NamedTypeError::IncompatibleOverride { member, .. } => Some(("TS2416", self.named_member_type_origin(*member))),
+            NamedTypeError::IncompatibleBase { declaration, index, .. } => Some(("TS2415", self.named_base_origin(*declaration, *index))),
+            NamedTypeError::Table { declaration, .. } => Some(("LUA2032", self.named_origin(*declaration))),
+            NamedTypeError::InvalidReceiver { .. } | NamedTypeError::UnsupportedReceiverType { .. }
+            | NamedTypeError::DefinitionOwner { .. } | NamedTypeError::DefinitionInitializer { .. }
+            | NamedTypeError::DefinitionField { .. } => Some(("LUA2032", self.file.span)),
+            _ => None,
+        };
+        if let Some((code, span)) = typed_origin {
+            let (template, types) = crate::diagnostic_types::named_error_description(&error);
+            self.report.borrow_mut().push_type_diagnostic(code, span, template, &types.iter().collect::<Vec<_>>());
+            return;
+        }
         let (code, span, message) = match error {
             NamedTypeError::PendingContext { .. } => return,
             NamedTypeError::InvalidMemberSignatures {member,..} => ("LUA2034",self.named_member_type_origin(member),"Bodyless member has invalid original signature identities.".into()),
@@ -828,11 +843,7 @@ impl NativeRegistry {
                 self.named_member_origin(member),
                 format!("Duplicate type owner '{name}'."),
             ),
-            NamedTypeError::Table { declaration, error } => (
-                "LUA2032",
-                self.named_origin(declaration),
-                format!("Invalid declared table: {error:?}."),
-            ),
+            NamedTypeError::Table { .. } => unreachable!("typed declaration error recorded above"),
             NamedTypeError::TooDeep(query) => (
                 "TS2589",
                 match query {
@@ -847,11 +858,11 @@ impl NativeRegistry {
                 },
                 "Type instantiation is excessively deep.".into(),
             ),
-            other => (
-                "LUA2032",
-                self.file.span,
-                format!("Invalid named declaration metadata: {other:?}."),
-            ),
+            other => {
+                let (message, types) = crate::diagnostic_types::named_error_description(&other);
+                debug_assert!(types.is_empty(), "typed declaration error recorded above");
+                ("LUA2032", self.file.span, format!("Invalid named declaration metadata: {message}"))
+            },
         };
         self.report.borrow_mut().diagnostics.push(Diagnostic {
             code,
@@ -911,8 +922,13 @@ impl NativeRegistry {
         &self,
         error: NamedTypeError,
         span: Span,
-        queries: &mut dyn TypeQueries,
+        _queries: &mut dyn TypeQueries,
     ) {
+        if let NamedTypeError::TypeArgumentConstraint { actual, expected, .. } = &error {
+            self.report.borrow_mut().push_type_diagnostic("TS2344", span,
+                "Type '{}' does not satisfy constraint '{}'.", &[actual, expected]);
+            return;
+        }
         let diagnostic = match error {
             NamedTypeError::TypeArgumentArity {
                 actual,
@@ -924,17 +940,7 @@ impl NativeRegistry {
                 span,
                 message: format!("Expected {minimum}..{maximum} type arguments, got {actual}."),
             }),
-            NamedTypeError::TypeArgumentConstraint {
-                actual, expected, ..
-            } => Some(Diagnostic {
-                code: "TS2344",
-                span,
-                message: format!(
-                    "Type '{}' does not satisfy constraint '{}'.",
-                    queries.format(&actual),
-                    queries.format(&expected)
-                ),
-            }),
+            NamedTypeError::TypeArgumentConstraint { .. } => unreachable!("typed constraint recorded above"),
             _ => None,
         };
         if let Some(diagnostic) = diagnostic {

@@ -273,10 +273,12 @@ impl crate::Checker<'_> {
         match self.engine.runtime_table_value(schema, &actual) {
             Ok(value) => value,
             Err(error) => {
-                self.error(
+                let (template, types) = crate::diagnostic_types::named_error_description(&error);
+                self.error_types(
                     "LUA2039",
                     expression.span,
-                    format!("Runtime table construction failed: {error:?}."),
+                    format!("Runtime table construction failed: {template}"),
+                    &types.iter().collect::<Vec<_>>(),
                 );
                 actual
             }

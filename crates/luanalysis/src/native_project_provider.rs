@@ -361,6 +361,7 @@ impl ProjectRegistry {
             if !checked.contains(&index) { continue; }
             file.source.report_unresolved_contextual_owners();
             report.report.append(file.source.take_report());
+            report.report.render_diagnostics(queries);
             report.report.diagnostics.sort_by(|left, right| {
                 (left.span.start, left.span.end, left.code, &left.message).cmp(&(
                     right.span.start,

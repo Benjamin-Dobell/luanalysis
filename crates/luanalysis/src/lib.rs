@@ -7,6 +7,7 @@
 
 pub mod bind;
 mod builtins;
+mod diagnostic_types;
 mod module_requests;
 pub mod flow;
 pub mod project_check;
@@ -77,15 +78,21 @@ pub struct CheckReport {
     pub bound: Option<BoundFile>,
     pending_bindings: Vec<(BindingId, Type)>,
     pending_types: Vec<(Span, Type)>,
+    pending_diagnostics: Vec<diagnostic_types::PendingDiagnostic>,
 }
 
 impl CheckReport {
     fn append(&mut self, mut other: Self) {
+        let diagnostic_offset = self.diagnostics.len();
+        for pending in &mut other.pending_diagnostics {
+            pending.index += diagnostic_offset;
+        }
         self.diagnostics.append(&mut other.diagnostics);
         self.bindings.append(&mut other.bindings);
         self.types.append(&mut other.types);
         self.pending_bindings.append(&mut other.pending_bindings);
         self.pending_types.append(&mut other.pending_types);
+        self.pending_diagnostics.append(&mut other.pending_diagnostics);
     }
 
     fn render(&mut self, engine: &mut dyn TypeQueries) {
@@ -109,6 +116,7 @@ impl CheckReport {
                 info.ty.clone_from(&displayed);
             }
         }
+        self.render_diagnostics(engine);
     }
 
     /// Returns an owned report's displayed type at an original UTF-8 byte offset.
@@ -244,6 +252,7 @@ pub fn check_with_overload_mode(source: &str, overload_mode: OverloadMode) -> Ch
             bound: None,
             pending_bindings: Vec::new(),
             pending_types: Vec::new(),
+            pending_diagnostics: Vec::new(),
         };
     }
     let bound = bind::bind(&file);
@@ -292,6 +301,7 @@ pub fn check_with_overload_mode(source: &str, overload_mode: OverloadMode) -> Ch
             registry.report_unresolved_contextual_owners();
             // Explicit display demands can complete a previously unqueried signature.
             report.append(registry.take_report());
+            report.render_diagnostics(engine);
             report.diagnostics.sort_by(|a, b| {
                 (a.span.start, a.span.end, a.code, &a.message).cmp(&(
                     b.span.start,
@@ -835,21 +845,16 @@ impl Checker<'_> {
     }
 
     fn compatible(&mut self, value: &Type, target: &Type, origin: Span) -> bool {
-        let relation = self.engine.compare(value, target);
-        if !relation.assignable {
-            let value = self.engine.format(value);
-            let target = self.engine.format(target);
-            self.error(
+        let assignable = self.engine.is_assignable(value, target);
+        if !assignable {
+            self.error_types(
                 "TS2322",
                 origin,
-                format!(
-                    "Type '{}' is not assignable to type '{}'.",
-                    value,
-                    target
-                ),
+                "Type '{}' is not assignable to type '{}'.",
+                &[value, target],
             );
         }
-        relation.assignable
+        assignable
     }
 
     fn local(&mut self, names: &[Name], values: &[Expr], annotation: Option<&TypeAnnotation>) {
@@ -1212,8 +1217,22 @@ pub fn describe(ty: &Type) -> String {
 }
 
 fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type>) -> String {
+    describe_native_mode(ty, engine, stack, false)
+}
+
+fn describe_diagnostic_type(ty: &Type, engine: &mut dyn TypeQueries) -> String {
+    describe_native_mode(ty, engine, &mut Vec::new(), true)
+}
+
+fn describe_native_mode(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type>, diagnostic: bool) -> String {
     match ty {
         Type::SessionType(_) => {
+            // A named object already has its original printable identity.
+            // Inspecting its call signatures would unnecessarily traverse its
+            // members, potentially demanding an unrelated inferred body.
+            if diagnostic && engine.named_object_declaration(ty).is_some() {
+                return engine.format(ty);
+            }
             if stack.contains(ty) {
                 return "<recursive type>".into();
             }
@@ -1223,18 +1242,18 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
             stack.push(ty.clone());
             let inspected = engine.inspect_type(ty);
             let text = if let Type::Function(function) = &inspected {
-                describe_native_function(function, Some(ty), engine, stack)
+                describe_native_function(function, Some(ty), engine, stack, diagnostic)
             } else if &inspected == ty {
                 engine.format(ty)
             } else {
-                describe_native(&inspected, engine, stack)
+                describe_native_mode(&inspected, engine, stack, diagnostic)
             };
             stack.pop();
             text
         }
-        Type::NativeTypeParameter(_) => engine.format(ty),
+        Type::NativeTypeParameter(_) | Type::NativeNamedReference { .. } => engine.format(ty),
         Type::Table(table) => {
-            native_tables::describe_table(table, |ty| describe_native(ty, engine, stack))
+            native_tables::describe_table(table, |ty| describe_native_mode(ty, engine, stack, diagnostic))
         }
         Type::NativeFunction(_) | Type::NativeSignature(_) => {
             if stack.contains(ty) {
@@ -1248,7 +1267,7 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
             // Each native handle retains its exact capture/context mapper.
             let heads = engine.call_signature_types(ty);
             let texts: Vec<_> = heads.iter()
-                .map(|head|describe_native(head,engine,stack)).collect();
+                .map(|head|describe_native_mode(head,engine,stack,diagnostic)).collect();
             let text=match texts.as_slice() {
                 []=>"function".into(),
                 [single]=>single.clone(),
@@ -1257,15 +1276,15 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
             stack.pop();
             text
         }
-        Type::Function(function) => describe_native_function(function, None, engine, stack),
+        Type::Function(function) => describe_native_function(function, None, engine, stack, diagnostic),
         Type::Union(types) => types
             .iter()
-            .map(|ty| describe_native(ty, engine, stack))
+            .map(|ty| describe_native_mode(ty, engine, stack, diagnostic))
             .collect::<Vec<_>>()
             .join(" | "),
         Type::Intersection(types) => types
             .iter()
-            .map(|ty| describe_native(ty, engine, stack))
+            .map(|ty| describe_native_mode(ty, engine, stack, diagnostic))
             .collect::<Vec<_>>()
             .join(" & "),
         Type::Shape(properties) | Type::FreshShape(properties) => format!(
@@ -1276,7 +1295,7 @@ fn describe_native(ty: &Type, engine: &mut dyn TypeQueries, stack: &mut Vec<Type
                     "{}{}: {}",
                     property.name,
                     if property.optional { "?" } else { "" },
-                    describe_native(&property.ty, engine, stack)
+                    describe_native_mode(&property.ty, engine, stack, diagnostic)
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -1290,6 +1309,7 @@ fn describe_native_function(
     original: Option<&Type>,
     engine: &mut dyn TypeQueries,
     stack: &mut Vec<Type>,
+    diagnostic: bool,
 ) -> String {
     let rest = original.and_then(|ty| engine.signature_rest_pack(ty));
     let fixed = function
@@ -1303,23 +1323,23 @@ fn describe_native_function(
                 "{}{}: {}",
                 parameter.name,
                 if parameter.optional { "?" } else { "" },
-                describe_native(&parameter.ty, engine, stack)
+                describe_native_mode(&parameter.ty, engine, stack, diagnostic)
             )
         })
         .collect();
     if let Some(rest) = rest {
         let text = match engine.inspect_pack(&rest).as_deref() {
             Some([row]) if row.fixed.is_empty() && row.tail.is_some() => {
-                describe_native(row.tail.as_ref().unwrap(), engine, stack)
+                describe_native_mode(row.tail.as_ref().unwrap(), engine, stack, diagnostic)
             }
-            _ => describe_native_pack(&rest, engine, stack).unwrap_or_else(|| "...".to_owned()),
+            _ => describe_native_pack(&rest, engine, stack, diagnostic).unwrap_or_else(|| "...".to_owned()),
         };
         parameters.push(format!("...: {text}"));
     }
     let returns = original
         .and_then(|ty| engine.function_result_pack(ty))
-        .and_then(|pack| describe_native_pack(&pack, engine, stack))
-        .unwrap_or_else(|| describe_native(&function.returns, engine, stack));
+        .and_then(|pack| describe_native_pack(&pack, engine, stack, diagnostic))
+        .unwrap_or_else(|| describe_native_mode(&function.returns, engine, stack, diagnostic));
     format!("fun({}): {}", parameters.join(", "), returns)
 }
 
@@ -1327,6 +1347,7 @@ fn describe_native_pack(
     pack: &luanalysis_engine::ValuePack,
     engine: &mut dyn TypeQueries,
     stack: &mut Vec<Type>,
+    diagnostic: bool,
 ) -> Option<String> {
     let alternatives = engine.inspect_pack(pack)?;
     if alternatives.is_empty() {
@@ -1340,12 +1361,12 @@ fn describe_native_pack(
                     .fixed
                     .iter()
                     .map(|slot| {
-                        let ty = describe_native(&slot.ty, engine, stack);
+                        let ty = describe_native_mode(&slot.ty, engine, stack, diagnostic);
                         if slot.optional { format!("{ty}?") } else { ty }
                     })
                     .collect();
                 if let Some(tail) = &row.tail {
-                    slots.push(format!("{}...", describe_native(tail, engine, stack)));
+                    slots.push(format!("{}...", describe_native_mode(tail, engine, stack, diagnostic)));
                 }
                 match slots.len() {
                     0 => "void".to_owned(),

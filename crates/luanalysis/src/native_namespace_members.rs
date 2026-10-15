@@ -145,11 +145,9 @@ impl NativeRegistry {
         Some(match queries.table_type(&TableType { fields, ..Default::default() }) {
             Ok(table) => table,
             Err(error) => {
-                self.report.borrow_mut().diagnostics.push(Diagnostic {
-                    code: "LUA2038",
-                    span: root.name.span,
-                    message: format!("Namespace has an invalid declared member schema: {error:?}."),
-                });
+                let (template, types) = crate::native_tables::table_error_description(&error);
+                self.report.borrow_mut().push_type_diagnostic("LUA2038", root.name.span,
+                    format!("Namespace has an invalid declared member schema: {template}"), &types.iter().collect::<Vec<_>>());
                 Type::Unknown
             }
         })
