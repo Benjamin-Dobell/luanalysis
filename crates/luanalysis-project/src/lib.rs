@@ -288,7 +288,48 @@ pub struct SourceFile {
     pub path: PathBuf,
     pub source: String,
     pub role: SourceRole,
+    pub origin: SourceOrigin,
 }
+
+/// Source provenance does not change lexical identity or module search policy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceOrigin {
+    Filesystem,
+    DeclarationLibrary { identity: String },
+}
+
+/// An original declaration resource carried by the checker distribution.
+/// `path` is its stable display origin, not a filesystem module candidate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeclarationSource {
+    pub identity: String,
+    pub path: PathBuf,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeclarationSourceError {
+    EmptyIdentity,
+    ConflictingIdentity {
+        identity: String,
+        existing: FileId,
+        existing_path: PathBuf,
+        requested_path: PathBuf,
+    },
+}
+impl std::fmt::Display for DeclarationSourceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyIdentity => f.write_str("declaration library identity must not be empty"),
+            Self::ConflictingIdentity { identity, existing_path, requested_path, .. } => write!(
+                f,
+                "declaration library identity {identity:?} has conflicting source content or origins: {} and {}",
+                existing_path.display(), requested_path.display(),
+            ),
+        }
+    }
+}
+impl std::error::Error for DeclarationSourceError {}
 
 /// Both requests identify the same canonical file but disagree on how it is
 /// checked. The first explicit role is retained; the conflicting request fails.
@@ -357,6 +398,7 @@ pub struct Project {
     /// A static cycle is recorded, not assumed to be a type error.
     pub cycles: Vec<DependencyCycle>,
     by_path: HashMap<PathBuf, FileId>,
+    declaration_sources: HashMap<String, FileId>,
 }
 impl Project {
     /// The callback must return only source-resolved static require requests.
@@ -391,6 +433,7 @@ impl Project {
             role_conflicts: Vec::new(),
             cycles: Vec::new(),
             by_path: HashMap::new(),
+            declaration_sources: HashMap::new(),
         };
         let mut pending = VecDeque::new();
         for input in plan.libraries {
@@ -460,6 +503,45 @@ impl Project {
         project.cycles = project.find_cycles();
         project
     }
+
+    /// Adds immutable original declaration text without filesystem IO, runtime
+    /// entries, dependency extraction or changes to a resolver's search roots.
+    /// Identical resources deduplicate; conflicting reuse of an identity fails
+    /// without replacing the first source or allocating another file identity.
+    pub fn add_declaration_source(
+        &mut self,
+        source: DeclarationSource,
+    ) -> Result<FileId, DeclarationSourceError> {
+        if source.identity.is_empty() {
+            return Err(DeclarationSourceError::EmptyIdentity);
+        }
+        if let Some(&id) = self.declaration_sources.get(&source.identity) {
+            let existing = self.file(id).expect("registered declaration source");
+            if existing.path == source.path && existing.source == source.source {
+                return Ok(id);
+            }
+            return Err(DeclarationSourceError::ConflictingIdentity {
+                identity: source.identity,
+                existing: id,
+                existing_path: existing.path.clone(),
+                requested_path: source.path,
+            });
+        }
+        let id = FileId {
+            project: self.id,
+            index: u32::try_from(self.files.len()).expect("file index fits u32"),
+        };
+        self.declaration_sources.insert(source.identity.clone(), id);
+        self.files.push(SourceFile {
+            id,
+            path: source.path,
+            source: source.source,
+            role: SourceRole::Declaration,
+            origin: SourceOrigin::DeclarationLibrary { identity: source.identity },
+        });
+        self.libraries.push(id);
+        Ok(id)
+    }
     pub fn file(&self, id: FileId) -> Option<&SourceFile> {
         (id.project == self.id)
             .then(|| self.files.get(id.index as usize))
@@ -507,6 +589,7 @@ impl Project {
             path: canonical.clone(),
             source,
             role: role.unwrap_or(SourceRole::Implementation),
+            origin: SourceOrigin::Filesystem,
         });
         self.by_path.insert(canonical, id);
         self.by_path.insert(alias, id);
