@@ -138,7 +138,7 @@ fn exact_transitive_local_calls_preserve_standard_origin_but_real_writes_do_not(
 #[test]
 fn false_is_a_present_raw_slot_while_nil_can_dispatch_newindex() {
     let fixture = Fixture::new();
-    let prefix = format!("{ORDINARY}local holder={{value=false}}\nsetmetatable(holder,{{__newindex=function() setmetatable=ordinary end}})\nholder.value=true\nholder.value=1\n");
+    let prefix = format!("{ORDINARY}---@type {{value:boolean|number|nil}}\nlocal holder={{value=false}}\nsetmetatable(holder,{{__newindex=function() setmetatable=ordinary end}})\nholder.value=true\nholder.value=1\n");
     clean(&fixture.check(&format!("{prefix}{FACTORY}")));
     let missing = prefix.replace("value=false", "value=nil");
     no_owner(&fixture.check(&format!("{missing}{FACTORY}")));

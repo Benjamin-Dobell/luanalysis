@@ -75,7 +75,7 @@ fn separate_source_snapshots_share_forward_alias_and_generic_declaration_queries
     assert_eq!(binding(&report, "original"), "number");
     assert_eq!(binding(&report, "numeric"), "number");
     assert_eq!(binding(&report, "text"), "string");
-    assert_eq!(report.files.len(), 3);
+    assert_eq!(report.checked_file_count(), 3);
     assert_eq!(report.project.entries.len(), 1);
 }
 
@@ -161,7 +161,7 @@ fn duplicate_project_named_types_keep_each_origin_and_never_select_a_first_decla
     let second = fixture.file("second.def.lua", "---@alias Same string\n");
     let main = fixture.file("main.lua", "---@type Same\nlocal value=42\n");
     let report = check_project(fixture.load(vec![main], vec![first, second]));
-    assert_eq!(report.files.len(), 3);
+    assert_eq!(report.checked_file_count(), 3);
     for file in &report.files {
         let source = &report.source(file.file).unwrap().source;
         assert_eq!(
@@ -199,7 +199,7 @@ fn syntax_invalid_sources_remain_owned_and_do_not_poison_other_files() {
     let invalid = fixture.file("invalid.lua", "local = ?");
     let valid = fixture.file("valid.lua", "local value=42");
     let report = check_project(fixture.load(vec![invalid, valid], vec![]));
-    assert_eq!(report.files.len(), 2);
+    assert_eq!(report.checked_file_count(), 2);
     assert!(report.files[0].report.bound.is_none());
     assert!(
         report.files[0]
@@ -314,10 +314,13 @@ fn project_host_failures_and_empty_snapshots_remain_available_to_the_caller() {
     assert_eq!(report.project.entry_errors.len(), 1);
     assert_eq!(report.project.role_conflicts.len(), 1);
     assert!(report.has_errors());
-    assert_eq!(report.files.len(), 1);
+    assert_eq!(report.checked_file_count(), 1);
     assert_clean(&report);
     let empty = check_project(fixture.load(vec![], vec![]));
-    assert!(empty.files.is_empty());
-    assert!(empty.project.files.is_empty());
+    assert_eq!(empty.checked_file_count(), 0);
+    // The default profile supplies its original loader declaration even when
+    // the host supplies no source. It is retained as a standard-library file.
+    assert_eq!(empty.standard_library_files.len(), 1);
+    assert!(empty.project.files.iter().all(|source| empty.standard_library_files.contains(&source.id)));
     assert!(!empty.has_errors());
 }
