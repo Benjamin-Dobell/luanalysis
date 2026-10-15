@@ -92,6 +92,7 @@ impl<'p, 's> Checker<'p, 's> {
         let seed = self.instantiate(seed, reference.mapper);
         let TypeData::NativeTable(data) = self.data(seed) else { return Err(NativeNamedTypeError::InvalidDeclaration(declaration)) };
         let mut fields = data.fields.to_vec();
+        let seed_keys: Vec<_> = fields.iter().map(|field| field.key).collect();
         let mut indexers = data.indexers.to_vec();
         let mut tails = data.sequence_tails.to_vec();
         for field in &mut fields {
@@ -107,21 +108,27 @@ impl<'p, 's> Checker<'p, 's> {
         for origin in members {
             let metadata = provider.type_member_header(self, origin.member);
             let declared = provider.type_member_origin(origin.member) == NativeTableFieldOrigin::Declared;
+            if let NativeTypeMemberKey::Fixed(key) = metadata.key {
+                let key = key.normalize().map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
+                if let Some(previous) = fields.iter_mut().find(|field| field.key == key)
+                    && (previous.origin == NativeTableFieldOrigin::Declared || !declared && seed_keys.contains(&key))
+                {
+                    // Original constructor fields and written contracts anchor
+                    // the member. Actual writes validate their own RHS at the
+                    // original store; a bad future store cannot poison this
+                    // contract or force a recursive RHS to type its own bound.
+                    previous.readonly |= metadata.readonly;
+                    continue;
+                }
+            }
             let raw = self.native_runtime_member_demand(reference, origin.member, false)?;
             let value = self.native_member_type(raw, origin.owner);
-            let actual = self.regular(value);
-            let value = if declared { actual } else { self.widened(value) };
+            let value = if declared { self.regular(value) } else { self.widened(value) };
             match metadata.key {
                 NativeTypeMemberKey::Fixed(key) => {
                     let key = key.normalize().map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
                     if let Some(previous) = fields.iter_mut().find(|field| field.key == key) {
-                        if previous.origin == NativeTableFieldOrigin::Declared {
-                            // Widening describes an inferred member's mutable
-                            // schema, not the value checked at this store. A
-                            // written singleton accepts its exact literal RHS.
-                            if !self.is_assignable(actual, previous.value) { return Err(NativeNamedTypeError::Table { declaration, error: NativeTableError::ValueType { value: actual, expected: previous.value } }); }
-                        } else if declared {
-                            if !self.is_assignable(previous.value, value) { return Err(NativeNamedTypeError::Table { declaration, error: NativeTableError::ValueType { value: previous.value, expected: value } }); }
+                        if declared {
                             previous.value = value;
                             previous.origin = NativeTableFieldOrigin::Declared;
                         } else {

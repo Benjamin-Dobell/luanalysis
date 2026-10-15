@@ -533,6 +533,34 @@ fn original_seed_singletons_validate_later_stores_before_inference_widening() {
 }
 
 #[test]
+fn original_seed_fields_anchor_contracts_despite_incompatible_future_stores() {
+    for origin in [TableFieldOrigin::Inferred, TableFieldOrigin::Declared] {
+        Engine::new().with_native_provider(
+            || {
+                let mut provider = Provider::new();
+                provider.seed.fields.push(TableField {
+                    origin,
+                    ..TableField::new(key("value"), Type::NumberLiteral(1.0))
+                });
+                provider.seed.fresh = true;
+                provider.members[0].ty = Type::StringLiteral(b"wrong".to_vec());
+                provider
+            },
+            |provider, queries| {
+                let actual = queries.table_type(&provider.seed).unwrap();
+                let table = queries.runtime_table_value(declaration(0), &actual).unwrap();
+                let schema = queries.runtime_table_schema(&table).unwrap();
+                let value = queries.table_lookup(&schema, &access("value")).unwrap();
+                assert_eq!(queries.inspect_type(&value), if origin == TableFieldOrigin::Declared { Type::NumberLiteral(1.0) } else { Type::Number });
+                assert!(queries.table_write(&table, &access("value"), &Type::StringLiteral(b"wrong".to_vec())).is_err(), "the original store checker rejects the RHS at its own source location");
+                assert!(queries.table_write(&table, &access("value"), &Type::NumberLiteral(1.0)).is_ok(), "an invalid future store cannot destroy the prefix contract");
+                assert_eq!(provider.member_calls.get(), 0, "an anchored contract does not depend on a future RHS");
+            },
+        );
+    }
+}
+
+#[test]
 fn stored_runtime_carriers_clear_freshness_without_losing_allocation_identity() {
     Engine::new().with_native_provider(Provider::new, |_, queries| {
         let actual = queries.table_type(&TableType {
