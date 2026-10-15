@@ -209,6 +209,40 @@ fn selected_string_namespace_supports_dot_colon_and_chained_original_result_pack
 }
 
 #[test]
+fn captured_string_members_keep_selected_library_contracts_in_nested_argument_queries() {
+    let fixture = Fixture::new();
+    let source = r#"---@alias HostObject {script_state:string}
+---@return HostObject[]
+local function all() return {} end
+local prefix='saved:'
+local function make()
+    local self={}
+    function self.load()
+        for _,object in ipairs(all()) do
+            local value=object.script_state
+            if value:sub(1,prefix:len())==prefix then
+                local rest=value:sub(prefix:len()+1)
+            end
+        end
+    end
+    return self
+end
+return make
+"#;
+    clean(&fixture.check(source, StandardEnvironmentProfile::Lua54));
+    let bad = fixture.check(
+        &source.replace("prefix:len()", "prefix:len('extra')"),
+        StandardEnvironmentProfile::Lua54,
+    );
+    assert!(code(&bad, "TS2554"), "{:#?}", bad.files);
+    let missing = fixture.check(
+        &source.replace("prefix:len()", "prefix:noSuchStringMethod()"),
+        StandardEnvironmentProfile::Lua54,
+    );
+    assert!(code(&missing, "TS2339"), "{:#?}", missing.files);
+}
+
+#[test]
 fn original_selected_type_declaration_grants_flow_but_compatible_replacement_does_not() {
     let fixture = Fixture::new();
     clean(&fixture.check(TYPE_GUARD, StandardEnvironmentProfile::Lua54));
