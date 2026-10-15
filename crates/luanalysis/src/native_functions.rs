@@ -1916,6 +1916,20 @@ impl FlowValueQueries for NativeRegistry {
 }
 
 impl NativeTypeProvider for NativeRegistry {
+    fn global_environment_binding(&self, environment: luanalysis_engine::NativeEnvironmentKey, name: &[u8]) -> Option<luanalysis_engine::NativeGlobalBindingKey> {
+        let globals = self.project_globals.as_ref()?;
+        if environment != globals.environment { return None; }
+        globals.binding(std::str::from_utf8(name).ok()?)
+    }
+    fn global_environment_bindings(&self, environment: luanalysis_engine::NativeEnvironmentKey) -> Vec<(Vec<u8>, luanalysis_engine::NativeGlobalBindingKey)> {
+        self.project_globals.as_ref().filter(|globals| globals.environment == environment)
+            .map_or_else(Vec::new, |globals| globals.bindings())
+    }
+    fn global_environment_self_binding(&self, _: luanalysis_engine::NativeEnvironmentKey) -> Option<luanalysis_engine::NativeGlobalBindingKey> {
+        // A standalone source registry owns no selected standard-library
+        // declaration provenance. A user value named `_G` is an ordinary value.
+        None
+    }
     fn contains_global_environment(&self, key: luanalysis_engine::NativeEnvironmentKey) -> bool {
         self.project_globals.as_ref().is_some_and(|globals| globals.environment == key)
     }
@@ -2634,6 +2648,43 @@ impl RegistryIndex<'_> {
         }
         self.statements(&function.body, Some(index));
         index
+    }
+}
+
+#[cfg(test)]
+mod standalone_environment_tests {
+    use super::*;
+    use luanalysis_engine::Engine;
+
+    #[test]
+    fn environment_members_use_original_single_source_binding_keys_and_reject_foreign_owners() {
+        let source = "answer = 42\nfunction global() return 1 end\n";
+        let file = luanalysis_syntax::parse(source);
+        let bound = bind::bind(&file);
+        Engine::new().with_native_provider(
+            move || NativeRegistry::new(file, bound),
+            |registry, queries| {
+                let environment = registry.project_globals.as_ref().unwrap().environment;
+                let binding = registry.global_binding("answer").unwrap();
+                assert_eq!(registry.global_environment_binding(environment, b"answer"), Some(binding));
+                let bindings = registry.global_environment_bindings(environment);
+                assert!(bindings.contains(&(b"answer".to_vec(), binding)));
+                assert!(bindings.iter().all(|(_, binding)| binding.environment == environment));
+                let foreign = luanalysis_engine::NativeEnvironmentKey { index: environment.index + 1, ..environment };
+                assert_eq!(registry.global_environment_binding(foreign, b"answer"), None);
+                assert!(registry.global_environment_bindings(foreign).is_empty());
+                assert_eq!(registry.global_environment_binding(environment, &[0xff]), None);
+                assert_eq!(registry.global_environment_self_binding(environment), None);
+                let table = queries.global_environment_type(environment).unwrap();
+                let value = queries.property_type(&table, "answer").unwrap();
+                assert_eq!(queries.format(&value), "number");
+                let function = queries.property_type(&table, "global").unwrap();
+                let call = queries.call(&function, &[]);
+                assert!(call.errors.is_empty(), "{:#?}", call.errors);
+                let returned = queries.widen(&call.return_type);
+                assert_eq!(queries.format(&returned), "number");
+            },
+        );
     }
 }
 
