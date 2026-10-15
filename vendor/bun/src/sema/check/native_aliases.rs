@@ -2,6 +2,8 @@
 //! These are allocation/copy tokens, never fabricated type or syntax IDs.
 use super::{Checker, Query};
 use super::native_flow::*;
+use super::task::Stored;
+use crate::util::FxHashMap;
 use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug)]
@@ -32,8 +34,20 @@ enum Origin {
     CallAllocation(NativeValueKey, NativeFlowKey, Box<Origin>),
     CallOpaque(NativeValueKey, NativeFlowKey, Box<Origin>),
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Origins { tokens: HashSet<Origin>, unknown: bool, non_table: bool, uncertain: bool }
+
+/// Completed provenance facts belong to the checker that owns their query
+/// dependencies. Flow epochs separate speculative effects from stable inputs.
+#[derive(Default)]
+pub(super) struct NativeAliasCache {
+    references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u64), Origins>,
+    values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u64), Origins>,
+}
+impl NativeAliasCache {
+    fn reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u64), result: Origins, _: Stored) { self.references.insert(key, result); }
+    fn value(&mut self, key: (NativeValueKey, NativeFlowKey, usize, u64), result: Origins, _: Stored) { self.values.insert(key, result); }
+}
 impl Origins {
     fn unknown() -> Self { Self { unknown: true, uncertain: true, ..Self::default() } }
     fn non_table() -> Self { Self { non_table: true, ..Self::default() } }
@@ -60,8 +74,11 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_alias_reference(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Origins {
         if reference.graph != at.graph || !provider.contains_graph(at.graph) || !provider.contains_reference(reference) { return Origins::unknown() }
+        let key = (reference, at, self.flow_memo.native_state.effect_epoch);
+        if let Some(result) = self.native_alias_cache.references.get(&key) { return result.clone() }
         let query = Query::NativeAlias(reference, at);
         if !self.enter(query) { return Origins::unknown() }
+        let begun = self.begin_memoizable();
         let result = match provider.node(at) {
             Some(NativeFlowNode::Start) => {
                 let declaration = provider.reference_declaration(reference);
@@ -106,14 +123,20 @@ impl<'p, 's> Checker<'p, 's> {
             Some(NativeFlowNode::Unreachable | NativeFlowNode::Return { .. }) => Origins::non_table(),
             _ => Origins::unknown(),
         };
-        let _ = self.leave(query);
+        let memoizable = self.end_memoizable(begun);
+        if let Ok(stored) = self.leave(query)
+            && memoizable.is_some() && !result.uncertain && !self.is_stack_low()
+        { self.native_alias_cache.reference(key, result.clone(), stored); }
         result
     }
 
     fn native_alias_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey, column: usize) -> Origins {
         if value.snapshot != input.graph.snapshot || !provider.contains_graph(input.graph) || provider.node(input).is_none() { return Origins::unknown() }
+        let key = (value, input, column, self.flow_memo.native_state.effect_epoch);
+        if let Some(result) = self.native_alias_cache.values.get(&key) { return result.clone() }
         let query = Query::NativeAliasValue(value, input, column);
         if !self.enter(query) { return Origins::unknown() }
+        let begun = self.begin_memoizable();
         let result = match provider.value_alias_source(value, input) {
             NativeAliasValue::Reference { reference, input } => if column == 0 { self.native_alias_reference(provider, reference, input) } else { Origins::non_table() },
             NativeAliasValue::Allocation => if column == 0 { Origins::one(Origin::Allocation(value, input), false) } else { Origins::non_table() },
@@ -125,7 +148,10 @@ impl<'p, 's> Checker<'p, 's> {
             NativeAliasValue::NotTable => Origins::non_table(),
             NativeAliasValue::Unknown => Origins::one(Origin::OpaqueValue(value, input, column), true),
         };
-        let _ = self.leave(query);
+        let memoizable = self.end_memoizable(begun);
+        if let Ok(stored) = self.leave(query)
+            && memoizable.is_some() && !result.uncertain && !self.is_stack_low()
+        { self.native_alias_cache.value(key, result.clone(), stored); }
         result
     }
 

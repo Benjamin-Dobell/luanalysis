@@ -355,21 +355,26 @@ fn original_alias_copies_follow_frozen_epochs_across_rebinding() {
 }
 #[test]
 fn proven_fresh_calls_differ_but_cached_memoized_and_unknown_calls_stay_possible() {
-    Engine::new().with_native_provider(
-        || Functions,
-        |_, q| {
-            for (returns, expected) in [
-                (Returns::Allocation, NativeAliasRelation::Different),
-                (Returns::Cached, NativeAliasRelation::Possible),
-                (Returns::Memoized, NativeAliasRelation::Possible),
-            ] {
+    for (returns, expected) in [
+        (Returns::Allocation, NativeAliasRelation::Different),
+        (Returns::Cached, NativeAliasRelation::Possible),
+        (Returns::Memoized, NativeAliasRelation::Possible),
+    ] {
+        Engine::new().with_native_provider(
+            || Functions,
+            |_, q| {
                 let mut source = Source::new();
                 source.returns = returns;
                 assert_eq!(
                     q.flow_alias_relation(&source, reference(0, 0), at(0, 5), value(9), at(0, 0)),
                     expected
                 );
-            }
+            },
+        );
+    }
+    Engine::new().with_native_provider(
+        || Functions,
+        |_, q| {
             let source = Source::new();
             assert_eq!(
                 q.flow_alias_relation(&source, reference(0, 0), at(0, 5), value(14), at(0, 0)),
@@ -380,29 +385,29 @@ fn proven_fresh_calls_differ_but_cached_memoized_and_unknown_calls_stay_possible
 }
 #[test]
 fn sibling_pack_projections_share_or_distinguish_the_actual_returned_allocations() {
-    Engine::new().with_native_provider(
-        || Functions,
-        |_, q| {
-            for (returns, expected) in [
-                (Returns::SharedPair, NativeAliasRelation::Same),
-                (Returns::DistinctPair, NativeAliasRelation::Different),
-            ] {
+    for (returns, expected) in [
+        (Returns::SharedPair, NativeAliasRelation::Same),
+        (Returns::DistinctPair, NativeAliasRelation::Different),
+    ] {
+        Engine::new().with_native_provider(
+            || Functions,
+            |_, q| {
                 let mut source = Source::new();
                 source.returns = returns;
                 assert_eq!(
                     q.flow_alias_relation(&source, reference(0, 0), at(0, 5), value(8), at(0, 0)),
                     expected
                 );
-            }
-        },
-    );
+            },
+        );
+    }
 }
 #[test]
 fn calls_preserve_immutable_cells_but_invalidate_fields_and_cross_function_writes() {
     Engine::new().with_native_provider(
         || Functions,
         |_, q| {
-            let mut source = Source::new();
+            let source = Source::new();
             assert_eq!(
                 q.flow_alias_relation(&source, reference(0, 0), at(0, 4), value(17), at(0, 3)),
                 NativeAliasRelation::Same
@@ -411,6 +416,12 @@ fn calls_preserve_immutable_cells_but_invalidate_fields_and_cross_function_write
                 q.flow_alias_relation(&source, reference(0, 2), at(0, 4), value(18), at(0, 3)),
                 NativeAliasRelation::Possible
             );
+        },
+    );
+    Engine::new().with_native_provider(
+        || Functions,
+        |_, q| {
+            let mut source = Source::new();
             source.foreign_write = true;
             assert_eq!(
                 q.flow_alias_relation(&source, reference(0, 0), at(0, 4), value(17), at(0, 3)),
@@ -432,6 +443,12 @@ fn loops_and_recursive_return_provenance_never_equate_repeated_allocation_sites(
                 q.flow_alias_relation(&source, reference(0, 0), at(0, 6), value(0), at(0, 0)),
                 NativeAliasRelation::Possible
             );
+        },
+    );
+    Engine::new().with_native_provider(
+        || Functions,
+        |_, q| {
+            let mut source = Source::new();
             source.returns = Returns::Recursive;
             assert_eq!(
                 q.flow_alias_relation(&source, reference(0, 0), at(0, 5), value(9), at(0, 0)),
@@ -464,9 +481,147 @@ fn matching_known_allocations_do_not_hide_an_untracked_recursive_return_alternat
         |_, queries| {
             let mut source = Source::new();
             source.returns = Returns::PartialRecursive;
+            for _ in 0..2 {
+                assert_eq!(
+                    queries.flow_alias_relation(
+                        &source,
+                        reference(0, 0),
+                        at(0, 5),
+                        value(8),
+                        at(0, 0)
+                    ),
+                    NativeAliasRelation::Possible
+                );
+            }
             assert_eq!(
-                queries.flow_alias_relation(&source, reference(0, 0), at(0, 5), value(8), at(0, 0)),
+                queries.flow_alias_relation(&source, reference(0, 0), at(0, 2), value(3), at(0, 2)),
+                NativeAliasRelation::Same
+            );
+        },
+    );
+}
+
+struct ContextSource;
+fn context_at(context: u64, node: u32) -> NativeFlowKey {
+    NativeFlowKey {
+        graph: NativeGraphKey {
+            context,
+            ..graph(0)
+        },
+        node,
+    }
+}
+fn context_reference(context: u64) -> NativeReferenceKey {
+    NativeReferenceKey {
+        graph: context_at(context, 0).graph,
+        reference: 0,
+    }
+}
+impl NativeFlowProvider for ContextSource {
+    fn contains_graph(&self, key: NativeGraphKey) -> bool {
+        key.snapshot == 7710 && key.region == 0 && key.context < 2
+    }
+    fn contains_reference(&self, key: NativeReferenceKey) -> bool {
+        self.contains_graph(key.graph) && key.reference == 0
+    }
+    fn node(&self, key: NativeFlowKey) -> Option<NativeFlowNode> {
+        if !self.contains_graph(key.graph) {
+            return None;
+        }
+        match key.node {
+            0 => Some(NativeFlowNode::Start),
+            1 => Some(NativeFlowNode::Write {
+                before: context_at(key.graph.context, 0),
+                target: context_reference(key.graph.context),
+                value: value(0),
+                input: context_at(key.graph.context, 0),
+            }),
+            _ => None,
+        }
+    }
+    fn is_shared(&self, _: NativeFlowKey) -> bool {
+        false
+    }
+    fn write_affects(
+        &self,
+        left: NativeReferenceKey,
+        right: NativeReferenceKey,
+        _: NativeFlowKey,
+    ) -> NativeWriteRelation {
+        if left == right {
+            NativeWriteRelation::Exact
+        } else {
+            NativeWriteRelation::Unaffected
+        }
+    }
+    fn value_alias_source(&self, key: NativeValueKey, input: NativeFlowKey) -> NativeAliasValue {
+        match key.index {
+            0 if input.graph.context == 0 => NativeAliasValue::Allocation,
+            0 => NativeAliasValue::NotTable,
+            1 => NativeAliasValue::Reference {
+                reference: context_reference(input.graph.context),
+                input: context_at(input.graph.context, 1),
+            },
+            _ => NativeAliasValue::Unknown,
+        }
+    }
+    fn value_type(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Type {
+        panic!("alias metadata needs no inferred type")
+    }
+    fn call_effects(
+        &self,
+        _: NativeValueKey,
+        _: NativeFlowKey,
+        _: &mut dyn TypeQueries,
+    ) -> NativeCallEffects {
+        panic!("no call in original graph")
+    }
+    fn flow_error(&self, _: NativeFlowKey, error: NativeFlowError) {
+        panic!("invalid original context {error:?}")
+    }
+}
+
+#[test]
+fn memoized_alias_origins_retain_original_body_context_and_input_flow() {
+    Engine::new().with_native_provider(
+        || Functions,
+        |_, queries| {
+            let source = ContextSource;
+            for (context, expected) in [
+                (0, NativeAliasRelation::Same),
+                (1, NativeAliasRelation::Different),
+                (0, NativeAliasRelation::Same),
+            ] {
+                assert_eq!(
+                    queries.flow_alias_relation(
+                        &source,
+                        context_reference(context),
+                        context_at(context, 1),
+                        value(1),
+                        context_at(context, 1)
+                    ),
+                    expected
+                );
+            }
+            assert_eq!(
+                queries.flow_alias_relation(
+                    &source,
+                    context_reference(0),
+                    context_at(0, 0),
+                    value(1),
+                    context_at(0, 1)
+                ),
                 NativeAliasRelation::Possible
+            );
+            assert_eq!(
+                queries.flow_alias_relation(
+                    &source,
+                    context_reference(0),
+                    context_at(0, 1),
+                    value(1),
+                    context_at(0, 1)
+                ),
+                NativeAliasRelation::Same
             );
         },
     );
