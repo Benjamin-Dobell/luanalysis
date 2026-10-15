@@ -508,9 +508,9 @@ impl<'p, 's> Checker<'p, 's> {
         let key = (value, input, column, path_id, epoch, frame);
         if let Some(result) = self.native_alias_cache.projected_values.get(&key) { return result.clone() }
         let query = Query::NativeAliasProjectedValue(value, input, column, path_id, epoch, frame);
-        if !self.enter(query) { return Origins::unknown() }
+        if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
         let begun = self.begin_memoizable();
-        let result = if column == 0 && let Some(field) = provider.value_alias_member_source(value, input, path[0], self) {
+        let mut result = if column == 0 && let Some(field) = provider.value_alias_member_source(value, input, path[0], self) {
             self.native_alias_projected_value(provider, field.value, field.input, 0, &path[1..])
         } else {
             match provider.value_alias_source(value, input) {
@@ -525,9 +525,11 @@ impl<'p, 's> Checker<'p, 's> {
             }
         };
         let memoizable = self.end_memoizable(begun);
-        if let Ok(stored) = self.leave(query)
-            && memoizable.is_some() && !result.uncertain && !self.is_stack_low()
-        { self.native_alias_cache.projected_value(key, result.clone(), stored); }
+        match self.leave(query) {
+            Ok(stored) if memoizable.is_some() && !result.uncertain && !self.is_stack_low() => self.native_alias_cache.projected_value(key, result.clone(), stored),
+            Ok(_) if memoizable.is_some() => {},
+            _ => { result.unknown = true; result.uncertain = true; self.mark_tainted_from(0); },
+        }
         result
     }
 
@@ -540,9 +542,9 @@ impl<'p, 's> Checker<'p, 's> {
         let key = (reference, at, path_id, epoch, frame);
         if let Some(result) = self.native_alias_cache.projected_references.get(&key) { return result.clone() }
         let query = Query::NativeAliasProjectedReference(reference, at, path_id, epoch, frame);
-        if !self.enter(query) { return Origins::unknown() }
+        if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
         let begun = self.begin_memoizable();
-        let result = match provider.node(at) {
+        let mut result = match provider.node(at) {
             // An immutable captured cell preserves its table identity, not
             // the identities stored in that table. Creation-time fields may
             // be replaced before invocation or by an earlier invocation;
@@ -551,6 +553,7 @@ impl<'p, 's> Checker<'p, 's> {
             // projection within its activation, without claiming an original
             // constructor object. Call returns wrap it with the actual call.
             Some(NativeFlowNode::Start) => Origins::one(Origin::OpaqueProjection(reference, at, path.to_vec()), true),
+            Some(NativeFlowNode::Write { before, .. }) if !self.native_alias_dispatch_safe(provider, at, before) => Origins::one(Origin::OpaqueProjection(reference, at, path.to_vec()), true),
             Some(NativeFlowNode::Write { before, target, value, input }) => {
                 self.native_alias_projected_write(provider, reference, at, path, before, target, value, input)
             },
@@ -560,7 +563,12 @@ impl<'p, 's> Checker<'p, 's> {
                 origins
             },
             Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
-                | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => self.native_alias_projected_reference(provider, reference, before, path),
+                | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => {
+                // The root cell can be immutable while a dispatched operation
+                // replaces an object stored anywhere along this heap path.
+                if self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_projected_reference(provider, reference, before, path) }
+                else { Origins::one(Origin::OpaqueProjection(reference, at, path.to_vec()), true) }
+            },
             // Heap contents may change across a call even when the base cell
             // remains stable. Neither a loop site nor a captured activation is
             // an identity proof for the projected object.
@@ -569,9 +577,11 @@ impl<'p, 's> Checker<'p, 's> {
             _ => Origins::unknown(),
         };
         let memoizable = self.end_memoizable(begun);
-        if let Ok(stored) = self.leave(query)
-            && memoizable.is_some() && !result.uncertain && !self.is_stack_low()
-        { self.native_alias_cache.projected_reference(key, result.clone(), stored); }
+        match self.leave(query) {
+            Ok(stored) if memoizable.is_some() && !result.uncertain && !self.is_stack_low() => self.native_alias_cache.projected_reference(key, result.clone(), stored),
+            Ok(_) if memoizable.is_some() => {},
+            _ => { result.unknown = true; result.uncertain = true; self.mark_tainted_from(0); },
+        }
         result
     }
 
