@@ -1586,6 +1586,30 @@
       "patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch",
       "reason": "Record verified allocation-backed runtime schemas, original member owner applications, alias/call-origin certificates and guarded environment/projected flow through kernel 207aabc.",
       "patch_sha256": "114ca384275a9fe5bad1a9c2f9173aad002f435e8f29eba78b80ecf8f54eff44"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-fresh-namespace-environment-members.patch",
+      "reason": "Prove raw writes to original fresh namespace allocations before any dispatch and resolve original member reads only after proving their physical global environment receiver through kernel 5e72664.",
+      "patch_sha256": "5bfabcffa01128bfa4a2de0e246cc50b6efa766d7be4df41ef9c4858651abd1b"
+    },
+    {
+      "path": "src/sema/check/native_aliases.rs",
+      "patch": "vendor/patches/bun-sema-native-fresh-namespace-environment-members.patch",
+      "reason": "Prove raw writes to original fresh namespace allocations before any dispatch and resolve original member reads only after proving their physical global environment receiver through kernel 5e72664.",
+      "patch_sha256": "5bfabcffa01128bfa4a2de0e246cc50b6efa766d7be4df41ef9c4858651abd1b"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-fresh-namespace-environment-members.patch",
+      "reason": "Prove raw writes to original fresh namespace allocations before any dispatch and resolve original member reads only after proving their physical global environment receiver through kernel 5e72664.",
+      "patch_sha256": "5bfabcffa01128bfa4a2de0e246cc50b6efa766d7be4df41ef9c4858651abd1b"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-fresh-namespace-environment-members.patch",
+      "reason": "Prove raw writes to original fresh namespace allocations before any dispatch and resolve original member reads only after proving their physical global environment receiver through kernel 5e72664.",
+      "patch_sha256": "5bfabcffa01128bfa4a2de0e246cc50b6efa766d7be4df41ef9c4858651abd1b"
     }
   ],
   "source_additions": {
@@ -1594,7 +1618,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_aliases.rs": {
-      "extracted_sha256": "352671d4f04dd64bbca9cf38153a50d67b3ee33d55324b1c21923626008fe846",
+      "extracted_sha256": "72485b044807b8e785db722d22ae090c970dae026e96938b90abf9571575484c",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_assertions.rs": {
@@ -1602,7 +1626,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "0104306481593c0b2b9e7f522f58a11c8dc133266cf80edcee4c29dd66eb343a",
+      "extracted_sha256": "e51a222c27ce0b6ca29b890ab5e073d7c15a7559cda9429bd62b89d7b9c3d7dc",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
@@ -2600,7 +2624,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "6a9880ad8e514c9d2252fe1cb356569ddf7217f85a0cdd4c589b721648139c72"
+      "extracted_sha256": "51130e7f9b91d4064fc00c8eced3115b633af63f8396b3060675d523214ddb11"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -2685,7 +2709,7 @@
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "881680933adbf8ebf6d5a0f6ebc8c07dbcc2e801835377a53ddacc76fc4ea46c"
+      "extracted_sha256": "d7aee538f7475002ba83e5f9a494b75763f4b999e0de89839580c6fecd72b2f6"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",

@@ -370,6 +370,12 @@ SOURCE_ADAPTATIONS.extend({
     "check/relate.rs", "check/shape.rs", "check/sink.rs", "check/symbols.rs", "types.rs",
 ])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-fresh-namespace-environment-members.patch",
+    "reason": "Prove raw writes to original fresh namespace allocations before any dispatch and resolve original member reads only after proving their physical global environment receiver through kernel 5e72664.",
+} for path in ["mod.rs", "native_aliases.rs", "native_flow.rs", "sink.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

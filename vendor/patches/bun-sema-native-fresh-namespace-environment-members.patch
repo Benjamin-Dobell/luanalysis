@@ -1,0 +1,204 @@
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index 73415c3..8e8fa90 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -1070,6 +1070,7 @@ enum Query {
+     NativeAliasProjectedValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u32, u64, u64),
+     NativeAliasReturn(crate::types::NativeFunctionId, usize),
+     NativeCallPreserves(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
++    NativeAliasMetatableAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
+     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
+     NativeGlobals(NativeGlobalsQuery),
+     NativeProject(NativeProjectQuery),
+@@ -1166,7 +1167,7 @@ impl Query {
+             Query::ReturnOfSignature(_)
+             | Query::NativeContextualTypeOwner(..)
+             | Query::NativeFlowCallEffects(..)
+-            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..)
++            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
+             | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
+             | Query::NativeNamed(_)
+             | Query::NativeGlobals(_)
+diff --git a/src/sema/check/native_aliases.rs b/src/sema/check/native_aliases.rs
+index 2b990f0..b414476 100644
+--- a/src/sema/check/native_aliases.rs
++++ b/src/sema/check/native_aliases.rs
+@@ -22,6 +22,14 @@ pub enum NativeAliasValue {
+ }
+ #[derive(Clone, Copy, Debug)]
+ pub struct NativeAliasReturnValue { pub value: NativeValueKey, pub input: NativeFlowKey }
++/// An original fixed member read and its candidate physical environment slot.
++/// The native worker must prove the receiver before using the candidate slot.
++#[derive(Clone, Copy, Debug)]
++pub struct NativeAliasEnvironmentMember {
++    pub receiver: NativeAliasReturnValue,
++    pub reference: NativeReferenceKey,
++    pub input: NativeFlowKey,
++}
+ #[derive(Clone, Debug)]
+ pub struct NativeAliasReturn {
+     pub at: NativeFlowKey,
+@@ -76,6 +84,7 @@ pub(super) struct NativeAliasCache {
+     projected_references: FxHashMap<(NativeReferenceKey, NativeFlowKey, u32, u64, u64), Origins>,
+     projected_values: FxHashMap<(NativeValueKey, NativeFlowKey, usize, u32, u64, u64), Origins>,
+     preservations: FxHashMap<(NativeReferenceKey, NativeValueKey, NativeFlowKey, u64, u64), NativeCallPreservation>,
++    metatable_absence: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), bool>,
+     execution_ids: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64), u64>,
+     executions: Vec<AliasExecutionFrame>,
+ }
+@@ -195,12 +204,94 @@ impl<'p, 's> Checker<'p, 's> {
+                 if reference.graph != at.graph { return false }
+                 if provider.reference_is_cell(reference) { return true }
+                 let origins = self.native_alias_reference(provider, reference, before);
+-                if origins.uncertain { self.mark_tainted_from(0); }
+-                !origins.unknown && !origins.uncertain && !origins.non_table && !origins.tokens.is_empty()
++                if origins.uncertain { self.mark_tainted_from(0); return false }
++                if !origins.unknown && !origins.non_table && !origins.tokens.is_empty() { return true }
++                self.native_alias_fresh_raw_write(provider, at, before)
+             },
+         }
+     }
+ 
++    /// A literal Lua allocation starts without a metatable. Prove that its
++    /// current write cannot invoke __newindex using original execution facts,
++    /// not the receiver's structural type or allocation age alone.
++    fn native_alias_fresh_raw_write(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, before: NativeFlowKey) -> bool {
++        if !matches!(provider.node(at), Some(NativeFlowNode::Write { .. })) { return false }
++        let Some(receiver) = provider.write_alias_receiver(at) else { return false };
++        if receiver.input.graph != before.graph { return false }
++        let origins = self.native_alias_value(provider, receiver.value, receiver.input, 0);
++        if origins.uncertain { self.mark_tainted_from(0); return false }
++        if origins.unknown || origins.non_table || origins.tokens.len() != 1 { return false }
++        let allocation = origins.tokens.into_iter().next().unwrap();
++        let (value, input) = match &allocation { Origin::Allocation(value, input) => (*value, *input), _ => return false };
++        if input.graph != before.graph || !provider.contains_graph(before.graph) || provider.node(input).is_none() { return false }
++        let epoch = self.flow_memo.native_state.effect_epoch;
++        let frame = self.native_alias_cache.frame();
++        let key = (value, input, before, epoch, frame);
++        if let Some(&absent) = self.native_alias_cache.metatable_absence.get(&key) { return absent }
++        let query = Query::NativeAliasMetatableAbsence(value, input, before, epoch, frame);
++        if !self.enter(query) { self.mark_tainted_from(0); return false }
++        let begun = self.begin_memoizable();
++        let absent = self.native_alias_allocation_clear_since(provider, &allocation, input, before);
++        let stored = self.end_memoizable(begun);
++        let left = self.leave(query);
++        if stored.is_none() || left.is_err() { self.mark_tainted_from(0); return false }
++        if !self.is_stack_low() { self.native_alias_cache.metatable_absence.insert(key, absent); }
++        absent
++    }
++
++    fn native_alias_allocation_clear_since(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
++        let mut active = HashSet::new();
++        let mut completed = HashSet::new();
++        let mut work = vec![(before, false)];
++        let mut steps = 0usize;
++        while let Some((at, leaving)) = work.pop() {
++            steps += 1;
++            if steps > 16_384 || at.graph != input.graph || self.is_stack_low() { return false }
++            if at == input { continue }
++            if leaving { active.remove(&at); completed.insert(at); continue }
++            if completed.contains(&at) { continue }
++            if !active.insert(at) { return false }
++            let Some(node) = provider.node(at) else { return false };
++            let mut edges = Vec::new();
++            match node {
++                NativeFlowNode::Write { before, .. } => {
++                    match provider.alias_node_dispatch(at) {
++                        NativeAliasDispatch::NoDispatch => {},
++                        NativeAliasDispatch::ReferenceRead(_) => {
++                            // Earlier stores into this same still-metatable-free
++                            // object cannot dispatch. Other heap stores may run
++                            // arbitrary __newindex code and are not a proof.
++                            let Some(receiver) = provider.write_alias_receiver(at) else { return false };
++                            if receiver.input.graph != at.graph { return false }
++                            let origins = self.native_alias_value(provider, receiver.value, receiver.input, 0);
++                            if origins.uncertain { self.mark_tainted_from(0); return false }
++                            if origins.unknown || origins.non_table || origins.tokens.len() != 1 || !origins.tokens.contains(allocation) { return false }
++                        },
++                        NativeAliasDispatch::Unknown => return false,
++                    }
++                    edges.push(before);
++                },
++                NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. } => {
++                    if !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return false }
++                    edges.push(before);
++                },
++                NativeFlowNode::Merge { edges: incoming } => {
++                    if incoming.is_empty() || !matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) { return false }
++                    edges.extend(incoming);
++                },
++                // Even a genuine standard setmetatable call can preserve raw
++                // fields while installing __newindex on this exact allocation.
++                NativeFlowNode::Call { .. } | NativeFlowNode::Loop { .. }
++                | NativeFlowNode::IteratorStart { .. } | NativeFlowNode::Iteration { .. }
++                | NativeFlowNode::Start | NativeFlowNode::Return { .. }
++                | NativeFlowNode::Unreachable | NativeFlowNode::Unsupported(_) => return false,
++            }
++            work.push((at, true));
++            work.extend(edges.into_iter().rev().map(|edge| (edge, false)));
++        }
++        true
++    }
++
+     fn native_alias_call_preservation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
+         if !provider.contains_reference(reference) || !provider.contains_graph(input.graph) || provider.node(input).is_none() || call.snapshot != input.graph.snapshot || self.is_stack_low() { return NativeCallPreservation::Unknown }
+         let epoch = self.flow_memo.native_state.effect_epoch;
+@@ -472,7 +563,11 @@ impl<'p, 's> Checker<'p, 's> {
+             });
+             if complete.is_some() && !self.is_stack_low() { origin } else { None }
+         } else { None };
+-        let mut result = if let Some(environment) = environment {
++        let member = if column == 0 { provider.value_alias_environment_member(value, input) } else { None };
++        let member = member.and_then(|member| self.native_alias_environment_member(provider, member));
++        let mut result = if let Some(member) = member {
++            member
++        } else if let Some(environment) = environment {
+             Origins::one(Origin::Environment(environment), false)
+         } else { match provider.value_alias_source(value, input) {
+             NativeAliasValue::Reference { reference, input } => if column == 0 { self.native_alias_reference(provider, reference, input) } else { Origins::non_table() },
+@@ -501,6 +596,18 @@ impl<'p, 's> Checker<'p, 's> {
+         result
+     }
+ 
++    fn native_alias_environment_member(&mut self, provider: &dyn NativeFlowProvider, member: NativeAliasEnvironmentMember) -> Option<Origins> {
++        if member.reference.graph != member.input.graph || !provider.contains_reference(member.reference) || provider.node(member.input).is_none() { return None }
++        let NativeAliasInitial::GlobalValue(binding) = provider.reference_alias_initial(member.reference) else { return None };
++        if !self.native_globals_provider.is_some_and(|globals| globals.contains_global_binding(binding) && globals.contains_global_environment(binding.environment)) { return None }
++        let receiver = self.native_alias_value(provider, member.receiver.value, member.receiver.input, 0);
++        if receiver.uncertain { self.mark_tainted_from(0); return Some(receiver) }
++        if receiver.unknown || receiver.non_table || receiver.tokens.len() != 1 || !receiver.tokens.contains(&Origin::Environment(binding.environment)) { return None }
++        // Resolve the physical slot at the lookup epoch, after evaluating a
++        // computed key, rather than at the receiver's earlier frozen input.
++        Some(self.native_alias_reference(provider, member.reference, member.input))
++    }
++
+     fn native_alias_projected_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey, column: usize, path: &[NativeTableKey]) -> Origins {
+         if path.is_empty() { return self.native_alias_value(provider, value, input, column) }
+         if value.snapshot != input.graph.snapshot || !provider.contains_graph(input.graph) || provider.node(input).is_none() { return Origins::unknown() }
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index 4f8e90d..e7de97a 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -268,6 +268,9 @@ pub trait NativeFlowProvider {
+     /// An invariant original written bound, never an inferred or narrowed view.
+     fn reference_written_contract(&self, _: NativeReferenceKey, _: &mut Checker<'_, '_>) -> Option<TypeId> { None }
+     fn value_alias_source(&self, _: NativeValueKey, _: NativeFlowKey) -> super::native_aliases::NativeAliasValue { super::native_aliases::NativeAliasValue::Unknown }
++    /// Candidate canonical slot for an original fixed-member read. Its frozen
++    /// receiver's environment identity is proved by the native alias worker.
++    fn value_alias_environment_member(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<super::native_aliases::NativeAliasEnvironmentMember> { None }
+     /// A unique original literal field at its frozen evaluation input. A
+     /// structural property type cannot establish runtime value provenance.
+     fn value_alias_member_source(&self, _: NativeValueKey, _: NativeFlowKey, _: NativeTableKey, _: &Checker<'_, '_>) -> Option<super::native_aliases::NativeAliasReturnValue> { None }
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+index 47f42b8..25ccecf 100644
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -271,7 +271,7 @@ fn is_task_independent(q: Query) -> bool {
+         Query::NativeGlobals(_)
+         | Query::NativeContextualTypeOwner(..)
+         | Query::NativeFlowCallEffects(..)
+-        | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..)
++        | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
+         | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
+         | Query::ReturnOfSignature(_)
+         | Query::Shape(_)
