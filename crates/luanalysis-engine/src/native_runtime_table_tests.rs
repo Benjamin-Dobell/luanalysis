@@ -733,6 +733,7 @@ fn future_computed_key_domains_preserve_nil_without_demanding_future_values() {
         || {
             let mut provider = Provider::new();
             provider.members[0].indexer = Some(Type::String);
+            provider.members[0].origin = TableFieldOrigin::Declared;
             provider
         },
         |provider, queries| {
@@ -756,6 +757,23 @@ fn future_computed_key_domains_preserve_nil_without_demanding_future_values() {
             let member = queries.table_lookup(&schema, &access("future")).unwrap();
             assert!(queries.is_assignable(&Type::Number, &member));
             assert!(queries.is_assignable(&Type::Nil, &member));
+        },
+    );
+}
+
+#[test]
+fn computed_stores_do_not_invent_an_unwritten_runtime_index_signature() {
+    Engine::new().with_native_provider(
+        || {
+            let mut provider = Provider::new();
+            provider.members[0].indexer = Some(Type::String);
+            provider
+        },
+        |provider, queries| {
+            let table = provider.allocation(queries);
+            assert!(queries.table_lookup(&table, &access("unknown")).is_err());
+            assert!(queries.table_write(&table, &TableKey::Type(Type::String), &Type::Number).is_err());
+            assert_eq!(provider.member_calls.get(), 0);
         },
     );
 }

@@ -378,7 +378,7 @@ impl super::NativeRegistry {
         let mut checker = self.checker_at_flow(creation.input, queries);
         checker.check_mode |= NativeCheckMode::INFERENTIAL;
         let receiver = checker.expression(&method.receiver);
-        Some(checker.engine.runtime_table_schema(&receiver).unwrap_or(receiver))
+        Some(receiver)
     }
 }
 

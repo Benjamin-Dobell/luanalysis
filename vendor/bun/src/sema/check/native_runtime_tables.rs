@@ -108,6 +108,9 @@ impl<'p, 's> Checker<'p, 's> {
         for origin in members {
             let metadata = provider.type_member_header(self, origin.member);
             let declared = provider.type_member_origin(origin.member) == NativeTableFieldOrigin::Declared;
+            // A computed store does not declare an open index signature. As
+            // with TS checking JS expandos, that key domain must be written.
+            if !declared && matches!(metadata.key, NativeTypeMemberKey::Indexer { .. }) { continue }
             if let NativeTypeMemberKey::Fixed(key) = metadata.key {
                 let key = key.normalize().map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
                 if let Some(previous) = fields.iter_mut().find(|field| field.key == key)
@@ -176,6 +179,7 @@ impl<'p, 's> Checker<'p, 's> {
                     if matches!(key, NativeTableAccessKey::Literal(key) if other.normalize() == Ok(key)) { return Ok(TypeId::UNDEFINED) }
                 }
                 NativeTypeMemberKey::Indexer { .. } => {
+                    if provider.type_member_origin(member.member) != NativeTableFieldOrigin::Declared { continue }
                     let raw = self.native_runtime_member_demand(reference.schema, member.member, true).map_err(|error| error.table_error(TypeId::ERROR))?;
                     let domain = self.native_member_type(raw, member.owner);
                     let observed = match key { NativeTableAccessKey::Literal(key) => self.native_table_key_type(key), NativeTableAccessKey::Type(ty) => ty };
@@ -226,7 +230,7 @@ impl<'p, 's> Checker<'p, 's> {
         let optional = self.contains_undefined(value);
         let present = self.without_undefined(value);
         if let Some(field) = fields.iter_mut().find(|field| field.key == key) {
-            field.value = present;
+            field.value = if field.origin == NativeTableFieldOrigin::Declared { self.resolved_assignment_type(field.value, present) } else { present };
             field.optional = optional;
         } else {
             fields.push(NativeTableField { key, value: present, optional, readonly: false, origin: NativeTableFieldOrigin::Inferred });

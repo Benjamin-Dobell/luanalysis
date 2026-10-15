@@ -2097,7 +2097,8 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 if widened_types[..] == types[..] {
                     ty
-                } else if widened_types.iter().any(|&t| self.is_empty_object_type(t)) {
+                } else if !widened_types.iter().any(|&t| self.native_has_runtime_table(t))
+                    && widened_types.iter().any(|&t| self.is_empty_object_type(t)) {
                     self.union_reduced(&widened_types)
                 } else {
                     self.union(&widened_types)
