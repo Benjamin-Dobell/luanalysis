@@ -339,6 +339,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Prepare canonical original owner scopes before publication and apply fixed alias augmentations only to matching native argument mappings.",
 })
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-caller-declaration-frames.patch",
+    "reason": "Preserve exact caller capabilities around delayed original arguments and establish canonical declaration frames for ordinary native signature provider callbacks.",
+} for path in ["call.rs", "decl.rs", "native_packs.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

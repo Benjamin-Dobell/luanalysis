@@ -1398,6 +1398,24 @@
       "patch": "vendor/patches/bun-sema-native-fixed-alias-method-owners.patch",
       "reason": "Prepare canonical original owner scopes before publication and apply fixed alias augmentations only to matching native argument mappings.",
       "patch_sha256": "4cfb20646ff3ebcecd61c6dbe9d698de1cbbe1c37633d8c3300ea47488fc9536"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-caller-declaration-frames.patch",
+      "reason": "Preserve exact caller capabilities around delayed original arguments and establish canonical declaration frames for ordinary native signature provider callbacks.",
+      "patch_sha256": "ddbb5d64d42bf833e147f13bc14d8afe5fc25a8eacb79625edd13aa09745fc5b"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-caller-declaration-frames.patch",
+      "reason": "Preserve exact caller capabilities around delayed original arguments and establish canonical declaration frames for ordinary native signature provider callbacks.",
+      "patch_sha256": "ddbb5d64d42bf833e147f13bc14d8afe5fc25a8eacb79625edd13aa09745fc5b"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-native-caller-declaration-frames.patch",
+      "reason": "Preserve exact caller capabilities around delayed original arguments and establish canonical declaration frames for ordinary native signature provider callbacks.",
+      "patch_sha256": "ddbb5d64d42bf833e147f13bc14d8afe5fc25a8eacb79625edd13aa09745fc5b"
     }
   ],
   "source_additions": {
@@ -1430,7 +1448,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "3861f65b1da8923ef9e7f331c6610cc2cceb6a2066357d2b6d35324dae2ac7f1",
+      "extracted_sha256": "7cc125bac0dd5d74cdd1b2e018d8ec27698101e3ea6a500e14ec58cc7a580eaa",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
@@ -2144,7 +2162,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "eeeeaa363fe6c3116c55f02a9e9441db2a3a327cf940a09e142c1bb4933a7060"
+      "extracted_sha256": "0d54a91d97d42c9a9ab64ed767a01aefa77e2ace18ceb7dae103b52293fb5a9a"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -2159,7 +2177,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "072b6192289b4f592a10b57279b31c6d7bdfe0eb1a1490911da1d8df998194ac"
+      "extracted_sha256": "f91d04c26c46ea07d0f46cdddc641784ba21447d9adc09a769e0fa12935fc18d"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
