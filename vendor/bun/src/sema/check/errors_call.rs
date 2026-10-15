@@ -1017,7 +1017,7 @@ impl Checker<'_, '_> {
                 self.note_parameter_types_resolved(sig, &params, i + 1);
                 return Some((i, actual, expected));
             }
-            prefix.push(actual);
+            if metatable || identity_context.is_some() { prefix.push(actual); }
         }
         if boundary < args.len() || rest.is_some() {
             let expected = self.rest_type_at_position(&params, boundary, false);
