@@ -56,6 +56,7 @@ enum Origin {
     Environment(NativeEnvironmentId),
     Allocation(NativeValueKey, NativeFlowKey),
     OpaqueReference(NativeReferenceKey, NativeFlowKey),
+    OpaqueProjection(NativeReferenceKey, NativeFlowKey, Vec<NativeTableKey>),
     OpaqueValue(NativeValueKey, NativeFlowKey, usize),
     CallAllocation(NativeValueKey, NativeFlowKey, Box<Origin>),
     CallOpaque(NativeValueKey, NativeFlowKey, Box<Origin>),
@@ -542,16 +543,14 @@ impl<'p, 's> Checker<'p, 's> {
         if !self.enter(query) { return Origins::unknown() }
         let begun = self.begin_memoizable();
         let result = match provider.node(at) {
-            Some(NativeFlowNode::Start) => {
-                if let Some(declaration) = provider.reference_declaration(reference)
-                    && declaration.owner != reference.graph
-                    && let Some(creation) = provider.graph_creation(reference.graph)
-                    && provider.graph_creation(declaration.owner).is_none()
-                    && !declaration.writes.iter().any(|write| write.owner != declaration.owner || write.statement_end > creation.position)
-                    && let Some(outer) = provider.reference_in_graph(reference, creation.input.graph)
-                { self.native_alias_projected_reference(provider, outer, creation.input, path) }
-                else { Origins::unknown() }
-            },
+            // An immutable captured cell preserves its table identity, not
+            // the identities stored in that table. Creation-time fields may
+            // be replaced before invocation or by an earlier invocation;
+            // lexical assignment positions cannot attest heap invariance.
+            // An opaque entry token preserves the identity of this one frozen
+            // projection within its activation, without claiming an original
+            // constructor object. Call returns wrap it with the actual call.
+            Some(NativeFlowNode::Start) => Origins::one(Origin::OpaqueProjection(reference, at, path.to_vec()), true),
             Some(NativeFlowNode::Write { before, target, value, input }) => {
                 self.native_alias_projected_write(provider, reference, at, path, before, target, value, input)
             },
