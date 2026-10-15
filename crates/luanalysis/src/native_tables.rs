@@ -255,10 +255,19 @@ impl Checker<'_> {
         receiver: &Type,
         key: &TableKey,
         value: &Type,
+        target_span: Span,
         key_span: Span,
         value_span: Span,
     ) -> bool {
-        match self.engine.table_write(receiver, key, value) {
+        let result = if matches!(key, TableKey::Type(_))
+            && let (Some(native), Some(input)) = (self.native, self.flow_at)
+            && let Some(store) = native.runtime_tables.store_for_target(target_span)
+            && store.key.graph.region == input.graph.region
+        {
+            let at = luanalysis_engine::NativeFlowKey { graph: input.graph, node: store.key.node };
+            self.engine.table_write_at_flow(&crate::native_flow::FlowAdapter { sources: native.iterator_sources(), values: native }, at, receiver, key, value)
+        } else { self.engine.table_write(receiver, key, value) };
+        match result {
             Ok(()) => true,
             Err(error) => {
                 self.native_table_error_with_owner(error, key_span, value_span, Some(receiver));

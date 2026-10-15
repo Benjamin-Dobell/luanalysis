@@ -402,6 +402,22 @@ impl SessionQueries<'_, '_, '_> {
             .map_err(|error| export_error(self.checker, self.handles, error))
     }
 
+    pub(super) fn table_write_at_flow_native(
+        &mut self,
+        provider: &dyn super::NativeFlowProvider,
+        at: super::NativeFlowKey,
+        table: &Type,
+        key: &TableKey,
+        value: &Type,
+    ) -> Result<(), TableError> {
+        let adapter = super::native_flow::FlowProviderAdapter { provider, handles: self.handles };
+        let table = import_type(self.checker, self.handles, table);
+        let key = import_access_key(self.checker, self.handles, key);
+        let value = import_type(self.checker, self.handles, value);
+        self.checker.native_table_write_at_flow(&adapter, at, table, key, value)
+            .map_err(|error| export_error(self.checker, self.handles, error))
+    }
+
     pub(super) fn table_value_context_native(
         &mut self,
         expected: &Type,

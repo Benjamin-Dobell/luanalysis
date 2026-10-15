@@ -177,6 +177,7 @@ pub enum NativeTypeDeclarationQuery {
     RuntimeTableSeed(TypeId),
     RuntimeTableMember(TypeId, NativeTypeMemberId, bool),
     RuntimeTableWrittenContext(TypeId, NativeTableKey),
+    RuntimeTableNumericContract(TypeId),
 }
 
 /// One original alias-head edge. The provider never follows the target alias.

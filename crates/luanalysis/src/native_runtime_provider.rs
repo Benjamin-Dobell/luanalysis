@@ -15,6 +15,13 @@ use luanalysis_syntax::{ExprKind, Span};
 use std::collections::HashSet;
 
 impl NativeRegistry {
+    pub(crate) fn runtime_store_in_scope(&self, declaration: NativeTypeDeclarationKey, at: NativeFlowKey) -> bool {
+        let Some(constructor) = self.runtime_tables.schema(declaration) else { return false; };
+        let Some(store) = self.runtime_tables.store(at) else { return false; };
+        constructor.is_lexically_uncontracted() && store.annotation.is_none()
+            && constructor.input.graph.snapshot == at.graph.snapshot
+            && constructor.input.graph.region == at.graph.region
+    }
     pub(crate) fn runtime_schema_contains(&self, key: NativeTypeDeclarationKey) -> bool {
         self.runtime_tables.schema(key).is_some()
     }

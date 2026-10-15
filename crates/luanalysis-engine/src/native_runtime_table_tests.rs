@@ -1037,6 +1037,146 @@ fn computed_stores_do_not_invent_an_unwritten_runtime_index_signature() {
     );
 }
 
+struct NumericFlow {
+    inner: Flow,
+    same_scope: bool,
+}
+impl NativeFlowProvider for NumericFlow {
+    fn contains_graph(&self, key: NativeGraphKey) -> bool { self.inner.contains_graph(key) }
+    fn contains_reference(&self, key: NativeReferenceKey) -> bool { self.inner.contains_reference(key) }
+    fn node(&self, key: NativeFlowKey) -> Option<NativeFlowNode> { self.inner.node(key) }
+    fn is_shared(&self, _: NativeFlowKey) -> bool { false }
+    fn write_affects(&self, query: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> NativeWriteRelation {
+        self.inner.write_affects(query, target, at)
+    }
+    fn write_index_value(&self, query: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> {
+        (query == reference(0) && target == reference(1)).then_some((value(0), NativeFlowKey { node: 0, ..at }))
+    }
+    fn runtime_table_store_in_scope(&self, key: NativeTypeDeclarationKey, _: NativeFlowKey) -> bool {
+        self.same_scope && key == declaration(0)
+    }
+    fn value_type(&self, key: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { self.inner.value_type(key, input, queries) }
+    fn call_effects(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> NativeCallEffects { NativeCallEffects::None }
+    fn flow_error(&self, _: NativeFlowKey, error: NativeFlowError) { panic!("invalid numeric-store graph: {error:?}") }
+}
+
+#[test]
+fn numeric_store_evolution_is_reached_sparse_and_does_not_demand_future_rhs() {
+    Engine::new().with_native_provider(
+        || {
+            let mut provider = Provider::new();
+            provider.members[0].indexer = Some(Type::Number);
+            provider.members[0].ty = Type::Boolean;
+            provider
+        },
+        |provider, queries| {
+            let table = provider.allocation(queries);
+            let numeric = TableKey::Type(Type::Number);
+            assert!(queries.table_lookup(&table, &numeric).is_err(), "future numeric stores do not establish a current domain");
+            let flow = NumericFlow {
+                inner: Flow {
+                    nodes: vec![NativeFlowNode::Start, Flow::write(0, 1, 1), Flow::write(1, 2, 1)],
+                    values: vec![Type::Number, Type::StringLiteral(b"word".to_vec()), Type::Boolean], weak: None,
+                }, same_scope: true,
+            };
+            assert!(queries.table_write_at_flow(&flow, at(1), &table, &numeric, &Type::String).is_ok());
+            assert_eq!(provider.member_calls.get(), 0, "admission must not demand this or a later inferred RHS");
+            assert_eq!(provider.seed_calls.get(), 0, "the original value bounds already describe the constructor");
+            let first = queries.flow_type(&flow, at(1), reference(0), &table, &table);
+            assert!(!first.incomplete, "{first:?}");
+            let read = queries.table_lookup(&first.ty, &numeric).unwrap();
+            for expected in [Type::String, Type::Nil] { assert!(queries.is_assignable(&expected, &read), "{}", queries.format(&read)); }
+            assert!(!queries.is_assignable(&Type::Boolean, &read));
+            let second = queries.flow_type(&flow, at(2), reference(0), &table, &table);
+            let read = queries.table_lookup(&second.ty, &numeric).unwrap();
+            for expected in [Type::String, Type::Boolean, Type::Nil] { assert!(queries.is_assignable(&expected, &read), "{}", queries.format(&read)); }
+            assert_eq!(provider.member_calls.get(), 0);
+            assert_eq!(provider.seed_calls.get(), 0);
+            assert!(queries.table_lookup(&first.ty, &access("unwritten")).is_err());
+            let array = queries.array_type(&Type::String);
+            assert!(!queries.is_assignable(&first.ty, &array), "numeric stores cannot create array form");
+        },
+    );
+}
+
+#[test]
+fn numeric_evolution_retains_overlapping_seed_values_and_nil_deletion() {
+    Engine::new().with_native_provider(
+        || {
+            let mut provider = Provider::new();
+            provider.members.clear();
+            provider.seed.fields = vec![TableField::new(LuaKey::Integer(1), Type::Number), TableField::new(key("named"), Type::Boolean)];
+            provider
+        },
+        |provider, queries| {
+            let actual = queries.table_type(&provider.seed).unwrap();
+            let table = queries.runtime_table_value(declaration(0), &actual).unwrap();
+            let flow = NumericFlow {
+                inner: Flow {
+                    nodes: vec![NativeFlowNode::Start, Flow::write(0, 1, 1), Flow::write(1, 2, 1)],
+                    values: vec![Type::Number, Type::String, Type::Nil], weak: None,
+                }, same_scope: true,
+            };
+            for (at_node, nil) in [(1, false), (2, true)] {
+                let reached = queries.flow_type(&flow, at(at_node), reference(0), &table, &table);
+                assert!(!reached.incomplete);
+                let read = queries.table_lookup(&reached.ty, &TableKey::Literal(LuaKey::Integer(1))).unwrap();
+                for expected in [Type::Number, Type::String] { assert!(queries.is_assignable(&expected, &read), "{}", queries.format(&read)); }
+                assert_eq!(queries.is_assignable(&Type::Nil, &read), nil);
+                assert_eq!(queries.table_lookup(&reached.ty, &access("named")), Ok(Type::Boolean));
+            }
+        },
+    );
+}
+
+#[test]
+fn numeric_store_evolution_excludes_written_bounds_foreign_scopes_and_symbolic_keys() {
+    Engine::new().with_native_provider(
+        || { let mut provider = Provider::new(); provider.members.clear(); provider },
+        |provider, queries| {
+            let table = provider.allocation(queries);
+            let mut flow = NumericFlow {
+                inner: Flow { nodes: vec![NativeFlowNode::Start, Flow::write(0, 1, 1)], values: vec![Type::Number, Type::String], weak: None },
+                same_scope: false,
+            };
+            let numeric = TableKey::Type(Type::Number);
+            assert!(queries.table_write_at_flow(&flow, at(1), &table, &numeric, &Type::String).is_err());
+            flow.same_scope = true;
+            for key in [Type::String, Type::Any, Type::Unknown, Type::Nil] {
+                assert!(queries.table_write_at_flow(&flow, at(1), &table, &TableKey::Type(key), &Type::String).is_err());
+            }
+            // A field annotation makes even this anonymous original table a
+            // written receiver; it cannot acquire a new inferred numeric domain.
+            let written = queries.table_type(&TableType { fields: vec![TableField::declared(key("named"), Type::Number)], ..Default::default() }).unwrap();
+            let written = queries.runtime_table_value(declaration(0), &written).unwrap();
+            assert!(queries.table_write_at_flow(&flow, at(1), &written, &numeric, &Type::String).is_err());
+        },
+    );
+}
+
+#[test]
+fn nil_only_numeric_stores_add_no_positive_slot_or_sequence_evidence() {
+    Engine::new().with_native_provider(
+        || { let mut provider = Provider::new(); provider.members.clear(); provider },
+        |provider, queries| {
+            let table = provider.allocation(queries);
+            let flow = NumericFlow {
+                inner: Flow { nodes: vec![NativeFlowNode::Start, Flow::write(0, 1, 1)], values: vec![Type::Number, Type::Nil], weak: None },
+                same_scope: true,
+            };
+            let reached = queries.flow_type(&flow, at(1), reference(0), &table, &table);
+            assert!(!reached.incomplete);
+            let read = queries.table_lookup(&reached.ty, &TableKey::Literal(LuaKey::Integer(1))).unwrap();
+            assert!(queries.is_assignable(&read, &Type::Nil));
+            assert!(!queries.is_assignable(&Type::String, &read));
+            let array = queries.array_type(&Type::String);
+            assert!(!queries.is_assignable(&reached.ty, &array));
+            assert_eq!(provider.member_calls.get(), 0);
+            assert_eq!(provider.seed_calls.get(), 0);
+        },
+    );
+}
+
 #[test]
 fn possible_alias_writes_preserve_both_actual_presence_continuations() {
     Engine::new().with_native_provider(Provider::new, |provider, queries| {

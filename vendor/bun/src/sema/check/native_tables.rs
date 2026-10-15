@@ -803,9 +803,19 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn native_table_absent_read(&mut self, table: TypeId, key: NativeTableAccessKey, error: NativeTableError) -> bool {
         // A broad key might also select one of this constituent's declared
         // fields. A rejected lookup cannot prove those possible values are nil.
-        if !matches!(key, NativeTableAccessKey::Literal(_)) { return false }
         if !matches!(error, NativeTableError::MissingKey { .. } | NativeTableError::KeyType { .. }) { return false }
         let table = self.native_runtime_carrier(table);
+        if matches!(key, NativeTableAccessKey::Type(TypeId::NUMBER))
+            && let Some(reference) = self.native_runtime_table_ref(table)
+            && let TypeData::NativeTable(data) = self.data(reference.view)
+        {
+            // A reached sparse numeric facet on another branch admits this
+            // truly empty numeric continuation as nil. Inspect only its
+            // existing view; future store recipes cannot supply values.
+            return data.indexers.is_empty() && data.sequence_tails.is_empty()
+                && !data.fields.iter().any(|field| matches!(field.key, NativeTableKey::Integer(_) | NativeTableKey::Float(_)));
+        }
+        if !matches!(key, NativeTableAccessKey::Literal(_)) { return false }
         if matches!(self.data(table), TypeData::NativeRuntimeTable(_) | TypeData::NativeTable(_) | TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) { return true }
         let base = self.base_constraint_or_type(table);
         base != table && self.native_table_absent_read(base, key, error)

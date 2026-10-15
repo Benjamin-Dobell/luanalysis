@@ -112,6 +112,11 @@ pub trait NativeFlowProvider {
     /// Original fixed child key for a descendant write. Types and the actual
     /// persistent receiver update are evaluated by the native flow worker.
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> Option<super::LuaKey> { None }
+    /// Original computed child key; the existing descendant relation selects
+    /// its receiver before this immutable recipe is requested.
+    fn write_index_value(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> { None }
+    /// Whether this unannotated constructor and store share an original scope.
+    fn runtime_table_store_in_scope(&self, _: super::NativeTypeDeclarationKey, _: NativeFlowKey) -> bool { false }
     /// A tested fixed child of the same original receiver.
     fn reference_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey) -> Option<super::LuaKey> { None }
     /// A fixed original descendant path, without inferred receiver values.
@@ -262,6 +267,12 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     fn write_member_key(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::NativeTableKey> {
         let key = self.provider.write_member_key(reference, target, at)?;
         Some(super::native_tables::import_literal_key(checker, &key))
+    }
+    fn write_index_value(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> {
+        self.provider.write_index_value(reference, target, at)
+    }
+    fn runtime_table_store_in_scope(&self, declaration: bun_sema::check::native_named::NativeTypeDeclarationId, at: NativeFlowKey) -> bool {
+        self.provider.runtime_table_store_in_scope(super::native_named::source_declaration(declaration), at)
     }
     fn reference_member_key(&self, reference: NativeReferenceKey, member: NativeReferenceKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::types::NativeTableKey> {
         let key = self.provider.reference_member_key(reference, member)?;

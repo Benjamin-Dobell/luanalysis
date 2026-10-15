@@ -1033,7 +1033,7 @@ impl Checker<'_> {
                         ExprKind::Index { index, .. } => (self.native_table_key(index), index.span),
                         _ => unreachable!(),
                     };
-                    if self.native_table_write(&receiver, &key, &value, key_span, origin) {
+                    if self.native_table_write(&receiver, &key, &value, target.span, key_span, origin) {
                         if let Some(reference) = self.reference(target) {
                             let constraint = self.engine.table_value_context(&receiver, &key);
                             let assigned = constraint.as_ref().map_or_else(

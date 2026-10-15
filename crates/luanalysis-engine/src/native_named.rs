@@ -631,7 +631,7 @@ pub(super) fn export_error(
             Q::IndexerKey(key) => NamedTypeQuery::Indexer(source_member(key)),
             Q::RuntimeTableMember(_, key, indexer) => if indexer { NamedTypeQuery::Indexer(source_member(key)) } else { NamedTypeQuery::Member(source_member(key)) },
             Q::Bases(key) | Q::RuntimeDomain(key) => NamedTypeQuery::Bases(source_declaration(key)),
-            Q::ObjectMembers(ty) | Q::ObjectValidation(ty) | Q::DefinitionContext(ty) | Q::RuntimeTableSeed(ty) | Q::RuntimeTableWrittenContext(ty, _) => {
+            Q::ObjectMembers(ty) | Q::ObjectValidation(ty) | Q::DefinitionContext(ty) | Q::RuntimeTableSeed(ty) | Q::RuntimeTableWrittenContext(ty, _) | Q::RuntimeTableNumericContract(ty) => {
                 let bun_sema::types::TypeData::NativeObject(reference) = checker.data(ty) else {
                     unreachable!("native object-members query owner")
                 };

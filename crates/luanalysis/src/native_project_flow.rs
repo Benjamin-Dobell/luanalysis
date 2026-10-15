@@ -8,7 +8,7 @@ use luanalysis_engine::{
     NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeFlowProvider,
     NativeFunctionCreation, NativeFunctionKey, NativeGraphKey, NativeIteratorProjection,
     NativeIteratorStage, NativePackProjection, NativePredicate, NativeReferenceKey, NativeValueKey,
-    NativeVariableDeclaration, NativeWriteRelation, Type, TypeQueries, ValuePack,
+    NativeVariableDeclaration, NativeWriteRelation, NativeTypeDeclarationKey, Type, TypeQueries, ValuePack,
 };
 
 impl ProjectRegistry {
@@ -79,6 +79,8 @@ impl NativeFlowProvider for ProjectRegistry {
         fn write_affects_with_types(reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeWriteRelation { at.graph.snapshot; NativeWriteRelation::PossibleAncestor }
         fn call_invalidates_reference(reference: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool { at.graph.snapshot; true }
         fn write_member_key(reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<LuaKey> { at.graph.snapshot; None }
+        fn write_index_value(reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> { at.graph.snapshot; None }
+        fn runtime_table_store_in_scope(declaration: NativeTypeDeclarationKey, at: NativeFlowKey) -> bool { at.graph.snapshot; false }
         fn reference_member_key(reference: NativeReferenceKey, member: NativeReferenceKey) -> Option<LuaKey> { reference.graph.snapshot; None }
         fn value_type(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { value.snapshot; queries.error_type() }
         fn alias_callee_type(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Type { value.snapshot; queries.error_type() }

@@ -890,6 +890,9 @@ pub trait TypeQueries {
     fn table_lookup(&mut self, table: &Type, key: &TableKey) -> Result<Type, TableError>;
     fn table_write(&mut self, table: &Type, key: &TableKey, value: &Type)
     -> Result<(), TableError>;
+    /// Validate an original store without turning future computed writes into
+    /// prospective members. Reached value evolution remains native flow work.
+    fn table_write_at_flow(&mut self, _: &dyn NativeFlowProvider, _: NativeFlowKey, table: &Type, key: &TableKey, value: &Type) -> Result<(), TableError> { self.table_write(table, key, value) }
     fn definition_field_write(&mut self, table: &Type, key: &LuaKey, value: &Type) -> Result<Type, TableError>;
     fn table_value_context(&mut self, table: &Type, key: &TableKey) -> Option<Type>;
     fn array_type(&mut self, element: &Type) -> Type;
@@ -1417,6 +1420,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         value: &Type,
     ) -> Result<(), TableError> {
         self.table_write_native(table, key, value)
+    }
+    fn table_write_at_flow(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, table: &Type, key: &TableKey, value: &Type) -> Result<(), TableError> {
+        self.table_write_at_flow_native(provider, at, table, key, value)
     }
     fn table_value_context(&mut self, table: &Type, key: &TableKey) -> Option<Type> {
         self.table_value_context_native(table, key)

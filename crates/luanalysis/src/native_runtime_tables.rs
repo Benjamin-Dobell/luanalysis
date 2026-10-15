@@ -83,6 +83,7 @@ pub(super) struct NativeRuntimeTables {
     constructor_indices: HashMap<NativeExpressionKey, usize>,
     stores: Vec<RuntimeTableStore>,
     store_indices: HashMap<NativeFlowKey, usize>,
+    target_stores: HashMap<(usize, usize), usize>,
     schema_keys: Vec<(NativeTypeDeclarationKey, NativeExpressionKey)>,
     member_keys: Vec<NativeTypeMemberKey>,
 }
@@ -209,6 +210,7 @@ impl NativeRuntimeTables {
         }
         let mut stores = Vec::new();
         let mut store_indices = HashMap::new();
+        let mut target_stores = HashMap::new();
         for graph in &sources.program.graphs {
             for node in &graph.nodes {
                 let flow::NodeKind::Write {
@@ -250,6 +252,7 @@ impl NativeRuntimeTables {
                 };
                 let key = sources.flow_key(node.id, 0);
                 store_indices.insert(key, stores.len());
+                target_stores.insert((address.span.start, address.span.end), stores.len());
                 stores.push(RuntimeTableStore {
                     key,
                     predecessors: node
@@ -285,6 +288,7 @@ impl NativeRuntimeTables {
             constructor_indices,
             stores,
             store_indices,
+            target_stores,
             schema_keys: Vec::new(),
             member_keys: Vec::new(),
         }
@@ -355,6 +359,9 @@ impl NativeRuntimeTables {
     }
     pub(super) fn stores(&self) -> &[RuntimeTableStore] {
         &self.stores
+    }
+    pub(super) fn store_for_target(&self, span: Span) -> Option<&RuntimeTableStore> {
+        self.target_stores.get(&(span.start, span.end)).map(|&index| &self.stores[index])
     }
     /// Recipes use context zero. Contextual/captured instances retain these
     /// same original nodes and acquire their native query context separately.

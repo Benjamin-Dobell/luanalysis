@@ -2020,6 +2020,9 @@ impl NativeRegistry {
 }
 
 impl FlowValueQueries for NativeRegistry {
+    fn runtime_table_store_in_scope(&self, declaration: luanalysis_engine::NativeTypeDeclarationKey, at: NativeFlowKey) -> bool {
+        self.runtime_store_in_scope(declaration, at)
+    }
     fn binding_has_written_contract(&self, binding: BindingId) -> bool {
         NativeRegistry::binding_has_written_contract(self, binding)
     }

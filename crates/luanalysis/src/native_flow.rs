@@ -1246,6 +1246,7 @@ fn intern_reference(
 }
 
 pub(super) trait FlowValueQueries {
+    fn runtime_table_store_in_scope(&self, _: luanalysis_engine::NativeTypeDeclarationKey, _: NativeFlowKey) -> bool { false }
     fn alias_value_type(&self, sources:&NativeFlowSources, value:&ValueRecipe, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {self.flow_value_type(sources,value,input,queries)}
     fn binding_has_written_contract(&self, _: BindingId) -> bool { false }
     fn written_binding_contract(&self, _: BindingId, _: &mut dyn TypeQueries) -> Option<Type> { None }
@@ -1773,6 +1774,20 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             flow::Key::Float(value) => luanalysis_engine::LuaKey::Number(f64::from_bits(*value)),
             flow::Key::Dynamic(_) => return None,
         })
+    }
+    fn write_index_value(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> {
+        if reference.graph != at.graph || target.graph != at.graph { return None; }
+        let target = self.sources.source_reference(target)?;
+        // The existing frozen-receiver relation selected this descendant.
+        // Transport its key without rediscovering aliases or re-reading the
+        // receiver after a key expression may have rebound its source path.
+        if !matches!(target.path.last(), Some(flow::Key::Dynamic(_))) { return None; }
+        let flow::NodeKind::Write { address, .. } = &self.sources.source_node(at)?.kind else { return None; };
+        let evaluation = self.sources.program.evaluation(address.key?);
+        Some((self.sources.evaluation_value(evaluation.id), self.sources.flow_key(evaluation.input, at.graph.context)))
+    }
+    fn runtime_table_store_in_scope(&self, declaration: luanalysis_engine::NativeTypeDeclarationKey, at: NativeFlowKey) -> bool {
+        self.values.runtime_table_store_in_scope(declaration, at)
     }
     fn reference_member_key(&self, reference: NativeReferenceKey, member: NativeReferenceKey) -> Option<luanalysis_engine::LuaKey> {
         if reference.graph != member.graph { return None; }

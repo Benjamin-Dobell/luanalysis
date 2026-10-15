@@ -40,7 +40,7 @@ pub enum NativeWriteRelation {
     Exact,
     /// Replacing an ancestor invalidates the descendant reference facts.
     Ancestor,
-    /// A single frozen literal child of the queried receiver. The provider supplies its key;
+    /// A single frozen child of the queried receiver. The provider supplies its key;
     /// the native transfer, rather than the source graph, owns the resulting value view.
     Descendant,
     PossibleExact,
@@ -312,6 +312,12 @@ pub trait NativeFlowProvider {
     fn reference_follows_creation(&self, _: NativeReferenceKey) -> bool { false }
     fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { true }
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
+    /// The original computed child key and its frozen evaluation input. The
+    /// existing descendant relation, not this recipe, selects the receiver.
+    fn write_index_value(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> { None }
+    /// Pure allocation/store scope metadata. A contextual or written receiver
+    /// contract is independently excluded by the native value carrier.
+    fn runtime_table_store_in_scope(&self, _: super::native_named::NativeTypeDeclarationId, _: NativeFlowKey) -> bool { false }
     /// A tested fixed child of this original receiver, independent of write metadata.
     fn reference_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
     /// An original fixed descendant path. This metadata does not evaluate a
@@ -877,6 +883,11 @@ impl FlowDomain for NativeDomain<'_> {
                             && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
                             let value = checker.native_flow_value(self.provider, value, input);
                             checker.native_definition_flow_write(previous.ty, key, value)
+                        } else if let Some(result) = self.numeric_store_transfer(checker, walk, at, target, value, input, previous) {
+                            // Every numeric slot remains sparse, which already
+                            // includes the unaffected continuation of this
+                            // possible receiver/key write.
+                            return result;
                         } else { previous.ty }
                     }
                     NativeWriteRelation::PossibleAncestor => checker.native_runtime_table_absent_view(walk.initial),
@@ -890,6 +901,8 @@ impl FlowDomain for NativeDomain<'_> {
                     && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
                     let value = checker.native_flow_value(self.provider, value, input);
                     checker.native_definition_flow_write(previous.ty, key, value)
+                } else if let Some(result) = self.numeric_store_transfer(checker, walk, at, target, value, input, previous) {
+                    return result;
                 } else { previous.ty }
             }
             NativeTransfer::Iteration(at, stage) => checker.native_iterator_step(self.provider, at, stage, NativeResultPack { ty: previous.ty }).ty,
@@ -911,6 +924,18 @@ impl FlowDomain for NativeDomain<'_> {
         };
         let _ = walk;
         FlowType::new(ty, previous.incomplete)
+    }
+
+    fn numeric_store_transfer(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> Option<FlowType> {
+        if !checker.native_has_runtime_table(previous.ty) { return None; }
+        let (key, key_input) = self.provider.write_index_value(walk.reference, target, at)?;
+        let (result, completed) = checker.run_memoizable(|checker| {
+            let key = checker.native_flow_value(self.provider, key, key_input);
+            let value = checker.native_flow_value(self.provider, value, input);
+            checker.native_runtime_table_flow_numeric_write(self.provider, at, previous.ty, key, value)
+        });
+        let incomplete = completed.is_none() || matches!(result, Err(super::native_tables::NativeTableError::PendingContext));
+        Some(FlowType::new(result.unwrap_or(previous.ty), previous.incomplete || incomplete))
     }
     fn empty_transfer(&self) -> NativeTransfer {
         NativeTransfer::Nothing
