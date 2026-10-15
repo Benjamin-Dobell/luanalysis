@@ -1,5 +1,6 @@
 use luanalysis::project_check::{ProjectCheckOptions, check_project_with_options, static_require_requests};
 use luanalysis::standard_environment::StandardEnvironmentProfile;
+use luanalysis_engine::NativeLoaderPolicy;
 use luanalysis_project::{
     Project, ProjectConfig, ProjectInput, ProjectLoadPlan, Resolver, SourceRole,
 };
@@ -200,7 +201,14 @@ fn run() -> i32 {
         },
         static_require_requests,
     );
-    let result = check_project_with_options(project, ProjectCheckOptions { environment, overload_mode, ..ProjectCheckOptions::default() });
+    let loader_policy = match environment {
+        StandardEnvironmentProfile::Lua50 => NativeLoaderPolicy::Lua50StandardFile,
+        StandardEnvironmentProfile::Lua51 => NativeLoaderPolicy::Lua51StandardFile,
+        StandardEnvironmentProfile::Lua52 => NativeLoaderPolicy::Lua52StandardFile,
+        StandardEnvironmentProfile::Lua53 => NativeLoaderPolicy::Lua53StandardFile,
+        StandardEnvironmentProfile::Lua54 | StandardEnvironmentProfile::LegacyMinimal | StandardEnvironmentProfile::None => NativeLoaderPolicy::Lua54StandardFile,
+    };
+    let result = check_project_with_options(project, ProjectCheckOptions { environment, overload_mode, loader_policy });
     let report = CliReport::from_project(&result, &display_paths, host_errors, dump);
     report.print(format);
     report.exit_code

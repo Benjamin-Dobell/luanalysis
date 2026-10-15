@@ -517,3 +517,28 @@ fn cli_selects_lua52_bit32_and_accepts_the_corrected_original_source() {
     let unsupported = fixture.cli(&["--lua-version", "5.5", "main.lua"]);
     assert_eq!(unsupported.status.code(), Some(2));
 }
+
+#[test]
+fn cli_lua_versions_preserve_the_matching_require_result_count() {
+    for version in ["5.0", "5.1", "5.2", "5.3", "5.4"] {
+        let fixture = Fixture::new();
+        fixture.file("value.lua", "return 42\n");
+        let metadata_type = if version == "5.4" { "nil|string" } else { "nil" };
+        let source = format!("local module,metadata=require('value')\n---@type number\nlocal first=module\n---@type {metadata_type}\nlocal second=metadata\n");
+        fixture.file("main.lua", &source);
+        let invoke = || fixture.cli(&["--lua-version", version, "--format", "json", "main.lua"]);
+        let accepted = invoke();
+        assert_eq!(accepted.status.code(), Some(0), "{version}: {accepted:?}");
+        let wrong = source.replace(&format!("---@type {metadata_type}"), "---@type boolean");
+        fixture.file("main.lua", &wrong);
+        let rejected = invoke();
+        assert_eq!(rejected.status.code(), Some(1), "{version}: {rejected:?}");
+        let report = String::from_utf8(rejected.stdout).unwrap();
+        assert!(report.contains("\"code\":\"TS2322\""), "{version}: {report}");
+        let start = wrong.rfind("metadata").unwrap();
+        assert!(report.contains(&format!("\"range\":{{\"start\":{start},\"end\":{}}}", start + "metadata".len())), "{version}: {report}");
+        fixture.file("main.lua", &source);
+        let corrected = invoke();
+        assert_eq!(corrected.status.code(), Some(0), "{version}: {corrected:?}");
+    }
+}
