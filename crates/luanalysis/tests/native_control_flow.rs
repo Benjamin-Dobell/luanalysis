@@ -40,6 +40,21 @@ fn one_assignment_error(source: &str, rejected: &str) -> CheckReport {
 }
 
 #[test]
+fn nullable_storage_retains_a_nonnil_asserted_initializer_before_a_later_nil_write() {
+    // Encoder radix-mark reduction: an initial value proof must not widen to
+    // the mutable storage contract before its first use.
+    let source = "---@param maybe nil|string\nlocal function use(maybe)\n---@type nil|string\nlocal radix=--[[---@type string]] maybe\nlocal initial='%'..radix\nradix=nil\n---@type nil\nlocal cleared=radix\nend\n";
+    clean(source);
+    let wrong_initial = source.replace("--[[---@type string]]", "--[[---@type nil|string]]");
+    let report = check(&wrong_initial);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "LUA2020");
+    let wrong_later = source.replace("---@type nil\nlocal cleared", "---@type string\nlocal cleared");
+    one_assignment_error(&wrong_later, "radix");
+    clean(source);
+}
+
+#[test]
 fn literal_conditions_use_lua_truthiness_and_only_reachable_returns() {
     for (condition, expected, opposite) in [
         ("0", "number", "string"),
