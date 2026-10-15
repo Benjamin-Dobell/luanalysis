@@ -250,6 +250,14 @@ fn unresolved_dynamic_environment_keys_retain_the_default_host_policy_boundary()
     // writer's parameter. A caller's literal is not a selected-slot proof.
     let called = "---@param event string\nlocal function replace(event)\n(--[[---@type table]] _G)[event]=42\nend\nreplace('assert')\nhostEffect()\nassert(true,'checked')\n";
     clean(fixture.check(called, true, None));
+    for effect in ["", "hostEffect()\n"] {
+        let source = format!("---@param event string\nlocal function replace(event)\n(--[[---@type table]] _G)[event]=42\nend\n---@type number|nil\nlocal value=--[[---@type number|nil]] 42\nreplace('assert')\n{effect}assert(value)\n---@type number\nlocal narrowed=value\n");
+        clean(fixture.check(&source, true, None));
+        let rejected = report(fixture.check_options(&source, true, None, true), 1);
+        error_on(&rejected, &source, "TS2322", "local narrowed=value", "value");
+        let corrected = source.replace("---@type number\nlocal narrowed", "---@type number|nil\nlocal narrowed");
+        clean(fixture.check_options(&corrected, true, None, true));
+    }
 }
 
 #[test]
