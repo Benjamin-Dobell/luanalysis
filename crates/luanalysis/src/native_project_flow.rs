@@ -12,10 +12,13 @@ use luanalysis_engine::{
 };
 
 impl ProjectRegistry {
-    fn original_flow(&self, snapshot: u64) -> Option<FlowAdapter<'_>> {
+    fn original_flow_registry(&self, snapshot: u64) -> Option<&super::NativeRegistry> {
         // Graph/value/reference snapshots belong to flow::ProgramFlow, not
         // the independently allocated native declaration namespace.
-        let source = &self.files[*self.flow_snapshots.get(&snapshot)?].source;
+        Some(&self.files[*self.flow_snapshots.get(&snapshot)?].source)
+    }
+    fn original_flow(&self, snapshot: u64) -> Option<FlowAdapter<'_>> {
+        let source = self.original_flow_registry(snapshot)?;
         Some(FlowAdapter {
             sources: source.iterator_sources(),
             values: source,
@@ -90,7 +93,7 @@ impl NativeFlowProvider for ProjectRegistry {
         value: NativeValueKey,
         input: NativeFlowKey,
     ) -> Option<Vec<NativeAliasExecution>> {
-        let source = self.original_flow(value.snapshot)?.values;
+        let source = self.original_flow_registry(value.snapshot)?;
         let crate::native_flow::ValueRecipe::Evaluation(evaluation) =
             source.iterator_sources().value(value)?
         else {
@@ -140,7 +143,7 @@ impl NativeFlowProvider for ProjectRegistry {
         value: NativeValueKey,
         input: NativeFlowKey,
     ) -> Option<NativeReferenceKey> {
-        let source = self.original_flow(value.snapshot)?.values;
+        let source = self.original_flow_registry(value.snapshot)?;
         let crate::native_flow::ValueRecipe::Evaluation(evaluation) =
             source.iterator_sources().value(value)?
         else {
