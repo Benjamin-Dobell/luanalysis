@@ -209,24 +209,47 @@ fn uncalled_sibling_environment_writes_do_not_erase_selected_standard_callable_v
 }
 
 #[test]
-fn reached_direct_dynamic_and_sibling_replacements_are_not_reset_to_standard_contracts() {
+fn reached_fixed_slot_replacements_are_not_reset_to_standard_contracts() {
     let fixture = Fixture::new();
     for replacement in [
         "assert=42\n",
         "(--[[---@type table]] _G)['assert']=42\n",
-        "---@param event string\nlocal function replace(event)\n(--[[---@type table]] _G)[event]=42\nend\nreplace('assert')\n",
-        "local function replace() assert=42 end\nreplace()\n",
     ] {
         let source = format!("{replacement}hostEffect()\nassert(true,'checked')\n");
         let rejected = report(fixture.check(&source, true, None), 1);
         error_on(&rejected, &source, "TS2349", "assert(true,'checked')", "assert");
     }
+    let ordinary = "---@generic T\n---@param value T\n---@vararg unknown\n---@return T\nlocal function ordinary(value,...) return value end\n";
+    let consumer = "---@param value number|nil\nlocal function consume(value)\nassert(value)\n---@type number\nlocal narrowed=value\nend\n";
+    for write in ["assert=ordinary", "(--[[---@type table]] _G)['assert']=ordinary"] {
+        let source = format!("{ordinary}local function replace() {write} end\nreplace()\nhostEffect()\n{consumer}");
+        let rejected = report(fixture.check(&source, true, None), 1);
+        error_on(&rejected, &source, "TS2322", "local narrowed=value", "value");
+        clean(fixture.check(&source.replace(write, ""), true, None));
+    }
+    let source = format!("local function replace() assert=42 end\nreplace()\nhostEffect()\n{consumer}");
+    let rejected = report(fixture.check(&source, true, None), 1);
+    error_on(&rejected, &source, "TS2322", "assert=42", "42");
+    error_on(&rejected, &source, "TS2322", "local narrowed=value", "value");
+    // An invalid assignment can retain its written callable contract during
+    // recovery. Require the write error and loss of assertion effects, rather
+    // than an arbitrary second uncallable-value diagnostic.
+    clean(fixture.check(&source.replace("assert=42", ""), true, None));
+}
+
+#[test]
+fn unresolved_dynamic_environment_keys_retain_the_default_host_policy_boundary() {
+    let fixture = Fixture::new();
     let source = "---@param event string\nlocal function replace(event)\n(--[[---@type table]] _G)[event]=42\nassert(true,'checked')\nend\n";
     // An unproven dynamic key is an unknown effect under the ordinary policy;
     // the strict physical proof must still reject its possible replacement.
     clean(fixture.check(source, true, None));
     let rejected = report(fixture.check_options(source, true, None, true), 1);
     error_on(&rejected, source, "TS2349", "assert(true,'checked')", "assert");
+    // The bounded scope scan does not transport an actual argument into a
+    // writer's parameter. A caller's literal is not a selected-slot proof.
+    let called = "---@param event string\nlocal function replace(event)\n(--[[---@type table]] _G)[event]=42\nend\nreplace('assert')\nhostEffect()\nassert(true,'checked')\n";
+    clean(fixture.check(called, true, None));
 }
 
 #[test]
