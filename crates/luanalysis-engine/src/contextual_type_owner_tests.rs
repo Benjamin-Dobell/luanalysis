@@ -123,12 +123,16 @@ impl NativeTypeProvider for Provider {
         }
     }
     fn contains_type_declaration(&self, id: NativeTypeDeclarationKey) -> bool {
-        id.snapshot == 7031 && id.index < 3
+        id.snapshot == 7031 && id.index < 4
     }
     fn type_declaration_header(&self, id: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
         TypeDeclarationHeader {
-            name: ["Base", "Derived", "Leaf"][id.index as usize].into(),
-            kind: TypeDeclarationKind::Class,
+            name: ["Base", "Derived", "Leaf", "RuntimeContainer"][id.index as usize].into(),
+            kind: if id.index == 3 {
+                TypeDeclarationKind::RuntimeTable
+            } else {
+                TypeDeclarationKind::Class
+            },
             object_form: Some(ObjectDeclarationForm::Record),
             parameters: if id.index == 0 {
                 vec![parameter(0)]
@@ -142,7 +146,39 @@ impl NativeTypeProvider for Provider {
         &self,
         id: NativeTypeDeclarationKey,
     ) -> Option<NativeTypeParameterKey> {
-        Some(parameter(id.index + 1))
+        (id.index < 3).then(|| parameter(id.index + 1))
+    }
+    fn contains_expression(&self, id: NativeExpressionKey) -> bool {
+        id.snapshot == 7031 && id.node == 0
+    }
+    fn runtime_table_constructor(
+        &self,
+        id: NativeTypeDeclarationKey,
+    ) -> Option<NativeExpressionKey> {
+        (id.index == 3).then_some(NativeExpressionKey {
+            snapshot: 7031,
+            node: 0,
+        })
+    }
+    fn runtime_table_seed(
+        &self,
+        id: NativeTypeDeclarationKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        if id.index != 3 {
+            return None;
+        }
+        let nested = queries
+            .named_type_reference(declaration(0), &[Type::Number])
+            .unwrap();
+        Some(
+            queries
+                .table_type(&TableType {
+                    fields: vec![TableField::new(LuaKey::String(b"nested".to_vec()), nested)],
+                    ..Default::default()
+                })
+                .unwrap(),
+        )
     }
     fn type_declaration_bases(
         &self,
@@ -350,6 +386,76 @@ fn pending_owner_does_not_publish_absence_or_an_empty_named_schema() {
             assert_eq!(
                 queries.named_object_declaration(&resolved),
                 Some(declaration(0))
+            );
+            assert!(
+                provider
+                    .errors
+                    .borrow()
+                    .iter()
+                    .all(|error| matches!(error, NamedTypeError::PendingContext { .. }))
+            );
+        },
+    );
+}
+
+#[test]
+fn runtime_carrier_and_schema_keep_nested_pending_reads_and_writes_retryable() {
+    Engine::new().with_native_provider(
+        || Provider {
+            pending: Cell::new(true),
+            ..Default::default()
+        },
+        |provider, queries| {
+            let nested = queries
+                .named_type_reference(declaration(0), &[Type::Number])
+                .unwrap();
+            let nested_key = TableKey::Literal(LuaKey::String(b"nested".to_vec()));
+            let actual = queries
+                .table_type(&TableType {
+                    fields: vec![TableField::new(LuaKey::String(b"nested".to_vec()), nested)],
+                    ..Default::default()
+                })
+                .unwrap();
+            let carrier = queries
+                .runtime_table_value(declaration(3), &actual)
+                .unwrap();
+            let schema = queries.runtime_table_schema(&carrier).unwrap();
+            let containers = [carrier, schema];
+
+            // An invariant allocation schema may expose an unresolved nominal
+            // value. Neither the actual-view nor schema route may turn its
+            // incomplete member contract into NotTable or a completed absence.
+            for container in &containers {
+                let exposed = queries.table_lookup(container, &nested_key).unwrap();
+                assert_eq!(
+                    queries.named_object_declaration(&exposed),
+                    Some(declaration(0))
+                );
+                assert_eq!(
+                    queries.table_lookup(&exposed, &key()),
+                    Err(TableError::PendingContext)
+                );
+                assert_eq!(
+                    queries.table_write(&exposed, &key(), &Type::Number),
+                    Err(TableError::PendingContext)
+                );
+            }
+            let pending_calls = provider.calls.get();
+            assert!(pending_calls > 0);
+            provider.pending.set(false);
+
+            for container in &containers {
+                let exposed = queries.table_lookup(container, &nested_key).unwrap();
+                assert_eq!(queries.table_lookup(&exposed, &key()), Ok(Type::Number));
+                assert!(queries.table_write(&exposed, &key(), &Type::Number).is_ok());
+                assert!(matches!(
+                    queries.table_write(&exposed, &key(), &Type::String),
+                    Err(TableError::ValueType { .. })
+                ));
+            }
+            assert!(
+                provider.calls.get() > pending_calls,
+                "settling must retry the original owner recipe"
             );
             assert!(
                 provider
