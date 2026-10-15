@@ -530,3 +530,6 @@ mod declaration_tests;
 
 #[cfg(test)]
 mod function_documentation_tests;
+
+#[cfg(test)]
+mod trailing_type_tests;

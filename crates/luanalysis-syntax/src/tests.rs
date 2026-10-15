@@ -794,7 +794,8 @@ fn deeply_nested_do_blocks_and_functions_recover_without_stack_overflow() {
 #[test]
 fn trailing_annotations_do_not_silently_attach_to_the_next_local() {
     let file = parse("local x = 1 ---@type string\nlocal y = true\n");
-    assert!(!file.diagnostics.is_empty());
+    assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
+    assert!(locals(&file, 0).2.is_some());
     assert!(locals(&file, 1).2.is_none());
 }
 

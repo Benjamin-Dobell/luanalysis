@@ -517,6 +517,8 @@ impl Parser<'_> {
             } else {
                 Vec::new()
             };
+            let value_end = values.last().map_or(names.last().unwrap().span, |value| value.span);
+            self.trailing_type_annotation(value_end, &mut annotations);
             let annotation = annotations.type_annotation.take();
             if annotation.as_ref().is_some_and(function_type_annotation)
                 && values.len() == 1
@@ -614,6 +616,28 @@ impl Parser<'_> {
                     span:comment,message:format!("named declarations cannot annotate {role}"),
                 });
             }
+        }
+    }
+
+    fn trailing_type_annotation(&mut self, end: Span, annotations: &mut FunctionAnnotations) {
+        while let TokenKind::Comment(comment) = self.current().kind.clone() {
+            if comment.kind != CommentKind::Documentation
+                || comment.span.start < end.end
+                || !self.source[end.end..comment.span.start].chars().all(|ch| matches!(ch, ' ' | '\t'))
+            {
+                break;
+            }
+            let (documentation, diagnostics) = types::annotations(&comment);
+            if documentation.functions.type_annotation.is_none()
+                || types::annotation_spans(&documentation.functions).len() != 1
+                || !documentation.declarations.is_empty()
+                || !documentation.exclusions.is_empty()
+            {
+                break;
+            }
+            self.pos += 1;
+            self.diagnostics.extend(diagnostics);
+            types::merge_annotations(annotations, documentation.functions, &mut self.diagnostics);
         }
     }
 
