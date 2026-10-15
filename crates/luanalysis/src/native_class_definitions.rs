@@ -69,6 +69,7 @@ impl NativeRegistry {
             return Ok(None);
         };
         if self.source_role() != SourceRole::Implementation {
+            if self.is_ambient_local_attachment(span) { return Ok(None); }
             return Err(
                 "declaration placeholders require an external value contract, not checked runtime initialization",
             );

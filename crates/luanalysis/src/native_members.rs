@@ -172,7 +172,11 @@ impl NativeRegistry {
                 let ty = self.original_member_expression_type(*key, queries);
                 queries.widen(&ty)
             }
-            OriginalMemberValue::Function(key) => Type::NativeFunction(*key),
+            OriginalMemberValue::Function(key) => {
+                if self.source_role() == luanalysis_project::SourceRole::Declaration {
+                    self.ambient_function_contract(*key, queries).unwrap_or_else(|| queries.error_type())
+                } else { Type::NativeFunction(*key) }
+            }
         }
     }
     pub(super) fn original_member_type(&self, key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Option<Type> {

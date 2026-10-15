@@ -27,6 +27,8 @@ mod named_provider;
 mod shape_attachment;
 #[path = "native_class_definitions.rs"]
 mod class_definitions;
+#[path = "native_ambient_locals.rs"]
+mod ambient_locals;
 #[path = "native_assignment_context.rs"]
 mod assignment_context;
 #[path = "native_methods.rs"]

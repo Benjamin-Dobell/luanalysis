@@ -325,7 +325,7 @@ impl NativeRegistry {
     }
     /// One pure original declaration contract for global and local namespace
     /// members. Placeholder values and bodies never supply inferred evidence.
-    pub(super) fn ambient_function_contract(
+    pub(crate) fn ambient_function_contract(
         &self,
         function: NativeFunctionKey,
         queries: &mut dyn TypeQueries,
@@ -472,6 +472,7 @@ impl NativeRegistry {
         }
         if self.source_role() == SourceRole::Declaration {
             for &span in &self.globals.unsupported {
+                if self.check_ambient_local_statement(span, queries) { continue; }
                 self.report.borrow_mut().diagnostics.push(Diagnostic { code: "LUA2034", span, message: "This executable statement is unsupported in a declaration library; use original global type/function contracts or standalone type declarations.".into() });
             }
         }
