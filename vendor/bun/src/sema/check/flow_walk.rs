@@ -136,6 +136,11 @@ pub(super) trait FlowDomain {
     fn edge_live(&self, _: &mut Checker<'_, '_>, _: Self::Node) -> bool {
         true
     }
+    /// A source binder may leave a label whose every predecessor is unreachable.
+    /// This differs from a live predecessor that narrows this reference to Never.
+    fn unreachable_branch(&self, _: &mut Checker<'_, '_>, _: &Self::Walk) -> TypeId {
+        TypeId::NEVER
+    }
     fn has_key(&self, checker: &mut Checker<'_, '_>, walk: &mut Self::Walk) -> bool;
     fn loop_cached(
         &self,
@@ -311,7 +316,7 @@ impl<'s, 'p> Checker<'s, 'p> {
                         && bypass.is_none()
                     {
                         if !domain.edge_live(self, only) {
-                            break TypeId::NEVER;
+                            break domain.unreachable_branch(self, walk);
                         }
                         flow = only;
                         continue;
@@ -348,6 +353,9 @@ impl<'s, 'p> Checker<'s, 'p> {
                             }
                             types.push(result.ty);
                         }
+                    }
+                    if types.is_empty() {
+                        break domain.unreachable_branch(self, walk);
                     }
                     let initial = if types.len() < 2 {
                         TypeId::UNRESOLVED

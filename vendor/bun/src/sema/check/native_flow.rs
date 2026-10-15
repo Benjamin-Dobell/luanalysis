@@ -902,6 +902,11 @@ impl FlowDomain for NativeDomain<'_> {
         // Keep it until the same backend loop publication rules settle it.
         reachable || stored.is_none()
     }
+    fn unreachable_branch(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk) -> TypeId {
+        // Like TS Flow::Unreachable, an entirely dead continuation is checked
+        // against the declaration. Per-reference predicate Never stays intact.
+        checker.convert_auto_to_any(walk.declared)
+    }
     fn has_key(&self, _: &mut Checker<'_, '_>, _: &mut NativeWalk) -> bool {
         true
     }

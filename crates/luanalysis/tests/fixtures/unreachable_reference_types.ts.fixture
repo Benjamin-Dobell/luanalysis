@@ -1,0 +1,15 @@
+function single(callback: (value: number) => void, record: { value: number }) {
+    if (true) return;
+    callback(record.value);
+}
+function joined(flag: boolean, callback: (value: number) => void, record: { value: number }) {
+    if (flag) return; else return;
+    callback(record.value);
+}
+function wrong(callback: (value: number) => void) {
+    if (true) return;
+    callback('wrong'); // TS2345: the declaration still checks dead code.
+}
+function impossible(value: number | string) {
+    if (typeof value === 'boolean') value(); // TS2349: per-reference Never remains.
+}
