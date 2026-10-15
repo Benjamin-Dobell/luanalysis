@@ -83,6 +83,7 @@ struct Fixture {
     trusted: bool,
     foreign_effect: bool,
     body_queries: Cell<usize>,
+    written_result_queries: Cell<usize>,
     value_queries: Cell<usize>,
     errors: RefCell<Vec<NativeFlowError>>,
 }
@@ -94,6 +95,7 @@ impl Fixture {
             trusted: true,
             foreign_effect: false,
             body_queries: Cell::new(0),
+            written_result_queries: Cell::new(0),
             value_queries: Cell::new(0),
             errors: RefCell::new(vec![]),
         }
@@ -224,10 +226,18 @@ impl NativeTypeProvider for Fixture {
     }
     fn signature_declared_return_pack(
         &self,
-        _: NativeSignatureKey,
+        key: NativeSignatureKey,
         _: &mut dyn TypeQueries,
     ) -> ValuePack {
-        panic!("flow metadata must not query even the written assert result pack")
+        assert!(
+            !self.trusted && key == signature(0),
+            "intrinsic metadata and trusted assertion flow must not query a written result"
+        );
+        self.written_result_queries
+            .set(self.written_result_queries.get() + 1);
+        // Without intrinsic trust this remains an ordinary written callable
+        // contract. Reading it for a nonreturning effect must remain pure.
+        ValuePack::single(Type::Unknown)
     }
     fn contains_type_parameter(&self, key: NativeTypeParameterKey) -> bool {
         key.snapshot == SNAPSHOT && key.index == 0
@@ -410,6 +420,7 @@ fn original_assertion_identity_is_pure_and_aliases_keep_it_while_shapes_and_mixe
                 None
             );
             assert_eq!(fixture.body_queries.get(), 0);
+            assert_eq!(fixture.written_result_queries.get(), 0);
         },
     );
 }
@@ -450,6 +461,7 @@ fn assertion_reference_and_compound_transfers_match_the_existing_true_conditiona
                 }
                 assert!(fixture.errors.borrow().is_empty());
                 assert_eq!(fixture.body_queries.get(), 0);
+                assert_eq!(fixture.written_result_queries.get(), 0);
             },
         );
     }
@@ -463,6 +475,7 @@ fn asserted_false_nil_and_missing_values_end_reachability_without_unused_call_re
             |fixture, queries| {
                 assert!(!queries.flow_reachable(fixture, at(0, 1)));
                 assert_eq!(fixture.body_queries.get(), 0);
+                assert_eq!(fixture.written_result_queries.get(), 0);
                 assert!(fixture.errors.borrow().is_empty());
             },
         );
@@ -473,6 +486,7 @@ fn asserted_false_nil_and_missing_values_end_reachability_without_unused_call_re
             assert!(queries.flow_reachable(fixture, at(0, 1)));
             assert_eq!(fixture.value_queries.get(), 0);
             assert_eq!(fixture.body_queries.get(), 0);
+            assert_eq!(fixture.written_result_queries.get(), 0);
         },
     );
 }
@@ -502,6 +516,7 @@ fn contextual_assertion_predicates_keep_the_original_graph_facet_and_reject_fore
                 );
             }
             assert!(fixture.errors.borrow().is_empty());
+            assert_eq!(fixture.written_result_queries.get(), 0);
         },
     );
     Engine::new().with_native_provider(
@@ -533,11 +548,21 @@ fn untrusted_policy_shaped_callees_and_recursive_unused_callees_acquire_no_asser
                 ..Fixture::new(Condition::False)
             },
             |fixture, queries| {
+                if !trusted {
+                    let original = queries.global_binding_type(binding()).unwrap();
+                    assert_eq!(queries.function_intrinsic(&original), None);
+                    assert_eq!(fixture.written_result_queries.get(), 0);
+                }
                 assert!(queries.flow_reachable(fixture, at(0, 1)));
                 let initial = Fixture::initial(0);
                 let after = queries.flow_type(fixture, at(0, 1), reference(0), &initial, &initial);
                 assert!(queries.is_assignable(&Type::Nil, &after.ty));
                 assert_eq!(fixture.body_queries.get(), 0);
+                if !trusted {
+                    assert!(fixture.written_result_queries.get() > 0);
+                } else {
+                    assert_eq!(fixture.written_result_queries.get(), 0);
+                }
                 assert_eq!(fixture.value_queries.get(), 0);
                 assert!(fixture.errors.borrow().is_empty());
             },
@@ -552,6 +577,7 @@ fn untrusted_policy_shaped_callees_and_recursive_unused_callees_acquire_no_asser
             let initial = Fixture::initial(0);
             let after = queries.flow_type(fixture, at(0, 1), reference(0), &initial, &initial);
             assert!(!queries.is_assignable(&Type::Nil, &after.ty));
+            assert_eq!(fixture.written_result_queries.get(), 0);
         },
     );
 }
