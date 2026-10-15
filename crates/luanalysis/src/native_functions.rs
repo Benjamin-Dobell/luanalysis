@@ -80,7 +80,7 @@ pub(super) struct NativeRegistry {
     declarations: HashMap<BindingId, DeclarationSource>,
     pub(super) types: NativeTypes,
     named: NativeNamed,
-    pub(super) header_metadata: RefCell<named_provider::SourceHeaderMetadata>,
+    header_metadata: RefCell<named_provider::SourceHeaderMetadata>,
     pub(super) members: super::native_members::NativeMembers,
     pub(super) doc_members: super::native_doc_members::NativeDocMembers,
     pub(super) runtime_tables: super::native_runtime_tables::NativeRuntimeTables,
@@ -111,6 +111,10 @@ pub(super) struct NativeRegistry {
 pub(crate) mod standard;
 
 impl NativeRegistry {
+    pub(super) fn invalidate_header_metadata(&self) {
+        self.header_metadata.borrow_mut().invalidate();
+    }
+
     pub(super) fn new(file: File, bound: BoundFile) -> Self {
         let snapshot = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
         assert_ne!(snapshot, u64::MAX, "source snapshot identities exhausted");

@@ -52,16 +52,16 @@ impl NativeRegistry {
                             message: "Bodyless colon declaration has no original class or shape receiver scope.".into(),
                         }], ..Default::default() });
                         source.scope.set(DocOwnerScope::Failed);
-                        self.header_metadata.borrow_mut().invalidate();
+                        self.invalidate_header_metadata();
                         continue;
                     }
                     self.types.attach_documentation_owner(signature, owner);
                     source.scope.set(DocOwnerScope::Scoped(owner));
-                    self.header_metadata.borrow_mut().invalidate();
+                    self.invalidate_header_metadata();
                 }
                 Err(_) => {
                     source.scope.set(DocOwnerScope::Failed);
-                    self.header_metadata.borrow_mut().invalidate();
+                    self.invalidate_header_metadata();
                 },
             }
         }
@@ -73,11 +73,11 @@ impl NativeRegistry {
             match queries.named_member_owner(source.key) {
                 Ok(owner) if owner.declaration.snapshot == expected.snapshot && owner.declaration.index == expected.index => {
                     source.scope.set(DocOwnerScope::Ready(expected));
-                    self.header_metadata.borrow_mut().invalidate();
+                    self.invalidate_header_metadata();
                 }
                 _ => {
                     source.scope.set(DocOwnerScope::Failed);
-                    self.header_metadata.borrow_mut().invalidate();
+                    self.invalidate_header_metadata();
                     self.types.clear_documentation_owner(self.doc_signature_key(source.declaration).unwrap());
                 }
             }
