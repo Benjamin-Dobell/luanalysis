@@ -1,7 +1,7 @@
 //! Original chunk return and require recipes for one native project session.
 //! The backend owns export projection, pack rows, caching and query guards.
 use super::NativeRegistry;
-use crate::module_requests::{RequireCall, RequireTarget};
+use crate::module_requests::{RequireCall, RequireDiscovery, RequireTarget};
 use crate::native_flow::FlowAdapter;
 use crate::{Checker, Diagnostic};
 use luanalysis_engine::{
@@ -26,6 +26,7 @@ pub(crate) struct ImportRecipe {
     pub argument_span: Span,
     pub target: Option<FileId>,
     pub outcome: ImportOutcome,
+    pub discovery: RequireDiscovery,
 }
 pub(crate) struct ProjectModuleIndex {
     pub policy: NativeLoaderPolicy,
@@ -132,9 +133,37 @@ impl NativeRegistry {
 }
 
 impl Checker<'_> {
+    fn native_require_operation(&mut self, callee: &Expr) -> Option<luanalysis_engine::NativeStandardOperation> {
+        let at = self.flow_at?;
+        let native = self.native?;
+        let evaluation = native.flow.evaluation_for_expression(callee, at.graph)?;
+        Some(self.engine.flow_standard_operation(
+            &FlowAdapter { sources: &native.flow, values: native },
+            native.flow.evaluation_value(evaluation.id),
+            native.flow.flow_key(evaluation.input, at.graph.context),
+        ))
+    }
+
     pub(crate) fn native_require_pack(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Option<ValuePack> {
         let (policy, recipe) = self.native?.module_import(span)?;
         let has_original_contract = self.native?.global_binding("require").is_some();
+        let operation = if recipe.discovery == RequireDiscovery::Value {
+            self.native_require_operation(callee)
+        } else { None };
+        if recipe.discovery == RequireDiscovery::Value {
+            match operation {
+                Some(luanalysis_engine::NativeStandardOperation::Standard(site))
+                    if site.kind == luanalysis_engine::NativeIntrinsicKind::Require => {},
+                Some(luanalysis_engine::NativeStandardOperation::Pending) => {
+                    self.incomplete_flow = true;
+                    return Some(ValuePack::single(Type::Unknown));
+                },
+                // A saved field or returned function is only a discovery
+                // candidate. Ordinary callees keep their own call checking,
+                // effects and return values, including without a stdlib.
+                _ => return None,
+            }
+        }
         if has_original_contract && !self.native?.flow.has_original_require_capability() {
             // A source import candidate cannot borrow the selected loader's
             // exports merely by copying its declaration text or display path.
@@ -142,15 +171,8 @@ impl Checker<'_> {
             return Some(ValuePack::single(Type::Unknown));
         }
         if has_original_contract {
-            let operation = self.flow_at.and_then(|at| {
-                let native = self.native?;
-                let evaluation = native.flow.evaluation_for_expression(callee, at.graph)?;
-                Some(self.engine.flow_standard_operation(
-                    &FlowAdapter { sources: &native.flow, values: native },
-                    native.flow.evaluation_value(evaluation.id),
-                    native.flow.flow_key(evaluation.input, at.graph.context),
-                ))
-            });
+            let operation = if recipe.discovery == RequireDiscovery::Value { operation }
+                else { self.native_require_operation(callee) };
             if matches!(operation, Some(luanalysis_engine::NativeStandardOperation::Pending)) {
                 self.incomplete_flow = true;
                 return Some(ValuePack::single(Type::Unknown));

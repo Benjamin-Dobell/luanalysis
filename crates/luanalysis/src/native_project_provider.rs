@@ -172,6 +172,7 @@ impl ProjectRegistry {
                     (file.source.snapshot, call.span.start, call.span.end),
                     ImportRecipe {
                         argument_span: call.argument_span,
+                        discovery: call.discovery,
                         target: dependency.and_then(|edge| match edge.outcome {
                             DependencyOutcome::Resolved(target) => Some(target),
                             _ => None,

@@ -213,6 +213,93 @@ fn rejected_candidates_keep_source_identities_without_checking_their_transitive_
 }
 
 #[test]
+fn saved_field_and_returned_loaders_check_original_module_exports() {
+    let fixture = Fixture::new();
+    fixture.file("record.lua", "return {value=42}\n");
+    for prefix in [
+        "local operations={loader=require}\nlocal saved=operations.loader\n",
+        "local function originalLoader() return require end\nlocal saved=originalLoader()\n",
+        "local operations={loader=require}\nlocal first=operations['loader']\nlocal saved=first\n",
+    ] {
+        let source = format!("{prefix}local record=saved('record')\n---@type number\nlocal accepted=record.value\n");
+        let run = |source: &str| check_project_with_options(
+            fixture.project(fixture.file("main.lua", source)),
+            ProjectCheckOptions {
+                environment: luanalysis::standard_environment::StandardEnvironmentProfile::Lua54,
+                ..ProjectCheckOptions::default()
+            },
+        );
+        let correct = run(&source);
+        clean(&correct);
+        assert_eq!(correct.checked_file_count(), 2);
+        assert_eq!(ty(&correct, "accepted"), "number");
+        let argument = source.find("'record'").unwrap();
+        assert!(correct.project.dependencies.iter().any(|edge| edge.request.span == (argument..argument + "'record'".len())));
+
+        let wrong = source.replace("---@type number", "---@type string");
+        let rejected = run(&wrong);
+        let main = rejected.file(rejected.project.entries[0]).unwrap();
+        assert!(main.report.diagnostics.iter().any(|error| error.code == "TS2322"
+            && &wrong[error.span.start..error.span.end] == "record.value"),
+            "{wrong}: {:#?}", main.report.diagnostics);
+    }
+}
+
+#[test]
+fn ordinary_value_candidates_do_not_check_target_bodies_or_publish_host_errors() {
+    let fixture = Fixture::new();
+    let candidate = fixture.file("candidate.lua", "type=nil\nlocal ignored=require('poison')\nreturn 42\n");
+    let poison = fixture.file("poison.lua", "---@type number\nlocal invalid='wrong'\nreturn 42\n");
+    let broken = fixture.file("broken.lua", "local invalid=\n");
+    for prefix in [
+        "local operations={loader=ordinary}\nlocal saved=operations.loader\n",
+        "local function getLoader() return ordinary end\nlocal saved=getLoader()\n",
+    ] {
+        for environment in [
+            luanalysis::standard_environment::StandardEnvironmentProfile::Lua54,
+            luanalysis::standard_environment::StandardEnvironmentProfile::None,
+        ] {
+            let mut source = format!("---@param name string\n---@return number\nlocal function ordinary(name) return 42 end\n{prefix}local result=saved('candidate')\nsaved('broken')\nsaved('absent')\n---@type number\nlocal accepted=result\n");
+            if environment == luanalysis::standard_environment::StandardEnvironmentProfile::Lua54 {
+                source.push_str("---@param value number|string\nlocal function probe(value)\nif type(value)=='number' then\n---@type number\nlocal narrowed=value\nend\nend\nprobe(42)\n");
+            }
+            let report = check_project_with_options(
+                fixture.project(fixture.file("main.lua", &source)),
+                ProjectCheckOptions { environment, ..ProjectCheckOptions::default() },
+            );
+            clean(&report);
+            assert_eq!(report.checked_file_count(), 1);
+            assert_eq!(ty(&report, "accepted"), "number");
+            for path in [&candidate, &poison, &broken] {
+                let original = report.project.file_by_path(path).unwrap();
+                assert!(report.file(original.id).is_none());
+            }
+        }
+    }
+}
+
+#[test]
+fn value_discovery_does_not_hide_nonreturning_call_effects() {
+    let fixture = Fixture::new();
+    for prefix in [
+        "local operations={stop=error}\nlocal stop=operations.stop\n",
+        "local function getStop() return error end\nlocal stop=getStop()\n",
+    ] {
+        let source = format!("{prefix}local function infer()\nstop('absent')\nreturn 'unreachable'\nend\nlocal result=infer()\n---@type number\nlocal accepted=result\n");
+        let report = check_project_with_options(
+            fixture.project(fixture.file("main.lua", &source)),
+            ProjectCheckOptions {
+                environment: luanalysis::standard_environment::StandardEnvironmentProfile::Lua54,
+                ..ProjectCheckOptions::default()
+            },
+        );
+        clean(&report);
+        assert_eq!(ty(&report, "result"), "never");
+        assert_eq!(report.checked_file_count(), 1);
+    }
+}
+
+#[test]
 fn invalid_candidate_syntax_is_published_only_after_the_original_target_is_required() {
     let fixture = Fixture::new();
     let broken = fixture.file("broken.lua", "local invalid=\n");
