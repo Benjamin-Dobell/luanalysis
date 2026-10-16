@@ -5543,3 +5543,6 @@ mod tests {
         });
     }
 }
+
+#[cfg(test)]
+mod native_publication_tests;

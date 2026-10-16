@@ -310,6 +310,7 @@ macro_rules! buffered_fields {
             resolved_parameter_symbols
             calls_before_signatures untyped_signatures_in_js jsx_fragment_types assignments_marked
             blocks_too_large_for_flow_analysis
+            native_project_results native_global_results native_declared_heads
         )
     };
 }
@@ -493,6 +494,11 @@ pub struct Program<'s> {
     diagnostics_of_re_resolved_calls:
         ByNodeIndirect<(FileId, ExprId), Vec<Reported>, Buffered, &'s Session>,
     relations: ByKey<relate::Key, u8, Buffered, &'s Session>,
+    /// Completed original-source demands. Providers sharing this program must
+    /// agree on the immutable meaning of their snapshot-qualified source keys.
+    native_project_results: ByKey<NativeProjectQuery, TypeId, Buffered, &'s Session>,
+    native_global_results: ByKey<NativeGlobalsQuery, Option<TypeId>, Buffered, &'s Session>,
+    native_declared_heads: ByKey<NativeTypeDeclarationId, TypeId, Buffered, &'s Session>,
     variances: ByNodeIndirect<Sym, &'s [u8], Buffered, &'s Session>,
     /// `resolvedType` of a property declared by assignment declarations, keyed by the first
     /// declaration.
@@ -688,6 +694,9 @@ impl<'s> Program<'s> {
             context_free_types: ByNode::new_in(&fns, session),
             diagnostics_of_re_resolved_calls: ByNodeIndirect::new_in(&exprs, session),
             relations: ByKey::new_in(session),
+            native_project_results: ByKey::new_in(session),
+            native_global_results: ByKey::new_in(session),
+            native_declared_heads: ByKey::new_in(session),
             variances: ByNodeIndirect::new_in(&symbols, session),
             awaited_types: ById::new_in(session),
             mapped_prop_types: ByKey::new_in(session),

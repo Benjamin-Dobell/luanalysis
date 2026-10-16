@@ -44,6 +44,29 @@ pub enum NativeProjectQuery {
     RequirePack { module: NativeModuleId, policy: NativeLoaderPolicy },
 }
 
+impl crate::local::MaybeLocal for NativeProjectQuery {
+    fn is_local(&self) -> bool { false }
+}
+
+impl crate::types::Follow for NativeProjectQuery {
+    fn visit<V: crate::types::Visitor>(&self, visitor: &mut V) {
+        visitor.plain(&std::mem::discriminant(self));
+        match self {
+            Self::ChunkResult(module) => { visitor.plain(&module.snapshot); visitor.plain(&module.index); }
+            Self::ModuleValue { module, policy } | Self::RequirePack { module, policy } => {
+                visitor.plain(&module.snapshot); visitor.plain(&module.index); visitor.plain(policy);
+            }
+        }
+    }
+    fn follow(&mut self, _: &crate::types::Link) {
+        match self {
+            Self::ChunkResult(NativeModuleId { snapshot: _, index: _ })
+            | Self::ModuleValue { module: NativeModuleId { snapshot: _, index: _ }, policy: _ }
+            | Self::RequirePack { module: NativeModuleId { snapshot: _, index: _ }, policy: _ } => {}
+        }
+    }
+}
+
 impl NativeProjectQuery {
     pub fn module(self) -> NativeModuleId {
         match self {
@@ -98,13 +121,14 @@ impl<'p, 's> Checker<'p, 's> {
         demand: NativeProjectQuery,
         compute: impl FnOnce(&mut Self, &'p dyn NativeProjectProvider) -> Result<TypeId, NativeProjectError>,
     ) -> Result<TypeId, NativeProjectError> {
-        if let Some(&known) = self.native_project_cache.values.get(&demand) { return known }
         let module = demand.module();
         let Some(provider) = self.native_project_provider.filter(|provider| provider.contains_module(module)) else {
             let error = NativeProjectError::InvalidModule(module);
             self.report_native_project(error);
             return Err(error);
         };
+        if let Some(known) = self.p.native_project_results.get(&self.task, &demand) { return Ok(known) }
+        if let Some(&known) = self.native_project_cache.values.get(&demand) { return known }
         let query = Query::NativeProject(demand);
         if let Some(raw) = self.provisional(query) { return Ok(TypeId(raw as u32)) }
         if !self.enter(query) {
@@ -126,7 +150,10 @@ impl<'p, 's> Checker<'p, 's> {
             return Err(error);
         }
         match left {
-            Ok(stored) => self.native_project_cache.store(demand, result, stored),
+            Ok(stored) => {
+                if let Ok(ty) = result { self.p.native_project_results.insert(&self.task, demand, ty, stored); }
+                self.native_project_cache.store(demand, result, stored);
+            }
             Err(open) => {
                 if let Ok(ty) = result {
                     self.cache_provisionally(query, u64::from(ty.0), open);

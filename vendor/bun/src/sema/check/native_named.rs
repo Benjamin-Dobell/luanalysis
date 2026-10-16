@@ -39,6 +39,10 @@ pub struct NativeTypeDeclarationId {
     pub index: u32,
 }
 
+impl crate::local::MaybeLocal for NativeTypeDeclarationId {
+    fn is_local(&self) -> bool { false }
+}
+
 /// Original field/indexer declaration, including explicit-owner augmentations.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeTypeMemberId {
@@ -503,8 +507,9 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub fn native_declared_head(&mut self, declaration: NativeTypeDeclarationId) -> Result<TypeId, NativeNamedTypeError> {
-        if let Some(&known) = self.native_named_cache.heads.get(&declaration) { return known }
         let provider = self.native_named_provider(declaration).map_err(|error| { self.report_native_named(error); error })?;
+        if let Some(known) = self.p.native_declared_heads.get(&self.task, &declaration) { return Ok(known) }
+        if let Some(&known) = self.native_named_cache.heads.get(&declaration) { return known }
         let query = Query::NativeNamed(NativeTypeDeclarationQuery::DeclaredHead(declaration));
         if let Some(raw) = self.provisional(query) { return Ok(TypeId(raw as u32)) }
         if !self.enter(query) {
@@ -541,7 +546,10 @@ impl<'p, 's> Checker<'p, 's> {
             return Err(error);
         }
         match left {
-            Ok(stored) => self.native_named_cache.head(declaration, result, stored),
+            Ok(stored) => {
+                if let Ok(ty) = result { self.p.native_declared_heads.insert(&self.task, declaration, ty, stored); }
+                self.native_named_cache.head(declaration, result, stored);
+            }
             Err(open) => if let Ok(ty) = result { self.cache_provisionally(query, u64::from(ty.0), open) },
         }
         if let Err(error) = result { self.report_native_named(error) }

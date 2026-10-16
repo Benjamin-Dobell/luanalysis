@@ -31,6 +31,32 @@ pub enum NativeGlobalsQuery {
     GlobalBinding(NativeGlobalBindingId),
 }
 
+impl crate::local::MaybeLocal for NativeGlobalsQuery {
+    fn is_local(&self) -> bool { false }
+}
+
+impl crate::types::Follow for NativeGlobalsQuery {
+    fn visit<V: crate::types::Visitor>(&self, visitor: &mut V) {
+        visitor.plain(&std::mem::discriminant(self));
+        match self {
+            Self::ValueDeclarationContract(NativeValueDeclarationId { snapshot, index })
+            | Self::ValueDeclaration(NativeValueDeclarationId { snapshot, index }) => {
+                visitor.plain(snapshot); visitor.plain(index);
+            }
+            Self::GlobalBinding(NativeGlobalBindingId { environment: NativeEnvironmentId { snapshot, index }, index: binding }) => {
+                visitor.plain(snapshot); visitor.plain(index); visitor.plain(binding);
+            }
+        }
+    }
+    fn follow(&mut self, _: &crate::types::Link) {
+        match self {
+            Self::ValueDeclarationContract(NativeValueDeclarationId { snapshot: _, index: _ })
+            | Self::ValueDeclaration(NativeValueDeclarationId { snapshot: _, index: _ })
+            | Self::GlobalBinding(NativeGlobalBindingId { environment: NativeEnvironmentId { snapshot: _, index: _ }, index: _ }) => {}
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeGlobalQueryError {
     InvalidEnvironment(NativeEnvironmentId),
@@ -237,7 +263,6 @@ impl<'p, 's> Checker<'p, 's> {
         demand: NativeGlobalsQuery,
         compute: impl FnOnce(&mut Self, &'p dyn NativeGlobalsProvider) -> Result<NativeGlobalsValue, NativeGlobalQueryError>,
     ) -> Result<NativeGlobalsValue, NativeGlobalQueryError> {
-        if let Some(result) = self.native_globals_cache.values.get(&demand) { return result.clone(); }
         let invalid = match demand {
             NativeGlobalsQuery::ValueDeclarationContract(declaration)
             | NativeGlobalsQuery::ValueDeclaration(declaration) => NativeGlobalQueryError::InvalidDeclaration(declaration),
@@ -256,6 +281,10 @@ impl<'p, 's> Checker<'p, 's> {
             NativeGlobalsQuery::GlobalBinding(binding) => provider.contains_global_binding(binding),
         };
         if !valid { self.report_native_global(invalid.clone()); return Err(invalid); }
+        if let Some(known) = self.p.native_global_results.get(&self.task, &demand) {
+            return Ok(known.map_or(NativeGlobalsValue::NoContract, NativeGlobalsValue::Type));
+        }
+        if let Some(result) = self.native_globals_cache.values.get(&demand) { return result.clone(); }
         let query = Query::NativeGlobals(demand);
         // Only unresolved computations enter this provisional table. A hit
         // retains their dependency/lifetime effects, not permission to use the
@@ -295,7 +324,13 @@ impl<'p, 's> Checker<'p, 's> {
             return Err(error);
         }
         match left {
-            Ok(stored) => self.native_globals_cache.store(demand, result.clone(), stored),
+            Ok(stored) => {
+                if let Ok(value) = &result {
+                    let ty = match value { NativeGlobalsValue::Type(ty) => Some(*ty), NativeGlobalsValue::NoContract => None };
+                    self.p.native_global_results.insert(&self.task, demand, ty, stored);
+                }
+                self.native_globals_cache.store(demand, result.clone(), stored);
+            }
             Err(_) if result.is_ok() && context.is_some_and(|context| {
                 memoizable.is_some() && self.cuts() == context.cuts
                     && self.lowest_taint_since(context.serial) == usize::MAX
