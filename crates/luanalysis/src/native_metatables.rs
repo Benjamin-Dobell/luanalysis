@@ -331,6 +331,17 @@ impl NativeRegistry {
                         }
                     }
                 }
+            } else if let Some(pack) = checker
+                .engine
+                .function_result_pack(&luanalysis_engine::Type::NativeFunction(function))
+            {
+                // Luanalysis v1 also obtains this owner from an inferred
+                // __call result. Keep the existing native return query in
+                // charge of inference, recursion, and provisional state.
+                let result = checker.engine.pack_slot(&pack, 0);
+                if checker.engine.contextual_owner_self_type(&result).is_some() {
+                    owner = Some(result);
+                }
             }
         }
         if owner.is_none() {

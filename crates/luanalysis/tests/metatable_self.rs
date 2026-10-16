@@ -74,6 +74,75 @@ const ORDINARY: &str = r#"---@generic T
 local function ordinary(value, meta) return value end
 "#;
 
+const INFERRED_OWNER: &str = r#"---@class Instance
+---@field id number
+
+---@class Static
+---@overload fun(): Instance
+local Static = {}
+ATTACH(Static, {
+    __call = function()
+        return --[[---@type Instance]] {id = 1}
+    end,
+    ---@param target self
+    ---@return number
+    __len = function(target)
+        return target.id
+    end,
+})
+"#;
+
+#[test]
+fn unannotated_call_result_supplies_its_named_owner_to_sibling_metatable_fields() {
+    // v1 LuaPsiImplUtil.guessParentType(LuaTableField) uses the inferred
+    // __call result before falling back to the setmetatable target.
+    let fixture = Fixture::new();
+    let source = INFERRED_OWNER.replace("ATTACH", "setmetatable");
+    clean(&fixture.check(&source));
+    let invalid = source.replace("return target.id", "return 'wrong'");
+    let output = fixture.check(&invalid);
+    assert!(text(&output).contains("TS2322"), "{}", text(&output));
+    assert!(!text(&output).contains("TS2339"), "{}", text(&output));
+    clean(&fixture.check(&source));
+}
+
+#[test]
+fn inferred_call_result_does_not_grant_an_ordinary_function_metatable_context() {
+    let fixture = Fixture::new();
+    let source = format!(
+        "{ORDINARY}{}",
+        INFERRED_OWNER.replace("ATTACH", "ordinary")
+    );
+    let output = fixture.check(&source);
+    assert!(text(&output).contains("TS2339"), "{}", text(&output));
+    clean(&fixture.check(&INFERRED_OWNER.replace("ATTACH", "setmetatable")));
+}
+
+#[test]
+fn a_self_dependent_inferred_call_result_keeps_the_original_target_fallback() {
+    let fixture = Fixture::new();
+    let source = r#"---@class SelfInstance
+---@field id number
+---@overload fun(): self
+local Static = {id = 1}
+setmetatable(Static, {
+    __call = function()
+        local self = --[[---@type self]] {id = 2}
+        return self
+    end,
+    ---@param target self
+    ---@return number
+    __len = function(target)
+        return target.id
+    end,
+})
+"#;
+    clean(&fixture.check(source));
+    let output = fixture.check(&source.replace("return target.id", "return 'wrong'"));
+    assert!(text(&output).contains("TS2322"), "{}", text(&output));
+    clean(&fixture.check(source));
+}
+
 #[test]
 fn genuine_metatable_context_uses_the_written_instance_class_and_checks_its_real_members() {
     let fixture = Fixture::new();
