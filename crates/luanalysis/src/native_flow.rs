@@ -74,17 +74,22 @@ struct OriginalWriteMetadata {
     environment_members: HashMap<flow::Key, Vec<usize>>,
     dynamic_environment_members: Vec<usize>,
     loader: [Vec<usize>; 2],
+    /// The written references of each assignment transaction that has more
+    /// than one write; a single write cannot replace its own receiver.
+    transactions: HashMap<flow::AssignmentId, Vec<flow::Reference>>,
 }
 
 impl OriginalWriteMetadata {
     fn new(sources: &NativeFlowRecipes) -> Self {
         let mut result = Self::default();
+        let mut transactions: HashMap<flow::AssignmentId, Vec<flow::Reference>> = HashMap::default();
         for graph in &sources.program.graphs {
             for node in &graph.nodes {
                 let flow::NodeKind::Write { address, .. } = &node.kind else { continue; };
                 let ordinal = result.nodes.len();
                 result.nodes.push(node.id);
                 result.exact.entry(address.reference.clone()).or_default().push(node.id);
+                transactions.entry(address.transaction).or_insert_with(Vec::new).push(address.reference.clone());
                 // Rebinding an alias changes its cell, never the old table.
                 if matches!(address.reference.root, flow::ReferenceRoot::Binding(_))
                     && address.reference.path.is_empty() { continue; }
@@ -110,6 +115,8 @@ impl OriginalWriteMetadata {
                 }
             }
         }
+        transactions.retain(|_, writes| writes.len() > 1);
+        result.transactions = transactions;
         result
     }
 
@@ -1363,25 +1370,24 @@ impl NativeFlowSources {
         if query.root == flow::ReferenceRoot::LoaderState {
             return if self.loader_address_invalidates(address) { NativeWriteRelation::Ancestor } else { NativeWriteRelation::Unaffected };
         }
-        self.compare_write_references(query, target, address, at)
+        self.compare_write_references(query, target, address)
     }
 
     /// All target addresses were captured before stores. A later/current path
     /// to a replacement receiver cannot inherit a write to the old one.
-    fn receiver_replaced_in_transaction(&self, target: &flow::Reference, address: &flow::CapturedAddress, at: NativeFlowKey) -> bool {
-        !target.path.is_empty() && self.program.graphs[at.graph.region as usize].nodes.iter().any(|candidate| {
-            matches!(&candidate.kind, flow::NodeKind::Write { address: replacement, .. }
-                if replacement.transaction == address.transaction && replacement.reference.root == target.root
-                && replacement.reference.path.len() < target.path.len() && target.path.starts_with(&replacement.reference.path))
+    fn receiver_replaced_in_transaction(&self, target: &flow::Reference, address: &flow::CapturedAddress) -> bool {
+        !target.path.is_empty() && self.write_metadata.transactions.get(&address.transaction).is_some_and(|writes| {
+            writes.iter().any(|replacement| replacement.root == target.root
+                && replacement.path.len() < target.path.len() && target.path.starts_with(&replacement.path))
         })
     }
 
-    fn compare_write_references(&self, query: &flow::Reference, target: &flow::Reference, address: &flow::CapturedAddress, at: NativeFlowKey) -> NativeWriteRelation {
+    fn compare_write_references(&self, query: &flow::Reference, target: &flow::Reference, address: &flow::CapturedAddress) -> NativeWriteRelation {
         // Different roots are unaffected; check that before the graph scan.
         if query.root != target.root {
             return NativeWriteRelation::Unaffected;
         }
-        if self.receiver_replaced_in_transaction(target, address, at) { return NativeWriteRelation::Unaffected; }
+        if self.receiver_replaced_in_transaction(target, address) { return NativeWriteRelation::Unaffected; }
         for (query_key, target_key) in query.path.iter().zip(&target.path) {
             if matches!(query_key, flow::Key::Dynamic(_))
                 || matches!(target_key, flow::Key::Dynamic(_))
@@ -1538,7 +1544,7 @@ impl FlowAdapter<'_> {
         // parentheses and casts, and the same assignment did not replace it.
         // Different spellings are different tables: no provenance proof.
         let receiver_reference=flow::Reference {root:target_source.root.clone(),path:target_source.path[..target_source.path.len()-1].to_vec()};
-        let receiver_replaced=self.sources.receiver_replaced_in_transaction(target_source,address,at);
+        let receiver_replaced=self.sources.receiver_replaced_in_transaction(target_source,address);
         let mut possible=None;
         let mut compared=false;
         let prefixes=(0..query.path.len()).rev().chain(std::iter::once(query.path.len()));
@@ -1638,7 +1644,7 @@ impl FlowAdapter<'_> {
             return NativeWriteRelation::Unaffected;
         }
         let target = flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path };
-        self.sources.compare_write_references(query, &target, address, at)
+        self.sources.compare_write_references(query, &target, address)
     }
 }
 
