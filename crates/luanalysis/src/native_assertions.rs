@@ -1,4 +1,4 @@
-//! Original inline assertion metadata; all exclusion and relations are native.
+//! Original inline assertion metadata; exclusions remain native operations.
 use super::native_packs::AnnotationPack;
 use super::{Checker, EvaluatedExpression};
 use luanalysis_engine::{Type, ValuePack};
@@ -19,18 +19,17 @@ impl Checker<'_> {
     fn assertion_pack(&mut self, assertion: &ExpressionAssertion) -> ValuePack {
         AnnotationPack::annotation(&assertion.annotation).lower(&mut |ty| self.annotation(ty))
     }
-    fn assertion_overlap(&mut self, source: &Type, target: &Type, assertion: &ExpressionAssertion) {
-        if !self.engine.assertion_overlap(source, target) {
-            self.error_types("TS2352", assertion.span, "Conversion of type '{}' to type '{}' may be a mistake because neither type sufficiently overlaps with the other.", &[source, target]);
-        }
-    }
     fn asserted_report(&mut self, expression: &Expr, ty: &Type) {
         self.report
             .types
             .retain(|info| info.span != expression.span);
         self.record_expression_type(expression.span, ty);
     }
-    pub(super) fn asserted_expression_value(&mut self, expression: &Expr, capture_origin: bool) -> Option<EvaluatedExpression> {
+    pub(super) fn asserted_expression_value(
+        &mut self,
+        expression: &Expr,
+        capture_origin: bool,
+    ) -> Option<EvaluatedExpression> {
         let assertions = self.assertions(expression);
         if assertions.is_empty() {
             return None;
@@ -47,8 +46,9 @@ impl Checker<'_> {
         let context = target.as_ref();
         let mut value = self.expression_value_at_current_flow(expression, context, capture_origin);
         // Keep this evaluation's physical origin even when its static view changes.
-        if let (Some(assertion), Some(target)) = (cast, target) {
-            self.assertion_overlap(&value.ty, &target, assertion);
+        if let Some(target) = target {
+            // V1 @type is an authoritative static view, including unrelated
+            // conversions. The operand above still checks calls and bodies.
             value.ty = target;
         } else {
             for assertion in &assertions {
@@ -75,9 +75,6 @@ impl Checker<'_> {
             .find(|assertion| assertion.kind == ExpressionAssertionKind::Type)
         {
             let target = self.assertion_pack(assertion);
-            let source_first = self.engine.pack_slot(&value, 0);
-            let target_first = self.engine.pack_slot(&target, 0);
-            self.assertion_overlap(&source_first, &target_first, assertion);
             value = target;
         } else {
             for assertion in &assertions {

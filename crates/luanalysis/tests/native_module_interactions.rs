@@ -156,15 +156,26 @@ fn nested_type_assertion_and_exclusion_on_require_preserve_original_pack_boundar
     assert_eq!(ty(&report, "scalar"), "number");
     assert_eq!(ty(&report, "absent"), "nil");
     assert_eq!(ty(&report, "first"), "number");
-    let invalid = fixture.check("local wrong=--[[---@type string]] require('count')");
-    assert!(
-        invalid
-            .files
-            .iter()
-            .flat_map(|file| &file.report.diagnostics)
-            .any(|error| error.code == "TS2352"),
-        "{:#?}",
-        invalid.files
+    let converted =
+        "local text=--[[---@type string]] require('count')\n---@type string\nlocal checked=text\n";
+    let report = fixture.check(converted);
+    clean(&report);
+    assert_eq!(ty(&report, "text"), "string");
+    let wrong = converted.replace(
+        "---@type string\nlocal checked",
+        "---@type number\nlocal checked",
+    );
+    let invalid = fixture.check(&wrong);
+    let diagnostics = &invalid
+        .file(invalid.project.entries[0])
+        .unwrap()
+        .report
+        .diagnostics;
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].code, "TS2322");
+    assert_eq!(
+        &wrong[diagnostics[0].span.start..diagnostics[0].span.end],
+        "text"
     );
 }
 

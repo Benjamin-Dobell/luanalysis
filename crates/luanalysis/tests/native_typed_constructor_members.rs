@@ -198,18 +198,22 @@ end
 }
 
 #[test]
-fn publishing_a_written_instance_owner_keeps_original_cast_validation() {
-    let bad = CONSTRUCTOR.replace("---@type Instance]] {}", "---@type Instance]] 'wrong'");
+fn publishing_a_written_instance_owner_keeps_authoritative_casts_and_member_contracts() {
+    let converted =
+        CONSTRUCTOR.replace("---@type Instance]] {}", "---@type Instance]] 'unrelated'");
+    clean(&converted);
+    let bad = converted.replace("instance.value(1)", "instance.value('wrong')");
     let report = check(&bad);
     assert!(
         report
             .diagnostics
             .iter()
-            .any(|error| error.code == "TS2352"),
+            .any(|error| error.code == "TS2345"
+                && bad[error.span.start..error.span.end] == *"'wrong'"),
         "{:#?}",
         report.diagnostics
     );
-    clean(CONSTRUCTOR);
+    clean(&bad.replace("instance.value('wrong')", "instance.value(1)"));
 }
 
 #[test]

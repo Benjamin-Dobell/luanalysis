@@ -921,7 +921,7 @@ local count=packed.n
 }
 
 #[test]
-fn packed_assertion_overlap_does_not_make_plain_array_assignment_valid() {
+fn packed_assertions_do_not_make_plain_array_assignment_valid() {
     let fixture = Fixture::new();
     let source = format!(
         "{CONTAINERS}---@param packed Packed<number>\nlocal function inspect(packed)\n    ---@type number[]\n    local values=packed\nend\n"
@@ -943,32 +943,37 @@ fn packed_assertion_overlap_does_not_make_plain_array_assignment_valid() {
 }
 
 #[test]
-fn array_packed_assertions_reject_incompatible_string_elements_in_both_directions() {
+fn array_packed_assertions_take_the_written_element_type_in_both_directions() {
     let fixture = Fixture::new();
-    for (parameter, assertion, correction) in [
+    for (parameter, assertion, element, wrong_element) in [
         (
             "number[]",
             "--[[---@type Packed<string>]] values",
-            "--[[---@type Packed<number>]] values",
+            "string",
+            "number",
         ),
         (
             "Packed<string>",
             "--[[---@type number[] ]] values",
-            "--[[---@type string[] ]] values",
+            "number",
+            "string",
         ),
     ] {
-        let statement = format!("local asserted={assertion}");
+        let statement = "local rejected=asserted[1]";
         let source = format!(
-            "{CONTAINERS}---@param values {parameter}\nlocal function inspect(values)\n    {statement}\nend\n"
+            "{CONTAINERS}---@param values {parameter}\nlocal function inspect(values)\n    local asserted={assertion}\n    ---@type {element}\n    local accepted=asserted[1]\n    ---@type {wrong_element}\n    {statement}\nend\n"
         );
-        let corrected = source.replace(assertion, correction);
+        let corrected = source.replace(
+            &format!("---@type {wrong_element}\n    local rejected"),
+            &format!("---@type {element}\n    local rejected"),
+        );
         for (profile, _) in PROFILES {
             error_at(
                 &fixture.check(&source, profile),
                 &source,
-                "TS2352",
-                &statement,
-                assertion,
+                "TS2322",
+                statement,
+                "asserted[1]",
             );
             clean(&fixture.check(&corrected, profile));
         }
@@ -976,34 +981,39 @@ fn array_packed_assertions_reject_incompatible_string_elements_in_both_direction
 }
 
 #[test]
-fn array_packed_assertion_overlap_preserves_nominal_element_class_identity() {
+fn array_packed_assertions_do_not_weaken_the_written_nominal_element_class() {
     let fixture = Fixture::new();
     let classes =
         "---@class First\n---@field value number\n\n---@class Second\n---@field value number\n\n";
-    for (parameter, assertion, correction) in [
+    for (parameter, assertion, element, wrong_element) in [
         (
             "First[]",
             "--[[---@type Packed<Second>]] values",
-            "--[[---@type Packed<First>]] values",
+            "Second",
+            "First",
         ),
         (
             "Packed<Second>",
             "--[[---@type First[] ]] values",
-            "--[[---@type Second[] ]] values",
+            "First",
+            "Second",
         ),
     ] {
-        let statement = format!("local asserted={assertion}");
+        let statement = "local rejected=asserted[1]";
         let source = format!(
-            "{CONTAINERS}{classes}---@param values {parameter}\nlocal function inspect(values)\n    {statement}\nend\n"
+            "{CONTAINERS}{classes}---@param values {parameter}\nlocal function inspect(values)\n    local asserted={assertion}\n    ---@type {element}\n    local accepted=asserted[1]\n    ---@type {wrong_element}\n    {statement}\nend\n"
         );
-        let corrected = source.replace(assertion, correction);
+        let corrected = source.replace(
+            &format!("---@type {wrong_element}\n    local rejected"),
+            &format!("---@type {element}\n    local rejected"),
+        );
         for (profile, _) in PROFILES {
             error_at(
                 &fixture.check(&source, profile),
                 &source,
-                "TS2352",
-                &statement,
-                assertion,
+                "TS2322",
+                statement,
+                "asserted[1]",
             );
             clean(&fixture.check(&corrected, profile));
         }
@@ -1011,62 +1021,63 @@ fn array_packed_assertion_overlap_preserves_nominal_element_class_identity() {
 }
 
 #[test]
-fn array_assertions_reject_disjoint_string_boolean_and_separate_mixed_key_domains() {
+fn authoritative_array_assertions_do_not_change_ordinary_key_domain_assignment() {
     let fixture = Fixture::new();
     for key in ["string", "boolean"] {
-        for (parameter, assertion, corrected_parameter, corrected_assertion) in [
+        for (parameter, assertion, annotation) in [
             (
                 format!("table<{key},number>"),
                 "--[[---@type number[] ]] values".to_owned(),
-                "table<number,number>".to_owned(),
-                "--[[---@type number[] ]] values".to_owned(),
+                "number[]".to_owned(),
             ),
             (
                 "number[]".to_owned(),
                 format!("--[[---@type table<{key},number>]] values"),
-                "number[]".to_owned(),
-                "--[[---@type table<number,number>]] values".to_owned(),
+                format!("table<{key},number>"),
             ),
         ] {
-            let statement = format!("local asserted={assertion}");
+            let statement = "local rejected=values";
             let source = format!(
-                "---@param values {parameter}\nlocal function inspect(values)\n    {statement}\nend\n"
+                "---@param values {parameter}\nlocal function inspect(values)\n    local asserted={assertion}\n    ---@type {annotation}\n    {statement}\nend\n"
             );
-            let corrected = source
-                .replace(
-                    &format!("---@param values {parameter}"),
-                    &format!("---@param values {corrected_parameter}"),
-                )
-                .replace(&assertion, &corrected_assertion);
+            let corrected = source.replace(statement, "local rejected=asserted");
             for (profile, _) in PROFILES {
                 error_at(
                     &fixture.check(&source, profile),
                     &source,
-                    "TS2352",
-                    &statement,
-                    &assertion,
+                    "TS2322",
+                    statement,
+                    "values",
                 );
                 clean(&fixture.check(&corrected, profile));
             }
         }
     }
     let separate_domains = "---@shape SeparateDomains\n---@field [number] number\n---@field [string] number\n---@field n number\n\n";
-    for (parameter, assertion) in [
-        ("SeparateDomains", "--[[---@type number[] ]] values"),
-        ("number[]", "--[[---@type SeparateDomains]] values"),
+    for (parameter, assertion, annotation) in [
+        (
+            "SeparateDomains",
+            "--[[---@type number[] ]] values",
+            "number[]",
+        ),
+        (
+            "number[]",
+            "--[[---@type SeparateDomains]] values",
+            "SeparateDomains",
+        ),
     ] {
-        let statement = format!("local asserted={assertion}");
+        let statement = "local rejected=values";
         let source = format!(
-            "{separate_domains}---@param values {parameter}\nlocal function inspect(values)\n    {statement}\nend\n"
+            "{separate_domains}---@param values {parameter}\nlocal function inspect(values)\n    local asserted={assertion}\n    ---@type {annotation}\n    {statement}\nend\n"
         );
-        let corrected = source.replace("---@field [string] number\n", "");
+        let corrected = source.replace(statement, "local rejected=asserted");
         for (profile, _) in PROFILES {
             error_at(
                 &fixture.check(&source, profile),
                 &source,
-                "TS2352",
-                &statement,
-                assertion,
+                "TS2322",
+                statement,
+                "values",
             );
             clean(&fixture.check(&corrected, profile));
         }
@@ -1074,50 +1085,56 @@ fn array_assertions_reject_disjoint_string_boolean_and_separate_mixed_key_domain
 }
 
 #[test]
-fn numeric_indexer_overlap_still_checks_required_concrete_element_values() {
+fn numeric_assertions_do_not_change_original_required_concrete_element_values() {
     let fixture = Fixture::new();
     let assertion = "--[[---@type number[] ]] values";
-    let statement = format!("local asserted={assertion}");
+    let statement = "local rejected=values[1]";
     let source = format!(
-        "---@shape NumericWithRequiredString\n---@field [number] number|string\n---@field [1] string\n---@field n number\n\n---@param values NumericWithRequiredString\nlocal function inspect(values)\n    {statement}\nend\n"
+        "---@shape NumericWithRequiredString\n---@field [number] number|string\n---@field [1] string\n---@field n number\n\n---@param values NumericWithRequiredString\nlocal function inspect(values)\n    local asserted={assertion}\n    ---@type number\n    local accepted=asserted[1]\n    ---@type number\n    {statement}\nend\n"
     );
-    let corrected = source.replace(assertion, "--[[---@type (number|string)[] ]] values");
+    let corrected = source.replace(
+        "---@type number\n    local rejected",
+        "---@type string\n    local rejected",
+    );
     for (profile, _) in PROFILES {
         error_at(
             &fixture.check(&source, profile),
             &source,
-            "TS2352",
-            &statement,
-            assertion,
+            "TS2322",
+            statement,
+            "values[1]",
         );
         clean(&fixture.check(&corrected, profile));
     }
 }
 
 #[test]
-fn cli_reports_incompatible_array_packed_assertions_at_the_original_expression() {
+fn cli_reports_invalid_uses_of_array_packed_assertions_at_the_original_expression() {
     let fixture = Fixture::new();
     let assertion = "--[[---@type Packed<string>]] values";
-    let statement = format!("local packed={assertion}");
+    let statement = "local rejected=packed[1]";
     let source = format!(
-        "-- café\n{CONTAINERS}---@param values number[]\nlocal function inspect(values)\n    {statement}\nend\n"
+        "-- café\n{CONTAINERS}---@param values number[]\nlocal function inspect(values)\n    local packed={assertion}\n    ---@type number\n    {statement}\nend\n"
     );
-    let corrected = source.replace(assertion, "--[[---@type Packed<number>]] values");
-    let (start, end) = span(&source, &statement, assertion);
+    let corrected = source.replace(
+        "---@type number\n    local rejected",
+        "---@type string\n    local rejected",
+    );
+    let (start, end) = span(&source, statement, "packed[1]");
     let range = format!("\"range\":{{\"start\":{start},\"end\":{end}}}");
     for (profile, version) in PROFILES {
         error_at(
             &fixture.check(&source, profile),
             &source,
-            "TS2352",
-            &statement,
-            assertion,
+            "TS2322",
+            statement,
+            "packed[1]",
         );
         let rejected = cli_report(fixture.cli(&source, version), 1);
         assert!(
             rejected
                 .split("},{\"path\":")
-                .any(|diagnostic| diagnostic.contains("\"code\":\"TS2352\"")
+                .any(|diagnostic| diagnostic.contains("\"code\":\"TS2322\"")
                     && diagnostic.contains(&range)),
             "{rejected}"
         );

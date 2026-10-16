@@ -1,13 +1,15 @@
-use luanalysis::{CheckReport};
+use luanalysis::CheckReport;
 
 // Keep contextual inference regressions meaningful with missing contracts denied.
 fn check(source: &str) -> luanalysis::CheckReport {
-    luanalysis::check_with_options(source, luanalysis::CheckOptions {
-        no_implicit_any: true,
-        ..Default::default()
-    })
+    luanalysis::check_with_options(
+        source,
+        luanalysis::CheckOptions {
+            no_implicit_any: true,
+            ..Default::default()
+        },
+    )
 }
-
 
 fn accepted(source: &str) -> CheckReport {
     let report = check(source);
@@ -24,7 +26,7 @@ fn ty(report: &CheckReport, name: &str) -> String {
         .clone()
 }
 #[test]
-fn generic_dictionary_assertions_use_possible_key_overlap_and_keep_value_contracts() {
+fn generic_dictionary_assertions_take_the_written_view_and_keep_value_contracts() {
     let source = r#"---@shape Packed<T>
 ---@field [number] T
 ---@field n number
@@ -46,34 +48,61 @@ local function dictionary(tab) return --[[---@type table<K,V>]] tab end
 "#;
     accepted(source);
 
-    let wrong = r#"---@generic K
+    let converted = r#"---@generic K
 ---@param tab table<K,number>
-local function wrong(tab) return --[[---@type string[] ]] tab end
+local function convert(tab)
+local strings=--[[---@type string[] ]] tab
+---@type string
+local value=strings[1]
+return value
+end
 "#;
-    let report = check(wrong);
+    accepted(converted);
+    let wrong = converted.replace(
+        "---@type string\nlocal value",
+        "---@type number\nlocal value",
+    );
+    let report = check(&wrong);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
-    assert_eq!(report.diagnostics[0].code, "TS2352");
-    assert_eq!(&wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "--[[---@type string[] ]] tab");
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(
+        &wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+        "strings[1]"
+    );
 }
 
 #[test]
-fn dictionary_assertion_overlap_does_not_coerce_distinct_lua_key_categories() {
+fn dictionary_assertions_can_change_key_categories_without_weakening_the_result() {
     for generic in ["", "---@generic K:string\n", "---@generic K:boolean\n"] {
         let key = if generic.is_empty() { "string" } else { "K" };
-        let source = format!("{generic}---@param tab table<{key},number>\nlocal function wrong(tab) return --[[---@type number[] ]] tab end\n");
-        let report = check(&source);
+        let source = format!(
+            "{generic}---@param tab table<{key},number>\nlocal function convert(tab)\nlocal numbers=--[[---@type number[] ]] tab\n---@type number\nlocal value=numbers[1]\nreturn value\nend\n"
+        );
+        accepted(&source);
+        let wrong = source.replace(
+            "---@type number\nlocal value",
+            "---@type string\nlocal value",
+        );
+        let report = check(&wrong);
         assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
-        assert_eq!(report.diagnostics[0].code, "TS2352");
+        assert_eq!(report.diagnostics[0].code, "TS2322");
+        assert_eq!(
+            &wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+            "numbers[1]"
+        );
     }
 }
 
 #[test]
-fn possible_generic_dictionary_key_overlap_does_not_allow_ordinary_assignment() {
+fn authoritative_generic_dictionary_assertions_do_not_allow_ordinary_assignment() {
     let source = "---@generic K,V\n---@param tab table<K,V>\nlocal function wrong(tab)\n---@type V[]\nlocal values=tab\nend\n";
     let report = check(source);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(report.diagnostics[0].code, "TS2322");
-    assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "tab");
+    assert_eq!(
+        &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
+        "tab"
+    );
 }
 
 #[test]
@@ -84,20 +113,110 @@ fn scalar_type_assertion_and_not_preserve_operand_checking() {
     let report = check(&bad);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(report.diagnostics[0].code, "TS2322");
-    let overlap = check("local result=--[[---@type string]] 42");
-    assert_eq!(overlap.diagnostics.len(), 1, "{:#?}", overlap.diagnostics);
-    assert_eq!(overlap.diagnostics[0].code, "TS2352");
+    let converted = accepted("local result=--[[---@type string]] 42");
+    assert_eq!(ty(&converted, "result"), "string");
     let invalid = check(
         "---@param value number\nlocal function use(value) end\nlocal result=--[[---@type number]] use(\"wrong\")",
     );
-    assert!(
-        invalid
-            .diagnostics
-            .iter()
-            .any(|error| error.code == "TS2345"),
-        "{:#?}",
-        invalid.diagnostics
+    assert_eq!(invalid.diagnostics.len(), 1, "{:#?}", invalid.diagnostics);
+    assert_eq!(invalid.diagnostics[0].code, "TS2345");
+}
+
+#[test]
+fn v1_unrelated_type_casts_are_authoritative_but_downstream_uses_stay_checked() {
+    // V1 inspections/type_casts.lua:21 casts 1 to fun():any, and :29-30
+    // casts a string to any[]. Neither conversion itself is an error.
+    let source = "---@param values string[]\nlocal function takeArray(values) end\n---@param value number\nlocal function takeNumber(value) end\nlocal text='text'\nlocal array=--[[---@type string[] ]] text\ntakeArray(array)\nlocal callback=--[[---@type fun():number]] 1\n---@type number\nlocal result=callback()\n";
+    let report = accepted(source);
+    assert_eq!(ty(&report, "array"), "string[]");
+    assert_eq!(ty(&report, "result"), "number");
+
+    let wrong = format!("{source}takeNumber(callback)\n");
+    let report = check(&wrong);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    let error = &report.diagnostics[0];
+    assert_eq!(error.code, "TS2345");
+    assert_eq!(&wrong[error.span.start..error.span.end], "callback");
+    accepted(&wrong.replace("takeNumber(callback)", "takeNumber(42)"));
+}
+
+#[test]
+fn authoritative_casts_and_real_errors_agree_in_serial_and_parallel_cli_projects() {
+    use std::{fs, process::Command};
+    let directory = std::env::temp_dir().join(format!(
+        "luanalysis authoritative casts {}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("module.lua"), "return {value=42}\n").unwrap();
+    // Enough independent original files to exercise the native parallel plan.
+    for index in 0..12 {
+        fs::write(
+            directory.join(format!("other{index}.lua")),
+            "local value=42\n",
+        )
+        .unwrap();
+    }
+    let source = "-- café\r\n---@param value number\r\nlocal function takeNumber(value) end\r\nlocal view=--[[---@type {value:string}]] require('module')\r\n---@type string\r\nlocal text=view.value\r\nlocal function pair() return 1,'tail' end\r\nlocal first,second=--[[---@type string,number]] pair()\r\n---@type string\r\nlocal head=first\r\n---@type number\r\nlocal tail=second\r\nlocal callback=--[[---@type fun():number]] 'unrelated'\r\ntakeNumber(callback)\r\n";
+    let path = directory.join("main.lua");
+    fs::write(&path, source).unwrap();
+    let start = source.rfind("callback)").unwrap();
+    let range = format!(
+        "\"range\":{{\"start\":{start},\"end\":{}}}",
+        start + "callback".len()
     );
+    let run = |jobs: usize| {
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+            .args([
+                "check",
+                "--no-stdlib",
+                "--no-implicit-any",
+                "--format",
+                "json",
+                "--jobs",
+            ])
+            .arg(jobs.to_string())
+            .arg(&directory)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.is_empty(), "jobs={jobs}: {stderr}");
+        (output.status.code(), stdout)
+    };
+    let expected = run(1);
+    assert_eq!(expected.0, Some(1), "{}", expected.1);
+    assert!(expected.1.contains("\"filesChecked\":14"), "{}", expected.1);
+    assert_eq!(
+        expected.1.matches("\"severity\":\"error\"").count(),
+        1,
+        "{}",
+        expected.1
+    );
+    assert!(
+        expected.1.contains("\"code\":\"TS2345\"") && expected.1.contains(&range),
+        "{}",
+        expected.1
+    );
+    assert!(!expected.1.contains("TS2352"), "{}", expected.1);
+    for jobs in [2, 4] {
+        assert_eq!(run(jobs), expected, "jobs={jobs}");
+    }
+    fs::write(
+        &path,
+        source.replace("takeNumber(callback)", "takeNumber(42)"),
+    )
+    .unwrap();
+    for jobs in [1, 2, 4] {
+        let corrected = run(jobs);
+        assert_eq!(corrected.0, Some(0), "jobs={jobs}: {}", corrected.1);
+        assert!(
+            corrected.1.contains("\"diagnostics\":[]"),
+            "jobs={jobs}: {}",
+            corrected.1
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
 }
 #[test]
 fn whole_pack_assertions_and_exclusions_keep_slot_order_and_parentheses() {
@@ -211,9 +330,7 @@ fn asserted_table_context_types_nested_callbacks_and_preserves_body_errors() {
     assert_eq!(ty(&report, "result"), "number");
     let bad = check(&source.replace("return value", "return \"wrong\""));
     assert!(
-        bad.diagnostics
-            .iter()
-            .any(|error| matches!(error.code, "TS2322" | "TS2352")),
+        bad.diagnostics.iter().any(|error| error.code == "TS2322"),
         "{:#?}",
         bad.diagnostics
     );
