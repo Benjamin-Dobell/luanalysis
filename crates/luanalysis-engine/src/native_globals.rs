@@ -171,6 +171,7 @@ impl<P: NativeTypeProvider> core::NativeGlobalsProvider for ProviderAdapter<'_, 
     fn assumed_standard_environment(&self) -> Option<core::NativeEnvironmentId> {
         self.provider.assumed_standard_environment().map(core_environment)
     }
+    fn strict_runtime_effects(&self) -> bool { self.provider.strict_runtime_effects() }
     fn primitive_member_environment(&self) -> Option<core::NativeEnvironmentId> {
         self.provider.primitive_member_environment().map(core_environment)
     }

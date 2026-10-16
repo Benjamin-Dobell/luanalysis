@@ -106,19 +106,11 @@ pub(super) struct NativeAliasCache {
     preservations: FxHashMap<(NativeReferenceKey, NativeValueKey, NativeFlowKey, u64, u64), NativeCallPreservation>,
     metatable_absence: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), bool>,
     newindex_absence: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), bool>,
-    callable_tables: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), Option<AliasCallableTable>>,
     execution_ids: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64), u64>,
     executions: Vec<AliasExecutionFrame>,
 }
 #[derive(Clone, Copy)]
 struct AliasExecutionFrame { id: u64, entry: NativeFlowKey, caller: NativeFlowKey, function: Option<(NativeFunctionId, NativeFlowKey, u64)> }
-#[derive(Clone, Copy)]
-struct AliasCallableTable {
-    callee: NativeAliasReturnValue,
-    function: NativeFunctionId,
-    creation: NativeFlowKey,
-    activation: u64,
-}
 #[derive(Clone, Copy)]
 enum AliasMetatableCall { Preserved, Replaced(NativeAliasReturnValue), Unknown, Pending }
 impl NativeAliasCache {
@@ -382,7 +374,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     fn native_alias_metatable_call_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, call: NativeValueKey, input: NativeFlowKey) -> AliasMetatableCall {
-        let Some(mut recipe) = provider.alias_call_source(call, input) else { return AliasMetatableCall::Unknown };
+        let Some(recipe) = provider.alias_call_source(call, input) else { return AliasMetatableCall::Unknown };
         if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return AliasMetatableCall::Unknown }
         let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
         if callee.uncertain { return AliasMetatableCall::Pending }
@@ -403,17 +395,6 @@ impl<'p, 's> Checker<'p, 's> {
                 NativeIntrinsicKind::Require => AliasMetatableCall::Unknown,
             },
             Origin::Function(function, creation, activation) => (function, creation, activation),
-            target @ Origin::Allocation(..) => {
-                let callable = match self.native_alias_callable_table(provider, &target, recipe.execution_input) {
-                    Ok(Some(callable)) => callable,
-                    Ok(None) => return AliasMetatableCall::Unknown,
-                    Err(()) => return AliasMetatableCall::Pending,
-                };
-                let receiver = recipe.callee;
-                recipe.callee = callable.callee;
-                recipe.arguments.insert(0, receiver);
-                (callable.function, callable.creation, callable.activation)
-            },
             _ => return AliasMetatableCall::Unknown,
         };
         if activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation) { return AliasMetatableCall::Unknown }
@@ -559,8 +540,22 @@ impl<'p, 's> Checker<'p, 's> {
         result
     }
 
+    /// Useful rather than sound, as in TypeScript: an unresolved call preserves
+    /// what it does not visibly write, unless strict runtime effects were
+    /// requested. Tables are callable only through their declared callable
+    /// types; metatables and `__call` are not traced.
+    /// The opt-in strict runtime-effect mode, from the globals provider.
+    pub fn native_strict_runtime_effects(&self) -> bool {
+        self.native_globals_provider.is_some_and(|globals| globals.strict_runtime_effects())
+    }
+
+    fn native_unresolved_call_preservation(&self) -> NativeCallPreservation {
+        if self.native_strict_runtime_effects() { NativeCallPreservation::Unknown }
+        else { NativeCallPreservation::Preserved }
+    }
+
     fn native_alias_call_preservation_uncached(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
-        let Some(recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Unknown };
+        let Some(recipe) = provider.alias_call_source(call, input) else { return self.native_unresolved_call_preservation() };
         if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeCallPreservation::Unknown }
         let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
         self.native_alias_call_preservation_for_callee(provider, reference, call, input, recipe, callee)
@@ -568,7 +563,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_alias_call_preservation_for_callee(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey, recipe: NativeAliasCall, callee: Origins) -> NativeCallPreservation {
         if callee.uncertain { return NativeCallPreservation::Pending }
-        if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return NativeCallPreservation::Unknown }
+        if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return self.native_unresolved_call_preservation() }
         match callee.tokens.into_iter().next().unwrap() {
             Origin::Standard(site) => match site.kind {
                 NativeIntrinsicKind::Type | NativeIntrinsicKind::Assert | NativeIntrinsicKind::SetMetatable => NativeCallPreservation::Preserved,
@@ -586,22 +581,7 @@ impl<'p, 's> Checker<'p, 's> {
                 },
             },
             Origin::Function(function, creation, activation) => self.native_alias_function_preservation(provider, reference, call, &recipe, function, creation, activation),
-            allocation @ Origin::Allocation(..) => {
-                let callable = match self.native_alias_callable_table(provider, &allocation, recipe.execution_input) {
-                    Ok(Some(callable)) => callable,
-                    Ok(None) => return NativeCallPreservation::Unknown,
-                    Err(()) => return NativeCallPreservation::Pending,
-                };
-                // Lua passes the frozen table as the first physical __call
-                // argument. Keep it even when a later entry-state capability
-                // cannot yet transport parameter aliases.
-                let receiver = recipe.callee;
-                let mut recipe = recipe;
-                recipe.callee = callable.callee;
-                recipe.arguments.insert(0, receiver);
-                self.native_alias_function_preservation(provider, reference, call, &recipe, callable.function, callable.creation, callable.activation)
-            },
-            _ => NativeCallPreservation::Unknown,
+            _ => self.native_unresolved_call_preservation(),
         }
     }
 
@@ -610,66 +590,6 @@ impl<'p, 's> Checker<'p, 's> {
         if self.native_alias_cache.executions.iter().any(|frame| frame.function == Some((function, creation, activation))) { return NativeCallPreservation::Pending }
         let Some(execution) = provider.function_alias_execution(function, creation) else { return NativeCallPreservation::Unknown };
         self.native_alias_execution_preservation(provider, reference, call, recipe, &execution, Some((function, creation, activation)))
-    }
-
-    fn native_alias_callable_table(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, before: NativeFlowKey) -> Result<Option<AliasCallableTable>, ()> {
-        let Origin::Allocation(value, input) = allocation else { return Ok(None) };
-        if input.graph != before.graph { return Ok(None) }
-        let key = (*value, *input, before, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
-        // The proof is independent of the watched reference whose call
-        // continuation requested it. Reuse only a completed result.
-        if let Some(&result) = self.native_alias_cache.callable_tables.get(&key) { return Ok(result) }
-        let query = Query::NativeAliasCallableTable(key.0, key.1, key.2, key.3, key.4);
-        if !self.enter(query) { self.mark_tainted_from(0); return Err(()) }
-        let (result, completed) = self.run_memoizable(|checker| checker.native_alias_callable_table_worker(provider, allocation, *input, before));
-        if self.leave(query).is_err() || completed.is_none() || result.is_err() {
-            self.mark_tainted_from(0);
-            return Err(());
-        }
-        if let Ok(result) = result && !self.is_stack_low() { self.native_alias_cache.callable_tables.insert(key, result); }
-        result
-    }
-
-    /// Find the reached physical metamethod, rather than trusting a callable
-    /// type or a future source-level setmetatable candidate. This first proof
-    /// accepts a direct literal metatable and no intervening heap effects.
-    fn native_alias_callable_table_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, mut at: NativeFlowKey) -> Result<Option<AliasCallableTable>, ()> {
-        let mut visited = HashSet::default();
-        while at != input {
-            if at.graph != input.graph || visited.len() >= 16_384 || !visited.insert(at) || self.is_stack_low() { return Ok(None) }
-            match provider.node(at) {
-                Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. })
-                    if matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) => at = before,
-                Some(NativeFlowNode::Write { before, target, .. })
-                    if provider.reference_is_cell(target) && matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) => at = before,
-                Some(NativeFlowNode::Call { before, value, input: call_input }) => {
-                    let Some(recipe) = provider.alias_call_source(value, call_input) else { return Ok(None) };
-                    if recipe.execution_input != before || recipe.arguments.len() < 2 { return Ok(None) }
-                    let metatable = recipe.arguments[1];
-                    // Recover only a field of the original literal itself.
-                    // A mutable alias needs a separate reached-heap proof. This
-                    // structural requirement precedes the physical callee and
-                    // receiver proofs: without it no callable table is reached.
-                    let key = NativeTableKey::String(self.atoms().intern(b"__call"));
-                    let Some(callee) = provider.value_alias_member_source(metatable.value, metatable.input, key, self) else { return Ok(None) };
-                    let setmetatable = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
-                    if setmetatable.uncertain { return Err(()) }
-                    if setmetatable.unknown || setmetatable.non_table || setmetatable.tokens.len() != 1 { return Ok(None) }
-                    if !matches!(setmetatable.tokens.into_iter().next(), Some(Origin::Standard(site)) if site.kind == NativeIntrinsicKind::SetMetatable) { return Ok(None) }
-                    let receiver = recipe.arguments[0];
-                    let receiver = self.native_alias_value(provider, receiver.value, receiver.input, 0);
-                    if receiver.uncertain { return Err(()) }
-                    if receiver.unknown || receiver.non_table || receiver.tokens.len() != 1 || !receiver.tokens.contains(allocation) { return Ok(None) }
-                    let function = self.native_alias_value(provider, callee.value, callee.input, 0);
-                    if function.uncertain { return Err(()) }
-                    if function.unknown || function.non_table || function.tokens.len() != 1 { return Ok(None) }
-                    let Some(Origin::Function(function, creation, activation)) = function.tokens.into_iter().next() else { return Ok(None) };
-                    return Ok(Some(AliasCallableTable { callee, function, creation, activation }));
-                },
-                _ => return Ok(None),
-            }
-        }
-        Ok(None)
     }
 
     fn native_alias_loader_state(&mut self, provider: &dyn NativeFlowProvider, loader: NativeReferenceKey, input: NativeFlowKey) -> NativeFlowResult {

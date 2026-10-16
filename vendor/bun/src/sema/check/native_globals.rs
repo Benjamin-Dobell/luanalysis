@@ -77,6 +77,10 @@ pub trait NativeGlobalsProvider {
     /// reached standard binding state; this supplies no heap identity or
     /// purity certificate and never overrides an observed assignment.
     fn assumed_standard_environment(&self) -> Option<NativeEnvironmentId> { None }
+    /// The opt-in strict runtime-effect mode: an unresolved call is an effect
+    /// barrier for heap provenance. Ordinary checking is useful rather than
+    /// sound and preserves what such a call does not visibly write.
+    fn strict_runtime_effects(&self) -> bool { false }
     /// Frozen initial-library capability, never a lookup of the current variable spelling.
     fn primitive_member_environment(&self) -> Option<NativeEnvironmentId> { None }
     fn primitive_member_binding(&self, _: NativeEnvironmentId, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingId> { None }

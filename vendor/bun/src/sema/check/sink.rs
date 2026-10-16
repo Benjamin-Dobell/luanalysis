@@ -273,7 +273,7 @@ fn is_task_independent(q: Query) -> bool {
         | Query::NativeContextualTypeOwner(..)
         | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallState(..)
         | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
-        | Query::NativeAliasLoaderState(..) | Query::NativeAliasCallableTable(..)
+        | Query::NativeAliasLoaderState(..)
         | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
         | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
         | Query::NativeStandardReference(..) | Query::NativeStandardValue(..) | Query::NativeStandardCall(..) | Query::NativeStandardLoader(..)

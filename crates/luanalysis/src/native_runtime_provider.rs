@@ -168,13 +168,27 @@ impl NativeRegistry {
         // those stores, whose values can read this schema while it is derived.
         let receiver = sources.program.evaluation(source.receiver_evaluation);
         if let ExprKind::Name(name) = &sources.program.expression(receiver.expression).expression.kind
-            && let Some(binding) = self.bound().binding_at(name.span.start)            && let Some(initializer) = sources.immutable_initializer(binding)
+            && let Some(binding) = self.bound().binding_at(name.span.start)
+            && let Some(initializer) = sources.immutable_initializer(binding)
             && initializer.input.graph == source.receiver_input.graph.region
         {
             let recipe = ValueRecipe::Evaluation(initializer.id);
             let input = sources.flow_key(initializer.input, graph.context);
             return Some(self.with_prospective_store_report(|| {
                 self.flow_value_type(sources, &recipe, input, queries)
+            }));
+        }
+        // A binding of this body that is never written, such as an unassigned
+        // `self` parameter, holds its entry value at every store here.
+        // Narrowing can only remove alternatives, never change an identity.
+        if let ExprKind::Name(name) = &sources.program.expression(receiver.expression).expression.kind
+            && let Some(binding) = self.bound().binding_at(name.span.start)
+            && sources.unwritten_binding_of(binding, source.receiver_input.graph.region)
+        {
+            let recipe = sources.value(source.receiver_value).expect("original receiver value");
+            let input = sources.flow_key(sources.graph_entry(source.receiver_input.graph.region), graph.context);
+            return Some(self.with_prospective_store_report(|| {
+                self.flow_value_type(sources, recipe, input, queries)
             }));
         }
         let input = NativeFlowKey {

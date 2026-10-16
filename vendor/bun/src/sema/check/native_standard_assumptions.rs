@@ -391,7 +391,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     fn native_standard_call_worker(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey, scope: StandardScope, callee: Option<Origins>) -> NativeCallPreservation {
-        let Some(mut recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Preserved };
+        let Some(recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Preserved };
         let callee = callee.unwrap_or_else(|| self.native_standard_value(provider, recipe.callee.value, recipe.callee.input));
         if callee.uncertain { return NativeCallPreservation::Pending }
         if callee.unknown || callee.tokens.len() != 1 { return NativeCallPreservation::Preserved }
@@ -399,21 +399,6 @@ impl<'p, 's> Checker<'p, 's> {
             Origin::Function(function, creation, activation) if scope.function => {
                 let Some(execution) = provider.function_alias_execution(function, creation) else { return NativeCallPreservation::Preserved };
                 (vec![execution], Some((function, creation, activation)), StandardScope { function: false, module: false, loader: scope.loader })
-            },
-            allocation @ Origin::Allocation(..) if scope.function => {
-                // Reuse only the bounded original setmetatable/__call target
-                // recipe. Unknown intervening effects still fail that raw
-                // lookup; no purity or absence certificate is inferred here.
-                let target = match self.native_alias_callable_table(provider, &allocation, recipe.execution_input) {
-                    Ok(Some(target)) => target,
-                    Ok(None) => return NativeCallPreservation::Preserved,
-                    Err(()) => return NativeCallPreservation::Pending,
-                };
-                let Some(execution) = provider.function_alias_execution(target.function, target.creation) else { return NativeCallPreservation::Preserved };
-                let receiver = recipe.callee;
-                recipe.callee = target.callee;
-                recipe.arguments.insert(0, receiver);
-                (vec![execution], Some((target.function, target.creation, target.activation)), StandardScope { function: false, module: false, loader: scope.loader })
             },
             Origin::Standard(site) if site.kind == NativeIntrinsicKind::Require && scope.module => {
                 // An original import recipe is only a candidate execution.

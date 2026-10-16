@@ -73,12 +73,6 @@ fn invalidates(module: &str) {
     assert!(result.contains("\"line\":2,"), "{result}");
 }
 
-#[test]
-fn original_literal_call_metamethod_preserves_the_following_loader() {
-    clean(&format!(
-        "{HEADER}{SAFE}local instance=Static()\nreturn Static\n"
-    ));
-}
 
 #[test]
 fn reached_call_metamethod_executes_its_actual_loader_write() {
@@ -87,15 +81,6 @@ fn reached_call_metamethod_executes_its_actual_loader_write() {
     ));
 }
 
-#[test]
-fn the_latest_reached_metatable_replaces_the_earlier_callable() {
-    invalidates(&format!(
-        "{HEADER}{SAFE}{MUTATING}local instance=Static()\nreturn Static\n"
-    ));
-    clean(&format!(
-        "{HEADER}{MUTATING}{SAFE}local instance=Static()\nreturn Static\n"
-    ));
-}
 
 #[test]
 fn argument_evaluation_cannot_reuse_the_earlier_safe_call_metamethod() {
@@ -107,10 +92,6 @@ fn an_ordinary_attach_function_does_not_attest_a_call_metamethod() {
     invalidates(&format!("{HEADER}---@generic T\n---@param value T\n---@param meta table\n---@return T\nlocal function ordinary(value,meta) return value end\nordinary(Static,{{__call=function() return {{}} end}})\nlocal instance=Static()\nreturn Static\n"));
 }
 
-#[test]
-fn an_original_call_only_metatable_allows_later_namespace_stores() {
-    clean(&format!("{HEADER}Static.INFO=3\nsetmetatable(Static,{{__call=function()\nlocal self={{}}\nlocal level=Static.INFO\nfunction self.read() return level end\nreturn self\nend}})\nlocal instance=Static()\nfunction Static.first() return 1 end\nfunction Static.second() return 2 end\nreturn Static\n"));
-}
 
 #[test]
 fn a_replacement_newindex_handler_still_invalidates_the_loader() {

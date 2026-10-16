@@ -429,7 +429,10 @@ fn sibling_pack_projections_share_or_distinguish_the_actual_returned_allocations
     }
 }
 #[test]
-fn calls_preserve_immutable_cells_but_invalidate_fields_and_cross_function_writes() {
+/// Useful rather than sound, as in TypeScript: an unresolved call preserves
+/// the cells and fields it does not visibly write, including a cell that another
+/// function writes. Strict runtime effects are covered by the host CLI tests.
+fn unresolved_calls_preserve_cells_fields_and_cross_function_cells() {
     Engine::new().with_native_provider(
         || Functions,
         |_, q| {
@@ -440,7 +443,7 @@ fn calls_preserve_immutable_cells_but_invalidate_fields_and_cross_function_write
             );
             assert_eq!(
                 q.flow_alias_relation(&source, reference(0, 2), at(0, 4), value(18), at(0, 3)),
-                NativeAliasRelation::Possible
+                NativeAliasRelation::Same
             );
         },
     );
@@ -451,7 +454,7 @@ fn calls_preserve_immutable_cells_but_invalidate_fields_and_cross_function_write
             source.foreign_write = true;
             assert_eq!(
                 q.flow_alias_relation(&source, reference(0, 0), at(0, 4), value(17), at(0, 3)),
-                NativeAliasRelation::Possible
+                NativeAliasRelation::Same
             );
         },
     );

@@ -372,6 +372,8 @@ pub trait NativeTypeProvider {
     /// Standard bindings survive unsupported effects under this host policy.
     /// Explicit/proven writes and incomplete queries still take precedence.
     fn assumed_standard_environment(&self) -> Option<NativeEnvironmentKey> { None }
+    /// The opt-in strict runtime-effect mode for heap provenance.
+    fn strict_runtime_effects(&self) -> bool { false }
     fn primitive_member_binding(&self, _: NativeEnvironmentKey, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingKey> { None }
     fn contains_global_environment(&self, _: NativeEnvironmentKey) -> bool { false }
     fn global_environment_binding(&self, _: NativeEnvironmentKey, _: &[u8]) -> Option<NativeGlobalBindingKey> { None }
@@ -789,6 +791,8 @@ pub trait TypeQueries {
     fn function_check_state(&mut self, function: &Type) -> NativeFunctionCheckState;
     fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError>;
     fn global_environment_origin(&mut self, environment: &Type) -> Option<NativeEnvironmentKey>;
+    /// Whether strict runtime effects were requested (`--strict-standard-effects`).
+    fn strict_runtime_effects(&mut self) -> bool { false }
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError>;
     fn value_declaration_type(&mut self, declaration: NativeValueDeclarationKey) -> Result<Type, GlobalQueryError>;
     fn module_result_pack(&mut self, key: NativeModuleKey) -> Result<ValuePack, NativeProjectError>;
@@ -1296,6 +1300,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError> { self.global_binding_type_native(binding) }
     fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError> { self.global_environment_type_native(environment) }
     fn global_environment_origin(&mut self, environment: &Type) -> Option<NativeEnvironmentKey> { self.global_environment_origin_native(environment) }
+    fn strict_runtime_effects(&mut self) -> bool { self.checker.native_strict_runtime_effects() }
     fn value_declaration_type(&mut self, declaration: NativeValueDeclarationKey) -> Result<Type, GlobalQueryError> { self.value_declaration_type_native(declaration) }
     fn module_result_pack(&mut self, key: NativeModuleKey) -> Result<ValuePack, NativeProjectError> { self.module_result_pack_native(key) }
     fn module_value(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<Type, NativeProjectError> { self.module_value_native(key, policy) }

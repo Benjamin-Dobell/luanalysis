@@ -61,6 +61,9 @@ impl NativeRegistry {
                     if checker.incomplete_flow || checker.engine.global_environment_origin(&environment).is_none() {
                         return None;
                     }
+                    // The standard `_G` names the environment itself, as the original
+                    // environment candidates already treat it: `_G[k]` writes a global.
+                    if name.text == "_G" { return Some(Vec::new()); }
                     return Some(vec![flow::Key::String(name.text.as_bytes().to_vec())]);
                 };
                 if !aliases.insert(binding) { return None; }

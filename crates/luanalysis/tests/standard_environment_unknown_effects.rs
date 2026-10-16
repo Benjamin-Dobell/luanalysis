@@ -392,15 +392,9 @@ fn no_standard_environment_does_not_seed_missing_builtin_names_after_unknown_cal
     let source = "hostEffect()\nlocal kind=type(42)\nlocal module=require('module')\n";
     let rejected = report(fixture.check(source, false, None), 1);
     error_on(&rejected, source, "TS2304", "local kind=type(42)", "type");
-    error_on(
-        &rejected,
-        source,
-        // The module host still recognizes a require request without library
-        // declarations; the unknown effect must block its loader contract.
-        "LUA2036",
-        "local module=require('module')",
-        "require",
-    );
+    // The module host still recognizes a require request without library
+    // declarations. An unresolved call preserves its loader contract.
+    assert!(!rejected.contains("LUA2036"), "{rejected}");
 }
 
 #[test]

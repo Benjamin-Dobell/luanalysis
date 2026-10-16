@@ -255,7 +255,9 @@ fn structural_callable_contract_does_not_establish_a_runtime_callee() {
             let input = at(0, 0, 0);
             let callable = Type::Function(FunctionType { params: Vec::new(), returns: Box::new(Type::Number) });
             assert!(!queries.call_signature_types(&callable).is_empty());
-            not_preserved(queries.flow_call_preservation(recipes, Recipes::queried(input), value(0), input));
+            // Unresolved, so it preserves what it does not visibly write; no
+            // body is executed on the strength of a structural contract.
+            assert_eq!(queries.flow_call_preservation(recipes, Recipes::queried(input), value(0), input), NativeCallPreservation::Preserved);
             assert_eq!(queries.flow_alias_intrinsic(recipes, value(10_000), input), NativeAliasIntrinsic::Unknown);
             assert!(recipes.execution_requests.borrow().is_empty());
         });

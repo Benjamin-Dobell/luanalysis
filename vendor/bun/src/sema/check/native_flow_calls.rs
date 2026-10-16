@@ -58,7 +58,7 @@ impl<'p, 's> Checker<'p, 's> {
         state.contextual_owners = cache.owners;
     }
 
-    fn with_call_parent<R>(&mut self, index: usize, work: impl FnOnce(&mut Self) -> R) -> R {
+    pub(in crate::check) fn with_call_parent<R>(&mut self, index: usize, work: impl FnOnce(&mut Self) -> R) -> R {
         let mut outside = self.flow_memo.native_state.call_executions.split_off(index);
         let parent = outside[0].outside.take().expect("call entry owns its caller caches");
         let epoch = self.flow_memo.native_state.effect_epoch;

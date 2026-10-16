@@ -175,7 +175,9 @@ fn actual_cell_rebindings_keep_frozen_copy_inputs() {
 }
 
 #[test]
-fn intervening_calls_preserve_stable_cells_but_not_cross_function_writes() {
+/// An unresolved intervening call preserves a cell whether or not another
+/// function writes it: ordinary checking is useful rather than sound.
+fn intervening_unresolved_calls_preserve_stable_and_cross_function_cells() {
     for foreign in [false, true] {
         Engine::new().with_native_provider(
             || Functions,
@@ -190,11 +192,7 @@ fn intervening_calls_preserve_stable_cells_but_not_cross_function_writes() {
                         value(17),
                         at(0, 3)
                     ),
-                    if foreign {
-                        NativeAliasRelation::Possible
-                    } else {
-                        NativeAliasRelation::Same
-                    }
+                    NativeAliasRelation::Same
                 );
             },
         );
@@ -202,12 +200,14 @@ fn intervening_calls_preserve_stable_cells_but_not_cross_function_writes() {
 }
 
 #[test]
-fn a_declared_heap_slot_cannot_borrow_the_immutable_cell_call_shortcut() {
+/// A declared heap slot is not a lexical cell, but an unresolved call still
+/// preserves it unless strict runtime effects are requested.
+fn a_declared_heap_slot_survives_an_unresolved_call() {
     Engine::new().with_native_provider(|| Functions, |_, queries| {
         let mut source = Cells::new();
         source.lexical = false;
         assert!(source.reference_declaration(reference(0, 0)).unwrap().writes.is_empty());
-        assert_eq!(queries.flow_alias_relation(&source, reference(0, 0), at(0, 4), value(17), at(0, 3)), NativeAliasRelation::Possible);
+        assert_eq!(queries.flow_alias_relation(&source, reference(0, 0), at(0, 4), value(17), at(0, 3)), NativeAliasRelation::Same);
     });
 }
 

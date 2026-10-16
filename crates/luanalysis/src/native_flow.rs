@@ -7,9 +7,6 @@
 #[path = "native_assertion_flow_tests.rs"]
 mod assertion_tests;
 #[cfg(test)]
-#[path = "native_dispatch_flow_tests.rs"]
-mod dispatch_tests;
-#[cfg(test)]
 #[path = "native_flow_metadata_index.rs"]
 mod metadata_index_tests;
 
@@ -600,6 +597,15 @@ impl NativeFlowSources {
         let flow::NodeKind::Write { value: flow::ValueDemand::Evaluation(initializer), declaration: true, .. } = &self.program.node(*write).kind else { return None; };
         Some(self.program.evaluation(*initializer))
     }
+
+    /// A binding owned by `region` that no original store writes, such as an
+    /// unassigned parameter: it holds its entry value throughout that body.
+    pub(super) fn unwritten_binding_of(&self, binding: BindingId, region: u32) -> bool {
+        self.binding_owners.get(&binding) == Some(&region)
+            && self.write_metadata.exact.get(&flow::Reference { root: flow::ReferenceRoot::Binding(binding), path: Vec::new() }).is_none_or(Vec::is_empty)
+    }
+
+    pub(super) fn graph_entry(&self, region: u32) -> flow::FlowId { self.program.graphs[region as usize].entry }
 
     pub(super) fn graph_creation(&self, graph: NativeGraphKey) -> Option<NativeFunctionCreation> {
         if !self.contains_graph(graph) { return None; }
@@ -1523,6 +1529,12 @@ impl FlowAdapter<'_> {
             };
             return if affects { NativeWriteRelation::Ancestor } else { NativeWriteRelation::Unaffected };
         }
+        // Ordinary checking treats a computed environment key as an unknown
+        // effect, not a replacement of any particular global; strict runtime
+        // effects keep it as a possible replacement.
+        if matches!(path.first(), Some(flow::Key::Dynamic(_))) && !queries.strict_runtime_effects() {
+            return NativeWriteRelation::Unaffected;
+        }
         let target = flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path };
         self.sources.compare_write_references(query, &target, address, at)
     }
@@ -1572,49 +1584,11 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         })
     }
 
-    fn alias_node_dispatch(&self, at: NativeFlowKey) -> luanalysis_engine::NativeAliasDispatch {
-        use luanalysis_engine::NativeAliasDispatch::{NoDispatch, ReferenceRead, Unknown};
-        fn primitive_literal(mut expression: &Expr) -> bool {
-            while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
-            matches!(expression.kind, ExprKind::Nil | ExprKind::Boolean(_) | ExprKind::String(_))
-                || flow::numeric_literal(expression).is_some()
-        }
-        let Some(node) = self.sources.source_node(at) else { return Unknown; };
-        match &node.kind {
-            flow::NodeKind::Eval(evaluation) => {
-                let evaluation = self.sources.program.evaluation(*evaluation);
-                let expression = &self.sources.program.expression(evaluation.expression).expression;
-                match &expression.kind {
-                    ExprKind::Nil | ExprKind::Boolean(_) | ExprKind::Number(_) | ExprKind::String(_)
-                    | ExprKind::Table(_) | ExprKind::Function(_) | ExprKind::Vararg
-                    | ExprKind::Parenthesized(_)
-                    | ExprKind::Unary { op: luanalysis_syntax::UnaryOperator::Not, .. }
-                    | ExprKind::Binary { op: BinaryOperator::And | BinaryOperator::Or, .. } => NoDispatch,
-                    ExprKind::Name(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => {
-                        let Some(reference) = self.sources.program.references.get(&evaluation.expression) else { return Unknown; };
-                        if reference.path.is_empty() && matches!(reference.root, flow::ReferenceRoot::Binding(_) | flow::ReferenceRoot::EnvironmentCell) { return NoDispatch; }
-                        self.alias_read_reference(reference, at.graph).map_or(Unknown, ReferenceRead)
-                    },
-                    ExprKind::Unary { .. } if flow::numeric_literal(expression).is_some() => NoDispatch,
-                    // Lua equality dispatches __eq only for two tables or two
-                    // full userdata. An original primitive literal rules that
-                    // out; operand evaluations keep their own effects/nodes.
-                    ExprKind::Binary { op: BinaryOperator::Equal | BinaryOperator::NotEqual, left, right, .. }
-                        if primitive_literal(left) || primitive_literal(right) => NoDispatch,
-                    ExprKind::Binary { left, right, .. }
-                        if flow::numeric_literal(left).is_some() && flow::numeric_literal(right).is_some() => NoDispatch,
-                    _ => Unknown,
-                }
-            },
-            flow::NodeKind::Write { address, .. } => {
-                if address.reference.path.is_empty() && matches!(address.reference.root, flow::ReferenceRoot::Binding(_) | flow::ReferenceRoot::EnvironmentCell) { return NoDispatch; }
-                self.alias_read_reference(&address.reference, at.graph).map_or(Unknown, ReferenceRead)
-            },
-            flow::NodeKind::IteratorStart { .. } | flow::NodeKind::Iteration { .. } => Unknown,
-            flow::NodeKind::Start | flow::NodeKind::CreateFunction { .. } | flow::NodeKind::Predicate { .. }
-            | flow::NodeKind::Merge | flow::NodeKind::Loop | flow::NodeKind::Call { .. }
-            | flow::NodeKind::Return { .. } | flow::NodeKind::Break | flow::NodeKind::Unreachable => NoDispatch,
-        }
+    fn alias_node_dispatch(&self, _: NativeFlowKey) -> luanalysis_engine::NativeAliasDispatch {
+        // Metatables are not traced (Luanalysis v1 semantics). A read, store,
+        // operator or iteration is a raw access for provenance; declared
+        // indexer and callable types describe what a metamethod implements.
+        luanalysis_engine::NativeAliasDispatch::NoDispatch
     }
 
     fn alias_callee_type(&self, value:NativeValueKey, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {

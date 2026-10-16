@@ -172,7 +172,7 @@ fn exact_transitive_local_calls_preserve_standard_origin_but_real_writes_do_not(
 }
 
 #[test]
-fn false_is_a_present_raw_slot_while_nil_can_dispatch_newindex() {
+fn a_newindex_metatable_does_not_affect_standard_identity() {
     let fixture = Fixture::new();
     let prefix = format!(
         "{ORDINARY}---@type {{value:boolean|number|nil}}\nlocal holder={{value=false}}\nsetmetatable(holder,{{__newindex=function() setmetatable=ordinary end}})\nholder.value=true\nholder.value=1\n"
@@ -180,10 +180,10 @@ fn false_is_a_present_raw_slot_while_nil_can_dispatch_newindex() {
     clean(&fixture.check(&format!("{prefix}{FACTORY}")));
     clean(&fixture.check_strict(&format!("{prefix}{FACTORY}")));
     let missing = prefix.replace("value=false", "value=nil");
-    // A missing raw slot may invoke __newindex. Default standard assumptions
-    // cross that implicit effect, while strict physical provenance cannot.
+    // Metatables are not traced: a missing raw slot is an ordinary store
+    // in both modes, whatever `__newindex` the table may have.
     clean(&fixture.check(&format!("{missing}{FACTORY}")));
-    no_owner(&fixture.check_strict(&format!("{missing}{FACTORY}")));
+    clean(&fixture.check_strict(&format!("{missing}{FACTORY}")));
 }
 
 #[test]
@@ -320,42 +320,9 @@ local result = instance.read()
     clean(&fixture.check(source));
 }
 
-#[test]
-fn a_copied_member_cannot_recover_standard_identity_across_an_implicit_getter() {
-    let fixture = Fixture::new();
-    let prefix = r#"---@shape Holder
----@field attach fun<T>(value:T, meta:nil|table):T
-
----@type Holder
-local holder
-
----@shape Probe
----@field missing number | nil
-
-local trigger = --[[---@type Probe]] setmetatable({}, {
-    ---@param ignored table
-    ---@param key string
-    ---@return number
-    __index=function(ignored, key) holder.attach=ordinary; return 1 end,
-})
-holder={attach=setmetatable}
-local observed=trigger.missing
-local alias=holder
-
-"#;
-    let source = format!(
-        "{ORDINARY}{prefix}{}",
-        FACTORY.replace("setmetatable(Static", "alias.attach(Static")
-    );
-    no_owner(&fixture.check(&source));
-    no_owner(&fixture.check_strict(&source));
-    let corrected = source.replace("local observed=trigger.missing", "local observed=1");
-    clean(&fixture.check(&corrected));
-    clean(&fixture.check_strict(&corrected));
-}
 
 #[test]
-fn local_namespace_initialization_preserves_require_but_real_newindex_effects_do_not() {
+fn namespace_newindex_metatables_do_not_affect_require() {
     let fixture = Fixture::new();
     fixture.file("Helper.lua", "return {value=1}\n");
     let source = "local Class=require('Class')\nlocal Helper=require('Helper')\n---@type number\nlocal result=Class.identity(Helper.value)\n";
@@ -366,8 +333,9 @@ fn local_namespace_initialization_preserves_require_but_real_newindex_effects_do
     );
     fixture.file("Class.lua", &changing_loader);
     clean(&fixture.check(source));
-    let denied = fixture.check_strict(source);
-    assert!(text(&denied).contains("LUA2036"), "{}", text(&denied));
+    // Metatables are not traced, so a `__newindex` handler is not a loader
+    // effect even under strict runtime effects.
+    clean(&fixture.check_strict(source));
     fixture.file("Class.lua", namespace);
     clean(&fixture.check(source));
     clean(&fixture.check_strict(source));

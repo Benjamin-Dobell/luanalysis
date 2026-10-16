@@ -1218,6 +1218,11 @@ impl ReachDomain for NativeDomain<'_> {
 }
 
 impl<'s, 'p> Checker<'s, 'p> {
+    /// Whether a call-state replay of an original invocation is in progress.
+    pub(in crate::check) fn native_call_replay_active(&self) -> bool {
+        !self.flow_memo.native_state.call_executions.is_empty()
+    }
+
     pub fn is_native_call_execution(&self, graph: NativeGraphKey) -> bool {
         self.flow_memo.native_state.call_executions.last().is_some_and(|frame| frame.entry.graph == graph)
     }

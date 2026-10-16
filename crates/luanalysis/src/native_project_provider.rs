@@ -152,6 +152,7 @@ pub(crate) struct ProjectRegistry {
 impl ProjectRegistry {
     pub(crate) fn set_standard_environment_assumptions(&mut self, enabled: bool) {
         self.standard_environment.assume_unknown_effects &= enabled;
+        self.standard_environment.strict_effects = !enabled;
     }
     #[cfg(test)]
     pub(crate) fn new(inputs: Vec<RegistryInput>) -> Self {
@@ -578,6 +579,7 @@ impl NativeTypeProvider for ProjectRegistry {
     fn assumed_standard_environment(&self) -> Option<luanalysis_engine::NativeEnvironmentKey> {
         self.standard_environment.assume_unknown_effects.then_some(self.globals.environment)
     }
+    fn strict_runtime_effects(&self) -> bool { self.standard_environment.strict_effects }
     fn project_flow_provider(&self) -> Option<&dyn luanalysis_engine::NativeFlowProvider> { Some(self) }
     fn global_environment_binding(&self, environment: luanalysis_engine::NativeEnvironmentKey, name: &[u8]) -> Option<luanalysis_engine::NativeGlobalBindingKey> {
         if environment != self.globals.environment { return None; }

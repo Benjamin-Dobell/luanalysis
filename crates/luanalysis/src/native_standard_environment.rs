@@ -18,6 +18,8 @@ pub(crate) struct OriginalStandardFunction {
 
 pub(crate) struct ProjectStandardEnvironment {
     pub assume_unknown_effects: bool,
+    /// `--strict-standard-effects`: unresolved calls are provenance barriers.
+    pub strict_effects: bool,
     pub string_library: Option<NativeGlobalBindingKey>,
     pub type_operation: Option<OriginalStandardFunction>,
     pub assert_operations: Vec<OriginalStandardFunction>,
@@ -44,6 +46,7 @@ impl ProjectStandardEnvironment {
     ) -> Self {
         let mut result = Self {
             assume_unknown_effects: profile.is_selected_standard(),
+            strict_effects: false,
             string_library: None,
             type_operation: None,
             assert_operations: Vec::new(),
