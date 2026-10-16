@@ -13,7 +13,7 @@ use super::{Binding, CheckReport, Checker, Diagnostic, bind};
 use bind::{BindingId, BoundFile};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NativeBindingKey, NativeCallEffects, NativeCallerFrame, NativeCheckMode,
-    NativeExpressionKey, NativeFlowError, NativeFlowKey, NativeFlowResult, NativeFunctionKey,
+    NativeExpressionKey, NativeFlowError, NativeFlowKey, NativeFlowResult, NativeFunctionCheckState, NativeFunctionKey,
     NativeTypeParameterKey, NativeTypeProvider, Parameter, Type, TypeQueries, ValuePack,
 };
 use luanalysis_syntax::{Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TypeExpr};
@@ -117,6 +117,26 @@ pub(super) struct NativeRegistry {
 pub(crate) mod standard;
 
 impl NativeRegistry {
+    /// Deferred validation uses the assignment's native lifetime, including its
+    /// lexical parent. Current provisional frames remain available to inference.
+    pub(super) fn body_frame_check_state(
+        &self,
+        contextual: Option<&ContextualFunctionContext>,
+        captured: Option<&CapturedFunctionContext>,
+        queries: &mut dyn TypeQueries,
+    ) -> NativeFunctionCheckState {
+        let context = contextual.map_or(NativeFunctionCheckState::Final, |context| queries.contextual_function_check_state(context));
+        let capture = captured.map_or(NativeFunctionCheckState::Final, |capture| {
+            let value = queries.captured_function_value(capture);
+            queries.function_check_state(&value)
+        });
+        match (context, capture) {
+            (NativeFunctionCheckState::Expired, _) | (_, NativeFunctionCheckState::Expired) => NativeFunctionCheckState::Expired,
+            (NativeFunctionCheckState::Provisional, _) | (_, NativeFunctionCheckState::Provisional) => NativeFunctionCheckState::Provisional,
+            _ => NativeFunctionCheckState::Final,
+        }
+    }
+
     pub(super) fn invalidate_header_metadata(&self) {
         self.header_metadata.borrow_mut().invalidate();
     }
@@ -374,7 +394,9 @@ impl NativeRegistry {
         let mut checker = self.checker_for_expression(key, mode, queries);
         checker.check_mode = mode;
         let pack = checker.expression_pack(expression, expected);
-        if super::native_expressions::publishes(mode) && !checker.incomplete_flow {
+        if super::native_expressions::publishes(mode) && !checker.incomplete_flow
+            && self.body_frame_check_state(checker.contextual_function.as_ref(), checker.captured_function.as_ref(), checker.engine) == NativeFunctionCheckState::Final
+        {
             self.merge_report(checker.report);
         }
         pack
@@ -731,12 +753,18 @@ impl NativeRegistry {
         at: NativeFlowKey,
         mode: luanalysis_engine::NativeCheckMode,
         report: CheckReport,
+        queries: &mut dyn TypeQueries,
     ) {
         if !super::native_expressions::publishes(mode) {
             return;
         }
-        if let Some(context) = self.flow.contextual(at.graph) {
-            self.contextual_report(&context, report);
+        let contextual = self.flow.contextual(at.graph);
+        let captured = self.flow.captured(at.graph);
+        if self.body_frame_check_state(contextual.as_ref(), captured.as_ref(), queries) != NativeFunctionCheckState::Final {
+            return;
+        }
+        if let Some(context) = contextual {
+            self.contextual_report(&context, report, queries);
         } else {
             self.merge_report(report);
         }
@@ -1108,7 +1136,7 @@ impl NativeRegistry {
                     let constraint = checker
                         .shape_binding_constraint(binding, Some(&explicit), Some(annotation.span))
                         .unwrap_or(explicit);
-                    self.contextual_report(context, checker.report);
+                    self.contextual_report(context, checker.report, checker.engine);
                     return Some(Binding {
                         initial: constraint.clone(),
                         value: constraint.clone(),
@@ -1120,13 +1148,13 @@ impl NativeRegistry {
                     let pack = AnnotationPack::annotation(&annotation).lower(&mut |ty| checker.annotation(ty));
                     let value = checker.engine.pack_slot(&pack, slot);
                     let constraint = checker.engine.widen(&value);
-                    self.contextual_report(context, checker.report);
+                    self.contextual_report(context, checker.report, checker.engine);
                     return Some(Binding {
                         initial: constraint.clone(), value: constraint.clone(), constraint, evolves_from_nil: false,
                     });
                 }
                 if let Some(constraint) = checker.shape_binding_constraint(binding, None, None) {
-                    self.contextual_report(context, checker.report);
+                    self.contextual_report(context, checker.report, checker.engine);
                     return Some(Binding {
                         initial: constraint.clone(),
                         value: constraint.clone(),
@@ -1271,7 +1299,7 @@ impl NativeRegistry {
             let mut checker = self.checker_at_flow(at, queries);
             returned.push(checker.return_expression_pack(&expressions, statement.span, context.as_ref()));
             if !checker.incomplete_flow {
-                self.merge_flow_report(at, checker.check_mode, checker.report);
+                self.merge_flow_report(at, checker.check_mode, checker.report, checker.engine);
             }
         }
         let has_fallthrough =
@@ -1359,7 +1387,7 @@ impl NativeRegistry {
                 .collect();
             checker.return_statement(&expressions, statement.span);
             returned.extend(checker.return_values.drain(..));
-            self.merge_flow_report(at, checker.check_mode, checker.report);
+            self.merge_flow_report(at, checker.check_mode, checker.report, checker.engine);
         }
         let has_fallthrough =
             queries.flow_reachable(&adapter, self.flow.flow_key(source.exit, graph.context));
@@ -1507,7 +1535,7 @@ impl NativeRegistry {
         }
         self.pending_owner_bodies.borrow_mut().remove(&(key, contextual, captured));
         if let Some(context) = contextual {
-            self.contextual_report(&context, checker.report);
+            self.contextual_report(&context, checker.report, checker.engine);
             self.checked_contextual_bodies
                 .borrow_mut()
                 .insert((key, context, captured));
@@ -1549,16 +1577,26 @@ impl NativeRegistry {
                 // The selected session capability owns this callback's
                 // parameter/return caches. Demanding its base signature would
                 // invent an unrelated untyped declaration and bogus TS7006.
+                let mut final_facet = false;
                 for facet in facets {
+                    if queries.function_check_state(&facet) != NativeFunctionCheckState::Final { continue; }
+                    final_facet = true;
                     // Retain the native implementation frame directly. A
                     // printer demand can re-run still-provisional metadata and
                     // publish its annotation errors on every report-drain pass.
                     self.retain_selected_body_frame(key, &facet, queries);
                 }
+                // An expired inference assignment is not an uncontextual
+                // declaration. A later committed source demand supplies its
+                // own facet; never invent a raw callback check here.
+                if !final_facet { continue; }
+                let mut final_body_frame = false;
                 for context in self.expressions.final_contexts(key) {
                     let captures = self.expressions.captures_for_context(key, &context);
                     let facets = if captures.is_empty() { vec![None] } else { captures.into_iter().map(Some).collect() };
                     for captured in facets {
+                        if self.body_frame_check_state(Some(&context), captured.as_ref(), queries) != NativeFunctionCheckState::Final { continue; }
+                        final_body_frame = true;
                         if self.checked_contextual_bodies.borrow().contains(&(key, context, captured)) { continue; }
                         if let Some(captured) = captured {
                             queries.with_captured_function(&captured, &mut |queries| {
@@ -1574,6 +1612,8 @@ impl NativeRegistry {
                     if contextual_captures.contains(&context) {
                         continue;
                     }
+                    if self.body_frame_check_state(None, Some(&context), queries) != NativeFunctionCheckState::Final { continue; }
+                    final_body_frame = true;
                     let checked = self
                         .checked_captured_bodies
                         .borrow()
@@ -1582,7 +1622,7 @@ impl NativeRegistry {
                         self.check_body_in_capture(key, &context, queries);
                     }
                 }
-                if !self.expressions.final_contexts(key).is_empty() || !self.expressions.final_captures(key).is_empty() {
+                if final_body_frame {
                     continue;
                 }
                 // A selected raw declaration, or an unapplied contextual
@@ -1918,7 +1958,7 @@ impl NativeRegistry {
                 let pack = checker.expression_pack(expression, expected.as_ref());
                 let value = checker.engine.pack_slot(&pack, *index);
                 if !checker.incomplete_flow {
-                    self.merge_flow_report(input, checker.check_mode, checker.report);
+                    self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
                 }
                 value
             }
@@ -1949,7 +1989,7 @@ impl NativeRegistry {
                 let expected = expected.as_ref().map(|pack| checker.engine.pack_slot(pack, 0));
                 let result = checker.expression_with_expected(expression, expected.as_ref());
                 if !checker.incomplete_flow {
-                    self.merge_flow_report(input, checker.check_mode, checker.report);
+                    self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
                 }
                 result
             }
@@ -2025,7 +2065,7 @@ impl NativeRegistry {
             _ => checker.engine.function_declared_scalar_return(&callee),
         };
         if !checker.incomplete_flow {
-            self.merge_flow_report(input, checker.check_mode, checker.report);
+            self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
         }
         if matches!(declared_return, Some(Type::Never)) {
             NativeCallEffects::Never
@@ -2126,7 +2166,7 @@ impl FlowValueQueries for NativeRegistry {
                 checker.report.append_diagnostic_note(index, " The previous first iterator result supplies the next control argument.");
             }
         }
-        self.merge_flow_report(at, checker.check_mode, checker.report);
+        self.merge_flow_report(at, checker.check_mode, checker.report, checker.engine);
     }
 
     fn flow_value_pack(&self, sources: &NativeFlowSources, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> ValuePack {
@@ -2143,7 +2183,7 @@ impl FlowValueQueries for NativeRegistry {
             let mut checker = self.checker_at_flow(input, queries);
             let expected = self.flow_initializer_context(expression, true, &mut checker);
             let pack = checker.expression_pack(expression, expected.as_ref());
-            if !checker.incomplete_flow { self.merge_flow_report(input, checker.check_mode, checker.report); }
+            if !checker.incomplete_flow { self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine); }
             pack
         })
     }

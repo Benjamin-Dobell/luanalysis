@@ -6,7 +6,7 @@ use crate::native_expressions::NativeExpressions;
 use crate::native_named::{NativeNamed, NativeNamedKey, NativeTypeContext};
 use luanalysis_engine::{
     ContextualTypeOwner, LuaKey, NativeExpressionKey, NativeFlowKey, NativeFunctionKey,
-    NativeIntrinsicKind, NativeTypeMemberKey, TypeMemberActivation, TypeQueries,
+    NativeFunctionCheckState, NativeIntrinsicKind, NativeTypeMemberKey, TypeMemberActivation, TypeQueries,
 };
 use luanalysis_syntax::{
     Expr, ExprKind, Function, NamedRecordKind, NamedTypeDeclarationKind, TableFieldKind, TypeExpr,
@@ -422,9 +422,21 @@ impl NativeRegistry {
             .collect();
         let bodies: Vec<_> = self.pending_owner_bodies.borrow().iter().copied().collect();
         for &(scope, input) in &owners {
+            let contextual = self.flow.contextual(input.graph);
+            let captured = self.flow.captured(input.graph);
+            match self.body_frame_check_state(contextual.as_ref(), captured.as_ref(), queries) {
+                NativeFunctionCheckState::Expired => { self.pending_contextual_owners.borrow_mut().remove(&(scope, input)); continue; }
+                NativeFunctionCheckState::Provisional => continue,
+                NativeFunctionCheckState::Final => {}
+            }
             self.contextual_owner_query(scope, input, queries);
         }
         for &(key, contextual, captured) in &bodies {
+            match self.body_frame_check_state(contextual.as_ref(), captured.as_ref(), queries) {
+                NativeFunctionCheckState::Expired => { self.pending_owner_bodies.borrow_mut().remove(&(key, contextual, captured)); continue; }
+                NativeFunctionCheckState::Provisional => continue,
+                NativeFunctionCheckState::Final => {}
+            }
             match (contextual, captured) {
                 (Some(context), Some(capture)) => {
                     queries.with_captured_function(&capture, &mut |queries| {

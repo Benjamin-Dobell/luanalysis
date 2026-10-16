@@ -3,7 +3,7 @@
 use crate::{CheckReport, native_functions::NativeRegistry};
 use luanalysis_engine::{
     CapturedFunctionContext, ContextualFunctionContext, NativeBindingKey, NativeCheckMode,
-    NativeExpressionKey, NativeFunctionKey, Parameter, Type, TypeQueries,
+    NativeExpressionKey, NativeFunctionCheckState, NativeFunctionKey, Parameter, Type, TypeQueries,
 };
 use luanalysis_syntax::{
     BinaryOperator, Expr, ExprKind, File, Function, Span, Stmt, StmtKind, TableFieldKind,
@@ -25,6 +25,8 @@ pub(super) struct NativeExpressions {
     expressions: Vec<SourceExpression>,
     spans: HashMap<(usize, usize), NativeExpressionKey>,
     functions: HashMap<(usize, usize), NativeFunctionKey>,
+    // Native assignments retain their exact lifetime. Keeping a value here
+    // never promotes it: deferred body replay checks its native state again.
     final_facets: RefCell<HashMap<NativeFunctionKey, Vec<Type>>>,
     final_contexts: RefCell<HashMap<NativeFunctionKey, Vec<ContextualFunctionContext>>>,
     final_captures: RefCell<HashMap<NativeFunctionKey, Vec<CapturedFunctionContext>>>,
@@ -555,7 +557,9 @@ impl NativeRegistry {
         let mut checker = self.checker_for_expression(key, mode, queries);
         checker.check_mode = mode;
         let ty = checker.expression_with_expected(&record.expression, expected);
-        if publishes(mode) {
+        if publishes(mode)
+            && self.body_frame_check_state(checker.contextual_function.as_ref(), checker.captured_function.as_ref(), checker.engine) == NativeFunctionCheckState::Final
+        {
             self.merge_report(checker.report);
         }
         ty
@@ -678,6 +682,7 @@ impl NativeRegistry {
         let mode = queries
             .current_contextual_function()
             .map_or_else(NativeCheckMode::empty, |context| context.mode);
+        let final_frame = self.body_frame_check_state(None, Some(context), queries) == NativeFunctionCheckState::Final;
         self.expressions().retain_capture(key, context, mode);
         let mut checker = self.checker(queries);
         checker.type_context = Some(key);
@@ -687,7 +692,7 @@ impl NativeRegistry {
         checker.captured_function = None;
         checker.check_mode = mode;
         let metadata = checker.signature_parts(self.function(key));
-        if publishes(mode) {
+        if final_frame && publishes(mode) {
             self.merge_report(checker.report);
         }
         metadata
@@ -719,12 +724,14 @@ impl NativeRegistry {
         let mut checker = self.checker(queries);
         checker.type_context = Some(key);
         checker.contextual_function = Some(*context);
+        let mut captured_frame = None;
         if let Some(captured) = checker.engine.current_captured_function() {
             let value = checker.engine.captured_function_value(&captured);
             // An ambient parent environment is not the child's signature
             // facet. Bind final validation to the source declaration that
             // actually owns this capture capability.
             if checker.engine.native_function_key(&value) == Some(key) {
+                captured_frame = Some(captured);
                 self.retain_capture_ancestry(&captured, checker.engine);
                 self.expressions()
                     .retain_capture(key, &captured, context.mode);
@@ -737,7 +744,7 @@ impl NativeRegistry {
         checker.captured_function = None;
         checker.check_mode = context.mode;
         let metadata = checker.signature_parts(self.function(key));
-        if publishes(context.mode) {
+        if publishes(context.mode) && self.body_frame_check_state(Some(context), captured_frame.as_ref(), checker.engine) == NativeFunctionCheckState::Final {
             self.merge_report(checker.report);
         }
         metadata
@@ -746,8 +753,9 @@ impl NativeRegistry {
         &self,
         context: &ContextualFunctionContext,
         report: CheckReport,
+        queries: &mut dyn TypeQueries,
     ) {
-        if publishes(context.mode) {
+        if publishes(context.mode) && queries.contextual_function_check_state(context) == NativeFunctionCheckState::Final {
             self.merge_report(report);
         }
     }
