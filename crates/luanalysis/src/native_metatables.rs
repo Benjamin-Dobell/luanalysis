@@ -12,7 +12,7 @@ use luanalysis_syntax::{
     Expr, ExprKind, Function, NamedRecordKind, NamedTypeDeclarationKind, TableFieldKind, TypeExpr,
     TypeExprKind,
 };
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 #[derive(Clone)]
 pub(super) struct MetatableContextSource {
@@ -39,7 +39,7 @@ impl NativeMetatables {
     ) -> Self {
         let mut result = Self {
             calls: Vec::new(),
-            scopes: HashMap::new(),
+            scopes: HashMap::default(),
         };
         for source in expressions.original_sources() {
             let ExprKind::Call { callee, args } = &source.expression.kind else {
@@ -186,7 +186,7 @@ impl NativeRegistry {
         let mut captured = None;
         if let Some(parent) = call.owner {
             let mut current = queries.current_captured_function();
-            let mut visited = std::collections::HashSet::new();
+            let mut visited = crate::collections::HashSet::default();
             while let Some(frame) = current {
                 if !visited.insert(frame) {
                     break;
@@ -367,12 +367,12 @@ impl NativeRegistry {
         // owner. Inspect original dependencies before entering QueryReturn so
         // its legitimate target fallback does not become a return cycle.
         // Explicit generic parameters named self have different source keys.
-        let mut used = std::collections::HashSet::new();
+        let mut used = crate::collections::HashSet::default();
         self.function_type_dependencies(
             function,
             &mut used,
-            &mut std::collections::HashSet::new(),
-            &mut std::collections::HashSet::new(),
+            &mut crate::collections::HashSet::default(),
+            &mut crate::collections::HashSet::default(),
         );
         used.contains(&parameter)
     }
@@ -428,7 +428,7 @@ impl NativeRegistry {
     pub(crate) fn extend_contextual_self_dependencies(
         &self,
         context: NativeTypeContext,
-        used: &std::collections::HashSet<luanalysis_engine::NativeTypeParameterKey>,
+        used: &crate::collections::HashSet<luanalysis_engine::NativeTypeParameterKey>,
         outer: &mut Vec<luanalysis_engine::NativeTypeParameterKey>,
     ) {
         if let Some(function) = self.metatable_annotation_function(context)

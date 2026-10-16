@@ -14,7 +14,7 @@ use luanalysis_syntax::{
     FieldVisibility, NamedRecordKind, NamedTypeDeclarationKind, Span, TypeExpr, TypeExprKind,
     TypeFieldKey,
 };
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 /// Completed original-source headers only: kinds, names and parameter keys.
 /// No checker type, inferred result, mapper or query permission is retained.
@@ -171,7 +171,7 @@ impl NativeRegistry {
         used: &mut HashSet<NativeTypeParameterKey>,
     ) {
         let mut pending = vec![(context, ty)];
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         while let Some((context, ty)) = pending.pop() {
             let mut reference = None;
             match &ty.kind {
@@ -343,7 +343,7 @@ impl NativeRegistry {
         let Some(context) = context else {
             return Vec::new();
         };
-        let mut used = HashSet::new();
+        let mut used = HashSet::default();
         self.annotation_parameter_dependencies(Some(context), ty, &mut used);
         self.types
             .outer_parameters_in_context(context, &used)
@@ -373,7 +373,7 @@ impl NativeRegistry {
         if let Some(header)=self.runtime_schema_header(key) {return header;}
         if let Some(source) = self.named.declaration(named_key(key)) {
             let context = NativeTypeContext::NamedType(source.key);
-            let mut used = HashSet::new();
+            let mut used = HashSet::default();
             for parameter in &source.syntax.generics {
                 if let Some(constraint) = &parameter.constraint {
                     self.annotation_parameter_dependencies(Some(context), constraint, &mut used);
@@ -873,7 +873,7 @@ impl NativeRegistry {
         self.doc_members.validate(queries);
         self.validate_return_annotations(queries);
         self.validate_original_assignment_annotations(queries);
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for source in self.named.declarations() {
             if let Err(reason) = self.class_definition_directive(source)
                 && !source.syntax.attachment.is_some_and(|span| self.is_ambient_global_attachment(span)) {

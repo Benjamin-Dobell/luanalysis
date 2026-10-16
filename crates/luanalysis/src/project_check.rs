@@ -9,7 +9,7 @@ use luanalysis_engine::{
 use luanalysis_project::{
     DeclarationSourceError, FileId, Project, RequireRequest, SourceFile, SourceRole,
 };
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 
 #[derive(Clone, Copy, Debug)]
@@ -146,7 +146,7 @@ pub(crate) fn check_project_with_workspace(
     let mut inputs = Vec::new();
     let mut files = Vec::new();
     let plan_options = NativePlanOptions::default();
-    let mut source_costs = HashMap::new();
+    let mut source_costs = HashMap::default();
     for source in workspace.prepare_registered_sources(&project).sources {
         let parsed = source.snapshot.syntax();
         if let Some(bound) = source.snapshot.bound() {
@@ -254,7 +254,7 @@ pub(crate) fn check_project_with_workspace(
                 (reports, registry.required_files())
             },
         );
-        let mut required = HashSet::new();
+        let mut required = HashSet::default();
         let mut checked = Vec::new();
         for (reports, targets) in run.results {
             checked.extend(reports);
@@ -277,7 +277,7 @@ pub(crate) fn check_project_with_workspace(
 
 fn merge_reports(reports: Vec<FileCheckReport>) -> Vec<FileCheckReport> {
     let mut merged = Vec::<FileCheckReport>::new();
-    let mut indices = HashMap::<FileId, usize>::new();
+    let mut indices = HashMap::<FileId, usize>::default();
     for file in reports {
         assert!(
             file.report.pending_bindings.is_empty()

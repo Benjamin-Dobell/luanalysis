@@ -948,8 +948,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         // Unrelated augmentation arguments must not be resolved while checking
         // another owner's constraints. Their original scope identity is enough.
-        let metadata = provider.type_member_header(self, member);
-        let candidate = match &metadata.owner {
+        let candidate = match &header.owner {
             NativeTypeMemberOwner::Declared(owner) => Some(*owner),
             NativeTypeMemberOwner::Reference { candidates, .. } => match candidates.as_slice() { [owner] => Some(*owner), _ => None },
             NativeTypeMemberOwner::RuntimeStore(_) => None,

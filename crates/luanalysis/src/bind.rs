@@ -7,7 +7,7 @@
 use luanalysis_syntax::{
     Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TableFieldKind,
 };
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 /// A dense scope identity belonging to one BoundFile source snapshot.
 /// IDs from another file or a later parse must not be used with this graph.
@@ -288,7 +288,7 @@ impl Binder {
         }
         self.active.push(ActiveScope {
             id,
-            names: HashMap::new(),
+            names: HashMap::default(),
         });
     }
 

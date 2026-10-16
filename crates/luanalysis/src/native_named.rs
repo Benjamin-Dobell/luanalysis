@@ -8,7 +8,7 @@ use luanalysis_syntax::{
     NamedTypeDeclarationId, NamedTypeDeclarationKind, Span, Stmt, StmtKind, TableFieldKind,
     TableField, TypeAnnotation, TypeExpr, TypeExprKind, TypeExtension, TypeFieldKey,
 };
-use std::collections::HashMap;
+use luanalysis_engine::FxHashMap as HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct NativeNamedKey {
@@ -233,13 +233,13 @@ impl NativeNamed {
         let mut result = Self {
             snapshot,
             declarations: Vec::new(),
-            names: HashMap::new(),
-            syntax_keys: HashMap::new(),
+            names: HashMap::default(),
+            syntax_keys: HashMap::default(),
             members: Vec::new(),
             augmentations: Vec::new(),
-            attachments: HashMap::new(),
+            attachments: HashMap::default(),
             anonymous_heads: Vec::new(),
-            anonymous_by_span: HashMap::new(),
+            anonymous_by_span: HashMap::default(),
             anonymous_members: Vec::new(),
             field_annotations: Vec::new(),
         };
@@ -909,8 +909,8 @@ fn source_index(statements: &[Stmt]) -> SourceIndex<'_> {
         Expression(&'a Expr),
     }
     let mut pending: Vec<_> = statements.iter().map(Node::Statement).collect();
-    let mut result = HashMap::new();
-    let mut functions = HashMap::new();
+    let mut result = HashMap::default();
+    let mut functions = HashMap::default();
     let mut fields = Vec::new();
     while let Some(node) = pending.pop() {
         match node {

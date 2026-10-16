@@ -7,7 +7,7 @@ use super::Diagnostic;
 use super::native_named::{NamedGenericScopeRecipe, NativeNamedKey, NativeTypeContext};
 use luanalysis_engine::{NativeFunctionKey, NativeTypeParameterKey, Type};
 use luanalysis_syntax::{Name, Span, TypeExpr, TypeExprKind};
-use std::collections::{HashMap, HashSet};
+use luanalysis_engine::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -73,7 +73,7 @@ pub(super) enum TypeNameResolution {
 impl NativeTypes {
     pub(super) fn original_scopes(&self) -> OriginalTypeScopes {
         let mut pending:Vec<_>=self.scopes.keys().filter(|owner|matches!(owner,NativeTypeContext::NamedType(_))).copied().collect();
-        let mut scopes=HashMap::new();
+        let mut scopes=HashMap::default();
         while let Some(owner)=pending.pop() {
             if scopes.contains_key(&owner) {continue;}
             let scope=self.scopes.get(&owner).expect("original named enclosing scope");
@@ -131,7 +131,7 @@ impl NativeTypes {
     ) -> Self {
         let mut result = Self {
             snapshot,
-            scopes: HashMap::new(),
+            scopes: HashMap::default(),
             parameters: Vec::new(),
             diagnostics: Vec::new(),
             metadata_epochs: vec![Rc::new(Cell::new(0))],
@@ -182,7 +182,7 @@ impl NativeTypes {
                 self_parameter: None,
                 parent,
                 documentation_parents,
-                names: HashMap::new(),
+                names: HashMap::default(),
                 parameters: Vec::new(),
             };
             for (order, parameter) in parameters.into_iter().enumerate() {
@@ -332,7 +332,7 @@ impl NativeTypes {
         name: &str,
     ) -> TypeNameResolution {
         let mut pending: Vec<_> = context.into_iter().collect();
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         while let Some(owner) = pending.pop() {
             if !visited.insert(owner) { continue }
             let Some(scope) = self.scopes.get(&owner) else {
@@ -456,7 +456,7 @@ impl NativeTypes {
             .get(&owner)
             .expect("original generic owner scope");
         let mut pending: Vec<_> = scope.parent.into_iter().chain(scope.method_owner.get()).chain(scope.documentation_parents.iter().copied()).collect();
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         let mut parameters = Vec::new();
         while let Some(owner) = pending.pop() {
             if !visited.insert(owner) { continue }

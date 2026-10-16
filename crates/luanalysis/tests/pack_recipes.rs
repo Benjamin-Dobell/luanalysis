@@ -5,7 +5,7 @@ use luanalysis::{bind, flow};
 use luanalysis_engine::{NativeExpressionKey, Type, ValuePack};
 use luanalysis_syntax::{StmtKind, TypeExprKind, TypeLiteral, parse};
 use native_packs::{Adjustment, AnnotationPack, InitializerContext, ListContext, NativePacks};
-use std::collections::HashMap;
+use luanalysis_engine::FxHashMap as HashMap;
 
 #[test]
 fn original_lists_expand_only_raw_final_calls_and_varargs() {

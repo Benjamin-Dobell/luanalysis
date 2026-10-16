@@ -5,7 +5,7 @@ use super::native_flow::*;
 use super::task::Stored;
 use crate::util::FxHashMap;
 use crate::types::NativeTableKey;
-use std::collections::HashSet;
+use crate::util::FxHashSet as HashSet;
 use super::native_globals::{NativeEnvironmentId, NativeGlobalBindingId, NativeGlobalSourceRole};
 use super::native_intrinsics::{NativeIntrinsicKind, NativeIntrinsicSite};
 use crate::types::NativeFunctionId;
@@ -142,7 +142,7 @@ impl Origins {
     fn unavailable() -> Self { Self { unknown: true, ..Self::default() } }
     fn non_table() -> Self { Self { non_table: true, maybe_nil: true, ..Self::default() } }
     fn non_nil_scalar() -> Self { Self { non_table: true, ..Self::default() } }
-    fn one(token: Origin, unknown: bool) -> Self { Self { tokens: HashSet::from([token]), unknown, non_table: false, uncertain: false, maybe_nil: false } }
+    fn one(token: Origin, unknown: bool) -> Self { Self { tokens: HashSet::from_iter([token]), unknown, non_table: false, uncertain: false, maybe_nil: false } }
     fn merge(&mut self, other: Self) { self.tokens.extend(other.tokens); self.unknown |= other.unknown; self.non_table |= other.non_table; self.uncertain |= other.uncertain; self.maybe_nil |= other.maybe_nil; }
     fn relation(&self, other: &Self) -> NativeAliasRelation {
         if self.tokens.is_empty() && !self.unknown || other.tokens.is_empty() && !other.unknown { return NativeAliasRelation::Different }
@@ -323,8 +323,8 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     fn native_alias_newindex_absent_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
-        let mut active = HashSet::new();
-        let mut completed = HashSet::new();
+        let mut active = HashSet::default();
+        let mut completed = HashSet::default();
         let mut work = vec![(before, false)];
         let mut steps = 0usize;
         while let Some((at, leaving)) = work.pop() {
@@ -421,8 +421,8 @@ impl<'p, 's> Checker<'p, 's> {
         let Some(execution) = provider.function_alias_execution(function, creation) else { return AliasMetatableCall::Unknown };
         if !provider.contains_graph(execution.entry.graph) || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) || execution.terminals.is_empty() { return AliasMetatableCall::Unknown }
         self.with_native_alias_execution(call, recipe.execution_input, &execution, Some((function, creation, activation)), |checker| {
-            let mut active = HashSet::new();
-            let mut completed = HashSet::new();
+            let mut active = HashSet::default();
+            let mut completed = HashSet::default();
             let mut work: Vec<_> = execution.terminals.iter().rev().map(|&at| (at, false)).collect();
             let mut steps = 0usize;
             while let Some((at, leaving)) = work.pop() {
@@ -480,8 +480,8 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_alias_allocation_clear_since(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
         let graph = before.graph;
-        let mut active = HashSet::new();
-        let mut completed = HashSet::new();
+        let mut active = HashSet::default();
+        let mut completed = HashSet::default();
         let mut work = vec![(before, false)];
         let mut steps = 0usize;
         while let Some((at, leaving)) = work.pop() {
@@ -634,7 +634,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// type or a future source-level setmetatable candidate. This first proof
     /// accepts a direct literal metatable and no intervening heap effects.
     fn native_alias_callable_table_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, mut at: NativeFlowKey) -> Result<Option<AliasCallableTable>, ()> {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         while at != input {
             if at.graph != input.graph || visited.len() >= 16_384 || !visited.insert(at) || self.is_stack_low() { return Ok(None) }
             match provider.node(at) {
@@ -710,8 +710,8 @@ impl<'p, 's> Checker<'p, 's> {
         let Some(watched) = provider.reference_in_graph(reference, execution.entry.graph) else { return NativeCallPreservation::Unknown };
         if !provider.contains_reference(watched) { return NativeCallPreservation::Unknown }
         self.with_native_alias_execution(call, recipe.execution_input, execution, function, |checker| {
-            let mut active = HashSet::new();
-            let mut completed = HashSet::new();
+            let mut active = HashSet::default();
+            let mut completed = HashSet::default();
             let mut work: Vec<_> = execution.terminals.iter().rev().map(|&at| (at, false)).collect();
             let mut steps = 0usize;
             while let Some((at, leaving)) = work.pop() {
@@ -761,7 +761,7 @@ impl<'p, 's> Checker<'p, 's> {
         let right_contract = if let NativeAliasValue::Reference { reference, .. } = provider.value_alias_source(right, right_at) { provider.reference_written_contract(reference, self) } else { None };
         if right_contract.is_some_and(|contract| self.native_alias_written_non_table(contract)) { return NativeAliasRelation::Different }
         if let (Some(left), Some(right)) = (left_contract, right_contract)
-            && self.native_alias_written_disjoint(left, right, &mut HashSet::new())
+            && self.native_alias_written_disjoint(left, right, &mut HashSet::default())
         { return NativeAliasRelation::Different }
         let left = self.native_alias_reference(provider, left, left_at);
         let right = self.native_alias_value(provider, right, right_at, 0);

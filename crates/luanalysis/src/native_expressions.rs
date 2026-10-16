@@ -9,7 +9,7 @@ use luanalysis_syntax::{
     BinaryOperator, Expr, ExprKind, File, Function, Span, Stmt, StmtKind, TableFieldKind,
 };
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub(super) struct SourceExpression {
@@ -47,7 +47,7 @@ impl NativeExpressions {
         let mut registry = Self {
             snapshot,
             expressions: Vec::new(),
-            spans: HashMap::new(),
+            spans: HashMap::default(),
             functions: functions
                 .iter()
                 .map(|(span, index)| {
@@ -60,11 +60,11 @@ impl NativeExpressions {
                     )
                 })
                 .collect(),
-            table_function_owners: HashMap::new(),
-            final_facets: RefCell::new(HashMap::new()),
-            final_contexts: RefCell::new(HashMap::new()),
-            final_captures: RefCell::new(HashMap::new()),
-            context_captures: RefCell::new(HashMap::new()),
+            table_function_owners: HashMap::default(),
+            final_facets: RefCell::new(HashMap::default()),
+            final_contexts: RefCell::new(HashMap::default()),
+            final_captures: RefCell::new(HashMap::default()),
+            context_captures: RefCell::new(HashMap::default()),
         };
         registry.statements(&file.statements, None, None);
         registry
@@ -516,7 +516,7 @@ impl NativeRegistry {
     ) -> Option<CapturedFunctionContext> {
         let parent = self.flow_sources().lexical_parent(function)?;
         let mut current = queries.current_captured_function();
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         while let Some(captured) = current {
             assert!(seen.insert(captured),
                 "native lexical signature ancestry is finite");

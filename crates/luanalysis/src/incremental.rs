@@ -7,7 +7,7 @@
 use crate::bind::{self, BoundFile};
 use luanalysis_project::{FileId, Project, RequireRequest, SourceFile, SourceOrigin, SourceRole};
 use luanalysis_syntax::File;
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -202,7 +202,7 @@ impl ProjectWorkspace {
             bound: pending.values().filter(|&&bound| bound).count(),
             ..PreparationStats::default()
         };
-        let mut current = HashSet::new();
+        let mut current = HashSet::default();
         let mut sources = Vec::with_capacity(project.files.len());
         for source in &project.files {
             stats.files_seen += 1;

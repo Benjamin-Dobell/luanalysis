@@ -6,7 +6,7 @@ use luanalysis_syntax::{
     BinaryOperator, Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TableFieldKind,
     UnaryOperator,
 };
-use std::collections::HashMap;
+use crate::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
@@ -326,11 +326,11 @@ pub(crate) fn build_with_snapshot(file: &File, bound: &BoundFile, snapshot: u64)
             evaluations: Vec::new(),
             iterators: Vec::new(),
             pending: Vec::new(),
-            functions: HashMap::new(),
-            references: HashMap::new(),
+            functions: HashMap::default(),
+            references: HashMap::default(),
         },
         bound,
-        expression_ids: HashMap::new(),
+        expression_ids: HashMap::default(),
         assignment: 0,
     };
     if file.has_lua_syntax_errors() {

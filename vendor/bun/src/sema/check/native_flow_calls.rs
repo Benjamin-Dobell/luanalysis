@@ -2,7 +2,7 @@
 //! Graph recipes remain immutable; all state and entry bridges are checker-local.
 use super::*;
 use crate::check::native_aliases::{NativeAliasExecution, NativeCallPreservation, NativeReachedCallee};
-use std::collections::HashSet;
+use crate::util::FxHashSet as HashSet;
 
 #[derive(Default)]
 struct CallCaches {
@@ -196,8 +196,8 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_call_replay_safe(&mut self, provider: &dyn NativeFlowProvider, execution: &NativeAliasExecution, watched: NativeReferenceKey) -> NativeCallPreservation {
         let mut pending: Vec<_> = execution.terminals.iter().rev().map(|&at| (at, false)).collect();
-        let mut active = HashSet::new();
-        let mut completed = HashSet::new();
+        let mut active = HashSet::default();
+        let mut completed = HashSet::default();
         while let Some((at, leaving)) = pending.pop() {
             if leaving { active.remove(&at); completed.insert(at); continue }
             if completed.contains(&at) { continue }

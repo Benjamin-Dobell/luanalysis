@@ -18,7 +18,7 @@ use luanalysis_engine::{
 };
 use luanalysis_syntax::{Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TypeExpr};
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
 
 #[path = "native_named_provider.rs"]
@@ -157,9 +157,9 @@ impl NativeRegistry {
                 .map(|assertion| ((assertion.expression.start, assertion.expression.end), &assertion.annotation)).collect(),
             functions: Vec::new(),
             function_names: Vec::new(),
-            declaration_functions: HashSet::new(),
-            function_spans: HashMap::new(),
-            declarations: HashMap::new(),
+            declaration_functions: HashSet::default(),
+            function_spans: HashMap::default(),
+            declarations: HashMap::default(),
         };
         index.statements(&file.statements, None);
         let RegistryIndex {
@@ -264,13 +264,13 @@ impl NativeRegistry {
             expressions,
             packs,
             flow,
-            completed_bindings: RefCell::new(HashMap::new()),
-            checked_bodies: RefCell::new(HashSet::new()),
-            checked_contextual_bodies: RefCell::new(HashSet::new()),
-            checked_captured_bodies: RefCell::new(HashSet::new()),
-            pending_contextual_owners: RefCell::new(HashSet::new()),
+            completed_bindings: RefCell::new(HashMap::default()),
+            checked_bodies: RefCell::new(HashSet::default()),
+            checked_contextual_bodies: RefCell::new(HashSet::default()),
+            checked_captured_bodies: RefCell::new(HashSet::default()),
+            pending_contextual_owners: RefCell::new(HashSet::default()),
             pending_owner_observations: Cell::new(0),
-            pending_owner_bodies: RefCell::new(HashSet::new()),
+            pending_owner_bodies: RefCell::new(HashSet::default()),
             report: RefCell::new(report),
             provisional_reports: RefCell::new(Vec::new()),
         };
@@ -616,12 +616,12 @@ impl NativeRegistry {
 
     pub(super) fn checker<'a>(&'a self, engine: &'a mut dyn TypeQueries) -> Checker<'a> {
         Checker {
-            active_assertions: HashSet::new(),
+            active_assertions: HashSet::default(),
             engine,
             bound: &self.bound,
             native: Some(self),
-            locals: HashMap::new(),
-            assigned_fields: HashMap::new(),
+            locals: HashMap::default(),
+            assigned_fields: HashMap::default(),
             report: CheckReport::default(),
             return_type: None,
             return_values: Vec::new(),
@@ -2654,8 +2654,8 @@ impl NativeTypeProvider for NativeRegistry {
         &self,
         key: NativeFunctionKey,
     ) -> Vec<NativeTypeParameterKey> {
-        let mut used = HashSet::new();
-        self.function_type_dependencies(key, &mut used, &mut HashSet::new(), &mut HashSet::new());
+        let mut used = HashSet::default();
+        self.function_type_dependencies(key, &mut used, &mut HashSet::default(), &mut HashSet::default());
         let mut outer = self.types.outer_parameters(key, &used);
         self.extend_contextual_self_dependencies(NativeTypeContext::Function(key), &used, &mut outer);
         outer

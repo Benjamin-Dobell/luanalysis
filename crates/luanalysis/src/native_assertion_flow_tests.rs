@@ -6,7 +6,7 @@ fn fixture(call: &str) -> (NativeFlowSources, flow::EvaluationId) {
     let file = luanalysis_syntax::parse(&source);
     assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
     let bound = crate::bind::bind(&file);
-    let sources = NativeFlowSources::new(&file, &bound, 34_444, &HashMap::new());
+    let sources = NativeFlowSources::new(&file, &bound, 34_444, &HashMap::default());
     let call = sources
         .program
         .evaluations

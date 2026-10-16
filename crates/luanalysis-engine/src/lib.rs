@@ -94,6 +94,8 @@ mod regular_literal_tests;
 mod native_lua_print_tests;
 
 pub use bun_sema::check::CheckMode as NativeCheckMode;
+/// Deterministic, fast hashing for host tables keyed by original source ids.
+pub use bun_sema::util::{FxBuild as FxBuildHasher, FxHashMap, FxHashSet};
 pub use bun_sema::check::NativeFunctionCheckState;
 use bun_sema::check::{
     Checker, NativeFunctionProvider, NativePackResult, NativeTypeResult, Program,

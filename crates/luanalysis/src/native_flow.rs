@@ -24,7 +24,7 @@ use luanalysis_engine::{
 };
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, File, Span};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 pub(super) enum ValueRecipe {
@@ -225,27 +225,27 @@ impl NativeFlowSources {
         });
         let mut result = Self {
             references: vec![Vec::new(); program.graphs.len()],
-            reference_indices: vec![HashMap::new(); program.graphs.len()],
-            functions: HashMap::new(),
+            reference_indices: vec![HashMap::default(); program.graphs.len()],
+            functions: HashMap::default(),
             values: Vec::new(),
-            evaluation_values: HashMap::new(),
-            iterator_values: HashMap::new(),
-            write_values: HashMap::new(),
-            declaration_writes: HashMap::new(),
-            binding_owners: HashMap::new(),
-            expression_evaluations: HashMap::new(),
-            runtime_type_calls: HashSet::new(),
-            runtime_type_operations: HashMap::new(),
+            evaluation_values: HashMap::default(),
+            iterator_values: HashMap::default(),
+            write_values: HashMap::default(),
+            declaration_writes: HashMap::default(),
+            binding_owners: HashMap::default(),
+            expression_evaluations: HashMap::default(),
+            runtime_type_calls: HashSet::default(),
+            runtime_type_operations: HashMap::default(),
             runtime_type_intrinsic_enabled: false,
             runtime_userdata_enabled: false,
             runtime_thread_enabled: false,
             loader_mutations: bound.module_environment_mutations().iter().map(|span| (span.start, span.end)).collect(),
             original_require_capability: false,
-            capability_bindings: HashSet::new(),
-            environment_candidates: HashMap::new(),
+            capability_bindings: HashSet::default(),
+            environment_candidates: HashMap::default(),
             environment_cell_written,
-            pack_projections: HashMap::new(),
-            iterator_projections: HashMap::new(),
+            pack_projections: HashMap::default(),
+            iterator_projections: HashMap::default(),
             contexts: RefCell::new(FlowContexts::default()),
             write_metadata: OriginalWriteMetadata::default(),
             program,
@@ -370,8 +370,8 @@ impl NativeFlowSources {
             .filter(|occurrence| occurrence.kind == super::bind::OccurrenceKind::Write)
             .filter_map(|occurrence| occurrence.binding)
             .collect();
-        let mut foreign_mutable_groups = HashSet::new();
-        let mut write_owners: HashMap<BindingId, HashSet<u32>> = HashMap::new();
+        let mut foreign_mutable_groups = HashSet::default();
+        let mut write_owners: HashMap<BindingId, HashSet<u32>> = HashMap::default();
         for graph in &result.program.graphs {
             for node in &graph.nodes {
                 if let flow::NodeKind::Write { address, .. } = &node.kind
@@ -382,7 +382,7 @@ impl NativeFlowSources {
                 }
             }
         }
-        let mut mutable_iterators = HashSet::new();
+        let mut mutable_iterators = HashSet::default();
         for graph in &result.program.graphs {
             for node in &graph.nodes {
                 if let flow::NodeKind::Write {
@@ -1283,6 +1283,10 @@ impl NativeFlowSources {
     }
 
     fn compare_write_references(&self, query: &flow::Reference, target: &flow::Reference, address: &flow::CapturedAddress, at: NativeFlowKey) -> NativeWriteRelation {
+        // Different roots are unaffected; check that before the graph scan.
+        if query.root != target.root {
+            return NativeWriteRelation::Unaffected;
+        }
         // All target addresses were captured before stores. A later/current
         // path to a replacement receiver cannot inherit a write to the old one.
         if !target.path.is_empty() && self.program.graphs[at.graph.region as usize].nodes.iter().any(|candidate| {
@@ -1290,9 +1294,6 @@ impl NativeFlowSources {
                 if replacement.transaction == address.transaction && replacement.reference.root == target.root
                 && replacement.reference.path.len() < target.path.len() && target.path.starts_with(&replacement.reference.path))
         }) { return NativeWriteRelation::Unaffected; }
-        if query.root != target.root {
-            return NativeWriteRelation::Unaffected;
-        }
         for (query_key, target_key) in query.path.iter().zip(&target.path) {
             if matches!(query_key, flow::Key::Dynamic(_))
                 || matches!(target_key, flow::Key::Dynamic(_))

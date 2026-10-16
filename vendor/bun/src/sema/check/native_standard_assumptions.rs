@@ -440,7 +440,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn native_standard_scope_writes(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, boundary: NativeFlowKey, terminals: &[NativeFlowKey], entry: Option<NativeFlowKey>, scope: StandardScope, invariant: Option<&StandardLoop>) -> NativeCallPreservation {
         let mut work = terminals.to_vec();
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         while let Some(at) = work.pop() {
             if at == boundary { continue }
             if self.is_stack_low() { self.mark_tainted_from(0); return NativeCallPreservation::Pending }
@@ -470,7 +470,7 @@ impl<'p, 's> Checker<'p, 's> {
                 Some(NativeFlowNode::Call { before, value, input }) => {
                     if scope.loader && provider.known_standard_loader_write(at) { return NativeCallPreservation::Unknown }
                     let callee = invariant.and_then(|invariant| provider.alias_call_source(value, input).map(|recipe| {
-                        self.native_standard_loop_value(provider, recipe.callee.value, recipe.callee.input, invariant, &mut HashSet::new())
+                        self.native_standard_loop_value(provider, recipe.callee.value, recipe.callee.input, invariant, &mut HashSet::default())
                     }));
                     let result = self.native_standard_call_continuation(provider, reference, value, input, scope, callee);
                     if result != NativeCallPreservation::Preserved { return result }
@@ -493,7 +493,7 @@ impl<'p, 's> Checker<'p, 's> {
         // Use the store's original frozen receiver, not its flowed type: typing
         // a captured environment alias here can demand this loop's call effect.
         // The local loop substitution is never published as physical evidence.
-        let receiver = self.native_standard_loop_value(provider, receiver.value, receiver.input, invariant, &mut HashSet::new());
+        let receiver = self.native_standard_loop_value(provider, receiver.value, receiver.input, invariant, &mut HashSet::default());
         if receiver.uncertain { return Err(()) }
         if !receiver.tokens.contains(&Origin::Environment(binding.environment)) {
             // This host policy preserves standard bindings unless an original

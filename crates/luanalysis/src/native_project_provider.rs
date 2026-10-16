@@ -19,7 +19,7 @@ use luanalysis_engine::{
 use luanalysis_project::{Dependency, DependencyOutcome, FileId, SourceRole};
 use luanalysis_syntax::File;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 #[path = "native_project_flow.rs"]
@@ -181,8 +181,8 @@ impl ProjectRegistry {
         no_implicit_any: bool,
         environment: luanalysis_engine::NativeEnvironmentKey,
     ) -> Self {
-        let mut snapshots = HashMap::new();
-        let mut flow_snapshots = HashMap::new();
+        let mut snapshots = HashMap::default();
+        let mut flow_snapshots = HashMap::default();
         let mut names = ProjectNamedIndex::default();
         let mut files: Vec<_> = inputs
             .into_iter()
@@ -227,7 +227,7 @@ impl ProjectRegistry {
             .iter()
             .map(|file| (file.id, file.source.module_key()))
             .collect();
-        let mut imports = HashMap::new();
+        let mut imports = HashMap::default();
         for file in &files {
             if file.role == SourceRole::Declaration {
                 continue;
@@ -364,7 +364,7 @@ impl ProjectRegistry {
         let mut header=owner.type_declaration_header(key);
         let named=crate::native_named::NativeNamedKey {snapshot:key.snapshot,index:key.index};
         if owner.named_metadata().declaration(named).is_none() {return header;}
-        let mut used=std::collections::HashSet::new();
+        let mut used=crate::collections::HashSet::default();
         for file in &self.files {
             file.source.doc_members.dependencies(named,&mut used,|id|file.source.doc_signature_key(id),|signature|file.source.signature_outer_keys(signature));
         }
@@ -423,8 +423,8 @@ impl ProjectRegistry {
         // Candidate registration establishes every identity/name, but only
         // explicit roots and proven original require targets schedule checks.
         self.modules.required_files.borrow_mut().extend(roots.iter().copied());
-        let mut checked = HashSet::new();
-        let mut emitted = HashSet::new();
+        let mut checked = HashSet::default();
+        let mut emitted = HashSet::default();
         let owned: HashSet<_> = roots.iter().copied().collect();
         let selected = |file: FileId| {
             owned.contains(&file) || self.modules.required_files.borrow().contains(&file)
@@ -1327,7 +1327,7 @@ mod tests {
             Engine::new().with_native_provider(make, move |provider, queries| {
                 let root = provider.files[0].id;
                 let dependency = provider.files[1].id;
-                let mut scheduled = HashSet::from([root, provider.files[2].id]);
+                let mut scheduled = HashSet::from_iter([root, provider.files[2].id]);
                 if dependency_scheduled { scheduled.insert(dependency); }
                 let reports = provider.check_scheduled_roots(queries, &[root], &scheduled);
                 assert!(provider.required_files().contains(&dependency));

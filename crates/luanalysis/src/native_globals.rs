@@ -11,7 +11,8 @@ use luanalysis_engine::{
 };
 use luanalysis_project::SourceRole;
 use luanalysis_syntax::{DocFunctionDeclarationId, ExprKind, File, Name, Span, StmtKind, TypeExpr};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use crate::collections::{HashMap, HashSet};
 
 #[path = "native_namespace_members.rs"]
 mod namespace;
@@ -191,9 +192,9 @@ pub(crate) struct ProjectGlobalIndex {
 impl ProjectGlobalIndex {
     pub(super) fn new(environment: NativeEnvironmentKey, sources: &[&NativeRegistry]) -> Self {
         let mut by_name = BTreeMap::<String, Vec<NativeValueDeclarationKey>>::new();
-        let mut declaration_owners = HashSet::new();
+        let mut declaration_owners = HashSet::default();
         for source in sources {
-            let mut introduced = HashSet::new();
+            let mut introduced = HashSet::default();
             for declaration in &source.globals.declarations {
                 if declaration.namespace.is_some() {
                     continue;
@@ -515,7 +516,7 @@ impl NativeRegistry {
     /// reached value; later assignments can invalidate this original copy.
     pub(crate) fn has_standard_callable_initializer(&self, binding: BindingId) -> bool {
         let mut binding = binding;
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         while visited.insert(binding) {
             let Some(write) = self.flow.declaration_write(binding) else { return false };
             let crate::flow::NodeKind::Write { value, .. } = &write.kind else { return false };
@@ -573,7 +574,7 @@ impl NativeRegistry {
         let source = self.function(function);
         let mut checker = self.checker(queries);
         checker.type_context = Some(function);
-        let mut names = HashSet::new();
+        let mut names = HashSet::default();
         for parameter in &source.annotations.params {
             if !names.insert(&parameter.name.text)
                 || (!(parameter.name.text == "self" && self.implicit_receiver(source).is_some()) && !source

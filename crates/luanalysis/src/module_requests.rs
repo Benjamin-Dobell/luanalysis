@@ -2,7 +2,7 @@
 //! No source text scanning, module execution or type construction happens here.
 use crate::bind::{BindingId, BoundFile, BuiltinIntrinsic};
 use luanalysis_syntax::{Expr, ExprKind, File, Span, Stmt, StmtKind, TableFieldKind};
-use std::collections::HashSet;
+use crate::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RequireTarget {
@@ -28,9 +28,9 @@ pub(crate) fn require_calls(file: &File, bound: &BoundFile) -> Vec<RequireCall> 
     let mut calls = Vec::new();
     let mut locals = Vec::new();
     local_value_candidates(&file.statements, &mut locals);
-    let mut loaders = HashSet::new();
-    let mut environments = HashSet::new();
-    let mut values = HashSet::new();
+    let mut loaders = HashSet::default();
+    let mut environments = HashSet::default();
+    let mut values = HashSet::default();
     // This is candidate collection, not value propagation. A later assignment
     // never erases a request candidate; the actual native callee must still
     // retain the original require capability at that evaluation's flow input.

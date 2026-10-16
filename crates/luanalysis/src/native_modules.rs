@@ -10,7 +10,7 @@ use luanalysis_engine::{
 use luanalysis_syntax::{Expr, Span};
 use luanalysis_project::FileId;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub(crate) enum ImportOutcome {

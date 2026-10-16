@@ -12,7 +12,7 @@ use luanalysis_engine::{
     TypeMemberKeyRecipe, TypeMemberOwner, TypeMemberVisibility, TypeQueries,
 };
 use luanalysis_syntax::{ExprKind, Span};
-use std::collections::HashSet;
+use crate::collections::HashSet;
 
 impl NativeRegistry {
     pub(crate) fn original_literal_self_type(
@@ -54,12 +54,12 @@ impl NativeRegistry {
         key: NativeTypeDeclarationKey,
     ) -> Option<TypeDeclarationHeader> {
         let source = self.runtime_tables.schema(key)?;
-        let mut used = HashSet::new();
+        let mut used = HashSet::default();
         self.value_type_dependencies(
             &self.expressions().get(source.key).expression,
             &mut used,
-            &mut HashSet::new(),
-            &mut HashSet::new(),
+            &mut HashSet::default(),
+            &mut HashSet::default(),
         );
         for store in self.runtime_tables.stores() {
             if let Some((annotation, _)) = &store.annotation {
@@ -92,8 +92,8 @@ impl NativeRegistry {
                     self.value_type_dependencies(
                         expression,
                         &mut used,
-                        &mut HashSet::new(),
-                        &mut HashSet::new(),
+                        &mut HashSet::default(),
+                        &mut HashSet::default(),
                     );
                 }
                 ValueRecipe::Function(graph) => {
@@ -104,8 +104,8 @@ impl NativeRegistry {
                         self.function_type_dependencies(
                             function,
                             &mut used,
-                            &mut HashSet::new(),
-                            &mut HashSet::new(),
+                            &mut HashSet::default(),
+                            &mut HashSet::default(),
                         );
                     }
                 }

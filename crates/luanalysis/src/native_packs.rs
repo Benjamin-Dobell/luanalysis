@@ -10,7 +10,7 @@ use luanalysis_syntax::{
     Expr, ExprKind, File, Function, Span, Stmt, StmtKind, TableFieldKind, TypeAnnotation, TypeExpr,
     TypePacks,
 };
-use std::collections::HashMap;
+use luanalysis_engine::FxHashMap as HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Adjustment {
@@ -193,10 +193,10 @@ impl NativePacks {
         let mut result = Self {
             snapshot,
             lists: Vec::new(),
-            list_spans: HashMap::new(),
-            table_sequences: HashMap::new(),
-            initializer_lists: HashMap::new(),
-            expression_initializers: HashMap::new(),
+            list_spans: HashMap::default(),
+            table_sequences: HashMap::default(),
+            initializer_lists: HashMap::default(),
+            expression_initializers: HashMap::default(),
             return_annotations: file.return_annotations.iter().map(|source| {
                 ((source.statement.start, source.statement.end), source.annotation.clone())
             }).collect(),

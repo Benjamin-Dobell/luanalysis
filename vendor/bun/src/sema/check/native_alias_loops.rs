@@ -21,8 +21,8 @@ impl<'p, 's> Checker<'p, 's> {
         { return Origins::unavailable() }
         let invariant = Invariant { reference, head, entry, seed };
         let mut work: Vec<_> = backedges.iter().map(|&at| (at, false)).collect();
-        let mut active = HashSet::new();
-        let mut completed = HashSet::new();
+        let mut active = HashSet::default();
+        let mut completed = HashSet::default();
         let mut steps = 0usize;
         while let Some((at, leaving)) = work.pop() {
             steps += 1;
@@ -37,7 +37,7 @@ impl<'p, 's> Checker<'p, 's> {
                         && provider.write_affects(reference, target, at) == NativeWriteRelation::Unaffected
                         && Self::native_loop_dispatch_safe(provider, at, &invariant) => before,
                 Some(NativeFlowNode::Call { before, value, input }) => {
-                    if self.native_loop_call_preservation(provider, reference, value, input, &invariant, &mut HashSet::new()) != NativeCallPreservation::Preserved { return Origins::unavailable() }
+                    if self.native_loop_call_preservation(provider, reference, value, input, &invariant, &mut HashSet::default()) != NativeCallPreservation::Preserved { return Origins::unavailable() }
                     before
                 },
                 Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
@@ -86,7 +86,7 @@ impl<'p, 's> Checker<'p, 's> {
         let Some(execution) = provider.function_alias_execution(function, creation) else { return false };
         if execution.terminals.is_empty() || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) { return false }
         let mut work = execution.terminals;
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         while let Some(at) = work.pop() {
             if at.graph != execution.entry.graph || visited.len() >= 16_384 { return false }
             if !visited.insert(at) { continue }

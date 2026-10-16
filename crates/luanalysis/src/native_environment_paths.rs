@@ -5,7 +5,7 @@ use super::NativeRegistry;
 use crate::{bind::BindingId, flow};
 use luanalysis_engine::{LuaKey, NativeFlowKey, TypeQueries};
 use luanalysis_syntax::{Expr, ExprKind};
-use std::collections::HashSet;
+use crate::collections::HashSet;
 
 impl NativeRegistry {
     pub(crate) fn frozen_environment_path(
@@ -14,7 +14,7 @@ impl NativeRegistry {
         input: NativeFlowKey,
         queries: &mut dyn TypeQueries,
     ) -> Option<Vec<flow::Key>> {
-        self.environment_path(expression, input, queries, &mut HashSet::new(), 0)
+        self.environment_path(expression, input, queries, &mut HashSet::default(), 0)
     }
 
     fn environment_path(
@@ -33,7 +33,7 @@ impl NativeRegistry {
         // cannot be the pre-existing global environment object. This is a Lua
         // identity fact; asking its written class assertion to prove it would
         // recursively validate that class while resolving its own methods.
-        if self.immutable_fresh_table(expression, &mut HashSet::new()) { return None; }
+        if self.immutable_fresh_table(expression, &mut HashSet::default()) { return None; }
 
         // This primitive query bypasses the assertion on the original receiver.
         // An equal-looking table schema cannot manufacture a runtime identity.

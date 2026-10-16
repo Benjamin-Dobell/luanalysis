@@ -4,7 +4,7 @@ fn fixture(source: &str) -> (NativeFlowSources, crate::bind::BoundFile) {
     let file = luanalysis_syntax::parse(source);
     assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
     let bound = crate::bind::bind(&file);
-    let sources = NativeFlowSources::new(&file, &bound, 91_217, &HashMap::new());
+    let sources = NativeFlowSources::new(&file, &bound, 91_217, &HashMap::default());
     (sources, bound)
 }
 

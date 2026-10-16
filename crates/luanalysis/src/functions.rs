@@ -8,7 +8,7 @@ use luanalysis_engine::{
     Type, ValuePack,
 };
 use luanalysis_syntax::{Expr, ExprKind, Function, Name, Span};
-use std::collections::HashSet;
+use crate::collections::HashSet;
 
 impl Checker<'_> {
     pub(super) fn expression_pack(
@@ -331,7 +331,7 @@ impl Checker<'_> {
             });
         let receiver = self.native.and_then(|native| native.implicit_receiver(function));
         let offset = usize::from(receiver.is_some());
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for tag in &function.annotations.params {
             if !seen.insert(&tag.name.text) {
                 self.error(

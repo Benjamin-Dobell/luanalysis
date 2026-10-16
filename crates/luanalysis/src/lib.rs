@@ -5,6 +5,12 @@
 //! Bun core. Native generic calls share its inference worker. Branch flow,
 //! contextual expression demands and project services are integration gates.
 
+/// Host tables use the checker's deterministic Fx hashing: keys are original
+/// source identities, never attacker-chosen input requiring DoS resistance.
+pub(crate) mod collections {
+    pub(crate) type HashMap<K, V> = std::collections::HashMap<K, V, luanalysis_engine::FxBuildHasher>;
+    pub(crate) type HashSet<T> = std::collections::HashSet<T, luanalysis_engine::FxBuildHasher>;
+}
 pub mod bind;
 mod builtins;
 mod diagnostic_types;
@@ -41,7 +47,7 @@ use luanalysis_syntax::{
     Expr, ExprKind, Name, Span, Stmt, StmtKind, TypeAnnotation, TypeExpr, TypeExprKind, TypeLiteral,
 };
 use native_functions::NativeRegistry;
-use std::collections::{HashMap, HashSet};
+use crate::collections::{HashMap, HashSet};
 
 /// Public exposure of an overloaded function's implementation contract.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -107,7 +113,7 @@ impl CheckReport {
     }
 
     fn render(&mut self, engine: &mut dyn TypeQueries) {
-        let mut bindings = HashMap::with_capacity(self.pending_bindings.len());
+        let mut bindings = HashMap::with_capacity_and_hasher(self.pending_bindings.len(), Default::default());
         for (binding, ty) in std::mem::take(&mut self.pending_bindings) {
             let displayed = describe_native(&ty, engine, &mut Vec::new());
             bindings.insert(binding, displayed);
@@ -117,7 +123,7 @@ impl CheckReport {
                 info.ty.clone_from(&displayed);
             }
         }
-        let mut types = HashMap::with_capacity(self.pending_types.len());
+        let mut types = HashMap::with_capacity_and_hasher(self.pending_types.len(), Default::default());
         for (span, ty) in std::mem::take(&mut self.pending_types) {
             let displayed = describe_native(&ty, engine, &mut Vec::new());
             types.insert((span.start, span.end), displayed);
@@ -298,7 +304,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
             registry.check_global_declarations(engine);
             let mut report = {
                 let mut checker = Checker {
-                    active_assertions: HashSet::new(),
+                    active_assertions: HashSet::default(),
                     engine,
                     bound: registry.bound(),
                     native: Some(registry),
@@ -312,8 +318,8 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
                     annotation_depth: 0,
                     check_mode: NativeCheckMode::empty(),
                     flow_at: Some(registry.flow_entry(None, None)),
-                    locals: HashMap::new(),
-                    assigned_fields: HashMap::new(),
+                    locals: HashMap::default(),
+                    assigned_fields: HashMap::default(),
                     report: CheckReport::default(),
                     return_type: None,
                     return_values: Vec::new(),

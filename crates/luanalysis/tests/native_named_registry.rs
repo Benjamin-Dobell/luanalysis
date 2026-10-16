@@ -6,7 +6,7 @@ use luanalysis_syntax::{
     ExprKind, NamedRecordKind, NamedTypeDeclarationKind, Span, StmtKind, TypeExprKind,
     TypeFieldKey, TypeLiteral,
 };
-use std::collections::HashMap;
+use luanalysis_engine::FxHashMap as HashMap;
 
 #[allow(dead_code)]
 #[path = "../src/native_named.rs"]
@@ -24,7 +24,7 @@ fn file(source: &str) -> luanalysis_syntax::File {
 fn registry(source: &str) -> NativeNamed {
     let file = file(source);
     let bound = bind::bind(&file);
-    NativeNamed::new(SNAPSHOT, &file, &bound, &HashMap::new()).unwrap()
+    NativeNamed::new(SNAPSHOT, &file, &bound, &HashMap::default()).unwrap()
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn runtime_attachments_keep_all_bindings_and_original_assignment_targets() {
     let source = "---@class Pair\nlocal first,second={},{}\n---@class Nested\nfirst.child={}\n";
     let parsed = file(source);
     let bound = bind::bind(&parsed);
-    let named = NativeNamed::new(SNAPSHOT, &parsed, &bound, &HashMap::new()).unwrap();
+    let named = NativeNamed::new(SNAPSHOT, &parsed, &bound, &HashMap::default()).unwrap();
     let local = named.attachment(parsed.statements[0].span).unwrap();
     let RuntimeAttachmentKind::Local { bindings } = &local.kind else {
         panic!("local")
@@ -195,7 +195,7 @@ fn enclosing_function_context_uses_original_spans_not_following_attachment() {
         snapshot: SNAPSHOT,
         index: 0,
     };
-    let functions = HashMap::from([((function.span.start, function.span.end), key)]);
+    let functions = HashMap::from_iter([((function.span.start, function.span.end), key)]);
     let named = NativeNamed::new(SNAPSHOT, &parsed, &bound, &functions).unwrap();
     assert_eq!(
         named
@@ -239,7 +239,7 @@ fn embedded_function_body_attachments_are_indexed_in_control_headers() {
         snapshot: SNAPSHOT,
         index: 0,
     };
-    let functions = HashMap::from([((function.span.start, function.span.end), key)]);
+    let functions = HashMap::from_iter([((function.span.start, function.span.end), key)]);
     let named = NativeNamed::new(SNAPSHOT, &parsed, &bound, &functions).unwrap();
     let declaration = named
         .declaration(named.candidates("HeaderLocal")[0])
@@ -259,7 +259,7 @@ fn embedded_function_body_attachments_are_indexed_in_control_headers() {
 fn foreign_snapshot_queries_and_invalid_origin_metadata_do_not_fallback() {
     let mut parsed = file("---@alias Alias number\nlocal value=1");
     let bound = bind::bind(&parsed);
-    let named = NativeNamed::new(SNAPSHOT, &parsed, &bound, &HashMap::new()).unwrap();
+    let named = NativeNamed::new(SNAPSHOT, &parsed, &bound, &HashMap::default()).unwrap();
     let key = named.candidates("Alias")[0];
     assert!(
         named
@@ -277,7 +277,7 @@ fn foreign_snapshot_queries_and_invalid_origin_metadata_do_not_fallback() {
             })
             .is_none()
     );
-    let functions = HashMap::from([(
+    let functions = HashMap::from_iter([(
         (0, parsed.span.end),
         NativeFunctionKey {
             snapshot: SNAPSHOT + 1,
@@ -290,7 +290,7 @@ fn foreign_snapshot_queries_and_invalid_origin_metadata_do_not_fallback() {
     ));
     parsed.type_declarations[0].attachment = Some(Span::new(999, 1000));
     assert!(matches!(
-        NativeNamed::new(SNAPSHOT, &parsed, &bound, &HashMap::new()),
+        NativeNamed::new(SNAPSHOT, &parsed, &bound, &HashMap::default()),
         Err(NamedRegistryError::MissingAttachment(_))
     ));
 }
@@ -304,7 +304,7 @@ fn malformed_binding_and_repeated_syntax_identity_are_explicit_registry_errors()
         .occurrences
         .retain(|occurrence| occurrence.span != second);
     assert!(matches!(
-        NativeNamed::new(SNAPSHOT, &parsed, &bound, &HashMap::new()),
+        NativeNamed::new(SNAPSHOT, &parsed, &bound, &HashMap::default()),
         Err(NamedRegistryError::MissingAttachmentBinding(span)) if span==second
     ));
     let bound = bind::bind(&parsed);
@@ -312,7 +312,7 @@ fn malformed_binding_and_repeated_syntax_identity_are_explicit_registry_errors()
         .type_declarations
         .push(parsed.type_declarations[0].clone());
     assert!(matches!(
-        NativeNamed::new(SNAPSHOT, &parsed, &bound, &HashMap::new()),
+        NativeNamed::new(SNAPSHOT, &parsed, &bound, &HashMap::default()),
         Err(NamedRegistryError::DuplicateSyntaxId(_))
     ));
 }
@@ -462,7 +462,7 @@ fn runtime_and_function_annotation_heads_keep_distinct_original_contexts() {
         snapshot: SNAPSHOT,
         index: 0,
     };
-    let functions = HashMap::from([((function.span.start, function.span.end), key)]);
+    let functions = HashMap::from_iter([((function.span.start, function.span.end), key)]);
     let named = NativeNamed::new(SNAPSHOT, &parsed, &bound, &functions).unwrap();
     assert_eq!(named.anonymous_heads().len(), 3);
     assert_eq!(named.anonymous_heads()[0].lexical_context, None);
@@ -498,7 +498,7 @@ fn copied_function_type_annotation_has_one_head_and_retains_both_source_uses() {
         SNAPSHOT,
         &parsed,
         &bound,
-        &HashMap::from([((function.span.start, function.span.end), key)]),
+        &HashMap::from_iter([((function.span.start, function.span.end), key)]),
     )
     .unwrap();
     assert_eq!(named.anonymous_heads().len(), 1);

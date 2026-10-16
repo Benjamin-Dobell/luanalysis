@@ -3,7 +3,7 @@
 use luanalysis::{Diagnostic, bind};
 use luanalysis_engine::{NativeFunctionKey, Type};
 use luanalysis_syntax::{ExprKind, StmtKind, TypeExprKind};
-use std::collections::{HashMap, HashSet};
+use luanalysis_engine::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 #[allow(dead_code)]
 #[path = "../src/native_named.rs"]
@@ -20,7 +20,7 @@ fn named(source: &str) -> NativeNamed {
     let file = luanalysis_syntax::parse(source);
     assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
     let bound = bind::bind(&file);
-    NativeNamed::new(SNAPSHOT, &file, &bound, &HashMap::new()).unwrap()
+    NativeNamed::new(SNAPSHOT, &file, &bound, &HashMap::default()).unwrap()
 }
 
 fn scopes(named: &NativeNamed) -> Vec<NamedGenericScopeRecipe> {
@@ -143,7 +143,7 @@ fn named_annotation_dependencies_capture_only_used_original_parent_parameters() 
         snapshot: SNAPSHOT,
         index: 0,
     };
-    let functions = HashMap::from([((function.span.start, function.span.end), function_key)]);
+    let functions = HashMap::from_iter([((function.span.start, function.span.end), function_key)]);
     let named = NativeNamed::new(SNAPSHOT, &file, &bound, &functions).unwrap();
     let types = NativeTypes::new_with_named(
         SNAPSHOT,
@@ -166,11 +166,11 @@ fn named_annotation_dependencies_capture_only_used_original_parent_parameters() 
     let luanalysis_syntax::NamedTypeDeclarationKind::Alias { target } = &inside.syntax.kind else {
         panic!("alias")
     };
-    let mut used = HashSet::new();
+    let mut used = HashSet::default();
     let owner = NativeTypeContext::NamedType(inside.key);
     types.annotation_dependencies_in_context(Some(owner), target, &mut used);
     let function_parameters = types.own_parameters(function_key);
-    assert_eq!(used, HashSet::from([function_parameters[0]]));
+    assert_eq!(used, HashSet::from_iter([function_parameters[0]]));
     assert_eq!(
         types.outer_parameters_in_context(owner, &used),
         vec![function_parameters[0]]
@@ -187,11 +187,11 @@ fn unused_visible_documentation_parameters_do_not_create_outer_mapper_inputs() {
     let owner = NativeTypeContext::NamedType(named.candidates("Child")[0]);
     assert!(
         types
-            .outer_parameters_in_context(owner, &HashSet::new())
+            .outer_parameters_in_context(owner, &HashSet::default())
             .is_empty()
     );
     let doc_owner = NativeTypeContext::NamedType(named.candidates("Owner")[0]);
-    let used = HashSet::from([types.own_parameters_in_context(doc_owner)[1]]);
+    let used = HashSet::from_iter([types.own_parameters_in_context(doc_owner)[1]]);
     assert_eq!(
         types.outer_parameters_in_context(owner, &used),
         used.into_iter().collect::<Vec<_>>()

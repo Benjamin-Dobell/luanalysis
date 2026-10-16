@@ -16,7 +16,7 @@ use luanalysis_syntax::{
     NamedTypeDeclarationKind, Span, Stmt, StmtKind, TableFieldKind, TypeAnnotation, TypeExpr,
     TypeExprKind, TypeFieldKey,
 };
-use std::collections::HashSet;
+use crate::collections::HashSet;
 
 pub(crate) fn checking_cost(file: &File, bound: &BoundFile, type_node_cost: usize) -> usize {
     let identifiers = bound

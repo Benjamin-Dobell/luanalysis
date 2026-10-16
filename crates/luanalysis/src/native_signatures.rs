@@ -15,7 +15,7 @@ use luanalysis_syntax::{
     DocFunctionDeclarationId, DocFunctionOwner, File, Function, FunctionType, NamedTypeDeclarationKind, Span, Stmt, StmtKind, TypeExpr,
     TypeExprKind, TypeFieldKey,
 };
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 impl NativeRegistry {
     /// A missing doc-function result is distinct from an explicit any/void row.
@@ -316,7 +316,7 @@ impl NativeRegistry {
             queries.format(&ty);
             if let Some(source) = self.documentation_signature(recipe.key) {
                 let mut checker=self.signature_checker(recipe.key,queries);
-                let mut names=std::collections::HashSet::new();
+                let mut names=crate::collections::HashSet::default();
                 for tag in &source.annotations.params {
                     if !names.insert(&tag.name.text) || (!source.signature.params.iter().any(|p|p.name.text==tag.name.text) && !(tag.name.text=="self" && source.method_colon.is_some())) {
                         checker.error("LUA2011",tag.name.span,"Parameter annotation has a duplicate or unknown original parameter owner.");
@@ -406,7 +406,7 @@ impl NativeRegistry {
         if let Some(function) = recipe.ambient_function {
             let source = self.function(function);
             let context = Some(NativeTypeContext::Function(function));
-            let mut used = std::collections::HashSet::new();
+            let mut used = crate::collections::HashSet::default();
             for constraint in source.annotations.generics.iter().filter_map(|parameter| parameter.constraint.as_ref()) {
                 self.annotation_parameter_dependencies(context, constraint, &mut used);
             }
@@ -434,7 +434,7 @@ impl NativeRegistry {
             return outer;
         }
         let source = recipe.signature.as_ref().expect("original function-type annotation");
-        let mut used = std::collections::HashSet::new();
+        let mut used = crate::collections::HashSet::default();
         if let Some(function) = self.signature_method_function(key)
             && let Some(parameter) = self.method_owner(function)
                 .and_then(|owner| self.types.self_parameter(owner))
@@ -536,13 +536,13 @@ impl NativeSignatures {
         let mut result = Self {
             snapshot,
             recipes: Vec::new(),
-            spans: HashMap::new(),
-            type_contexts: HashMap::new(),
-            functions: HashMap::new(),
-            ambient_mains: HashMap::new(),
-            named: HashMap::new(),
-            documentation: HashMap::new(),
-            sites: HashMap::new(),
+            spans: HashMap::default(),
+            type_contexts: HashMap::default(),
+            functions: HashMap::default(),
+            ambient_mains: HashMap::default(),
+            named: HashMap::default(),
+            documentation: HashMap::default(),
+            sites: HashMap::default(),
             diagnostics: Vec::new(),
         };
         for declaration in &file.function_declarations {

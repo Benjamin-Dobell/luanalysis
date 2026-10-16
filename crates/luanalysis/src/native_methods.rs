@@ -7,7 +7,7 @@ use luanalysis_engine::{LuaKey, NativeFunctionKey, Type, TypeQueries, NativeChec
 use luanalysis_syntax::{
     Expr, ExprKind, File, Function, NamedRecordKind, NamedTypeDeclarationKind, Span, Stmt, StmtKind, TypeExpr,
 };
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub(super) struct MethodSource {
@@ -53,10 +53,10 @@ impl NativeMethods {
         types: &crate::native_types::NativeTypes,
         metatables: &super::metatables::NativeMetatables,
     ) -> Self {
-        let mut owners: HashMap<BindingId, Vec<NativeNamedKey>> = HashMap::new();
-        let mut contextual_owners = HashMap::new();
-        let mut owner_applications = HashMap::new();
-        let mut declaration_owners: HashMap<String, Vec<NativeNamedKey>> = HashMap::new();
+        let mut owners: HashMap<BindingId, Vec<NativeNamedKey>> = HashMap::default();
+        let mut contextual_owners = HashMap::default();
+        let mut owner_applications = HashMap::default();
+        let mut declaration_owners: HashMap<String, Vec<NativeNamedKey>> = HashMap::default();
         for declaration in named.declarations() {
             if !matches!(
                 declaration.syntax.kind,

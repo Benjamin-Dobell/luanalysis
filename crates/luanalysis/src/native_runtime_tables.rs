@@ -14,7 +14,7 @@ use luanalysis_syntax::{
     Expr, ExprKind, ExpressionAssertionKind, File, NamedTypeDeclarationId,
     NamedTypeDeclarationKind, Span, Stmt, StmtKind, TableField, TypeAnnotation,
 };
-use std::collections::HashMap;
+use crate::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum WrittenTableContext {
@@ -93,8 +93,8 @@ impl NativeRuntimeTables {
         expressions: &NativeExpressions,
         sources: &NativeFlowSources,
     ) -> Self {
-        let mut contexts: HashMap<(usize, usize), Vec<WrittenTableContext>> = HashMap::new();
-        let mut annotations = HashMap::new();
+        let mut contexts: HashMap<(usize, usize), Vec<WrittenTableContext>> = HashMap::default();
+        let mut annotations = HashMap::default();
         let mut statements = Vec::new();
         collect_statements(&file.statements, &mut statements);
         // Function-expression bodies are original source roots too. Their
@@ -178,8 +178,8 @@ impl NativeRuntimeTables {
             );
         }
         let mut constructors = Vec::new();
-        let mut constructor_indices = HashMap::new();
-        let mut evaluations = HashMap::new();
+        let mut constructor_indices = HashMap::default();
+        let mut evaluations = HashMap::default();
         for evaluation in &sources.program.evaluations {
             let span = sources
                 .program
@@ -209,8 +209,8 @@ impl NativeRuntimeTables {
             });
         }
         let mut stores = Vec::new();
-        let mut store_indices = HashMap::new();
-        let mut target_stores = HashMap::new();
+        let mut store_indices = HashMap::default();
+        let mut target_stores = HashMap::default();
         for graph in &sources.program.graphs {
             for node in &graph.nodes {
                 let flow::NodeKind::Write {

@@ -121,7 +121,7 @@ impl NativeMembers {
 use crate::native_functions::NativeRegistry;
 use luanalysis_engine::{TableFieldOrigin, TableKey, TableType, Type, TypeMemberHeader, TypeMemberKeyRecipe, TypeMemberOwner, TypeMemberVisibility, TypeQueries, NativeTypeParameterKey};
 use luanalysis_syntax::{ExprKind, TableFieldKind};
-use std::collections::HashSet;
+use crate::collections::HashSet;
 
 impl NativeRegistry {
     /// Choose the first completed active original declaration group. A pending
@@ -133,7 +133,7 @@ impl NativeRegistry {
     ) -> Option<(luanalysis_engine::TypeMemberActivation, Vec<&'a OriginalMemberInput>)> {
         use luanalysis_engine::{ContextualTypeOwner, TypeMemberActivation};
         let source = self.members.get(key)?;
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         for input in &source.candidates {
             if !visited.insert(input.contextual_owner) { continue; }
             if let Some(scope) = input.contextual_owner {
@@ -325,12 +325,12 @@ impl NativeRegistry {
         for key in self.members.members(owner) {
             for input in &self.members.get(key).unwrap().candidates {
                 if let OriginalMemberKey::Computed(key) = input.key {
-                    self.value_type_dependencies(&self.expressions().get(key).expression, used, &mut HashSet::new(), &mut HashSet::new());
+                    self.value_type_dependencies(&self.expressions().get(key).expression, used, &mut HashSet::default(), &mut HashSet::default());
                 }
                 match &input.value {
                     OriginalMemberValue::Written(ty) => self.annotation_parameter_dependencies(input.lexical_context, ty, used),
-                    OriginalMemberValue::Expression(key) => self.value_type_dependencies(&self.expressions().get(*key).expression, used, &mut HashSet::new(), &mut HashSet::new()),
-                    OriginalMemberValue::Function(key) => self.function_type_dependencies(*key, used, &mut HashSet::new(), &mut HashSet::new()),
+                    OriginalMemberValue::Expression(key) => self.value_type_dependencies(&self.expressions().get(*key).expression, used, &mut HashSet::default(), &mut HashSet::default()),
+                    OriginalMemberValue::Function(key) => self.function_type_dependencies(*key, used, &mut HashSet::default(), &mut HashSet::default()),
                 }
             }
         }

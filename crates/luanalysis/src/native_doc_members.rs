@@ -8,7 +8,7 @@ use luanalysis_engine::{
     TypeMemberVisibility, TypeQueries,
 };
 use luanalysis_syntax::{DocFunctionDeclarationId, DocFunctionOwner, File, Span};
-use std::collections::HashSet;
+use crate::collections::HashSet;
 use std::cell::Cell;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,13 +195,13 @@ impl NativeDocMembers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use crate::collections::HashMap;
 
     fn indexed(source: &str, snapshot: u64) -> (File, NativeNamed) {
         let file = luanalysis_syntax::parse(source);
         assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
         let named =
-            NativeNamed::new(snapshot, &file, &crate::bind::bind(&file), &HashMap::new()).unwrap();
+            NativeNamed::new(snapshot, &file, &crate::bind::bind(&file), &HashMap::default()).unwrap();
         (file, named)
     }
 
@@ -270,7 +270,7 @@ mod tests {
                 .any(|source| source.invalid_owner)
         );
         let named =
-            NativeNamed::new(13, &file, &crate::bind::bind(&file), &HashMap::new()).unwrap();
+            NativeNamed::new(13, &file, &crate::bind::bind(&file), &HashMap::default()).unwrap();
         let members =
             NativeDocMembers::new(13, &file, &named, named.member_namespace_end(), |_| {
                 Vec::new()

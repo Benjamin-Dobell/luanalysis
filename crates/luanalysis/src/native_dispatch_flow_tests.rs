@@ -70,7 +70,7 @@ fn fixture(expression: &str) -> (NativeFlowSources, flow::EvaluationId) {
         file.diagnostics
     );
     let bound = crate::bind::bind(&file);
-    let sources = NativeFlowSources::new(&file, &bound, 34_445, &HashMap::new());
+    let sources = NativeFlowSources::new(&file, &bound, 34_445, &HashMap::default());
     let evaluation = sources
         .program
         .evaluations
