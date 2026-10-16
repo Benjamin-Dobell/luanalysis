@@ -107,6 +107,7 @@ pub struct ProjectWorkspace {
     next_revision: u64,
     /// Parse/bind work performed by dependency discovery before preparation.
     pending_preparation: HashMap<u64, bool>,
+    last_preparation: PreparationStats,
 }
 
 impl ProjectWorkspace {
@@ -118,11 +119,26 @@ impl ProjectWorkspace {
         self.sources.len()
     }
 
+    pub fn last_preparation_stats(&self) -> PreparationStats {
+        self.last_preparation
+    }
+
+    /// Check a freshly loaded project while retaining unchanged source inputs.
+    /// All native semantic state belongs to this check's immutable epoch.
+    pub fn check_project(
+        &mut self,
+        project: Project,
+        options: crate::project_check::ProjectCheckOptions,
+    ) -> crate::project_check::ProjectCheckReport {
+        crate::project_check::check_project_with_workspace(project, options, self)
+    }
+
     /// Releases retained source inputs. Existing prepared snapshots remain
     /// valid through their own shared ownership.
     pub fn clear(&mut self) {
         self.sources.clear();
         self.pending_preparation.clear();
+        self.last_preparation = PreparationStats::default();
     }
 
     /// Supplies the source-host's static candidates from the same cached
@@ -209,6 +225,7 @@ impl ProjectWorkspace {
         self.sources
             .retain(|identity, _| current.contains(identity));
         stats.evicted = before - self.sources.len();
+        self.last_preparation = stats;
         PreparedSources { sources, stats }
     }
 }

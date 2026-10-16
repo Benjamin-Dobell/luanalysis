@@ -10,6 +10,7 @@ mod builtins;
 mod diagnostic_types;
 mod module_requests;
 pub mod flow;
+pub mod incremental;
 pub mod project_check;
 pub mod standard_environment;
 mod functions;

@@ -10,6 +10,9 @@ use luanalysis_project::{
 
 #[derive(Clone, Copy, Debug)]
 pub struct ProjectCheckOptions {
+    /// Maximum simultaneous native checker tasks. Zero selects the host's
+    /// available parallelism; one requests deterministic serial execution.
+    pub jobs: usize,
     pub loader_policy: NativeLoaderPolicy,
     pub environment: StandardEnvironmentProfile,
     pub overload_mode: crate::OverloadMode,
@@ -20,6 +23,7 @@ pub struct ProjectCheckOptions {
 impl Default for ProjectCheckOptions {
     fn default() -> Self {
         Self {
+            jobs: 0,
             loader_policy: NativeLoaderPolicy::Lua54StandardFile,
             environment: StandardEnvironmentProfile::LegacyMinimal,
             overload_mode: crate::OverloadMode::default(),
@@ -101,8 +105,16 @@ pub fn check_project(project: Project) -> ProjectCheckReport {
 }
 
 pub fn check_project_with_options(
+    project: Project,
+    options: ProjectCheckOptions,
+) -> ProjectCheckReport {
+    crate::incremental::ProjectWorkspace::new().check_project(project, options)
+}
+
+pub(crate) fn check_project_with_workspace(
     mut project: Project,
     options: ProjectCheckOptions,
+    workspace: &mut crate::incremental::ProjectWorkspace,
 ) -> ProjectCheckReport {
     let (selection, environment_errors) = match StandardEnvironmentSelection::register(&mut project, options.environment) {
         Ok(selection) => (selection, Vec::new()),
@@ -111,16 +123,15 @@ pub fn check_project_with_options(
     let standard_library_files = selection.files();
     let mut inputs = Vec::new();
     let mut files = Vec::new();
-    for source in &project.files {
-        let parsed = luanalysis_syntax::parse(&source.source);
-        if !parsed.has_lua_syntax_errors() {
-            let bound = crate::bind::bind(&parsed);
+    for source in workspace.prepare_registered_sources(&project).sources {
+        let parsed = source.snapshot.syntax();
+        if let Some(bound) = source.snapshot.bound() {
             inputs.push(RegistryInput {
                 id: source.id,
                 role: source.role,
                 standard_library: selection.kind(source.id),
-                syntax: parsed,
-                bound,
+                syntax: parsed.clone(),
+                bound: bound.clone(),
             });
         } else {
             files.push(FileCheckReport {
@@ -128,10 +139,10 @@ pub fn check_project_with_options(
                 report: CheckReport {
                     diagnostics: parsed
                         .diagnostics
-                        .into_iter()
+                        .iter()
                         .map(|error| Diagnostic {
                             code: "LUA1001",
-                            message: error.message,
+                            message: error.message.clone(),
                             span: error.span,
                         })
                         .collect(),
