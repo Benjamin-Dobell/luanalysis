@@ -331,7 +331,8 @@ impl NativeRegistry {
                         }
                     }
                 }
-            } else if let Some(pack) = checker
+            } else if !self.inferred_call_result_requires_owner(function)
+                && let Some(pack) = checker
                 .engine
                 .function_result_pack(&luanalysis_engine::Type::NativeFunction(function))
             {
@@ -356,6 +357,24 @@ impl NativeRegistry {
         }
         self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
         owner.map_or(ContextualTypeOwner::Absent, ContextualTypeOwner::Owner)
+    }
+
+    fn inferred_call_result_requires_owner(&self, function: NativeFunctionKey) -> bool {
+        let Some(parameter) = self.contextual_self_dependency(function) else {
+            return false;
+        };
+        // A return that uses this contextual self cannot establish the same
+        // owner. Inspect original dependencies before entering QueryReturn so
+        // its legitimate target fallback does not become a return cycle.
+        // Explicit generic parameters named self have different source keys.
+        let mut used = std::collections::HashSet::new();
+        self.function_type_dependencies(
+            function,
+            &mut used,
+            &mut std::collections::HashSet::new(),
+            &mut std::collections::HashSet::new(),
+        );
+        used.contains(&parameter)
     }
 
     pub(crate) fn contextual_self_type(

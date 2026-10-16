@@ -158,6 +158,25 @@ setmetatable(Static, {
 }
 
 #[test]
+fn an_explicit_generic_named_self_does_not_block_an_independent_inferred_owner() {
+    let fixture = Fixture::new();
+    let source = INFERRED_OWNER
+        .replace("ATTACH", "setmetatable")
+        .replace(
+            "    __call = function()",
+            "    ---@generic self\n    ---@param value self\n    __call = function(value)\n        ---@type self\n        local copy = value",
+        );
+    clean(&fixture.check(&source));
+    let output = fixture.check(&source.replace("---@return number", "---@return string"));
+    assert!(
+        text(&output).contains("Actual: number. Expected: string."),
+        "{}",
+        text(&output)
+    );
+    clean(&fixture.check(&source));
+}
+
+#[test]
 fn genuine_metatable_context_uses_the_written_instance_class_and_checks_its_real_members() {
     let fixture = Fixture::new();
     let source = FACTORY.replace("ATTACH", "setmetatable");
