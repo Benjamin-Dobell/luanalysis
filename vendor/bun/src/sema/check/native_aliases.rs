@@ -845,10 +845,14 @@ impl<'p, 's> Checker<'p, 's> {
                 NativeWriteRelation::Ancestor => {
                     match provider.reference_member_path(target, reference, self).filter(|path| !path.is_empty()) {
                         Some(path) => self.native_alias_projected_value(provider, value, input, 0, &path),
-                        None => Origins::unknown(),
+                        None => Origins::unavailable(),
                     }
                 },
-                NativeWriteRelation::PossibleAncestor => Origins::unknown(),
+                // A completed write relation, not an unfinished dependency: the
+                // possibly replaced ancestor leaves provenance unsupported. An
+                // uncertain result here is never cached, and every walk through
+                // later stores repeats it (exponential in straight-line stores).
+                NativeWriteRelation::PossibleAncestor => Origins::unavailable(),
                 _ => self.native_alias_reference(provider, reference, before),
             },
             Some(NativeFlowNode::Call { before, value, input }) => {

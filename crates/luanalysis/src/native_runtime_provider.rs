@@ -155,21 +155,37 @@ impl NativeRegistry {
         let source = self.runtime_tables.store(key)?;
         let contextual = queries.current_contextual_function();
         let captured = queries.current_captured_function();
-        let graph = self.iterator_sources().graph_with_contexts(
+        let sources = self.iterator_sources();
+        let graph = sources.graph_with_contexts(
             source.receiver_input.graph.region,
             contextual.as_ref(),
             captured.as_ref(),
         );
+        // Store membership needs only the receiver table's schema identity.
+        // An immutable local declared in this same body still holds its
+        // initializer's allocation; later member stores evolve only its view.
+        // Evaluate that initializer rather than flowing the receiver through
+        // those stores, whose values can read this schema while it is derived.
+        let receiver = sources.program.evaluation(source.receiver_evaluation);
+        if let ExprKind::Name(name) = &sources.program.expression(receiver.expression).expression.kind
+            && let Some(binding) = self.bound().binding_at(name.span.start)            && let Some(initializer) = sources.immutable_initializer(binding)
+            && initializer.input.graph == source.receiver_input.graph.region
+        {
+            let recipe = ValueRecipe::Evaluation(initializer.id);
+            let input = sources.flow_key(initializer.input, graph.context);
+            return Some(self.with_prospective_store_report(|| {
+                self.flow_value_type(sources, &recipe, input, queries)
+            }));
+        }
         let input = NativeFlowKey {
             graph,
             node: source.receiver_input.node,
         };
-        let recipe = self
-            .iterator_sources()
+        let recipe = sources
             .value(source.receiver_value)
             .expect("original receiver value");
         Some(self.with_prospective_store_report(|| {
-            self.flow_value_type(self.iterator_sources(), recipe, input, queries)
+            self.flow_value_type(sources, recipe, input, queries)
         }))
     }
     pub(crate) fn runtime_member_header(
