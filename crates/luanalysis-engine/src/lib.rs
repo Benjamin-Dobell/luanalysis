@@ -1256,8 +1256,33 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         self.checker.native_contextual_function_check_state(self.handles.resolve_context(context))
     }
     fn function_check_state(&mut self, function: &Type) -> NativeFunctionCheckState {
-        let function = import_type(self.checker, self.handles, function);
-        self.checker.native_function_check_state(function)
+        match function {
+            Type::SessionType(reference) => self.checker.native_function_check_state(self.handles.resolve(*reference)),
+            Type::NativeFunction(key) => {
+                if !self.checker.contains_native_function(core_key(*key)) {
+                    std::panic::panic_any(InvalidNativeFunctionKey(*key));
+                }
+                NativeFunctionCheckState::Final
+            }
+            Type::NativeSignature(key) => {
+                if !self.checker.contains_native_signature(core_signature_key(*key)) {
+                    std::panic::panic_any(InvalidNativeSignatureKey(*key));
+                }
+                NativeFunctionCheckState::Final
+            }
+            Type::Union(parts) | Type::Intersection(parts) => {
+                let mut state = NativeFunctionCheckState::Final;
+                for part in parts {
+                    match self.function_check_state(part) {
+                        NativeFunctionCheckState::Expired => return NativeFunctionCheckState::Expired,
+                        NativeFunctionCheckState::Provisional => state = NativeFunctionCheckState::Provisional,
+                        NativeFunctionCheckState::Final => {}
+                    }
+                }
+                state
+            }
+            _ => NativeFunctionCheckState::Final,
+        }
     }
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError> { self.global_binding_type_native(binding) }
     fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError> { self.global_environment_type_native(environment) }

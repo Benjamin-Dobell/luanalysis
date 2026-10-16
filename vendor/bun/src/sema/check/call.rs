@@ -455,6 +455,12 @@ impl<'p, 's> Checker<'p, 's> {
     pub fn contains_native_expression(&self, expression: NativeExpressionId) -> bool {
         self.native_function_provider.is_some_and(|provider| provider.contains_expression(expression))
     }
+    pub fn contains_native_function(&self, function: NativeFunctionId) -> bool {
+        self.native_function_provider.is_some_and(|provider| provider.contains_function(function))
+    }
+    pub fn contains_native_signature(&self, signature: NativeSignatureId) -> bool {
+        self.native_function_provider.is_some_and(|provider| provider.contains_signature(signature))
+    }
 
     pub fn native_contextual_function(
         &mut self,
@@ -548,8 +554,25 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// Read the exact implementation/lexical-parent identities. This never
     /// demands a function's parameters, return type or implementation body.
-    pub fn native_function_check_state(&mut self, function: TypeId) -> NativeFunctionCheckState {
-        let mut pending = self.signatures(function, false).to_vec();
+    pub fn native_function_check_state(&self, function: TypeId) -> NativeFunctionCheckState {
+        // Calling `signatures` here would resolve/compare union or intersection
+        // signatures, demanding their parameters and possibly their returns.
+        // Ownership observes only identities already carried by the value.
+        let mut types = vec![function];
+        let mut seen_types = std::collections::HashSet::new();
+        let mut pending = Vec::new();
+        while let Some(ty) = types.pop() {
+            if !seen_types.insert(ty) { continue }
+            match self.data(ty) {
+                TypeData::Synth(shape) => {
+                    pending.extend(shape.call.iter().copied());
+                    pending.extend(shape.construct.iter().copied());
+                    types.extend(shape.instantiation_target);
+                }
+                TypeData::Union(parts) | TypeData::Intersection(parts) => types.extend(parts.iter().copied()),
+                _ => {}
+            }
+        }
         let mut visited = std::collections::HashSet::new();
         let mut state = NativeFunctionCheckState::Final;
         while let Some(signature) = pending.pop() {

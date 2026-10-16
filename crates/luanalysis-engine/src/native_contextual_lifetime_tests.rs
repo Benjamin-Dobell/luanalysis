@@ -68,6 +68,7 @@ struct Contexts {
     created: RefCell<HashSet<u32>>,
     observed: RefCell<Vec<(Type, ContextualFunctionContext, Type)>>,
     inherited_reads: Cell<usize>,
+    module_reads: Cell<usize>,
 }
 
 impl Contexts {
@@ -78,6 +79,7 @@ impl Contexts {
             created: RefCell::default(),
             observed: RefCell::default(),
             inherited_reads: Cell::new(0),
+            module_reads: Cell::new(0),
         }
     }
 
@@ -173,6 +175,22 @@ impl Contexts {
 }
 
 impl NativeTypeProvider for Contexts {
+    fn contains_module(&self, key: NativeModuleKey) -> bool {
+        key == NativeModuleKey { snapshot: SNAPSHOT, index: 0 }
+    }
+    fn module_header(&self, _: NativeModuleKey) -> NativeModuleHeader {
+        NativeModuleHeader { role: ModuleSourceRole::Implementation }
+    }
+    fn module_inferred_result_pack(&self, _: NativeModuleKey, queries: &mut dyn TypeQueries) -> ValuePack {
+        self.module_reads.set(self.module_reads.get() + 1);
+        let (callback, _, child) = self.observed.borrow().first().cloned()
+            .expect("the producing task first creates a query-scoped callback");
+        let (stable, _, _) = Self::callback(queries);
+        ValuePack::Alternatives(vec![PackAlternative {
+            fixed: [callback, child, stable].into_iter().map(PackSlot::required).collect(),
+            tail: None,
+        }])
+    }
     fn contains_function(&self, key: NativeFunctionKey) -> bool {
         key.snapshot == SNAPSHOT && key.index < 5
     }
@@ -443,4 +461,102 @@ fn contextual_callback_assignments_expire_with_their_exact_native_query_frame() 
             },
         );
     }
+}
+
+#[test]
+fn provisional_callback_and_captured_parent_stay_expired_after_native_task_publication() {
+    let module = NativeModuleKey { snapshot: SNAPSHOT, index: 0 };
+    let run = Engine::new().with_native_task_plan_report(
+        std::num::NonZeroUsize::new(2).unwrap(),
+        &[vec![0], vec![1, 2]],
+        |_| Contexts::new(ContextSource::PendingMember),
+        |job, provider, queries| {
+            if job == 0 {
+                queries.function_result_pack(&Type::NativeFunction(function(0))).unwrap();
+                assert_eq!(provider.observed.borrow().len(), 1);
+            } else {
+                assert!(provider.observed.borrow().is_empty(), "the receiving checker/provider has no originating frame sidecar");
+            }
+            // The pure completed module query roots the whole signature graph,
+            // including the expired parent's immutable provisional marker.
+            let pack = queries.module_result_pack(module).unwrap();
+            let mut states = Vec::new();
+            for index in 0..3 {
+                let function = queries.pack_slot(&pack, index);
+                let state = queries.function_check_state(&function);
+                let capture = queries.function_capture_context(&function).unwrap();
+                let context = if index == 1 {
+                    let parent = queries.captured_function_parent(&capture).unwrap();
+                    queries.captured_function_context(&parent).unwrap()
+                } else {
+                    queries.captured_function_context(&capture).unwrap()
+                };
+                assert_eq!(queries.contextual_function_check_state(&context), state);
+                states.push(state);
+            }
+            (states, provider.module_reads.get())
+        },
+    );
+    let states = vec![NativeFunctionCheckState::Expired, NativeFunctionCheckState::Expired, NativeFunctionCheckState::Final];
+    assert_eq!(run.results, vec![(states.clone(), 1), (states.clone(), 0), (states, 0)]);
+    assert_eq!(run.stats.barriers, 2);
+    assert!(run.stats.linked_records > 0);
+    assert!(run.stats.published_entries > 0);
+}
+
+#[derive(Default)]
+struct NoDemand {
+    parameters: Cell<usize>,
+    returns: Cell<usize>,
+    outer: Cell<usize>,
+}
+
+impl NativeTypeProvider for NoDemand {
+    fn contains_function(&self, key: NativeFunctionKey) -> bool { key.snapshot == SNAPSHOT && key.index < 2 }
+    fn contains_signature(&self, key: NativeSignatureKey) -> bool { key.snapshot == SNAPSHOT && key.index == 0 }
+    fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> {
+        self.parameters.set(self.parameters.get() + 1);
+        Vec::new()
+    }
+    fn function_declared_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> {
+        self.returns.set(self.returns.get() + 1);
+        None
+    }
+    fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type {
+        self.returns.set(self.returns.get() + 1);
+        Type::Number
+    }
+    fn function_outer_type_parameters(&self, _: NativeFunctionKey) -> Vec<NativeTypeParameterKey> {
+        self.outer.set(self.outer.get() + 1);
+        Vec::new()
+    }
+    fn signature_outer_type_parameters(&self, _: NativeSignatureKey) -> Vec<NativeTypeParameterKey> {
+        self.outer.set(self.outer.get() + 1);
+        Vec::new()
+    }
+    fn return_cycle(&self, _: NativeFunctionKey) { panic!("ownership inspection must not infer a return") }
+    fn return_type_too_deep(&self, _: NativeFunctionKey) { panic!("ownership inspection must not infer a return") }
+}
+
+#[test]
+fn function_ownership_inspection_does_not_resolve_formals_returns_or_union_signatures() {
+    with_program(|program, handles| {
+        let provider = NoDemand::default();
+        let adapter = ProviderAdapter { provider: &provider, handles };
+        let mut checker = program.checker_with_native_provider(&adapter);
+        let native = Type::NativeFunction(function(0));
+        let union = Type::Union(vec![native.clone(), Type::NativeFunction(function(1))]);
+        let intersection = Type::Intersection(vec![native.clone(), Type::NativeFunction(function(1))]);
+        let single_id = import_type(&mut checker, handles, &native);
+        let union_id = import_type(&mut checker, handles, &union);
+        let intersection_id = import_type(&mut checker, handles, &intersection);
+        assert_eq!((provider.parameters.get(), provider.returns.get()), (0, 0));
+        provider.outer.set(0);
+        let mut queries = SessionQueries { checker: &mut checker, handles };
+        for function in [native, union, intersection, handles.retain(single_id), handles.retain(union_id), handles.retain(intersection_id), Type::NativeSignature(NativeSignatureKey { snapshot: SNAPSHOT, index: 0 })] {
+            assert_eq!(queries.function_check_state(&function), NativeFunctionCheckState::Final);
+            assert_eq!((provider.parameters.get(), provider.returns.get(), provider.outer.get()), (0, 0, 0),
+                "checking ownership must not resolve or combine callable signatures");
+        }
+    });
 }
