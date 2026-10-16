@@ -15,6 +15,24 @@ use luanalysis_syntax::{ExprKind, Span};
 use std::collections::HashSet;
 
 impl NativeRegistry {
+    pub(crate) fn original_literal_self_type(
+        &self,
+        function: luanalysis_engine::NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        let constructor = self.expressions().table_function_owner(function)?;
+        let declaration = self.runtime_tables.schema_key(constructor)?;
+        // v1's ordinary table-field owner is the containing literal. Reuse its
+        // original structural schema; native queries retain fixed fields,
+        // recursion, and the source generic mapper. No inferred type is kept.
+        Some(match queries.named_type_reference(declaration, &[]) {
+            Ok(ty) => ty,
+            Err(error) => {
+                self.record_named_application_error(error, self.function(function).span, queries);
+                queries.error_type()
+            }
+        })
+    }
     pub(crate) fn runtime_store_in_scope(&self, declaration: NativeTypeDeclarationKey, at: NativeFlowKey) -> bool {
         let Some(constructor) = self.runtime_tables.schema(declaration) else { return false; };
         let Some(store) = self.runtime_tables.store(at) else { return false; };

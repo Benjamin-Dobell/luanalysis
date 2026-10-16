@@ -25,6 +25,8 @@ pub(super) struct NativeExpressions {
     expressions: Vec<SourceExpression>,
     spans: HashMap<(usize, usize), NativeExpressionKey>,
     functions: HashMap<(usize, usize), NativeFunctionKey>,
+    /// Original field syntax only; no inferred receiver or contextual type.
+    table_function_owners: HashMap<NativeFunctionKey, NativeExpressionKey>,
     // Native assignments retain their exact lifetime. Keeping a value here
     // never promotes it: deferred body replay checks its native state again.
     final_facets: RefCell<HashMap<NativeFunctionKey, Vec<Type>>>,
@@ -58,6 +60,7 @@ impl NativeExpressions {
                     )
                 })
                 .collect(),
+            table_function_owners: HashMap::new(),
             final_facets: RefCell::new(HashMap::new()),
             final_contexts: RefCell::new(HashMap::new()),
             final_captures: RefCell::new(HashMap::new()),
@@ -95,6 +98,12 @@ impl NativeExpressions {
     }
     fn function_key(&self, function: &Function) -> NativeFunctionKey {
         self.functions[&(function.span.start, function.span.end)]
+    }
+    pub(super) fn table_function_owner(
+        &self,
+        function: NativeFunctionKey,
+    ) -> Option<NativeExpressionKey> {
+        self.table_function_owners.get(&function).copied()
     }
     pub(super) fn descendant(
         &self,
@@ -400,7 +409,11 @@ impl NativeExpressions {
                     if let TableFieldKind::Keyed(key) = &field.kind {
                         self.index(key, owner, parent);
                     }
-                    self.index(&field.value, owner, parent);
+                    let value = self.index(&field.value, owner, parent);
+                    if let Some(function) = self.function_for(value) {
+                        assert!(self.table_function_owners.insert(function, key).is_none(),
+                            "an original field closure has one literal owner");
+                    }
                 }
             }
             ExprKind::Call { callee, args } => {

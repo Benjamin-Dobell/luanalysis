@@ -655,6 +655,10 @@ impl Checker<'_> {
                                 luanalysis_engine::ContextualTypeOwner::Absent => {},
                             }
                         }
+                        if contextual_self
+                            && let Some(function) = context.and_then(|context| native.metatable_annotation_function(context))
+                            && let Some(owner) = native.original_literal_self_type(function, self.engine)
+                        { return owner; }
                         match resolution {
                             native_types::TypeNameResolution::Parameter(key)=>return Type::NativeTypeParameter(key),
                             native_types::TypeNameResolution::Ambiguous(_)=>{
@@ -664,6 +668,9 @@ impl Checker<'_> {
                             native_types::TypeNameResolution::Missing=>{},
                         }
                     }
+                    // self is contextual syntax in v1. The standard library's
+                    // documentation placeholder is never a global type owner.
+                    if name == "self" { return Type::Unknown; }
                     if let Some(resolved)=self.native_named_reference(name,&[],ty){return resolved;}
                     self.error(
                         "TS2304",
@@ -704,6 +711,10 @@ impl Checker<'_> {
             }
             TypeExprKind::Generic { base, args, .. } => {
                 let arguments:Vec<_>=args.iter().map(|arg|self.annotation(arg)).collect();
+                if base.text == "self" {
+                    self.error("TS2315", base.span, "Type 'self' is not generic.");
+                    return self.engine.error_type();
+                }
                 if let Some(resolved)=self.native_named_reference(&base.text,&arguments,ty){return resolved;}
                 let parameter=self.native.map(|native| {
                     let context=self.signature_type_context.map(native_named::NativeTypeContext::Signature)
