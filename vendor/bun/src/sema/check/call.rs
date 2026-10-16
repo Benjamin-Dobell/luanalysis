@@ -233,6 +233,15 @@ enum SigParent {
     Lone(FileId, FnId),
 }
 
+/// A contextual assignment may be used by the query that selected it without
+/// becoming final source-body work. An expired instance never becomes final.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeFunctionCheckState {
+    Final,
+    Provisional,
+    Expired,
+}
+
 impl<'p, 's> Checker<'p, 's> {
     pub(super) fn native_argument_expression(&self, expression: NativeExpressionId) -> NativeArgumentExpression {
         NativeArgumentExpression {
@@ -496,12 +505,29 @@ impl<'p, 's> Checker<'p, 's> {
             }))
             .unwrap_or(expected);
         static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        // `contextuallyCheckFunctionExpressionOrObjectLiteralMethod`, exactly
+        // as for `context_checked_under` in expr.rs: a cycle/trial is scoped,
+        // while an incomplete-flow-only assignment is deliberately retained.
+        let is_checked_again = self.frames.last()
+            .is_some_and(|frame| frame.tainted && (!frame.incomplete_flow || frame.drops_reported));
+        let scope = is_checked_again.then(|| self.frames.iter().enumerate()
+            .find(|(_, frame)| frame.tainted)
+            .map(|(index, frame)| (index, frame.serial)))
+            .flatten();
         let context = NativeFunctionContext {
             expression,
             expected: assigned,
             instance: NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             mode,
+            provisional: scope.is_some(),
         };
+        if let Some(scope) = scope {
+            let frames = &self.frames;
+            self.native_contextual_scopes.retain(|_, (index, serial)| {
+                frames.get(*index).is_some_and(|frame| frame.serial == *serial)
+            });
+            self.native_contextual_scopes.insert(context.instance, scope);
+        }
         let sig = self.types().intern_sig(SigData::NativeContextual {
             declaration,
             mapper,
@@ -510,6 +536,41 @@ impl<'p, 's> Checker<'p, 's> {
             lexical_parent,
         });
         Some(self.native_function_overload_type(sig))
+    }
+
+    pub fn native_contextual_function_check_state(&self, context: NativeFunctionContext) -> NativeFunctionCheckState {
+        if !context.provisional { return NativeFunctionCheckState::Final }
+        match self.native_contextual_scopes.get(&context.instance) {
+            Some(&(index, serial)) if self.frames.get(index).is_some_and(|frame| frame.serial == serial) => NativeFunctionCheckState::Provisional,
+            _ => NativeFunctionCheckState::Expired,
+        }
+    }
+
+    /// Read the exact implementation/lexical-parent identities. This never
+    /// demands a function's parameters, return type or implementation body.
+    pub fn native_function_check_state(&mut self, function: TypeId) -> NativeFunctionCheckState {
+        let mut pending = self.signatures(function, false).to_vec();
+        let mut visited = std::collections::HashSet::new();
+        let mut state = NativeFunctionCheckState::Final;
+        while let Some(signature) = pending.pop() {
+            if !visited.insert(signature) { continue }
+            match self.types().sig(signature) {
+                SigData::NativeContextual { context, lexical_parent, .. } => {
+                    match self.native_contextual_function_check_state(*context) {
+                        NativeFunctionCheckState::Expired => return NativeFunctionCheckState::Expired,
+                        NativeFunctionCheckState::Provisional => state = NativeFunctionCheckState::Provisional,
+                        NativeFunctionCheckState::Final => {}
+                    }
+                    pending.extend(*lexical_parent);
+                }
+                SigData::NativeCaptured { lexical_parent, .. } => pending.extend(*lexical_parent),
+                SigData::NativeDeclarationSignature { implementation, .. } => pending.extend(*implementation),
+                SigData::WithReturn { sig, .. } | SigData::WithNativeResultPack { sig, .. } => pending.push(*sig),
+                SigData::Synth { of, .. } => pending.extend(of.iter().copied()),
+                _ => {}
+            }
+        }
+        state
     }
 
     pub fn contextual_parameter_type(&mut self, context: NativeFunctionContext, index: usize) -> Option<TypeId> {

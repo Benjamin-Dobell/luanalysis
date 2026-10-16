@@ -82,6 +82,9 @@ pub struct NativeFunctionContext {
     pub expected: SigId,
     pub instance: u64,
     pub mode: crate::check::CheckMode,
+    /// Like a contextual assignment in `context_checked_under`: the originating
+    /// query owns this instance, even after its task-local scope has expired.
+    pub provisional: bool,
 }
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MapperId(pub u32);
@@ -3574,7 +3577,8 @@ follow_struct!(NativeFunctionContext {
     expression,
     expected,
     instance,
-    mode
+    mode,
+    provisional
 });
 follow_struct!(Provenance<'_> {
     alias,

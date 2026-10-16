@@ -133,7 +133,7 @@ use native_project::{NativeProjectCache, NativeProjectProvider, NativeProjectQue
 use native_named::{NativeNamedCache, NativeTypeDeclarationProvider, NativeTypeDeclarationQuery};
 use native_globals::{NativeGlobalsCache, NativeGlobalsProvider, NativeGlobalsQuery};
 
-pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
+pub use call::{NativeFunctionCheckState, ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
 pub use native_packs::NativePackResult;
 
 /// Written types need the signature substitution; checked values already used its scoped facts.
@@ -803,6 +803,7 @@ impl<'s> Program<'s> {
             native_arrays: false,
             native_function_contexts: Vec::new(),
             native_capture_contexts: Vec::new(),
+            native_contextual_scopes: FxHashMap::default(),
             arena,
             task: Task::new_in(arena),
             left_frame: None,
@@ -1347,6 +1348,9 @@ pub struct Checker<'p, 's> {
     native_arrays: bool,
     native_function_contexts: Vec<NativeFunctionContext>,
     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
+    /// Native counterpart of `context_checked_under`. Scope indices/serials
+    /// stay task-local; only the immutable provisional bit follows a signature.
+    native_contextual_scopes: FxHashMap<u64, (usize, u64)>,
     /// The arena of the thread that runs the task: for the records that the task creates, which may be
     /// published. Everything else that a task allocates is on the regular heap.
     pub arena: &'s Arena,

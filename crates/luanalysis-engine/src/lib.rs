@@ -48,6 +48,8 @@ mod native_standard_call_certificate_tests;
 #[cfg(test)]
 mod native_query_context_tests;
 #[cfg(test)]
+mod native_contextual_lifetime_tests;
+#[cfg(test)]
 mod native_global_query_context_tests;
 #[cfg(test)]
 mod native_standard_loop_write_tests;
@@ -92,6 +94,7 @@ mod regular_literal_tests;
 mod native_lua_print_tests;
 
 pub use bun_sema::check::CheckMode as NativeCheckMode;
+pub use bun_sema::check::NativeFunctionCheckState;
 use bun_sema::check::{
     Checker, NativeFunctionProvider, NativePackResult, NativeTypeResult, Program,
     ResolvedTypeCallError,
@@ -774,6 +777,11 @@ pub enum CallError {
 /// Queries available during one native checker session. All inputs and outputs
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
+    /// Whether this exact contextual instance is final source-body work, usable
+    /// only by its current native query, or from an expired query scope.
+    fn contextual_function_check_state(&mut self, context: &ContextualFunctionContext) -> NativeFunctionCheckState;
+    /// Includes captured lexical-parent provenance, without demanding returns.
+    fn function_check_state(&mut self, function: &Type) -> NativeFunctionCheckState;
     fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError>;
     fn global_environment_origin(&mut self, environment: &Type) -> Option<NativeEnvironmentKey>;
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError>;
@@ -1244,6 +1252,13 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn contextual_function_check_state(&mut self, context: &ContextualFunctionContext) -> NativeFunctionCheckState {
+        self.checker.native_contextual_function_check_state(self.handles.resolve_context(context))
+    }
+    fn function_check_state(&mut self, function: &Type) -> NativeFunctionCheckState {
+        let function = import_type(self.checker, self.handles, function);
+        self.checker.native_function_check_state(function)
+    }
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError> { self.global_binding_type_native(binding) }
     fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError> { self.global_environment_type_native(environment) }
     fn global_environment_origin(&mut self, environment: &Type) -> Option<NativeEnvironmentKey> { self.global_environment_origin_native(environment) }
