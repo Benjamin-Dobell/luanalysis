@@ -193,10 +193,14 @@ fn declared_never_calls_remove_later_returns_and_reachable_fallthrough() {
     assert_eq!(binding_type(&report, "result"), "never");
 }
 
+// As in Bun, a call's effect comes only from its target's written contract.
+// A function result has none; annotating the local that holds it supplies one.
 #[test]
-fn captured_declared_never_signature_handles_keep_nonreturning_effects() {
+fn a_function_result_needs_a_written_contract_for_nonreturning_effects() {
     let source = "---@generic T\n---@param value T\nlocal function make(value)\n---@return never\nlocal function stopped()\nlocal copied=value\nstopped()\nend\nreturn stopped\nend\nlocal stopped=make(1)\n---@return number\nlocal function endpoint() stopped() end\nendpoint()";
-    clean(source);
+    let report = luanalysis::check(source);
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2355"), "{:#?}", report.diagnostics);
+    clean(&source.replace("local stopped=make(1)", "---@type fun(): never\nlocal stopped=make(1)"));
 }
 
 #[test]

@@ -2069,41 +2069,18 @@ impl NativeRegistry {
                 luanalysis_engine::NativeStandardOperation::Ordinary => {},
             }
         }
-        if let Some(callee) = self.original_effect_call_contract(expression, queries) {
-            // An authoritative written overload set can have no single
-            // scalar result without lacking a written effect contract. Only
-            // the native all-never result terminates this continuation.
-            // Any Pending native dependency still taints the enclosing query.
-            return if matches!(queries.function_declared_scalar_return(&callee), Some(Type::Never)) {
-                NativeCallEffects::Never
-            } else { NativeCallEffects::None };
-        }
-        let mut checker = self.checker_at_flow(input, queries);
-        let callee = match &expression.kind {
-            ExprKind::Call { callee, .. } => checker.expression(callee),
-            ExprKind::MethodCall { receiver, name, .. } => {
-                let receiver = checker.expression(receiver);
-                checker
-                    .engine
-                    .property_type(&receiver, &name.text)
-                    .unwrap_or(Type::Unknown)
-            }
-            _ => return NativeCallEffects::None,
+        // As in Bun (`getEffectsSignature` with `getTypeOfDottedName`), a call's
+        // effect comes only from the explicit, written contract of its target.
+        // A target without one has no effect; its expression is never
+        // evaluated here (that evaluation was 63% of Prototype Inertia time).
+        let Some(callee) = self.original_effect_call_contract(expression, queries) else {
+            return NativeCallEffects::None;
         };
-        // Reachability must not demand the inferred result of an unused call:
-        // that result can recursively depend on the current function. An
-        // explicit nonreturning contract is sufficient for this flow effect.
-        let declared_return = match &callee {
-            Type::Function(signature) => Some((*signature.returns).clone()),
-            // Native callables can originate in another original file. The
-            // pure written-contract query routes to its actual provider and
-            // does not demand physical result counts or inferred bodies.
-            _ => checker.engine.function_declared_scalar_return(&callee),
-        };
-        if !checker.incomplete_flow {
-            self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
-        }
-        if matches!(declared_return, Some(Type::Never)) {
+        // An authoritative written overload set can have no single scalar
+        // result without lacking a written effect contract. Only the native
+        // all-never result terminates this continuation. Any Pending native
+        // dependency still taints the enclosing query.
+        if matches!(queries.function_declared_scalar_return(&callee), Some(Type::Never)) {
             NativeCallEffects::Never
         } else {
             NativeCallEffects::None

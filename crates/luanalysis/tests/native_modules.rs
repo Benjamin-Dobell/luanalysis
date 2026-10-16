@@ -290,8 +290,11 @@ fn ordinary_value_candidates_do_not_check_target_bodies_or_publish_host_errors()
     }
 }
 
+// As in Bun, a call's effect comes only from its target's written contract. A
+// constructor field or a function result holding `error` supplies none, so
+// the following return stays reachable.
 #[test]
-fn value_discovery_does_not_hide_nonreturning_call_effects() {
+fn values_holding_error_do_not_supply_nonreturning_effects() {
     let fixture = Fixture::new();
     for prefix in [
         "local operations={stop=error}\nlocal stop=operations.stop\n",
@@ -305,8 +308,9 @@ fn value_discovery_does_not_hide_nonreturning_call_effects() {
                 ..ProjectCheckOptions::default()
             },
         );
-        clean(&report);
-        assert_eq!(ty(&report, "result"), "never");
+        let main = report.file(report.project.entries[0]).unwrap();
+        assert!(main.report.diagnostics.iter().any(|error| error.code == "TS2322"), "{:#?}", main.report.diagnostics);
+        assert_eq!(ty(&report, "result"), "string");
         assert_eq!(report.checked_file_count(), 1);
     }
 }

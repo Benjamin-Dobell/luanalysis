@@ -47,7 +47,16 @@ impl NativeRegistry {
                             return Some(Type::NativeFunction(function));
                         }
                     }
-                    return self.original_written_binding_contract(binding, queries);
+                    if let Some(written) = self.original_written_binding_contract(binding, queries) {
+                        return Some(written);
+                    }
+                    // An immutable local alias names its initializer's contract,
+                    // syntactically: Lua code localises globals (ge_tts's
+                    // lunajson has `local error = error`). Bun accepts only
+                    // annotated declarations; this is the one deviation.
+                    let initializer = self.flow.immutable_initializer(binding)?;
+                    let initializer = &self.flow.program.expression(initializer.expression).expression;
+                    return self.original_effect_expression_contract(initializer, queries);
                 }
                 // This only selects the written contract of the original
                 // environment. A lexical/reassigned _ENV needs its real view.
