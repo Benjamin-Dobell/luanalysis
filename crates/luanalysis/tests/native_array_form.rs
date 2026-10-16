@@ -760,7 +760,7 @@ fn proven_deletion_uses_current_nil_instead_of_the_preceding_numeric_store() {
 }
 
 #[test]
-fn replacing_or_deleting_an_original_number_does_not_freeze_the_constructor_value() {
+fn replacing_or_deleting_a_written_number_preserves_its_contract_and_reached_view() {
     let fixture = Fixture::new();
     for (value, annotation, statement, expression) in [
         ("'wrong'", "number", "take(values)", "values"),
@@ -772,7 +772,7 @@ fn replacing_or_deleting_an_original_number_does_not_freeze_the_constructor_valu
         ),
     ] {
         let source = format!(
-            "---@function take(values:number[]):void\n---@function elements<T>(values:T[]):T\nlocal values={{nil,1}}\nvalues[1]=2\nvalues[2]={value}\n---@type {annotation}\nlocal current=elements(values)\n{}",
+            "---@function take(values:number[]):void\n---@function elements<T>(values:T[]):T\nlocal values={{nil,--[[---@type number]]1}}\nvalues[1]=2\nvalues[2]={value}\n---@type {annotation}\nlocal current=elements(values)\n{}",
             if value == "nil" { "" } else { "take(values)\n" }
         );
         let corrected = source.replace(&format!("values[2]={value}"), "values[2]=3");
@@ -783,12 +783,21 @@ fn replacing_or_deleting_an_original_number_does_not_freeze_the_constructor_valu
                 .unwrap()
                 .report
                 .diagnostics;
-            // The original numeric constructor contract separately rejects the
-            // store. The current view must still retain its string/nil value.
+            // The written broad element contract rejects the store without
+            // freezing it to the inferred literal 1 under v1 field inference.
+            // The current view must still retain its string/nil value.
             let expected_count = if value == "nil" { 2 } else { 3 };
             assert_eq!(
                 diagnostics.len(),
                 expected_count,
+                "{source}\n{diagnostics:#?}"
+            );
+            let assignment = format!("values[2]={value}");
+            let (store_start, store_end) = span(&source, &assignment, value);
+            assert!(
+                diagnostics.iter().any(|error| error.code == "TS2322"
+                    && error.span.start == store_start
+                    && error.span.end == store_end),
                 "{source}\n{diagnostics:#?}"
             );
             let (start, end) = span(&source, statement, expression);
@@ -811,7 +820,9 @@ fn contextual_nullable_literal_elements_keep_their_literal_and_reject_other_numb
     let wrong_argument = source.replace("take({nil,1})", "take({nil,2})");
     let inferred =
         "---@function take(values:(1|nil)[]):void\n\nlocal values={nil,1}\ntake(values)\n";
-    let corrected = inferred.replace("local values=", "---@type (1|nil)[]\nlocal values=");
+    let wrong_inferred = inferred.replace("{nil,1}", "{nil,2}");
+    let wrong_store = format!("{inferred}values[2]=2\n");
+    let corrected_store = wrong_store.replace("values[2]=2", "values[2]=1");
     for (profile, _) in PROFILES {
         clean(&fixture.check(source, profile));
         error_at(
@@ -829,14 +840,22 @@ fn contextual_nullable_literal_elements_keep_their_literal_and_reject_other_numb
             "{nil,2}",
         );
         clean(&fixture.check(source, profile));
+        clean(&fixture.check(inferred, profile));
         error_at(
-            &fixture.check(inferred, profile),
-            inferred,
+            &fixture.check(&wrong_inferred, profile),
+            &wrong_inferred,
             "TS2345",
             "take(values)",
             "values",
         );
-        clean(&fixture.check(&corrected, profile));
+        error_at(
+            &fixture.check(&wrong_store, profile),
+            &wrong_store,
+            "TS2322",
+            "values[2]=2",
+            "2",
+        );
+        clean(&fixture.check(&corrected_store, profile));
     }
 }
 

@@ -218,14 +218,18 @@ fn publishing_a_written_instance_owner_keeps_authoritative_casts_and_member_cont
 
 #[test]
 fn captured_initializer_assertions_preserve_result_slots_and_literal_contracts() {
+    // V1 scalar-local widening applies at both the captured initializer and
+    // the returned scalar's receiving declaration; singleton storage is written.
     let source = r#"---@return number, string
 local function pair() return 1, 'tail' end
 local function make()
     local first, second = --[[---@type number, string]] pair()
+    ---@type 1
     local literal = --[[---@type 1]] 1
     local function read() return second, literal end
     return read
 end
+---@type string, 1
 local text, one = make()()
 ---@type string
 local good_text = text
