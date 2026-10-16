@@ -435,6 +435,7 @@ impl ProjectRegistry {
                 if !selected(file.id) || !checked.insert(index) {
                     continue;
                 }
+                unresolved_reported = false;
                 file.source.check_named_declarations(queries);
                 file.source.check_global_declarations(queries);
                 file.source.check_module_requests(queries);
