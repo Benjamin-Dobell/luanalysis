@@ -238,9 +238,9 @@ fn anonymous_runtime_schema_call_errors_print_actual_members_without_body_querie
                     panic!("{:?}", rejected.errors)
                 };
                 assert_eq!(
-                    provider.seed_reads.get(),
+                    provider.signature_reads.get(),
                     0,
-                    "recording the call error must defer type printing"
+                    "recording the call error must not print its function member"
                 );
                 let displayed = queries.format(source);
                 for expected in [
