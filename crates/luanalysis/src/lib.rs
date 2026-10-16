@@ -165,6 +165,18 @@ impl CheckReport {
     }
 }
 
+/// V1 broadens a single primitive literal at an inferred local declaration,
+/// including a regular literal read from a field. Literal unions and written
+/// contracts are separate cases and retain their existing native behavior.
+fn inferred_local_constraint(value: &Type, engine: &mut dyn TypeQueries) -> Type {
+    let value = if engine.is_primitive_literal(value) {
+        engine.base_of_literal(value)
+    } else {
+        value.clone()
+    };
+    engine.widen(&value)
+}
+
 #[derive(Clone)]
 struct Binding {
     constraint: Type,
@@ -930,7 +942,11 @@ impl Checker<'_> {
         }
         for (index, name) in names.iter().enumerate() {
             let (value, origin) = values.get(index).cloned().unwrap_or((Type::Nil, name.span));
-            let widened = self.engine.widen(&value);
+            let id = self.bound.binding_at(name.span.start).expect("bound Lua declaration");
+            let written = annotations.get(index).is_some()
+                || self.native.is_some_and(|native| native.binding_has_written_contract(id));
+            let widened = if written { self.engine.widen(&value) }
+                else { inferred_local_constraint(&value, self.engine) };
             let evolves_from_nil = automatic[index];
             let constraint = if evolves_from_nil {
                 self.engine.auto_variable_constraint()
@@ -943,10 +959,6 @@ impl Checker<'_> {
                 self.compatible(&value, &constraint, origin);
             }
             let narrowed = self.engine.assignment_value(&constraint, &value);
-            let id = self
-                .bound
-                .binding_at(name.span.start)
-                .expect("bound Lua declaration");
             let displayed = if evolves_from_nil { Type::Nil } else { constraint.clone() };
             self.locals.insert(
                 id,

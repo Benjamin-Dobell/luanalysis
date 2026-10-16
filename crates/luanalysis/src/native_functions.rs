@@ -817,7 +817,8 @@ impl NativeRegistry {
         let recipe = self.flow.value(value_key)?;
         let value = self.flow_value_type(&self.flow, recipe, at, queries);
         let evolves_from_nil = matches!(self.declarations.get(&binding), Some(DeclarationSource::Local { automatic: true, .. }));
-        let constraint = if evolves_from_nil { queries.auto_variable_constraint() } else { queries.widen(&value) };
+        let constraint = if evolves_from_nil { queries.auto_variable_constraint() }
+            else { super::inferred_local_constraint(&value, queries) };
         Some(Binding {
             initial: if evolves_from_nil { Type::Nil } else { constraint.clone() },
             value: constraint.clone(),

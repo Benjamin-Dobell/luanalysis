@@ -1068,6 +1068,10 @@ pub trait TypeQueries {
     fn is_assignable(&mut self, source: &Type, target: &Type) -> bool;
     fn compare(&mut self, source: &Type, target: &Type) -> Relation;
     fn widen(&mut self, ty: &Type) -> Type;
+    /// Native literal-kind metadata only; does not request signatures or members.
+    fn is_primitive_literal(&mut self, ty: &Type) -> bool;
+    /// Uses the native base-of-literal worker, including its union mapping.
+    fn base_of_literal(&mut self, ty: &Type) -> Type;
     /// The annotation form of a literal, using TypeScript's regular-literal worker.
     fn regular_type(&mut self, ty: &Type) -> Type;
     /// Partition with the same Lua nil/false policy used by native graph flow.
@@ -1980,6 +1984,24 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn widen(&mut self, ty: &Type) -> Type {
         let ty = import_type(self.checker, self.handles, ty);
         let ty = self.checker.widened(ty);
+        export_type(self.checker, self.handles, ty)
+    }
+    fn is_primitive_literal(&mut self, ty: &Type) -> bool {
+        match ty {
+            Type::StringLiteral(_) | Type::NumberLiteral(_) | Type::BooleanLiteral(_) => true,
+            Type::SessionType(reference) => {
+                let ty = self.handles.resolve(*reference);
+                matches!(self.checker.data(ty), TypeData::StringLit { .. }
+                    | TypeData::NumberLit { .. } | TypeData::BoolLit { .. })
+            }
+            // Do not import another facade recipe just to classify it: named
+            // and function imports may legitimately request source metadata.
+            _ => false,
+        }
+    }
+    fn base_of_literal(&mut self, ty: &Type) -> Type {
+        let ty = import_type(self.checker, self.handles, ty);
+        let ty = self.checker.base_of_literal(ty);
         export_type(self.checker, self.handles, ty)
     }
     fn regular_type(&mut self, ty: &Type) -> Type {
@@ -5216,6 +5238,37 @@ mod tests {
                 }
             },
         );
+    }
+
+    #[test]
+    fn literal_kind_and_base_queries_preserve_regular_and_union_boundaries() {
+        Engine::new().with_session(|queries| {
+            for (literal, expected) in [
+                (Type::StringLiteral(b"tag".to_vec()), Type::String),
+                (Type::NumberLiteral(1.0), Type::Number),
+                (Type::BooleanLiteral(true), Type::Boolean),
+            ] {
+                let regular = queries.regular_type(&literal);
+                assert!(queries.is_primitive_literal(&literal));
+                assert!(queries.is_primitive_literal(&regular));
+                assert_eq!(queries.base_of_literal(&literal), expected);
+                assert_eq!(queries.base_of_literal(&regular), expected);
+            }
+            let one = queries.regular_type(&Type::NumberLiteral(1.0));
+            let two = queries.regular_type(&Type::NumberLiteral(2.0));
+            let union = queries.union_reduced(&[one.clone(), two]);
+            assert!(!queries.is_primitive_literal(&union));
+            assert_eq!(queries.base_of_literal(&union), Type::Number);
+            let table = queries.table_type(&TableType {
+                fields: vec![TableField::new(LuaKey::String(b"value".to_vec()), one)],
+                ..TableType::default()
+            }).unwrap();
+            assert!(!queries.is_primitive_literal(&table));
+            let untouched = queries.base_of_literal(&table);
+            let field = queries.table_lookup(&untouched, &TableKey::Literal(LuaKey::String(b"value".to_vec()))).unwrap();
+            assert!(queries.is_assignable(&field, &Type::NumberLiteral(1.0)));
+            assert!(!queries.is_assignable(&field, &Type::NumberLiteral(2.0)));
+        });
     }
 
     #[test]
