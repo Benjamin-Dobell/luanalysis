@@ -6,6 +6,10 @@
 #![feature(linkage)]
 
 mod native;
+mod parallel;
+pub use parallel::{NativeTaskRun, NativeTaskRunStats};
+#[cfg(test)]
+mod parallel_tests;
 #[cfg(test)]
 mod native_overload_failure_tests;
 mod native_assertions;

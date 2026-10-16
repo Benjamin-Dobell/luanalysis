@@ -2395,7 +2395,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// Sorts by `CompareTypes`. `has_compared_without_total_order` tells whether that is an order
     /// of `types`.
-    pub(super) fn sort_types(&self, types: &mut [TypeId]) {
+    pub fn sort_types(&self, types: &mut [TypeId]) {
         self.has_compared_without_total_order.set(false);
         if types.len() < 3 {
             return types.sort_by(|&a, &b| self.compare_types(a, b));

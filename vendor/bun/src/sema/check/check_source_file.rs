@@ -146,13 +146,18 @@ impl<'s> Program<'s> {
     /// have created, the copy of the lowest task is kept. Each task gets its `Link`, through which
     /// `publish` rewrites its keys and values.
     pub fn link(&self, finished: &mut [Finished<'s>], in_parallel: InParallel<'_>) -> LinkCounts {
-        let own = finished.iter_mut().map(|it| std::mem::take(&mut it.own));
         // For a union whose member order depended on task-local ids. Few steps have one.
         let checker = std::cell::OnceCell::new();
-        let (links, counts) =
-            (self.types).link(&self.files.atoms, own.collect(), in_parallel, &|types| {
+        self.link_with_sort(finished, in_parallel, &|types| {
                 checker.get_or_init(|| self.checker()).sort_types(types)
-            });
+            })
+    }
+
+    /// Native source types can need their immutable provider metadata when union members are
+    /// re-sorted after linking. The publication algorithm is shared with `link`.
+    pub fn link_with_sort(&self, finished: &mut [Finished<'s>], in_parallel: InParallel<'_>, sort: &dyn Fn(&mut [crate::types::TypeId])) -> LinkCounts {
+        let own = finished.iter_mut().map(|it| std::mem::take(&mut it.own));
+        let (links, counts) = self.types.link(&self.files.atoms, own.collect(), in_parallel, sort);
         for (finished, link) in finished.iter_mut().zip(links) {
             finished.link = link;
         }
