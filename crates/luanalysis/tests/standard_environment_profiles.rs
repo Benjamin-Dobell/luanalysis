@@ -666,6 +666,39 @@ fn each_lua_version_selects_only_its_original_standard_declarations() {
 }
 
 #[test]
+fn string_search_public_overloads_accept_explicit_nil_defaults_in_each_profile() {
+    let fixture = Fixture::new();
+    for profile in [StandardEnvironmentProfile::Lua50, StandardEnvironmentProfile::Lua51, StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua53, StandardEnvironmentProfile::Lua54] {
+        let mut source = "local text='abc'\nlocal omitted=string.find(text,'b')\nlocal numeric=string.find(text,'b',1)\n---@type number|nil\nlocal defaulted=string.find(text,'b',nil)\nlocal plain=string.find(text,'b',nil,true)\nlocal default_plain=string.find(text,'b',1,nil)\nlocal both_defaults=string.find(text,'b',nil,nil)\nlocal method=text:find('b',nil,true)\n".to_owned();
+        if profile != StandardEnvironmentProfile::Lua50 {
+            source.push_str("local omitted_match=string.match(text,'b')\nlocal numeric_match=string.match(text,'b',1)\n---@type string|number|nil\nlocal defaulted_match=string.match(text,'b',nil)\nlocal method_match=text:match('b',nil)\n");
+        }
+        clean(&fixture.check(&source, profile));
+    }
+    let unavailable = fixture.check("local value=string.match('abc','b',nil)\n", StandardEnvironmentProfile::Lua50);
+    assert!(code(&unavailable, "TS2339"), "Lua 5.0 must not acquire string.match");
+}
+
+#[test]
+fn string_search_nil_defaults_preserve_argument_and_result_checks_after_correction() {
+    let fixture = Fixture::new();
+    for profile in [StandardEnvironmentProfile::Lua50, StandardEnvironmentProfile::Lua51, StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua53, StandardEnvironmentProfile::Lua54] {
+        for bad in ["local result=string.find('abc','b',true)\n", "local text='abc'\nlocal result=text:find('b',{})\n"] {
+            let report = fixture.check(bad, profile);
+            assert!(code(&report, "TS2345"), "{profile:?}: a nonnumeric, nonnil start must be rejected");
+        }
+        clean(&fixture.check("local result=string.find('abc','b',nil,true)\n", profile));
+        if profile != StandardEnvironmentProfile::Lua50 {
+            let report = fixture.check("local result=string.match('abc','b',true)\n", profile);
+            assert!(code(&report, "TS2345"), "{profile:?}: match must retain its numeric start contract");
+            let report = fixture.check("---@type boolean\nlocal result=string.match('abc','b',nil)\n", profile);
+            assert!(code(&report, "TS2322"), "{profile:?}: explicit nil must not widen the result to any");
+            clean(&fixture.check("---@type string|number|nil\nlocal result=string.match('abc','b',nil)\n", profile));
+        }
+    }
+}
+
+#[test]
 fn lua52_bit32_checks_original_arguments_and_results_without_later_api_leaks() {
     let fixture = Fixture::new();
     let source = "---@type number\nlocal masked=bit32.band(7,3)\n---@type number\nlocal field=bit32.extract(masked,0)\n---@type number\nlocal width=bit32.extract(masked,0,2)\n";

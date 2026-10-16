@@ -66,9 +66,9 @@ function string.dump(func, strip) end
 --- Refer to the Lua manual's [section on patterns](https://www.lua.org/manual/5.3/manual.html#6.4.1)
 --- for more details. Take particular note of `()` empty captures which capture
 --- a number rather than a string.
----@overload fun(s: string, pattern: string, init: number): nil | (number, number, (number | string)...)
+---@overload fun(s: string, pattern: string, init: number | nil): nil | (number, number, (number | string)...)
 ---@overload fun(s: string, pattern: string): nil | (number, number, (number | string)...)
----@overload fun(s:string,pattern:string,init:number,plain:boolean):nil | (number, number, (number | string)...)
+---@overload fun(s:string,pattern:string,init:number|nil,plain:boolean|nil):nil | (number, number, (number | string)...)
 ---@param s string
 ---@param pattern string
 ---@param init? number
@@ -224,7 +224,7 @@ function string.lower(s) end
 --- for more details. Take particular note of `()` empty captures which capture
 --- a number rather than a string.
 ---@overload fun(s: string, pattern: string): nil | (number | string, (number | string)...)
----@overload fun(s:string,pattern:string,init:number):nil | (number | string, (number | string)...)
+---@overload fun(s:string,pattern:string,init:number|nil):nil | (number | string, (number | string)...)
 ---@param s string
 ---@param pattern string
 ---@param init? number
