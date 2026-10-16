@@ -13,13 +13,14 @@ fn instance() -> Type {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Ancestry { Complete, PendingMember, FlowDependency, Cycle }
+enum Ancestry { Complete, PendingMember, FlowDependency, SettledFlowDependency, Cycle }
 
 struct NominalLoop {
     flow: GlobalContexts,
     ancestry: Ancestry,
     base_calls: Cell<usize>,
     inherited_checks: Cell<usize>,
+    settled_refusals: Cell<usize>,
     errors: RefCell<Vec<NamedTypeError>>,
 }
 impl NominalLoop {
@@ -27,6 +28,7 @@ impl NominalLoop {
         Self {
             flow: GlobalContexts::new(Inherited::Loop, Contract::Constant),
             ancestry, base_calls: Cell::new(0), inherited_checks: Cell::new(0),
+            settled_refusals: Cell::new(0),
             errors: RefCell::new(Vec::new()),
         }
     }
@@ -53,6 +55,11 @@ impl NominalLoop {
                 application.expect("the same T must satisfy a named generic's bound");
                 assert!(self.base_calls.get() > before_application,
                     "generic bound checks must not reuse an inherited completed ancestry entry");
+            } else if self.ancestry == Ancestry::SettledFlowDependency {
+                if !related { self.settled_refusals.set(self.settled_refusals.get() + 1); }
+                application.expect("the earlier relation settled this same dependency before the application demand");
+                assert!(queries.is_assignable(&actual, &expected),
+                    "a dependency that is now complete must be usable in this context");
             } else {
                 assert!(!related, "a fresh ancestry dependency must not become a completed nominal relation");
                 assert!(application.is_err(), "a refused ancestry must not admit a generic argument through fallback types: {:?}, bases={}", self.ancestry, self.base_calls.get());
@@ -125,8 +132,13 @@ impl NativeTypeProvider for NominalLoop {
         if self.flow.pending_dependency.get() {
             match self.ancestry {
                 Ancestry::PendingMember => self.flow.pending_member(1, queries),
-                Ancestry::FlowDependency => {
-                    let result = self.read_loop(queries, 1);
+                Ancestry::FlowDependency | Ancestry::SettledFlowDependency => {
+                    // Every FlowDependency demand reads a different original
+                    // graph, so no prior attempt can settle its inner loop.
+                    // The countercontrol deliberately reuses region 1.
+                    let region = if self.ancestry == Ancestry::SettledFlowDependency { 1 }
+                        else { 2 + u32::try_from(self.base_calls.get()).unwrap() };
+                    let result = self.read_loop(queries, region);
                     assert_eq!(result.ty, queries.union_reduced(&[Type::Number, Type::Nil]));
                 }
                 Ancestry::Cycle => return vec![instance()],
@@ -145,9 +157,21 @@ impl NativeTypeProvider for NominalLoop {
 }
 
 impl NativeFlowProvider for NominalLoop {
-    fn contains_graph(&self, key: NativeGraphKey) -> bool { self.flow.contains_graph(key) }
-    fn contains_reference(&self, key: NativeReferenceKey) -> bool { self.flow.contains_reference(key) }
-    fn node(&self, key: NativeFlowKey) -> Option<NativeFlowNode> { self.flow.node(key) }
+    fn contains_graph(&self, key: NativeGraphKey) -> bool {
+        key.snapshot == SNAPSHOT && key.region < 2048 && key.context == 0
+    }
+    fn contains_reference(&self, key: NativeReferenceKey) -> bool { self.contains_graph(key.graph) && key.reference == 0 }
+    fn node(&self, key: NativeFlowKey) -> Option<NativeFlowNode> {
+        if !self.contains_graph(key.graph) { return None; }
+        let region = key.graph.region;
+        Some(match key.node {
+            0 => NativeFlowNode::Start,
+            1 => NativeFlowNode::Loop { edges: vec![at(region, 0), at(region, 2)] },
+            2 => NativeFlowNode::Write { before: at(region, 3), target: reference(region), value: value(region), input: at(region, 3) },
+            3 => NativeFlowNode::Call { before: at(region, 1), value: value(region), input: at(region, 1) },
+            _ => return None,
+        })
+    }
     fn is_shared(&self, key: NativeFlowKey) -> bool { self.flow.is_shared(key) }
     fn write_affects(&self, reference: NativeReferenceKey, target: NativeReferenceKey, input: NativeFlowKey) -> NativeWriteRelation {
         self.flow.write_affects(reference, target, input)
@@ -204,4 +228,15 @@ fn fresh_pending_nominal_ancestry_is_not_accepted_under_an_inherited_loop() {
             }
         });
     }
+}
+
+#[test]
+fn a_completed_inner_dependency_can_admit_the_next_generic_application() {
+    Engine::new().with_native_provider(|| NominalLoop::new(Ancestry::SettledFlowDependency), |provider, queries| {
+        queries.type_parameter_constraint(parameter(0)).unwrap();
+        queries.function_result_pack(&Type::NativeFunction(function(0)));
+        assert!(provider.inherited_checks.get() > 0);
+        assert!(provider.settled_refusals.get() > 0,
+            "the first ancestry attempt must actually encounter the unfinished inner loop");
+    });
 }
