@@ -162,9 +162,12 @@ fn transparent_record_and_generic_alias_bases_keep_their_original_member_mappers
 ---@type Derived
 local value={value="literal"}
 local inherited=value.value
+---@type "literal"
+local exact=value.value
 "#,
     );
-    assert_eq!(ty(&report, "inherited"), "\"literal\"");
+    assert_eq!(ty(&report, "inherited"), "string");
+    assert_eq!(ty(&report, "exact"), "\"literal\"");
     rejects_at(
         "---@alias Record<T> {value:T}\n---@alias Alias<T> Record<T>\n\n---@shape Derived:Alias<\"literal\">\n\n---@param value Derived\nlocal function wrong(value) value.value=\"other\" end",
         "TS2322",

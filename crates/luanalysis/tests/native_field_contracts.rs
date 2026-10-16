@@ -29,12 +29,18 @@ inferred = 1,
 }
 record.value = 2
 record.one = 1
-record.inferred = 2
+record.inferred = 1
 local copied = record.one
+copied = 2
+---@type 1
+local exact = record.one
 "#;
     let report = accepted(source);
-    assert_eq!(binding(&report, "copied"), "1");
-    for (suffix, rejected) in [("record.value = \"wrong\"", "\"wrong\""), ("record.one = 2", "2"), ("copied = 2", "2")] {
+    // v1 keeps literal field contracts, while an unannotated scalar copy
+    // receives the primitive storage type. A written local remains exact.
+    assert_eq!(binding(&report, "copied"), "number");
+    assert_eq!(binding(&report, "exact"), "1");
+    for (suffix, rejected) in [("record.value = \"wrong\"", "\"wrong\""), ("record.one = 2", "2"), ("record.inferred = 2", "2"), ("exact = 2", "2")] {
         let bad = format!("{source}{suffix}\n");
         let report = check(&bad);
         let diagnostic = report.diagnostics.iter().find(|error| error.code == "TS2322").unwrap_or_else(|| panic!("{suffix}: {:#?}", report.diagnostics));
@@ -147,14 +153,22 @@ local one = instance.one
 local ordinary = instance.inferred
 ---@type number
 local call = instance.read()
-instance.inferred = 2
+instance.inferred = 1
 instance.one = 1
 local copied = instance.one
+copied = 2
+---@type 1
+local exact = instance.one
 "#;
     let report = accepted(source);
-    assert_eq!(binding(&report, "copied"), "1");
-    let bad = format!("{source}instance.one = 2\n");
-    assert!(check(&bad).diagnostics.iter().any(|error| error.code == "TS2322"));
+    assert_eq!(binding(&report, "copied"), "number");
+    assert_eq!(binding(&report, "exact"), "1");
+    for suffix in ["instance.one = 2", "instance.inferred = 2", "exact = 2"] {
+        let bad = format!("{source}{suffix}\n");
+        let report = check(&bad);
+        assert!(report.diagnostics.iter().any(|error| error.code == "TS2322"
+            && &bad[error.span.start..error.span.end] == "2"), "{:#?}", report.diagnostics);
+    }
     let forged = format!("{source}---@type Fields\nlocal fake = {{one=1,inferred=1,read=function() return 1 end}}\n");
     assert!(check(&forged).diagnostics.iter().any(|error| error.code == "TS2322"));
     accepted(r#"---@class Written

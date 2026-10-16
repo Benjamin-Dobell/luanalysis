@@ -52,11 +52,16 @@ fn fail(output: &Output, code: &str) {
 
 #[test]
 fn original_logger_scalar_fields_keep_mutable_schema_and_actual_literal_values() {
-    let source = "---@class ge_tts__static_Logger\nlocal Logger = {}\nLogger.ERROR = 1\nLogger.WARNING = 2\n---@alias LogLevel 1 | 2\n---@type table<LogLevel, string>\nlocal prefixes = {[Logger.ERROR]='ERROR: ', [Logger.WARNING]='WARNING: '}\n---@type LogLevel\nlocal level = Logger.WARNING\nLogger.ERROR = 2\n---@type ge_tts__static_Logger\nlocal instance\n---@type number\nlocal inherited = instance.ERROR\nreturn Logger\n";
+    let source = "---@class ge_tts__static_Logger\nlocal Logger = {}\nLogger.ERROR = 1\nLogger.WARNING = 2\n---@alias LogLevel 1 | 2\n---@type table<LogLevel, string>\nlocal prefixes = {[Logger.ERROR]='ERROR: ', [Logger.WARNING]='WARNING: '}\n---@type LogLevel\nlocal level = Logger.WARNING\nLogger.ERROR = 1\n---@type ge_tts__static_Logger\nlocal instance\n---@type number\nlocal inherited = instance.ERROR\nreturn Logger\n";
     let fixture = Fixture::new(source);
     pass(&fixture.check());
-    fixture.source(&source.replace("Logger.ERROR = 2", "Logger.ERROR = 'wrong'"));
-    fail(&fixture.check(), "TS2322");
+    for replacement in ["2", "'wrong'"] {
+        fixture.source(&source.replace(
+            "Logger.ERROR = 1\n---@type ge_tts__static_Logger",
+            &format!("Logger.ERROR = {replacement}\n---@type ge_tts__static_Logger"),
+        ));
+        fail(&fixture.check(), "main.lua:10:16: error[TS2322]");
+    }
     fixture.source(source);
     pass(&fixture.check());
 }
@@ -79,13 +84,15 @@ fn original_instance_written_field_checks_initializer_and_later_stores_at_actual
 
 #[test]
 fn written_singleton_field_contracts_are_preserved_when_copied_and_remain_mutable() {
-    let source = "---@class Fields\nlocal Fields = {}\n---@type 1\nFields.one = 1\nFields.one = 1\nlocal copied = Fields.one\n";
+    let source = "---@class Fields\nlocal Fields = {}\n---@type 1\nFields.one = 1\nFields.one = 1\nlocal copied = Fields.one\ncopied = 2\n---@type 1\nlocal exact = Fields.one\n";
     let fixture = Fixture::new(source);
     pass(&fixture.check());
     fixture.source(&format!("{source}Fields.one = 2\n"));
-    fail(&fixture.check(), "TS2322");
-    fixture.source(&format!("{source}copied = 2\n"));
-    fail(&fixture.check(), "TS2322");
+    fail(&fixture.check(), "main.lua:10:14: error[TS2322]");
+    fixture.source(&format!("{source}exact = 2\n"));
+    fail(&fixture.check(), "main.lua:10:9: error[TS2322]");
+    fixture.source(source);
+    pass(&fixture.check());
 }
 
 #[test]
@@ -103,7 +110,11 @@ fn assignment_recipes_keep_inherited_contracts_and_literal_origins() {
     let fixture = Fixture::new(source);
     pass(&fixture.check());
     fixture.source(&format!("{source}copied = 3\n"));
-    fail(&fixture.check(), "TS2322");
+    pass(&fixture.check());
+    fixture.source(&format!("{source}---@type 1 | 2\nlocal exact = definition.value\nexact = 3\n"));
+    fail(&fixture.check(), "main.lua:11:9: error[TS2322]");
+    fixture.source(&format!("{source}definition.value = 3\n"));
+    fail(&fixture.check(), "main.lua:9:20: error[TS2322]");
     fixture.source(&source.replace("definition.value = 2", "definition.value = 'wrong'"));
     let output = fixture.check();
     fail(&output, "main.lua:8:20: error[TS2322]");
@@ -118,8 +129,10 @@ fn original_class_binding_ownership_excludes_aliases_shadows_and_ordinary_tables
     let fixture = Fixture::new(source);
     let output = fixture.check();
     fail(&output, "TS2339");
-    fixture.source("local ordinary = {value=1}\nordinary.value = 2\n");
+    fixture.source("local ordinary = {value=1}\nordinary.value = 1\n");
     pass(&fixture.check());
+    fixture.source("local ordinary = {value=1}\nordinary.value = 2\n");
+    fail(&fixture.check(), "main.lua:2:18: error[TS2322]");
     fixture.source("local ordinary = {value=1}\nordinary.value = 'wrong'\n");
     fail(&fixture.check(), "TS2322");
 }
