@@ -1,0 +1,18 @@
+{
+  "upstream_revision": "408c9374b266b45fe6b8260e09be73aa82a957cd",
+  "source_path": "src/sema/driver/lib.rs",
+  "source_sha256": "cc20dc8c2ac91a8dfc9c8098421f823b0a84a491d9e26819daef5f9843df504a",
+  "fragments": {
+    "plan_methods": "409946fe67cc685c556e7f77073033273355fa163497e3ffffe414c98dd5bea7",
+    "task_start_order": "5e10f4e80fa3881be434517b2cb2225501fea5ac19055a70786e617703110da2"
+  },
+  "adaptations": [
+    "Rename Plan/PlanOptions/Task/Ahead into the native public namespace.",
+    "Expose new/ahead_of/cut; retain only relevant upstream options/defaults.",
+    "Provide a one-thread constructor and the unchanged driver plan-choice predicate.",
+    "Use std stable sort_by_key for coordinator start order instead of SharedSort.",
+    "Pass start-order cost and order as explicit arguments instead of driver captures."
+  ],
+  "output_path": "crates/luanalysis-engine/src/native_plan.rs",
+  "output_sha256": "3fe6b4fc63b9e72e148d840a75943845cc7d752b74a41a55c0512d5a0530ab73"
+}

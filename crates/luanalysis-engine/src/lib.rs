@@ -8,6 +8,10 @@
 mod native;
 mod parallel;
 pub use parallel::{NativeTaskRun, NativeTaskRunStats};
+mod native_plan;
+pub use native_plan::{NativeCheckAhead, NativeCheckPlan, NativeCheckTask, NativePlanOptions};
+#[cfg(test)]
+mod native_plan_tests;
 #[cfg(test)]
 mod parallel_tests;
 #[cfg(test)]
