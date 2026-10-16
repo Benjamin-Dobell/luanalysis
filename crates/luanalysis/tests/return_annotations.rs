@@ -232,17 +232,23 @@ fn unreachable_return_annotations_still_validate_original_written_types() {
 }
 
 #[test]
-fn copied_written_literal_return_keeps_its_declared_type_while_inferred_values_widen() {
+fn written_literal_returns_do_not_freeze_inferred_receiving_locals() {
     let source = "local function one()\n---@type 1\nreturn 1\nend\nlocal copied=one()\ncopied=2";
-    let report = rejected(source);
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|d| d.code == "TS2322" && d.message.contains("type '1'")),
-        "{:#?}",
-        report.diagnostics
-    );
-    accepted(&source.replace("@type 1", "@type number"));
+    accepted(source);
+    let report = check(source);
+    assert_eq!(report.bindings.iter().find(|binding| binding.name == "one").unwrap().ty, "fun(): 1");
+    assert_eq!(report.bindings.iter().find(|binding| binding.name == "copied").unwrap().ty, "number");
+    let written_local = source.replace("local copied", "---@type 1\nlocal copied");
+    let report = rejected(&written_local);
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "TS2322"
+            && &written_local[diagnostic.span.start..diagnostic.span.end] == "2"
+            && diagnostic.message.contains("type '1'")
+    }), "{:#?}", report.diagnostics);
+    let wrong_return = source.replace("return 1", "return 2");
+    assert!(rejected(&wrong_return).diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "TS2322" && &wrong_return[diagnostic.span.start..diagnostic.span.end] == "2"
+    }));
+    accepted(&written_local.replace("@type 1", "@type number"));
     accepted("local inferred=1\ninferred=2");
 }

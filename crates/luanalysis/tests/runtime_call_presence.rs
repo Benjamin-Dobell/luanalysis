@@ -89,8 +89,13 @@ fn a_call_cannot_export_a_store_intercepted_by_an_actual_metatable() {
 
 #[test]
 fn reusable_callback_returns_do_not_publish_one_installer_invocations_heap() {
-    let source = "local record={\n---@type number|string\ncurrent=1,\n---@type number|string\nsaved=1,\nmarker=0,\n}\n---@param callback fun():number|string\n---@return number\nlocal function accept(callback) local ignored=record return 1 end\nlocal function make()\n local function install()\n  record.saved=record.current\n  record.marker=accept(install)\n  return record.saved\n end\n record.current='word'\n install()\n record.current=42\n---@type string\n local wrong=install()\n return record\nend\nlocal outcome=make()\n";
-    rejects_number(source);
+    let source = "local record={\n---@type number|string\ncurrent=1,\n---@type number|string\nsaved=1,\n---@type number\nmarker=0,\n}\n---@param callback fun():number|string\n---@return number\nlocal function accept(callback) local ignored=record return 1 end\nlocal function make()\n local function install()\n  record.saved=record.current\n  record.marker=accept(install)\n  return record.saved\n end\n record.current='word'\n install()\n record.current=42\n---@type string\n local wrong=install()\n return record\nend\nlocal outcome=make()\n";
+    // v1 preserves constructor field literals; this unrelated marker is
+    // explicitly mutable so its write cannot mask the return-cache control.
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "install()");
     clean(&source.replace("---@type string\n local wrong", "---@type number|string\n local corrected"));
 }
 

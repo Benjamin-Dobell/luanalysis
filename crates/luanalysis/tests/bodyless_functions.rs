@@ -51,12 +51,19 @@ fn bodyless_global_headers_are_public_native_overloads_without_implementations()
 
 #[test]
 fn original_long_form_doc_tags_supply_missing_header_types_and_generics() {
-    let source = "---@generic T:string\n---@param value T\n---@return T\n---@function identity(value)\nlocal result=identity('literal')\n";
+    let source = "---@generic T:string\n---@param value T\n---@return T\n---@function identity(value)\nlocal result=identity('literal')\n---@type 'literal'\nlocal exact=identity('literal')\n";
     let report = clean(source);
     assert_eq!(
         report.type_at(source.find("result=").unwrap()),
-        Some("\"literal\"")
+        Some("string")
     );
+    // v1 broadens inferred local literals; a written receiving contract still
+    // observes the generic result's exact type.
+    assert_eq!(report.type_at(source.find("exact=").unwrap()), Some("\"literal\""));
+    let wrong_result = source.replace("local exact=identity('literal')", "local exact=identity('different')");
+    assert!(check(&wrong_result).diagnostics.iter().any(|error| {
+        error.code == "TS2322" && &wrong_result[error.span.start..error.span.end] == "identity('different')"
+    }));
     let wrong = format!("{source}identity(1)\n");
     assert!(
         check(&wrong)
@@ -135,12 +142,14 @@ fn cli_merges_original_cross_file_doc_heads_and_reports_original_call_errors() {
     );
     fixture.file(
         "main.lua",
-        "local first=convert(1)\nlocal second=convert('literal')\n",
+        "local first=convert(1)\nlocal second=convert('literal')\n---@type 'literal'\nlocal exact=convert('literal')\n",
     );
     let corrected = fixture.run(&["first.lua", "second.lua", "main.lua"]);
     assert_eq!(corrected.status.code(), Some(0), "{}", output(&corrected));
     assert!(
-        output(&corrected).contains("string") && output(&corrected).contains("literal"),
+        output(&corrected).contains("first: string")
+            && output(&corrected).contains("second: string")
+            && output(&corrected).contains("exact: \"literal\""),
         "{}",
         output(&corrected)
     );

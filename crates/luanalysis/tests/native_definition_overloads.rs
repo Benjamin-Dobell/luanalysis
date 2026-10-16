@@ -40,12 +40,23 @@ fn an_empty_definition_uses_only_its_explicit_overload_heads() {
 
 #[test]
 fn signature_local_generics_infer_independently_on_a_definition() {
-    let report = clean(
-        "---@class Factory\n---@overload fun<T:number>(value:T):T\n---@overload fun<T:string>(value:T):T\nlocal factory={}\nlocal number=factory(42)\nlocal string=factory(\"text\")\nlocal repeated=factory(84)",
-    );
-    assert_eq!(ty(&report, "number"), "42");
-    assert_eq!(ty(&report, "string"), "\"text\"");
-    assert_eq!(ty(&report, "repeated"), "84");
+    let source = "---@class Factory\n---@overload fun<T:number>(value:T):T\n---@overload fun<T:string>(value:T):T\nlocal factory={}\nlocal number=factory(42)\nlocal string=factory(\"text\")\nlocal repeated=factory(84)\n---@type 42\nlocal exact_number=factory(42)\n---@type \"text\"\nlocal exact_string=factory(\"text\")\n---@type 84\nlocal exact_repeated=factory(84)";
+    let report = clean(source);
+    assert_eq!(ty(&report, "number"), "number");
+    assert_eq!(ty(&report, "string"), "string");
+    assert_eq!(ty(&report, "repeated"), "number");
+    assert_eq!(ty(&report, "exact_number"), "42");
+    assert_eq!(ty(&report, "exact_string"), "\"text\"");
+    assert_eq!(ty(&report, "exact_repeated"), "84");
+    let wrong_argument = format!("{source}\nfactory(true)");
+    assert!(check(&wrong_argument).diagnostics.iter().any(|error| {
+        matches!(error.code, "TS2345" | "TS2769")
+            && &wrong_argument[error.span.start..error.span.end] == "true"
+    }));
+    let wrong_result = source.replace("exact_number=factory(42)", "exact_number=factory(84)");
+    assert!(check(&wrong_result).diagnostics.iter().any(|error| {
+        error.code == "TS2322" && &wrong_result[error.span.start..error.span.end] == "factory(84)"
+    }));
 }
 
 #[test]
@@ -78,9 +89,14 @@ fn a_signature_local_parameter_shadows_an_outer_parameter_in_named_head_dependen
 
 #[test]
 fn an_alias_generic_constraint_alone_keeps_the_outer_parameter_dependency() {
-    let source = "---@generic T\n---@param value T\nlocal function make(value)\n---@alias Identity fun<U:T>(value:U):U\n\n---@class Factory\n---@overload fun():Identity\nlocal factory={}\nreturn factory\nend\nlocal factory=make(42)\nlocal identity=factory()\nlocal result=identity(84)";
+    let source = "---@generic T\n---@param value T\nlocal function make(value)\n---@alias Identity fun<U:T>(value:U):U\n\n---@class Factory\n---@overload fun():Identity\nlocal factory={}\nreturn factory\nend\nlocal factory=make(42)\nlocal identity=factory()\nlocal result=identity(84)\n---@type 84\nlocal exact=identity(84)";
     let report = clean(source);
-    assert_eq!(ty(&report, "result"), "84");
+    assert_eq!(ty(&report, "result"), "number");
+    assert_eq!(ty(&report, "exact"), "84");
+    let wrong_result = source.replace("exact=identity(84)", "exact=identity(85)");
+    assert!(check(&wrong_result).diagnostics.iter().any(|error| {
+        error.code == "TS2322" && &wrong_result[error.span.start..error.span.end] == "identity(85)"
+    }));
     let rejected = check(&format!("{source}\nlocal invalid=identity(\"wrong\")"));
     assert!(
         rejected
