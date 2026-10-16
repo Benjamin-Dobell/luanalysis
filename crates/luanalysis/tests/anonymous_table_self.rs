@@ -125,7 +125,7 @@ local string_value = outer.inner.read(outer.inner)
 
 #[test]
 fn a_global_class_named_self_is_not_a_contextual_owner() {
-    let source = "---@class self\n---@field sentinel number\n---@type self\nlocal value\nlocal invalid = value.sentinel\n";
+    let source = "---@class self\n---@field sentinel number\n\n---@type self\nlocal value\nlocal invalid = value.sentinel\n";
     let report = check(source);
     assert!(report.diagnostics.iter().any(|error| error.code == "TS2339" && error.message.contains("unknown")), "{:#?}", report.diagnostics);
 }
