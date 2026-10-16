@@ -236,7 +236,11 @@ local good_text = text
 ---@type 1
 local good_one = one
 "#;
-    clean(source);
+    let report = clean(source);
+    assert_eq!(
+        report.type_at(source.find("read() return").unwrap()),
+        Some("fun(): (string, 1)")
+    );
     let bad = source.replace("local good_text = text", "local good_text = one");
     assert!(
         check(&bad)

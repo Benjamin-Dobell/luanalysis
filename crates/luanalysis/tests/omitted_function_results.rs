@@ -92,14 +92,13 @@ fn calling_an_omitted_result_contract_produces_any_in_every_pack_slot() {
 #[test]
 fn an_omitted_source_result_cannot_satisfy_a_written_result_contract() {
     for declaration in [
-        "---@function unspecified()\n",
+        "---@function unspecified()\nlocal boundary = true\n",
         "---@type fun()\nlocal unspecified\n",
     ] {
         for result in [
             "number",
             "any",
             "void",
-            "()",
             "(number,string)",
             "number...",
         ] {
@@ -125,35 +124,46 @@ fn an_omitted_source_result_cannot_satisfy_a_written_result_contract() {
 fn omitted_targets_accept_written_results_and_written_any_keeps_ordinary_relations() {
     for no_implicit_any in [false, true] {
         clean(
-            "---@function unspecified()\n---@type fun()\nlocal accepted = unspecified\n",
+            "---@function unspecified()\nlocal boundary = true\n---@type fun()\nlocal accepted = unspecified\n",
             no_implicit_any,
         );
         for result in [
             "number",
             "any",
             "void",
-            "()",
             "(number,string)",
             "number...",
         ] {
             clean(
                 &format!(
-                    "---@function written():{result}\n---@type fun()\nlocal accepted = written\n"
+                    "---@function written():{result}\nlocal boundary = true\n---@type fun()\nlocal accepted = written\n"
                 ),
                 no_implicit_any,
             );
         }
-        // An explicitly written any result is not the omitted-result marker.
+        // Written any retains its ordinary scalar relation. Its function pack
+        // also allows zero physical results, so compare matching pack contracts.
         clean(
-            "---@function written():any\n---@type fun():number\nlocal accepted = written\n",
+            "---@function written():any\nlocal boundary = true\n---@type fun():any\nlocal accepted = written\n---@type number\nlocal numeric = written()\n",
             no_implicit_any,
         );
     }
 }
 
 #[test]
+fn written_any_with_an_empty_physical_row_does_not_establish_a_required_result() {
+    let source = "---@function written():any\nlocal boundary = true\n---@type fun():number\nlocal rejected = written\n";
+    for no_implicit_any in [false, true] {
+        let rejected = report(source, no_implicit_any);
+        assert_eq!(rejected.diagnostics.len(), 1, "{:#?}", rejected.diagnostics);
+        assert_eq!(rejected.diagnostics[0].code, "TS2322");
+        assert_eq!(&source[rejected.diagnostics[0].span.start..rejected.diagnostics[0].span.end], "written");
+    }
+}
+
+#[test]
 fn omitted_target_results_preserve_parameter_contravariance() {
-    let source = "---@function unspecified(value:string)\n---@type fun(value:number)\nlocal rejected = unspecified\n";
+    let source = "---@function unspecified(value:string)\nlocal boundary = true\n---@type fun(value:number)\nlocal rejected = unspecified\n";
     for no_implicit_any in [false, true] {
         let rejected = report(source, no_implicit_any);
         assert_eq!(rejected.diagnostics.len(), 1, "{:#?}", rejected.diagnostics);
@@ -231,8 +241,8 @@ fn omitted_results_do_not_waive_callback_parameter_contracts() {
 }
 
 #[test]
-fn explicit_void_and_empty_result_contracts_still_scalarize_to_nil() {
-    for annotation in ["void", "()"] {
+fn explicit_void_result_contracts_still_scalarize_to_nil() {
+    for annotation in ["void"] {
         let source = format!(
             "---@type fun():{annotation}\nlocal declared\nlocal scalar = declared()\nlocal first, second = declared()\n---@type number\nlocal rejected = declared()\n"
         );
@@ -303,7 +313,7 @@ fn written_scalar_tuple_and_variadic_results_retain_their_precise_contracts() {
 
 #[test]
 fn runtime_bodies_without_result_annotations_still_infer_empty_and_fixed_packs() {
-    let source = "local function empty() end\nlocal function pair() return 42, 'tail' end\n---@type fun():()\nlocal typed_empty = empty\n---@type fun():(number,string)\nlocal typed_pair = pair\nlocal missing, also_missing = typed_empty()\nlocal first, second, third = typed_pair()\n";
+    let source = "local function empty() end\nlocal function pair() return 42, 'tail' end\n---@type fun():void\nlocal typed_empty = empty\n---@type fun():(number,string)\nlocal typed_pair = pair\nlocal missing, also_missing = typed_empty()\nlocal first, second, third = typed_pair()\n";
     for no_implicit_any in [false, true] {
         let report = clean(source, no_implicit_any);
         for name in ["missing", "also_missing", "third"] {

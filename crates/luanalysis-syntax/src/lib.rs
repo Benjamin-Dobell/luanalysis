@@ -540,7 +540,7 @@ pub struct FunctionType {
     pub params: Vec<FunctionTypeParam>,
     pub vararg: Option<Box<VarargAnnotation>>,
     /// Original colon and result syntax. None leaves the result unconstrained;
-    /// an explicit `: ()` has a span even though its result vector is empty.
+    /// a written `: void` still establishes an explicit result contract.
     pub returns_span: Option<Span>,
     pub returns: Vec<TypeExpr>,
     /// Pack indices refer to `returns`, without duplicating type nodes.
