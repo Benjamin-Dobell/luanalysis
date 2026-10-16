@@ -1,4 +1,10 @@
-use luanalysis::check;
+// Keep contextual inference regressions meaningful with missing contracts denied.
+fn check(source: &str) -> luanalysis::CheckReport {
+    luanalysis::check_with_options(source, luanalysis::CheckOptions {
+        no_implicit_any: true,
+        ..Default::default()
+    })
+}
 
 #[test]
 fn written_callback_fields_keep_context_through_assignment_member_paths() {

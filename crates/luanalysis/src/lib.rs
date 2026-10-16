@@ -51,6 +51,15 @@ pub enum OverloadMode {
     LegacyExposeImplementation,
 }
 
+/// Source declaration policy independent of overload visibility and type relations.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CheckOptions {
+    pub overload_mode: OverloadMode,
+    /// Require written or contextual parameter types, including runtime varargs.
+    /// Ordinary Luanalysis analysis permits missing contracts as in v1.
+    pub no_implicit_any: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub code: &'static str,
@@ -231,12 +240,18 @@ struct Checker<'a> {
 
 /// Checks the documented native subset without generating TypeScript source.
 pub fn check(source: &str) -> CheckReport {
-    check_with_overload_mode(source, OverloadMode::default())
+    check_with_options(source, CheckOptions::default())
 }
 
 /// Checks one source with an explicit overload compatibility policy.
 /// Both modes validate the same private implementation and function body.
 pub fn check_with_overload_mode(source: &str, overload_mode: OverloadMode) -> CheckReport {
+    check_with_options(source, CheckOptions { overload_mode, ..CheckOptions::default() })
+}
+
+/// Checks original Lua with explicit source declaration policies. Missing
+/// contracts keep their inferred/contextual type regardless of strict reporting.
+pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
     let file = luanalysis_syntax::parse(source);
     if file.has_lua_syntax_errors() {
         return CheckReport {
@@ -261,7 +276,8 @@ pub fn check_with_overload_mode(source: &str, overload_mode: OverloadMode) -> Ch
     Engine::new().with_native_provider(
         move || {
             let mut registry = NativeRegistry::new(file, bound);
-            registry.set_overload_mode(overload_mode);
+            registry.set_overload_mode(options.overload_mode);
+            registry.set_no_implicit_any(options.no_implicit_any);
             registry.set_legacy_builtin_policy(builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility);
             registry
         },
@@ -550,6 +566,12 @@ impl Checker<'_> {
             }
         }
         false
+    }
+
+    fn implicit_parameter_any(&mut self, code: &'static str, span: Span, message: impl Into<String>) {
+        if self.native.is_some_and(|native| native.no_implicit_any()) {
+            self.error(code, span, message);
+        }
     }
 
     fn error(&mut self, code: &'static str, span: Span, message: impl Into<String>) {

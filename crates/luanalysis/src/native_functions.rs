@@ -75,6 +75,7 @@ pub(super) struct NativeRegistry {
     snapshot: u64,
     source_role: luanalysis_project::SourceRole,
     overload_mode: crate::OverloadMode,
+    no_implicit_any: bool,
     legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy,
     file: File,
     bound: BoundFile,
@@ -237,6 +238,7 @@ impl NativeRegistry {
             snapshot,
             source_role: luanalysis_project::SourceRole::Implementation,
             overload_mode: crate::OverloadMode::default(),
+            no_implicit_any: false,
             legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy::Disabled,
             file,
             bound,
@@ -305,6 +307,8 @@ impl NativeRegistry {
     }
 
     pub(crate) fn source_role(&self) -> luanalysis_project::SourceRole { self.source_role }
+    pub(crate) fn no_implicit_any(&self) -> bool { self.no_implicit_any }
+    pub(crate) fn set_no_implicit_any(&mut self, enabled: bool) { self.no_implicit_any = enabled; }
     pub(crate) fn set_overload_mode(&mut self, mode: crate::OverloadMode) {
         self.overload_mode = mode;
     }
@@ -505,7 +509,7 @@ impl NativeRegistry {
         let ty = match annotation {
             None if self.source_role() == luanalysis_project::SourceRole::Declaration => Type::Unknown,
             None => {
-                checker.error(
+                checker.implicit_parameter_any(
                     "TS7019",
                     function.vararg.unwrap(),
                     "Rest parameter '...' implicitly has an 'any[]' type.",

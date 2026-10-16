@@ -57,6 +57,7 @@ pub(crate) struct ProjectRegistrySnapshot {
     policy: NativeLoaderPolicy,
     environment_profile: StandardEnvironmentProfile,
     overload_mode: crate::OverloadMode,
+    no_implicit_any: bool,
     environment: luanalysis_engine::NativeEnvironmentKey,
 }
 
@@ -85,7 +86,12 @@ impl ProjectRegistrySnapshot {
             snapshot: identities.first().map_or_else(|| SourceRecipeIdentity::new().source, |identity| identity.source),
             index: 0,
         };
-        Self { inputs, identities, dependencies, policy, environment_profile, overload_mode, environment }
+        Self { inputs, identities, dependencies, policy, environment_profile, overload_mode, no_implicit_any: false, environment }
+    }
+
+    pub(crate) fn with_no_implicit_any(mut self, enabled: bool) -> Self {
+        self.no_implicit_any = enabled;
+        self
     }
 
     /// Mutable scopes, report queues, body facets and session handles belong to
@@ -93,7 +99,7 @@ impl ProjectRegistrySnapshot {
     pub(crate) fn worker_registry(&self) -> ProjectRegistry {
         ProjectRegistry::new_with_recipe_identities(
             self.inputs.clone(), &self.identities, self.dependencies.clone(), self.policy,
-            self.environment_profile, self.overload_mode,
+            self.environment_profile, self.overload_mode, self.no_implicit_any,
             self.environment,
         )
     }
@@ -172,6 +178,7 @@ impl ProjectRegistry {
         policy: NativeLoaderPolicy,
         environment_profile: StandardEnvironmentProfile,
         overload_mode: crate::OverloadMode,
+        no_implicit_any: bool,
         environment: luanalysis_engine::NativeEnvironmentKey,
     ) -> Self {
         let mut snapshots = HashMap::new();
@@ -183,6 +190,7 @@ impl ProjectRegistry {
             .map(|(index, input)| {
                 let mut source = NativeRegistry::new_with_identity(input.syntax, input.bound, identities[index]);
                 source.set_overload_mode(overload_mode);
+                source.set_no_implicit_any(no_implicit_any);
                 source.set_source_role(input.role);
                 assert!(snapshots.insert(source.snapshot, index).is_none());
                 assert!(flow_snapshots.insert(source.iterator_sources().program.snapshot, index).is_none());

@@ -1,4 +1,13 @@
-use luanalysis::{check, CheckReport};
+use luanalysis::{CheckReport};
+
+// Keep contextual inference regressions meaningful with missing contracts denied.
+fn check(source: &str) -> luanalysis::CheckReport {
+    luanalysis::check_with_options(source, luanalysis::CheckOptions {
+        no_implicit_any: true,
+        ..Default::default()
+    })
+}
+
 
 fn accepted(source: &str) -> CheckReport {
     let report = check(source);

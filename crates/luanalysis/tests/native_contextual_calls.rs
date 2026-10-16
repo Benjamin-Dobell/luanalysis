@@ -1,4 +1,13 @@
-use luanalysis::{check, location};
+use luanalysis::{location};
+
+// Keep contextual inference regressions meaningful with missing contracts denied.
+fn check(source: &str) -> luanalysis::CheckReport {
+    luanalysis::check_with_options(source, luanalysis::CheckOptions {
+        no_implicit_any: true,
+        ..Default::default()
+    })
+}
+
 
 const TRANSFORM: &str = "---@generic T, R\n---@param value T\n---@param project fun(value: T): R\n---@return R\nlocal function transform(value, project) return project(value) end\n";
 

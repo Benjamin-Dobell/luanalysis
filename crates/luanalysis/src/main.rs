@@ -53,6 +53,7 @@ fn run() -> i32 {
     let mut package_path = None;
     let mut environment = StandardEnvironmentProfile::LegacyMinimal;
     let mut overload_mode = luanalysis::OverloadMode::default();
+    let mut no_implicit_any = false;
     let mut assume_unknown_standard_effects = true;
     let mut positional = false;
     while let Some(arg) = args.next() {
@@ -83,6 +84,10 @@ fn run() -> i32 {
         }
         if !positional && arg == "--legacy-overloads" {
             overload_mode = luanalysis::OverloadMode::LegacyExposeImplementation;
+            continue;
+        }
+        if !positional && arg == "--no-implicit-any" {
+            no_implicit_any = true;
             continue;
         }
         if !positional && arg == "--strict-standard-effects" {
@@ -182,6 +187,7 @@ fn run() -> i32 {
     let options = ProjectCheckOptions {
         environment,
         overload_mode,
+        no_implicit_any,
         loader_policy,
         assume_unknown_standard_effects,
         jobs,
@@ -477,7 +483,7 @@ fn expand(path: &Path, errors: &mut Vec<HostDiagnostic>) -> Vec<PathBuf> {
 
 fn help() {
     println!(
-        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--lua-version 5.0|5.1|5.2|5.3|5.4 | --no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--no-stdlib disables standard declarations and the legacy minimal type builtin.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
+        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--lua-version 5.0|5.1|5.2|5.3|5.4 | --no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--no-stdlib disables standard declarations and the legacy minimal type builtin.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
     );
     println!(
         "Selected standard profiles preserve reached builtin/environment bindings across unknown calls and property effects; known assignments still apply.\n--strict-standard-effects requires runtime-effect preservation proofs instead."

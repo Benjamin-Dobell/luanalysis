@@ -64,7 +64,7 @@ fn documented_table_callback_checks_bad_body_and_accepts_original_source_correct
 #[test]
 fn documented_field_does_not_supply_annotations_to_its_sibling() {
     let source = "local callbacks={\n---@param value number\nread=function(value) return value end,\nplain=function(untyped) return untyped end}";
-    let report = check(source);
+    let report = luanalysis::check_with_options(source, luanalysis::CheckOptions { no_implicit_any: true, ..Default::default() });
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     let error = &report.diagnostics[0];
     assert_eq!(error.code, "TS7006");

@@ -24,6 +24,9 @@ impl Fixture {
         fs::write(self.0.join(name), source).unwrap();
     }
     fn check(&self) -> Output {
+        self.check_with_arguments(&[])
+    }
+    fn check_with_arguments(&self, extra: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_luanalysis"))
             .current_dir(&self.0)
             .args([
@@ -34,6 +37,7 @@ impl Fixture {
                 "api.def.lua",
                 "main.lua",
             ])
+            .args(extra)
             .output()
             .unwrap()
     }
@@ -247,9 +251,9 @@ fn original_ambient_ellipsis_without_a_vararg_tag_is_an_unknown_tail() {
 }
 
 #[test]
-fn runtime_ellipsis_without_a_vararg_tag_keeps_the_existing_implicit_any_error() {
+fn strict_runtime_ellipsis_without_a_vararg_tag_reports_implicit_any() {
     let fixture = Fixture::new("", "local function report(...) end\nreport(42)\n");
-    fail(&fixture.check(), "TS7019");
+    fail(&fixture.check_with_arguments(&["--no-implicit-any"]), "TS7019");
 }
 
 #[test]

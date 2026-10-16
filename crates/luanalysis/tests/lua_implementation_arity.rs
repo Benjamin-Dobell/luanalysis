@@ -142,7 +142,7 @@ fn overload_parameter_types_never_retype_the_long_form_body() {
 #[test]
 fn a_public_overload_does_not_annotate_an_untyped_implementation_parameter() {
     let source = "---@overload fun(value:number):number\nlocal function untyped(value) return value end\nlocal result=untyped(1)\n";
-    let report = check(source);
+    let report = luanalysis::check_with_options(source, luanalysis::CheckOptions { no_implicit_any: true, ..Default::default() });
     let errors: Vec<_> = report
         .diagnostics
         .iter()

@@ -212,7 +212,7 @@ impl NativeRegistry {
                     .or_else(|| tag.map(|tag| &tag.ty))
                     .map(|ty| checker.annotation(ty))
                     .unwrap_or_else(|| {
-                        checker.error(
+                        checker.implicit_parameter_any(
                             "TS7006",
                             parameter.name.span,
                             "Function-type parameter implicitly has an any type.",

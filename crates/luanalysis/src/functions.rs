@@ -245,7 +245,7 @@ impl Checker<'_> {
                     .as_ref()
                     .map(|ty| self.annotation(ty))
                     .unwrap_or_else(|| {
-                        self.error(
+                        self.implicit_parameter_any(
                             "TS7006",
                             param.name.span,
                             format!(
@@ -365,7 +365,7 @@ impl Checker<'_> {
             } else if let Some(ty) = self.native.and_then(|native| native.default_receiver_type(function, self.engine)) {
                 (ty, false)
             } else {
-                self.error("TS7006", self.bound.declaration(binding).span, "The implicit receiver has no type contract.");
+                self.implicit_parameter_any("TS7006", self.bound.declaration(binding).span, "The implicit receiver has no type contract.");
                 (Type::Any, false)
             };
             optional_seen = optional;
@@ -390,7 +390,7 @@ impl Checker<'_> {
             {
                 (ty, false)
             } else {
-                self.error(
+                self.implicit_parameter_any(
                     "TS7006",
                     param.span,
                     format!("Parameter '{}' implicitly has an 'any' type.", param.text),

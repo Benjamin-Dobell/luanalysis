@@ -65,7 +65,7 @@ fn original_long_form_doc_tags_supply_missing_header_types_and_generics() {
             .any(|error| matches!(error.code, "TS2345" | "TS2769"))
     );
     let untyped = "---@function untyped(value):number\n";
-    let report = check(untyped);
+    let report = luanalysis::check_with_options(untyped, luanalysis::CheckOptions { no_implicit_any: true, ..Default::default() });
     assert!(
         report
             .diagnostics

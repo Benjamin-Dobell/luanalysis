@@ -20,6 +20,9 @@ pub struct ProjectCheckOptions {
     pub loader_policy: NativeLoaderPolicy,
     pub environment: StandardEnvironmentProfile,
     pub overload_mode: crate::OverloadMode,
+    /// Opt-in missing parameter/rest contract diagnostics; ordinary analysis
+    /// preserves v1's acceptance of unannotated runtime functions.
+    pub no_implicit_any: bool,
     /// Ordinary analysis preserves reached standard bindings across unknown
     /// effects. False requests the stricter runtime-effect certificates.
     pub assume_unknown_standard_effects: bool,
@@ -31,6 +34,7 @@ impl Default for ProjectCheckOptions {
             loader_policy: NativeLoaderPolicy::Lua54StandardFile,
             environment: StandardEnvironmentProfile::LegacyMinimal,
             overload_mode: crate::OverloadMode::default(),
+            no_implicit_any: false,
             assume_unknown_standard_effects: true,
         }
     }
@@ -189,7 +193,7 @@ pub(crate) fn check_project_with_workspace(
         options.loader_policy,
         selection.profile,
         options.overload_mode,
-    );
+    ).with_no_implicit_any(options.no_implicit_any);
     let make_registry = |_| {
         let mut registry = snapshot.worker_registry();
         registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);

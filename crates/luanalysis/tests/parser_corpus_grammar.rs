@@ -1,4 +1,13 @@
-use luanalysis::{check, location};
+use luanalysis::{location};
+
+// Keep contextual inference regressions meaningful with missing contracts denied.
+fn check(source: &str) -> luanalysis::CheckReport {
+    luanalysis::check_with_options(source, luanalysis::CheckOptions {
+        no_implicit_any: true,
+        ..Default::default()
+    })
+}
+
 
 const CALLBACKS: &str = r#"---@param produce (fun(): number, string)
 ---@return number
