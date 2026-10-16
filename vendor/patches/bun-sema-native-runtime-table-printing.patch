@@ -1,0 +1,14 @@
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+index 2ef8852..7146b74 100644
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1818,7 +1818,8 @@ impl<'p, 's> Printer<'_, 'p, 's> {
+                     .filter(|p| p.contains_type_declaration(reference.declaration))
+                     .map(|p| p.type_declaration_header(self.c, reference.declaration));
+                 if header.as_ref().is_some_and(|header|
+-                    header.kind == super::native_named::NativeTypeDeclarationKind::Shape
++                    matches!(header.kind, super::native_named::NativeTypeDeclarationKind::Shape
++                        | super::native_named::NativeTypeDeclarationKind::RuntimeTable)
+                     && header.object_form.is_some()
+                     && self.c.atoms().bytes(header.name).is_empty()) {
+                     if self.visited_types.contains(&ty) { return self.elided_information_placeholder(); }

@@ -2112,6 +2112,12 @@
       "patch": "vendor/patches/bun-sema-native-v1-contract-parity.patch",
       "reason": "Restore Lua constructor width subtyping, preserve original omitted documentation result contracts through native signature relations, and retain gradual Any applicability for native callable unions while keeping explicit never and ordinary TS calls strict through kernel e55f418.",
       "patch_sha256": "4373299b40b35755f67526071b3425ee2a1ba28d1d823737b2cf4016d1a0acbb"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-table-printing.patch",
+      "reason": "Render unnamed native runtime-table declarations through the existing anonymous object printer, preserving named declaration formatting and cycle elision through kernel 5950739.",
+      "patch_sha256": "1a7482cee803b9a45526f49894fa0bc660e0d8e634fb38c8b17f2d7b13904082"
     }
   ],
   "source_additions": {
@@ -3152,7 +3158,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "0b0f33d27b337115d1cb90c8fb9598152480fe0040e57df81d26983bdb998a56"
+      "extracted_sha256": "f6f73b73db5e1d886934c3c2eb3f634fcecf63bc4191e54e65ad9707c7e77f3c"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",

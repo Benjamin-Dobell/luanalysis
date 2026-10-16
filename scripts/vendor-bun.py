@@ -481,6 +481,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Restore Lua constructor width subtyping, preserve original omitted documentation result contracts through native signature relations, and retain gradual Any applicability for native callable unions while keeping explicit never and ordinary TS calls strict through kernel e55f418.",
 } for path in ["errors_call.rs", "mod.rs", "native_signatures.rs", "native_tables.rs", "relate.rs", "shape.rs"])
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/print.rs",
+    "patch": "vendor/patches/bun-sema-native-runtime-table-printing.patch",
+    "reason": "Render unnamed native runtime-table declarations through the existing anonymous object printer, preserving named declaration formatting and cycle elision through kernel 5950739.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
