@@ -195,17 +195,14 @@ mod tests {
                         vec![Self::at(3)]
                     },
                 },
-                5 if self.query_body => NativeFlowNode::Predicate {
+                // A body call whose effects read the loop's current result.
+                5 if self.query_body => NativeFlowNode::Call {
                     before: Self::at(4),
-                    predicate: NativePredicate::Truthy {
-                        subject: Some(Self::reference(1)),
-                        value: NativeValueKey {
-                            snapshot: 913,
-                            index: 2,
-                        },
-                        input: Self::at(4),
+                    value: NativeValueKey {
+                        snapshot: 913,
+                        index: 2,
                     },
-                    sense: true,
+                    input: Self::at(4),
                 },
                 5 => NativeFlowNode::Write {
                     before: Self::at(4),
@@ -298,10 +295,13 @@ mod tests {
         }
         fn call_effects(
             &self,
-            _: NativeValueKey,
-            _: NativeFlowKey,
-            _: &mut dyn TypeQueries,
+            value: NativeValueKey,
+            input: NativeFlowKey,
+            queries: &mut dyn TypeQueries,
         ) -> NativeCallEffects {
+            if value.index == 2 {
+                self.value_type(value, input, queries);
+            }
             NativeCallEffects::None
         }
         fn flow_error(&self, _: NativeFlowKey, error: NativeFlowError) {
@@ -448,11 +448,13 @@ mod tests {
     }
 
     #[test]
-    fn generic_iteration_zero_results_never_enter_body() {
+    fn generic_iteration_zero_results_leave_the_body_structurally_reachable() {
+        // Reachability is structural: an iterator's declared result types
+        // never make the body dead code. That is an inspection's finding.
         Engine::new().with_session(|queries| {
             let iterator = function(queries, Type::Nil, Type::Nil, ValuePack::empty());
             let graph = Graph::new(ValuePack::Alternatives(vec![row(vec![iterator])]), true);
-            assert!(!queries.flow_reachable(&graph, Graph::at(4)));
+            assert!(queries.flow_reachable(&graph, Graph::at(4)));
             assert!(queries.flow_reachable(&graph, Graph::at(6)));
             assert!(graph.errors.borrow().is_empty());
         });
@@ -605,12 +607,14 @@ mod tests {
     }
 
     #[test]
-    fn generic_iteration_never_returns_has_no_body_or_exit() {
+    fn generic_iteration_never_returning_iterator_types_leave_body_and_exit_reachable() {
+        // Only an explicit nonreturning call statement ends reachability; the
+        // implicit iterator call's declared type does not (as in TypeScript).
         Engine::new().with_session(|queries| {
             let iterator = function(queries, Type::Nil, Type::Nil, ValuePack::never());
             let graph = Graph::new(ValuePack::Alternatives(vec![row(vec![iterator])]), true);
-            assert!(!queries.flow_reachable(&graph, Graph::at(4)));
-            assert!(!queries.flow_reachable(&graph, Graph::at(6)));
+            assert!(queries.flow_reachable(&graph, Graph::at(4)));
+            assert!(queries.flow_reachable(&graph, Graph::at(6)));
             assert!(graph.errors.borrow().is_empty());
         });
     }

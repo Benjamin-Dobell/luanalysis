@@ -147,6 +147,9 @@ pub(super) struct NativeFlowRecipes {
     declaration_writes: HashMap<BindingId, flow::FlowId>,
     binding_owners: HashMap<BindingId, u32>,
     expression_evaluations: HashMap<(u32, usize, usize), flow::EvaluationId>,
+    /// The first evaluation of each predicate expression by its completed
+    /// flow position, replacing a scan of every evaluation per predicate node.
+    predicate_evaluations: HashMap<(flow::SourceExpressionId, flow::FlowId), flow::EvaluationId>,
     runtime_type_calls: HashSet<flow::SourceExpressionId>,
     runtime_type_operations: HashMap<flow::EvaluationId, flow::EvaluationId>,
     runtime_type_intrinsic_enabled: bool,
@@ -254,6 +257,7 @@ impl NativeFlowSources {
             declaration_writes: HashMap::default(),
             binding_owners: HashMap::default(),
             expression_evaluations: HashMap::default(),
+            predicate_evaluations: HashMap::default(),
             runtime_type_calls: HashSet::default(),
             runtime_type_operations: HashMap::default(),
             runtime_type_intrinsic_enabled: false,
@@ -298,6 +302,7 @@ impl NativeFlowSources {
                 ),
                 evaluation.id,
             );
+            result.predicate_evaluations.entry((evaluation.expression, evaluation.completed)).or_insert(evaluation.id);
             let index = result.values.len() as u32;
             result.values.push(ValueRecipe::Evaluation(evaluation.id));
             result.evaluation_values.insert(evaluation.id, index);
@@ -953,9 +958,7 @@ impl NativeFlowSources {
         expression: flow::SourceExpressionId,
         before: flow::FlowId,
     ) -> NativePredicate {
-        let Some(evaluation) = self.program.evaluations.iter().find(|evaluation| {
-            evaluation.expression == expression && evaluation.completed == before
-        }) else {
+        let Some(evaluation) = self.predicate_evaluations.get(&(expression, before)).map(|&id| self.program.evaluation(id)) else {
             return NativePredicate::Unsupported(
                 "predicate evaluation is missing its frozen input",
             );
@@ -1728,6 +1731,17 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             flow::ReferenceRoot::Binding(binding) if source.path.is_empty() => self.values.binding_has_written_contract(binding)
                 && self.sources.binding_owners.get(&binding).is_some_and(|&owner| owner != reference.graph.region),
             _ => false,
+        }
+    }
+    fn value_literal_truthiness(&self, value: NativeValueKey) -> Option<bool> {
+        let Some(ValueRecipe::Evaluation(evaluation)) = self.sources.value(value) else { return None; };
+        let mut expression = &self.sources.program.expression(self.sources.program.evaluation(*evaluation).expression).expression;
+        while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
+        match &expression.kind {
+            ExprKind::Nil => Some(false),
+            ExprKind::Boolean(value) => Some(*value),
+            ExprKind::Number(_) | ExprKind::String(_) | ExprKind::Table(_) | ExprKind::Function(_) => Some(true),
+            _ => None,
         }
     }
     fn runtime_type_operation(&self, value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {

@@ -29,8 +29,10 @@ fn field_runtime_type_tests_share_canonical_reference_paths() {
     );
 }
 
+// Reachability is structural, as in TypeScript: a contradictory `type` test
+// narrows its subject to never but leaves the branch's return reachable.
 #[test]
-fn contradictory_runtime_type_branches_do_not_add_inferred_returns() {
+fn contradictory_runtime_type_branches_still_add_inferred_returns() {
     let source = "---@param value number\nlocal function convert(value)\nif type(value) == \"string\" then return \"unreachable\" end\nreturn value\nend\nlocal result = convert(42)";
     let report = check(source);
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
@@ -41,7 +43,7 @@ fn contradictory_runtime_type_branches_do_not_add_inferred_returns() {
             .find(|binding| binding.name == "result")
             .unwrap()
             .ty,
-        "number"
+        "string | number"
     );
 }
 

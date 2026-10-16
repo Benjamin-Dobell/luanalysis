@@ -74,6 +74,8 @@ pub trait NativeFlowProvider {
     fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
     fn reference_follows_creation(&self, _: NativeReferenceKey) -> bool { false }
     fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> bool { true }
+    /// The truthiness of an original literal value; `None` for anything else.
+    fn value_literal_truthiness(&self, _: NativeValueKey) -> Option<bool> { None }
     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
@@ -210,6 +212,7 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     fn runtime_type_operation(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> bool {
         self.provider.runtime_type_operation(value, input, &mut SessionQueries { checker, handles: self.handles })
     }
+    fn value_literal_truthiness(&self, value: NativeValueKey) -> Option<bool> { self.provider.value_literal_truthiness(value) }
     fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
         self.provider.assertion_predicate(condition, input)
     }
@@ -549,6 +552,10 @@ mod tests {
                 _ => panic!("missing source value"),
             }
         }
+        // Value 5 is the original `false` literal condition.
+        fn value_literal_truthiness(&self, value: NativeValueKey) -> Option<bool> {
+            (value.index == 5).then_some(false)
+        }
         fn call_effects(
             &self,
             _: NativeValueKey,
@@ -734,6 +741,15 @@ mod tests {
                 NativeWriteRelation::Exact
             } else {
                 NativeWriteRelation::Unaffected
+            }
+        }
+        // The condition is an original literal of the value's literal type.
+        fn value_literal_truthiness(&self, _: NativeValueKey) -> Option<bool> {
+            match self.value {
+                Type::Nil => Some(false),
+                Type::BooleanLiteral(value) => Some(value),
+                Type::NumberLiteral(_) | Type::StringLiteral(_) => Some(true),
+                _ => None,
             }
         }
         fn value_type(

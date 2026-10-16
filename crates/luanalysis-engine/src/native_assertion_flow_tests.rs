@@ -321,6 +321,10 @@ impl NativeFlowProvider for Fixture {
             NativeWriteRelation::Unaffected
         }
     }
+    // Values 1 and 2 are the original `nil` and `false` literals.
+    fn value_literal_truthiness(&self, value: NativeValueKey) -> Option<bool> {
+        matches!(value.index, 1 | 2).then_some(false)
+    }
     fn value_type(
         &self,
         key: NativeValueKey,

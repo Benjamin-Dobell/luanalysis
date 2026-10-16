@@ -117,6 +117,10 @@ impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> 
         self.project_flow_adapter().runtime_type_operation(value, input, checker)
     }
 
+    fn value_literal_truthiness(&self, value: NativeValueKey) -> Option<bool> {
+        self.project_flow_adapter().value_literal_truthiness(value)
+    }
+
     fn write_member_key(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> Option<NativeTableKey> {
         self.project_flow_adapter().write_member_key(reference, target, at, checker)
     }

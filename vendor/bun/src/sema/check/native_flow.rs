@@ -311,6 +311,10 @@ pub trait NativeFlowProvider {
     fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
     fn reference_follows_creation(&self, _: NativeReferenceKey) -> bool { false }
     fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { true }
+    /// The truthiness of an original literal value (`nil`, `false`, `true`, a
+    /// number, string, table or function literal); `None` for anything else.
+    /// Reachability is structural: it never asks for operand types.
+    fn value_literal_truthiness(&self, _: NativeValueKey) -> Option<bool> { None }
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
     /// The original computed child key and its frozen evaluation input. The
     /// existing descendant relation, not this recipe, selects the receiver.
@@ -662,44 +666,35 @@ impl NativeDomain<'_> {
         if checker.reach_cuts != cuts { ReachStep::Follow(before) } else { step }
     }
 
+    /// Reachability is structural, as in TypeScript: only literal conditions
+    /// (Lua truthiness), literal numeric ranges and explicit nonreturning or
+    /// assertion contracts make a branch unreachable. Operand types are never
+    /// requested: type-based dead-code findings belong to separate inspections.
     fn predicate_reach_step(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey, before: NativeFlowKey, predicate: NativePredicate, sense: bool) -> ReachStep<NativeFlowKey> {
         if !self.edge(at, before) || !self.predicate_valid(at, &predicate) { return ReachStep::Value(false) }
-        self.reach_refinement(checker, before, |checker| self.predicate_reach_step_worker(checker, at, before, predicate, sense))
-    }
-
-    fn predicate_reach_step_worker(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey, before: NativeFlowKey, predicate: NativePredicate, sense: bool) -> ReachStep<NativeFlowKey> {
-        if !self.edge(at, before) || !self.predicate_valid(at, &predicate) { return ReachStep::Value(false) }
         match predicate {
-            predicate @ (NativePredicate::And(..) | NativePredicate::Or(..) | NativePredicate::Not(..)) => {
-                if checker.native_predicate_possible(self.provider, &predicate, sense) { ReachStep::Follow(before) } else { ReachStep::Value(false) }
-            }
-            NativePredicate::Truthy { value, input, .. } => {
-                let value = checker.native_flow_value(self.provider, value, input);
-                if checker.lua_truthiness_type(value, sense).is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
-            }
-            NativePredicate::Equal { .. } => ReachStep::Follow(before),
-            NativePredicate::RuntimeType { value, input, kind, equals, .. } => {
-                // A lexical `type` candidate is insufficient after a real
-                // environment write. Source providers prove the original call.
-                if !self.provider.runtime_type_operation(value, input, checker) { return ReachStep::Follow(before); }
-                let value = checker.native_flow_value(self.provider, value, input);
-                if checker.native_runtime_type(value, &kind, equals == sense).is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
-            }
-            NativePredicate::NumericIteration { start, limit, step, stage } => {
-                match checker.native_numeric_entry(self.provider, start, limit, step, stage) {
-                    NumericEntry::Impossible => ReachStep::Value(false),
-                    NumericEntry::Known(enters) if enters != sense => ReachStep::Value(false),
-                    NumericEntry::Known(_) | NumericEntry::Unknown => ReachStep::Follow(before),
-                }
-            }
-            NativePredicate::GenericIteration { frame, input } => {
-                let pack = checker.native_flow_iterator_pack(self.provider, input, frame);
-                if checker.native_iterator_filter(pack, sense).ty.is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
-            }
+            NativePredicate::NumericIteration { start, limit, step, stage } => match checker.native_literal_numeric_entry(start, limit, step, stage) {
+                NumericEntry::Impossible => ReachStep::Value(false),
+                NumericEntry::Known(enters) if enters != sense => ReachStep::Value(false),
+                NumericEntry::Known(_) | NumericEntry::Unknown => ReachStep::Follow(before),
+            },
             NativePredicate::Unsupported(feature) => {
                 self.provider.flow_error(at, NativeFlowError::Unsupported(feature));
                 ReachStep::Value(false)
             }
+            predicate => if self.literal_predicate_possible(&predicate, sense) { ReachStep::Follow(before) } else { ReachStep::Value(false) },
+        }
+    }
+
+    fn literal_predicate_possible(&self, predicate: &NativePredicate, sense: bool) -> bool {
+        match predicate {
+            NativePredicate::And(left, right) => if sense { self.literal_predicate_possible(left, true) && self.literal_predicate_possible(right, true) }
+                else { self.literal_predicate_possible(left, false) || self.literal_predicate_possible(right, false) },
+            NativePredicate::Or(left, right) => if sense { self.literal_predicate_possible(left, true) || self.literal_predicate_possible(right, true) }
+                else { self.literal_predicate_possible(left, false) && self.literal_predicate_possible(right, false) },
+            NativePredicate::Not(inner) => self.literal_predicate_possible(inner, !sense),
+            NativePredicate::Truthy { value, .. } => self.provider.value_literal_truthiness(*value).is_none_or(|truthy| truthy == sense),
+            _ => true,
         }
     }
 }
@@ -1431,64 +1426,17 @@ impl<'s, 'p> Checker<'s, 'p> {
         pack
     }
 
-    fn native_numeric_constant(
-        &mut self,
-        provider: &dyn NativeFlowProvider,
-        header: NativeNumericInput,
-    ) -> Option<NativeNumericConstant> {
-        let ty = self.native_flow_value(provider, header.value, header.input);
-        if header.literal.is_some() {
-            return header.literal;
-        }
-        let TypeData::NumberLit { bits, .. } = *self.data(ty) else {
-            return None;
-        };
-        let number = f64::from_bits(bits);
-        // Without a Lua lexical integer/float fact, large integer literals
-        // could have lost precision in the shared Number representation.
-        (number.is_finite() && number.abs() < 9_007_199_254_740_992.0)
-            .then_some(NativeNumericConstant::Float(number))
-    }
-
-    fn native_numeric_entry(
-        &mut self,
-        provider: &dyn NativeFlowProvider,
-        start: NativeNumericInput,
-        limit: NativeNumericInput,
-        step: Option<NativeNumericInput>,
-        stage: NativeNumericIterationStage,
-    ) -> NumericEntry {
-        let known_kinds = start.literal.is_some() && limit.literal.is_some()
-            && step.is_none_or(|step| step.literal.is_some());
-        let step = step.map_or(Some(NativeNumericConstant::Integer(1)), |step| {
-            self.native_numeric_constant(provider, step)
-        });
+    /// Whether a numeric `for` is entered, from original numeric literals
+    /// alone (structural reachability): a non-literal bound leaves both paths
+    /// open, and a literal zero step raises before either continuation.
+    fn native_literal_numeric_entry(&self, start: NativeNumericInput, limit: NativeNumericInput, step: Option<NativeNumericInput>, stage: NativeNumericIterationStage) -> NumericEntry {
+        let step = step.map_or(Some(NativeNumericConstant::Integer(1)), |step| step.literal);
         if matches!(step, Some(NativeNumericConstant::Integer(0)))
             || matches!(step, Some(NativeNumericConstant::Float(value)) if value == 0.0)
-        {
-            // Lua raises before either continuation; the source header check
-            // reports the original zero-step diagnostic independently.
-            return NumericEntry::Impossible;
-        }
-        if stage == NativeNumericIterationStage::Next {
-            // A body continuation can iterate or terminate. Its predecessor
-            // exists only when the body completes; a guaranteed first return
-            // has no such exit. Do not turn a finite literal range into while
-            // (true), unroll it, or solve a second loop in this adapter.
-            return NumericEntry::Unknown;
-        }
-        let start = self.native_numeric_constant(provider, start);
-        let limit = self.native_numeric_constant(provider, limit);
-        if !known_kinds && [start, limit, step].into_iter().flatten().any(|value| match value {
-            NativeNumericConstant::Integer(value) => value.unsigned_abs() >= 9_007_199_254_740_992,
-            NativeNumericConstant::Float(value) => value.abs() >= 9_007_199_254_740_992.0,
-        }) {
-            // Structural numeric literal types do not distinguish Lua's
-            // integer and float values. At this scale their conversion can
-            // change the first-entry comparison; retain both paths.
-            return NumericEntry::Unknown;
-        }
-        numeric_first_entry(start, limit, step)
+        { return NumericEntry::Impossible }
+        if stage == NativeNumericIterationStage::Next { return NumericEntry::Unknown }
+        let (Some(start), Some(limit), Some(step)) = (start.literal, limit.literal, step) else { return NumericEntry::Unknown };
+        numeric_first_entry(Some(start), Some(limit), Some(step))
     }
 
     pub(super) fn native_runtime_type(&mut self, ty: TypeId, kind: &NativeRuntimeType, sense: bool) -> TypeId {

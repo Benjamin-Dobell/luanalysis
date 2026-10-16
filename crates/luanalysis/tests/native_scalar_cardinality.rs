@@ -28,8 +28,11 @@ fn unreachable_explicit_nil_return_does_not_invent_a_result() {
 }
 #[test]
 fn annotated_recursive_condition_uses_scalar_contract_without_count_cycle() {
-    accepted(
+    // The recursive condition resolves without a result-count cycle. Its
+    // `return nil` stays structurally reachable, so the call has 0-1 results.
+    rejected(
         "---@return nil\nlocal function recursive() if recursive() then return nil end end\nlocal function zero() end\nzero(recursive())",
+        "TS2554",
     );
 }
 #[test]
