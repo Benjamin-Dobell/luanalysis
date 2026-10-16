@@ -21,3 +21,13 @@ luanalysis-project = { path = "crates/luanalysis-project" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+
+# Keep routine development and test artifacts bounded. Full variable-level
+# debug information can be requested explicitly for a focused investigation.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false

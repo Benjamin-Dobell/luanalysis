@@ -916,7 +916,7 @@ impl NativeRegistry {
             }
         }
     }
-    fn record_named_application_error(
+    pub(super) fn record_named_application_error(
         &self,
         error: NamedTypeError,
         span: Span,
