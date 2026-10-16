@@ -3,7 +3,7 @@
 use super::NativeRegistry;
 use crate::native_named::*;
 use crate::native_types::TypeNameResolution;
-use crate::{Checker, Diagnostic};
+use crate::{CheckReport, Checker, Diagnostic};
 use luanalysis_engine::{
     LuaKey, NamedTypeError, NamedTypeQuery, NativeTypeDeclarationKey, NativeTypeMemberKey,
     NativeTypeParameterKey, ObjectDeclarationForm, Type, TypeDeclarationHeader,
@@ -923,8 +923,13 @@ impl NativeRegistry {
         _queries: &mut dyn TypeQueries,
     ) {
         if let NamedTypeError::TypeArgumentConstraint { actual, expected, .. } = &error {
-            self.report.borrow_mut().push_type_diagnostic("TS2344", span,
+            let mut report = CheckReport::default();
+            report.push_type_diagnostic("TS2344", span,
                 "Type '{}' does not satisfy constraint '{}'.", &[actual, expected]);
+            // An annotation can be demanded while evaluating a prospective
+            // runtime-store receiver. Its diagnostics belong to that existing
+            // report scope, just like the surrounding expression diagnostics.
+            self.merge_report(report);
             return;
         }
         let diagnostic = match error {
@@ -942,7 +947,7 @@ impl NativeRegistry {
             _ => None,
         };
         if let Some(diagnostic) = diagnostic {
-            self.report.borrow_mut().diagnostics.push(diagnostic);
+            self.merge_report(CheckReport { diagnostics: vec![diagnostic], ..CheckReport::default() });
         }
     }
 }
@@ -1066,7 +1071,7 @@ mod dependency_tests {
             Engine::new().with_native_provider(
                 move || registry(&source),
                 |registry, queries| {
-                    registry.check_all_bodies(queries);
+                    registry.check_body(function(registry, "inspect"), queries);
                     let mut report = registry.take_report();
                     report.render(queries);
                     assert_eq!(report.diagnostics.len(), expected, "{argument}: {:#?}", report.diagnostics);
