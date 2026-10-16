@@ -40,11 +40,19 @@ impl NominalLoop {
         let actual = Type::NativeTypeParameter(parameter(0));
         let expected = instance();
         for _ in 0..2 {
+            let before_relation = self.base_calls.get();
             let related = queries.is_assignable(&actual, &expected);
+            if self.ancestry == Ancestry::Complete {
+                assert!(self.base_calls.get() > before_relation,
+                    "each inherited relation must recompute ancestry without a completed cache entry");
+            }
+            let before_application = self.base_calls.get();
             let application = queries.named_type_reference(nominal(2), &[actual.clone()]);
             if self.ancestry == Ancestry::Complete {
                 assert!(related, "a bounded T must satisfy its exact nominal bound under inherited incomplete flow");
                 application.expect("the same T must satisfy a named generic's bound");
+                assert!(self.base_calls.get() > before_application,
+                    "generic bound checks must not reuse an inherited completed ancestry entry");
             } else {
                 assert!(!related, "a fresh ancestry dependency must not become a completed nominal relation");
                 assert!(application.is_err(), "a refused ancestry must not admit a generic argument through fallback types");
@@ -172,6 +180,8 @@ fn nominal_type_parameter_bounds_remain_usable_in_an_inherited_incomplete_loop()
         for _ in 0..2 { assert!(queries.is_assignable(&Type::NativeTypeParameter(parameter(0)), &instance())); }
         assert_eq!(provider.base_calls.get(), before + 1,
             "inherited current-only ancestry must recompute cleanly once before entering a completed cache");
+        assert!(!queries.is_assignable(&Type::String, &instance()),
+            "current-only completion must not bypass ordinary type or nominal compatibility");
     });
 }
 
