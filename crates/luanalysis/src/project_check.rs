@@ -11,6 +11,8 @@ use luanalysis_project::{
 };
 use crate::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ProjectCheckOptions {
@@ -134,6 +136,8 @@ pub(crate) fn check_project_with_workspace(
     options: ProjectCheckOptions,
     workspace: &mut crate::incremental::ProjectWorkspace,
 ) -> ProjectCheckReport {
+    let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
+    let started = Instant::now();
     let (selection, environment_errors) =
         match StandardEnvironmentSelection::register(&mut project, options.environment) {
             Ok(selection) => (selection, Vec::new()),
@@ -187,18 +191,13 @@ pub(crate) fn check_project_with_workspace(
         .chain(&project.libraries)
         .copied()
         .collect();
-    let snapshot = ProjectRegistrySnapshot::new(
+    let mut snapshot = ProjectRegistrySnapshot::new(
         inputs,
         dependencies,
         options.loader_policy,
         selection.profile,
         options.overload_mode,
     ).with_no_implicit_any(options.no_implicit_any);
-    let make_registry = |_| {
-        let mut registry = snapshot.worker_registry();
-        registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
-        registry
-    };
     let requested = NonZeroUsize::new(options.jobs)
         .unwrap_or_else(|| std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN));
     // Use the extracted Bun driver policy: sampled light-file warmups and
@@ -213,6 +212,23 @@ pub(crate) fn check_project_with_workspace(
     );
     let capacity = plan.steps.iter().map(Vec::len).max().unwrap_or(1);
     let workers = requested.get().min(capacity).max(1);
+    let source_prepare = started.elapsed();
+    let flow_started = Instant::now();
+    if workers > 1 { snapshot.prepare_shared_flows(); }
+    let flow_prepare = flow_started.elapsed();
+    let factory_nanos = AtomicU64::new(0);
+    let factories = AtomicU64::new(0);
+    let make_registry = |_| {
+        let started = profile.then(Instant::now);
+        let mut registry = snapshot.worker_registry();
+        registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
+        if let Some(started) = started {
+            factory_nanos.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            factories.fetch_add(1, Ordering::Relaxed);
+        }
+        registry
+    };
+    let checking_started = Instant::now();
     let (checked, required, execution) = if workers == 1 {
         let (checked, required) = Engine::new().with_native_provider(
             || make_registry(0),
@@ -250,7 +266,14 @@ pub(crate) fn check_project_with_workspace(
             |job| batch_costs[job],
             make_registry,
             |job, registry, queries| {
+                let started = profile.then(Instant::now);
                 let reports = registry.check_scheduled_roots(queries, &batches[job], &scheduled);
+                if let Some(started) = started {
+                    let names: Vec<_> = batches[job].iter().map(|&file| {
+                        project.file(file).unwrap().path.file_name().unwrap().to_string_lossy()
+                    }).collect();
+                    eprintln!("luanalysis profile: job={job} elapsed={:.6}s files={names:?}", started.elapsed().as_secs_f64());
+                }
                 (reports, registry.required_files())
             },
         );
@@ -262,6 +285,11 @@ pub(crate) fn check_project_with_workspace(
         }
         (merge_reports(checked), required, Some(run.stats))
     };
+    if profile {
+        eprintln!("luanalysis profile: source_prepare={:.6}s flow_prepare={:.6}s checking={:.6}s registry_factory_sum={:.6}s factories={} execution={execution:?}",
+            source_prepare.as_secs_f64(), flow_prepare.as_secs_f64(), checking_started.elapsed().as_secs_f64(),
+            factory_nanos.load(Ordering::Relaxed) as f64 / 1_000_000_000.0, factories.load(Ordering::Relaxed));
+    }
     files.retain(|report| required.contains(&report.file));
     files.extend(checked);
     files.sort_by_key(|file| file.file.index);
