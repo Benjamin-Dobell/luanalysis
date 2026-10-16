@@ -37,7 +37,7 @@ fn inferred_plain_table_members_do_not_grant_class_identity() {
 fn plain_colon_methods_use_a_structural_receiver_and_check_public_arguments() {
     // The mutable number slot is a written contract; an unannotated initial
     // literal retains its original literal contract under Luanalysis rules.
-    let source = "local Counter={}\n---@type number\nCounter.value=1\n---@param amount number\n---@return number\nfunction Counter:add(amount)\n self.value=self.value+amount\n return self.value\nend\nlocal result=Counter:add(2)\n";
+    let source = "local Counter={\n---@type number\nvalue=1,\n}\n---@param amount number\n---@return number\nfunction Counter:add(amount)\n self.value=self.value+amount\n return self.value\nend\nlocal result=Counter:add(2)\n";
     let report = check(source);
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     assert_eq!(

@@ -136,9 +136,9 @@ fn fixed_numeric_fields_remain_exact_and_sparse_numeric_domains_do_not_become_ar
 fn numeric_stores_join_overlapping_literal_values_without_widening_other_key_domains() {
     let source = "---@param index number\nlocal function fill(index)\n local value={[1]=1,named=false,[false]='flag'}\n value[index]='word'\n local overlap=value[1]\n ---@type number|string\n local accepted=overlap\n local named=value.named\n local flag=value[false]\n value[index]=nil\n local deleted=value[1]\n ---@type nil|number|string\n local optional=deleted\n local stillNamed=value.named\n local stillFlag=value[false]\nend\n";
     let report = clean(source);
-    has_parts(&report, source, "overlap=", &["number", "string"]);
+    has_parts(&report, source, "overlap=", &["1", "string"]);
     assert!(!report.type_at(source.find("overlap=").unwrap()).unwrap().contains("nil"));
-    has_parts(&report, source, "deleted=", &["nil", "number", "string"]);
+    has_parts(&report, source, "deleted=", &["nil", "1", "string"]);
     for binding in ["named=", "stillNamed="] {
         let local = format!("local {binding}");
         assert_eq!(report.type_at(source.find(&local).unwrap() + "local ".len()), Some("boolean"));

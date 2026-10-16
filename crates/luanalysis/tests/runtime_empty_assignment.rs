@@ -25,8 +25,12 @@ fn written_empty_shapes_accept_extras_but_keep_the_declared_member_view() {
 
 #[test]
 fn known_structural_nominal_and_runtime_domains_keep_their_contracts() {
+    let width = "---@type {known:number}\nlocal record={known=1,new='word'}\n";
+    assert!(check(width).diagnostics.is_empty());
+    assert!(check(&format!("{width}local invalid=record.new\n"))
+        .diagnostics.iter().any(|error| error.code == "TS2339"));
     for source in [
-        "---@type {known:number}\nlocal record={known=1,new='word'}\n",
+        "---@type {known:number}\nlocal record={known='wrong',new='word'}\n",
         "local record={old=1}\nrecord={new='word'}\n",
         "---@type table\nlocal record={}\nrecord=function() return 1 end\n",
         "---@type table\nlocal record={}\nrecord=1\n",

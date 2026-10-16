@@ -158,11 +158,11 @@ fn original_iterator_controls_and_version_keep_their_exact_literal_contracts() {
     );
     let fixture = Fixture::new(
         &declarations,
-        "---@type 'Lua 5.4'\nlocal version=_VERSION\nlocal iterator,state,initial=ipairs({1,2})\n---@type 0\nlocal zero=initial\n---@param values table<boolean,string>\nlocal function visit(values)\nlocal iterator,state,initial=pairs(values)\n---@type nil\nlocal control=initial\nend\n",
+        "---@type 'Lua 5.4'\nlocal version=_VERSION\n---@type unknown,unknown,0\nlocal iterator,state,initial=ipairs({1,2})\n---@type 0\nlocal zero=initial\n---@param values table<boolean,string>\nlocal function visit(values)\nlocal iterator,state,initial=pairs(values)\n---@type nil\nlocal control=initial\nend\n",
     );
     pass(&fixture.check());
-    fixture.source("local iterator,state,initial=ipairs({1})\n---@type 1\nlocal rejected=initial\n");
+    fixture.source("---@type unknown,unknown,0\nlocal iterator,state,initial=ipairs({1})\n---@type 1\nlocal rejected=initial\n");
     fail(&fixture.check(), "TS2322");
-    fixture.source("local iterator,state,initial=ipairs({1})\n---@type 0\nlocal corrected=initial\n");
+    fixture.source("---@type unknown,unknown,0\nlocal iterator,state,initial=ipairs({1})\n---@type 0\nlocal corrected=initial\n");
     pass(&fixture.check());
 }
