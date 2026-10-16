@@ -495,12 +495,20 @@ impl ProjectRegistry {
                 if !owned_only && !checked.contains(&index) { continue; }
                 let mut pending = file.source.take_report();
                 if !self.describe_types { pending.discard_types(); }
-                let has_pending = !pending.diagnostics.is_empty()
+                // The drain loop runs to a fixed point: only new information
+                // keeps it alive. A body checked again on a later pass can
+                // report the same diagnostic again; one already in this file's
+                // report (same code and range) is not new. Pending renders
+                // always accompany an entry in `diagnostics`.
+                let known: HashSet<_> = report.report.diagnostics.iter()
+                    .map(|diagnostic| (diagnostic.code, diagnostic.span.start, diagnostic.span.end))
+                    .collect();
+                let has_pending = pending.diagnostics.iter()
+                        .any(|diagnostic| !known.contains(&(diagnostic.code, diagnostic.span.start, diagnostic.span.end)))
                     || !pending.bindings.is_empty()
                     || !pending.types.is_empty()
                     || !pending.pending_bindings.is_empty()
-                    || !pending.pending_types.is_empty()
-                    || !pending.pending_diagnostics.is_empty();
+                    || !pending.pending_types.is_empty();
                 published |= has_pending;
                 if owned_only && (has_pending || checked.contains(&index)
                     || self.modules.required_files.borrow().contains(&file.id))
