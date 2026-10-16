@@ -264,6 +264,7 @@ impl<'p, 's> Checker<'p, 's> {
         if candidates.is_empty() { return Ok(false); }
         let query = Query::NativeNamed(native_query);
         if !self.enter(query) { self.mark_tainted_from(0); return Err(NativeTableError::PendingContext); }
+        let context = self.native_query_context();
         let (result, completed) = self.run_memoizable(|checker| {
             for member in candidates {
                 if checker.native_named_member_header(reference, member)?.is_some() { return Ok(true); }
@@ -271,23 +272,46 @@ impl<'p, 's> Checker<'p, 's> {
             Ok(false)
         });
         let ended = self.leave(query);
-        let (Some(_), Ok(stored)) = (completed, ended) else {
-            self.mark_tainted_from(0);
-            return Err(NativeTableError::PendingContext);
-        };
         let result = result.map_err(|error: NativeNamedTypeError| error.table_error(object))?;
-        self.native_named_cache.ty(native_query, if result { TypeId::TRUE } else { TypeId::FALSE }, stored);
-        Ok(result)
+        match ended {
+            Ok(stored) if completed.is_some() => {
+                self.native_named_cache.ty(native_query, if result { TypeId::TRUE } else { TypeId::FALSE }, stored);
+                Ok(result)
+            }
+            Err(_) if self.native_complete_without_cache(context, completed.is_some()) => Ok(result),
+            _ => {
+                self.mark_tainted_from(0);
+                Err(NativeTableError::PendingContext)
+            }
+        }
     }
 
-    pub(in crate::check) fn native_runtime_table_flow_numeric_write(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, table: TypeId, key: TypeId, value: TypeId) -> Result<TypeId, NativeTableError> {
-        if self.is_union(table) {
-            let mut values = Vec::new();
-            for part in self.parts(table).to_vec() { values.push(self.native_runtime_table_flow_numeric_write(provider, at, part, key, value)?); }
-            return Ok(self.union_or_evolving_with(&values, false));
+    /// Resolve eligibility before requesting a computed store's RHS. The
+    /// prepared references are consumed in this query, never cached as types.
+    pub(in crate::check) fn native_runtime_numeric_store_candidates(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, table: TypeId, key: TypeId) -> Result<Vec<(TypeId, NativeRuntimeTableRef)>, NativeTableError> {
+        if key != TypeId::NUMBER { return Ok(Vec::new()); }
+        let mut candidates = Vec::new();
+        for part in self.parts(table).to_vec() {
+            if let Some(reference) = self.native_runtime_numeric_store(provider, at, part, NativeTableAccessKey::Type(key))? {
+                candidates.push((part, reference));
+            }
         }
-        let Some(reference) = self.native_runtime_numeric_store(provider, at, table, NativeTableAccessKey::Type(key))? else { return Ok(table); };
-        let TypeData::NativeTable(data) = self.data(reference.view) else { return Ok(table); };
+        Ok(candidates)
+    }
+
+    pub(in crate::check) fn native_runtime_table_flow_numeric_write(&mut self, table: TypeId, candidates: &[(TypeId, NativeRuntimeTableRef)], value: TypeId) -> TypeId {
+        let mut values = Vec::new();
+        for part in self.parts(table).to_vec() {
+            values.push(match candidates.iter().find(|(original, _)| *original == part) {
+                Some((_, reference)) => self.native_runtime_numeric_store_view(*reference, value),
+                None => part,
+            });
+        }
+        self.union_or_evolving_with(&values, false)
+    }
+
+    fn native_runtime_numeric_store_view(&mut self, reference: NativeRuntimeTableRef, value: TypeId) -> TypeId {
+        let TypeData::NativeTable(data) = self.data(reference.view) else { unreachable!("a runtime table retains its original table view"); };
         let mut description = (**data).clone_in(self.arena);
         let mut indexers = data.indexers.to_vec();
         let present = self.without_undefined(value);
@@ -316,7 +340,7 @@ impl<'p, 's> Checker<'p, 's> {
         description.constructor_sequence = None;
         description.fresh = false;
         let view = self.intern(TypeData::NativeTable(self.boxed(description)));
-        Ok(self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { view, ..reference })))
+        self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { view, ..reference }))
     }
 
     pub(in crate::check) fn native_runtime_table_value_context(&mut self, reference: NativeRuntimeTableRef, key: NativeTableAccessKey) -> Option<TypeId> {

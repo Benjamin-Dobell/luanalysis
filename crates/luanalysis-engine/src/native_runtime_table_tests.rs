@@ -1,5 +1,7 @@
 use crate::*;
 use std::cell::{Cell, RefCell};
+#[path = "native_runtime_numeric_demand_tests.rs"]
+mod numeric_demand_tests;
 fn declaration(index: u32) -> NativeTypeDeclarationKey {
     NativeTypeDeclarationKey {
         snapshot: 6400,

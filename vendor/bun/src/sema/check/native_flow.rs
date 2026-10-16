@@ -508,13 +508,20 @@ impl NativeDomain<'_> {
     fn numeric_store_transfer(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> Option<FlowType> {
         if !checker.native_has_runtime_table(previous.ty) { return None; }
         let (key, key_input) = self.provider.write_index_value(walk.reference, target, at)?;
-        let (result, completed) = checker.run_memoizable(|checker| {
+        let (candidates, completed) = checker.run_memoizable(|checker| {
             let key = checker.native_flow_value(self.provider, key, key_input);
-            let value = checker.native_flow_value(self.provider, value, input);
-            checker.native_runtime_table_flow_numeric_write(self.provider, at, previous.ty, key, value)
+            checker.native_runtime_numeric_store_candidates(self.provider, at, previous.ty, key)
         });
-        let incomplete = completed.is_none() || matches!(result, Err(super::native_tables::NativeTableError::PendingContext));
-        Some(FlowType::new(result.unwrap_or(previous.ty), previous.incomplete || incomplete))
+        if completed.is_none() || matches!(candidates, Err(super::native_tables::NativeTableError::PendingContext)) {
+            return Some(FlowType::new(previous.ty, true));
+        }
+        let Ok(candidates) = candidates else { return Some(previous); };
+        if candidates.is_empty() { return Some(previous); }
+        let (ty, completed) = checker.run_memoizable(|checker| {
+            let value = checker.native_flow_value(self.provider, value, input);
+            checker.native_runtime_table_flow_numeric_write(previous.ty, &candidates, value)
+        });
+        Some(FlowType::new(ty, previous.incomplete || completed.is_none()))
     }
     fn auto_at_start(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey) -> Option<FlowType> {
         if walk.declared != TypeId::AUTO && !self.provider.reference_follows_creation(walk.reference) { return None; }
