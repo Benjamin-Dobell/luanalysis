@@ -147,8 +147,11 @@ fn text_and_json_publish_anonymous_container_contracts_and_accept_numeric_correc
         })
         .unwrap();
         for diagnostic in &report.diagnostics {
-            assert!(text.contains(&diagnostic.message), "{text}");
             if format == "json" {
+                // Literal field types contain quotes in the message; JSON
+                // escapes those characters instead of publishing raw text.
+                let message = diagnostic.message.replace('\\', "\\\\").replace('"', "\\\"");
+                assert!(text.contains(&format!("\"message\":\"{message}\"")), "{text}");
                 assert!(
                     text.contains(&format!(
                         "\"range\":{{\"start\":{},\"end\":{}}}",
@@ -157,6 +160,7 @@ fn text_and_json_publish_anonymous_container_contracts_and_accept_numeric_correc
                     "{text}"
                 );
             } else {
+                assert!(text.contains(&diagnostic.message), "{text}");
                 let (line, column) = location(CONTRACTS, diagnostic.span);
                 assert!(
                     text.contains(&format!("main.lua:{line}:{column}: error[TS2322]")),

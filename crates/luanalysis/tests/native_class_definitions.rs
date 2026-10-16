@@ -159,10 +159,16 @@ fn original_constructor_members_are_part_of_the_instance_schema() {
         "---@class Point\n---@field x number\nlocal point={x=42,extra=\"runtime\"}\nlocal value=point.extra",
     );
     assert_eq!(ty(&report, "value"), "string");
-    let report = clean(
-        "---@class Point\n---@field x number\nlocal point={x=42,extra=\"runtime\"}\n---@param instance Point\nlocal function read(instance) return instance.extra end",
-    );
-    assert!(ty(&report, "read").contains("string"));
+    let source = "---@class Point\n---@field x number\nlocal point={x=42,extra=\"runtime\"}\n---@param instance Point\nlocal function read(instance) return instance.extra end";
+    let report = clean(source);
+    assert_eq!(ty(&report, "read"), "fun(instance: Point): \"runtime\"");
+    let wrong = format!("{source}\npoint.extra=42\n");
+    let rejected = rejects(&wrong, "TS2322");
+    let value = wrong.rfind("42").unwrap();
+    assert!(rejected.diagnostics.iter().any(|error| error.code == "TS2322"
+        && error.span.start == value
+        && error.span.end == value + 2));
+    clean(&wrong.replace("point.extra=42", "point.extra=\"runtime\""));
 }
 
 #[test]
@@ -230,13 +236,14 @@ fn dynamic_definition_writes_cannot_delete_or_violate_a_declared_member() {
 
 #[test]
 fn generic_constructor_collisions_retain_value_and_deletion_candidates() {
-    for (value, alternative) in [("\"word\"", "string"), ("nil", "nil")] {
+    for (value, alternative) in [("\"word\"", "\"word\""), ("nil", "nil")] {
         let source = format!(
             "---@generic K:string\n---@param key K\nlocal function build(key) return {{value=42,[key]={value}}} end\nlocal result=build(\"value\").value\n---@type number\nlocal invalid=result"
         );
         let report = rejects(&source, "TS2322");
         assert!(
-            ty(&report, "result").contains(alternative),
+            ty(&report, "result").contains("42")
+                && ty(&report, "result").contains(alternative),
             "{}",
             ty(&report, "result")
         );
