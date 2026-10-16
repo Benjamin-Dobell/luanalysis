@@ -480,7 +480,15 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub fn native_named_member_scope_owner(&mut self, member: NativeTypeMemberId) -> Result<NativeTypeDeclarationId, NativeNamedTypeError> {
-        let result = (|| {
+        let result = self.native_named_member_scope_owner_unreported(member);
+        if let Err(error) = result { self.report_native_named(error); }
+        result
+    }
+
+    /// The member's scope owner without reporting a failure: the member's own
+    /// validation reports it once. Probing whether another file's candidate
+    /// belongs to an object must not report on every probe.
+    fn native_named_member_scope_owner_unreported(&mut self, member: NativeTypeMemberId) -> Result<NativeTypeDeclarationId, NativeNamedTypeError> {
         let provider = self.native_type_declaration_provider.filter(|provider| provider.contains_type_member(member))
             .ok_or(NativeNamedTypeError::InvalidMember(member))?;
         let header = provider.type_member_header(self, member);
@@ -494,9 +502,6 @@ impl<'p, 's> Checker<'p, 's> {
             },
         };
         self.native_owner_scope(declaration)
-        })();
-        if let Err(error) = result { self.report_native_named(error); }
-        result
     }
 
     pub fn native_named_member_owner(&mut self, member: NativeTypeMemberId) -> Result<(NativeTypeDeclarationId, TypeId), NativeNamedTypeError> {
@@ -959,7 +964,7 @@ impl<'p, 's> Checker<'p, 's> {
         // resolved while that candidate was listed.
         if let Some(candidate) = candidate
             && !matches!(provider.type_declaration_owner_scope(self, candidate), NativeOwnerScopeRecipe::ResolvedHead)
-            && self.native_named_member_scope_owner(member).ok() != Some(reference.declaration)
+            && self.native_named_member_scope_owner_unreported(member).ok() != Some(reference.declaration)
         { return Ok(None) }
         let (owner, _) = self.native_named_member_origin(member)?;
         if owner.declaration != reference.declaration { return Ok(None) }
