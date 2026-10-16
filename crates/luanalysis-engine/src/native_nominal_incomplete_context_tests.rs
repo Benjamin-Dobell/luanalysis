@@ -55,7 +55,7 @@ impl NominalLoop {
                     "generic bound checks must not reuse an inherited completed ancestry entry");
             } else {
                 assert!(!related, "a fresh ancestry dependency must not become a completed nominal relation");
-                assert!(application.is_err(), "a refused ancestry must not admit a generic argument through fallback types");
+                assert!(application.is_err(), "a refused ancestry must not admit a generic argument through fallback types: {:?}, bases={}", self.ancestry, self.base_calls.get());
             }
         }
         assert!(self.base_calls.get() > before,
