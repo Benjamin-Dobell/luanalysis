@@ -56,12 +56,34 @@ impl NominalLoop {
 }
 
 impl NativeTypeProvider for NominalLoop {
-    fn contains_function(&self, _: NativeFunctionKey) -> bool { false }
-    fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> { unreachable!() }
-    fn function_declared_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> { unreachable!() }
-    fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type { unreachable!() }
+    fn contains_function(&self, key: NativeFunctionKey) -> bool { key.snapshot == SNAPSHOT && key.index < 2 }
+    fn function_parameters(&self, key: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> {
+        if key == function(1) { vec![Parameter { name: "argument".into(), ty: Type::Number, optional: false }] } else { Vec::new() }
+    }
+    fn function_declared_return(&self, key: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> {
+        (key == function(1)).then_some(Type::Number)
+    }
+    fn function_inferred_return(&self, key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Type {
+        assert_eq!(key, function(0));
+        let called = queries.call_native_arguments(&Type::NativeFunction(function(1)), None,
+            &[PackArgument::Expression(expression())], &[], None);
+        assert!(called.errors.is_empty(), "{:?}", called.errors);
+        Type::Number
+    }
     fn return_cycle(&self, _: NativeFunctionKey) { unreachable!() }
     fn return_type_too_deep(&self, _: NativeFunctionKey) { unreachable!() }
+    fn contains_expression(&self, key: NativeExpressionKey) -> bool { key == expression() }
+    fn check_expression(&self, key: NativeExpressionKey, expected: Option<&Type>, mode: NativeCheckMode, queries: &mut dyn TypeQueries) -> Type {
+        let expected = expected.map(|ty| ValuePack::single(ty.clone()));
+        let pack = self.check_expression_pack(key, expected.as_ref(), mode, queries);
+        queries.pack_slot(&pack, 0)
+    }
+    fn check_expression_pack(&self, key: NativeExpressionKey, _: Option<&ValuePack>, _: NativeCheckMode, queries: &mut dyn TypeQueries) -> ValuePack {
+        assert_eq!(key, expression());
+        let result = self.read_loop(queries, 0);
+        assert_eq!(result.ty, queries.union_reduced(&[Type::Number, Type::Nil]));
+        ValuePack::single(Type::Number)
+    }
     fn runtime_type_declaration(&self, kind: NativeOpaqueRuntimeKind) -> Option<NativeTypeDeclarationKey> {
         (kind == NativeOpaqueRuntimeKind::Userdata).then_some(nominal(0))
     }
@@ -142,8 +164,9 @@ fn nominal_type_parameter_bounds_remain_usable_in_an_inherited_incomplete_loop()
         // so the unrelated active loop must not make T fail that same bound.
         let known = queries.type_parameter_constraint(parameter(0)).unwrap();
         assert_eq!(queries.named_object_declaration(&known), Some(nominal(1)));
-        let result = provider.read_loop(queries, 0);
-        assert_eq!(result.ty, queries.union_reduced(&[Type::Number, Type::Nil]));
+        // Native argument checking supplies the inference context in which
+        // child declaration queries inherit their parent's incomplete flow.
+        queries.function_result_pack(&Type::NativeFunction(function(0)));
         assert!(provider.inherited_checks.get() > 0);
         let before = provider.base_calls.get();
         for _ in 0..2 { assert!(queries.is_assignable(&Type::NativeTypeParameter(parameter(0)), &instance())); }
@@ -158,7 +181,7 @@ fn fresh_pending_nominal_ancestry_is_not_accepted_under_an_inherited_loop() {
         Engine::new().with_native_provider(|| NominalLoop::new(ancestry), |provider, queries| {
             let known = queries.type_parameter_constraint(parameter(0)).unwrap();
             assert_eq!(queries.named_object_declaration(&known), Some(nominal(1)));
-            provider.read_loop(queries, 0);
+            queries.function_result_pack(&Type::NativeFunction(function(0)));
             assert!(provider.inherited_checks.get() > 0);
             if ancestry != Ancestry::Cycle {
                 provider.flow.pending_dependency.set(false);
