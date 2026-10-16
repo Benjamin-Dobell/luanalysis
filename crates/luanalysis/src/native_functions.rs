@@ -19,7 +19,7 @@ use luanalysis_engine::{
 use luanalysis_syntax::{Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TypeExpr};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 
 #[path = "native_named_provider.rs"]
 mod named_provider;
@@ -125,8 +125,11 @@ impl NativeRegistry {
     }
 
     pub(super) fn new(file: File, bound: BoundFile) -> Self {
-        let snapshot = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
-        assert_ne!(snapshot, u64::MAX, "source snapshot identities exhausted");
+        Self::new_with_identity(file, bound, project_provider::SourceRecipeIdentity::new())
+    }
+
+    fn new_with_identity(file: File, bound: BoundFile, identity: project_provider::SourceRecipeIdentity) -> Self {
+        let snapshot = identity.source;
         let mut index = RegistryIndex {
             bound: &bound,
             assertions: file.expression_assertions.iter().filter(|assertion| assertion.kind == luanalysis_syntax::ExpressionAssertionKind::Type)
@@ -195,7 +198,7 @@ impl NativeRegistry {
         let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
             expressions.key_for_span(expression.span)
         });
-        let flow = NativeFlowSources::new(&file, &bound, snapshot, &function_spans);
+        let flow = NativeFlowSources::new_with_snapshot(&file, &bound, snapshot, &function_spans, identity.flow);
         let runtime_tables=super::native_runtime_tables::NativeRuntimeTables::new(&file,&expressions,&flow);
         let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
         let members = super::native_members::NativeMembers::new(snapshot, &named, Vec::new(), globals.member_namespace_end(named.next_member_index()));

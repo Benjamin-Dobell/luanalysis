@@ -135,7 +135,17 @@ impl NativeFlowSources {
         native_snapshot: u64,
         functions: &HashMap<(usize, usize), u32>,
     ) -> Self {
-        let program = flow::build(file, bound);
+        Self::new_with_snapshot(file, bound, native_snapshot, functions, flow::allocate_snapshot())
+    }
+
+    pub(super) fn new_with_snapshot(
+        file: &File,
+        bound: &super::bind::BoundFile,
+        native_snapshot: u64,
+        functions: &HashMap<(usize, usize), u32>,
+        flow_snapshot: u64,
+    ) -> Self {
+        let program = flow::build_with_snapshot(file, bound, flow_snapshot);
         let environment_cell_written = program.graphs.iter().flat_map(|graph| &graph.nodes).any(|node| {
             matches!(&node.kind, flow::NodeKind::Write { address, .. } if address.reference.root == flow::ReferenceRoot::EnvironmentCell && address.reference.path.is_empty())
         });

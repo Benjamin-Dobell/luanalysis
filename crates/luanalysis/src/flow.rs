@@ -308,8 +308,16 @@ impl ProgramFlow {
 /// Builds original-source recipes. Lua syntax failures retain explicit invalid
 /// source metadata. Annotation failures preserve real Lua graphs and error types.
 pub fn build(file: &File, bound: &BoundFile) -> ProgramFlow {
+    build_with_snapshot(file, bound, allocate_snapshot())
+}
+
+pub(crate) fn allocate_snapshot() -> u64 {
     let snapshot = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
     assert_ne!(snapshot, u64::MAX, "source graph snapshots exhausted");
+    snapshot
+}
+
+pub(crate) fn build_with_snapshot(file: &File, bound: &BoundFile, snapshot: u64) -> ProgramFlow {
     let mut builder = Builder {
         program: ProgramFlow {
             snapshot,

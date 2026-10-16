@@ -25,12 +25,78 @@ use std::rc::Rc;
 #[path = "native_project_flow.rs"]
 mod flow_router;
 
+#[derive(Clone)]
 pub(crate) struct RegistryInput {
     pub id: FileId,
     pub role: SourceRole,
     pub standard_library: Option<StandardLibrarySource>,
     pub syntax: File,
     pub bound: BoundFile,
+}
+
+/// Original recipe identities survive task-local provider construction. They
+/// contain no inferred types or contextual checker capabilities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SourceRecipeIdentity {
+    pub(super) source: u64,
+    pub(super) flow: u64,
+}
+
+impl SourceRecipeIdentity {
+    pub(crate) fn new() -> Self {
+        let source = super::NEXT_SNAPSHOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        assert_ne!(source, u64::MAX, "source snapshot identities exhausted");
+        Self { source, flow: crate::flow::allocate_snapshot() }
+    }
+}
+
+pub(crate) struct ProjectRegistrySnapshot {
+    inputs: Vec<RegistryInput>,
+    identities: Vec<SourceRecipeIdentity>,
+    dependencies: Vec<Dependency>,
+    policy: NativeLoaderPolicy,
+    environment_profile: StandardEnvironmentProfile,
+    overload_mode: crate::OverloadMode,
+    environment: luanalysis_engine::NativeEnvironmentKey,
+}
+
+impl ProjectRegistrySnapshot {
+    pub(crate) fn new(
+        inputs: Vec<RegistryInput>,
+        dependencies: Vec<Dependency>,
+        policy: NativeLoaderPolicy,
+        environment_profile: StandardEnvironmentProfile,
+        overload_mode: crate::OverloadMode,
+    ) -> Self {
+        let identities = inputs.iter().map(|_| SourceRecipeIdentity::new()).collect();
+        Self::with_identities(inputs, identities, dependencies, policy, environment_profile, overload_mode)
+    }
+
+    pub(crate) fn with_identities(
+        inputs: Vec<RegistryInput>,
+        identities: Vec<SourceRecipeIdentity>,
+        dependencies: Vec<Dependency>,
+        policy: NativeLoaderPolicy,
+        environment_profile: StandardEnvironmentProfile,
+        overload_mode: crate::OverloadMode,
+    ) -> Self {
+        assert_eq!(inputs.len(), identities.len(), "one identity per original source recipe");
+        let environment = luanalysis_engine::NativeEnvironmentKey {
+            snapshot: identities.first().map_or_else(|| SourceRecipeIdentity::new().source, |identity| identity.source),
+            index: 0,
+        };
+        Self { inputs, identities, dependencies, policy, environment_profile, overload_mode, environment }
+    }
+
+    /// Mutable scopes, report queues, body facets and session handles belong to
+    /// this task. Parsing and lexical binding have already completed.
+    pub(crate) fn worker_registry(&self) -> ProjectRegistry {
+        ProjectRegistry::new_with_recipe_identities(
+            self.inputs.clone(), &self.identities, self.dependencies.clone(), self.policy,
+            self.environment_profile, self.overload_mode,
+            self.environment,
+        )
+    }
 }
 
 #[derive(Default)]
@@ -95,6 +161,19 @@ impl ProjectRegistry {
         environment_profile: StandardEnvironmentProfile,
         overload_mode: crate::OverloadMode,
     ) -> Self {
+        ProjectRegistrySnapshot::new(inputs, dependencies, policy, environment_profile, overload_mode)
+            .worker_registry()
+    }
+
+    fn new_with_recipe_identities(
+        inputs: Vec<RegistryInput>,
+        identities: &[SourceRecipeIdentity],
+        dependencies: Vec<Dependency>,
+        policy: NativeLoaderPolicy,
+        environment_profile: StandardEnvironmentProfile,
+        overload_mode: crate::OverloadMode,
+        environment: luanalysis_engine::NativeEnvironmentKey,
+    ) -> Self {
         let mut snapshots = HashMap::new();
         let mut flow_snapshots = HashMap::new();
         let mut names = ProjectNamedIndex::default();
@@ -102,7 +181,7 @@ impl ProjectRegistry {
             .into_iter()
             .enumerate()
             .map(|(index, input)| {
-                let mut source = NativeRegistry::new(input.syntax, input.bound);
+                let mut source = NativeRegistry::new_with_identity(input.syntax, input.bound, identities[index]);
                 source.set_overload_mode(overload_mode);
                 source.set_source_role(input.role);
                 assert!(snapshots.insert(source.snapshot, index).is_none());
@@ -133,10 +212,6 @@ impl ProjectRegistry {
             file.source.attach_documentation_signature_owners();
             file.source.rebuild_documentation_members();
         }
-        let environment = luanalysis_engine::NativeEnvironmentKey {
-            snapshot: files.first().map_or_else(|| super::NEXT_SNAPSHOT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), |file| file.source.snapshot),
-            index: 0,
-        };
         let globals = Rc::new(super::globals::ProjectGlobalIndex::new(environment, &files.iter().map(|file| &file.source).collect::<Vec<_>>()));
         let original_names: Vec<_> = globals.bindings().into_iter().map(|(name, _)| name).collect();
         for file in &mut files { file.source.seed_original_global_reference_keys(&original_names); }
@@ -389,6 +464,9 @@ impl ProjectRegistry {
             report.report.bound = Some(file.source.bound().clone());
         }
         reports.retain(|report| self.modules.required_files.borrow().contains(&report.file));
+        assert!(reports.iter().all(|report| report.report.pending_bindings.is_empty()
+            && report.report.pending_types.is_empty() && report.report.pending_diagnostics.is_empty()),
+            "project task reports must be rendered before native capabilities expire");
         reports
     }
 }
@@ -1044,5 +1122,103 @@ mod tests {
             snapshot: key.snapshot,
             index: u32::MAX
         }));
+    }
+
+    fn recipe_fingerprint(provider: &ProjectRegistry) -> Vec<String> {
+        let mut keys = vec![format!("{:?}", provider.globals.bindings())];
+        for file in &provider.files {
+            let source = &file.source;
+            keys.push(format!("{:?}:{:?}", file.id, source.module_key()));
+            keys.extend(source.functions.iter().map(|function| format!("{:?}", source.key_for(function))));
+            keys.extend(source.expressions.sources().map(|(key, expression)| format!("{key:?}:{:?}", expression.expression.span)));
+            let declarations = source.named.declarations().iter()
+                .map(|declaration| NativeTypeDeclarationKey { snapshot: declaration.key.snapshot, index: declaration.key.index })
+                .chain(source.named.anonymous_heads().iter().map(|head| NativeTypeDeclarationKey { snapshot: head.key.snapshot, index: head.key.index }))
+                .chain(source.runtime_tables.schemas());
+            for declaration in declarations {
+                keys.push(format!("{declaration:?}:{:?}", provider.type_declaration_header(declaration)));
+                for member in provider.type_declaration_members(declaration) {
+                    keys.push(format!("{member:?}:{:?}", provider.type_member_header(member)));
+                }
+            }
+            for index in 0.. {
+                let key = NativeSignatureKey { snapshot: source.snapshot, index };
+                if !source.signatures.contains(key) { break; }
+                keys.push(format!("{key:?}:{:?}:{:?}", source.signatures.get(key).header, source.signature_parameters_keys(key)));
+            }
+            for index in 0.. {
+                let key = NativeTypeParameterKey { snapshot: source.snapshot, index };
+                if !source.contains_type_parameter(key) { break; }
+                keys.push(format!("{key:?}:{:?}:{:?}", source.type_parameter_name(key), source.type_parameter_siblings(key)));
+            }
+            for graph in &source.flow.program.graphs {
+                keys.extend(graph.nodes.iter().map(|node| format!("{:?}:{:?}", node.id, node.kind)));
+                let graph = source.flow.graph(graph.index, 0);
+                for reference in 0.. {
+                    let key = luanalysis_engine::NativeReferenceKey { graph, reference };
+                    let Some(original) = source.flow.source_reference(key) else { break; };
+                    keys.push(format!("{key:?}:{original:?}"));
+                }
+            }
+        }
+        keys
+    }
+
+    #[test]
+    fn parallel_task_registries_keep_original_recipe_keys_and_isolate_mutable_state() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ProjectRegistrySnapshot>();
+        let snapshot = ProjectRegistrySnapshot::new(vec![
+            input(0, "---@class Box<T>\n---@field value T\nlocal object={}\nfunction object:read() return self.value end\n---@generic U\n---@param value U\n---@return U\nlocal function identity(value) return value end\n---@type Box<number>\nlocal result={value=identity(1)}\nresult.extra=2\nreturn result\n"),
+            input(1, "---@alias Result {value:number, callback:fun<T>(value:T):T}\nlocal function another() return {value=1} end\nreturn another\n"),
+        ], Vec::new(), NativeLoaderPolicy::Lua54StandardFile,
+            StandardEnvironmentProfile::LegacyMinimal, crate::OverloadMode::V2);
+        let expected = recipe_fingerprint(&snapshot.worker_registry());
+        let barrier = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            let tasks: Vec<_> = (0..4).map(|task| {
+                let snapshot = &snapshot;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let registry = snapshot.worker_registry();
+                    let source = &registry.files[0].source;
+                    barrier.wait();
+                    source.report.borrow_mut().diagnostics.push(Diagnostic {
+                        code: "TASK-LOCAL", span: source.file.span, message: task.to_string(),
+                    });
+                    source.checked_bodies.borrow_mut().insert(source.key(0));
+                    registry.modules.required_files.borrow_mut().insert(registry.files[task % 2].id);
+                    barrier.wait();
+                    let report = source.take_report();
+                    let messages: Vec<_> = report.diagnostics.into_iter().filter(|diagnostic| diagnostic.code == "TASK-LOCAL")
+                        .map(|diagnostic| diagnostic.message).collect();
+                    assert_eq!(messages, [task.to_string()]);
+                    assert_eq!(source.checked_bodies.borrow().len(), 1);
+                    assert_eq!(registry.required_files().len(), 1);
+                    recipe_fingerprint(&registry)
+                })
+            }).collect();
+            for task in tasks { assert_eq!(task.join().unwrap(), expected); }
+        });
+        let clean = snapshot.worker_registry();
+        assert!(clean.files[0].source.checked_bodies.borrow().is_empty());
+        assert!(clean.required_files().is_empty());
+    }
+
+    #[test]
+    fn recipe_identities_can_survive_a_project_epoch_without_retaining_task_state() {
+        let original = SourceRecipeIdentity::new();
+        let changed = SourceRecipeIdentity::new();
+        assert_ne!(original, changed);
+        let make = |identity| ProjectRegistrySnapshot::with_identities(
+            vec![input(0, "local function identity(value) return value end")], vec![identity],
+            Vec::new(), NativeLoaderPolicy::Lua54StandardFile,
+            StandardEnvironmentProfile::LegacyMinimal, crate::OverloadMode::V2,
+        );
+        assert_eq!(recipe_fingerprint(&make(original).worker_registry()), recipe_fingerprint(&make(original).worker_registry()));
+        assert_ne!(recipe_fingerprint(&make(original).worker_registry()), recipe_fingerprint(&make(changed).worker_registry()));
+        let empty = ProjectRegistrySnapshot::new(Vec::new(), Vec::new(), NativeLoaderPolicy::Lua54StandardFile,
+            StandardEnvironmentProfile::None, crate::OverloadMode::V2);
+        assert_eq!(empty.worker_registry().globals.environment, empty.worker_registry().globals.environment);
     }
 }
