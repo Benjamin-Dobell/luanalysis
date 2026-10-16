@@ -2076,6 +2076,42 @@
       "patch": "vendor/patches/bun-sema-native-contextual-assignment-lifetimes.patch",
       "reason": "Retain contextual assignment ownership with the originating native query frame, distinguish final/provisional/expired instances, and inspect original callable/lexical identities without resolving parameters or returns through kernel f320c7a.",
       "patch_sha256": "08e09f6b1b1be20bb7d1820c2114291c55cb26ffa00715d90f4a7fae5850c301"
+    },
+    {
+      "path": "src/sema/check/errors_call.rs",
+      "patch": "vendor/patches/bun-sema-native-v1-contract-parity.patch",
+      "reason": "Restore Lua constructor width subtyping, preserve original omitted documentation result contracts through native signature relations, and retain gradual Any applicability for native callable unions while keeping explicit never and ordinary TS calls strict through kernel e55f418.",
+      "patch_sha256": "4373299b40b35755f67526071b3425ee2a1ba28d1d823737b2cf4016d1a0acbb"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-v1-contract-parity.patch",
+      "reason": "Restore Lua constructor width subtyping, preserve original omitted documentation result contracts through native signature relations, and retain gradual Any applicability for native callable unions while keeping explicit never and ordinary TS calls strict through kernel e55f418.",
+      "patch_sha256": "4373299b40b35755f67526071b3425ee2a1ba28d1d823737b2cf4016d1a0acbb"
+    },
+    {
+      "path": "src/sema/check/native_signatures.rs",
+      "patch": "vendor/patches/bun-sema-native-v1-contract-parity.patch",
+      "reason": "Restore Lua constructor width subtyping, preserve original omitted documentation result contracts through native signature relations, and retain gradual Any applicability for native callable unions while keeping explicit never and ordinary TS calls strict through kernel e55f418.",
+      "patch_sha256": "4373299b40b35755f67526071b3425ee2a1ba28d1d823737b2cf4016d1a0acbb"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-v1-contract-parity.patch",
+      "reason": "Restore Lua constructor width subtyping, preserve original omitted documentation result contracts through native signature relations, and retain gradual Any applicability for native callable unions while keeping explicit never and ordinary TS calls strict through kernel e55f418.",
+      "patch_sha256": "4373299b40b35755f67526071b3425ee2a1ba28d1d823737b2cf4016d1a0acbb"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-v1-contract-parity.patch",
+      "reason": "Restore Lua constructor width subtyping, preserve original omitted documentation result contracts through native signature relations, and retain gradual Any applicability for native callable unions while keeping explicit never and ordinary TS calls strict through kernel e55f418.",
+      "patch_sha256": "4373299b40b35755f67526071b3425ee2a1ba28d1d823737b2cf4016d1a0acbb"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-v1-contract-parity.patch",
+      "reason": "Restore Lua constructor width subtyping, preserve original omitted documentation result contracts through native signature relations, and retain gradual Any applicability for native callable unions while keeping explicit never and ordinary TS calls strict through kernel e55f418.",
+      "patch_sha256": "4373299b40b35755f67526071b3425ee2a1ba28d1d823737b2cf4016d1a0acbb"
     }
   ],
   "source_additions": {
@@ -2140,7 +2176,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
-      "extracted_sha256": "fdfbefefc6809c47c8aacc3cc217c53ec32168a2e1ba223b66510e7e66cc01ef",
+      "extracted_sha256": "e727166a988596ed6abb0916db79c21653b12c0994c504cd90abe2b2a43840d7",
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_standard_assumptions.rs": {
@@ -2148,7 +2184,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "97b1fe030098432357bc1e2fc89f128b5a8b9bc7a4538c794b1d2ded8c8be64e",
+      "extracted_sha256": "5f336cf70376309882d188e586863de82c91d6c6c345ac192f027becb0ccb570",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2896,7 +2932,7 @@
     "src/sema/check/errors_call.rs": {
       "upstream": "src/sema/check/errors_call.rs",
       "sha256": "d3afd92a719df2d061cc57fdbaaceab03111588613ea9748fe20a3a2cfab230f",
-      "extracted_sha256": "eafc1d96bac6bfecfacc56488b2190eaada6dbbf06a363d50d0752c0c4ef4e2d"
+      "extracted_sha256": "7b74a5f743df5a57b6e4bc13f506eb00d2729cdf0664c555f3ba14f242d59503"
     },
     "src/sema/check/errors_circular.rs": {
       "upstream": "src/sema/check/errors_circular.rs",
@@ -3106,7 +3142,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "1ca2456425684489dc2cdbacbc805e385aa9eaa597b1a7aa947896d26ea7f3fb"
+      "extracted_sha256": "f8381e83979c79e314184ee05ac467b89c041c27e312079ee2ec8ec435dd3acf"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -3131,7 +3167,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "d9beddae7d5a26c87f960ba8e60ed2e57f9c85b6c5b5a66d93be97578b65de75"
+      "extracted_sha256": "dc936093832d0e89a06085c5b44e57fd6089ea12d428930a8a44306bd1c0e983"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -3186,7 +3222,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "9fc8b750d79e1d7a26b5ba3c3ee6c97e9ae76a17d744bc957c1363dc6e66b286"
+      "extracted_sha256": "7b90647b093ab177ba66589d66d80dcaed07598b4fc68d105b4de7f97b217fda"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",

@@ -475,6 +475,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Retain contextual assignment ownership with the originating native query frame, distinguish final/provisional/expired instances, and inspect original callable/lexical identities without resolving parameters or returns through kernel f320c7a.",
 } for path in ["check/call.rs", "check/mod.rs", "types.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-v1-contract-parity.patch",
+    "reason": "Restore Lua constructor width subtyping, preserve original omitted documentation result contracts through native signature relations, and retain gradual Any applicability for native callable unions while keeping explicit never and ordinary TS calls strict through kernel e55f418.",
+} for path in ["errors_call.rs", "mod.rs", "native_signatures.rs", "native_tables.rs", "relate.rs", "shape.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
