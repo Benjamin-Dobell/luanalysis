@@ -299,6 +299,33 @@ impl Checker<'_> {
         }
     }
 
+    /// Duplicate and unknown `---@param` tags. Purely syntactic, so it does
+    /// not depend on any contextual or captured frame.
+    pub(super) fn check_parameter_annotations(&mut self, function: &Function) {
+        let receiver = self.native.and_then(|native| native.implicit_receiver(function));
+        let mut seen = HashSet::default();
+        for tag in &function.annotations.params {
+            if !seen.insert(&tag.name.text) {
+                self.error(
+                    "LUA2011",
+                    tag.name.span,
+                    format!("duplicate annotation for parameter '{}'", tag.name.text),
+                );
+            }
+            if !(receiver.is_some() && tag.name.text == "self") && !function
+                .params
+                .iter()
+                .any(|param| param.text == tag.name.text)
+            {
+                self.error(
+                    "LUA2011",
+                    tag.name.span,
+                    format!("annotation refers to unknown parameter '{}'", tag.name.text),
+                );
+            }
+        }
+    }
+
     pub(super) fn signature_parts(
         &mut self,
         function: &Function,
@@ -331,27 +358,7 @@ impl Checker<'_> {
             });
         let receiver = self.native.and_then(|native| native.implicit_receiver(function));
         let offset = usize::from(receiver.is_some());
-        let mut seen = HashSet::default();
-        for tag in &function.annotations.params {
-            if !seen.insert(&tag.name.text) {
-                self.error(
-                    "LUA2011",
-                    tag.name.span,
-                    format!("duplicate annotation for parameter '{}'", tag.name.text),
-                );
-            }
-            if !(receiver.is_some() && tag.name.text == "self") && !function
-                .params
-                .iter()
-                .any(|param| param.text == tag.name.text)
-            {
-                self.error(
-                    "LUA2011",
-                    tag.name.span,
-                    format!("annotation refers to unknown parameter '{}'", tag.name.text),
-                );
-            }
-        }
+        self.check_parameter_annotations(function);
         let mut params = Vec::new();
         let mut optional_seen = false;
         if let Some(binding) = receiver {

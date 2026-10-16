@@ -1574,7 +1574,23 @@ impl NativeRegistry {
     /// declarations whose return type required no native inference query.
     pub(super) fn check_all_bodies(&self, queries: &mut dyn TypeQueries) {
         self.check_all_signatures(queries);
+        self.check_function_annotations(queries);
         self.check_bodies(queries, false);
+    }
+
+    /// Parameter-tag diagnostics belong to the function's declaration, as in
+    /// TypeScript's signature declaration check: the file's own check
+    /// publishes them once. Otherwise they appeared only if some lowering whose
+    /// report is published (rendering a type, not a body check that stays
+    /// provisional) happened to request the function's metadata.
+    fn check_function_annotations(&self, queries: &mut dyn TypeQueries) {
+        for index in 0..self.functions.len() {
+            let key = self.key(index as u32);
+            let mut checker = self.checker(queries);
+            checker.type_context = Some(key);
+            checker.check_parameter_annotations(self.function(key));
+            self.report.borrow_mut().append(checker.report);
+        }
     }
 
     /// Selected foreign callbacks retain task-local inference and capture
