@@ -236,11 +236,18 @@ impl NativeRegistry {
     }
     fn original_member_expression_type(&self, key: NativeExpressionKey, queries: &mut dyn TypeQueries) -> Type {
         let expression = &self.expressions().get(key).expression;
-        let (ty, report, incomplete) = {
+        // A member's type belongs to its declaration, not to whichever
+        // function's contextual or captured frame demanded it (a union
+        // reduction inside another body, for example). Evaluate it in
+        // declaration space; function values inside it otherwise look for
+        // their lexical parent in an unrelated frame chain.
+        let mut result = None;
+        queries.with_native_function_frame(luanalysis_engine::NativeCallerFrame::default(), &mut |queries| {
             let mut checker = self.checker_for_declaration_expression(key, queries);
             let ty = checker.expression(expression);
-            (ty, checker.report, checker.incomplete_flow)
-        };
+            result = Some((ty, checker.report, checker.incomplete_flow));
+        });
+        let (ty, report, incomplete) = result.expect("declaration-space member evaluation runs");
         if !incomplete { self.merge_report(report); }
         ty
     }
