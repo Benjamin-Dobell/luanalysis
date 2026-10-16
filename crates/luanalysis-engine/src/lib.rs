@@ -40,6 +40,8 @@ mod native_named;
 #[cfg(test)]
 mod native_runtime_table_tests;
 #[cfg(test)]
+mod native_argument_reuse_tests;
+#[cfg(test)]
 mod native_alias_tests;
 #[cfg(test)]
 mod native_call_certificate_tests;
@@ -603,6 +605,17 @@ pub trait NativeTypeProvider {
     ) -> Type {
         panic!("native expression provider is not installed")
     }
+    /// `check_expression`, and whether the checker may reuse the result for the
+    /// same expression, mode and function frame instead of checking it again.
+    fn check_reusable_expression(
+        &self,
+        key: NativeExpressionKey,
+        expected: Option<&Type>,
+        mode: NativeCheckMode,
+        queries: &mut dyn TypeQueries,
+    ) -> (Type, bool) {
+        (self.check_expression(key, expected, mode, queries), false)
+    }
     fn contextual_parameter_indices(&self, _: NativeFunctionKey) -> Vec<usize> {
         Vec::new()
     }
@@ -984,6 +997,11 @@ pub trait TypeQueries {
         binding: NativeBindingKey,
     ) -> Option<Type>;
     fn current_captured_function(&mut self) -> Option<CapturedFunctionContext>;
+    /// How many reusable argument results the checker holds; with
+    /// `discard_argument_results_since`, forgets those recorded while a report
+    /// that is then discarded was open, so their checks report again.
+    fn argument_results_mark(&mut self) -> usize;
+    fn discard_argument_results_since(&mut self, mark: usize);
     /// Select both original source frame options, including declaration-space
     /// absence. Frozen flow callbacks must not inherit an unrelated requester.
     fn with_native_function_frame(
@@ -1668,6 +1686,12 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         self.checker
             .current_native_captured_function()
             .map(|context| self.handles.retain_capture(context))
+    }
+    fn argument_results_mark(&mut self) -> usize {
+        self.checker.native_argument_results_mark()
+    }
+    fn discard_argument_results_since(&mut self, mark: usize) {
+        self.checker.discard_native_argument_results_since(mark);
     }
     fn with_native_function_frame(
         &mut self,
@@ -2786,6 +2810,29 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
             },
         );
         import_type(checker, self.handles, &ty)
+    }
+    fn check_reusable_expression(
+        &self,
+        checker: &mut Checker<'_, '_>,
+        key: NativeExpressionId,
+        expected: Option<TypeId>,
+        mode: NativeCheckMode,
+    ) -> (TypeId, bool) {
+        let key = source_expression_key(key);
+        if !self.provider.contains_expression(key) {
+            std::panic::panic_any(InvalidNativeExpressionKey(key));
+        }
+        let expected = expected.map(|ty| self.handles.retain(ty));
+        let (ty, reusable) = self.provider.check_reusable_expression(
+            key,
+            expected.as_ref(),
+            mode,
+            &mut SessionQueries {
+                checker,
+                handles: self.handles,
+            },
+        );
+        (import_type(checker, self.handles, &ty), reusable)
     }
     fn parameters_in_context(
         &self,

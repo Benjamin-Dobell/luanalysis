@@ -315,6 +315,18 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_capture_contexts.last().copied()
     }
 
+    pub fn native_argument_results_mark(&self) -> usize {
+        self.native_argument_log.len()
+    }
+
+    /// Forgets the argument results recorded since `mark`, so that they are
+    /// checked (and report) again.
+    pub fn discard_native_argument_results_since(&mut self, mark: usize) {
+        for key in self.native_argument_log.drain(mark.min(self.native_argument_log.len())..) {
+            self.native_argument_types.remove(&key);
+        }
+    }
+
     pub fn with_native_capture_context<R>(
         &mut self,
         context: NativeCapturedFunctionContext,
@@ -3710,7 +3722,23 @@ impl<'p, 's> Checker<'p, 's> {
         let (mode, outside) = self.push_inference_context_for_origin(
             ExpressionOrigin::Native(expression), inference_context.as_deref_mut(), mode,
         );
-        let mut ty = provider.check_expression(self, expression, expected, mode);
+        // An argument whose type does not depend on the expected type or
+        // inference is checked once per mode and function frame (stable results
+        // only) instead of on every resolution pass, as Bun memoises the types
+        // of arguments that are not context sensitive.
+        let memo = (expression, mode.bits(), self.current_native_function_context(), self.current_native_captured_function());
+        let mut ty = match self.native_argument_types.get(&memo) {
+            Some(&known) => known,
+            None => {
+                let ((ty, reusable), stored) =
+                    self.run_memoizable(|checker| provider.check_reusable_expression(checker, expression, expected, mode));
+                if reusable && stored.is_some() && !self.is_stack_low() {
+                    self.native_argument_types.insert(memo, ty);
+                    self.native_argument_log.push(memo);
+                }
+                ty
+            }
+        };
         // Contextual declarations are checked while their actual native inference context is
         // active. Their distinct signature identity retains these results for later relations.
         if let Some(sig) = self.single_call_signature(ty)

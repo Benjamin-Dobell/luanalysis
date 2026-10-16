@@ -296,6 +296,26 @@ impl NativeRegistry {
         registry
     }
 
+    /// Whether an expression's type cannot depend on its expected type,
+    /// inference or contextual instantiation: reads of locals that are not
+    /// function declarations (named functions receive contextual instances),
+    /// static member reads of those, and operators over them. Literals, calls,
+    /// constructors, function expressions, varargs and globals are excluded.
+    pub(super) fn expression_is_context_free(&self, expression: &Expr) -> bool {
+        match &expression.kind {
+            ExprKind::Parenthesized(inner) => self.expression_is_context_free(inner),
+            ExprKind::Name(name) => self.bound.binding_at(name.span.start).is_some_and(|binding| {
+                !matches!(self.declarations.get(&binding), Some(DeclarationSource::Function(_)))
+            }),
+            ExprKind::Field { base, .. } => self.expression_is_context_free(base),
+            ExprKind::Index { base, index } => crate::native_tables::literal_key(index).is_some()
+                && self.expression_is_context_free(base),
+            ExprKind::Unary { value, .. } => self.expression_is_context_free(value),
+            ExprKind::Binary { left, right, .. } => self.expression_is_context_free(left) && self.expression_is_context_free(right),
+            _ => false,
+        }
+    }
+
     /// The declared receiver expression (`X` in `function X:m()`) of the method
     /// whose implicit `self` is `binding`.
     pub(super) fn method_receiver_for(&self, binding: BindingId) -> Option<&Expr> {
@@ -1458,7 +1478,14 @@ impl NativeRegistry {
         contextual: Option<ContextualFunctionContext>,
         captured: Option<CapturedFunctionContext>,
     ) -> Type {
-        self.with_body_report(|| self.check_body_report(key, queries, contextual, captured))
+        let mark = queries.argument_results_mark();
+        let (ty, complete) = self.with_body_report(|| {
+            let (ty, complete) = self.check_body_report(key, queries, contextual, captured);
+            ((ty, complete), complete)
+        });
+        // The discarded report held what those arguments reported.
+        if !complete { queries.discard_argument_results_since(mark); }
+        ty
     }
 
     fn check_body_report(
@@ -2563,6 +2590,15 @@ impl NativeTypeProvider for NativeRegistry {
         queries: &mut dyn TypeQueries,
     ) -> Type {
         self.source_check_expression(key, expected, mode, queries)
+    }
+    fn check_reusable_expression(
+        &self,
+        key: NativeExpressionKey,
+        expected: Option<&Type>,
+        mode: luanalysis_engine::NativeCheckMode,
+        queries: &mut dyn TypeQueries,
+    ) -> (Type, bool) {
+        self.source_check_reusable_expression(key, expected, mode, queries)
     }
     fn check_expression_pack(
         &self,

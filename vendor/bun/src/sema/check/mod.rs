@@ -223,6 +223,12 @@ pub trait NativeFunctionProvider {
     fn check_expression(&self, _: &mut Checker<'_, '_>, _: NativeExpressionId, _: Option<TypeId>, _: CheckMode) -> TypeId {
         panic!("native expression provider is not installed")
     }
+    /// `check_expression`, and whether the result may be reused for the same
+    /// expression, mode and function frame: it cannot depend on the expected
+    /// type or inference.
+    fn check_reusable_expression(&self, checker: &mut Checker<'_, '_>, expression: NativeExpressionId, expected: Option<TypeId>, mode: CheckMode) -> (TypeId, bool) {
+        (self.check_expression(checker, expression, expected, mode), false)
+    }
     fn check_expression_pack(&self, checker: &mut Checker<'_, '_>, expression: NativeExpressionId, expected: Option<NativeResultPack>, mode: CheckMode) -> NativeResultPack {
         let expected = expected.map(|pack| checker.native_pack_slot(pack, 0));
         let ty = self.check_expression(checker, expression, expected, mode);
@@ -806,6 +812,8 @@ impl<'s> Program<'s> {
             native_function_contexts: Vec::new(),
             native_capture_contexts: Vec::new(),
             native_contextual_scopes: FxHashMap::default(),
+            native_argument_types: FxHashMap::default(),
+            native_argument_log: Vec::new(),
             arena,
             task: Task::new_in(arena),
             left_frame: None,
@@ -1356,6 +1364,14 @@ pub struct Checker<'p, 's> {
     /// Native counterpart of `context_checked_under`. Scope indices/serials
     /// stay task-local; only the immutable provisional bit follows a signature.
     native_contextual_scopes: FxHashMap<u64, (usize, u64)>,
+    /// Provider results for context-free native arguments, per check mode and
+    /// function frame: the same argument is otherwise re-evaluated on every
+    /// inference, applicability and overload pass (as Bun memoises the types
+    /// of non-context-sensitive arguments).
+    native_argument_types: FxHashMap<(NativeExpressionId, u8, Option<NativeFunctionContext>, Option<NativeCapturedFunctionContext>), TypeId>,
+    /// `native_argument_types` keys in insertion order, so that the host can
+    /// forget results recorded under a report it discards.
+    native_argument_log: Vec<(NativeExpressionId, u8, Option<NativeFunctionContext>, Option<NativeCapturedFunctionContext>)>,
     /// The arena of the thread that runs the task: for the records that the task creates, which may be
     /// published. Everything else that a task allocates is on the regular heap.
     pub arena: &'s Arena,

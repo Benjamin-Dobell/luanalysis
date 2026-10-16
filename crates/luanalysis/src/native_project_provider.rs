@@ -909,6 +909,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn is_context_sensitive(key: NativeExpressionKey) -> bool;
         fn has_context_sensitive_parameters(key: NativeExpressionKey) -> bool;
         fn check_expression(key: NativeExpressionKey, expected: Option<&Type>, mode: NativeCheckMode, queries: &mut dyn TypeQueries) -> Type;
+        fn check_reusable_expression(key: NativeExpressionKey, expected: Option<&Type>, mode: NativeCheckMode, queries: &mut dyn TypeQueries) -> (Type, bool);
         fn contextual_parameter_indices(key: NativeFunctionKey) -> Vec<usize>;
         fn function_parameters_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Vec<Parameter>;
         fn function_declared_return_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Option<Type>;

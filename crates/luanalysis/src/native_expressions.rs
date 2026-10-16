@@ -558,24 +558,41 @@ impl NativeRegistry {
         mode: NativeCheckMode,
         queries: &mut dyn TypeQueries,
     ) -> Type {
+        self.source_check_reusable_expression(key, expected, mode, queries).0
+    }
+    /// The result is reusable when it cannot depend on the expected type and a
+    /// repeated check would report the same, or nothing (its mode does not
+    /// publish). A check in a frame that is not yet final must run again when
+    /// the frame is final, and a check under a body report that is discarded
+    /// is forgotten with it.
+    pub(super) fn source_check_reusable_expression(
+        &self,
+        key: NativeExpressionKey,
+        expected: Option<&Type>,
+        mode: NativeCheckMode,
+        queries: &mut dyn TypeQueries,
+    ) -> (Type, bool) {
         let record = self.expressions().get(key);
         if let Some(function) = self.expressions().function_for(key) {
             if let Some(expected) = expected {
                 let value = self.build_source_function_value(self.function(function), mode, queries, false);
                 let ty = queries.contextual_function_value(&value, key, expected, mode);
                 self.expressions().retain_final(function, mode, &ty);
-                return ty;
+                return (ty, false);
             }
         }
         let mut checker = self.checker_for_expression(key, mode, queries);
         checker.check_mode = mode;
         let ty = checker.expression_with_expected(&record.expression, expected);
-        if publishes(mode)
-            && self.body_frame_check_state(checker.contextual_function.as_ref(), checker.captured_function.as_ref(), checker.engine) == NativeFunctionCheckState::Final
-        {
-            self.merge_report(checker.report);
+        let mut reusable = self.expression_is_context_free(&record.expression);
+        if publishes(mode) {
+            if self.body_frame_check_state(checker.contextual_function.as_ref(), checker.captured_function.as_ref(), checker.engine) == NativeFunctionCheckState::Final {
+                self.merge_report(checker.report);
+            } else {
+                reusable = false;
+            }
         }
-        ty
+        (ty, reusable)
     }
     /// Captures only lexical binding-cell constraints. Expected return
     /// inference variables are not part of this immutable environment.
