@@ -821,6 +821,8 @@ impl<'s> Program<'s> {
             eager: Vec::new(),
             loop_values: Vec::new(),
             unmarked_refusals: 0,
+            reach_refinements: Vec::new(),
+            reach_cuts: 0,
             non_circular_returns: Vec::new(),
             array_or_tuple_constraint_requests: Vec::new(),
             mapped_instantiations_in_progress: Vec::new(),
@@ -1084,7 +1086,9 @@ enum Query {
     NativeStandardLoader(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u64),
     NativeStandardReference(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u64, u64),
     NativeStandardValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
-    NativeStandardCall(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
+    /// The last field distinguishes the continuation scope and whether a loop
+    /// invariant supplied the callee: those are different computations.
+    NativeStandardCall(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64, u8),
     NativeAliasProjectedReference(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u32, u64, u64),
     NativeAliasProjectedValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u32, u64, u64),
     NativeAliasReturn(crate::types::NativeFunctionId, usize),
@@ -1497,6 +1501,12 @@ pub struct Checker<'p, 's> {
     /// How many cycles `mark_cycle_from` has left unmarked because of `eager`. A walk of a loop
     /// during which it grows is not one tsgo makes: see `Flow::Loop` in `flow_type`.
     unmarked_refusals: u64,
+    /// The stack height at each original-source reachability refinement in
+    /// progress. TypeScript decides reachability without operand types, so a
+    /// return type re-requested through one is not circular: see `on_reentry`.
+    pub(super) reach_refinements: Vec<usize>,
+    /// How many re-requested return types a reachability refinement has cut.
+    pub(super) reach_cuts: u64,
     /// The height of `stack` at each request of `getNonCircularReturnTypeOfSignature` in progress.
     non_circular_returns: Vec<usize>,
     /// The height of `stack` at each request of `hasArrayOrTypeTypeConstraint` in progress.
@@ -2567,10 +2577,20 @@ impl<'p, 's> Checker<'p, 's> {
         // is different (`resolvingSignature`): the caller gets no result, and that is not an error.
         // The same holds for members that are already installed, and for a path that leads to
         // `typeToStringEx` first.
-        let marked = !self.ends_at_members_in_place(i)
+        // A reachability refinement can re-request the return type that is
+        // being inferred from the returns it classifies. TypeScript never makes
+        // that request: the refinement keeps its structural answer, and the
+        // return type is not circular.
+        let reach_cut = matches!(q, Query::ReturnOfSignature(_))
+            && self.reach_refinements.iter().any(|&from| from > i);
+        if reach_cut {
+            self.reach_cuts += 1;
+        }
+        let marked = !reach_cut
+            && !self.ends_at_members_in_place(i)
             && (self.is_resolution(q) || !is_through_printing)
             && self.mark_cycle_from(i);
-        self.found_cycle = marked && self.is_resolution(q);
+        self.found_cycle = (marked || reach_cut) && self.is_resolution(q);
         if self.has_members_in_place(q) {
             self.note_members_in_place();
         } else {

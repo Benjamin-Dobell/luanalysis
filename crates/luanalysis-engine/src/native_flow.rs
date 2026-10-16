@@ -107,6 +107,11 @@ pub trait NativeFlowProvider {
     fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, _: &mut dyn TypeQueries) -> NativeWriteRelation {
         self.write_affects(reference, target, at)
     }
+    /// `write_affects_with_types` for a consumer that treats `Descendant`,
+    /// `PossibleDescendant` and `Unaffected` alike.
+    fn write_affects_ignoring_descendants(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeWriteRelation {
+        self.write_affects_with_types(reference, target, at, queries)
+    }
     fn call_invalidates_reference(&self, _: NativeReferenceKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> bool { false }
     fn known_standard_loader_write(&self, _: NativeFlowKey) -> bool { false }
     /// Original fixed child key for a descendant write. Types and the actual
@@ -259,6 +264,9 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     }
     fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> NativeWriteRelation {
         self.provider.write_affects_with_types(reference, target, at, &mut SessionQueries { checker, handles: self.handles })
+    }
+    fn write_affects_ignoring_descendants(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> NativeWriteRelation {
+        self.provider.write_affects_ignoring_descendants(reference, target, at, &mut SessionQueries { checker, handles: self.handles })
     }
     fn call_invalidates_reference(&self, reference: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> bool {
         self.provider.call_invalidates_reference(reference, at, &mut SessionQueries { checker, handles: self.handles })

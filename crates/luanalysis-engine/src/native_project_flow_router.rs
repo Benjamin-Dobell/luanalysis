@@ -189,6 +189,10 @@ impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> 
         self.project_flow_adapter().write_affects_with_types(reference, target, at, checker)
     }
 
+    fn write_affects_ignoring_descendants(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> NativeWriteRelation {
+        self.project_flow_adapter().write_affects_ignoring_descendants(reference, target, at, checker)
+    }
+
     fn call_invalidates_reference(&self, reference: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> bool {
         self.project_flow_adapter().call_invalidates_reference(reference, at, checker)
     }

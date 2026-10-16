@@ -106,6 +106,7 @@ pub(super) struct NativeAliasCache {
     preservations: FxHashMap<(NativeReferenceKey, NativeValueKey, NativeFlowKey, u64, u64), NativeCallPreservation>,
     metatable_absence: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), bool>,
     newindex_absence: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), bool>,
+    callable_tables: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64, u64), Option<AliasCallableTable>>,
     execution_ids: FxHashMap<(NativeValueKey, NativeFlowKey, NativeFlowKey, u64), u64>,
     executions: Vec<AliasExecutionFrame>,
 }
@@ -614,13 +615,18 @@ impl<'p, 's> Checker<'p, 's> {
     fn native_alias_callable_table(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, before: NativeFlowKey) -> Result<Option<AliasCallableTable>, ()> {
         let Origin::Allocation(value, input) = allocation else { return Ok(None) };
         if input.graph != before.graph { return Ok(None) }
-        let query = Query::NativeAliasCallableTable(*value, *input, before, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
+        let key = (*value, *input, before, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
+        // The proof is independent of the watched reference whose call
+        // continuation requested it. Reuse only a completed result.
+        if let Some(&result) = self.native_alias_cache.callable_tables.get(&key) { return Ok(result) }
+        let query = Query::NativeAliasCallableTable(key.0, key.1, key.2, key.3, key.4);
         if !self.enter(query) { self.mark_tainted_from(0); return Err(()) }
         let (result, completed) = self.run_memoizable(|checker| checker.native_alias_callable_table_worker(provider, allocation, *input, before));
         if self.leave(query).is_err() || completed.is_none() || result.is_err() {
             self.mark_tainted_from(0);
             return Err(());
         }
+        if let Ok(result) = result && !self.is_stack_low() { self.native_alias_cache.callable_tables.insert(key, result); }
         result
     }
 
@@ -639,19 +645,21 @@ impl<'p, 's> Checker<'p, 's> {
                 Some(NativeFlowNode::Call { before, value, input: call_input }) => {
                     let Some(recipe) = provider.alias_call_source(value, call_input) else { return Ok(None) };
                     if recipe.execution_input != before || recipe.arguments.len() < 2 { return Ok(None) }
-                    let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
-                    if callee.uncertain { return Err(()) }
-                    if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return Ok(None) }
-                    if !matches!(callee.tokens.into_iter().next(), Some(Origin::Standard(site)) if site.kind == NativeIntrinsicKind::SetMetatable) { return Ok(None) }
+                    let metatable = recipe.arguments[1];
+                    // Recover only a field of the original literal itself.
+                    // A mutable alias needs a separate reached-heap proof. This
+                    // structural requirement precedes the physical callee and
+                    // receiver proofs: without it no callable table is reached.
+                    let key = NativeTableKey::String(self.atoms().intern(b"__call"));
+                    let Some(callee) = provider.value_alias_member_source(metatable.value, metatable.input, key, self) else { return Ok(None) };
+                    let setmetatable = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
+                    if setmetatable.uncertain { return Err(()) }
+                    if setmetatable.unknown || setmetatable.non_table || setmetatable.tokens.len() != 1 { return Ok(None) }
+                    if !matches!(setmetatable.tokens.into_iter().next(), Some(Origin::Standard(site)) if site.kind == NativeIntrinsicKind::SetMetatable) { return Ok(None) }
                     let receiver = recipe.arguments[0];
                     let receiver = self.native_alias_value(provider, receiver.value, receiver.input, 0);
                     if receiver.uncertain { return Err(()) }
                     if receiver.unknown || receiver.non_table || receiver.tokens.len() != 1 || !receiver.tokens.contains(allocation) { return Ok(None) }
-                    let metatable = recipe.arguments[1];
-                    // Recover only a field of the original literal itself.
-                    // A mutable alias needs a separate reached-heap proof.
-                    let key = NativeTableKey::String(self.atoms().intern(b"__call"));
-                    let Some(callee) = provider.value_alias_member_source(metatable.value, metatable.input, key, self) else { return Ok(None) };
                     let function = self.native_alias_value(provider, callee.value, callee.input, 0);
                     if function.uncertain { return Err(()) }
                     if function.unknown || function.non_table || function.tokens.len() != 1 { return Ok(None) }
@@ -827,7 +835,7 @@ impl<'p, 's> Checker<'p, 's> {
                 // cell's original assignments; classifying heap aliases here
                 // recursively asks for the identity we are already tracing.
                 provider.write_affects(reference, target, at)
-            } else { provider.write_affects_with_types(reference, target, at, self) } {
+            } else { provider.write_affects_ignoring_descendants(reference, target, at, self) } {
                 NativeWriteRelation::Exact => self.native_alias_value(provider, value, input, 0),
                 NativeWriteRelation::PossibleExact => {
                     let mut previous = self.native_alias_reference(provider, reference, before);
@@ -1046,7 +1054,7 @@ impl<'p, 's> Checker<'p, 's> {
         let cell_write = provider.reference_is_cell(target);
         if cell_write || !provider.reference_is_cell(reference) {
             let relation = if cell_write { provider.write_affects(reference, target, at) }
-                else { provider.write_affects_with_types(reference, target, at, self) };
+                else { provider.write_affects_ignoring_descendants(reference, target, at, self) };
             match relation {
                 NativeWriteRelation::Exact => return self.native_alias_projected_value(provider, value, input, 0, path),
                 NativeWriteRelation::Ancestor => {

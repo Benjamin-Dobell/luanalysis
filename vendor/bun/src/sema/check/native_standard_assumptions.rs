@@ -68,7 +68,7 @@ impl<'p, 's> Checker<'p, 's> {
                 NativeFlowResult { ty: TypeId::TRUE, ..invalid }
             },
             Some(NativeFlowNode::Write { before, target, .. }) => {
-                if matches!(provider.write_affects_with_types(reference, target, at, checker), NativeWriteRelation::Exact | NativeWriteRelation::PossibleExact | NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor) { invalid }
+                if matches!(provider.write_affects_ignoring_descendants(reference, target, at, checker), NativeWriteRelation::Exact | NativeWriteRelation::PossibleExact | NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor) { invalid }
                 else { checker.native_standard_loader_state(provider, before, reference) }
             },
             Some(NativeFlowNode::Call { before, value, input }) => {
@@ -324,18 +324,26 @@ impl<'p, 's> Checker<'p, 's> {
         let direct = provider.write_affects(reference, target, at);
         if provider.reference_is_cell(reference) || provider.reference_is_cell(target) { return Ok(direct) }
         let Some(prefixes) = provider.reference_proper_prefixes(reference) else {
-            return Ok(provider.write_affects_with_types(reference, target, at, self));
+            return Ok(provider.write_affects_ignoring_descendants(reference, target, at, self));
         };
         let Some(receiver) = provider.write_alias_receiver(at) else {
-            return Ok(provider.write_affects_with_types(reference, target, at, self));
+            return Ok(provider.write_affects_ignoring_descendants(reference, target, at, self));
         };
         let written = provider.write_member_key(reference, target, at, self).and_then(|key| key.normalize().ok());
-        let receiver = self.native_standard_value(provider, receiver.value, receiver.input);
-        if receiver.uncertain { return Err(()) }
-        let mut possible = None;
+        // A known written key that differs from a watched member leaves that
+        // prefix unaffected whatever the receiver is. Prove receiver
+        // provenance only for prefixes that the store can actually reach.
+        let mut candidates = Vec::with_capacity(prefixes.len());
         for prefix in prefixes {
             let path = provider.reference_member_path(prefix, reference, self);
             if let Some(path) = &path && written.is_some_and(|key| path.first().and_then(|key| key.normalize().ok()) != Some(key)) { continue }
+            candidates.push((prefix, path));
+        }
+        if candidates.is_empty() { return Ok(NativeWriteRelation::Unaffected) }
+        let receiver = self.native_standard_value(provider, receiver.value, receiver.input);
+        if receiver.uncertain { return Err(()) }
+        let mut possible = None;
+        for (prefix, path) in candidates {
             let original = self.native_standard_reference(provider, prefix, before);
             if original.uncertain { return Err(()) }
             if !original.unknown && !receiver.unknown && original.tokens.is_disjoint(&receiver.tokens) { continue }
@@ -368,7 +376,11 @@ impl<'p, 's> Checker<'p, 's> {
         // Inspect at most one module top level and one reached function.
         // There is no recursive host/metamethod purity proof.
         if !scope.function && !scope.module { return NativeCallPreservation::Preserved }
-        let query = Query::NativeStandardCall(reference, call, input, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
+        // A loop-invariant callee hypothesis is well-founded: it does not
+        // resolve the callee through the loop that requested it. Sharing the
+        // ordinary continuation identity would report a false cycle.
+        let variant = u8::from(scope.function) | u8::from(scope.module) << 1 | u8::from(scope.loader) << 2 | u8::from(callee.is_some()) << 3;
+        let query = Query::NativeStandardCall(reference, call, input, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame(), variant);
         if !self.enter(query) { self.mark_tainted_from(0); return NativeCallPreservation::Pending }
         let (result, completed) = self.run_memoizable(|checker| checker.native_standard_call_worker(provider, reference, call, input, scope, callee));
         if self.leave(query).is_err() || completed.is_none() || result == NativeCallPreservation::Pending {
@@ -441,7 +453,7 @@ impl<'p, 's> Checker<'p, 's> {
                         else if let Some(invariant) = invariant {
                             match self.native_standard_loop_environment_write(provider, reference, target, at, invariant) {
                                 Ok(Some(relation)) => relation,
-                                Ok(None) => provider.write_affects_with_types(reference, target, at, self),
+                                Ok(None) => provider.write_affects_ignoring_descendants(reference, target, at, self),
                                 Err(()) => return NativeCallPreservation::Pending,
                             }
                         } else {

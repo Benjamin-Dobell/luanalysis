@@ -1354,7 +1354,10 @@ impl FlowAdapter<'_> {
     /// Compare object origins at the two frozen epochs. Source paths select
     /// which original references to ask about; only the native alias query
     /// decides whether those reads denote the same allocation.
-    fn alias_write_affects(&self,reference:NativeReferenceKey,target:NativeReferenceKey,at:NativeFlowKey,queries:&mut dyn TypeQueries)->Option<NativeWriteRelation> {
+    /// `descendants: false` serves a consumer that treats descendant relations
+    /// as unaffected. Without a possible proper-prefix relation, the remaining
+    /// full-reference proof could only distinguish those, so it is omitted.
+    fn alias_write_affects(&self,reference:NativeReferenceKey,target:NativeReferenceKey,at:NativeFlowKey,queries:&mut dyn TypeQueries,descendants:bool)->Option<NativeWriteRelation> {
         use luanalysis_engine::NativeAliasRelation;
         let query=self.sources.source_reference(reference)?;
         let target_source=self.sources.source_reference(target)?;
@@ -1372,15 +1375,18 @@ impl FlowAdapter<'_> {
         for length in prefixes {
             let prefix=flow::Reference {root:query.root.clone(),path:query.path[..length].to_vec()};
             let Some(prefix)=self.sources.reference_key(at.graph,&prefix) else {continue};
+            let suffix=&query.path[length..];
+            if suffix.is_empty() && !descendants && possible.is_none() {continue;}
+            // A different written key leaves this prefix unaffected whatever
+            // the receiver aliases; classify the path before proving aliases.
+            let affected=if suffix.is_empty() {NativeWriteRelation::Descendant}
+                else if matches!(written,flow::Key::Dynamic(_)) || matches!(suffix[0],flow::Key::Dynamic(_)) {NativeWriteRelation::Ancestor}
+                else if &suffix[0]!=written {compared=true; continue;}
+                else if suffix.len()==1 {NativeWriteRelation::Exact}
+                else {NativeWriteRelation::Ancestor};
             let relation=queries.flow_alias_relation(self,prefix,before,receiver_value,receiver_input);
             compared=true;
             if relation==NativeAliasRelation::Different {continue;}
-            let suffix=&query.path[length..];
-            let affected=if suffix.is_empty() {NativeWriteRelation::Descendant}
-                else if matches!(written,flow::Key::Dynamic(_)) || matches!(suffix[0],flow::Key::Dynamic(_)) {NativeWriteRelation::Ancestor}
-                else if &suffix[0]!=written {continue;}
-                else if suffix.len()==1 {NativeWriteRelation::Exact}
-                else {NativeWriteRelation::Ancestor};
             if relation==NativeAliasRelation::Same && !matches!(written,flow::Key::Dynamic(_)) && !suffix.iter().any(|key|matches!(key,flow::Key::Dynamic(_))) {return Some(affected);}
             possible.get_or_insert(match affected {
                 NativeWriteRelation::Exact=>NativeWriteRelation::PossibleExact,
@@ -1390,6 +1396,73 @@ impl FlowAdapter<'_> {
             });
         }
         possible.or_else(||compared.then_some(NativeWriteRelation::Unaffected))
+    }
+    fn typed_write_affects(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries, descendants: bool) -> NativeWriteRelation {
+        let Some(query) = self.sources.source_reference(reference) else { return NativeWriteRelation::Unaffected; };
+        if matches!(query.root, flow::ReferenceRoot::Pack(_)) {
+            return self.sources.write_affects(reference, target, at);
+        }
+        if query.root == flow::ReferenceRoot::LoaderState {
+            let ordinary = self.sources.write_affects(reference, target, at);
+            if ordinary != NativeWriteRelation::Unaffected { return ordinary; }
+        }
+        if !matches!(query.root, flow::ReferenceRoot::EnvironmentObject | flow::ReferenceRoot::LoaderState) {
+            let direct=self.sources.write_affects(reference,target,at);
+            return self.alias_write_affects(reference,target,at,queries,descendants).unwrap_or(direct);
+        }
+        let Some(flow::Node { kind: flow::NodeKind::Write { address, .. }, .. }) = self.sources.source_node(at) else {
+            return NativeWriteRelation::Unaffected;
+        };
+        if matches!(address.reference.root, flow::ReferenceRoot::Binding(_)) && address.reference.path.is_empty() { return NativeWriteRelation::Unaffected; }
+        let input = self.sources.flow_key(address.epoch, at.graph.context);
+        let path = if let Some(receiver) = address.receiver {
+            let receiver = self.sources.program.evaluation(receiver);
+            let expression = &self.sources.program.expression(receiver.expression).expression;
+            self.values.environment_access_path(expression, self.sources.flow_key(receiver.input, at.graph.context), queries)
+        } else if address.reference.path.len() == 1 {
+            let binding = match address.reference.root {
+                flow::ReferenceRoot::EnvironmentCell => None,
+                flow::ReferenceRoot::Binding(binding) => Some(binding),
+                _ => return NativeWriteRelation::Unaffected,
+            };
+            let environment = self.values.environment_value(binding, input, queries);
+            queries.global_environment_origin(&environment).map(|_| Vec::new())
+        } else { None };
+        let Some(mut path) = path else {
+            // A mutable alias can erase its actual table identity through a
+            // written view. Candidate metadata cannot prove a store exact, but
+            // it also cannot prove a selected capability survives that store.
+            // Keep this unsupported value-origin case conservative at this
+            // actual continuation, rather than borrowing standard exports.
+            let possible = self.sources.environment_candidate_paths(&address.reference);
+            let invalidates = possible.iter().any(|path| {
+                if query.root == flow::ReferenceRoot::LoaderState {
+                    match path.as_slice() {
+                        [flow::Key::Dynamic(_), ..] => true,
+                        [flow::Key::String(name)] if name == b"require" => !self.sources.original_require_capability,
+                        [flow::Key::String(name), members @ ..] if name == b"package" => crate::bind::modifies_package(&members.iter().map(|key| match key { flow::Key::String(value) => Some(value.as_slice()), _ => None }).collect::<Vec<_>>()),
+                        _ => false,
+                    }
+                } else {
+                    matches!((path.first(), query.path.first()), (Some(flow::Key::Dynamic(_)), _) | (Some(_), Some(flow::Key::Dynamic(_))))
+                        || matches!((path.as_slice(), query.path.as_slice()), ([written], [read]) if written == read)
+                }
+            });
+            return if invalidates { NativeWriteRelation::Ancestor } else { NativeWriteRelation::Unaffected };
+        };
+        let Some(key) = address.reference.path.last().cloned() else { return NativeWriteRelation::Unaffected; };
+        path.push(key);
+        if query.root == flow::ReferenceRoot::LoaderState {
+            let affects = match path.as_slice() {
+                [flow::Key::Dynamic(_), ..] => true,
+                [flow::Key::String(name)] if name == b"require" => !self.sources.original_require_capability,
+                [flow::Key::String(name), members @ ..] if name == b"package" => crate::bind::modifies_package(&members.iter().map(|key| match key { flow::Key::String(value) => Some(value.as_slice()), _ => None }).collect::<Vec<_>>()),
+                _ => false,
+            };
+            return if affects { NativeWriteRelation::Ancestor } else { NativeWriteRelation::Unaffected };
+        }
+        let target = flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path };
+        self.sources.compare_write_references(query, &target, address, at)
     }
 }
 
@@ -1695,71 +1768,10 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         self.sources.write_affects(reference, target, at)
     }
     fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeWriteRelation {
-        let Some(query) = self.sources.source_reference(reference) else { return NativeWriteRelation::Unaffected; };
-        if matches!(query.root, flow::ReferenceRoot::Pack(_)) {
-            return self.sources.write_affects(reference, target, at);
-        }
-        if query.root == flow::ReferenceRoot::LoaderState {
-            let ordinary = self.sources.write_affects(reference, target, at);
-            if ordinary != NativeWriteRelation::Unaffected { return ordinary; }
-        }
-        if !matches!(query.root, flow::ReferenceRoot::EnvironmentObject | flow::ReferenceRoot::LoaderState) {
-            let direct=self.sources.write_affects(reference,target,at);
-            return self.alias_write_affects(reference,target,at,queries).unwrap_or(direct);
-        }
-        let Some(flow::Node { kind: flow::NodeKind::Write { address, .. }, .. }) = self.sources.source_node(at) else {
-            return NativeWriteRelation::Unaffected;
-        };
-        if matches!(address.reference.root, flow::ReferenceRoot::Binding(_)) && address.reference.path.is_empty() { return NativeWriteRelation::Unaffected; }
-        let input = self.sources.flow_key(address.epoch, at.graph.context);
-        let path = if let Some(receiver) = address.receiver {
-            let receiver = self.sources.program.evaluation(receiver);
-            let expression = &self.sources.program.expression(receiver.expression).expression;
-            self.values.environment_access_path(expression, self.sources.flow_key(receiver.input, at.graph.context), queries)
-        } else if address.reference.path.len() == 1 {
-            let binding = match address.reference.root {
-                flow::ReferenceRoot::EnvironmentCell => None,
-                flow::ReferenceRoot::Binding(binding) => Some(binding),
-                _ => return NativeWriteRelation::Unaffected,
-            };
-            let environment = self.values.environment_value(binding, input, queries);
-            queries.global_environment_origin(&environment).map(|_| Vec::new())
-        } else { None };
-        let Some(mut path) = path else {
-            // A mutable alias can erase its actual table identity through a
-            // written view. Candidate metadata cannot prove a store exact, but
-            // it also cannot prove a selected capability survives that store.
-            // Keep this unsupported value-origin case conservative at this
-            // actual continuation, rather than borrowing standard exports.
-            let possible = self.sources.environment_candidate_paths(&address.reference);
-            let invalidates = possible.iter().any(|path| {
-                if query.root == flow::ReferenceRoot::LoaderState {
-                    match path.as_slice() {
-                        [flow::Key::Dynamic(_), ..] => true,
-                        [flow::Key::String(name)] if name == b"require" => !self.sources.original_require_capability,
-                        [flow::Key::String(name), members @ ..] if name == b"package" => crate::bind::modifies_package(&members.iter().map(|key| match key { flow::Key::String(value) => Some(value.as_slice()), _ => None }).collect::<Vec<_>>()),
-                        _ => false,
-                    }
-                } else {
-                    matches!((path.first(), query.path.first()), (Some(flow::Key::Dynamic(_)), _) | (Some(_), Some(flow::Key::Dynamic(_))))
-                        || matches!((path.as_slice(), query.path.as_slice()), ([written], [read]) if written == read)
-                }
-            });
-            return if invalidates { NativeWriteRelation::Ancestor } else { NativeWriteRelation::Unaffected };
-        };
-        let Some(key) = address.reference.path.last().cloned() else { return NativeWriteRelation::Unaffected; };
-        path.push(key);
-        if query.root == flow::ReferenceRoot::LoaderState {
-            let affects = match path.as_slice() {
-                [flow::Key::Dynamic(_), ..] => true,
-                [flow::Key::String(name)] if name == b"require" => !self.sources.original_require_capability,
-                [flow::Key::String(name), members @ ..] if name == b"package" => crate::bind::modifies_package(&members.iter().map(|key| match key { flow::Key::String(value) => Some(value.as_slice()), _ => None }).collect::<Vec<_>>()),
-                _ => false,
-            };
-            return if affects { NativeWriteRelation::Ancestor } else { NativeWriteRelation::Unaffected };
-        }
-        let target = flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path };
-        self.sources.compare_write_references(query, &target, address, at)
+        self.typed_write_affects(reference, target, at, queries, true)
+    }
+    fn write_affects_ignoring_descendants(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> NativeWriteRelation {
+        self.typed_write_affects(reference, target, at, queries, false)
     }
     fn call_invalidates_reference(&self, reference: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {
         if !self.sources.source_reference(reference).is_some_and(|reference| reference.root == flow::ReferenceRoot::LoaderState) {

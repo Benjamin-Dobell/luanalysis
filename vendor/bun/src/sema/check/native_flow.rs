@@ -356,6 +356,12 @@ pub trait NativeFlowProvider {
     fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, _: &mut Checker<'_, '_>) -> NativeWriteRelation {
         self.write_affects(reference, target, at)
     }
+    /// `write_affects_with_types` for a consumer that treats `Descendant`,
+    /// `PossibleDescendant` and `Unaffected` alike. A provider may omit proofs
+    /// that could only distinguish those relations.
+    fn write_affects_ignoring_descendants(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> NativeWriteRelation {
+        self.write_affects_with_types(reference, target, at, checker)
+    }
     fn call_invalidates_reference(&self, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { false }
     /// Original explicit loader-mutating call metadata, without effect inference.
     fn known_standard_loader_write(&self, _: NativeFlowKey) -> bool { false }
@@ -645,7 +651,23 @@ impl NativeDomain<'_> {
         FlowStep::Follow { before, transfer, count_passed: true }
     }
 
+    /// Operand types refine TypeScript's structural reachability. A return type
+    /// re-requested by the refinement is cut (`on_reentry`); the structural
+    /// answer, a reachable predecessor, then stands.
+    fn reach_refinement(&self, checker: &mut Checker<'_, '_>, before: NativeFlowKey, refine: impl FnOnce(&mut Checker<'_, '_>) -> ReachStep<NativeFlowKey>) -> ReachStep<NativeFlowKey> {
+        let cuts = checker.reach_cuts;
+        checker.reach_refinements.push(checker.stack.len());
+        let step = refine(checker);
+        checker.reach_refinements.pop();
+        if checker.reach_cuts != cuts { ReachStep::Follow(before) } else { step }
+    }
+
     fn predicate_reach_step(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey, before: NativeFlowKey, predicate: NativePredicate, sense: bool) -> ReachStep<NativeFlowKey> {
+        if !self.edge(at, before) || !self.predicate_valid(at, &predicate) { return ReachStep::Value(false) }
+        self.reach_refinement(checker, before, |checker| self.predicate_reach_step_worker(checker, at, before, predicate, sense))
+    }
+
+    fn predicate_reach_step_worker(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey, before: NativeFlowKey, predicate: NativePredicate, sense: bool) -> ReachStep<NativeFlowKey> {
         if !self.edge(at, before) || !self.predicate_valid(at, &predicate) { return ReachStep::Value(false) }
         match predicate {
             predicate @ (NativePredicate::And(..) | NativePredicate::Or(..) | NativePredicate::Not(..)) => {
@@ -1162,7 +1184,9 @@ impl ReachDomain for NativeDomain<'_> {
                 if !self.edge(at, before) || !self.edge(at, input) {
                     return ReachStep::Value(false);
                 }
-                match checker.native_flow_call_effects(self.provider, value, input) {
+                // Only an explicit nonreturning or assertion contract is a
+                // structural effect; its classification is a refinement too.
+                self.reach_refinement(checker, before, |checker| match checker.native_flow_call_effects(self.provider, value, input) {
                     NativeEffectResult::Pending | NativeEffectResult::Incomplete { .. } => ReachStep::Follow(before),
                     NativeEffectResult::Complete(NativeCallEffects::None) => ReachStep::Follow(before),
                     NativeEffectResult::Complete(NativeCallEffects::Never) => ReachStep::Value(false),
@@ -1176,7 +1200,7 @@ impl ReachDomain for NativeDomain<'_> {
                             .flow_error(at, NativeFlowError::Unsupported(feature));
                         ReachStep::Value(false)
                     }
-                }
+                })
             }
             NativeFlowNode::Merge { edges } => {
                 if edges.iter().any(|&edge| !self.edge(at, edge)) {
