@@ -11,11 +11,13 @@ fn rejects_number(source: &str) {
 }
 
 #[test]
-fn a_reached_original_installer_changes_the_actual_returned_table() {
-    let source = "local function make()\n local value={}\n local function install() value.count=1 end\n local before=value.count\n install()\n local after=value.count\n return before,after,value\nend\nlocal before,after,value=make()\n---@type nil\nlocal absent=before\n---@type number\nlocal reached=after\n---@type number\nlocal exported=value.count\n";
+/// As in TypeScript, a call does not change the caller's view of a table: the
+/// callee's stores are not replayed into the caller's flow.
+fn a_called_installer_does_not_change_the_callers_table_view() {
+    let source = "local function make()\n local value={}\n local function install() value.count=1 end\n install()\n local after=value.count\n return after,value\nend\nlocal after,value=make()\n---@type nil\nlocal absent=after\n---@type nil\nlocal returned=value.count\n";
     clean(source);
-    rejects_number(&source.replace("---@type nil", "---@type number"));
-    rejects_number(&source.replace("local exported=value.count", "local exported='wrong'"));
+    rejects_number(&source.replace("---@type nil\nlocal absent", "---@type number\nlocal absent"));
+    rejects_number(&source.replace("---@type nil\nlocal returned", "---@type number\nlocal returned"));
 }
 
 #[test]
@@ -33,39 +35,6 @@ fn normal_completions_preserve_conditional_and_early_return_absence() {
         clean(&source.replace("local unproven=value.count", "local proven=value.count or 0"));
     }
 }
-
-#[test]
-fn a_callee_rhs_reads_the_callers_current_heap_value() {
-    let source = "local value={\n---@type number|string\ncurrent=1,\n}\nlocal function install() value.saved=value.current end\nvalue.current='word'\ninstall()\n---@type string\nlocal current=value.saved\n";
-    clean(source);
-    rejects_number(&source.replace("---@type string\nlocal current", "---@type number\nlocal current"));
-}
-
-#[test]
-fn repeated_original_calls_keep_each_actual_entry_state_separate() {
-    let source = "local value={\n---@type number|string\ncurrent=1,\n}\nlocal function install() value.saved=value.current end\nvalue.current=1\ninstall()\nlocal first=value.saved\nvalue.current='word'\ninstall()\nlocal second=value.saved\n---@type number\nlocal numeric=first\n---@type string\nlocal text=second\n";
-    clean(source);
-    rejects_number(&source.replace("---@type string\nlocal text", "---@type number\nlocal text"));
-    rejects_number(&source.replace("---@type number\nlocal numeric", "---@type string\nlocal numeric"));
-}
-
-#[test]
-fn original_callee_order_keeps_nil_deletion_and_later_replacement() {
-    let source = "local value={\n---@type number|nil\ncount=1,\n}\nlocal function erase() value.count=nil end\nerase()\n---@type nil\nlocal gone=value.count\nlocal function restore() value.count=2 end\nrestore()\nlocal raw=value.count\n---@type number\nlocal restored=value.count\n";
-    let report = clean(source);
-    assert_eq!(report.type_at(source.find("raw=value").unwrap()), Some("number"));
-    rejects_number(&source.replace("---@type nil", "---@type number"));
-    rejects_number(&source.replace("---@type number\nlocal restored", "---@type string\nlocal restored"));
-}
-
-#[test]
-/// Useful rather than sound: an unresolved callback preserves the field it
-/// does not visibly write, so the earlier store stays definite.
-fn an_unresolved_nested_call_preserves_an_earlier_new_field() {
-    let source = "---@param mutate fun(value:table):void\nlocal function make(mutate)\n local value={}\n local function install()\n  value.count=1\n  mutate(value)\n end\n install()\n return value\nend\nlocal value=make(function(value) end)\n---@type number\nlocal unproven=value.count\n";
-    clean(source);
-}
-
 
 #[test]
 fn reusable_callback_returns_do_not_publish_one_installer_invocations_heap() {

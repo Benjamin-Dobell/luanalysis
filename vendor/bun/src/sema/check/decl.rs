@@ -5347,12 +5347,6 @@ impl<'p, 's> Checker<'p, 's> {
         if let Some(raw) = self.provisional(Query::ReturnOfSignature(sig)) {
             return TypeId(raw as u32);
         }
-        // A return type belongs to its signature, not to one replayed
-        // invocation: resolve it outside every call-state replay, or that
-        // invocation's heap state would publish as the signature's result.
-        if self.native_call_replay_active() {
-            return self.with_call_parent(0, |checker| checker.resolve_return_type(sig, resolve));
-        }
         if !self.enter(Query::ReturnOfSignature(sig)) {
             if self.found_cycle && self.sig_has_native_result_pack(sig)
                 && let Some(contract) = self.sig_declared_result_pack_contract(sig)

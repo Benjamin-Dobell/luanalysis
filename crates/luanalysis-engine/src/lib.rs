@@ -58,8 +58,6 @@ mod native_standard_loop_write_tests;
 #[cfg(test)]
 mod native_fresh_namespace_tests;
 #[cfg(test)]
-mod native_flow_call_tests;
-#[cfg(test)]
 mod native_alias_written_contract_tests;
 #[cfg(test)]
 mod native_alias_environment_tests;
@@ -362,7 +360,6 @@ pub trait NativeTypeProvider {
     /// category. A matching user-written class name does not grant this fact.
     fn runtime_type_declaration(&self, _: NativeOpaqueRuntimeKind) -> Option<NativeTypeDeclarationKey> { None }
     fn project_flow_provider(&self) -> Option<&dyn NativeFlowProvider> { None }
-    fn function_flow_execution(&self, _: NativeFunctionKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Option<NativeAliasExecution> { None }
     fn contextual_type_owner(&self, _: NativeFunctionKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> ContextualTypeOwner { ContextualTypeOwner::Absent }
     fn function_calling_convention(&self, _: NativeFunctionKey) -> FunctionCallingConvention { FunctionCallingConvention::TypeScript }
     /// Exact source method declaration provenance. Function-valued fields stay false.
@@ -1028,8 +1025,6 @@ pub trait TypeQueries {
     fn flow_standard_call_continuation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
         self.flow_call_preservation(provider, reference, call, input)
     }
-    /// True only for the exact original graph/facet in active call-state replay.
-    fn is_native_call_execution(&self, graph: NativeGraphKey) -> bool;
     fn flow_alias_intrinsic(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasIntrinsic;
     fn flow_standard_operation(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeStandardOperation {
         match self.flow_alias_intrinsic(provider, value, input) {
@@ -1790,9 +1785,6 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
         self.checker.native_flow_standard_call_continuation(&adapter, reference, call, input)
     }
-    fn is_native_call_execution(&self, graph: NativeGraphKey) -> bool {
-        self.checker.is_native_call_execution(graph)
-    }
     fn flow_alias_intrinsic(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeAliasIntrinsic {
         let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
         match self.checker.native_flow_alias_intrinsic(&adapter, value, input) {
@@ -2429,9 +2421,6 @@ struct ProviderAdapter<'a, P> {
 impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     fn project_flow_provider(&self) -> Option<&dyn bun_sema::check::native_flow::NativeFlowProvider> {
         self.provider.project_flow_provider().map(|_| self as &dyn bun_sema::check::native_flow::NativeFlowProvider)
-    }
-    fn function_flow_execution(&self, checker: &mut Checker<'_, '_>, function: NativeFunctionId, creation: NativeFlowKey) -> Option<NativeAliasExecution> {
-        self.provider.function_flow_execution(source_key(function), creation, &mut SessionQueries { checker, handles: self.handles })
     }
     fn contextual_type_owner(&self, checker: &mut Checker<'_, '_>, scope: NativeFunctionId, input: NativeFlowKey) -> bun_sema::check::native_named::NativeContextualTypeOwner {
         use bun_sema::check::native_named::NativeContextualTypeOwner as Core;

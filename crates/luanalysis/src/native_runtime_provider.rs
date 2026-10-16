@@ -339,12 +339,6 @@ impl crate::Checker<'_> {
         expression: &luanalysis_syntax::Expr,
         actual: Type,
     ) -> Type {
-        // A proven original invocation replays this exact body graph with its
-        // caller's reached heap. Prospective capture contracts are appropriate
-        // for declaration checking, not for an actual callee RHS evaluation.
-        if self.flow_at.is_some_and(|input| self.engine.is_native_call_execution(input.graph)) {
-            return actual;
-        }
         if let Some(native) = self.native
             && self.type_context.is_some()
             && let Some(reference) = self.reference(expression)

@@ -62,11 +62,6 @@ pub struct NativeAliasCall {
 pub enum NativeAliasDispatch { NoDispatch, ReferenceRead(NativeReferenceKey), Unknown }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeCallPreservation { Preserved, Unknown, Pending }
-pub(super) enum NativeReachedCallee {
-    Function { function: NativeFunctionId, creation: NativeFlowKey, activation: u64, call: NativeAliasCall },
-    Unsupported,
-    Pending,
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeAliasIntrinsic { Standard(NativeIntrinsicSite), Unknown, Pending }
 /// Ordinary language operation under the selected host policy. This is not
@@ -149,27 +144,6 @@ impl Origin {
 }
 
 impl<'p, 's> Checker<'p, 's> {
-    pub(super) fn native_alias_execution_key(&self) -> u64 { self.native_alias_cache.frame() }
-    pub(super) fn native_alias_execution_depth(&self) -> usize { self.native_alias_cache.executions.len() }
-    /// Selects an original callee only within the caller-state replay capability.
-    pub(super) fn native_reached_callee(&mut self, provider: &dyn NativeFlowProvider, call: NativeValueKey, input: NativeFlowKey) -> NativeReachedCallee {
-        let Some(recipe) = provider.alias_call_source(call, input) else { return NativeReachedCallee::Unsupported };
-        // Formal/actual substitution is unsupported. Reject the original
-        // argument recipe before asking for physical callee provenance.
-        if !recipe.arguments.is_empty() { return NativeReachedCallee::Unsupported }
-        if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeReachedCallee::Unsupported }
-        let origins = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
-        if origins.uncertain { return NativeReachedCallee::Pending }
-        if origins.unknown || origins.non_table || origins.tokens.len() != 1 { return NativeReachedCallee::Unsupported }
-        let Origin::Function(function, creation, activation) = origins.tokens.into_iter().next().unwrap() else { return NativeReachedCallee::Unsupported };
-        // The first transfer capability covers only a closure invoked in its
-        // actual creating activation. Escaped closures need a separate proof.
-        if creation.graph != recipe.execution_input.graph
-            || activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation)
-        { return NativeReachedCallee::Unsupported }
-        if self.native_alias_cache.executions.iter().any(|frame| frame.function.is_some_and(|active| active.0 == function)) { return NativeReachedCallee::Pending }
-        NativeReachedCallee::Function { function, creation, activation, call: recipe }
-    }
     fn native_alias_stable_cell(&self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey) -> bool {
         provider.reference_is_cell(reference) && provider.reference_declaration(reference).is_some_and(|declaration| declaration.writes.iter().all(|write| write.owner == declaration.owner))
     }

@@ -148,7 +148,6 @@ pub enum NativeTypeResult {
 pub trait NativeFunctionProvider {
     fn project_flow_provider(&self) -> Option<&dyn native_flow::NativeFlowProvider> { None }
     /// Original normal-completion graph under the exact selected callee frame.
-    fn function_flow_execution(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId, _: native_flow::NativeFlowKey) -> Option<native_aliases::NativeAliasExecution> { None }
     fn contextual_type_owner(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId, _: native_flow::NativeFlowKey) -> native_named::NativeContextualTypeOwner { native_named::NativeContextualTypeOwner::Absent }
     fn calling_convention(&self, _: NativeFunctionId) -> native_signatures::NativeCallingConvention { native_signatures::NativeCallingConvention::TypeScript }
     /// Exact original method declaration syntax, not merely a callable property.
@@ -1106,7 +1105,6 @@ enum Query {
     NativeAliasNewIndexAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
     NativeAliasMetatableCall(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
-    NativeFlowCallState(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, TypeId, SigId, u64, u64),
     NativeGlobals(NativeGlobalsQuery),
     NativeProject(NativeProjectQuery),
     NativeNamed(NativeTypeDeclarationQuery),
@@ -1201,7 +1199,7 @@ impl Query {
             Query::BaseConstructor(sym) => (sym.file, 13),
             Query::ReturnOfSignature(_)
             | Query::NativeContextualTypeOwner(..)
-            | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallState(..)
+            | Query::NativeFlowCallEffects(..)
             | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
             | Query::NativeAliasLoaderState(..)
             | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)

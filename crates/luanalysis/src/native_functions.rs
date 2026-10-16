@@ -37,8 +37,6 @@ mod methods;
 mod metatables;
 #[path = "native_alias_facts.rs"]
 mod alias_facts;
-#[path = "native_flow_execution.rs"]
-mod flow_execution;
 #[path = "native_project_provider.rs"]
 pub(crate) mod project_provider;
 #[path = "native_globals.rs"]
@@ -2648,9 +2646,6 @@ impl NativeTypeProvider for NativeRegistry {
     }
     fn function_lexical_parent(&self, key: NativeFunctionKey) -> Option<NativeFunctionKey> {
         self.flow.lexical_parent(key)
-    }
-    fn function_flow_execution(&self, key: NativeFunctionKey, creation: NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::NativeAliasExecution> {
-        self.source_function_flow_execution(key, creation, queries)
     }
     fn contains_function(&self, key: NativeFunctionKey) -> bool {
         key.snapshot == self.snapshot && (key.index as usize) < self.functions.len()

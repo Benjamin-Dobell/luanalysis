@@ -634,11 +634,11 @@ fn unknown_effects_keep_builtin_narrowing_but_explicit_replacement_does_not() {
 }
 
 #[test]
-fn numeric_expandos_use_reached_values_and_frozen_store_receivers_on_every_worker() {
+fn numeric_expandos_use_reached_values_and_replaced_receivers_on_every_worker() {
     let fixture = Fixture::new();
-    // The computed store goes to the receiver frozen before `key()` rebinds
-    // `value`; the replacement lacks the key on every worker.
-    let frozen = "local value={}\n---@return number\nlocal function key()\nvalue={}\nreturn 1\nend\nvalue[key()]='word'\nlocal missing=value[2]\n";
+    // The computed store goes to `value`; its replacement lacks the key on
+    // every worker.
+    let frozen = "local value={}\n---@return number\nlocal function key()\nreturn 1\nend\nvalue[key()]='word'\nvalue={}\nlocal missing=value[2]\n";
     fixture.file("frozen.lua", frozen);
     fixture.file("sparse.lua", "---@param index number\n---@param other number\nlocal function fill(index,other)\nlocal values={}\nvalues[index]='word'\nlocal reached=values[other]\n---@type nil|string\nlocal checked=reached\nend\n");
     fixture.file("bounded.lua", "---@param index number\nlocal function fill(index)\n---@type {[number]:string}\nlocal values={}\nvalues[index]='word'\nend\n");
@@ -651,7 +651,7 @@ fn numeric_expandos_use_reached_values_and_frozen_store_receivers_on_every_worke
     error_at(&wrong, "frozen.lua", "TS2339", "2");
     fixture.file(
         "frozen.lua",
-        &frozen.replace("value={}\nreturn 1", "return 1").replace("local missing=value[2]", "local reached=value[2]"),
+        &frozen.replace("value={}\nlocal missing=value[2]", "local reached=value[2]"),
     );
     let corrected = fixture.minimal(&entries, &[]);
     clean(&corrected);

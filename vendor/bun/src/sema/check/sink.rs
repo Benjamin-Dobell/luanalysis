@@ -271,7 +271,7 @@ fn is_task_independent(q: Query) -> bool {
         | Query::Comparison(_) => true,
         Query::NativeGlobals(_)
         | Query::NativeContextualTypeOwner(..)
-        | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallState(..)
+        | Query::NativeFlowCallEffects(..)
         | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
         | Query::NativeAliasLoaderState(..)
         | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)

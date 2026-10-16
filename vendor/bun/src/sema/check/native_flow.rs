@@ -5,8 +5,6 @@
 use super::flow_walk::{FlowDomain, FlowStep, FlowType, ReachDomain, ReachStep, WalkState};
 use super::*;
 use crate::types::TypeId;
-#[path = "native_flow_calls.rs"]
-mod calls;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NativeGraphKey {
@@ -437,7 +435,6 @@ pub(super) struct NativeFlowState {
     latest_reachable: Option<(NativeFlowKey, bool)>,
     disabled: FxHashMap<NativeGraphKey, ()>,
     capture_graphs: Vec<NativeGraphKey>,
-    call_executions: Vec<calls::NativeCallStateFrame>,
 }
 
 impl NativeFlowState {
@@ -462,7 +459,6 @@ struct NativeDomain<'a> {
 }
 
 enum NativeTransfer {
-    Call { value: NativeValueKey, input: NativeFlowKey },
     PossibleWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, relation: NativeWriteRelation },
     IncompleteCall,
     DefinitionWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey },
@@ -763,7 +759,7 @@ impl FlowDomain for NativeDomain<'_> {
             return FlowStep::Value(TypeId::ERROR);
         };
         match node {
-            NativeFlowNode::Start => match checker.native_call_entry(self.provider, at, walk).or_else(|| self.auto_at_start(checker, walk, at)) {
+            NativeFlowNode::Start => match self.auto_at_start(checker, walk, at) {
                 Some(result) => FlowStep::Complete(result),
                 None => FlowStep::Initial,
             },
@@ -902,11 +898,7 @@ impl FlowDomain for NativeDomain<'_> {
                         Ok(None) => FlowStep::Follow { before, transfer: None, count_passed: false },
                         Err(()) => FlowStep::Value(TypeId::ERROR),
                     },
-                    NativeEffectResult::Complete(NativeCallEffects::None) => FlowStep::Follow {
-                        before,
-                        transfer: Some(NativeTransfer::Call { value, input }),
-                        count_passed: false,
-                    },
+                    NativeEffectResult::Complete(NativeCallEffects::None) => FlowStep::Follow { before, transfer: None, count_passed: false },
                     NativeEffectResult::Complete(NativeCallEffects::Unsupported(feature)) => {
                         self.provider
                             .flow_error(at, NativeFlowError::Unsupported(feature));
@@ -928,7 +920,6 @@ impl FlowDomain for NativeDomain<'_> {
             return FlowType::new(previous.ty, true);
         }
         let ty = match transfer {
-            NativeTransfer::Call { value, input } => return checker.native_call_state_transfer(self.provider, walk, value, input, previous),
             NativeTransfer::PossibleWrite { at, target, value, input, relation } => {
                 let assigned = match relation {
                     NativeWriteRelation::PossibleExact => checker.native_flow_value(self.provider, value, input),
@@ -1232,14 +1223,6 @@ impl ReachDomain for NativeDomain<'_> {
 }
 
 impl<'s, 'p> Checker<'s, 'p> {
-    /// Whether a call-state replay of an original invocation is in progress.
-    pub(in crate::check) fn native_call_replay_active(&self) -> bool {
-        !self.flow_memo.native_state.call_executions.is_empty()
-    }
-
-    pub fn is_native_call_execution(&self, graph: NativeGraphKey) -> bool {
-        self.flow_memo.native_state.call_executions.last().is_some_and(|frame| frame.entry.graph == graph)
-    }
     /// Original runtime capabilities must not lose a structurally redundant
     /// alternative before intrinsic provenance is classified.
     pub fn native_runtime_value_union(&mut self, types: &[TypeId]) -> TypeId {

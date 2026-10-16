@@ -4,6 +4,10 @@ const ORIGINAL_FACTORY: &str = "local function make()\n local t={}\n local funct
 
 const GENERIC_FACTORY: &str = "---@generic T\n---@param value T\nlocal function make(value)\n local t={}\n local function install()\n  ---@return T\n  function t.callback() return value end\n end\n install()\n return t\nend\n";
 
+// Immediate reads see only stores in the caller's own flow (calls are not
+// replayed, as in TypeScript), so these factories define the callback directly.
+const GENERIC_DIRECT_FACTORY: &str = "---@generic T\n---@param value T\nlocal function make(value)\n local t={}\n ---@return T\n function t.callback() return value end\n return t\nend\n";
+
 const DEFERRED_CALLS: &str = "local numbers=make(1)\nlocal strings=make('word')\nlocal function run()\n---@type number\nlocal numeric=numbers.callback()\n---@type string\nlocal text=strings.callback()\nend\nrun()\n";
 
 #[test]
@@ -16,7 +20,7 @@ fn replaying_a_nested_installer_selects_its_original_frozen_function_frame() {
 
 #[test]
 fn separate_generic_factory_instances_keep_their_lexical_callback_results() {
-    let source = format!("{GENERIC_FACTORY}local numbers=make(1)\nlocal strings=make('word')\n---@type number\nlocal numeric=numbers.callback()\n---@type string\nlocal text=strings.callback()\n");
+    let source = format!("{GENERIC_DIRECT_FACTORY}local numbers=make(1)\nlocal strings=make('word')\n---@type number\nlocal numeric=numbers.callback()\n---@type string\nlocal text=strings.callback()\n");
     let report = check(&source);
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     let wrong = source.replace("local text=strings.callback()", "local text=numbers.callback()");
@@ -32,7 +36,7 @@ fn separate_generic_factory_instances_keep_their_lexical_callback_results() {
 fn imported_factory_callbacks_reject_wrong_results_then_accept_the_original_source_correction() {
     let directory = std::env::temp_dir().join(format!("luanalysis-frozen-parent-factory-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
-    std::fs::write(directory.join("factory.lua"), format!("{GENERIC_FACTORY}return make\n")).unwrap();
+    std::fs::write(directory.join("factory.lua"), format!("{GENERIC_DIRECT_FACTORY}return make\n")).unwrap();
     let path = directory.join("main.lua");
     let corrected = "local make=require('factory')\nlocal numbers=make(42)\nlocal strings=make('word')\n---@type number\nlocal numeric=numbers.callback()\n---@type string\nlocal text=strings.callback()\n";
     let invoke = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))

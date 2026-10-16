@@ -179,10 +179,15 @@ local labels={number='number',string='string'}
 local function unrelated(key) return labels[key] end
 local numeric=make(1)
 local text=make('word')
----@type number
-local a=numeric.callback()
----@type string
-local b=text.callback()
+-- A deferred body reads the prospective receiver, which includes the
+-- installer's store (an immediate read would not: calls are not replayed).
+local function run()
+    ---@type number
+    local a=numeric.callback()
+    ---@type string
+    local b=text.callback()
+end
+run()
 "#;
     for profile in [StandardEnvironmentProfile::Lua52, StandardEnvironmentProfile::Lua54] {
         clean(&fixture.check(source, profile));
