@@ -28,7 +28,9 @@ impl SourceHeaderMetadata {
     pub(super) fn invalidate(&mut self) {
         self.headers.clear();
         self.generation = self.generation.checked_add(1).expect("original header metadata generation fits u64");
+        crate::native_types::advance_metadata_clock();
     }
+    #[cfg(test)]
     pub(super) fn generation(&self) -> u64 { self.generation }
     pub(super) fn get(&mut self, revisions: &[u64], key: NativeTypeDeclarationKey) -> Option<TypeDeclarationHeader> {
         if self.scope_revisions != revisions {
@@ -356,12 +358,13 @@ impl NativeRegistry {
         &self,
         key: NativeTypeDeclarationKey,
     ) -> TypeDeclarationHeader {
-        let revisions = self.types.metadata_revisions();
+        // Every original scope revision advances the thread's metadata clock.
+        let revisions = [crate::native_types::metadata_clock()];
         if let Some(header) = self.header_metadata.borrow_mut().get(&revisions, key) { return header; }
         // Each original owner is traversed with the existing fresh visited
         // sets. A recursive sub-traversal never publishes a partial closure.
         let header = self.named_declaration_header_uncached(key);
-        assert_eq!(self.types.metadata_revisions(), revisions,
+        assert_eq!([crate::native_types::metadata_clock()], revisions,
             "header dependency discovery only reads original scope metadata");
         self.header_metadata.borrow_mut().headers.insert(key, header.clone());
         header

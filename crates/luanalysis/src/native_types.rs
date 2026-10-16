@@ -49,6 +49,22 @@ struct TypeScope {
     parameters: Vec<NativeTypeParameterKey>,
 }
 
+thread_local! {
+    /// Advanced with every original scope epoch and header metadata generation
+    /// on this thread. A project's registries live on one thread, so the clock
+    /// is unchanged exactly when none of their revisions changed: a merged
+    /// metadata view is validated in O(1) instead of comparing every file's.
+    static METADATA_CLOCK: Cell<u64> = const { Cell::new(0) };
+}
+
+pub(super) fn metadata_clock() -> u64 {
+    METADATA_CLOCK.get()
+}
+
+pub(super) fn advance_metadata_clock() {
+    METADATA_CLOCK.set(METADATA_CLOCK.get().checked_add(1).expect("original metadata clock fits u64"));
+}
+
 pub(super) struct NativeTypes {
     snapshot: u64,
     scopes: HashMap<NativeTypeContext, TypeScope>,
@@ -112,11 +128,14 @@ impl NativeTypes {
     }
     fn advance_metadata(epoch: &Cell<u64>) {
         epoch.set(epoch.get().checked_add(1).expect("original scope metadata epoch fits u64"));
+        advance_metadata_clock();
     }
     /// Original scope revisions only; these never name inferred checker types.
+    #[cfg(test)]
     pub(super) fn metadata_revisions(&self) -> Vec<u64> {
         self.metadata_epochs.iter().map(|epoch| epoch.get()).collect()
     }
+    #[cfg(test)]
     pub(super) fn own_metadata_revision(&self) -> u64 { self.metadata_epochs[0].get() }
     pub(super) fn new(snapshot: u64, recipes: Vec<TypeScopeRecipe>) -> Self {
         Self::new_with_named(snapshot, recipes, Vec::new())

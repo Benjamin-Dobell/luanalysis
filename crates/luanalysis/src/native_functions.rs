@@ -142,6 +142,7 @@ impl NativeRegistry {
     pub(super) fn invalidate_header_metadata(&self) {
         self.header_metadata.borrow_mut().invalidate();
     }
+    #[cfg(test)]
     pub(super) fn header_metadata_revision(&self) -> (u64, u64) {
         (self.types.own_metadata_revision(), self.header_metadata.borrow().generation())
     }

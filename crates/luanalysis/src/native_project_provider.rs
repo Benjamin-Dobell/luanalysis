@@ -367,14 +367,12 @@ impl ProjectRegistry {
         }
     }
 
-    fn header_metadata_revisions(&self) -> Vec<u64> {
-        // Every imported original scope belongs to one of these fixed source
-        // owners. Shared scope epochs and local documentation preparation
-        // generations therefore cover the complete merged metadata view.
-        self.files.iter().flat_map(|file| {
-            let (scope, local) = file.source.header_metadata_revision();
-            [scope, local]
-        }).collect()
+    fn header_metadata_revisions(&self) -> [u64; 1] {
+        // Every imported original scope belongs to one of the fixed source
+        // owners. Their shared scope epochs and local documentation preparation
+        // generations all advance the thread's metadata clock, which therefore
+        // covers the complete merged metadata view.
+        [crate::native_types::metadata_clock()]
     }
 
     fn declaration_header_metadata(&self, key: NativeTypeDeclarationKey) -> TypeDeclarationHeader {
