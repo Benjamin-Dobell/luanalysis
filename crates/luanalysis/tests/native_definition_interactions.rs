@@ -219,7 +219,15 @@ fn immutable_assignment_context_checks_the_original_custom_environment_property(
         .collect();
     assert_eq!(gates.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(&source[gates[0].span.start..gates[0].span.end], "missing");
-    let corrected = luanalysis::check("local _ENV={missing=0}\nmissing=42\n");
+    let fixed = "local _ENV={missing=0}\nmissing=42\n";
+    let rejected = luanalysis::check(fixed);
+    assert_eq!(rejected.diagnostics.len(), 1, "{:#?}", rejected.diagnostics);
+    assert_eq!(rejected.diagnostics[0].code, "TS2322");
+    let span = rejected.diagnostics[0].span;
+    assert_eq!(&fixed[span.start..span.end], "42");
+    let corrected = luanalysis::check(
+        "---@type {missing:number}\nlocal _ENV={missing=0}\nmissing=42\n",
+    );
     assert!(corrected.diagnostics.is_empty(), "{:#?}", corrected.diagnostics);
 }
 

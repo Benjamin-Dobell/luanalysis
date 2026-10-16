@@ -28,7 +28,7 @@ fn unannotated_callback_member_access_is_checked_in_native_context() {
     );
     let parameter = source.find("function(value)").unwrap() + 9;
     let ty = report.type_at(parameter).unwrap();
-    assert!(ty.contains("id") && ty.contains("number"), "{ty}");
+    assert_eq!(ty, "{ id: 42 }");
 }
 
 #[test]
