@@ -76,7 +76,7 @@ impl NativeRegistry {
             }
         };
         if !checker.incomplete_flow {
-            self.merge_flow_report(input, checker.check_mode, checker.report);
+            self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
         }
         pack
     }

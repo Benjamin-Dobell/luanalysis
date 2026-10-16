@@ -310,7 +310,7 @@ impl NativeRegistry {
             // caller-specific activation may become a global class fact.
             checker.error("LUA2042", self.expressions.get(source.call).expression.span,
                 "Contextual metatable ownership inside a function requires an owner application that retains its original capture facet.");
-            self.merge_flow_report(input, checker.check_mode, checker.report);
+            self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
             return ContextualTypeOwner::Absent;
         }
         let mut owner = None;
@@ -343,7 +343,7 @@ impl NativeRegistry {
         if checker.incomplete_flow {
             return ContextualTypeOwner::Pending;
         }
-        self.merge_flow_report(input, checker.check_mode, checker.report);
+        self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
         owner.map_or(ContextualTypeOwner::Absent, ContextualTypeOwner::Owner)
     }
 

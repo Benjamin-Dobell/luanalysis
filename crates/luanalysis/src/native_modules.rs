@@ -107,7 +107,7 @@ impl NativeRegistry {
             let mut checker = self.checker_at_flow(at, queries);
             returned.push(checker.return_expression_pack(&expressions, statement.span, None));
             if !checker.incomplete_flow {
-                self.merge_flow_report(at, checker.check_mode, checker.report);
+                self.merge_flow_report(at, checker.check_mode, checker.report, checker.engine);
             }
         }
         let fallthrough =
