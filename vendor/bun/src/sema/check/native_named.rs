@@ -953,9 +953,13 @@ impl<'p, 's> Checker<'p, 's> {
             NativeTypeMemberOwner::Reference { candidates, .. } => match candidates.as_slice() { [owner] => Some(*owner), _ => None },
             NativeTypeMemberOwner::RuntimeStore(_) => None,
         };
+        // A candidate whose scope owner cannot be determined (an augmentation of
+        // an unsupported alias) is not this owner's member. Its own declaration
+        // check reports the error; propagating it here failed every object
+        // resolved while that candidate was listed.
         if let Some(candidate) = candidate
             && !matches!(provider.type_declaration_owner_scope(self, candidate), NativeOwnerScopeRecipe::ResolvedHead)
-            && self.native_named_member_scope_owner(member)? != reference.declaration
+            && self.native_named_member_scope_owner(member).ok() != Some(reference.declaration)
         { return Ok(None) }
         let (owner, _) = self.native_named_member_origin(member)?;
         if owner.declaration != reference.declaration { return Ok(None) }
