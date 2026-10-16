@@ -103,6 +103,20 @@ fn unannotated_call_result_supplies_its_named_owner_to_sibling_metatable_fields(
     let output = fixture.check(&invalid);
     assert!(text(&output).contains("TS2322"), "{}", text(&output));
     assert!(!text(&output).contains("TS2339"), "{}", text(&output));
+    let wrong_result = source.replace("---@return number", "---@return string");
+    let output = fixture.check(&wrong_result);
+    assert!(
+        text(&output).contains("Actual: number. Expected: string."),
+        "{}",
+        text(&output)
+    );
+    let missing_member = source.replace("target.id", "target.missing");
+    let output = fixture.check(&missing_member);
+    assert!(
+        text(&output).contains("Property 'missing' does not exist"),
+        "{}",
+        text(&output)
+    );
     clean(&fixture.check(&source));
 }
 
