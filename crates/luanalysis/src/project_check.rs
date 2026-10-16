@@ -182,6 +182,7 @@ pub(crate) fn check_project_with_workspace(
         );
         (checked, required, None)
     } else {
+        let scheduled: HashSet<_> = roots.iter().copied().collect();
         let mut batches = Vec::new();
         let mut steps = Vec::new();
         if !standard_roots.is_empty() {
@@ -194,7 +195,7 @@ pub(crate) fn check_project_with_workspace(
         let run = Engine::new().with_native_task_plan_report(
             NonZeroUsize::new(workers).unwrap(), &steps, make_registry,
             |job, registry, queries| {
-                let reports = registry.check_roots(queries, &batches[job]);
+                let reports = registry.check_scheduled_roots(queries, &batches[job], &scheduled);
                 (reports, registry.required_files())
             },
         );
