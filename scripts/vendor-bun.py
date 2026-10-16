@@ -469,6 +469,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Publish completed snapshot-qualified native module/global/head results through shared Program buffers and provider-aware linking, retain task-local failures and guarded current-only results under unchanged inherited flow, and preserve deterministic union sorting through kernel f6512d7.",
 } for path in ["check_source_file.rs", "mod.rs", "native_globals.rs", "native_named.rs", "native_project.rs", "native_query_context.rs", "unions.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-contextual-assignment-lifetimes.patch",
+    "reason": "Retain contextual assignment ownership with the originating native query frame, distinguish final/provisional/expired instances, and inspect original callable/lexical identities without resolving parameters or returns through kernel f320c7a.",
+} for path in ["check/call.rs", "check/mod.rs", "types.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

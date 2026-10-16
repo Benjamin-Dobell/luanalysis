@@ -2058,6 +2058,24 @@
       "patch": "vendor/patches/bun-sema-native-shared-program-publication.patch",
       "reason": "Publish completed snapshot-qualified native module/global/head results through shared Program buffers and provider-aware linking, retain task-local failures and guarded current-only results under unchanged inherited flow, and preserve deterministic union sorting through kernel f6512d7.",
       "patch_sha256": "bd2a0e07023669dc5813a78ef5c2749239aa50ecea9bfa2791f956f86de9eedf"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-contextual-assignment-lifetimes.patch",
+      "reason": "Retain contextual assignment ownership with the originating native query frame, distinguish final/provisional/expired instances, and inspect original callable/lexical identities without resolving parameters or returns through kernel f320c7a.",
+      "patch_sha256": "08e09f6b1b1be20bb7d1820c2114291c55cb26ffa00715d90f4a7fae5850c301"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-contextual-assignment-lifetimes.patch",
+      "reason": "Retain contextual assignment ownership with the originating native query frame, distinguish final/provisional/expired instances, and inspect original callable/lexical identities without resolving parameters or returns through kernel f320c7a.",
+      "patch_sha256": "08e09f6b1b1be20bb7d1820c2114291c55cb26ffa00715d90f4a7fae5850c301"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-contextual-assignment-lifetimes.patch",
+      "reason": "Retain contextual assignment ownership with the originating native query frame, distinguish final/provisional/expired instances, and inspect original callable/lexical identities without resolving parameters or returns through kernel f320c7a.",
+      "patch_sha256": "08e09f6b1b1be20bb7d1820c2114291c55cb26ffa00715d90f4a7fae5850c301"
     }
   ],
   "source_additions": {
@@ -2828,7 +2846,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "fb91d9f52abd71e545b8e5c767ac00d1a92262b2e5972016f1442887a6dad77b"
+      "extracted_sha256": "2e9bc6887bddec29ac3234b756c43004b3b14bcf9d7d65856ae53da0a9f49a0c"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -3088,7 +3106,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "042c28c99d0c8c96aaef7124d3fd698618d1213d8840122c192889945eda58ea"
+      "extracted_sha256": "1ca2456425684489dc2cdbacbc805e385aa9eaa597b1a7aa947896d26ea7f3fb"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -3293,7 +3311,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "c688d3f962275f836d8d4101653d304611814a09ba6a3e718dce018d78f31c0d"
+      "extracted_sha256": "af0f65978898c780a609f12c6564a7752490a2c3f110e545da7f03980df54e0c"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

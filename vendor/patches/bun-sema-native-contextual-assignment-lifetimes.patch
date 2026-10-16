@@ -1,0 +1,177 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+index 5c182ab..3e4210a 100644
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -233,6 +233,15 @@ enum SigParent {
+     Lone(FileId, FnId),
+ }
+ 
++/// A contextual assignment may be used by the query that selected it without
++/// becoming final source-body work. An expired instance never becomes final.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeFunctionCheckState {
++    Final,
++    Provisional,
++    Expired,
++}
++
+ impl<'p, 's> Checker<'p, 's> {
+     pub(super) fn native_argument_expression(&self, expression: NativeExpressionId) -> NativeArgumentExpression {
+         NativeArgumentExpression {
+@@ -446,6 +455,12 @@ impl<'p, 's> Checker<'p, 's> {
+     pub fn contains_native_expression(&self, expression: NativeExpressionId) -> bool {
+         self.native_function_provider.is_some_and(|provider| provider.contains_expression(expression))
+     }
++    pub fn contains_native_function(&self, function: NativeFunctionId) -> bool {
++        self.native_function_provider.is_some_and(|provider| provider.contains_function(function))
++    }
++    pub fn contains_native_signature(&self, signature: NativeSignatureId) -> bool {
++        self.native_function_provider.is_some_and(|provider| provider.contains_signature(signature))
++    }
+ 
+     pub fn native_contextual_function(
+         &mut self,
+@@ -496,12 +511,29 @@ impl<'p, 's> Checker<'p, 's> {
+             }))
+             .unwrap_or(expected);
+         static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
++        // `contextuallyCheckFunctionExpressionOrObjectLiteralMethod`, exactly
++        // as for `context_checked_under` in expr.rs: a cycle/trial is scoped,
++        // while an incomplete-flow-only assignment is deliberately retained.
++        let is_checked_again = self.frames.last()
++            .is_some_and(|frame| frame.tainted && (!frame.incomplete_flow || frame.drops_reported));
++        let scope = is_checked_again.then(|| self.frames.iter().enumerate()
++            .find(|(_, frame)| frame.tainted)
++            .map(|(index, frame)| (index, frame.serial)))
++            .flatten();
+         let context = NativeFunctionContext {
+             expression,
+             expected: assigned,
+             instance: NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+             mode,
++            provisional: scope.is_some(),
+         };
++        if let Some(scope) = scope {
++            let frames = &self.frames;
++            self.native_contextual_scopes.retain(|_, (index, serial)| {
++                frames.get(*index).is_some_and(|frame| frame.serial == *serial)
++            });
++            self.native_contextual_scopes.insert(context.instance, scope);
++        }
+         let sig = self.types().intern_sig(SigData::NativeContextual {
+             declaration,
+             mapper,
+@@ -512,6 +544,58 @@ impl<'p, 's> Checker<'p, 's> {
+         Some(self.native_function_overload_type(sig))
+     }
+ 
++    pub fn native_contextual_function_check_state(&self, context: NativeFunctionContext) -> NativeFunctionCheckState {
++        if !context.provisional { return NativeFunctionCheckState::Final }
++        match self.native_contextual_scopes.get(&context.instance) {
++            Some(&(index, serial)) if self.frames.get(index).is_some_and(|frame| frame.serial == serial) => NativeFunctionCheckState::Provisional,
++            _ => NativeFunctionCheckState::Expired,
++        }
++    }
++
++    /// Read the exact implementation/lexical-parent identities. This never
++    /// demands a function's parameters, return type or implementation body.
++    pub fn native_function_check_state(&self, function: TypeId) -> NativeFunctionCheckState {
++        // Calling `signatures` here would resolve/compare union or intersection
++        // signatures, demanding their parameters and possibly their returns.
++        // Ownership observes only identities already carried by the value.
++        let mut types = vec![function];
++        let mut seen_types = std::collections::HashSet::new();
++        let mut pending = Vec::new();
++        while let Some(ty) = types.pop() {
++            if !seen_types.insert(ty) { continue }
++            match self.data(ty) {
++                TypeData::Synth(shape) => {
++                    pending.extend(shape.call.iter().copied());
++                    pending.extend(shape.construct.iter().copied());
++                    types.extend(shape.instantiation_target);
++                }
++                TypeData::Union(parts) | TypeData::Intersection(parts) => types.extend(parts.iter().copied()),
++                _ => {}
++            }
++        }
++        let mut visited = std::collections::HashSet::new();
++        let mut state = NativeFunctionCheckState::Final;
++        while let Some(signature) = pending.pop() {
++            if !visited.insert(signature) { continue }
++            match self.types().sig(signature) {
++                SigData::NativeContextual { context, lexical_parent, .. } => {
++                    match self.native_contextual_function_check_state(*context) {
++                        NativeFunctionCheckState::Expired => return NativeFunctionCheckState::Expired,
++                        NativeFunctionCheckState::Provisional => state = NativeFunctionCheckState::Provisional,
++                        NativeFunctionCheckState::Final => {}
++                    }
++                    pending.extend(*lexical_parent);
++                }
++                SigData::NativeCaptured { lexical_parent, .. } => pending.extend(*lexical_parent),
++                SigData::NativeDeclarationSignature { implementation, .. } => pending.extend(*implementation),
++                SigData::WithReturn { sig, .. } | SigData::WithNativeResultPack { sig, .. } => pending.push(*sig),
++                SigData::Synth { of, .. } => pending.extend(of.iter().copied()),
++                _ => {}
++            }
++        }
++        state
++    }
++
+     pub fn contextual_parameter_type(&mut self, context: NativeFunctionContext, index: usize) -> Option<TypeId> {
+         let params = self.sig_params(context.expected);
+         self.param_type_at(&params, index)
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index f750d76..57d3c8e 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -133,7 +133,7 @@ use native_project::{NativeProjectCache, NativeProjectProvider, NativeProjectQue
+ use native_named::{NativeNamedCache, NativeTypeDeclarationProvider, NativeTypeDeclarationQuery};
+ use native_globals::{NativeGlobalsCache, NativeGlobalsProvider, NativeGlobalsQuery};
+ 
+-pub use call::{ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
++pub use call::{NativeFunctionCheckState, ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
+ pub use native_packs::NativePackResult;
+ 
+ /// Written types need the signature substitution; checked values already used its scoped facts.
+@@ -803,6 +803,7 @@ impl<'s> Program<'s> {
+             native_arrays: false,
+             native_function_contexts: Vec::new(),
+             native_capture_contexts: Vec::new(),
++            native_contextual_scopes: FxHashMap::default(),
+             arena,
+             task: Task::new_in(arena),
+             left_frame: None,
+@@ -1347,6 +1348,9 @@ pub struct Checker<'p, 's> {
+     native_arrays: bool,
+     native_function_contexts: Vec<NativeFunctionContext>,
+     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
++    /// Native counterpart of `context_checked_under`. Scope indices/serials
++    /// stay task-local; only the immutable provisional bit follows a signature.
++    native_contextual_scopes: FxHashMap<u64, (usize, u64)>,
+     /// The arena of the thread that runs the task: for the records that the task creates, which may be
+     /// published. Everything else that a task allocates is on the regular heap.
+     pub arena: &'s Arena,
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+index b3a6e52..5ab4d29 100644
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -82,6 +82,9 @@ pub struct NativeFunctionContext {
+     pub expected: SigId,
+     pub instance: u64,
+     pub mode: crate::check::CheckMode,
++    /// Like a contextual assignment in `context_checked_under`: the originating
++    /// query owns this instance, even after its task-local scope has expired.
++    pub provisional: bool,
+ }
+ #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+ pub struct MapperId(pub u32);
+@@ -3574,7 +3577,8 @@ follow_struct!(NativeFunctionContext {
+     expression,
+     expected,
+     instance,
+-    mode
++    mode,
++    provisional
+ });
+ follow_struct!(Provenance<'_> {
+     alias,
