@@ -1,9 +1,11 @@
 //! Native checker tasks over an immutable collection of original Lua files.
 //! Files retain their own syntax, lexical identities, graphs and source reports.
 use crate::native_functions::project_provider::{ProjectRegistrySnapshot, RegistryInput};
-use crate::{CheckReport, Diagnostic};
 use crate::standard_environment::{StandardEnvironmentProfile, StandardEnvironmentSelection};
-use luanalysis_engine::{Engine, NativeLoaderPolicy, NativeTaskRunStats};
+use crate::{CheckReport, Diagnostic};
+use luanalysis_engine::{
+    Engine, NativeCheckPlan, NativeLoaderPolicy, NativePlanOptions, NativeTaskRunStats,
+};
 use luanalysis_project::{
     DeclarationSourceError, FileId, Project, RequireRequest, SourceFile, SourceRole,
 };
@@ -76,6 +78,8 @@ pub struct ProjectCheckReport {
     /// Actual shared-Program task/barrier execution, when multiple roots were
     /// scheduled. A single worker uses the original one-session check path.
     pub execution: Option<NativeTaskRunStats>,
+    /// Maximum task count in a step of Bun's source/cost plan.
+    pub planned_parallelism: usize,
 }
 impl ProjectCheckReport {
     pub fn file(&self, file: FileId) -> Option<&FileCheckReport> {
@@ -88,15 +92,20 @@ impl ProjectCheckReport {
     }
 
     pub fn checked_file_count(&self) -> usize {
-        self.files.iter().filter(|file| !self.standard_library_files.contains(&file.file)).count()
+        self.files
+            .iter()
+            .filter(|file| !self.standard_library_files.contains(&file.file))
+            .count()
     }
 
     /// Host failures and source diagnostics affect success. A static dependency
     /// cycle alone is a graph fact rather than a type-checking failure.
     pub fn has_errors(&self) -> bool {
-        !self.environment_errors.is_empty() || self.files
-            .iter()
-            .any(|file| !file.report.diagnostics.is_empty())
+        !self.environment_errors.is_empty()
+            || self
+                .files
+                .iter()
+                .any(|file| !file.report.diagnostics.is_empty())
             || !self.project.entry_errors.is_empty()
             || !self.project.library_errors.is_empty()
             || !self.project.role_conflicts.is_empty()
@@ -121,16 +130,26 @@ pub(crate) fn check_project_with_workspace(
     options: ProjectCheckOptions,
     workspace: &mut crate::incremental::ProjectWorkspace,
 ) -> ProjectCheckReport {
-    let (selection, environment_errors) = match StandardEnvironmentSelection::register(&mut project, options.environment) {
-        Ok(selection) => (selection, Vec::new()),
-        Err(error) => (StandardEnvironmentSelection::empty(StandardEnvironmentProfile::None), vec![error]),
-    };
+    let (selection, environment_errors) =
+        match StandardEnvironmentSelection::register(&mut project, options.environment) {
+            Ok(selection) => (selection, Vec::new()),
+            Err(error) => (
+                StandardEnvironmentSelection::empty(StandardEnvironmentProfile::None),
+                vec![error],
+            ),
+        };
     let standard_library_files = selection.files();
     let mut inputs = Vec::new();
     let mut files = Vec::new();
+    let plan_options = NativePlanOptions::default();
+    let mut source_costs = HashMap::new();
     for source in workspace.prepare_registered_sources(&project).sources {
         let parsed = source.snapshot.syntax();
         if let Some(bound) = source.snapshot.bound() {
+            source_costs.insert(
+                source.id,
+                crate::project_cost::checking_cost(parsed, bound, plan_options.type_node_cost),
+            );
             inputs.push(RegistryInput {
                 id: source.id,
                 role: source.role,
@@ -139,6 +158,7 @@ pub(crate) fn check_project_with_workspace(
                 bound: bound.clone(),
             });
         } else {
+            source_costs.insert(source.id, 1);
             files.push(FileCheckReport {
                 file: source.id,
                 report: CheckReport {
@@ -157,21 +177,38 @@ pub(crate) fn check_project_with_workspace(
         }
     }
     let dependencies = project.dependencies.clone();
-    let roots: Vec<_> = project.entries.iter().chain(&project.libraries).copied().collect();
-    let snapshot = ProjectRegistrySnapshot::new(inputs, dependencies, options.loader_policy, selection.profile, options.overload_mode);
+    let roots: Vec<_> = project
+        .entries
+        .iter()
+        .chain(&project.libraries)
+        .copied()
+        .collect();
+    let snapshot = ProjectRegistrySnapshot::new(
+        inputs,
+        dependencies,
+        options.loader_policy,
+        selection.profile,
+        options.overload_mode,
+    );
     let make_registry = |_| {
         let mut registry = snapshot.worker_registry();
         registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
         registry
     };
-    // Standard declarations warm the shared native tables before user roots.
-    // The source task plan itself is independent of the worker count.
-    let (standard_roots, user_roots): (Vec<_>, Vec<_>) = roots.iter().copied()
-        .partition(|file| standard_library_files.contains(file));
-    let requested = NonZeroUsize::new(options.jobs).unwrap_or_else(|| {
-        std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
-    });
-    let workers = requested.get().min(user_roots.len()).max(1);
+    let requested = NonZeroUsize::new(options.jobs)
+        .unwrap_or_else(|| std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN));
+    // Use the extracted Bun driver policy: sampled light-file warmups and
+    // source-cost chunks. Module edges do not impose publication barriers.
+    // Lua has no TS declaration-statement range task adapter, so ranges are empty.
+    let plan = NativeCheckPlan::new(
+        roots.len(),
+        &|index| project.file(roots[index]).unwrap().source.len(),
+        &|index| source_costs[&roots[index]],
+        &|_, _| Vec::new(),
+        &plan_options,
+    );
+    let capacity = plan.steps.iter().map(Vec::len).max().unwrap_or(1);
+    let workers = requested.get().min(capacity).max(1);
     let (checked, required, execution) = if workers == 1 {
         let (checked, required) = Engine::new().with_native_provider(
             || make_registry(0),
@@ -185,15 +222,29 @@ pub(crate) fn check_project_with_workspace(
         let scheduled: HashSet<_> = roots.iter().copied().collect();
         let mut batches = Vec::new();
         let mut steps = Vec::new();
-        if !standard_roots.is_empty() {
-            batches.push(standard_roots);
-            steps.push(vec![0]);
+        let mut batch_costs = Vec::new();
+        for step in plan.steps {
+            let mut jobs = Vec::new();
+            for task in step {
+                jobs.push(batches.len());
+                batch_costs.push(
+                    task.iter()
+                        .map(|&index| source_costs[&roots[index]])
+                        .sum::<usize>(),
+                );
+                batches.push(
+                    task.into_iter()
+                        .map(|index| roots[index])
+                        .collect::<Vec<_>>(),
+                );
+            }
+            steps.push(jobs);
         }
-        let first = batches.len();
-        batches.extend(user_roots.into_iter().map(|file| vec![file]));
-        steps.push((first..batches.len()).collect());
-        let run = Engine::new().with_native_task_plan_report(
-            NonZeroUsize::new(workers).unwrap(), &steps, make_registry,
+        let run = Engine::new().with_native_task_plan_by_cost_report(
+            NonZeroUsize::new(workers).unwrap(),
+            &steps,
+            |job| batch_costs[job],
+            make_registry,
             |job, registry, queries| {
                 let reports = registry.check_scheduled_roots(queries, &batches[job], &scheduled);
                 (reports, registry.required_files())
@@ -210,17 +261,26 @@ pub(crate) fn check_project_with_workspace(
     files.retain(|report| required.contains(&report.file));
     files.extend(checked);
     files.sort_by_key(|file| file.file.index);
-    ProjectCheckReport { project, files, standard_library_files, environment_errors, execution }
+    ProjectCheckReport {
+        project,
+        files,
+        standard_library_files,
+        environment_errors,
+        execution,
+        planned_parallelism: capacity,
+    }
 }
 
 fn merge_reports(reports: Vec<FileCheckReport>) -> Vec<FileCheckReport> {
     let mut merged = Vec::<FileCheckReport>::new();
     let mut indices = HashMap::<FileId, usize>::new();
     for file in reports {
-        assert!(file.report.pending_bindings.is_empty()
-            && file.report.pending_types.is_empty()
-            && file.report.pending_diagnostics.is_empty(),
-            "project task reports must render every native operand before ending");
+        assert!(
+            file.report.pending_bindings.is_empty()
+                && file.report.pending_types.is_empty()
+                && file.report.pending_diagnostics.is_empty(),
+            "project task reports must render every native operand before ending"
+        );
         if let Some(&index) = indices.get(&file.file) {
             let target = &mut merged[index];
             debug_assert_eq!(target.report.bound, file.report.bound);
@@ -234,19 +294,27 @@ fn merge_reports(reports: Vec<FileCheckReport>) -> Vec<FileCheckReport> {
         let report = &mut file.report;
         report.diagnostics.sort_by(|left, right| {
             (left.span.start, left.span.end, left.code, &left.message).cmp(&(
-                right.span.start, right.span.end, right.code, &right.message,
+                right.span.start,
+                right.span.end,
+                right.code,
+                &right.message,
             ))
         });
         report.diagnostics.dedup();
         report.bindings.sort_by(|left, right| {
             (left.span.start, left.span.end, left.binding.0, &left.ty).cmp(&(
-                right.span.start, right.span.end, right.binding.0, &right.ty,
+                right.span.start,
+                right.span.end,
+                right.binding.0,
+                &right.ty,
             ))
         });
         report.bindings.dedup();
         report.types.sort_by(|left, right| {
             (left.span.start, left.span.end, &left.ty).cmp(&(
-                right.span.start, right.span.end, &right.ty,
+                right.span.start,
+                right.span.end,
+                &right.ty,
             ))
         });
         report.types.dedup();

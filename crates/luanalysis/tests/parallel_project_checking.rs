@@ -85,14 +85,13 @@ impl Fixture {
             } else {
                 jobs
             };
-            let user_roots = entries.len() + declarations.len();
-            if requested > 1 && user_roots > 1 {
+            if requested > 1 && candidate.planned_parallelism > 1 {
                 let execution = candidate.execution.as_ref().unwrap_or_else(|| {
                     panic!("jobs={jobs} did not execute the shared-Program task runner")
                 });
                 assert!(execution.workers > 1, "jobs={jobs}: {execution:?}");
                 assert!(
-                    execution.workers <= requested.min(user_roots),
+                    execution.workers <= requested.min(candidate.planned_parallelism),
                     "jobs={jobs}: {execution:?}"
                 );
                 assert!(

@@ -12,6 +12,7 @@ mod module_requests;
 pub mod flow;
 pub mod incremental;
 pub mod project_check;
+mod project_cost;
 pub mod standard_environment;
 mod functions;
 mod native_expressions;
