@@ -365,6 +365,7 @@ impl WatchSnapshot {
         let mut loaded = HashMap::new();
         let mut failed = HashMap::new();
         for error in project.entry_errors.iter().chain(&project.library_errors) {
+            paths.insert(error.path.clone());
             failed.insert(error.path.clone(), error);
         }
         for source in &project.files {
