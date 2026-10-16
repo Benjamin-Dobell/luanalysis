@@ -187,13 +187,25 @@ pub(crate) struct ProjectGlobalIndex {
     names: BTreeMap<String, NativeGlobalBindingKey>,
     declarations: Vec<Vec<NativeValueDeclarationKey>>,
     declaration_owners: HashSet<NativeValueDeclarationKey>,
+    /// Standard names some implementation source may replace (`bind::STANDARD_NAMES`
+    /// bits). Declaration files only describe the initial library.
+    replaced_standard_names: u8,
+    /// Whether some implementation source may mutate the module loader.
+    loader_mutated: bool,
 }
 
 impl ProjectGlobalIndex {
     pub(super) fn new(environment: NativeEnvironmentKey, sources: &[&NativeRegistry]) -> Self {
         let mut by_name = BTreeMap::<String, Vec<NativeValueDeclarationKey>>::new();
+        let mut replaced_standard_names = 0;
+        let mut loader_mutated = false;
         let mut declaration_owners = HashSet::default();
         for source in sources {
+            if source.source_role() != SourceRole::Declaration {
+                let (names, loader) = source.flow.environment_replacements();
+                replaced_standard_names |= source.bound.replaced_standard_names() | names;
+                loader_mutated |= loader || !source.bound.module_environment_mutations().is_empty();
+            }
             let mut introduced = HashSet::default();
             for declaration in &source.globals.declarations {
                 if declaration.namespace.is_some() {
@@ -231,11 +243,19 @@ impl ProjectGlobalIndex {
             names,
             declarations,
             declaration_owners,
+            replaced_standard_names,
+            loader_mutated,
         }
     }
 
     pub(super) fn binding(&self, name: &str) -> Option<NativeGlobalBindingKey> {
         self.names.get(name).copied()
+    }
+    pub(super) fn replaced_standard_names(&self) -> u8 {
+        self.replaced_standard_names
+    }
+    pub(super) fn loader_mutated(&self) -> bool {
+        self.loader_mutated
     }
     pub(super) fn bindings(&self) -> Vec<(Vec<u8>, NativeGlobalBindingKey)> {
         self.names.iter().map(|(name, key)| (name.as_bytes().to_vec(), *key)).collect()

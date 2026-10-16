@@ -331,20 +331,19 @@ fn saved_original_values_keep_their_effects_across_replacement_and_unknown_calls
     );
 }
 
+// Standard operations are recognised by name (Luanalysis v1 semantics): a
+// literal field or a function result holding one is an ordinary call, so its
+// `type` test does not narrow.
 #[test]
-fn literal_field_and_function_return_aliases_keep_original_standard_operations() {
+fn literal_field_and_function_return_aliases_are_ordinary_operations() {
     let fixture = Fixture::new();
     for prefix in [
         "local operations={loader=require,kind=type}\nhostEffect()\nlocal savedLoader=operations.loader\nlocal savedKind=operations.kind\n",
         "local function getLoader() return require end\nlocal function getKind() return type end\nhostEffect()\nlocal savedLoader=getLoader()\nlocal savedKind=getKind()\n",
     ] {
-        trusted_controls(
-            &fixture,
-            &format!(
-                "{prefix}{}",
-                probe("hostEffect()", "savedLoader", "savedKind")
-            ),
-        );
+        let source = format!("{prefix}{}", probe("hostEffect()", "savedLoader", "savedKind"));
+        let rejected = report(fixture.check(&source, true, None), 1);
+        error_on(&rejected, &source, "TS2322", "local checked_type=value", "value");
     }
 }
 

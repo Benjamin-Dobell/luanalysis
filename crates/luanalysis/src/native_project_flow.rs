@@ -7,7 +7,7 @@ use luanalysis_engine::{
     NativeAliasInitial, NativeAliasReturn, NativeAliasReturnValue, NativeAliasValue, NativeAliasEnvironmentMember,
     NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeFlowProvider,
     NativeFunctionCreation, NativeFunctionKey, NativeGraphKey, NativeIteratorProjection,
-    NativeIteratorStage, NativePackProjection, NativePredicate, NativeReferenceKey, NativeValueKey,
+    NativeIteratorStage, NativeLexicalStandard, NativePackProjection, NativePredicate, NativeReferenceKey, NativeValueKey,
     NativeVariableDeclaration, NativeWriteRelation, NativeTypeDeclarationKey, Type, TypeQueries, ValuePack,
 };
 
@@ -64,6 +64,9 @@ impl NativeFlowProvider for ProjectRegistry {
         fn reference_tracks_runtime_value(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
         fn reference_follows_creation(reference: NativeReferenceKey) -> bool { reference.graph.snapshot; false }
         fn runtime_type_operation(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool { value.snapshot; false }
+        fn value_literal_truthiness(value: NativeValueKey) -> Option<bool> { value.snapshot; None }
+        fn value_lexical_standard(value: NativeValueKey, input: NativeFlowKey) -> NativeLexicalStandard { value.snapshot; NativeLexicalStandard::Unknown }
+        fn loader_never_mutated(graph: NativeGraphKey) -> bool { graph.snapshot; false }
         fn assertion_predicate(value: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> { value.snapshot; None }
         fn reference_declaration(reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> { reference.graph.snapshot; None }
         fn graph_creation(graph: NativeGraphKey) -> Option<NativeFunctionCreation> { graph.snapshot; None }

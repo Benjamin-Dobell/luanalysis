@@ -60,11 +60,14 @@ fn a_nominal_assertion_cannot_hide_environment_identity_while_fresh_allocations_
     clean(&fixture.check(&format!("{header}local fresh=--[[---@type LoaderView]] {{require=function(name) return {{}} end}}\nlocal alias=fresh\nalias.require=function(name) return {{}} end\nlocal after=require('module')\n---@type number\nlocal checked=after.value\n")));
 }
 
+// Loader and standard-name replacements are found from original stores into
+// the environment or a local that may hold it. An environment kept inside
+// another table is not traced (as TypeScript does not trace `globalThis`).
 #[test]
-fn fresh_containers_do_not_hide_nested_environment_values_or_later_alias_replacements() {
+fn later_alias_replacements_are_found_while_nested_environment_containers_are_not_traced() {
     let fixture = Fixture::new();
     let nested = fixture.check("local wrapper={env=_G}\nwrapper.env.require=function(name) return {} end\nlocal after=require('module')\n");
-    assert!(text(&nested).contains("LUA2036"), "{}", text(&nested));
+    assert!(!text(&nested).contains("LUA2036"), "{}", text(&nested));
     let replaced = fixture.check("local fresh={}\nlocal alias=fresh\nalias=_G\nalias.require=function(name) return {} end\nlocal after=require('module')\n");
     assert!(text(&replaced).contains("LUA2036"), "{}", text(&replaced));
 }

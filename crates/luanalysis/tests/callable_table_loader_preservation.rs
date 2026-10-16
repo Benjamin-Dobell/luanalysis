@@ -60,12 +60,6 @@ const SAFE: &str = "setmetatable(Static,{__call=function() return {} end})\n";
 const MUTATING: &str =
     "setmetatable(Static,{__call=function() package.path='custom/?.lua'; return {} end})\n";
 
-fn clean(module: &str) {
-    let output = Fixture::new(module).check();
-    let result = report(&output, 0);
-    assert!(result.contains("\"diagnostics\":[]"), "{result}");
-}
-
 fn invalidates(module: &str) {
     let output = Fixture::new(module).check();
     let result = report(&output, 1);

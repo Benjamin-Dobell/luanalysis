@@ -2111,6 +2111,13 @@ impl FlowValueQueries for NativeRegistry {
     fn original_alias_initial(&self, reference: &super::flow::Reference) -> luanalysis_engine::NativeAliasInitial {
         self.source_alias_initial(reference)
     }
+    fn loader_never_mutated(&self) -> bool {
+        self.project_globals.as_ref().is_some_and(|globals| !globals.loader_mutated())
+    }
+    fn lexical_standard(&self, sources: &NativeFlowSources, evaluation: super::flow::EvaluationId, graph: luanalysis_engine::NativeGraphKey) -> luanalysis_engine::NativeLexicalStandard {
+        let Some(globals) = &self.project_globals else { return luanalysis_engine::NativeLexicalStandard::Unknown; };
+        sources.lexical_standard(&self.bound, globals.replaced_standard_names(), evaluation, graph)
+    }
     fn original_alias_execution(&self, function: NativeFunctionKey, creation: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasExecution> {
         self.source_alias_execution(function, creation)
     }

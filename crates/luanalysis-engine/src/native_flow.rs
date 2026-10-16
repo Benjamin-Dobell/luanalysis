@@ -7,7 +7,7 @@ use bun_sema::check::native_flow as core;
 pub use core::{
     NativeCallEffects, NativeFlowError, NativeFlowKey, NativeFlowNode, NativeGraphKey,
     NativeNumericConstant, NativeNumericInput, NativeNumericIterationStage, NativePackProjection,
-    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeOpaqueRuntimeKind, NativeValueKey, NativeWriteRelation, NativeIteratorProjection, NativeIteratorStage,
+    NativePredicate, NativeReferenceKey, NativeRuntimeType, NativeOpaqueRuntimeKind, NativeValueKey, NativeWriteRelation, NativeIteratorProjection, NativeIteratorStage, NativeLexicalStandard,
     NativeVariableDeclaration, NativeVariableWrite, NativeFunctionCreation, NativeFrozenReference,
 };
 pub use bun_sema::check::native_aliases::{NativeAliasRelation, NativeAliasReturn, NativeAliasReturnValue, NativeAliasEnvironmentMember, NativeAliasExecution, NativeAliasCall, NativeAliasDispatch, NativeCallPreservation};
@@ -76,6 +76,10 @@ pub trait NativeFlowProvider {
     fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> bool { true }
     /// The truthiness of an original literal value; `None` for anything else.
     fn value_literal_truthiness(&self, _: NativeValueKey) -> Option<bool> { None }
+    /// What an original callee value names lexically; see `NativeLexicalStandard`.
+    fn value_lexical_standard(&self, _: NativeValueKey, _: NativeFlowKey) -> NativeLexicalStandard { NativeLexicalStandard::Unknown }
+    /// No source in the project may mutate the module loader.
+    fn loader_never_mutated(&self, _: NativeGraphKey) -> bool { false }
     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
@@ -213,6 +217,8 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
         self.provider.runtime_type_operation(value, input, &mut SessionQueries { checker, handles: self.handles })
     }
     fn value_literal_truthiness(&self, value: NativeValueKey) -> Option<bool> { self.provider.value_literal_truthiness(value) }
+    fn value_lexical_standard(&self, value: NativeValueKey, input: NativeFlowKey) -> NativeLexicalStandard { self.provider.value_lexical_standard(value, input) }
+    fn loader_never_mutated(&self, graph: NativeGraphKey) -> bool { self.provider.loader_never_mutated(graph) }
     fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
         self.provider.assertion_predicate(condition, input)
     }

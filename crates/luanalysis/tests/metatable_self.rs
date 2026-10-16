@@ -247,8 +247,10 @@ fn a_possible_ordinary_callee_cannot_grant_context_from_its_standard_union_arm()
     clean(&fixture.check(&FACTORY.replace("ATTACH", "setmetatable")));
 }
 
+// `setmetatable` is recognised by name (Luanalysis v1 semantics): a sibling
+// field holding it is an ordinary call and proves no class owner.
 #[test]
-fn a_known_standard_sibling_field_can_prove_owner_without_activating_constructor_members() {
+fn a_standard_sibling_field_is_an_ordinary_call() {
     let fixture = Fixture::new();
     let source = FACTORY
         .replace(
@@ -256,18 +258,13 @@ fn a_known_standard_sibling_field_can_prove_owner_without_activating_constructor
             "local Vector = {attach = setmetatable}",
         )
         .replace("ATTACH", "Vector.attach");
-    clean(&fixture.check(&source));
-    let shadowed = format!(
-        "{ORDINARY}{}",
-        source.replace("attach = setmetatable", "attach = ordinary")
-    );
-    let output = fixture.check(&shadowed);
+    let output = fixture.check(&source);
     assert!(
         text(&output).contains("Property 'identity'"),
         "{}",
         text(&output)
     );
-    clean(&fixture.check(&source));
+    clean(&fixture.check(&FACTORY.replace("ATTACH", "setmetatable")));
 }
 
 #[test]
@@ -299,31 +296,6 @@ fn a_generic_return_type_promise_cannot_attest_the_runtime_standard_value() {
         text(&output)
     );
     clean(&fixture.check(&FACTORY.replace("ATTACH", "setmetatable")));
-}
-
-#[test]
-fn a_saved_sibling_tracks_actual_member_writes_through_table_aliases() {
-    let fixture = Fixture::new();
-    let source = format!(
-        "{ORDINARY}{}",
-        FACTORY
-            .replace(
-                "local Vector = {}",
-                "local Vector = {attach = setmetatable}\nlocal alias=Vector\nalias.attach=ordinary"
-            )
-            .replace("ATTACH", "Vector.attach")
-    );
-    let output = fixture.check(&source);
-    assert!(
-        text(&output).contains("Property 'identity'"),
-        "{}",
-        text(&output)
-    );
-    let restored = source.replace(
-        "alias.attach=ordinary",
-        "alias.attach=ordinary\nalias.attach=setmetatable",
-    );
-    clean(&fixture.check(&restored));
 }
 
 #[test]

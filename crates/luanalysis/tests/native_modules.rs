@@ -212,8 +212,10 @@ fn rejected_candidates_keep_source_identities_without_checking_their_transitive_
         && &original.source[error.span.start..error.span.end] == "'wrong'"));
 }
 
+// `require` is recognised by name (Luanalysis v1 semantics): a saved field or a
+// returned function holding it is an ordinary call that activates no module.
 #[test]
-fn saved_field_and_returned_loaders_check_original_module_exports() {
+fn saved_field_and_returned_loaders_are_ordinary_calls() {
     let fixture = Fixture::new();
     fixture.file("record.lua", "return {value=42}\n");
     for prefix in [
@@ -229,24 +231,14 @@ fn saved_field_and_returned_loaders_check_original_module_exports() {
                 ..ProjectCheckOptions::default()
             },
         );
-        let correct = run(&source);
-        clean(&correct);
-        assert_eq!(correct.checked_file_count(), 2);
-        assert_eq!(ty(&correct, "accepted"), "number");
-        let argument = source.find("'record'").unwrap();
-        assert!(correct.project.dependencies.iter().any(|edge| edge.request.span == (argument..argument + "'record'".len())));
-
-        let wrong = source.replace("---@type number", "---@type string");
-        let rejected = run(&wrong);
-        let main = rejected.file(rejected.project.entries[0]).unwrap();
-        assert!(main.report.diagnostics.iter().any(|error| error.code == "TS2322"
-            && &wrong[error.span.start..error.span.end] == "record.value"),
-            "{wrong}: {:#?}", main.report.diagnostics);
+        let ordinary = run(&source);
+        clean(&ordinary);
+        assert_eq!(ordinary.checked_file_count(), 1);
     }
 }
 
 #[test]
-fn a_copied_holder_loader_store_controls_actual_module_activation() {
+fn a_holder_loader_field_never_activates_a_module() {
     let fixture = Fixture::new();
     let target = fixture.file("record.lua", "---@type number\nlocal invalid='wrong'\nreturn 9\n");
     let source = "---@param name string\n---@return number\nlocal function ordinary(name) return 7 end\nlocal operations={loader=require}\nlocal copy=operations\ncopy.loader=ordinary\nlocal savedLoader=operations.loader\nlocal result=savedLoader('record')\n---@type number\nlocal accepted=result\n";
@@ -257,16 +249,12 @@ fn a_copied_holder_loader_store_controls_actual_module_activation() {
             ..ProjectCheckOptions::default()
         },
     );
-    let ordinary = run(source);
-    clean(&ordinary);
-    assert_eq!(ordinary.checked_file_count(), 1);
-    assert!(ordinary.file(ordinary.project.file_by_path(&target).unwrap().id).is_none());
-
-    let restored = run(&source.replace("copy.loader=ordinary", "copy.loader=ordinary\ncopy.loader=require"));
-    assert_eq!(restored.checked_file_count(), 2);
-    let original = restored.project.file_by_path(&target).unwrap();
-    assert!(restored.file(original.id).unwrap().report.diagnostics.iter().any(|error|
-        error.code == "TS2322" && &original.source[error.span.start..error.span.end] == "'wrong'"));
+    for source in [source.to_owned(), source.replace("copy.loader=ordinary", "copy.loader=ordinary\ncopy.loader=require")] {
+        let ordinary = run(&source);
+        clean(&ordinary);
+        assert_eq!(ordinary.checked_file_count(), 1);
+        assert!(ordinary.file(ordinary.project.file_by_path(&target).unwrap().id).is_none());
+    }
 }
 
 #[test]

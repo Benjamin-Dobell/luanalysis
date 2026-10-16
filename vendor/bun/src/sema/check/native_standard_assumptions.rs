@@ -18,6 +18,18 @@ impl<'p, 's> Checker<'p, 's> {
                 NativeAliasIntrinsic::Pending => NativeStandardOperation::Pending,
             };
         }
+        // Intrinsics are recognised by name, as in Luanalysis v1. A callee that
+        // cannot lexically name one is ordinary, and an unreplaced global name
+        // is its original declaration. Only the remaining spellings (aliases
+        // through mutable locals, members, replaced names) walk provenance.
+        match provider.value_lexical_standard(value, input) {
+            NativeLexicalStandard::Ordinary => return NativeStandardOperation::Ordinary,
+            NativeLexicalStandard::Global(reference) => return match self.native_initial_standard(provider, reference, input) {
+                Some(site) if Some(site.binding.environment) == self.native_assumed_environment() => NativeStandardOperation::Standard(site),
+                _ => NativeStandardOperation::Ordinary,
+            },
+            NativeLexicalStandard::Unknown => {},
+        }
         // Reuse completed physical evidence without starting an expensive raw
         // effect proof merely to classify an ordinary standard operation.
         let raw_key = (value, input, 0, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
@@ -38,6 +50,11 @@ impl<'p, 's> Checker<'p, 's> {
     pub fn native_flow_standard_loader_state(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, reference: NativeReferenceKey) -> NativeFlowResult {
         let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
         if self.native_assumed_environment().is_none() { return self.native_flow_type(provider, at, reference, crate::types::TypeId::FALSE, crate::types::TypeId::TRUE) }
+        // Like intrinsic names, the loader is the original unless some source
+        // explicitly mutates it; only then walk the actual continuations.
+        if provider.loader_never_mutated(at.graph) && reference.graph == at.graph && provider.contains_reference(reference) && provider.node(at).is_some() {
+            return NativeFlowResult { ty: crate::types::TypeId::TRUE, incomplete: false, unresolved_auto: false };
+        }
         self.native_standard_loader_state(provider, at, reference)
     }
 

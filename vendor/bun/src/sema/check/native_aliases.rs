@@ -189,6 +189,13 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_alias_call_preservation(provider, reference, call, input)
     }
 
+    /// The standard intrinsic an original environment member holds initially.
+    pub(super) fn native_initial_standard(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Option<NativeIntrinsicSite> {
+        let origins = self.native_alias_initial(provider, reference, at);
+        if origins.unknown || origins.uncertain || origins.non_table || origins.tokens.len() != 1 { return None }
+        match origins.tokens.into_iter().next() { Some(Origin::Standard(site)) => Some(site), _ => None }
+    }
+
     fn native_alias_initial(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Origins {
         let opaque = || Origins::one(Origin::OpaqueReference(reference, at), true);
         let Some(globals) = self.native_globals_provider else { return opaque() };

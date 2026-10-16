@@ -35,6 +35,20 @@ pub struct NativeValueKey {
     pub index: u32,
 }
 
+/// What an original callee names lexically, for ordinary standard-operation
+/// classification (Luanalysis v1 semantics: intrinsics are recognised by name,
+/// not traced through heap provenance).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeLexicalStandard {
+    /// Leave the classification to the flow-sensitive provenance walk.
+    Unknown,
+    /// It cannot name a standard intrinsic.
+    Ordinary,
+    /// It names this original global environment member, which no source
+    /// in the project replaces.
+    Global(NativeReferenceKey),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeWriteRelation {
     Exact,
@@ -315,6 +329,11 @@ pub trait NativeFlowProvider {
     /// number, string, table or function literal); `None` for anything else.
     /// Reachability is structural: it never asks for operand types.
     fn value_literal_truthiness(&self, _: NativeValueKey) -> Option<bool> { None }
+    /// What an original callee value names lexically; see `NativeLexicalStandard`.
+    fn value_lexical_standard(&self, _: NativeValueKey, _: NativeFlowKey) -> NativeLexicalStandard { NativeLexicalStandard::Unknown }
+    /// No source in the project may mutate the module loader (`require`,
+    /// `package` loader fields), so ordinary module checking needs no walk.
+    fn loader_never_mutated(&self, _: NativeGraphKey) -> bool { false }
     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
     /// The original computed child key and its frozen evaluation input. The
     /// existing descendant relation, not this recipe, selects the receiver.

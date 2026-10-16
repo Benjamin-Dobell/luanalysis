@@ -88,6 +88,10 @@ pub enum BuiltinIntrinsic {
     LuaType,
 }
 
+/// The standard operations recognised by name, as bits of
+/// `BoundFile::replaced_standard_names`.
+pub const STANDARD_NAMES: [&str; 4] = ["assert", "type", "setmetatable", "require"];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct IntrinsicOccurrence {
     span: Span,
@@ -103,9 +107,17 @@ pub struct BoundFile {
     intrinsic_occurrences: Vec<IntrinsicOccurrence>,
     modified_module_environment: bool,
     module_environment_mutations: Vec<Span>,
+    /// Mutations through a computed key of the environment itself (`_G[k] = v`,
+    /// `rawset(_G, k, v)`). The loader walk treats them as possible
+    /// replacements; the project replacement summary does not.
+    computed_environment_mutations: Vec<Span>,
     modified_type_intrinsic: bool,
     modified_assert_intrinsic: bool,
     assert_intrinsic_mutations: Vec<Span>,
+    /// `STANDARD_NAMES` bits this source may replace globally: a direct or
+    /// `_G`/`_ENV` write, a `rawset`, or replacing `_G`/`_ENV` itself. Computed
+    /// environment keys are unknown effects, not replacements.
+    replaced_standard_names: u8,
 }
 
 impl BoundFile {
@@ -193,6 +205,7 @@ impl BoundFile {
         self.modified_module_environment
     }
     pub fn module_environment_mutations(&self) -> &[Span] { &self.module_environment_mutations }
+    pub fn computed_environment_mutations(&self) -> &[Span] { &self.computed_environment_mutations }
 
     /// Direct replacement of the initially standard `type` value. This is a
     /// lexical fact; the project still selects the actual environment identity.
@@ -206,6 +219,9 @@ impl BoundFile {
 
     pub fn assert_intrinsic_mutations(&self) -> &[Span] {
         &self.assert_intrinsic_mutations
+    }
+    pub fn replaced_standard_names(&self) -> u8 {
+        self.replaced_standard_names
     }
 
     pub fn scope_at(&self, byte_offset: usize) -> Option<ScopeId> {
@@ -236,9 +252,11 @@ pub fn bind(file: &File) -> BoundFile {
             intrinsic_occurrences: Vec::new(),
             modified_module_environment: false,
             module_environment_mutations: Vec::new(),
+            computed_environment_mutations: Vec::new(),
             modified_type_intrinsic: false,
             modified_assert_intrinsic: false,
             assert_intrinsic_mutations: Vec::new(),
+            replaced_standard_names: 0,
         },
         active: Vec::new(),
     };
@@ -498,7 +516,8 @@ impl Binder {
     fn target(&mut self, expression: &Expr) {
         if self.modifies_module_environment(expression) {
             self.file.modified_module_environment = true;
-            self.file.module_environment_mutations.push(expression.span);
+            if computed_environment_target(expression, None) { self.file.computed_environment_mutations.push(expression.span); }
+            else { self.file.module_environment_mutations.push(expression.span); }
         }
         if self.modifies_standard_intrinsic(expression, "type") {
             self.file.modified_type_intrinsic = true;
@@ -506,6 +525,10 @@ impl Binder {
         if self.modifies_standard_intrinsic(expression, "assert") {
             self.file.modified_assert_intrinsic = true;
             self.file.assert_intrinsic_mutations.push(expression.span);
+        }
+        // A computed environment key is an unknown effect, not a replacement.
+        for (bit, name) in STANDARD_NAMES.iter().enumerate() {
+            if !computed_environment_target(expression, None) && self.modifies_standard_intrinsic(expression, name) { self.file.replaced_standard_names |= 1 << bit; }
         }
         match &expression.kind {
             ExprKind::Name(name) => self.name(name, OccurrenceKind::Write),
@@ -636,7 +659,8 @@ impl Binder {
             ExprKind::Call { callee, args } => {
                 if self.call_modifies_module_environment(callee, args) {
                     self.file.modified_module_environment = true;
-                    self.file.module_environment_mutations.push(expression.span);
+                    if call_computed_environment_target(callee, args) { self.file.computed_environment_mutations.push(expression.span); }
+                    else { self.file.module_environment_mutations.push(expression.span); }
                 }
                 if self.call_modifies_standard_intrinsic(callee, args, "type") {
                     self.file.modified_type_intrinsic = true;
@@ -644,6 +668,9 @@ impl Binder {
                 if self.call_modifies_standard_intrinsic(callee, args, "assert") {
                     self.file.modified_assert_intrinsic = true;
                     self.file.assert_intrinsic_mutations.push(expression.span);
+                }
+                for (bit, name) in STANDARD_NAMES.iter().enumerate() {
+                    if !call_computed_environment_target(callee, args) && self.call_modifies_standard_intrinsic(callee, args, name) { self.file.replaced_standard_names |= 1 << bit; }
                 }
                 self.expression(callee);
                 for argument in args {
@@ -708,6 +735,31 @@ fn access_path<'a>(expression: &'a Expr, keys: &mut Vec<Option<&'a [u8]>>) -> Op
             Some(root)
         }
         _ => None,
+    }
+}
+
+/// Whether a mutated path selects its environment member by a computed key
+/// (`_G[k]`, `_ENV[k]`, or `rawset(_G, k, v)` with `extra` as the key).
+fn computed_environment_target(expression: &Expr, extra: Option<&Expr>) -> bool {
+    let mut keys = Vec::new();
+    let Some(root) = access_path(expression, &mut keys) else { return false; };
+    if let Some(key) = extra { keys.push(string_key(key)); }
+    matches!(root.text.as_str(), "_G" | "_ENV") && matches!(keys.first(), Some(None))
+}
+
+/// `computed_environment_target` for the table a mutating standard call writes.
+fn call_computed_environment_target(callee: &Expr, args: &[Expr]) -> bool {
+    let mut keys = Vec::new();
+    let Some(root) = access_path(callee, &mut keys) else { return false; };
+    let (global, members) = match (root.text.as_str(), keys.as_slice()) {
+        ("_G" | "_ENV", [Some(global), members @ ..]) => (*global, members),
+        (global, members) => (global.as_bytes(), members),
+    };
+    match (global, members) {
+        (b"rawset", []) if args.len() >= 2 => computed_environment_target(&args[0], Some(&args[1])),
+        (b"table", [Some(b"insert" | b"remove")]) if !args.is_empty() => computed_environment_target(&args[0], None),
+        (b"table", [Some(b"move")]) if args.len() >= 4 => computed_environment_target(args.get(4).unwrap_or(&args[0]), None),
+        _ => false,
     }
 }
 

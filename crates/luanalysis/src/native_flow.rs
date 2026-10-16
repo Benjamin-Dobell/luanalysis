@@ -263,7 +263,7 @@ impl NativeFlowSources {
             runtime_type_intrinsic_enabled: false,
             runtime_userdata_enabled: false,
             runtime_thread_enabled: false,
-            loader_mutations: bound.module_environment_mutations().iter().map(|span| (span.start, span.end)).collect(),
+            loader_mutations: bound.module_environment_mutations().iter().chain(bound.computed_environment_mutations()).map(|span| (span.start, span.end)).collect(),
             original_require_capability: false,
             capability_bindings: HashSet::default(),
             environment_candidates: HashMap::default(),
@@ -611,6 +611,75 @@ impl NativeFlowSources {
     }
 
     pub(super) fn graph_entry(&self, region: u32) -> flow::FlowId { self.program.graphs[region as usize].entry }
+
+    /// What original stores in this source may replace through the environment
+    /// or a local alias of it (`environment_candidate_paths`): `bind::STANDARD_NAMES`
+    /// bits, and whether the module loader (`require`, `package` loader fields)
+    /// may change. Computed environment keys (`_G[k] = v`) do not count: as for
+    /// other globals, they are unknown effects in ordinary checking. Direct
+    /// writes and `rawset` calls are also recorded by the binder.
+    pub(super) fn environment_replacements(&self) -> (u8, bool) {
+        let (mut names, mut loader) = (0, false);
+        for node in self.program.graphs.iter().flat_map(|graph| &graph.nodes) {
+            let flow::NodeKind::Write { address, .. } = &node.kind else { continue; };
+            if matches!(address.reference.root, flow::ReferenceRoot::Binding(_)) && address.reference.path.is_empty() { continue; }
+            for path in self.environment_candidate_paths(&address.reference) {
+                match path.as_slice() {
+                    [] => { names = u8::MAX; loader = true; },
+                    [flow::Key::String(name), rest @ ..] => {
+                        if let Some(bit) = super::bind::STANDARD_NAMES.iter().position(|standard| standard.as_bytes() == name.as_slice()) && rest.is_empty() { names |= 1 << bit; }
+                        loader |= match name.as_slice() {
+                            b"require" => rest.is_empty(),
+                            b"package" => crate::bind::modifies_package(&rest.iter().map(|key| match key { flow::Key::String(value) => Some(value.as_slice()), _ => None }).collect::<Vec<_>>()),
+                            _ => false,
+                        };
+                    },
+                    _ => {},
+                }
+            }
+        }
+        (names, loader)
+    }
+
+    /// What an original callee names lexically (Luanalysis v1 semantics). A
+    /// local that no original write can give an intrinsic is ordinary; an
+    /// immutable one names its initializer. An unbound name other than a
+    /// standard name is ordinary, and an unreplaced standard name is the
+    /// original environment member. Members spelled with a standard name,
+    /// mutable candidate locals, replaced names and a lexical or written
+    /// `_ENV` are left to the provenance walk. Calls, operators, other members
+    /// and computed keys never name an intrinsic.
+    pub(super) fn lexical_standard(&self, bound: &super::bind::BoundFile, replaced: u8, evaluation: flow::EvaluationId, graph: NativeGraphKey) -> luanalysis_engine::NativeLexicalStandard {
+        use luanalysis_engine::NativeLexicalStandard as Lexical;
+        use super::bind::STANDARD_NAMES;
+        let standard = |name: &[u8]| STANDARD_NAMES.iter().position(|standard| standard.as_bytes() == name);
+        let mut expression = &self.program.expression(self.program.evaluation(evaluation).expression).expression;
+        loop {
+            match &expression.kind {
+                ExprKind::Parenthesized(inner) => expression = inner,
+                ExprKind::Name(name) => {
+                    if let Some(binding) = bound.binding_at(name.span.start) {
+                        if !self.capability_bindings.contains(&binding) { return Lexical::Ordinary; }
+                        let Some(initializer) = self.immutable_initializer(binding) else { return Lexical::Unknown; };
+                        expression = &self.program.expression(initializer.expression).expression;
+                        continue;
+                    }
+                    let Some(bit) = standard(name.text.as_bytes()) else { return Lexical::Ordinary; };
+                    if self.environment_cell_written || replaced & 1 << bit != 0 || bound.environment_binding_at(name.span.start).is_some() {
+                        return Lexical::Unknown;
+                    }
+                    let reference = flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: vec![flow::Key::String(name.text.as_bytes().to_vec())] };
+                    return self.reference_key(graph, &reference).map_or(Lexical::Unknown, Lexical::Global);
+                }
+                ExprKind::Field { name, .. } => return if standard(name.text.as_bytes()).is_some() { Lexical::Unknown } else { Lexical::Ordinary },
+                ExprKind::Index { index, .. } => return match super::native_tables::literal_key(index) {
+                    Some(luanalysis_engine::LuaKey::String(key)) if standard(&key).is_some() => Lexical::Unknown,
+                    _ => Lexical::Ordinary,
+                },
+                _ => return Lexical::Ordinary,
+            }
+        }
+    }
 
     pub(super) fn graph_creation(&self, graph: NativeGraphKey) -> Option<NativeFunctionCreation> {
         if !self.contains_graph(graph) { return None; }
@@ -1332,6 +1401,10 @@ pub(super) trait FlowValueQueries {
     fn binding_has_written_contract(&self, _: BindingId) -> bool { false }
     fn written_binding_contract(&self, _: BindingId, _: &mut dyn TypeQueries) -> Option<Type> { None }
     fn original_alias_initial(&self, _: &flow::Reference) -> luanalysis_engine::NativeAliasInitial { luanalysis_engine::NativeAliasInitial::Opaque }
+    /// See `NativeFlowSources::lexical_standard`; Unknown keeps the provenance walk.
+    fn lexical_standard(&self, _: &NativeFlowSources, _: flow::EvaluationId, _: NativeGraphKey) -> luanalysis_engine::NativeLexicalStandard { luanalysis_engine::NativeLexicalStandard::Unknown }
+    /// No implementation source in the project may mutate the module loader.
+    fn loader_never_mutated(&self) -> bool { false }
     fn original_alias_execution(&self, _: NativeFunctionKey, _: NativeFlowKey) -> Option<luanalysis_engine::NativeAliasExecution> { None }
     fn environment_access_path(&self, expression: &Expr, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<Vec<flow::Key>>;
     fn original_type_operation(&self, value: &ValueRecipe, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool;
@@ -1732,6 +1805,11 @@ impl NativeFlowProvider for FlowAdapter<'_> {
                 && self.sources.binding_owners.get(&binding).is_some_and(|&owner| owner != reference.graph.region),
             _ => false,
         }
+    }
+    fn loader_never_mutated(&self, _: NativeGraphKey) -> bool { self.values.loader_never_mutated() }
+    fn value_lexical_standard(&self, value: NativeValueKey, input: NativeFlowKey) -> luanalysis_engine::NativeLexicalStandard {
+        let Some(ValueRecipe::Evaluation(evaluation)) = self.sources.value(value) else { return luanalysis_engine::NativeLexicalStandard::Unknown; };
+        self.values.lexical_standard(self.sources, *evaluation, input.graph)
     }
     fn value_literal_truthiness(&self, value: NativeValueKey) -> Option<bool> {
         let Some(ValueRecipe::Evaluation(evaluation)) = self.sources.value(value) else { return None; };
