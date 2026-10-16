@@ -340,6 +340,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
             };
             registry.check_all_bodies(engine);
             while registry.retry_contextual_owner_validations(engine) {}
+            registry.check_deferred_constraints(engine);
             report.append(registry.take_report());
             report.render(engine);
             while registry.retry_contextual_owner_validations(engine) {}

@@ -848,6 +848,7 @@ impl<'p, 's> Checker<'p, 's> {
             for value in &mut values { if self.is_any(*value) { *value = TypeId::UNKNOWN; } }
             return if values.is_empty() { None } else { Some(self.intersection(&values)) };
         }
+        if let TypeData::NativeObject(reference) = *self.data(expected) { return self.native_named_context_value(reference, key) }
         self.native_table_read(expected, key).ok()
     }
 

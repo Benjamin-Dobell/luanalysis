@@ -506,9 +506,11 @@ fn native_generic_members_use_existing_mapper_once_and_constraints_defaults() {
                     .unwrap(),
                 Type::Number
             );
+            // Resolution keeps the reference; the bound is the reference's own check.
+            assert!(q.named_type_reference(declaration(0), &[Type::String]).is_ok());
             assert!(matches!(
-                q.named_type_reference(declaration(0), &[Type::String]),
-                Err(NamedTypeError::TypeArgumentConstraint {
+                q.named_type_constraint_error(declaration(0), &[Type::String]),
+                Some(NamedTypeError::TypeArgumentConstraint {
                     index: 0,
                     actual: Type::String,
                     expected: Type::Number,
@@ -951,9 +953,10 @@ fn f_bounded_parameters_do_not_become_spurious_constraint_cycles() {
                 "an F-bound is productive through a structural head"
             );
             assert!(provider.errors.borrow().is_empty());
+            assert!(q.named_type_reference(declaration(0), &[Type::Number]).is_ok());
             assert!(matches!(
-                q.named_type_reference(declaration(0), &[Type::Number]),
-                Err(NamedTypeError::TypeArgumentConstraint { .. })
+                q.named_type_constraint_error(declaration(0), &[Type::Number]),
+                Some(NamedTypeError::TypeArgumentConstraint { .. })
             ));
         },
     );

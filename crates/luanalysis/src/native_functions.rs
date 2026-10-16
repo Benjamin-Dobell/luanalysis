@@ -113,6 +113,11 @@ pub(super) struct NativeRegistry {
     pending_owner_bodies: RefCell<HashSet<(NativeFunctionKey, Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
     report: RefCell<CheckReport>,
     provisional_reports: RefCell<Vec<CheckReport>>,
+    /// Written generic references whose constraints are still to be checked, as TypeScript's
+    /// deferred `checkTypeReferenceNode`: once per reference, at top level, never inside the
+    /// resolution that lowered it.
+    deferred_constraints: RefCell<Vec<(Span, Vec<Span>, luanalysis_engine::NativeTypeDeclarationKey, Vec<Type>)>>,
+    deferred_constraint_spans: RefCell<HashSet<(usize, usize)>>,
 }
 
 #[path = "native_standard_environment.rs"]
@@ -286,6 +291,8 @@ impl NativeRegistry {
             pending_owner_bodies: RefCell::new(HashSet::default()),
             report: RefCell::new(report),
             provisional_reports: RefCell::new(Vec::new()),
+            deferred_constraints: RefCell::new(Vec::new()),
+            deferred_constraint_spans: RefCell::new(HashSet::default()),
         };
         registry.rebuild_original_members();
         registry.attach_documentation_signature_owners();
@@ -895,6 +902,34 @@ impl NativeRegistry {
                 result
             }
             Err(error) => std::panic::resume_unwind(error),
+        }
+    }
+
+    /// Records a written generic reference for `check_deferred_constraints`.
+    pub(super) fn defer_constraint_check(&self, span: Span, argument_spans: Vec<Span>, declaration: luanalysis_engine::NativeTypeDeclarationKey, arguments: &[Type]) {
+        if self.deferred_constraint_spans.borrow_mut().insert((span.start, span.end)) {
+            self.deferred_constraints.borrow_mut().push((span, argument_spans, declaration, arguments.to_vec()));
+        }
+    }
+
+    /// Reports TS2344 for every recorded reference whose arguments do not satisfy their
+    /// constraints, at the offending argument. Run at top level, before the file's report is
+    /// taken.
+    pub(crate) fn check_deferred_constraints(&self, queries: &mut dyn TypeQueries) {
+        loop {
+            let pending = std::mem::take(&mut *self.deferred_constraints.borrow_mut());
+            if pending.is_empty() { return; }
+            for (span, argument_spans, declaration, arguments) in pending {
+                if let Some(error) = queries.named_type_constraint_error(declaration, &arguments) {
+                    let span = match &error {
+                        luanalysis_engine::NamedTypeError::TypeArgumentConstraint { index, .. } => {
+                            argument_spans.get(*index).copied().unwrap_or(span)
+                        }
+                        _ => span,
+                    };
+                    self.record_named_application_error(error, span, queries);
+                }
+            }
         }
     }
 

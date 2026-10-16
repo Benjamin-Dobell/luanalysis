@@ -49,20 +49,22 @@ impl NominalLoop {
                     "each inherited relation must recompute ancestry without a completed cache entry");
             }
             let before_application = self.base_calls.get();
-            let application = queries.named_type_reference(nominal(2), &[actual.clone()]);
+            // Resolution keeps the reference; its bound is the reference's own check.
+            queries.named_type_reference(nominal(2), &[actual.clone()]).expect("a written application resolves");
+            let bound = queries.named_type_constraint_error(nominal(2), &[actual.clone()]);
             if self.ancestry == Ancestry::Complete {
                 assert!(related, "a bounded T must satisfy its exact nominal bound under inherited incomplete flow");
-                application.expect("the same T must satisfy a named generic's bound");
+                assert!(bound.is_none(), "the same T must satisfy a named generic's bound");
                 assert!(self.base_calls.get() > before_application,
                     "generic bound checks must not reuse an inherited completed ancestry entry");
             } else if self.ancestry == Ancestry::SettledFlowDependency {
                 if !related { self.settled_refusals.set(self.settled_refusals.get() + 1); }
-                application.expect("the earlier relation settled this same dependency before the application demand");
+                assert!(bound.is_none(), "the earlier relation settled this same dependency before the bound check");
                 assert!(queries.is_assignable(&actual, &expected),
                     "a dependency that is now complete must be usable in this context");
             } else {
                 assert!(!related, "a fresh ancestry dependency must not become a completed nominal relation");
-                assert!(application.is_err(), "a refused ancestry must not admit a generic argument through fallback types: {:?}, bases={}", self.ancestry, self.base_calls.get());
+                assert!(bound.is_some(), "a refused ancestry must not admit a generic argument through fallback types: {:?}, bases={}", self.ancestry, self.base_calls.get());
             }
         }
         assert!(self.base_calls.get() > before,

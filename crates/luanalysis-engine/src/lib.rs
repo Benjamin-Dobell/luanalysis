@@ -1152,6 +1152,8 @@ pub trait TypeQueries {
     fn type_parameter_default(&mut self, key: NativeTypeParameterKey) -> Option<Type>;
     fn format(&mut self, ty: &Type) -> String;
     fn named_type_reference(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Result<Type, NamedTypeError>;
+    /// `checkTypeArgumentConstraints` for a written reference; resolution does not check them.
+    fn named_type_constraint_error(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Option<NamedTypeError>;
     fn named_object_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey>;
     fn runtime_table_value(&mut self, declaration: NativeTypeDeclarationKey, actual: &Type) -> Result<Type, NamedTypeError>;
     fn runtime_table_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey>;
@@ -2159,6 +2161,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn named_type_reference(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Result<Type, NamedTypeError> {
         native_named::resolve(self, declaration, arguments)
+    }
+    fn named_type_constraint_error(&mut self, declaration: NativeTypeDeclarationKey, arguments: &[Type]) -> Option<NamedTypeError> {
+        native_named::constraint_error(self, declaration, arguments)
     }
     fn named_object_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey> {
         let ty = import_type(self.checker, self.handles, ty);

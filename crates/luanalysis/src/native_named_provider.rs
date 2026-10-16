@@ -978,7 +978,19 @@ impl Checker<'_> {
             }
         };
         match self.engine.named_type_reference(declaration, arguments) {
-            Ok(ty) => Some(ty),
+            Ok(ty) => {
+                // The reference keeps its instantiated type. Its constraints are checked later,
+                // at top level (`check_deferred_constraints`), as TypeScript defers
+                // `checkTypeArgumentConstraints`: checking here, inside the resolution that
+                // lowered it (a base list, a member type), re-entered that resolution.
+                if let TypeExprKind::Generic { args, .. } = &syntax.kind
+                    && !arguments.is_empty()
+                {
+                    let spans = args.iter().map(|argument| argument.span).collect();
+                    native.defer_constraint_check(syntax.span, spans, declaration, arguments);
+                }
+                Some(ty)
+            }
             Err(error) => {
                 let span = match (&error, &syntax.kind) {
                     (
@@ -1060,6 +1072,7 @@ mod dependency_tests {
                     // The same original annotation is still invalid. Its own
                     // completed check must report it after the candidate ends.
                     registry.checker(queries).annotation(&syntax);
+                    registry.check_deferred_constraints(queries);
                     let mut completed = registry.take_report();
                     completed.render(queries);
                     assert_eq!(completed.diagnostics.len(), 1, "{application}: {:#?}", completed.diagnostics);
@@ -1080,6 +1093,7 @@ mod dependency_tests {
                 move || registry(&source),
                 |registry, queries| {
                     registry.check_body(function(registry, "inspect"), queries);
+                    registry.check_deferred_constraints(queries);
                     let mut report = registry.take_report();
                     report.render(queries);
                     assert_eq!(report.diagnostics.len(), expected, "{argument}: {:#?}", report.diagnostics);

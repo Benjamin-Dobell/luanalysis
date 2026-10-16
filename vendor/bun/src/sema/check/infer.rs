@@ -2792,7 +2792,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// `compare`: `InferenceContext.compareTypes`, as "is not `TernaryFalse`". A comparison of two
     /// signatures passes its own `isRelatedTo`, so that what is in progress and how deep it is
     /// count for the constraint of an inferred type too. Otherwise `compareTypesAssignable`.
-    fn get_inferred_type_comparing(
+    pub(super) fn get_inferred_type_comparing(
         &mut self,
         n: &Inference,
         index: usize,

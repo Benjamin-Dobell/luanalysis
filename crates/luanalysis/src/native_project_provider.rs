@@ -491,6 +491,7 @@ impl ProjectRegistry {
             }
             for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
                 if !owned_only && !checked.contains(&index) { continue; }
+                file.source.check_deferred_constraints(queries);
                 let mut pending = file.source.take_report();
                 if !self.describe_types { pending.discard_types(); }
                 // The drain loop runs to a fixed point: only new information
@@ -539,7 +540,15 @@ impl ProjectRegistry {
             if !checked.contains(&index) && !(owned_only && emitted.contains(&index)) { continue; }
             if !owned_only {
                 file.source.report_unresolved_contextual_owners();
-                report.report.append(file.source.take_report());
+                file.source.check_deferred_constraints(queries);
+                let mut pending = file.source.take_report();
+                // As in the drain loop: types are described only when printed.
+                if self.describe_types {
+                    pending.render(queries);
+                } else {
+                    pending.discard_types();
+                }
+                report.report.append(pending);
                 report.report.render_diagnostics(queries);
             }
             report.report.diagnostics.sort_by(|left, right| {

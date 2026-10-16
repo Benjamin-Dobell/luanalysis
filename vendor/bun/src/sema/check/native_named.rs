@@ -581,22 +581,33 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let filled = self.fill_type_args(&parameters, arguments);
         let mapper = self.mapper_from(&parameters, &filled);
+        // As `getTypeFromTypeReference`, resolution does not check constraints: that is the
+        // separate `checkTypeArgumentConstraints` of the reference's own check
+        // (`native_type_reference_constraint_error`). Checking here made a reference resolved
+        // inside a cycle fail as a whole, so the result depended on evaluation order.
+        let declared = self.native_declared_head(declaration)?;
+        Ok(self.type_alias_instantiation(declared, mapper))
+    }
+
+    /// `checkTypeArgumentConstraints` for a written reference: the first argument that does not
+    /// satisfy its parameter's constraint. Arity errors belong to resolution.
+    pub fn native_type_reference_constraint_error(&mut self, declaration: NativeTypeDeclarationId, arguments: &[TypeId]) -> Option<NativeNamedTypeError> {
+        let provider = self.native_named_provider(declaration).ok()?;
+        let header = provider.type_declaration_header(self, declaration);
+        let parameters: Vec<_> = header.parameters.iter().map(|&id| self.native_type_parameter(id)).collect::<Option<_>>()?;
+        let filled = self.fill_type_args(&parameters, arguments);
+        let mapper = self.mapper_from(&parameters, &filled);
         for (index, (&parameter, &actual)) in parameters.iter().zip(&filled).enumerate() {
-            // A declaration parameter is assumed to satisfy its own bound. Demanding that bound
-            // while resolving Node<T>'s F-bound Node<T> would otherwise manufacture a constraint
-            // cycle before the structural head can be used by the ordinary relation worker.
+            // A declaration parameter is assumed to satisfy its own bound (Node<T>'s F-bound).
             if actual == parameter { continue }
             if let Some(constraint) = self.constraint_of_type_param(parameter) {
                 let expected = self.instantiate(constraint, mapper);
                 if !self.is_assignable(actual, expected) {
-                    let error = NativeNamedTypeError::TypeArgumentConstraint { declaration, index, actual, expected };
-                    self.report_native_named(error);
-                    return Err(error);
+                    return Some(NativeNamedTypeError::TypeArgumentConstraint { declaration, index, actual, expected });
                 }
             }
         }
-        let declared = self.native_declared_head(declaration)?;
-        Ok(self.type_alias_instantiation(declared, mapper))
+        None
     }
 
     /// Validate a declaration template without requiring actual arguments for its own parameters.
@@ -835,7 +846,11 @@ impl<'p, 's> Checker<'p, 's> {
         for (index, &parameter) in parameters.iter().enumerate() {
             let candidate = &inference.candidates[index];
             if candidate.covariant.is_empty() && candidate.contravariant.is_empty() && candidate.fixed.is_none() { return Ok(None) }
-            let inferred = self.get_inferred_type(&inference, index, false);
+            // A declared subclass satisfies its ancestor without comparing members: a structural
+            // comparison here needed the member schema that is being resolved.
+            let inferred = self.get_inferred_type_comparing(&inference, index, false, &mut |checker, source, target| {
+                checker.native_nominally_derived(source, target) || checker.is_assignable(source, target)
+            });
             pairs.push((parameter, inferred));
             if let TypeData::NativeTypeParam { declaration, .. } = *self.data(parameter) {
                 let original = self.native_type_parameter(declaration).ok_or(NativeNamedTypeError::InvalidTypeParameter(declaration))?;
@@ -1243,6 +1258,16 @@ impl<'p, 's> Checker<'p, 's> {
         Ok(members)
     }
 
+    /// Whether `target` is `source` or one of its declared, mapped bases. A declared subclass is
+    /// assignable to its ancestors (incompatible overrides are the declaration's own error).
+    pub(super) fn native_nominally_derived(&mut self, source: TypeId, target: TypeId) -> bool {
+        if source == target { return true }
+        if !matches!(self.data(target), TypeData::NativeObject(_)) { return false }
+        let TypeData::NativeObject(reference) = *self.data(source) else { return false };
+        let Ok(bases) = self.native_object_bases(reference) else { return false };
+        bases.into_iter().any(|base| self.native_nominally_derived(base, target))
+    }
+
     pub(super) fn native_nominal_reference_compatible(&mut self, source: NativeObjectReference, target: NativeObjectReference, identity: bool) -> bool {
         if source.declaration == target.declaration { return true }
         if identity { return false }
@@ -1523,6 +1548,36 @@ impl<'p, 's> Checker<'p, 's> {
         let object = self.intern(TypeData::NativeObject(reference));
         let resolved = self.native_object_resolved(object).map_err(|error| error.table_error(object))?;
         self.native_table_read(resolved, key)
+    }
+
+    /// The type a contextual lookup sees for `key`, as `getTypeOfPropertyOfContextualType`: the
+    /// member's mapped type, without the receiver and override relations of a read. Context is
+    /// demanded while resolving members, and relating types there re-entered the schema being
+    /// resolved.
+    pub(super) fn native_named_context_value(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Option<TypeId> {
+        if let NativeTableAccessKey::Literal(literal) = key
+            && self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_kind(self, reference.declaration) != NativeTypeDeclarationKind::RuntimeTable)
+        {
+            let literal = literal.normalize().ok()?;
+            let members = self.native_object_members(reference).ok()?;
+            let provider = self.native_named_provider(reference.declaration).ok()?;
+            for origin in members {
+                let metadata = provider.type_member_header(self, origin.member);
+                let NativeTypeMemberKey::Fixed(member_key) = metadata.key else { continue };
+                if member_key.normalize().ok()? != literal { continue }
+                if let Some((_, base)) = origin.via {
+                    let TypeData::NativeObject(owner) = *self.data(base) else { continue };
+                    return self.native_named_context_value(owner, key);
+                }
+                let Some(raw) = self.native_object_member_demand(&origin).ok()? else { continue };
+                let value = self.native_member_type(raw, origin.owner);
+                let value = if self.native_object_member_effective_origin(&origin).ok()? == Some(crate::types::NativeTableFieldOrigin::Declared) { self.regular(value) } else { value };
+                return Some(if metadata.optional { self.optional(value) } else { value });
+            }
+        }
+        let object = self.intern(TypeData::NativeObject(reference));
+        let schema = self.native_object_schema_resolved(object).ok()?;
+        self.native_table_read(schema, key).ok()
     }
 }
 

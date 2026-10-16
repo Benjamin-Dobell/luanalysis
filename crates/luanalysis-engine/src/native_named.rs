@@ -553,6 +553,21 @@ pub(super) fn resolve(
         .map_err(|error| export_error(queries.checker, queries.handles, error))
 }
 
+pub(super) fn constraint_error(
+    queries: &mut SessionQueries<'_, '_, '_>,
+    declaration: NativeTypeDeclarationKey,
+    arguments: &[Type],
+) -> Option<NamedTypeError> {
+    let arguments: Vec<_> = arguments
+        .iter()
+        .map(|ty| import_type(queries.checker, queries.handles, ty))
+        .collect();
+    queries
+        .checker
+        .native_type_reference_constraint_error(core_declaration(declaration), &arguments)
+        .map(|error| export_error(queries.checker, queries.handles, error))
+}
+
 pub(super) fn declared(
     queries: &mut SessionQueries<'_, '_, '_>,
     declaration: NativeTypeDeclarationKey,
