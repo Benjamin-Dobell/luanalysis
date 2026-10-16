@@ -1600,6 +1600,12 @@ impl<'s, 'p> Checker<'s, 'p> {
         !reachable && stored.is_some()
     }
 
+    /// The value of an original recipe at its frozen input, through the same
+    /// cache flow walks use (stored only when the computation was stable).
+    pub fn native_flow_value_cached(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> TypeId {
+        self.native_flow_value(provider, value, input)
+    }
+
     fn native_flow_value(
         &mut self,
         provider: &dyn NativeFlowProvider,

@@ -837,8 +837,11 @@ impl NativeRegistry {
         };
         let at = self.flow.flow_key(input, graph.context);
         let value_key = self.flow.write_value(write)?;
-        let recipe = self.flow.value(value_key)?;
-        let value = self.flow_value_type(&self.flow, recipe, at, queries);
+        self.flow.value(value_key)?;
+        // Through the engine's flow value cache: every reference to an
+        // unannotated local re-evaluated its initializer here (35% of
+        // Prototype Inertia time). Bun computes a local's type once.
+        let value = queries.flow_value(&FlowAdapter { sources: &self.flow, values: self }, value_key, at);
         let evolves_from_nil = matches!(self.declarations.get(&binding), Some(DeclarationSource::Local { automatic: true, .. }));
         let constraint = if evolves_from_nil { queries.auto_variable_constraint() }
             else { super::inferred_local_constraint(&value, queries) };

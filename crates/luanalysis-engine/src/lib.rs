@@ -1029,6 +1029,9 @@ pub trait TypeQueries {
         context: &ContextualFunctionContext,
         work: &mut dyn FnMut(&mut dyn TypeQueries),
     );
+    /// An original value recipe at its frozen input, through the flow value
+    /// cache (computed once per stable demand, as Bun memoises expressions).
+    fn flow_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> Type;
     fn flow_type(
         &mut self,
         provider: &dyn NativeFlowProvider,
@@ -1265,6 +1268,11 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn flow_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> Type {
+        let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
+        let ty = self.checker.native_flow_value_cached(&adapter, value, input);
+        export_type(self.checker, self.handles, ty)
+    }
     fn contextual_function_check_state(&mut self, context: &ContextualFunctionContext) -> NativeFunctionCheckState {
         self.checker.native_contextual_function_check_state(self.handles.resolve_context(context))
     }
