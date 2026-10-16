@@ -504,9 +504,13 @@ impl NativeRegistry {
         &self,
         key: NativeTypeDeclarationKey,
     ) -> Vec<NativeTypeMemberKey> {
-        if self.runtime_schema_contains(key) {
+        if let Some(constructor) = self.runtime_schema_constructor(key) {
+            // Only the stores this schema owns, as a binder sees them.
             return if self.source_role() == luanalysis_project::SourceRole::Implementation {
-                self.runtime_tables.members().collect()
+                self.runtime_tables.members_with_stores()
+                    .filter(|&(_, store)| self.runtime_store_owner(store) == Some(constructor))
+                    .map(|(member, _)| member)
+                    .collect()
             } else {Vec::new()};
         }
         let mut result = if let Some(source) = self.named.declaration(named_key(key)) {
@@ -1042,8 +1046,9 @@ mod dependency_tests {
                         let luanalysis_syntax::StmtKind::Local { annotation: Some(annotation), .. } = &statement.kind else { return None };
                         annotation.types.first().cloned()
                     }).expect("original named application annotation");
-                    registry.with_prospective_store_report(|| {
+                    registry.with_body_report(|| {
                         registry.checker(queries).annotation(&syntax);
+                        ((), false)
                     });
                     let provisional = registry.take_report();
                     assert!(provisional.diagnostics.is_empty(), "{application}: {:#?}", provisional.diagnostics);

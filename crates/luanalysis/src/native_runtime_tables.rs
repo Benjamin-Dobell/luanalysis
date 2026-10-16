@@ -85,7 +85,10 @@ pub(super) struct NativeRuntimeTables {
     store_indices: HashMap<NativeFlowKey, usize>,
     target_stores: HashMap<(usize, usize), usize>,
     schema_keys: Vec<(NativeTypeDeclarationKey, NativeExpressionKey)>,
+    schema_indices: HashMap<NativeExpressionKey, usize>,
     member_keys: Vec<NativeTypeMemberKey>,
+    /// The registered key namespace: (snapshot, declaration base, member base).
+    bases: Option<(u64, u32, u32)>,
 }
 impl NativeRuntimeTables {
     pub(super) fn new(
@@ -290,13 +293,16 @@ impl NativeRuntimeTables {
             store_indices,
             target_stores,
             schema_keys: Vec::new(),
+            schema_indices: HashMap::default(),
             member_keys: Vec::new(),
+            bases: None,
         }
     }
     pub(super) fn constructors(&self) -> &[RuntimeTableConstructor] {
         &self.constructors
     }
     pub(super) fn register_keys(&mut self, snapshot: u64, declaration_base: u32, member_base: u32) {
+        self.bases = Some((snapshot, declaration_base, member_base));
         self.schema_keys = self
             .constructors
             .iter()
@@ -314,6 +320,7 @@ impl NativeRuntimeTables {
                 )
             })
             .collect();
+        self.schema_indices = self.schema_keys.iter().enumerate().map(|(index, (_, constructor))| (*constructor, index)).collect();
         self.member_keys = self
             .stores
             .iter()
@@ -327,27 +334,32 @@ impl NativeRuntimeTables {
             .collect();
     }
     pub(super) fn schema(&self, key: NativeTypeDeclarationKey) -> Option<&RuntimeTableConstructor> {
-        self.schema_keys
-            .iter()
-            .find_map(|(candidate, constructor)| (*candidate == key).then_some(constructor))
-            .and_then(|key| self.constructor(*key))
+        let (snapshot, base, _) = self.bases?;
+        if key.snapshot != snapshot { return None; }
+        let (candidate, constructor) = self.schema_keys.get(key.index.checked_sub(base)? as usize)?;
+        (*candidate == key).then(|| self.constructor(*constructor)).flatten()
     }
     pub(super) fn schema_key(
         &self,
         constructor: NativeExpressionKey,
     ) -> Option<NativeTypeDeclarationKey> {
-        self.schema_keys
-            .iter()
-            .find_map(|(key, candidate)| (*candidate == constructor).then_some(*key))
+        self.schema_indices.get(&constructor).map(|&index| self.schema_keys[index].0)
     }
     pub(super) fn schemas(&self) -> impl Iterator<Item = NativeTypeDeclarationKey> + '_ {
         self.schema_keys.iter().map(|(key, _)| *key)
     }
     pub(super) fn member(&self, key: NativeTypeMemberKey) -> Option<&RuntimeTableStore> {
-        self.member_keys
-            .iter()
-            .position(|candidate| *candidate == key)
-            .map(|index| &self.stores[index])
+        self.member_store_index(key).map(|index| &self.stores[index])
+    }
+    pub(super) fn member_store_index(&self, key: NativeTypeMemberKey) -> Option<usize> {
+        let (snapshot, _, base) = self.bases?;
+        if key.snapshot != snapshot { return None; }
+        let index = key.index.checked_sub(base)? as usize;
+        (self.member_keys.get(index) == Some(&key)).then_some(index)
+    }
+    /// Each member key with the index of its original store.
+    pub(super) fn members_with_stores(&self) -> impl Iterator<Item = (NativeTypeMemberKey, usize)> + '_ {
+        self.member_keys.iter().copied().enumerate().map(|(index, key)| (key, index))
     }
     pub(super) fn members(&self) -> impl Iterator<Item = NativeTypeMemberKey> + '_ {
         self.member_keys.iter().copied()
@@ -371,6 +383,11 @@ impl NativeRuntimeTables {
         self.store_indices
             .get(&original)
             .map(|&index| &self.stores[index])
+    }
+    pub(super) fn store_index(&self, key: NativeFlowKey) -> Option<usize> {
+        let mut original = key;
+        original.graph.context = 0;
+        self.store_indices.get(&original).copied()
     }
 }
 fn constructor(mut expression: &Expr) -> Option<&Expr> {

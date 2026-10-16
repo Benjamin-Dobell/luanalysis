@@ -11,10 +11,104 @@ use luanalysis_engine::{
     ObjectDeclarationForm, Type, TypeDeclarationHeader, TypeDeclarationKind, TypeMemberHeader,
     TypeMemberKeyRecipe, TypeMemberOwner, TypeMemberVisibility, TypeQueries,
 };
-use luanalysis_syntax::{ExprKind, Span};
-use crate::collections::HashSet;
+use luanalysis_syntax::{Expr, ExprKind, Span, TableFieldKind};
+use luanalysis_engine::LuaKey;
+use crate::bind::DeclarationKind;
+use crate::collections::{HashMap, HashSet};
 
 impl NativeRegistry {
+    /// The runtime-table constructor whose schema owns this store, by Bun's
+    /// expando rule: the binder declares `x.y = z` on `x`'s declaration, so
+    /// ownership is decided from syntax and declarations alone, never from the
+    /// receiver's flow or value type. Computed once per registry.
+    pub(crate) fn runtime_store_owner(&self, store: usize) -> Option<NativeExpressionKey> {
+        self.runtime_store_owners.get_or_init(|| {
+            let mut memo = HashMap::default();
+            self.runtime_tables.stores().iter().map(|store| {
+                let receiver = &self.expressions().get(store.receiver).expression;
+                self.syntactic_table_owner(receiver, Some(store.key.graph.region), 0, &mut memo)
+                    .filter(|&owner| self.runtime_tables.schema_key(owner).is_some())
+            }).collect()
+        }).get(store).copied().flatten()
+    }
+
+    /// The constructor `expression` names syntactically: the constructor itself,
+    /// `setmetatable(t, mt)` (which returns `t`), a local by the assignment that
+    /// syntactically reaches it in its own function body (`region`), else by its
+    /// declaration (as Bun and v1 attribute expandos), a method's implicit
+    /// `self` (owned like the declared receiver), or a static path to a nested
+    /// table. Schemas belong to constructors, so a local rebound to a new
+    /// constructor owns the new one from that point.
+    fn syntactic_table_owner(&self, expression: &Expr, region: Option<u32>, depth: u32, memo: &mut HashMap<(usize, usize), Option<NativeExpressionKey>>) -> Option<NativeExpressionKey> {
+        if depth > 32 { return None; }
+        if let Some(&known) = memo.get(&(expression.span.start, expression.span.end)) { return known; }
+        // A cycle through this expression has no owner.
+        memo.insert((expression.span.start, expression.span.end), None);
+        let owner = match &expression.kind {
+            ExprKind::Parenthesized(inner) => self.syntactic_table_owner(inner, region, depth + 1, memo),
+            // Any constructor, contracted or not, can own a nested table; only a
+            // runtime schema owns stores (checked by `runtime_store_owner`).
+            ExprKind::Table(_) => {
+                let key = self.expressions().key_for_span(expression.span);
+                self.runtime_tables.constructor(key).map(|_| key)
+            }
+            ExprKind::Call { callee, args } => match &callee.kind {
+                ExprKind::Name(name) if name.text == "setmetatable" && self.bound().binding_at(name.span.start).is_none() => {
+                    args.first().and_then(|table| self.syntactic_table_owner(table, region, depth + 1, memo))
+                }
+                _ => None,
+            },
+            ExprKind::Name(name) => self.bound().binding_at(name.span.start).and_then(|binding| {
+                if self.bound().declaration(binding).kind == DeclarationKind::ImplicitReceiver {
+                    return self.method_receiver_for(binding).and_then(|receiver| self.syntactic_table_owner(receiver, None, depth + 1, memo));
+                }
+                let sources = self.iterator_sources();
+                let initializer = region.and_then(|region| sources.latest_binding_write_before(binding, region, expression.span.start))
+                    .or_else(|| sources.declaration_initializer(binding))?;
+                let region = Some(initializer.input.graph);
+                let initializer = &sources.program.expression(initializer.expression).expression;
+                self.syntactic_table_owner(initializer, region, depth + 1, memo)
+            }),
+            ExprKind::Field { base, name } => self.syntactic_member_owner(base, region, expression.span.start, &LuaKey::String(name.text.as_bytes().to_vec()), depth, memo),
+            ExprKind::Index { base, index } => crate::native_tables::literal_key(index)
+                .and_then(|key| self.syntactic_member_owner(base, region, expression.span.start, &key, depth, memo)),
+            _ => None,
+        };
+        memo.insert((expression.span.start, expression.span.end), owner);
+        owner
+    }
+
+    /// A nested table under an owned table: the owned store `base.key = {...}`
+    /// that syntactically reaches `position` in the same function body, else the
+    /// constructor field `key = {...}`, else the first such store in source
+    /// order (a namespace built by assignments, as Bun's nested expandos).
+    fn syntactic_member_owner(&self, base: &Expr, region: Option<u32>, position: usize, key: &LuaKey, depth: u32, memo: &mut HashMap<(usize, usize), Option<NativeExpressionKey>>) -> Option<NativeExpressionKey> {
+        let owner = self.syntactic_table_owner(base, region, depth + 1, memo)?;
+        let sources = self.iterator_sources();
+        let (mut reaching, mut first) = (None, None);
+        for store in self.runtime_tables.stores() {
+            if !matches!(&store.member, RuntimeTableStoreKey::Fixed(stored) if stored == key) { continue; }
+            let receiver = &self.expressions().get(store.receiver).expression;
+            let store_region = Some(store.key.graph.region);
+            if self.syntactic_table_owner(receiver, store_region, depth + 1, memo) != Some(owner) { continue; }
+            let Some(ValueRecipe::Evaluation(value)) = sources.value(store.value) else { continue; };
+            let value = &sources.program.expression(sources.program.evaluation(*value).expression).expression;
+            let Some(nested) = self.syntactic_table_owner(value, store_region, depth + 1, memo) else { continue; };
+            if store_region == region && store.statement_end <= position
+                && reaching.is_none_or(|(end, _)| store.statement_end > end)
+            { reaching = Some((store.statement_end, nested)); }
+            if first.is_none_or(|(start, _)| store.span.start < start) { first = Some((store.span.start, nested)); }
+        }
+        if let Some((_, nested)) = reaching { return Some(nested); }
+        let constructor = self.runtime_tables.constructor(owner)?;
+        constructor.fields.iter().find(|field| match &field.kind {
+            TableFieldKind::Named(name) => LuaKey::String(name.text.as_bytes().to_vec()) == *key,
+            TableFieldKind::Keyed(expression) => crate::native_tables::literal_key(expression).as_ref() == Some(key),
+            TableFieldKind::Sequence { index } => LuaKey::Integer(*index as i64) == *key,
+        }).and_then(|field| self.syntactic_table_owner(&field.value, region, depth + 1, memo))
+            .or_else(|| first.map(|(_, nested)| nested))
+    }
+
     pub(crate) fn original_literal_self_type(
         &self,
         function: luanalysis_engine::NativeFunctionKey,
@@ -152,55 +246,12 @@ impl NativeRegistry {
         key: NativeFlowKey,
         queries: &mut dyn TypeQueries,
     ) -> Option<Type> {
-        let source = self.runtime_tables.store(key)?;
-        let contextual = queries.current_contextual_function();
-        let captured = queries.current_captured_function();
-        let sources = self.iterator_sources();
-        let graph = sources.graph_with_contexts(
-            source.receiver_input.graph.region,
-            contextual.as_ref(),
-            captured.as_ref(),
-        );
-        // Store membership needs only the receiver table's schema identity.
-        // An immutable local declared in this same body still holds its
-        // initializer's allocation; later member stores evolve only its view.
-        // Evaluate that initializer rather than flowing the receiver through
-        // those stores, whose values can read this schema while it is derived.
-        let receiver = sources.program.evaluation(source.receiver_evaluation);
-        if let ExprKind::Name(name) = &sources.program.expression(receiver.expression).expression.kind
-            && let Some(binding) = self.bound().binding_at(name.span.start)
-            && let Some(initializer) = sources.immutable_initializer(binding)
-            && initializer.input.graph == source.receiver_input.graph.region
-        {
-            let recipe = ValueRecipe::Evaluation(initializer.id);
-            let input = sources.flow_key(initializer.input, graph.context);
-            return Some(self.with_prospective_store_report(|| {
-                self.flow_value_type(sources, &recipe, input, queries)
-            }));
-        }
-        // A binding of this body that is never written, such as an unassigned
-        // `self` parameter, holds its entry value at every store here.
-        // Narrowing can only remove alternatives, never change an identity.
-        if let ExprKind::Name(name) = &sources.program.expression(receiver.expression).expression.kind
-            && let Some(binding) = self.bound().binding_at(name.span.start)
-            && sources.unwritten_binding_of(binding, source.receiver_input.graph.region)
-        {
-            let recipe = sources.value(source.receiver_value).expect("original receiver value");
-            let input = sources.flow_key(sources.graph_entry(source.receiver_input.graph.region), graph.context);
-            return Some(self.with_prospective_store_report(|| {
-                self.flow_value_type(sources, recipe, input, queries)
-            }));
-        }
-        let input = NativeFlowKey {
-            graph,
-            node: source.receiver_input.node,
-        };
-        let recipe = sources
-            .value(source.receiver_value)
-            .expect("original receiver value");
-        Some(self.with_prospective_store_report(|| {
-            self.flow_value_type(sources, recipe, input, queries)
-        }))
+        // Membership needs only the owner schema's identity, decided
+        // syntactically (`runtime_store_owner`); the receiver is not flow-typed.
+        let store = self.runtime_tables.store_index(key)?;
+        let schema = self.runtime_tables.schema_key(self.runtime_store_owner(store)?)?;
+        let view = queries.table_type(&luanalysis_engine::TableType { fresh: true, ..Default::default() }).ok()?;
+        queries.runtime_table_value(schema, &view).ok()
     }
     pub(crate) fn runtime_member_header(
         &self,

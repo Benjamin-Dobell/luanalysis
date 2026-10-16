@@ -1015,6 +1015,25 @@ impl NativeFlowSources {
         Some(self.predicate_evaluation(input, evaluation))
     }
 
+    /// The evaluation that initialises `binding` at its declaration, whatever
+    /// later writes rebind it (as a binder sees the declaration).
+    /// The value of the latest write of `binding` in graph `region` whose
+    /// statement ends at or before `position`: the syntactically reaching
+    /// assignment in straight-line code. Writes in nested functions and in the
+    /// same statement do not count.
+    pub(super) fn latest_binding_write_before(&self, binding: BindingId, region: u32, position: usize) -> Option<&flow::Evaluation> {
+        let reference = flow::Reference { root: flow::ReferenceRoot::Binding(binding), path: Vec::new() };
+        self.write_metadata.exact.get(&reference)?.iter().filter_map(|&write| {
+            let flow::NodeKind::Write { address, value: flow::ValueDemand::Evaluation(value), .. } = &self.program.node(write).kind else { return None; };
+            (write.graph == region && address.statement_end <= position).then_some((address.statement_end, *value))
+        }).max_by_key(|(end, _)| *end).map(|(_, value)| self.program.evaluation(value))
+    }
+
+    pub(super) fn declaration_initializer(&self, binding: BindingId) -> Option<&flow::Evaluation> {
+        let flow::NodeKind::Write { value: flow::ValueDemand::Evaluation(initializer), .. } = &self.declaration_write(binding)?.kind else { return None; };
+        Some(self.program.evaluation(*initializer))
+    }
+
     pub(super) fn declaration_write(&self, binding: BindingId) -> Option<&flow::Node> {
         self.declaration_writes
             .get(&binding)

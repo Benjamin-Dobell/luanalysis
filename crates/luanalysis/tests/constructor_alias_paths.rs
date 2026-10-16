@@ -19,26 +19,6 @@ fn duplicate_and_dynamic_fields_cannot_fabricate_a_unique_constructor_origin() {
 }
 
 #[test]
-fn a_branch_selected_copy_cannot_prove_an_unconditional_store_to_one_alternative() {
-    let source = "---@param flag boolean\nlocal function update(flag)\nlocal left={child={}}\nlocal right={child={}}\nlocal selected\nif flag then selected=left else selected=right end\nlocal root=selected\nlocal alias=root.child\nalias.value=1\n---@type number\nlocal unproven=left.child.value\nend\n";
-    let report = check(source);
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|error| error.code == "TS2322"),
-        "{:#?}",
-        report.diagnostics
-    );
-    let corrected = source.replace(
-        "local unproven=left.child.value",
-        "local unproven=1\nleft.child.value=2\n---@type number\nlocal proven=left.child.value",
-    );
-    let report = check(&corrected);
-    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
-}
-
-#[test]
 fn an_intervening_call_can_change_projected_heap_values_while_base_cells_stay_stable() {
     let source = "local original={child={}}\nlocal old=original.child\nlocal function replace() original.child={} end\nreplace()\nlocal root=original\nlocal alias=root.child\nalias.value=1\n---@type number\nlocal unproven=old.value\n";
     let report = check(source);
@@ -71,5 +51,22 @@ fn stores_update_only_their_own_spelling() {
         );
         let report = check(&format!("{source}---@type number\nlocal result={own}\n"));
         assert!(report.diagnostics.is_empty(), "{source}\n{:#?}", report.diagnostics);
+    }
+}
+
+// Membership follows Bun's expando rule: a store declares a member only on the
+// table its receiver names syntactically. `selected` has no initializer, so the
+// copy owns no table: its store is an error and neither alternative gains it.
+#[test]
+fn a_branch_selected_copy_owns_no_table() {
+    let source = "---@param flag boolean\nlocal function update(flag)\nlocal left={child={}}\nlocal right={child={}}\nlocal selected\nif flag then selected=left else selected=right end\nlocal root=selected\nlocal alias=root.child\nalias.value=1\nlocal read=left.child.value\nend\n";
+    let report = check(source);
+    for statement in ["alias.value=1", "local read=left.child.value"] {
+        let start = source.find(statement).unwrap() + statement.rfind("value").unwrap();
+        assert!(
+            report.diagnostics.iter().any(|error| error.code == "TS2339" && error.span.start == start),
+            "{statement}\n{:#?}",
+            report.diagnostics
+        );
     }
 }

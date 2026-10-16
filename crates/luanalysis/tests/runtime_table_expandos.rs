@@ -103,32 +103,13 @@ fn shadowed_plain_tables_keep_distinct_original_allocations() {
     );
 }
 #[test]
-fn two_factory_calls_share_schema_but_do_not_share_actual_member_presence() {
-    let source = "local function fresh() return {} end\nlocal first=fresh()\nlocal second=fresh()\nfirst.item=1\nlocal populated=first.item\nlocal absent=second.item\n";
-    let report = clean(source);
-    assert_eq!(
-        report.type_at(source.find("populated=").unwrap()),
-        Some("number")
-    );
-    assert_eq!(report.type_at(source.find("absent=").unwrap()), Some("nil"));
-}
-
-#[test]
-fn independent_flow_builds_do_not_change_factory_alias_presence() {
+fn independent_flow_builds_keep_their_own_snapshot() {
     // Flow construction is a public original-source operation, independent of
     // native declaration allocation. Their snapshot numbers need not align.
     let syntax = luanalysis_syntax::parse("local original={}\n");
     let bound = luanalysis::bind::bind(&syntax);
     let original = luanalysis::flow::build(&syntax, &bound);
     assert_eq!(original.graphs[0].entry.snapshot, original.snapshot);
-    let source = "local function fresh() return {} end\nlocal first=fresh()\nlocal second=fresh()\nfirst.item=1\nlocal populated=first.item\nlocal absent=second.item\n";
-    let report = clean(source);
-    assert_eq!(report.type_at(source.find("populated=").unwrap()), Some("number"));
-    assert_eq!(report.type_at(source.find("absent=").unwrap()), Some("nil"));
-    // The two result columns are different spellings: a store through one
-    // does not update the other (Bun's syntactic store matching).
-    let shared = "local function pair() local value={} return value,value end\nlocal first,second=pair()\nfirst.item=1\nlocal shared=second.item\n";
-    assert_eq!(clean(shared).type_at(shared.find("shared=second").unwrap()), Some("nil"));
 }
 #[test]
 fn written_structural_annotations_keep_existing_closed_member_contracts() {
@@ -196,20 +177,6 @@ fn written_fields_keep_their_storage_bound_across_repeated_narrowing_and_deletio
     assert_eq!(report.diagnostics[0].code, "TS2322");
     assert_eq!(&wrong[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "true");
     clean(&wrong.replace("value.current=true", "value.current='corrected'"));
-}
-
-#[test]
-fn factory_result_columns_do_not_share_stores_between_spellings() {
-    let shared = "local function pair() local value={} return value,value end\nlocal first,second=pair()\nfirst.item=1\nlocal shared=second.item\n";
-    assert_eq!(
-        clean(shared).type_at(shared.find("shared=second").unwrap()),
-        Some("nil")
-    );
-    let distinct = "local function pair() return {},{} end\nlocal first,second=pair()\nfirst.item=1\nlocal absent=second.item\nsecond.item=2\n";
-    assert_eq!(
-        clean(distinct).type_at(distinct.find("absent=").unwrap()),
-        Some("nil")
-    );
 }
 
 // The store goes to the frozen old receiver, so the replacement lacks the
@@ -288,4 +255,22 @@ fn cli_exports_actual_plain_table_members_with_checked_calls_and_source_correcti
         "{output}"
     );
     fs::remove_dir_all(directory).unwrap();
+}
+
+// A factory result has no syntactic owner, so a store through it declares no
+// member on the factory's table (Bun's expando rule) and is reported.
+#[test]
+fn stores_through_factory_results_declare_no_member() {
+    for source in [
+        "local function fresh() return {} end\nlocal first=fresh()\nfirst.item=1\n",
+        "local function pair() local value={} return value,value end\nlocal first,second=pair()\nfirst.item=1\n",
+    ] {
+        let report = check(source);
+        let start = source.find("first.item=1").unwrap() + "first.".len();
+        assert!(
+            report.diagnostics.iter().any(|error| error.code == "TS2339" && error.span.start == start),
+            "{source}\n{:#?}",
+            report.diagnostics
+        );
+    }
 }

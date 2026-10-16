@@ -90,6 +90,9 @@ pub(super) struct NativeRegistry {
     pub(super) members: super::native_members::NativeMembers,
     pub(super) doc_members: super::native_doc_members::NativeDocMembers,
     pub(super) runtime_tables: super::native_runtime_tables::NativeRuntimeTables,
+    /// The runtime-table constructor each original store's receiver names, as a
+    /// binder sees it (`runtime_store_owner`). Computed once per registry.
+    pub(super) runtime_store_owners: std::cell::OnceCell<Vec<Option<NativeExpressionKey>>>,
     class_definitions: class_definitions::NativeClassDefinitions,
     methods: methods::NativeMethods,
     metatables: metatables::NativeMetatables,
@@ -263,6 +266,7 @@ impl NativeRegistry {
             members,
             doc_members,
             runtime_tables,
+            runtime_store_owners: Default::default(),
             class_definitions,
             methods,
             metatables,
@@ -290,6 +294,12 @@ impl NativeRegistry {
             luanalysis_engine::NativeEnvironmentKey { snapshot, index: 0 }, &[&registry],
         )));
         registry
+    }
+
+    /// The declared receiver expression (`X` in `function X:m()`) of the method
+    /// whose implicit `self` is `binding`.
+    pub(super) fn method_receiver_for(&self, binding: BindingId) -> Option<&Expr> {
+        self.methods.sources().find(|method| method.implicit_receiver == Some(binding)).map(|method| &method.receiver)
     }
 
     pub(super) fn bound(&self) -> &BoundFile {
@@ -864,14 +874,6 @@ impl NativeRegistry {
             }
             Err(error) => std::panic::resume_unwind(error),
         }
-    }
-
-    pub(crate) fn with_prospective_store_report<R>(&self, work: impl FnOnce() -> R) -> R {
-        // A prospective receiver query may walk another function's open loop
-        // feedback. Those expression diagnostics are not a checked body result.
-        // Reuse body staging so completed nested bodies still publish their
-        // own diagnostics and keep their checked-body cache entries.
-        self.with_body_report(|| (work(), false))
     }
 
     pub(super) fn take_report(&self) -> CheckReport {
@@ -3076,19 +3078,20 @@ mod body_report_tests {
     use luanalysis_engine::Engine;
 
     #[test]
-    fn prospective_store_report_keeps_completed_nested_body_errors_and_cache() {
+    fn a_discarded_body_report_keeps_completed_nested_body_errors_and_cache() {
         let file = luanalysis_syntax::parse("---@return number\nlocal function child() return 'wrong' end\n");
         let bound = bind::bind(&file);
         Engine::new().with_native_provider(
             move || NativeRegistry::new(file, bound),
             |registry, queries| {
                 let child = registry.key(0);
-                registry.with_prospective_store_report(|| {
+                registry.with_body_report(|| {
                     registry.merge_report(CheckReport {
                         diagnostics: vec![Diagnostic { code: "LUA2011", span: Span { start: 0, end: 1 }, message: "prospective receiver expression".into() }],
                         ..CheckReport::default()
                     });
                     registry.check_body(child, queries);
+                    ((), false)
                 });
                 assert!(registry.checked_bodies.borrow().contains(&child));
                 let report = registry.take_report();

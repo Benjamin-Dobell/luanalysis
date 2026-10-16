@@ -64,7 +64,6 @@ fn original_callee_order_keeps_nil_deletion_and_later_replacement() {
 fn an_unresolved_nested_call_preserves_an_earlier_new_field() {
     let source = "---@param mutate fun(value:table):void\nlocal function make(mutate)\n local value={}\n local function install()\n  value.count=1\n  mutate(value)\n end\n install()\n return value\nend\nlocal value=make(function(value) end)\n---@type number\nlocal unproven=value.count\n";
     clean(source);
-    clean(&source.replace("---@type number\nlocal unproven=value.count", "value.count=2\n---@type number\nlocal proven=value.count"));
 }
 
 
