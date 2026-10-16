@@ -974,6 +974,55 @@ impl Checker<'_, '_> {
         self.related(actual, expected, relation)
     }
 
+    /// A union's parameter intersection can reduce to never even though gradual
+    /// any is accepted by every original parameter. This is a Lua-native call
+    /// rule; ordinary JS/TS applicability and explicit never parameters stay strict.
+    fn native_union_any_argument_applicable(
+        &mut self,
+        mut sig: SigId,
+        index: usize,
+        actual: TypeId,
+        expected: TypeId,
+        relation: Relation,
+        sequence: bool,
+    ) -> bool {
+        let conflict = if sequence {
+            self.native_pack_has_any_never_conflict(actual, expected)
+        } else { self.is_any(actual) && expected.is_never() };
+        if !conflict { return false }
+        let members = loop {
+            match self.types().sig(sig) {
+                SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => sig = *inner,
+                SigData::Synth { of, is_union: true, .. } if of.len() > 1 => break of.to_vec(),
+                SigData::Synth { of, .. } if of.len() == 1 => sig = of[0],
+                _ => return false,
+            }
+        };
+        for member in members {
+            let params = self.sig_params_up_to(member, if sequence { usize::MAX } else { index + 1 });
+            let expected = if sequence { self.rest_type_at_position(&params, index, false) }
+                else { let Some(expected) = self.param_type_at(&params, index) else { return false }; expected };
+            if !self.is_resolved_call_argument_applicable(actual, expected, relation)
+                && !self.native_union_any_argument_applicable(member, index, actual, expected, relation, sequence)
+            { return false }
+        }
+        true
+    }
+
+    fn native_pack_has_any_never_conflict(&mut self, actual: TypeId, expected: TypeId) -> bool {
+        let actual = NativeResultPack { ty: actual };
+        let expected = NativeResultPack { ty: expected };
+        let Some(actual_rows) = self.native_pack_alternatives(actual) else { return false };
+        let Some(expected_rows) = self.native_pack_alternatives(expected) else { return false };
+        // One position beyond the fixed prefixes also covers homogeneous tails.
+        let last = actual_rows.iter().chain(&expected_rows).map(|row| row.fixed.len()).max().unwrap_or(0);
+        (0..=last).any(|index| {
+            let Some(actual) = self.native_pack_contextual_slot(actual, index) else { return false };
+            let Some(expected) = self.native_pack_contextual_slot(expected, index) else { return false };
+            self.is_any(actual) && expected.is_never()
+        })
+    }
+
     /// Applicability for arguments resolved by a native frontend, without TS syntax or positions.
     pub(super) fn resolved_signature_argument_error(
         &mut self,
@@ -1010,7 +1059,8 @@ impl Checker<'_, '_> {
             } else {
                 actual
             };
-            if !self.is_resolved_call_argument_applicable(actual, expected, relation) {
+            if !self.is_resolved_call_argument_applicable(actual, expected, relation)
+                && !self.native_union_any_argument_applicable(sig, i, actual, expected, relation, false) {
                 self.note_parameter_types_resolved(sig, &params, i + 1);
                 return Some((i, actual, expected));
             }
@@ -1020,7 +1070,8 @@ impl Checker<'_, '_> {
             let expected = self.rest_type_at_position(&params, boundary, false);
             let contextual = identity_context.and_then(|pack| self.native_pack_contextual_tail(pack, &prefix)).map_or(expected, |pack| pack.ty);
             let actual = self.native_argument_sequence_type(args, boundary, contextual, None, check_mode);
-            if !self.is_resolved_call_argument_applicable(actual, expected, relation) {
+            if !self.is_resolved_call_argument_applicable(actual, expected, relation)
+                && !self.native_union_any_argument_applicable(sig, boundary, actual, expected, relation, true) {
                 self.note_parameter_types_resolved(sig, &params, boundary);
                 return Some((boundary, actual, expected));
             }

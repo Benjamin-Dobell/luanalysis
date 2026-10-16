@@ -1126,3 +1126,156 @@ fn expanded_written_callback_producer_keeps_contextual_generic_return_metadata()
         }
     });
 }
+
+#[test]
+fn native_callable_unions_accept_gradual_any_without_erasing_other_parameters() {
+    Engine::new().with_session(|queries| {
+        let mut members = Vec::new();
+        for ty in [Type::Number, Type::String] {
+            members.push(packed_function(
+                queries,
+                vec![
+                    parameter("value", ty.clone()),
+                    parameter("flag", Type::Boolean),
+                ],
+                fixed(vec![ty]),
+            ));
+        }
+        for member in &members {
+            let direct = queries.call_pack(member, &[Type::Any, Type::Boolean], &[], None);
+            assert!(direct.errors.is_empty(), "{:?}", direct.errors);
+        }
+        let callable = Type::Union(members);
+        let accepted = queries.call_pack(&callable, &[Type::Any, Type::Boolean], &[], None);
+        assert!(accepted.errors.is_empty(), "{:?}", accepted.errors);
+        for ty in [Type::Number, Type::String] {
+            assert!(queries.is_assignable(&ty, &accepted.return_type));
+        }
+        assert!(!queries.is_assignable(&Type::Boolean, &accepted.return_type));
+        for ty in [Type::Number, Type::Unknown, Type::NumberLiteral(1.0)] {
+            let rejected = queries.call_pack(&callable, &[ty, Type::Boolean], &[], None);
+            assert!(matches!(
+                rejected.errors.as_slice(),
+                [CallError::Argument { index: 0, .. }]
+            ));
+        }
+        let wrong_second = queries.call_pack(&callable, &[Type::Any, Type::String], &[], None);
+        assert!(matches!(
+            wrong_second.errors.as_slice(),
+            [CallError::Argument { index: 1, .. }]
+        ));
+        for args in [
+            vec![Type::Any],
+            vec![Type::Any, Type::Boolean, Type::Boolean],
+        ] {
+            let rejected = queries.call_pack(&callable, &args, &[], None);
+            assert!(matches!(
+                rejected.errors.as_slice(),
+                [CallError::Arity { .. }]
+            ));
+        }
+        let forbidden = packed_function(
+            queries,
+            vec![
+                parameter("value", Type::Never),
+                parameter("flag", Type::Boolean),
+            ],
+            ValuePack::empty(),
+        );
+        let explicit_never = Type::Union(vec![callable.clone(), forbidden]);
+        let rejected = queries.call_pack(&explicit_never, &[Type::Any, Type::Boolean], &[], None);
+        assert!(matches!(
+            rejected.errors.as_slice(),
+            [CallError::Argument { index: 0, .. }]
+        ));
+        let corrected = queries.call_pack(&callable, &[Type::Any, Type::Boolean], &[], None);
+        assert!(corrected.errors.is_empty());
+    });
+}
+
+#[test]
+fn native_union_any_expansions_and_tuple_rests_preserve_result_rows() {
+    Engine::new().with_session(|queries| {
+        let returns = [
+            fixed(vec![Type::Number, Type::String]),
+            fixed(vec![Type::String, Type::Number]),
+        ];
+        for tuple_rest in [false, true] {
+            let mut members = Vec::new();
+            for (index, ty) in [Type::Number, Type::String].into_iter().enumerate() {
+                members.push(queries.pack_function(&PackFunctionType {
+                    params: if tuple_rest {
+                        Vec::new()
+                    } else {
+                        vec![
+                            parameter("value", ty.clone()),
+                            parameter("flag", Type::Boolean),
+                        ]
+                    },
+                    rest: tuple_rest.then(|| fixed(vec![ty, Type::Boolean])),
+                    type_parameters: Vec::new(),
+                    returns: returns[index].clone(),
+                }));
+            }
+            let callable = Type::Union(members);
+            let expected = ValuePack::Alternatives(vec![
+                PackAlternative {
+                    fixed: vec![
+                        PackSlot::required(Type::Number),
+                        PackSlot::required(Type::String),
+                    ],
+                    tail: None,
+                },
+                PackAlternative {
+                    fixed: vec![
+                        PackSlot::required(Type::String),
+                        PackSlot::required(Type::Number),
+                    ],
+                    tail: None,
+                },
+            ]);
+            for args in [
+                vec![
+                    PackArgument::Resolved(Type::Any),
+                    PackArgument::Resolved(Type::Boolean),
+                ],
+                vec![PackArgument::Expand(fixed(vec![Type::Any, Type::Boolean]))],
+            ] {
+                let accepted = queries.call_native_arguments(&callable, None, &args, &[], None);
+                assert!(
+                    accepted.errors.is_empty(),
+                    "tuple_rest={tuple_rest}: {:?}",
+                    accepted.errors
+                );
+                assert!(queries.pack_assignable(&accepted.return_pack, &expected));
+                assert!(queries.pack_assignable(&expected, &accepted.return_pack));
+                assert!(!queries.pack_assignable(
+                    &accepted.return_pack,
+                    &fixed(vec![Type::Number, Type::Number])
+                ));
+            }
+            let wrong = queries.call_native_arguments(
+                &callable,
+                None,
+                &[PackArgument::Expand(fixed(vec![Type::Any, Type::String]))],
+                &[],
+                None,
+            );
+            assert!(matches!(
+                wrong.errors.as_slice(),
+                [CallError::Argument { .. }]
+            ));
+            let unknown = queries.call_native_arguments(
+                &callable,
+                None,
+                &[PackArgument::Expand(fixed(vec![
+                    Type::Unknown,
+                    Type::Boolean,
+                ]))],
+                &[],
+                None,
+            );
+            assert!(!unknown.errors.is_empty());
+        }
+    });
+}
