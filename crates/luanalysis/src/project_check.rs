@@ -1,12 +1,14 @@
-//! One native checker session for an immutable collection of original Lua files.
+//! Native checker tasks over an immutable collection of original Lua files.
 //! Files retain their own syntax, lexical identities, graphs and source reports.
-use crate::native_functions::project_provider::{ProjectRegistry, RegistryInput};
+use crate::native_functions::project_provider::{ProjectRegistrySnapshot, RegistryInput};
 use crate::{CheckReport, Diagnostic};
 use crate::standard_environment::{StandardEnvironmentProfile, StandardEnvironmentSelection};
-use luanalysis_engine::{Engine, NativeLoaderPolicy};
+use luanalysis_engine::{Engine, NativeLoaderPolicy, NativeTaskRunStats};
 use luanalysis_project::{
     DeclarationSourceError, FileId, Project, RequireRequest, SourceFile, SourceRole,
 };
+use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
 
 #[derive(Clone, Copy, Debug)]
 pub struct ProjectCheckOptions {
@@ -71,6 +73,9 @@ pub struct ProjectCheckReport {
     pub files: Vec<FileCheckReport>,
     pub standard_library_files: Vec<FileId>,
     pub environment_errors: Vec<DeclarationSourceError>,
+    /// Actual shared-Program task/barrier execution, when multiple roots were
+    /// scheduled. A single worker uses the original one-session check path.
+    pub execution: Option<NativeTaskRunStats>,
 }
 impl ProjectCheckReport {
     pub fn file(&self, file: FileId) -> Option<&FileCheckReport> {
@@ -153,19 +158,97 @@ pub(crate) fn check_project_with_workspace(
     }
     let dependencies = project.dependencies.clone();
     let roots: Vec<_> = project.entries.iter().chain(&project.libraries).copied().collect();
-    let (checked, required) = Engine::new().with_native_provider(
-        move || {
-            let mut registry = ProjectRegistry::new_with_environment_and_overloads(inputs, dependencies, options.loader_policy, selection.profile, options.overload_mode);
-            registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
-            registry
-        },
-        |registry, queries| {
-            let reports = registry.check_roots(queries, &roots);
-            (reports, registry.required_files())
-        },
-    );
+    let snapshot = ProjectRegistrySnapshot::new(inputs, dependencies, options.loader_policy, selection.profile, options.overload_mode);
+    let make_registry = |_| {
+        let mut registry = snapshot.worker_registry();
+        registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
+        registry
+    };
+    // Standard declarations warm the shared native tables before user roots.
+    // The source task plan itself is independent of the worker count.
+    let (standard_roots, user_roots): (Vec<_>, Vec<_>) = roots.iter().copied()
+        .partition(|file| standard_library_files.contains(file));
+    let requested = NonZeroUsize::new(options.jobs).unwrap_or_else(|| {
+        std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
+    });
+    let workers = requested.get().min(user_roots.len()).max(1);
+    let (checked, required, execution) = if workers == 1 {
+        let (checked, required) = Engine::new().with_native_provider(
+            || make_registry(0),
+            |registry, queries| {
+                let reports = registry.check_roots(queries, &roots);
+                (reports, registry.required_files())
+            },
+        );
+        (checked, required, None)
+    } else {
+        let mut batches = Vec::new();
+        let mut steps = Vec::new();
+        if !standard_roots.is_empty() {
+            batches.push(standard_roots);
+            steps.push(vec![0]);
+        }
+        let first = batches.len();
+        batches.extend(user_roots.into_iter().map(|file| vec![file]));
+        steps.push((first..batches.len()).collect());
+        let run = Engine::new().with_native_task_plan_report(
+            NonZeroUsize::new(workers).unwrap(), &steps, make_registry,
+            |job, registry, queries| {
+                let reports = registry.check_roots(queries, &batches[job]);
+                (reports, registry.required_files())
+            },
+        );
+        let mut required = HashSet::new();
+        let mut checked = Vec::new();
+        for (reports, targets) in run.results {
+            checked.extend(reports);
+            required.extend(targets);
+        }
+        (merge_reports(checked), required, Some(run.stats))
+    };
     files.retain(|report| required.contains(&report.file));
     files.extend(checked);
     files.sort_by_key(|file| file.file.index);
-    ProjectCheckReport { project, files, standard_library_files, environment_errors }
+    ProjectCheckReport { project, files, standard_library_files, environment_errors, execution }
+}
+
+fn merge_reports(reports: Vec<FileCheckReport>) -> Vec<FileCheckReport> {
+    let mut merged = Vec::<FileCheckReport>::new();
+    let mut indices = HashMap::<FileId, usize>::new();
+    for file in reports {
+        assert!(file.report.pending_bindings.is_empty()
+            && file.report.pending_types.is_empty()
+            && file.report.pending_diagnostics.is_empty(),
+            "project task reports must render every native operand before ending");
+        if let Some(&index) = indices.get(&file.file) {
+            let target = &mut merged[index];
+            debug_assert_eq!(target.report.bound, file.report.bound);
+            target.report.append(file.report);
+        } else {
+            indices.insert(file.file, merged.len());
+            merged.push(file);
+        }
+    }
+    for file in &mut merged {
+        let report = &mut file.report;
+        report.diagnostics.sort_by(|left, right| {
+            (left.span.start, left.span.end, left.code, &left.message).cmp(&(
+                right.span.start, right.span.end, right.code, &right.message,
+            ))
+        });
+        report.diagnostics.dedup();
+        report.bindings.sort_by(|left, right| {
+            (left.span.start, left.span.end, left.binding.0, &left.ty).cmp(&(
+                right.span.start, right.span.end, right.binding.0, &right.ty,
+            ))
+        });
+        report.bindings.dedup();
+        report.types.sort_by(|left, right| {
+            (left.span.start, left.span.end, &left.ty).cmp(&(
+                right.span.start, right.span.end, &right.ty,
+            ))
+        });
+        report.types.dedup();
+    }
+    merged
 }
