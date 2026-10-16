@@ -270,7 +270,10 @@ impl NativeRegistry {
                     }
                 }
                 let ty = self.original_member_expression_type(*key, queries);
-                queries.widen(&ty)
+                // Original inferred Lua fields retain their literal contract.
+                // This leaves functions, generics and written contexts alone;
+                // it does not impose const/readonly semantics on the member.
+                queries.regular_type(&ty)
             }
             OriginalMemberValue::Function(key) => {
                 if self.source_role() == luanalysis_project::SourceRole::Declaration {

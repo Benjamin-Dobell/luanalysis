@@ -169,7 +169,11 @@ impl Checker<'_> {
             if let Some(declared) = &declared {
                 self.compatible(&actual, declared, field.value.span);
             }
-            let value = declared.unwrap_or(actual);
+            // Luanalysis infers field literals, unlike mutable scalar locals.
+            // Use the native regular-literal operation without declaring the
+            // field or making the table readonly. Written bounds stay ahead
+            // of the initializer's value as before.
+            let value = declared.unwrap_or_else(|| self.engine.regular_type(&actual));
             match &key {
                 TableKey::Literal(key) => table.fields.push(if written.is_some() {
                     NativeField::declared(key.clone(), value)

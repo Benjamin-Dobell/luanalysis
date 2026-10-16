@@ -203,7 +203,10 @@ impl NativeRegistry {
             .iterator_sources()
             .value(source.value)
             .expect("original runtime store value");
-        Some(self.flow_value_type(self.iterator_sources(), recipe, input, queries))
+        let value = self.flow_value_type(self.iterator_sources(), recipe, input, queries);
+        // A prospective original field contract must agree with the literal
+        // read from its reached store. Scalar local storage still widens.
+        Some(queries.regular_type(&value))
     }
     pub(crate) fn runtime_member_index_key(
         &self,
