@@ -29,7 +29,7 @@ impl OutputFormat {
                 }
             } else if matches!(
                 arg.to_str(),
-                Some("--library" | "--module-root" | "--package-path" | "--lua-version")
+                Some("--library" | "--module-root" | "--package-path" | "--lua-version" | "--jobs")
             ) {
                 args.next();
             }
@@ -38,6 +38,7 @@ impl OutputFormat {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
 pub struct HostDiagnostic {
     pub path: Option<PathBuf>,
     pub code: &'static str,
