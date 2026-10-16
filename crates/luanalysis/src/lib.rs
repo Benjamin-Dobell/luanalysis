@@ -112,6 +112,15 @@ impl CheckReport {
         self.pending_diagnostics.append(&mut other.pending_diagnostics);
     }
 
+    /// Drops recorded binding and expression types when nothing will print or
+    /// query them (as Bun prints only diagnostics). Diagnostics are kept.
+    pub(crate) fn discard_types(&mut self) {
+        self.bindings.clear();
+        self.types.clear();
+        self.pending_bindings.clear();
+        self.pending_types.clear();
+    }
+
     fn render(&mut self, engine: &mut dyn TypeQueries) {
         let mut bindings = HashMap::with_capacity_and_hasher(self.pending_bindings.len(), Default::default());
         for (binding, ty) in std::mem::take(&mut self.pending_bindings) {

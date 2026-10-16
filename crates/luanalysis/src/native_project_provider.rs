@@ -147,9 +147,13 @@ pub(crate) struct ProjectRegistry {
     standard_environment: super::standard::ProjectStandardEnvironment,
     modules: Rc<ProjectModuleIndex>,
     header_metadata: RefCell<super::named_provider::SourceHeaderMetadata>,
+    /// Whether reports describe binding and expression types. Diagnostics never
+    /// depend on it; only callers that print or query types need them.
+    describe_types: bool,
 }
 
 impl ProjectRegistry {
+    pub(crate) fn set_describe_types(&mut self, describe: bool) { self.describe_types = describe; }
     pub(crate) fn set_standard_environment_assumptions(&mut self, enabled: bool) {
         self.standard_environment.assume_unknown_effects &= enabled;
         self.standard_environment.strict_effects = !enabled;
@@ -359,6 +363,7 @@ impl ProjectRegistry {
             standard_environment,
             modules,
             header_metadata: RefCell::new(super::named_provider::SourceHeaderMetadata::default()),
+            describe_types: true,
         }
     }
 
@@ -488,7 +493,8 @@ impl ProjectRegistry {
             }
             for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
                 if !owned_only && !checked.contains(&index) { continue; }
-                let pending = file.source.take_report();
+                let mut pending = file.source.take_report();
+                if !self.describe_types { pending.discard_types(); }
                 let has_pending = !pending.diagnostics.is_empty()
                     || !pending.bindings.is_empty()
                     || !pending.types.is_empty()
@@ -501,6 +507,7 @@ impl ProjectRegistry {
                     && emitted.insert(index)
                 {
                     report.report.append(std::mem::take(&mut baselines[index]));
+                    if !self.describe_types { report.report.discard_types(); }
                 }
                 if owned_only && !emitted.contains(&index) { continue; }
                 report.report.append(pending);

@@ -28,6 +28,9 @@ pub struct ProjectCheckOptions {
     /// Ordinary analysis preserves reached standard bindings across unknown
     /// effects. False requests the stricter runtime-effect certificates.
     pub assume_unknown_standard_effects: bool,
+    /// Describe binding and expression types in the report. Only `--dump-types`
+    /// and library callers that query types need them.
+    pub describe_types: bool,
 }
 impl Default for ProjectCheckOptions {
     fn default() -> Self {
@@ -38,6 +41,7 @@ impl Default for ProjectCheckOptions {
             overload_mode: crate::OverloadMode::default(),
             no_implicit_any: false,
             assume_unknown_standard_effects: true,
+            describe_types: true,
         }
     }
 }
@@ -222,6 +226,7 @@ pub(crate) fn check_project_with_workspace(
         let started = profile.then(Instant::now);
         let mut registry = snapshot.worker_registry();
         registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
+        registry.set_describe_types(options.describe_types);
         if let Some(started) = started {
             factory_nanos.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
             factories.fetch_add(1, Ordering::Relaxed);

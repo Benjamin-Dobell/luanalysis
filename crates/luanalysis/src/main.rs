@@ -191,6 +191,7 @@ fn run() -> i32 {
         loader_policy,
         assume_unknown_standard_effects,
         jobs,
+        describe_types: dump,
     };
     let mut workspace = ProjectWorkspace::new();
     let mut discovery = match inputs.discover() {
