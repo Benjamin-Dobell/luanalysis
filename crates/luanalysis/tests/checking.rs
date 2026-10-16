@@ -32,16 +32,9 @@ fn shadowed_local_initializer_reads_the_previous_binding() {
 }
 
 #[test]
-fn shapes_preserve_ts_freshness_and_member_relations() {
+fn shapes_accept_additional_members_and_preserve_member_relations() {
     let fresh = check("---@type {x: number}\nlocal value = {x = 1, extra = true}");
-    assert_eq!(
-        fresh
-            .diagnostics
-            .iter()
-            .map(|error| error.code)
-            .collect::<Vec<_>>(),
-        ["TS2322"]
-    );
+    assert!(fresh.diagnostics.is_empty(), "{:#?}", fresh.diagnostics);
     let staged = check(
         "local wider = {x = 1, extra = true}\n---@type {x: number}\nlocal value = wider\nlocal x = value.x",
     );

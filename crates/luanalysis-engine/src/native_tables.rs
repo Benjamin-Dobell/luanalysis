@@ -111,8 +111,9 @@ pub struct TableType {
     /// Literal construction may combine overlapping candidate values by union.
     /// This origin survives storage independently of excess-property freshness.
     pub collision_candidates: bool,
-    /// An original constructor value, eligible for the checker's fresh-literal
-    /// relation. Stored and declared table descriptions use `false`.
+    /// An original constructor value, eligible for contextual literal widening.
+    /// Stored and declared table descriptions use `false`. Lua structural
+    /// relations permit additional keys independently of this construction flag.
     pub fresh: bool,
 }
 
@@ -1197,7 +1198,16 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
-            assert!(!queries.is_assignable(&fresh, &target));
+            assert!(queries.is_assignable(&fresh, &target));
+            let wrong = Type::Table(TableType {
+                fields: vec![TableField::new(string_key("id"), Type::String)],
+                ..Default::default()
+            });
+            assert!(!queries.is_assignable(&fresh, &wrong));
+            assert_eq!(
+                queries.table_lookup(&fresh, &literal(string_key("extra"))),
+                Ok(Type::Boolean)
+            );
             let stored = queries.widen(&fresh);
             assert!(queries.is_assignable(&stored, &target));
             assert_eq!(
@@ -1208,7 +1218,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_legacy_shapes_preserve_native_key_domains_and_fresh_excess_fields() {
+    fn mixed_legacy_shapes_preserve_native_key_domains_and_structural_extra_fields() {
         Engine::new().with_session(|queries| {
             let legacy = Type::Shape(vec![crate::Property::new("x", Type::Number)]);
             let native = queries
@@ -1239,7 +1249,7 @@ mod tests {
                     ..Default::default()
                 })
                 .unwrap();
-            assert!(!queries.is_assignable(&fresh, &legacy));
+            assert!(queries.is_assignable(&fresh, &legacy));
             let stored = queries.widen(&fresh);
             assert!(queries.is_assignable(&stored, &legacy));
             let numeric = queries

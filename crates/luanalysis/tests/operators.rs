@@ -107,9 +107,9 @@ fn concatenation_and_length_use_lua_domains_without_js_addition_coercion() {
 }
 
 #[test]
-fn selected_table_literals_retain_native_excess_property_freshness() {
-    // The native union boundary must preserve freshness metadata, rather than
-    // changing the relation policy according to which expression selected it.
+fn selected_table_literals_preserve_lua_structural_width_subtyping() {
+    // Selecting a constructor through and/or does not change the Lua structural
+    // rule that additional members are permitted.
     for expression in [
         "{x = 1, extra = true}",
         "true and {x = 1, extra = true}",
@@ -117,13 +117,11 @@ fn selected_table_literals_retain_native_excess_property_freshness() {
     ] {
         let source = format!("---@type {{x: number}}\nlocal value = {expression}");
         let report = check(&source);
-        assert_eq!(
-            report.diagnostics.len(),
-            1,
+        assert!(
+            report.diagnostics.is_empty(),
             "{expression}: {:#?}",
             report.diagnostics
         );
-        assert_eq!(report.diagnostics[0].code, "TS2322");
     }
     // Ordinary local materialization still removes literal freshness.
     let staged = check(

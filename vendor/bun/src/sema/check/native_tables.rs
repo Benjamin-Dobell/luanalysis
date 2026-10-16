@@ -985,34 +985,9 @@ impl<'p, 's> Checker<'p, 's> {
         {
             return Ternary::FALSE;
         }
-        // Like TS's empty object/interface targets, an unconstrained structural
-        // table has no known properties against which extras can be rejected.
-        // Nominal requirements above and all nonempty contracts still apply.
-        let empty_target = target.fields.is_empty() && target.indexers.is_empty() && target.sequence_tails.is_empty();
-        if source.fresh && !identity && !empty_target {
-            for field in &source.fields {
-                if field.optional && field.value.is_never() { continue }
-                if target.fields.iter().any(|other| other.key == field.key) { continue }
-                let key = self.native_table_key_type(field.key);
-                if !target.indexers.iter().any(|indexer| self.is_assignable(key, indexer.key))
-                    && !target.sequence_tails.iter().any(|tail| Self::native_sequence_contains(tail.start, field.key))
-                {
-                    return Ternary::FALSE;
-                }
-            }
-            for indexer in &source.indexers {
-                if indexer.value.is_never() { continue }
-                if !target.indexers.iter().any(|other| self.is_assignable(indexer.key, other.key)) {
-                    return Ternary::FALSE;
-                }
-            }
-            for tail in &source.sequence_tails {
-                if tail.value.is_never() { continue }
-                if !target.indexers.iter().any(|indexer| self.is_assignable(TypeId::NUMBER, indexer.key))
-                    && !target.sequence_tails.iter().any(|other| tail.start >= other.start)
-                { return Ternary::FALSE }
-            }
-        }
+        // Lua structural contracts permit additional source keys, including on a
+        // constructor. Freshness still controls contextual literal widening and
+        // constructor collisions; target members and indexer values are checked below.
         let mut result = Ternary::TRUE;
         if target.is_array && let Some(pack) = source.constructor_sequence {
             let expected = self.native_result_pack(&[NativePackAlternative { fixed: Vec::new(), tail: Some(target.indexers[0].value) }]);

@@ -46,10 +46,11 @@ fn implicit_shape_checks_initializer_and_preserves_declared_member_constraints()
     );
 }
 #[test]
-fn tagged_shapes_use_native_freshness_and_required_members() {
+fn tagged_shapes_permit_extra_members_and_check_required_members() {
+    passes("---@shape Point\n---@field value number\nlocal point={value=1,extra=true}");
     for source in [
         "---@shape Point\n---@field value number\nlocal point={}",
-        "---@shape Point\n---@field value number\nlocal point={value=1,extra=true}",
+        "---@shape Point\n---@field value number\nlocal point={value=\"wrong\",extra=true}",
     ] {
         let report = check(source);
         assert!(
