@@ -9,6 +9,9 @@ mod assertion_tests;
 #[cfg(test)]
 #[path = "native_dispatch_flow_tests.rs"]
 mod dispatch_tests;
+#[cfg(test)]
+#[path = "native_flow_metadata_index.rs"]
+mod metadata_index_tests;
 
 use super::{bind::BindingId, flow};
 use luanalysis_engine::{
@@ -63,6 +66,73 @@ struct FlowContexts {
     contextual_owners: HashMap<ContextualFunctionContext, NativeFunctionKey>,
 }
 
+/// Original write locations only. Lists retain graph/node traversal order;
+/// actual flow, alias decisions, and contextual ownership remain native queries.
+#[derive(Default)]
+struct OriginalWriteMetadata {
+    nodes: Vec<flow::FlowId>,
+    exact: HashMap<flow::Reference, Vec<flow::FlowId>>,
+    environment_members: HashMap<flow::Key, Vec<usize>>,
+    dynamic_environment_members: Vec<usize>,
+    loader: [Vec<usize>; 2],
+}
+
+impl OriginalWriteMetadata {
+    fn new(sources: &NativeFlowSources) -> Self {
+        let mut result = Self::default();
+        for graph in &sources.program.graphs {
+            for node in &graph.nodes {
+                let flow::NodeKind::Write { address, .. } = &node.kind else { continue; };
+                let ordinal = result.nodes.len();
+                result.nodes.push(node.id);
+                result.exact.entry(address.reference.clone()).or_default().push(node.id);
+                // Rebinding an alias changes its cell, never the old table.
+                if matches!(address.reference.root, flow::ReferenceRoot::Binding(_))
+                    && address.reference.path.is_empty() { continue; }
+                let candidates = sources.environment_candidate_paths(&address.reference);
+                for path in &candidates {
+                    let [key] = path.as_slice() else { continue; };
+                    let writes = if matches!(key, flow::Key::Dynamic(_)) {
+                        &mut result.dynamic_environment_members
+                    } else {
+                        result.environment_members.entry(key.clone()).or_default()
+                    };
+                    if writes.last() != Some(&ordinal) { writes.push(ordinal); }
+                }
+                for capability in [false, true] {
+                    let affects = sources.loader_address_invalidates_with_capability(address, capability)
+                        || candidates.iter().any(|path| match path.as_slice() {
+                            [flow::Key::Dynamic(_), ..] => true,
+                            [flow::Key::String(name)] if name == b"require" => !capability,
+                            [flow::Key::String(name), members @ ..] if name == b"package" => crate::bind::modifies_package(&members.iter().map(|key| match key { flow::Key::String(value) => Some(value.as_slice()), _ => None }).collect::<Vec<_>>()),
+                            _ => false,
+                        });
+                    if affects { result.loader[usize::from(capability)].push(ordinal); }
+                }
+            }
+        }
+        result
+    }
+
+    fn environment_writes<'a>(&'a self, key: Option<&flow::Key>) -> impl Iterator<Item = flow::FlowId> + 'a {
+        let (exact, dynamic) = key.map_or((&[][..], &[][..]), |key| {
+            (self.environment_members.get(key).map_or(&[][..], Vec::as_slice), self.dynamic_environment_members.as_slice())
+        });
+        let (mut left, mut right) = (0, 0);
+        std::iter::from_fn(move || {
+            let ordinal = match (exact.get(left), dynamic.get(right)) {
+                (Some(&a), Some(&b)) if a < b => { left += 1; a }
+                (Some(&a), Some(&b)) if a > b => { right += 1; b }
+                (Some(&a), Some(_)) => { left += 1; right += 1; a }
+                (Some(&a), None) => { left += 1; a }
+                (None, Some(&b)) => { right += 1; b }
+                (None, None) => return None,
+            };
+            Some(self.nodes[ordinal])
+        })
+    }
+}
+
 pub(super) struct NativeFlowSources {
     pub program: flow::ProgramFlow,
     functions: HashMap<NativeFunctionKey, u32>,
@@ -88,6 +158,7 @@ pub(super) struct NativeFlowSources {
     pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
     iterator_projections: HashMap<BindingId, (flow::IteratorId, usize)>,
     contexts: RefCell<FlowContexts>,
+    write_metadata: OriginalWriteMetadata,
 }
 
 impl NativeFlowSources {
@@ -117,8 +188,11 @@ impl NativeFlowSources {
     pub(super) fn has_original_require_capability(&self) -> bool { self.original_require_capability }
     pub(super) fn environment_cell_is_immutable(&self) -> bool { !self.environment_cell_written }
     fn loader_address_invalidates(&self, address: &flow::CapturedAddress) -> bool {
+        self.loader_address_invalidates_with_capability(address, self.original_require_capability)
+    }
+    fn loader_address_invalidates_with_capability(&self, address: &flow::CapturedAddress, capability: bool) -> bool {
         if !self.loader_mutations.contains(&(address.span.start, address.span.end)) { return false; }
-        if self.original_require_capability && address.reference.root == flow::ReferenceRoot::EnvironmentCell {
+        if capability && address.reference.root == flow::ReferenceRoot::EnvironmentCell {
             match address.reference.path.as_slice() {
                 [] => return false,
                 [flow::Key::String(name)] if name == b"require" => return false,
@@ -173,6 +247,7 @@ impl NativeFlowSources {
             pack_projections: HashMap::new(),
             iterator_projections: HashMap::new(),
             contexts: RefCell::new(FlowContexts::default()),
+            write_metadata: OriginalWriteMetadata::default(),
             program,
         };
         for (span, index) in functions {
@@ -438,6 +513,7 @@ impl NativeFlowSources {
                     &flow::Reference { root: flow::ReferenceRoot::EnvironmentCell, path: vec![key.clone()] });
             }
         }
+        result.write_metadata = OriginalWriteMetadata::new(&result);
         result
     }
 
@@ -499,24 +575,13 @@ impl NativeFlowSources {
         let source = self.source_reference(reference)?;
         if matches!(source.root, flow::ReferenceRoot::LoaderState | flow::ReferenceRoot::EnvironmentObject) {
             let owner = self.graph(0, reference.graph.context);
-            let writes = self.program.graphs.iter().flat_map(|graph| graph.nodes.iter()).filter_map(|node| {
-                let flow::NodeKind::Write { address, .. } = &node.kind else { return None; };
-                // Rebinding a local alias changes its cell, not the table it
-                // previously referenced. Only a member store can mutate it.
-                if matches!(address.reference.root, flow::ReferenceRoot::Binding(_)) && address.reference.path.is_empty() { return None; }
-                let candidates = self.environment_candidate_paths(&address.reference);
-                let affects = if source.root == flow::ReferenceRoot::LoaderState {
-                    self.loader_address_invalidates(address) || candidates.iter().any(|path| match path.as_slice() {
-                        [flow::Key::Dynamic(_), ..] => true,
-                        [flow::Key::String(name)] if name == b"require" => !self.original_require_capability,
-                        [flow::Key::String(name), members @ ..] if name == b"package" => crate::bind::modifies_package(&members.iter().map(|key| match key { flow::Key::String(value) => Some(value.as_slice()), _ => None }).collect::<Vec<_>>()),
-                        _ => false,
-                    })
-                } else {
-                    candidates.iter().any(|path| matches!((path.as_slice(), source.path.first()), ([written], Some(query)) if written == query || matches!(written, flow::Key::Dynamic(_))))
-                };
-                affects.then_some(NativeVariableWrite { owner: self.graph(node.id.graph, reference.graph.context), statement_end: address.statement_end })
-            }).collect();
+            let writes = if source.root == flow::ReferenceRoot::LoaderState {
+                self.write_metadata.loader[usize::from(self.original_require_capability)].iter()
+                    .map(|&ordinal| self.variable_write(self.write_metadata.nodes[ordinal], reference.graph.context)).collect()
+            } else {
+                self.write_metadata.environment_writes(source.path.first())
+                    .map(|node| self.variable_write(node, reference.graph.context)).collect()
+            };
             return Some(NativeVariableDeclaration { owner, reference: self.reference_key(owner, source)?, writes });
         }
         if !source.path.is_empty() { return None; }
@@ -526,18 +591,27 @@ impl NativeFlowSources {
             _ => return None,
         };
         let owner = self.graph(owner_region, reference.graph.context);
-        let writes = self.program.graphs.iter().flat_map(|graph| graph.nodes.iter()).filter_map(|node| {
-            let flow::NodeKind::Write { address, .. } = &node.kind else { return None; };
-            (address.reference.root == source.root && address.reference.path.is_empty()).then_some(NativeVariableWrite {
-                owner: self.graph(node.id.graph, reference.graph.context),
-                statement_end: address.statement_end,
-            })
-        }).collect();
+        let writes = self.write_metadata.exact.get(source).into_iter().flatten()
+            .map(|&node| self.variable_write(node, reference.graph.context)).collect();
         Some(NativeVariableDeclaration {
             owner,
             reference: self.reference_key(owner, source)?,
             writes,
         })
+    }
+
+    fn variable_write(&self, node: flow::FlowId, context: u64) -> NativeVariableWrite {
+        let flow::NodeKind::Write { address, .. } = &self.program.node(node).kind else {
+            unreachable!("original write metadata contains only writes")
+        };
+        NativeVariableWrite { owner: self.graph(node.graph, context), statement_end: address.statement_end }
+    }
+
+    pub(super) fn immutable_initializer(&self, binding: BindingId) -> Option<&flow::Evaluation> {
+        let reference = flow::Reference { root: flow::ReferenceRoot::Binding(binding), path: Vec::new() };
+        let [write] = self.write_metadata.exact.get(&reference)?.as_slice() else { return None; };
+        let flow::NodeKind::Write { value: flow::ValueDemand::Evaluation(initializer), declaration: true, .. } = &self.program.node(*write).kind else { return None; };
+        Some(self.program.evaluation(*initializer))
     }
 
     pub(super) fn graph_creation(&self, graph: NativeGraphKey) -> Option<NativeFunctionCreation> {

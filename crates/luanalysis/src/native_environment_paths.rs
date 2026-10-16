@@ -94,14 +94,7 @@ impl NativeRegistry {
     fn immutable_initializer(&self, binding: BindingId) -> Option<&flow::Evaluation> {
         // Count original stores across every actual graph. A later store, even
         // inside a closure, invalidates this immutable initializer proof.
-        let mut writes = self.flow.program.graphs.iter().flat_map(|graph| &graph.nodes).filter_map(|node| {
-            let flow::NodeKind::Write { address, value, declaration, .. } = &node.kind else { return None; };
-            (address.reference.root == flow::ReferenceRoot::Binding(binding) && address.reference.path.is_empty())
-                .then_some((value, *declaration))
-        });
-        let (flow::ValueDemand::Evaluation(initializer), true) = writes.next()? else { return None; };
-        if writes.next().is_some() { return None; }
-        Some(self.flow.program.evaluation(*initializer))
+        self.flow.immutable_initializer(binding)
     }
 
     fn immutable_fresh_table(&self, expression: &Expr, seen: &mut HashSet<BindingId>) -> bool {
