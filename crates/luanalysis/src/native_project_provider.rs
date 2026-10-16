@@ -382,14 +382,31 @@ impl ProjectRegistry {
     }
 
     pub(crate) fn check_roots(&self, queries: &mut dyn TypeQueries, roots: &[FileId]) -> Vec<FileCheckReport> {
+        self.check_roots_mode(queries, roots, false)
+    }
+
+    /// A planned task validates its own roots. Sibling recipes remain available
+    /// to lazy queries, and their emitted diagnostics stay with their source.
+    pub(crate) fn check_owned_roots(&self, queries: &mut dyn TypeQueries, roots: &[FileId]) -> Vec<FileCheckReport> {
+        self.check_roots_mode(queries, roots, true)
+    }
+
+    fn check_roots_mode(&self, queries: &mut dyn TypeQueries, roots: &[FileId], owned_only: bool) -> Vec<FileCheckReport> {
         // Canonical scope identities must exist for every sibling extension
         // before any alias head can publish a class's captured outer mapper.
         for file in &self.files { file.source.prepare_documentation_scope_keys(queries); }
         for file in &self.files { file.source.validate_documentation_scope_owners(queries); }
+        // Setup visits original declaration candidates even when they are never
+        // selected. Keep that baseline separate from later demand diagnostics.
+        let mut baselines: Vec<_> = self.files.iter().map(|file| {
+            if owned_only { file.source.take_report() } else { CheckReport::default() }
+        }).collect();
         // Candidate registration establishes every identity/name, but only
         // explicit roots and proven original require targets schedule checks.
         self.modules.required_files.borrow_mut().extend(roots.iter().copied());
         let mut checked = HashSet::new();
+        let mut emitted = HashSet::new();
+        let owned: HashSet<_> = roots.iter().copied().collect();
         let mut reports: Vec<_> = self.files.iter().map(|file| FileCheckReport {
                 file: file.id,
                 report: CheckReport::default(),
@@ -397,9 +414,12 @@ impl ProjectRegistry {
         // Rendering can complete a deferred signature in any owner file. Drain
         // those source report queues before the arena ends; this schedules
         // report publication only and never iterates or joins inferred types.
+        let mut unresolved_reported = false;
         loop {
             for (index, file) in self.files.iter().enumerate() {
-                if !self.modules.required_files.borrow().contains(&file.id) || !checked.insert(index) {
+                let selected = if owned_only { owned.contains(&file.id) }
+                    else { self.modules.required_files.borrow().contains(&file.id) };
+                if !selected || !checked.insert(index) {
                     continue;
                 }
                 file.source.check_named_declarations(queries);
@@ -415,33 +435,53 @@ impl ProjectRegistry {
             }
             let mut published = false;
             for (index, file) in self.files.iter().enumerate() {
-                if checked.contains(&index) { published |= file.source.retry_contextual_owner_validations(queries); }
+                if owned_only && file.role == SourceRole::Implementation { file.source.check_selected_bodies(queries); }
+                if owned_only || checked.contains(&index) { published |= file.source.retry_contextual_owner_validations(queries); }
             }
             for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
-                if !checked.contains(&index) { continue; }
+                if !owned_only && !checked.contains(&index) { continue; }
                 let pending = file.source.take_report();
-                published |= !pending.diagnostics.is_empty()
+                let has_pending = !pending.diagnostics.is_empty()
                     || !pending.bindings.is_empty()
                     || !pending.types.is_empty()
                     || !pending.pending_bindings.is_empty()
-                    || !pending.pending_types.is_empty();
+                    || !pending.pending_types.is_empty()
+                    || !pending.pending_diagnostics.is_empty();
+                published |= has_pending;
+                if owned_only && (has_pending || checked.contains(&index)
+                    || self.modules.required_files.borrow().contains(&file.id))
+                    && emitted.insert(index)
+                {
+                    report.report.append(std::mem::take(&mut baselines[index]));
+                }
+                if owned_only && !emitted.contains(&index) { continue; }
                 report.report.append(pending);
                 published |= !report.report.pending_bindings.is_empty()
                     || !report.report.pending_types.is_empty();
                 report.report.render(queries);
             }
             let unchecked = self.files.iter().enumerate().any(|(index, file)| {
-                !checked.contains(&index) && self.modules.required_files.borrow().contains(&file.id)
+                !checked.contains(&index) && if owned_only { owned.contains(&file.id) }
+                    else { self.modules.required_files.borrow().contains(&file.id) }
             });
             if !published && !unchecked {
+                if owned_only && !unresolved_reported {
+                    for (index, file) in self.files.iter().enumerate() {
+                        if checked.contains(&index) { file.source.report_unresolved_contextual_owners(); }
+                    }
+                    unresolved_reported = true;
+                    continue;
+                }
                 break;
             }
         }
         for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
-            if !checked.contains(&index) { continue; }
-            file.source.report_unresolved_contextual_owners();
-            report.report.append(file.source.take_report());
-            report.report.render_diagnostics(queries);
+            if !checked.contains(&index) && !(owned_only && emitted.contains(&index)) { continue; }
+            if !owned_only {
+                file.source.report_unresolved_contextual_owners();
+                report.report.append(file.source.take_report());
+                report.report.render_diagnostics(queries);
+            }
             report.report.diagnostics.sort_by(|left, right| {
                 (left.span.start, left.span.end, left.code, &left.message).cmp(&(
                     right.span.start,
@@ -463,7 +503,10 @@ impl ProjectRegistry {
             report.report.types.dedup();
             report.report.bound = Some(file.source.bound().clone());
         }
-        reports.retain(|report| self.modules.required_files.borrow().contains(&report.file));
+        reports = reports.into_iter().enumerate().filter_map(|(index, report)| {
+            (self.modules.required_files.borrow().contains(&report.file) || owned_only && emitted.contains(&index))
+                .then_some(report)
+        }).collect();
         assert!(reports.iter().all(|report| report.report.pending_bindings.is_empty()
             && report.report.pending_types.is_empty() && report.report.pending_diagnostics.is_empty()),
             "project task reports must be rendered before native capabilities expire");
@@ -1220,5 +1263,63 @@ mod tests {
         let empty = ProjectRegistrySnapshot::new(Vec::new(), Vec::new(), NativeLoaderPolicy::Lua54StandardFile,
             StandardEnvironmentProfile::None, crate::OverloadMode::V2);
         assert_eq!(empty.worker_registry().globals.environment, empty.worker_registry().globals.environment);
+    }
+
+    #[test]
+    fn owned_root_returns_proven_dependencies_without_checking_their_unused_bodies() {
+        const ENTRY: &str = "local exported=require('dep')\nreturn exported";
+        const DEPENDENCY: &str = "local function unused() local bad=missingDependencyValue return bad end\nreturn 42";
+        let make = || {
+            let entry = input(0, ENTRY);
+            let dependency = input(1, DEPENDENCY);
+            let mut library = input(2, include_str!("../stdlib/LegacyMinimal/require.def.lua"));
+            library.role = SourceRole::Declaration;
+            library.standard_library = Some(StandardLibrarySource::LegacyRequire);
+            let start = ENTRY.find("'dep'").unwrap();
+            let edge = Dependency { from: entry.id,
+                request: luanalysis_project::RequireRequest::new("dep", start..start + "'dep'".len()),
+                outcome: DependencyOutcome::Resolved(dependency.id),
+            };
+            ProjectRegistry::new_with_modules(vec![entry, dependency, library,
+                input(3, "local unusedStaticCandidate=missingStaticValue")], vec![edge], NativeLoaderPolicy::Lua54StandardFile)
+        };
+        Engine::new().with_native_provider(make, |provider, queries| {
+            let root = provider.files[0].id;
+            let dependency = provider.files[1].id;
+            let reports = provider.check_owned_roots(queries, &[root]);
+            assert!(provider.required_files().contains(&dependency), "native loader provenance schedules the dependency");
+            assert!(!provider.required_files().contains(&provider.files[3].id));
+            assert!(provider.files[1].source.checked_bodies.borrow().is_empty());
+            assert!(reports.iter().all(|file| file.report.diagnostics.iter()
+                .all(|diagnostic| !diagnostic.message.contains("missingDependencyValue"))));
+            assert!(reports.iter().all(|file| file.file != provider.files[3].id));
+            assert!(reports.iter().all(|file| file.report.pending_bindings.is_empty()
+                && file.report.pending_types.is_empty() && file.report.pending_diagnostics.is_empty()));
+        });
+        Engine::new().with_native_provider(make, |provider, queries| {
+            let reports = provider.check_roots(queries, &[provider.files[0].id]);
+            assert!(reports.iter().any(|file| file.file == provider.files[1].id
+                && file.report.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("missingDependencyValue"))));
+        });
+    }
+
+    #[test]
+    fn owned_root_drains_foreign_alias_diagnostics_in_the_requesting_task() {
+        Engine::new().with_native_provider(|| ProjectRegistry::new(vec![
+            input(0, "---@type Imported\nlocal selected\nreturn selected"),
+            input(1, "---@alias Imported MissingForeignType\nlocal function unused() return missingUnusedValue end"),
+        ]), |provider, queries| {
+            let reports = provider.check_owned_roots(queries, &[provider.files[0].id]);
+            let foreign = reports.iter().find(|file| file.file == provider.files[1].id)
+                .expect("a demanded foreign alias keeps its original diagnostic owner");
+            assert!(foreign.report.diagnostics.iter().any(|diagnostic|
+                diagnostic.code == "TS2304" && diagnostic.message.contains("MissingForeignType")));
+            assert!(foreign.report.diagnostics.iter().all(|diagnostic| !diagnostic.message.contains("missingUnusedValue")));
+            assert!(provider.files[1].source.checked_bodies.borrow().is_empty());
+            assert!(foreign.report.pending_bindings.is_empty() && foreign.report.pending_types.is_empty()
+                && foreign.report.pending_diagnostics.is_empty());
+            assert!(!provider.required_files().contains(&provider.files[1].id),
+                "query diagnostic ownership does not activate an unrequired module");
+        });
     }
 }

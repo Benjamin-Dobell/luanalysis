@@ -1528,8 +1528,19 @@ impl NativeRegistry {
     /// declarations whose return type required no native inference query.
     pub(super) fn check_all_bodies(&self, queries: &mut dyn TypeQueries) {
         self.check_all_signatures(queries);
+        self.check_bodies(queries, false);
+    }
+
+    /// Selected foreign callbacks retain task-local inference and capture
+    /// frames. Validate those frames without starting unrelated source bodies.
+    pub(super) fn check_selected_bodies(&self, queries: &mut dyn TypeQueries) {
+        self.check_bodies(queries, true);
+    }
+
+    fn check_bodies(&self, queries: &mut dyn TypeQueries, selected_only: bool) {
         for index in 0..self.functions.len() {
             let key = self.key(index as u32);
+            if selected_only && self.expressions.final_facets(key).is_empty() { continue; }
             for parameter in self.types.own_parameters(key) {
                 queries.type_parameter_constraint(parameter);
             }
