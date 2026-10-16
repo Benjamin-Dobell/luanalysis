@@ -1000,7 +1000,7 @@ impl Checker<'_> {
 #[cfg(test)]
 mod dependency_tests {
     use super::*;
-    use luanalysis_engine::{NativeFunctionKey, NativeTypeProvider};
+    use luanalysis_engine::{Engine, NativeFunctionKey, NativeTypeProvider};
 
     fn registry(source: &str) -> NativeRegistry {
         let file = luanalysis_syntax::parse(source);
@@ -1021,6 +1021,59 @@ mod dependency_tests {
         NativeFunctionKey {
             snapshot: registry.snapshot,
             index: index as u32,
+        }
+    }
+
+    #[test]
+    fn prospective_named_application_errors_belong_to_the_owning_check() {
+        for (application, code) in [("Box<number>", "TS2344"), ("Box<number, string>", "TS2314")] {
+            let source = format!(
+                "---@class Required\n---@field id number\n\n---@class Box<T : Required>\n\n---@type {application}\nlocal value\n"
+            );
+            Engine::new().with_native_provider(
+                move || registry(&source),
+                |registry, queries| {
+                    let syntax = registry.file.statements.iter().find_map(|statement| {
+                        let luanalysis_syntax::StmtKind::Local { annotation: Some(annotation), .. } = &statement.kind else { return None };
+                        annotation.types.first().cloned()
+                    }).expect("original named application annotation");
+                    registry.with_prospective_store_report(|| {
+                        registry.checker(queries).annotation(&syntax);
+                    });
+                    let provisional = registry.take_report();
+                    assert!(provisional.diagnostics.is_empty(), "{application}: {:#?}", provisional.diagnostics);
+                    assert!(provisional.pending_diagnostics.is_empty(), "a discarded query must retain no diagnostic type capabilities");
+
+                    // The same original annotation is still invalid. Its own
+                    // completed check must report it after the candidate ends.
+                    registry.checker(queries).annotation(&syntax);
+                    let mut completed = registry.take_report();
+                    completed.render(queries);
+                    assert_eq!(completed.diagnostics.len(), 1, "{application}: {:#?}", completed.diagnostics);
+                    assert_eq!(completed.diagnostics[0].code, code);
+                    assert!(completed.pending_diagnostics.is_empty());
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn completed_body_named_application_errors_survive_staging_and_corrections() {
+        for (argument, expected) in [("number", 1), ("Required", 0)] {
+            let source = format!(
+                "---@class Required\n---@field id number\n\n---@class Box<T : Required>\n\n---@param value Box<{argument}>\nlocal function inspect(value) return value end\n"
+            );
+            Engine::new().with_native_provider(
+                move || registry(&source),
+                |registry, queries| {
+                    registry.check_all_bodies(queries);
+                    let mut report = registry.take_report();
+                    report.render(queries);
+                    assert_eq!(report.diagnostics.len(), expected, "{argument}: {:#?}", report.diagnostics);
+                    assert!(report.diagnostics.iter().all(|diagnostic| diagnostic.code == "TS2344"));
+                    assert!(report.pending_diagnostics.is_empty());
+                },
+            );
         }
     }
     #[test]
