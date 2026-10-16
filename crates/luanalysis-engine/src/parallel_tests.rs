@@ -220,3 +220,68 @@ fn task_capabilities_cannot_be_queried_in_another_task_epoch() {
     );
     assert!(invalid.load(Ordering::Relaxed));
 }
+
+#[test]
+fn cost_order_starts_heaviest_first_but_keeps_plan_outputs_and_published_answers() {
+    let starts = std::sync::Mutex::new(Vec::new());
+    let steps = [vec![0, 1, 2, 3], vec![4]];
+    let costs = [1, 8, 3, 8, 1];
+    let check = |job, provider: &Provider, queries: &mut dyn TypeQueries| {
+        starts.lock().unwrap().push(job);
+        let called = queries.call(&Type::NativeFunction(Provider::function()), &[]);
+        assert!(called.errors.is_empty());
+        (job, queries.format(&called.return_type), provider.body_reads.get())
+    };
+    let original = Engine::new().with_native_task_plan_report(
+        NonZeroUsize::new(1).unwrap(), &steps, |_| Provider::new(false), check,
+    );
+    assert_eq!(*starts.lock().unwrap(), vec![0, 1, 2, 3, 4]);
+    starts.lock().unwrap().clear();
+    let by_cost = Engine::new().with_native_task_plan_by_cost_report(
+        NonZeroUsize::new(1).unwrap(), &steps, |job| costs[job], |_| Provider::new(false), check,
+    );
+    assert_eq!(*starts.lock().unwrap(), vec![1, 3, 2, 0, 4]);
+    assert_eq!(by_cost.results, original.results);
+    assert_eq!(by_cost.results.iter().map(|result| result.0).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4]);
+    assert_eq!(by_cost.results.iter().map(|result| result.2).collect::<Vec<_>>(), vec![1, 1, 1, 1, 0],
+        "each cold task computes independently, while the later step sees the published return");
+    assert_eq!(by_cost.stats.barriers, 2);
+    assert_eq!(by_cost.stats.retries, 0);
+    assert!(by_cost.stats.published_entries > 0);
+}
+
+#[test]
+fn cost_order_preserves_four_worker_barriers_and_published_results_repeatedly() {
+    for _ in 0..3 {
+        let gate = Barrier::new(4);
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let starts = std::sync::Mutex::new(Vec::new());
+        let run = Engine::new().with_native_task_plan_by_cost_report(
+            NonZeroUsize::new(4).unwrap(),
+            &[vec![0, 1, 2, 3, 4, 5, 6, 7], vec![8, 9, 10, 11]],
+            |job| if job >= 4 { 100 + job } else { job },
+            |_| Provider::new(false),
+            |job, provider, queries| {
+                starts.lock().unwrap().push(job);
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                if job >= 4 { gate.wait(); }
+                let called = queries.call(&Type::NativeFunction(Provider::function()), &[]);
+                assert!(called.errors.is_empty());
+                let answer = (job, queries.format(&called.return_type), provider.body_reads.get());
+                active.fetch_sub(1, Ordering::SeqCst);
+                answer
+            },
+        );
+        let mut first = starts.lock().unwrap()[..4].to_vec();
+        first.sort_unstable();
+        assert_eq!(first, vec![4, 5, 6, 7], "the first worker group starts the heavy jobs");
+        assert_eq!(peak.load(Ordering::SeqCst), 4);
+        assert_eq!(run.stats.workers, 4);
+        assert_eq!(run.stats.barriers, 2);
+        assert_eq!(run.stats.retries, 0);
+        assert_eq!(run.results, (0..12).map(|job| (job, "number".into(), usize::from(job < 8))).collect::<Vec<_>>());
+        assert!(run.stats.published_entries > 0);
+    }
+}

@@ -5,6 +5,7 @@ use super::{
 };
 use bun_sema::check::{Program, task::Finished};
 use std::any::Any;
+use std::cmp::Reverse;
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::{Arc, Mutex, mpsc};
@@ -78,6 +79,36 @@ impl Engine {
         factory: impl Fn(usize) -> P + Sync,
         work: impl Fn(usize, &P, &mut dyn super::TypeQueries) -> R + Sync,
     ) -> NativeTaskRun<R> {
+        self.with_native_task_plan_ordered_report(workers, steps, None, factory, work)
+    }
+
+    /// Start the heaviest tasks first while validating, linking, publishing and
+    /// returning their outputs in the original plan order. This is the pinned
+    /// Bun driver's `start_order` policy (driver/lib.rs:4148-4160), applied again
+    /// for each retry round. `task_cost` is immutable source metadata per job.
+    ///
+    /// Retry tasks currently keep their original file grouping; Bun's driver
+    /// repartitions retried files with `Plan::cut`. This method changes only
+    /// start order and preserves the existing native runner's retry grouping.
+    pub fn with_native_task_plan_by_cost_report<P: NativeTypeProvider, R: Send>(
+        &self,
+        workers: NonZeroUsize,
+        steps: &[Vec<usize>],
+        task_cost: impl Fn(usize) -> usize + Sync,
+        factory: impl Fn(usize) -> P + Sync,
+        work: impl Fn(usize, &P, &mut dyn super::TypeQueries) -> R + Sync,
+    ) -> NativeTaskRun<R> {
+        self.with_native_task_plan_ordered_report(workers, steps, Some(&task_cost), factory, work)
+    }
+
+    fn with_native_task_plan_ordered_report<P: NativeTypeProvider, R: Send>(
+        &self,
+        workers: NonZeroUsize,
+        steps: &[Vec<usize>],
+        task_cost: Option<&(dyn Fn(usize) -> usize + Sync)>,
+        factory: impl Fn(usize) -> P + Sync,
+        work: impl Fn(usize, &P, &mut dyn super::TypeQueries) -> R + Sync,
+    ) -> NativeTaskRun<R> {
         let tasks: usize = steps.iter().map(Vec::len).sum();
         if tasks == 0 {
             return NativeTaskRun {
@@ -86,7 +117,7 @@ impl Engine {
             };
         }
         let workers = workers.get().min(steps.iter().map(Vec::len).max().unwrap());
-        with_program(|program, _coordinator_handles| run(program, workers, steps, &factory, &work))
+        with_program(|program, _coordinator_handles| run(program, workers, steps, task_cost, &factory, &work))
     }
 }
 
@@ -94,6 +125,7 @@ fn run<'s, P: NativeTypeProvider, R: Send>(
     program: &Program<'s>,
     workers: usize,
     steps: &[Vec<usize>],
+    task_cost: Option<&(dyn Fn(usize) -> usize + Sync)>,
     factory: &(impl Fn(usize) -> P + Sync),
     work: &(impl Fn(usize, &P, &mut dyn super::TypeQueries) -> R + Sync),
 ) -> NativeTaskRun<R> {
@@ -181,7 +213,12 @@ fn run<'s, P: NativeTypeProvider, R: Send>(
                 let mut pending: Vec<usize> = (0..jobs.len()).collect();
                 let mut prior_retry_count = None;
                 while !pending.is_empty() {
-                    for (index, &slot) in pending.iter().enumerate() {
+                    let mut work_order: Vec<usize> = (0..pending.len()).collect();
+                    if let Some(task_cost) = task_cost {
+                        work_order.sort_by_key(|&index| Reverse(task_cost(jobs[pending[index]])));
+                    }
+                    for index in work_order {
+                        let slot = pending[index];
                         commands
                             .send(Command {
                                 step: u32::try_from(step_number)
