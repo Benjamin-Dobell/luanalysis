@@ -7179,6 +7179,15 @@ impl<'p, 's> Checker<'p, 's> {
         if source == target {
             return Ternary::TRUE;
         }
+        // Luanalysis doc signatures without result syntax accept any checked
+        // result as targets, but cannot establish a written source result. Keep
+        // this distinction before TS's top/any/void return shortcuts.
+        if check_mode & IGNORE_RETURN_TYPES == 0
+            && self.sig_has_unconstrained_native_return(source)
+            && !self.sig_has_unconstrained_native_return(target)
+        {
+            return Ternary::FALSE;
+        }
         let strict_top = check_mode & STRICT_TOP_SIGNATURE != 0;
         let (source_is_top, target_is_top) = (
             strict_top && self.is_top_signature(source),
@@ -7394,7 +7403,7 @@ impl<'p, 's> Checker<'p, 's> {
             }
             result &= related;
         }
-        if check_mode & IGNORE_RETURN_TYPES != 0 {
+        if check_mode & IGNORE_RETURN_TYPES != 0 || self.sig_has_unconstrained_native_return(target) {
             return result;
         }
         let packed = self.sig_has_native_result_pack(target);

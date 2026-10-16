@@ -1182,7 +1182,8 @@ impl TypeParser {
             let close = self.expect(")");
             parameters_span = Some(open.join(close));
         }
-        let (returns, packs) = if self.take(":").is_some() {
+        let returns_start = self.take(":");
+        let (returns, packs) = if returns_start.is_some() {
             self.return_packs()
         } else {
             (Vec::new(), None)
@@ -1198,6 +1199,7 @@ impl TypeParser {
             parameters_span,
             params,
             vararg,
+            returns_span: returns_start.map(|start| start.join(end)),
             returns,
             packs,
             span,

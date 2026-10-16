@@ -18,6 +18,15 @@ use luanalysis_syntax::{
 use std::collections::HashMap;
 
 impl NativeRegistry {
+    /// A missing doc-function result is distinct from an explicit any/void row.
+    /// Runtime implementation signatures keep their actual inferred result.
+    pub(super) fn signature_has_omitted_result(&self, key: NativeSignatureKey) -> bool {
+        let recipe = self.signatures.get(key);
+        recipe.ambient_function.is_none()
+            && recipe.signature.as_ref().is_some_and(|signature| signature.returns_span.is_none())
+            && self.documentation_signature(key).is_none_or(|doc| doc.annotations.returns.is_none())
+    }
+
     pub(super) fn signature_has_method_origin(&self, key: NativeSignatureKey) -> bool {
         let recipe = self.signatures.get(key);
         if let Some(source) = self.documentation_signature(key) {
@@ -277,13 +286,13 @@ impl NativeRegistry {
             return queries.declared_result_pack(&contract);
         }
         let source = recipe.signature.as_ref().expect("original function-type annotation");
-        if source.returns.is_empty() && let Some(annotation) = self.documentation_signature(key).and_then(|doc| doc.annotations.returns.as_ref()) {
+        if source.returns_span.is_none() && let Some(annotation) = self.documentation_signature(key).and_then(|doc| doc.annotations.returns.as_ref()) {
             let mut checker=self.signature_checker(key,queries);
             let pack=AnnotationPack::annotation(annotation).lower(&mut |ty| checker.annotation(ty));
             self.merge_report(checker.report);
             return pack;
         }
-        if source.parameters_span.is_none() && source.returns.is_empty() {
+        if source.returns_span.is_none() {
             return ValuePack::variadic(Type::Any);
         }
         let mut checker = self.signature_checker(key, queries);

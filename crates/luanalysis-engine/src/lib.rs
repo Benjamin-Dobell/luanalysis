@@ -412,6 +412,9 @@ pub trait NativeTypeProvider {
     fn contains_signature(&self, _: NativeSignatureKey) -> bool { false }
     fn signature_intrinsic(&self, _: NativeSignatureKey) -> Option<NativeIntrinsicSite> { None }
     fn signature_header(&self, _: NativeSignatureKey) -> SignatureHeader { panic!("native signature provider is not installed") }
+    /// Original omitted doc-function result; calls still return a gradual pack.
+    /// This is not set for runtime signatures whose results are inferred.
+    fn signature_has_unconstrained_return(&self, _: NativeSignatureKey) -> bool { false }
     fn function_overload_signatures(&self, _: NativeFunctionKey) -> Vec<NativeSignatureKey> { Vec::new() }
     fn function_exposes_implementation(&self, _: NativeFunctionKey) -> bool { false }
     fn signature_type_parameters(&self, _: NativeSignatureKey) -> Vec<NativeTypeParameterKey> { Vec::new() }
@@ -2456,6 +2459,7 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
         })
     }
     fn signature_header(&self, key: bun_sema::types::NativeSignatureId) -> bun_sema::check::native_signatures::NativeSignatureHeader { self.signature_header_core(key) }
+    fn signature_has_unconstrained_return(&self, key: bun_sema::types::NativeSignatureId) -> bool { self.provider.signature_has_unconstrained_return(source_signature_key(key)) }
     fn overload_signatures(&self, function: NativeFunctionId) -> Vec<bun_sema::types::NativeSignatureId> { self.provider.function_overload_signatures(source_key(function)).into_iter().map(core_signature_key).collect() }
     fn exposes_implementation(&self, function: NativeFunctionId) -> bool { self.provider.function_exposes_implementation(source_key(function)) }
     fn signature_parameters(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Vec<SigParam> { self.signature_parameters_core(checker, key) }

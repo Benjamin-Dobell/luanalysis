@@ -8451,6 +8451,11 @@ impl<'p, 's> Checker<'p, 's> {
         if source == target {
             return Ternary::TRUE;
         }
+        if ignore_return_types == IgnoreReturnTypes::No
+            && self.sig_has_unconstrained_native_return(source) != self.sig_has_unconstrained_native_return(target)
+        {
+            return Ternary::FALSE;
+        }
         let (sp, tp) = (self.sig_params(source), self.sig_params(target));
         // `isMatchingSignature`
         let (source_least, target_least) =

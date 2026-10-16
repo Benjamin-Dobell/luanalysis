@@ -827,6 +827,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn function_is_method(key: NativeFunctionKey) -> bool;
         fn signature_is_method(key: NativeSignatureKey) -> bool;
         fn signature_header(key: NativeSignatureKey) -> SignatureHeader;
+        fn signature_has_unconstrained_return(key: NativeSignatureKey) -> bool;
         fn function_overload_signatures(key: NativeFunctionKey) -> Vec<NativeSignatureKey>;
         fn function_exposes_implementation(key: NativeFunctionKey) -> bool;
         fn function_flow_execution(key: NativeFunctionKey, creation: luanalysis_engine::NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::NativeAliasExecution>;

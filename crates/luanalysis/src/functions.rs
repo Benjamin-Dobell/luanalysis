@@ -219,7 +219,7 @@ impl Checker<'_> {
         &mut self,
         function: &luanalysis_syntax::FunctionType,
     ) -> Type {
-        if function.parameters_span.is_none() && function.returns.is_empty() && function.generics.is_empty() {
+        if function.parameters_span.is_none() && function.returns_span.is_none() && function.generics.is_empty() {
             return Type::RuntimeFunction;
         }
         if let Some(native)=self.native {
@@ -262,9 +262,12 @@ impl Checker<'_> {
                 }
             })
             .collect();
-        let returns =
+        let returns = if function.returns_span.is_some() {
             AnnotationPack::new(&function.returns, function.packs.as_deref(), function.span)
-                .lower(&mut |ty| self.annotation(ty));
+                .lower(&mut |ty| self.annotation(ty))
+        } else {
+            ValuePack::variadic(Type::Any)
+        };
         let returns = self.engine.declared_result_pack(&returns);
         let returns = self.engine.pack_with_implicit_empty(&returns);
         let rest = function

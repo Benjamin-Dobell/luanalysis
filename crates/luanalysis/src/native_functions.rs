@@ -423,6 +423,9 @@ impl NativeRegistry {
             let luanalysis_syntax::TypeExprKind::Function(signature) = &ty.kind else {
                 return None;
             };
+            // A function type with no result syntax constrains parameters only.
+            // Its runtime implementation still infers its own physical returns.
+            if signature.returns_span.is_none() { return None; }
             AnnotationPack::new(
                 &signature.returns,
                 signature.packs.as_deref(),
@@ -2299,6 +2302,9 @@ impl NativeTypeProvider for NativeRegistry {
     fn type_member_owner_application(&self,key:luanalysis_engine::NativeTypeMemberKey,queries:&mut dyn TypeQueries)->Option<luanalysis_engine::MemberOwnerApplication>{self.original_member_owner_application(key,queries)}
     fn contains_signature(&self,key:luanalysis_engine::NativeSignatureKey)->bool{self.signature_available(key)}
     fn signature_header(&self,key:luanalysis_engine::NativeSignatureKey)->luanalysis_engine::SignatureHeader{self.signatures.get(key).header}
+    fn signature_has_unconstrained_return(&self, key: luanalysis_engine::NativeSignatureKey) -> bool {
+        self.signature_has_omitted_result(key)
+    }
     fn function_overload_signatures(&self,key:NativeFunctionKey)->Vec<luanalysis_engine::NativeSignatureKey>{
         if self.source_role() == luanalysis_project::SourceRole::Declaration {
             self.signatures.ambient_function_heads(key, self.overload_mode == crate::OverloadMode::LegacyExposeImplementation)

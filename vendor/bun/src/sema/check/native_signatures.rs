@@ -146,6 +146,14 @@ impl<'p, 's> Checker<'p, 's> {
         signatures.iter().map(|&sig| self.type_of_signature(sig, false)).collect()
     }
 
+    /// Original doc signatures retain the absence of a result contract through
+    /// mapping/wrapping. Runtime functions always retain their inferred result.
+    pub(super) fn sig_has_unconstrained_native_return(&self, sig: SigId) -> bool {
+        self.sig_native_signature_decl(sig).is_some_and(|(declaration, _)| {
+            self.native_signature_provider_for(declaration).signature_has_unconstrained_return(declaration)
+        })
+    }
+
     pub fn sig_native_signature_decl(&self, sig: SigId) -> Option<(NativeSignatureId, MapperId)> {
         match *self.types().sig(sig) {
             SigData::NativeDeclarationSignature { declaration, mapper, .. } => Some((declaration, mapper)),

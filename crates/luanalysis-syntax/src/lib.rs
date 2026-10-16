@@ -539,6 +539,9 @@ pub struct FunctionType {
     pub parameters_span: Option<Span>,
     pub params: Vec<FunctionTypeParam>,
     pub vararg: Option<Box<VarargAnnotation>>,
+    /// Original colon and result syntax. None leaves the result unconstrained;
+    /// an explicit `: ()` has a span even though its result vector is empty.
+    pub returns_span: Option<Span>,
     pub returns: Vec<TypeExpr>,
     /// Pack indices refer to `returns`, without duplicating type nodes.
     pub packs: Option<Box<TypePacks>>,
