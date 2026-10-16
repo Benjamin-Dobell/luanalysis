@@ -217,12 +217,13 @@ struct DemandFlow {
     key: Type,
     allow_rhs: bool,
     same_scope: bool,
+    scope_calls: Cell<usize>,
     key_calls: Cell<usize>,
     rhs_calls: Cell<usize>,
 }
 impl DemandFlow {
     fn new(key: Type, allow_rhs: bool, same_scope: bool) -> Self {
-        Self { key, allow_rhs, same_scope, key_calls: Cell::new(0), rhs_calls: Cell::new(0) }
+        Self { key, allow_rhs, same_scope, scope_calls: Cell::new(0), key_calls: Cell::new(0), rhs_calls: Cell::new(0) }
     }
 }
 impl NativeFlowProvider for DemandFlow {
@@ -244,7 +245,8 @@ impl NativeFlowProvider for DemandFlow {
         (query == reference(0) && target == reference(1)).then_some((value(0), at(0)))
     }
     fn runtime_table_store_in_scope(&self, original: NativeTypeDeclarationKey, _: NativeFlowKey) -> bool {
-        self.same_scope && original.index < 2
+        self.scope_calls.set(self.scope_calls.get() + 1);
+        self.same_scope && (original == declaration(0) || original == declaration(1))
     }
     fn value_type(&self, original: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Type {
         if original == value(0) {
@@ -337,6 +339,7 @@ fn eligible_and_excluded_union_arms_demand_rhs_once_and_evolve_only_the_eligible
             assert!(!reached.incomplete, "{reached:?}");
             assert_eq!(flow.key_calls.get(), 1);
             assert_eq!(flow.rhs_calls.get(), 1, "a computed RHS is demanded once for all prepared eligible arms");
+            assert_eq!(flow.scope_calls.get(), 1, "only the eligible arm is prepared, and application must not rescan its eligibility");
             let Type::Union(parts) = queries.inspect_type(&reached.ty) else { panic!("the two original allocation arms must remain distinct") };
             assert_eq!(parts.len(), 2);
             for part in parts {
@@ -355,7 +358,7 @@ fn eligible_and_excluded_union_arms_demand_rhs_once_and_evolve_only_the_eligible
                 }
             }
             assert_eq!(provider.future_calls.get(), 0);
-            assert_eq!(provider.receiver_calls.get(), 1, "applying prepared arms must not repeat written-contract receiver discovery");
+            assert_eq!(provider.receiver_calls.get(), 1);
         },
     );
 }
