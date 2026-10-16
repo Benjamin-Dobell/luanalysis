@@ -47,13 +47,15 @@ fn a_known_future_store_does_not_make_the_member_present_before_execution() {
             .any(|error| error.code == "TS2339")
     );
 }
+
+// A copy is another spelling: its stores do not update the original's view.
 #[test]
-fn plain_table_aliases_share_stores_without_confusing_rebound_roots() {
+fn plain_table_aliases_do_not_share_stores_and_rebound_roots_stay_separate() {
     let source = "local value={}\nlocal alias=value\nalias.count=1\nlocal shared=value.count\nvalue={}\nvalue.other='new'\nlocal old=alias.count\nlocal fresh=value.other\n";
     let report = clean(source);
     assert_eq!(
         report.type_at(source.find("shared=").unwrap()),
-        Some("number")
+        Some("nil")
     );
     assert_eq!(report.type_at(source.find("old=").unwrap()), Some("number"));
     assert_eq!(
@@ -123,8 +125,10 @@ fn independent_flow_builds_do_not_change_factory_alias_presence() {
     let report = clean(source);
     assert_eq!(report.type_at(source.find("populated=").unwrap()), Some("number"));
     assert_eq!(report.type_at(source.find("absent=").unwrap()), Some("nil"));
+    // The two result columns are different spellings: a store through one
+    // does not update the other (Bun's syntactic store matching).
     let shared = "local function pair() local value={} return value,value end\nlocal first,second=pair()\nfirst.item=1\nlocal shared=second.item\n";
-    assert_eq!(clean(shared).type_at(shared.find("shared=second").unwrap()), Some("number"));
+    assert_eq!(clean(shared).type_at(shared.find("shared=second").unwrap()), Some("nil"));
 }
 #[test]
 fn written_structural_annotations_keep_existing_closed_member_contracts() {
@@ -195,11 +199,11 @@ fn written_fields_keep_their_storage_bound_across_repeated_narrowing_and_deletio
 }
 
 #[test]
-fn original_result_projections_preserve_shared_and_distinct_factory_allocations() {
+fn factory_result_columns_do_not_share_stores_between_spellings() {
     let shared = "local function pair() local value={} return value,value end\nlocal first,second=pair()\nfirst.item=1\nlocal shared=second.item\n";
     assert_eq!(
         clean(shared).type_at(shared.find("shared=second").unwrap()),
-        Some("number")
+        Some("nil")
     );
     let distinct = "local function pair() return {},{} end\nlocal first,second=pair()\nfirst.item=1\nlocal absent=second.item\nsecond.item=2\n";
     assert_eq!(
@@ -208,13 +212,15 @@ fn original_result_projections_preserve_shared_and_distinct_factory_allocations(
     );
 }
 
+// The store goes to the frozen old receiver, so the replacement lacks the
+// field. The copy `old` is another spelling and does not see the store.
 #[test]
-fn parallel_assignment_updates_the_frozen_old_table_without_populating_its_replacement() {
+fn parallel_assignment_does_not_populate_the_replacement_receiver() {
     let source = "local value={}\nlocal old=value\nvalue,value.item={},1\nlocal oldItem=old.item\nvalue.other='new'\nlocal fresh=value.other\n";
     let report = clean(source);
     assert_eq!(
         report.type_at(source.find("oldItem=").unwrap()),
-        Some("number")
+        Some("nil")
     );
     assert_eq!(
         report.type_at(source.find("fresh=").unwrap()),

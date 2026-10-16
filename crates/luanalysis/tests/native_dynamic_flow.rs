@@ -44,28 +44,30 @@ fn dynamic_writes_preserve_unrelated_static_member_prefixes() {
     );
 }
 
+// As in TypeScript, a store through another spelling, even one that may name
+// the same table, leaves an established narrowing in place.
 #[test]
-fn compatible_written_child_contracts_do_not_hide_possible_self_aliases() {
+fn a_store_through_a_written_child_keeps_the_narrowed_field() {
     let source = "---@param record {values: table<string, number|string|table>, stable: number|string}\n---@param key string\nlocal function mutate(record,key)\nif type(record.stable)==\"number\" then\nrecord.values[key]=\"changed\"\nreturn record.stable+1\nend\nreturn 0\nend";
     let report = check(source);
-    assert!(report.diagnostics.iter().any(|error| error.code == "TS2362"), "{:#?}", report.diagnostics);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     clean(&source.replace("return record.stable+1", "return \"value: \"..record.stable"));
 }
 
 #[test]
-fn structural_callable_fields_do_not_disprove_shared_table_aliases() {
+fn a_store_through_another_parameter_keeps_the_narrowed_field() {
     let source = "---@class Callable\n---@overload fun():number\nlocal Callable={}\n---@param record {child:fun():number, stable:number|string}\n---@param other {child:table, stable:number|string}\nlocal function mutate(record,other)\n if type(record.stable)==\"number\" then\n  other.stable=\"changed\"\n  return record.stable+1\n end\n return 0\nend\nlocal shared={child=Callable,stable=1}\nlocal result=mutate(shared,shared)\n";
     let report = check(source);
-    assert!(report.diagnostics.iter().any(|error| error.code == "TS2362"), "{:#?}", report.diagnostics);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     assert!(report.diagnostics.iter().all(|error| error.code != "TS2345"), "the same callable-table child satisfies both public contracts: {:#?}", report.diagnostics);
     clean(&source.replace("return record.stable+1", "return \"value: \"..record.stable"));
 }
 
 #[test]
-fn simultaneous_discriminant_mutation_preserves_aliasing_across_frozen_epochs() {
+fn a_store_through_a_typed_alias_keeps_the_narrowed_field() {
     let source = "---@param record {kind: 'old'|'new', stable: number|string}\n---@param key string\nlocal function mutate(record,key)\n---@type table<string, number|string>\nlocal alias=record\nif type(record.stable)==\"number\" then\nrecord.kind,alias[key]=\"new\",\"changed\"\nreturn record.stable+1\nend\nreturn 0\nend";
     let report = check(source);
-    assert!(report.diagnostics.iter().any(|error| error.code == "TS2362"), "{:#?}", report.diagnostics);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     clean(&source.replace("return record.stable+1", "return \"value: \"..record.stable"));
 }
 

@@ -151,12 +151,15 @@ fn numeric_stores_join_overlapping_literal_values_without_widening_other_key_dom
     clean(&wrong.replace("---@type number|string\n local optional", "---@type nil|number|string\n local optional"));
 }
 
+// The computed store goes to the receiver frozen before `key()` rebinds
+// `value`, so the replacement lacks the key. The copy `original` is another
+// spelling and does not see the store either (Bun's syntactic store matching).
 #[test]
-fn computed_key_rebinding_evolves_the_frozen_receiver_without_populating_its_replacement() {
+fn computed_key_rebinding_does_not_populate_the_replacement_receiver() {
     let source = "local value={}\nlocal original=value\n---@return number\nlocal function key()\n value={}\n return 1\nend\nvalue[key()]='word'\nlocal reached=original[2]\nlocal missing=value[2]\n";
     let report = check(source);
-    has_parts(&report, source, "reached=", &["nil", "string"]);
     error_at(&report, source, "TS2339", "local missing=value[2]", "2");
-    let corrected = source.replace("local missing=value[2]", "local missing=original[2]");
-    has_parts(&clean(&corrected), &corrected, "missing=", &["nil", "string"]);
+    error_at(&report, source, "TS2339", "local reached=original[2]", "2");
+    let corrected = "local value={}\n---@return number\nlocal function key()\n return 1\nend\nvalue[key()]='word'\nlocal reached=value[2]\n";
+    has_parts(&clean(corrected), corrected, "reached=", &["nil", "string"]);
 }

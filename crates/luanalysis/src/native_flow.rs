@@ -1347,18 +1347,22 @@ impl NativeFlowSources {
         self.compare_write_references(query, target, address, at)
     }
 
+    /// All target addresses were captured before stores. A later/current path
+    /// to a replacement receiver cannot inherit a write to the old one.
+    fn receiver_replaced_in_transaction(&self, target: &flow::Reference, address: &flow::CapturedAddress, at: NativeFlowKey) -> bool {
+        !target.path.is_empty() && self.program.graphs[at.graph.region as usize].nodes.iter().any(|candidate| {
+            matches!(&candidate.kind, flow::NodeKind::Write { address: replacement, .. }
+                if replacement.transaction == address.transaction && replacement.reference.root == target.root
+                && replacement.reference.path.len() < target.path.len() && target.path.starts_with(&replacement.reference.path))
+        })
+    }
+
     fn compare_write_references(&self, query: &flow::Reference, target: &flow::Reference, address: &flow::CapturedAddress, at: NativeFlowKey) -> NativeWriteRelation {
         // Different roots are unaffected; check that before the graph scan.
         if query.root != target.root {
             return NativeWriteRelation::Unaffected;
         }
-        // All target addresses were captured before stores. A later/current
-        // path to a replacement receiver cannot inherit a write to the old one.
-        if !target.path.is_empty() && self.program.graphs[at.graph.region as usize].nodes.iter().any(|candidate| {
-            matches!(&candidate.kind, flow::NodeKind::Write { address: replacement, .. }
-                if replacement.transaction == address.transaction && replacement.reference.root == target.root
-                && replacement.reference.path.len() < target.path.len() && target.path.starts_with(&replacement.reference.path))
-        }) { return NativeWriteRelation::Unaffected; }
+        if self.receiver_replaced_in_transaction(target, address, at) { return NativeWriteRelation::Unaffected; }
         for (query_key, target_key) in query.path.iter().zip(&target.path) {
             if matches!(query_key, flow::Key::Dynamic(_))
                 || matches!(target_key, flow::Key::Dynamic(_))
@@ -1501,24 +1505,27 @@ impl FlowAdapter<'_> {
     /// `descendants: false` serves a consumer that treats descendant relations
     /// as unaffected. Without a possible proper-prefix relation, the remaining
     /// full-reference proof could only distinguish those, so it is omitted.
-    fn alias_write_affects(&self,reference:NativeReferenceKey,target:NativeReferenceKey,at:NativeFlowKey,queries:&mut dyn TypeQueries,descendants:bool)->Option<NativeWriteRelation> {
+    fn alias_write_affects(&self,reference:NativeReferenceKey,target:NativeReferenceKey,at:NativeFlowKey,_queries:&mut dyn TypeQueries,descendants:bool)->Option<NativeWriteRelation> {
         use luanalysis_engine::NativeAliasRelation;
         let query=self.sources.source_reference(reference)?;
         let target_source=self.sources.source_reference(target)?;
         if !matches!(query.root,flow::ReferenceRoot::Binding(_)|flow::ReferenceRoot::Temporary(_)) {return None;}
         let node=self.sources.source_node(at)?;
         let flow::NodeKind::Write {address,..}=&node.kind else {return None};
-        let receiver=self.sources.program.evaluation(address.receiver?);
-        let receiver_value=self.sources.evaluation_value(receiver.id);
-        let receiver_input=self.sources.flow_key(receiver.input,at.graph.context);
-        let before=self.sources.flow_key(*node.antecedents.first()?,at.graph.context);
+        address.receiver?;
         let written=target_source.path.last()?;
+        // As in Bun (`isMatchingReference`), the written receiver is this
+        // prefix only when it is syntactically the same reference, after
+        // parentheses and casts, and the same assignment did not replace it.
+        // Different spellings are different tables: no provenance proof.
+        let receiver_reference=flow::Reference {root:target_source.root.clone(),path:target_source.path[..target_source.path.len()-1].to_vec()};
+        let receiver_replaced=self.sources.receiver_replaced_in_transaction(target_source,address,at);
         let mut possible=None;
         let mut compared=false;
         let prefixes=(0..query.path.len()).rev().chain(std::iter::once(query.path.len()));
         for length in prefixes {
             let prefix=flow::Reference {root:query.root.clone(),path:query.path[..length].to_vec()};
-            let Some(prefix)=self.sources.reference_key(at.graph,&prefix) else {continue};
+            if self.sources.reference_key(at.graph,&prefix).is_none() {continue};
             let suffix=&query.path[length..];
             if suffix.is_empty() && !descendants && possible.is_none() {continue;}
             // A different written key leaves this prefix unaffected whatever
@@ -1528,7 +1535,7 @@ impl FlowAdapter<'_> {
                 else if &suffix[0]!=written {compared=true; continue;}
                 else if suffix.len()==1 {NativeWriteRelation::Exact}
                 else {NativeWriteRelation::Ancestor};
-            let relation=queries.flow_alias_relation(self,prefix,before,receiver_value,receiver_input);
+            let relation=if prefix==receiver_reference && !receiver_replaced {NativeAliasRelation::Same} else {NativeAliasRelation::Different};
             compared=true;
             if relation==NativeAliasRelation::Different {continue;}
             if relation==NativeAliasRelation::Same && !matches!(written,flow::Key::Dynamic(_)) && !suffix.iter().any(|key|matches!(key,flow::Key::Dynamic(_))) {return Some(affected);}
