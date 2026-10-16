@@ -1986,6 +1986,36 @@
       "patch": "vendor/patches/bun-sema-native-array-assertion-overlap.patch",
       "reason": "Separate Comparable numeric array overlap from strict sequence assignment/inference and retain fixed numeric field checks even with a covering source indexer through kernel 3521d3b.",
       "patch_sha256": "973168a5bcf7f92a44eb74f36cc9d4c0109196be5df62bbe7c9ee328427b547b"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-reached-numeric-stores.patch",
+      "reason": "Infer bounded reached numeric stores on eligible unannotated local runtime tables, transport original key/scope recipes, prepare eligibility before RHS demands, and guard written numeric contracts and current-only completion through kernel 73f49a4.",
+      "patch_sha256": "d144f0c23644e9ab7a7b6fccd2e940ca23e78da4526c330c5487d8264615a654"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-reached-numeric-stores.patch",
+      "reason": "Infer bounded reached numeric stores on eligible unannotated local runtime tables, transport original key/scope recipes, prepare eligibility before RHS demands, and guard written numeric contracts and current-only completion through kernel 73f49a4.",
+      "patch_sha256": "d144f0c23644e9ab7a7b6fccd2e940ca23e78da4526c330c5487d8264615a654"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-reached-numeric-stores.patch",
+      "reason": "Infer bounded reached numeric stores on eligible unannotated local runtime tables, transport original key/scope recipes, prepare eligibility before RHS demands, and guard written numeric contracts and current-only completion through kernel 73f49a4.",
+      "patch_sha256": "d144f0c23644e9ab7a7b6fccd2e940ca23e78da4526c330c5487d8264615a654"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-reached-numeric-stores.patch",
+      "reason": "Infer bounded reached numeric stores on eligible unannotated local runtime tables, transport original key/scope recipes, prepare eligibility before RHS demands, and guard written numeric contracts and current-only completion through kernel 73f49a4.",
+      "patch_sha256": "d144f0c23644e9ab7a7b6fccd2e940ca23e78da4526c330c5487d8264615a654"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-reached-numeric-stores.patch",
+      "reason": "Infer bounded reached numeric stores on eligible unannotated local runtime tables, transport original key/scope recipes, prepare eligibility before RHS demands, and guard written numeric contracts and current-only completion through kernel 73f49a4.",
+      "patch_sha256": "d144f0c23644e9ab7a7b6fccd2e940ca23e78da4526c330c5487d8264615a654"
     }
   ],
   "source_additions": {
@@ -2006,7 +2036,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "11ac1ad7fb81561c15e32690f644fb773c1999050ee9aff2c751910833fc150b",
+      "extracted_sha256": "91e6083d490968c4136f5586c76670ff35b13733efe9f4a7effd44bdd961a699",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_flow_calls.rs": {
@@ -2026,7 +2056,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "ee15742c490958045a429a7a53067bd2d34934b0542906d53de8940596244a75",
+      "extracted_sha256": "e2242d3c1e3b0e72e685b708747afa48e31810f2e449b383cdb8476684fad159",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -2046,7 +2076,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "607fa38ee9d99a4b39bd8d49801eff8a7faedb2d0b785099eceda6e0a5833571",
+      "extracted_sha256": "ea8e7509565ecf3cb176caa93b6fd142b3d4ef068e865083e7b543bc2605616f",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -2058,7 +2088,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "e7b67affd9da69e4e4ab088cc1fe0a4615dd845abc78680e1c146a872c91b379",
+      "extracted_sha256": "97b1fe030098432357bc1e2fc89f128b5a8b9bc7a4538c794b1d2ded8c8be64e",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -3101,7 +3131,7 @@
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "43c046c241d7ccaafd262ffddf38a939559af60aa904fe8503d6d0e1e855ba5d"
+      "extracted_sha256": "2a43cf242f76c2995c099d154a92209445ac56bb68bb67c24c3d60004761bd01"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",

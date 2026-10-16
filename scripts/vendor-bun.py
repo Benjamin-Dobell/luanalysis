@@ -457,6 +457,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Separate Comparable numeric array overlap from strict sequence assignment/inference and retain fixed numeric field checks even with a covering source indexer through kernel 3521d3b.",
 })
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-reached-numeric-stores.patch",
+    "reason": "Infer bounded reached numeric stores on eligible unannotated local runtime tables, transport original key/scope recipes, prepare eligibility before RHS demands, and guard written numeric contracts and current-only completion through kernel 73f49a4.",
+} for path in ["native_flow.rs", "native_named.rs", "native_runtime_tables.rs", "native_tables.rs", "sink.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

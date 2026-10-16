@@ -1,0 +1,271 @@
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index 066660e..154e40d 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -40,7 +40,7 @@ pub enum NativeWriteRelation {
+     Exact,
+     /// Replacing an ancestor invalidates the descendant reference facts.
+     Ancestor,
+-    /// A single frozen literal child of the queried receiver. The provider supplies its key;
++    /// A single frozen child of the queried receiver. The provider supplies its key;
+     /// the native transfer, rather than the source graph, owns the resulting value view.
+     Descendant,
+     PossibleExact,
+@@ -312,6 +312,12 @@ pub trait NativeFlowProvider {
+     fn reference_follows_creation(&self, _: NativeReferenceKey) -> bool { false }
+     fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { true }
+     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
++    /// The original computed child key and its frozen evaluation input. The
++    /// existing descendant relation, not this recipe, selects the receiver.
++    fn write_index_value(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> { None }
++    /// Pure allocation/store scope metadata. A contextual or written receiver
++    /// contract is independently excluded by the native value carrier.
++    fn runtime_table_store_in_scope(&self, _: super::native_named::NativeTypeDeclarationId, _: NativeFlowKey) -> bool { false }
+     /// A tested fixed child of this original receiver, independent of write metadata.
+     fn reference_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
+     /// An original fixed descendant path. This metadata does not evaluate a
+@@ -499,6 +505,24 @@ fn numeric_first_entry(
+ }
+ 
+ impl NativeDomain<'_> {
++    fn numeric_store_transfer(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> Option<FlowType> {
++        if !checker.native_has_runtime_table(previous.ty) { return None; }
++        let (key, key_input) = self.provider.write_index_value(walk.reference, target, at)?;
++        let (candidates, completed) = checker.run_memoizable(|checker| {
++            let key = checker.native_flow_value(self.provider, key, key_input);
++            checker.native_runtime_numeric_store_candidates(self.provider, at, previous.ty, key)
++        });
++        if completed.is_none() || matches!(candidates, Err(super::native_tables::NativeTableError::PendingContext)) {
++            return Some(FlowType::new(previous.ty, true));
++        }
++        let Ok(candidates) = candidates else { return Some(previous); };
++        if candidates.is_empty() { return Some(previous); }
++        let (ty, completed) = checker.run_memoizable(|checker| {
++            let value = checker.native_flow_value(self.provider, value, input);
++            checker.native_runtime_table_flow_numeric_write(previous.ty, &candidates, value)
++        });
++        Some(FlowType::new(ty, previous.incomplete || completed.is_none()))
++    }
+     fn auto_at_start(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey) -> Option<FlowType> {
+         if walk.declared != TypeId::AUTO && !self.provider.reference_follows_creation(walk.reference) { return None; }
+         let declaration = self.provider.reference_declaration(walk.reference)?;
+@@ -877,6 +901,11 @@ impl FlowDomain for NativeDomain<'_> {
+                             && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
+                             let value = checker.native_flow_value(self.provider, value, input);
+                             checker.native_definition_flow_write(previous.ty, key, value)
++                        } else if let Some(result) = self.numeric_store_transfer(checker, walk, at, target, value, input, previous) {
++                            // Every numeric slot remains sparse, which already
++                            // includes the unaffected continuation of this
++                            // possible receiver/key write.
++                            return result;
+                         } else { previous.ty }
+                     }
+                     NativeWriteRelation::PossibleAncestor => checker.native_runtime_table_absent_view(walk.initial),
+@@ -890,6 +919,8 @@ impl FlowDomain for NativeDomain<'_> {
+                     && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
+                     let value = checker.native_flow_value(self.provider, value, input);
+                     checker.native_definition_flow_write(previous.ty, key, value)
++                } else if let Some(result) = self.numeric_store_transfer(checker, walk, at, target, value, input, previous) {
++                    return result;
+                 } else { previous.ty }
+             }
+             NativeTransfer::Iteration(at, stage) => checker.native_iterator_step(self.provider, at, stage, NativeResultPack { ty: previous.ty }).ty,
+@@ -912,6 +943,7 @@ impl FlowDomain for NativeDomain<'_> {
+         let _ = walk;
+         FlowType::new(ty, previous.incomplete)
+     }
++
+     fn empty_transfer(&self) -> NativeTransfer {
+         NativeTransfer::Nothing
+     }
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 9716ba5..f04916f 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -177,6 +177,7 @@ pub enum NativeTypeDeclarationQuery {
+     RuntimeTableSeed(TypeId),
+     RuntimeTableMember(TypeId, NativeTypeMemberId, bool),
+     RuntimeTableWrittenContext(TypeId, NativeTableKey),
++    RuntimeTableNumericContract(TypeId),
+ }
+ 
+ /// One original alias-head edge. The provider never follows the target alias.
+diff --git a/src/sema/check/native_runtime_tables.rs b/src/sema/check/native_runtime_tables.rs
+index 1a6d112..bdc0a91 100644
+--- a/src/sema/check/native_runtime_tables.rs
++++ b/src/sema/check/native_runtime_tables.rs
+@@ -1,6 +1,7 @@
+ //! Original Lua allocation schemas and persistent structural value views.
+ use super::*;
+ use crate::types::{NativeResultPack, NativeRuntimeTableRef, NativeTableFieldOrigin};
++use crate::check::native_flow::{NativeFlowKey, NativeFlowProvider};
+ 
+ impl<'p, 's> Checker<'p, 's> {
+     pub(super) fn with_runtime_table_context<R>(&mut self, reference: NativeObjectReference, work: impl FnOnce(&mut Self) -> R) -> R {
+@@ -219,6 +220,129 @@ impl<'p, 's> Checker<'p, 's> {
+         self.native_table_write(schema, key, value)
+     }
+ 
++    /// A store's reached value may acquire a sparse numeric domain. Its
++    /// prospective schema stays unchanged, so future writes cannot establish
++    /// either present values or an inferred RHS bound for an earlier store.
++    pub fn native_table_write_at_flow(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, table: TypeId, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
++        let key = self.native_table_access(key)?;
++        if self.is_union(table) {
++            for part in self.parts(table).to_vec() { self.native_table_write_at_flow(provider, at, part, key, value)?; }
++            return Ok(());
++        }
++        if self.native_runtime_numeric_store(provider, at, table, key)?.is_some() { return Ok(()); }
++        self.native_table_write(table, key, value)
++    }
++
++    fn native_runtime_numeric_store(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, table: TypeId, key: NativeTableAccessKey) -> Result<Option<NativeRuntimeTableRef>, NativeTableError> {
++        // Any, unknown, symbolic keys and literal keys use ordinary checking.
++        // In particular a constrained generic does not invent a numeric cell.
++        if !matches!(key, NativeTableAccessKey::Type(TypeId::NUMBER)) { return Ok(None); }
++        let Some(reference) = self.native_runtime_table_ref(table) else { return Ok(None); };
++        let Some(bounds) = reference.bounds else { return Ok(None); };
++        let TypeData::NativeTable(bounds) = self.data(bounds) else { return Ok(None); };
++        if bounds.is_array || !bounds.indexers.is_empty() || !bounds.sequence_tails.is_empty()
++            || bounds.fields.iter().any(|field| field.origin == NativeTableFieldOrigin::Declared)
++            || !provider.runtime_table_store_in_scope(reference.schema.declaration, at)
++        { return Ok(None); }
++        if self.native_runtime_written_numeric_contract(reference.schema)? { return Ok(None); }
++        Ok(Some(reference))
++    }
++
++    fn native_runtime_written_numeric_contract(&mut self, reference: NativeObjectReference) -> Result<bool, NativeTableError> {
++        let object = self.intern(TypeData::NativeObject(reference));
++        let native_query = NativeTypeDeclarationQuery::RuntimeTableNumericContract(object);
++        if let Some(&known) = self.native_named_cache.types.get(&native_query) { return Ok(known == TypeId::TRUE); }
++        let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
++        let candidates: Vec<_> = provider.type_declaration_members(reference.declaration).into_iter().filter(|&member| {
++            if provider.type_member_origin(member) != NativeTableFieldOrigin::Declared { return false; }
++            matches!(provider.type_member_header(self, member).key, NativeTypeMemberKey::Indexer { .. }
++                | NativeTypeMemberKey::Fixed(NativeTableKey::Integer(_) | NativeTableKey::Float(_)))
++        }).collect();
++        // This absence follows only immutable written headers. Do not turn a
++        // loop's inherited value approximation into a dependency on a body or
++        // receiver query when there is no written numeric recipe to resolve.
++        if candidates.is_empty() { return Ok(false); }
++        let query = Query::NativeNamed(native_query);
++        if !self.enter(query) { self.mark_tainted_from(0); return Err(NativeTableError::PendingContext); }
++        let context = self.native_query_context();
++        let (result, completed) = self.run_memoizable(|checker| {
++            for member in candidates {
++                if checker.native_named_member_header(reference, member)?.is_some() { return Ok(true); }
++            }
++            Ok(false)
++        });
++        let ended = self.leave(query);
++        let result = result.map_err(|error: NativeNamedTypeError| error.table_error(object))?;
++        match ended {
++            Ok(stored) if completed.is_some() => {
++                self.native_named_cache.ty(native_query, if result { TypeId::TRUE } else { TypeId::FALSE }, stored);
++                Ok(result)
++            }
++            Err(_) if self.native_complete_without_cache(context, completed.is_some()) => Ok(result),
++            _ => {
++                self.mark_tainted_from(0);
++                Err(NativeTableError::PendingContext)
++            }
++        }
++    }
++
++    /// Resolve eligibility before requesting a computed store's RHS. The
++    /// prepared references are consumed in this query, never cached as types.
++    pub(in crate::check) fn native_runtime_numeric_store_candidates(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, table: TypeId, key: TypeId) -> Result<Vec<(TypeId, NativeRuntimeTableRef)>, NativeTableError> {
++        if key != TypeId::NUMBER { return Ok(Vec::new()); }
++        let mut candidates = Vec::new();
++        for part in self.parts(table).to_vec() {
++            if let Some(reference) = self.native_runtime_numeric_store(provider, at, part, NativeTableAccessKey::Type(key))? {
++                candidates.push((part, reference));
++            }
++        }
++        Ok(candidates)
++    }
++
++    pub(in crate::check) fn native_runtime_table_flow_numeric_write(&mut self, table: TypeId, candidates: &[(TypeId, NativeRuntimeTableRef)], value: TypeId) -> TypeId {
++        let mut values = Vec::new();
++        for part in self.parts(table).to_vec() {
++            values.push(match candidates.iter().find(|(original, _)| *original == part) {
++                Some((_, reference)) => self.native_runtime_numeric_store_view(*reference, value),
++                None => part,
++            });
++        }
++        self.union_or_evolving_with(&values, false)
++    }
++
++    fn native_runtime_numeric_store_view(&mut self, reference: NativeRuntimeTableRef, value: TypeId) -> TypeId {
++        let TypeData::NativeTable(data) = self.data(reference.view) else { unreachable!("a runtime table retains its original table view"); };
++        let mut description = (**data).clone_in(self.arena);
++        let mut indexers = data.indexers.to_vec();
++        let present = self.without_undefined(value);
++        let present = self.widened(present);
++        let mut candidates = vec![present];
++        candidates.extend(data.fields.iter().filter_map(|field| matches!(field.key, NativeTableKey::Integer(_) | NativeTableKey::Float(_)).then_some(field.value)));
++        let numeric = self.union_reduced(&candidates);
++        if let Some(indexer) = indexers.iter_mut().find(|indexer| indexer.key == TypeId::NUMBER && indexer.origin == NativeTableFieldOrigin::Inferred) {
++            indexer.value = self.union_reduced(&[indexer.value, numeric]);
++        } else {
++            indexers.push(NativeTableIndexer { key: TypeId::NUMBER, value: numeric, readonly: false, sparse: true, origin: NativeTableFieldOrigin::Inferred });
++        }
++        // A computed key can overlap any earlier fixed numeric slot. Retain
++        // both values instead of replacing all numeric cells with the RHS.
++        let mut fields = data.fields.to_vec();
++        for field in &mut fields {
++            if matches!(field.key, NativeTableKey::Integer(_) | NativeTableKey::Float(_)) {
++                field.value = self.union_reduced(&[field.value, present]);
++                field.optional |= self.contains_undefined(value);
++            }
++        }
++        description.fields = self.list(&fields);
++        description.indexers = self.list(&indexers);
++        // An arbitrary numeric store can create a hole, fractional key or a
++        // distant cell. The old constructor row is no longer sequence proof.
++        description.constructor_sequence = None;
++        description.fresh = false;
++        let view = self.intern(TypeData::NativeTable(self.boxed(description)));
++        self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { view, ..reference }))
++    }
++
+     pub(in crate::check) fn native_runtime_table_value_context(&mut self, reference: NativeRuntimeTableRef, key: NativeTableAccessKey) -> Option<TypeId> {
+         let key = self.native_table_access(key).ok()?;
+         if let NativeTableAccessKey::Literal(key) = key {
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+index d96e1b8..e2c814b 100644
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -803,9 +803,19 @@ impl<'p, 's> Checker<'p, 's> {
+     pub(super) fn native_table_absent_read(&mut self, table: TypeId, key: NativeTableAccessKey, error: NativeTableError) -> bool {
+         // A broad key might also select one of this constituent's declared
+         // fields. A rejected lookup cannot prove those possible values are nil.
+-        if !matches!(key, NativeTableAccessKey::Literal(_)) { return false }
+         if !matches!(error, NativeTableError::MissingKey { .. } | NativeTableError::KeyType { .. }) { return false }
+         let table = self.native_runtime_carrier(table);
++        if matches!(key, NativeTableAccessKey::Type(TypeId::NUMBER))
++            && let Some(reference) = self.native_runtime_table_ref(table)
++            && let TypeData::NativeTable(data) = self.data(reference.view)
++        {
++            // A reached sparse numeric facet on another branch admits this
++            // truly empty numeric continuation as nil. Inspect only its
++            // existing view; future store recipes cannot supply values.
++            return data.indexers.is_empty() && data.sequence_tails.is_empty()
++                && !data.fields.iter().any(|field| matches!(field.key, NativeTableKey::Integer(_) | NativeTableKey::Float(_)));
++        }
++        if !matches!(key, NativeTableAccessKey::Literal(_)) { return false }
+         if matches!(self.data(table), TypeData::NativeRuntimeTable(_) | TypeData::NativeTable(_) | TypeData::NativeObject(_) | TypeData::NativeDefinition(_)) { return true }
+         let base = self.base_constraint_or_type(table);
+         base != table && self.native_table_absent_read(base, key, error)
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+index 79b8c49..cc816ad 100644
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -247,6 +247,7 @@ fn is_task_independent(q: Query) -> bool {
+         Query::NativeNamed(super::native_named::NativeTypeDeclarationQuery::ObjectMembers(_)
+             | super::native_named::NativeTypeDeclarationQuery::MemberOwnerMatch { .. }
+             | super::native_named::NativeTypeDeclarationQuery::RuntimeTableWrittenContext(..)
++            | super::native_named::NativeTypeDeclarationQuery::RuntimeTableNumericContract(..)
+             | super::native_named::NativeTypeDeclarationQuery::ObjectValidation(_)
+             | super::native_named::NativeTypeDeclarationQuery::DefinitionContext(_)) => false,
+         Query::NativeNamed(_)
