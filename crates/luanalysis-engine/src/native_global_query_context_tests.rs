@@ -431,3 +431,6 @@ fn refused_global_contracts_do_not_complete_or_cache_a_provider_fallback() {
         },
     );
 }
+
+#[path = "native_nominal_incomplete_context_tests.rs"]
+mod nominal_incomplete;
