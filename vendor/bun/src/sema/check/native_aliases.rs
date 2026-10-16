@@ -734,8 +734,15 @@ impl<'p, 's> Checker<'p, 's> {
         let query = Query::NativeAlias(reference, at, frame);
         if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
         let begun = self.begin_memoizable();
-        let mut result = match provider.node(at) {
-            Some(NativeFlowNode::Start) => {
+        // Steps that leave the reference as it was (unaffected stores,
+        // preserved calls, passes, predicates and iteration steps) are followed
+        // in this frame. One query and native frame per node exhausted the
+        // stack on long bodies, and nothing computed on a low stack is cached.
+        // Every node passed has this same answer, so each is cached with it.
+        let mut passed = Vec::new();
+        let mut at = at;
+        let mut result = loop { let before = match provider.node(at) {
+            Some(NativeFlowNode::Start) => break {
                 let declaration = provider.reference_declaration(reference);
                 let execution = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry == at);
                 let own_cell = provider.reference_is_cell(reference) && declaration.as_ref().is_some_and(|declaration| declaration.owner == at.graph);
@@ -755,21 +762,21 @@ impl<'p, 's> Checker<'p, 's> {
                     && let Some(outer) = provider.reference_in_graph(reference, creation.input.graph)
                 { self.native_alias_reference(provider, outer, creation.input) }
                 else { self.native_alias_initial(provider, reference, at) }
-            }
-            Some(NativeFlowNode::Write { before, .. }) if !self.native_alias_stable_cell(provider, reference) && !self.native_alias_dispatch_safe(provider, at, before) => Origins::one(Origin::OpaqueReference(reference, at), true),
+            },
+            Some(NativeFlowNode::Write { before, .. }) if !self.native_alias_stable_cell(provider, reference) && !self.native_alias_dispatch_safe(provider, at, before) => break Origins::one(Origin::OpaqueReference(reference, at), true),
             Some(NativeFlowNode::Write { before, target, value, input }) => match if provider.reference_is_cell(reference) {
                 // Heap stores cannot rebind a lexical cell. Resolve only the
                 // cell's original assignments; classifying heap aliases here
                 // recursively asks for the identity we are already tracing.
                 provider.write_affects(reference, target, at)
             } else { provider.write_affects_ignoring_descendants(reference, target, at, self) } {
-                NativeWriteRelation::Exact => self.native_alias_value(provider, value, input, 0),
-                NativeWriteRelation::PossibleExact => {
+                NativeWriteRelation::Exact => break self.native_alias_value(provider, value, input, 0),
+                NativeWriteRelation::PossibleExact => break {
                     let mut previous = self.native_alias_reference(provider, reference, before);
                     previous.merge(self.native_alias_value(provider, value, input, 0));
                     previous
-                }
-                NativeWriteRelation::Ancestor => {
+                },
+                NativeWriteRelation::Ancestor => break {
                     match provider.reference_member_path(target, reference, self).filter(|path| !path.is_empty()) {
                         Some(path) => self.native_alias_projected_value(provider, value, input, 0, &path),
                         None => Origins::unavailable(),
@@ -779,44 +786,52 @@ impl<'p, 's> Checker<'p, 's> {
                 // possibly replaced ancestor leaves provenance unsupported. An
                 // uncertain result here is never cached, and every walk through
                 // later stores repeats it (exponential in straight-line stores).
-                NativeWriteRelation::PossibleAncestor => Origins::unavailable(),
-                _ => self.native_alias_reference(provider, reference, before),
+                NativeWriteRelation::PossibleAncestor => break Origins::unavailable(),
+                _ => before,
             },
             Some(NativeFlowNode::Call { before, value, input }) => {
                 let stable_cell = self.native_alias_stable_cell(provider, reference);
                 let preservation = if stable_cell && !provider.call_invalidates_reference(reference, at, self) {
                     NativeCallPreservation::Preserved
                 } else { self.native_alias_call_preservation(provider, reference, value, input) };
-                if preservation == NativeCallPreservation::Preserved {
-                    self.native_alias_reference(provider, reference, before)
-                } else if preservation == NativeCallPreservation::Pending { Origins::unknown() }
-                else { Origins::one(Origin::OpaqueReference(reference, at), true) }
+                if preservation == NativeCallPreservation::Preserved { before }
+                else if preservation == NativeCallPreservation::Pending { break Origins::unknown() }
+                else { break Origins::one(Origin::OpaqueReference(reference, at), true) }
             }
-            Some(NativeFlowNode::Merge { edges }) => {
+            Some(NativeFlowNode::Merge { edges }) => break {
                 let mut origins = Origins::default();
                 for edge in edges { origins.merge(self.native_alias_reference(provider, reference, edge)); }
                 origins
-            }
+            },
             // A static allocation site on a backedge can denote another
             // physical object. Never equate iterations through a cycle token.
             // This is a completed limit of the provenance proof, not an
             // unresolved query. The memo scope below still propagates any
             // actual recursive dependency as uncertain.
-            Some(NativeFlowNode::Loop { edges }) => self.native_alias_loop_reference(provider, reference, at, &edges),
+            Some(NativeFlowNode::Loop { edges }) => break self.native_alias_loop_reference(provider, reference, at, &edges),
             Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }) => {
-                if self.native_alias_stable_cell(provider, reference) || self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_reference(provider, reference, before) }
-                else { Origins::one(Origin::OpaqueReference(reference, at), true) }
+                if self.native_alias_stable_cell(provider, reference) || self.native_alias_dispatch_safe(provider, at, before) { before }
+                else { break Origins::one(Origin::OpaqueReference(reference, at), true) }
             },
             Some(NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => {
-                if self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_reference(provider, reference, before) }
-                else { Origins::one(Origin::OpaqueReference(reference, at), true) }
+                if self.native_alias_dispatch_safe(provider, at, before) { before }
+                else { break Origins::one(Origin::OpaqueReference(reference, at), true) }
             },
-            Some(NativeFlowNode::Unreachable | NativeFlowNode::Return { .. }) => Origins::non_table(),
-            _ => Origins::unknown(),
+            Some(NativeFlowNode::Unreachable | NativeFlowNode::Return { .. }) => break Origins::non_table(),
+            _ => break Origins::unknown(),
+        };
+            if before.graph != reference.graph || provider.node(before).is_none() { break Origins::unknown() }
+            let next = (reference, before, key.2, key.3);
+            if let Some(result) = self.native_alias_cache.references.get(&next) { break result.clone() }
+            passed.push(next);
+            at = before;
         };
         let memoizable = self.end_memoizable(begun);
         match self.leave(query) {
-            Ok(stored) if memoizable.is_some() && !result.uncertain && !self.is_stack_low() => self.native_alias_cache.reference(key, result.clone(), stored),
+            Ok(stored) if memoizable.is_some() && !result.uncertain && !self.is_stack_low() => {
+                for passed in passed { self.native_alias_cache.reference(passed, result.clone(), stored); }
+                self.native_alias_cache.reference(key, result.clone(), stored)
+            },
             Ok(_) if memoizable.is_some() => {},
             _ => { result.unknown = true; result.uncertain = true; self.mark_tainted_from(0); },
         }
