@@ -73,9 +73,39 @@ impl Fixture {
         environment: StandardEnvironmentProfile,
     ) -> ProjectCheckReport {
         let serial = self.check(entries, declarations, environment, 1);
+        assert!(
+            serial.execution.is_none(),
+            "jobs=1 must use the serial session"
+        );
         let expected = snapshot(&serial, &self.0);
         for jobs in [2, 4, 4, 2, 0] {
             let candidate = self.check(entries, declarations, environment, jobs);
+            let requested = if jobs == 0 {
+                std::thread::available_parallelism().map_or(1, usize::from)
+            } else {
+                jobs
+            };
+            let user_roots = entries.len() + declarations.len();
+            if requested > 1 && user_roots > 1 {
+                let execution = candidate.execution.as_ref().unwrap_or_else(|| {
+                    panic!("jobs={jobs} did not execute the shared-Program task runner")
+                });
+                assert!(execution.workers > 1, "jobs={jobs}: {execution:?}");
+                assert!(
+                    execution.workers <= requested.min(user_roots),
+                    "jobs={jobs}: {execution:?}"
+                );
+                assert!(
+                    execution.tasks >= execution.workers,
+                    "jobs={jobs}: {execution:?}"
+                );
+                assert!(execution.barriers > 0, "jobs={jobs}: {execution:?}");
+            } else {
+                assert!(
+                    candidate.execution.is_none(),
+                    "jobs={jobs}: expected serial execution"
+                );
+            }
             assert_eq!(
                 snapshot(&candidate, &self.0),
                 expected,
