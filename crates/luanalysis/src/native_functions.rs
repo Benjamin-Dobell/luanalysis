@@ -150,6 +150,15 @@ impl NativeRegistry {
     }
 
     fn new_with_identity(file: File, bound: BoundFile, identity: project_provider::SourceRecipeIdentity) -> Self {
+        Self::new_with_identity_and_flow(file, bound, identity, None)
+    }
+
+    fn new_with_identity_and_flow(
+        file: File,
+        bound: BoundFile,
+        identity: project_provider::SourceRecipeIdentity,
+        prepared_flow: Option<NativeFlowSources>,
+    ) -> Self {
         let snapshot = identity.source;
         let mut index = RegistryIndex {
             bound: &bound,
@@ -219,7 +228,8 @@ impl NativeRegistry {
         let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
             expressions.key_for_span(expression.span)
         });
-        let flow = NativeFlowSources::new_with_snapshot(&file, &bound, snapshot, &function_spans, identity.flow);
+        let flow = prepared_flow.unwrap_or_else(|| NativeFlowSources::new_with_snapshot(&file, &bound, snapshot, &function_spans, identity.flow));
+        assert_eq!(flow.program.snapshot, identity.flow, "prepared flow belongs to its original source recipe");
         let runtime_tables=super::native_runtime_tables::NativeRuntimeTables::new(&file,&expressions,&flow);
         let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
         let members = super::native_members::NativeMembers::new(snapshot, &named, Vec::new(), globals.member_namespace_end(named.next_member_index()));

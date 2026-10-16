@@ -25,6 +25,8 @@ use luanalysis_engine::{
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, File, Span};
 use std::cell::RefCell;
 use crate::collections::{HashMap, HashSet};
+use std::ops::Deref;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub(super) enum ValueRecipe {
@@ -68,7 +70,7 @@ struct FlowContexts {
 
 /// Original write locations only. Lists retain graph/node traversal order;
 /// actual flow, alias decisions, and contextual ownership remain native queries.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct OriginalWriteMetadata {
     nodes: Vec<flow::FlowId>,
     exact: HashMap<flow::Reference, Vec<flow::FlowId>>,
@@ -78,7 +80,7 @@ struct OriginalWriteMetadata {
 }
 
 impl OriginalWriteMetadata {
-    fn new(sources: &NativeFlowSources) -> Self {
+    fn new(sources: &NativeFlowRecipes) -> Self {
         let mut result = Self::default();
         for graph in &sources.program.graphs {
             for node in &graph.nodes {
@@ -133,7 +135,10 @@ impl OriginalWriteMetadata {
     }
 }
 
-pub(super) struct NativeFlowSources {
+/// Source-only graph recipes are prepared before native checking begins.
+/// They contain no inferred types, active contexts or checker capabilities.
+#[derive(Clone)]
+pub(super) struct NativeFlowRecipes {
     pub program: flow::ProgramFlow,
     functions: HashMap<NativeFunctionKey, u32>,
     references: Vec<Vec<flow::Reference>>,
@@ -157,50 +162,68 @@ pub(super) struct NativeFlowSources {
     environment_cell_written: bool,
     pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
     iterator_projections: HashMap<BindingId, (flow::IteratorId, usize)>,
-    contexts: RefCell<FlowContexts>,
     write_metadata: OriginalWriteMetadata,
 }
 
+pub(super) struct NativeFlowSources {
+    recipes: Arc<NativeFlowRecipes>,
+    contexts: RefCell<FlowContexts>,
+}
+
+impl Deref for NativeFlowSources {
+    type Target = NativeFlowRecipes;
+    fn deref(&self) -> &Self::Target { &self.recipes }
+}
+
 impl NativeFlowSources {
+    pub(super) fn shared_recipes(&self) -> Arc<NativeFlowRecipes> { Arc::clone(&self.recipes) }
+    pub(super) fn from_shared_recipes(recipes: Arc<NativeFlowRecipes>) -> Self {
+        Self { recipes, contexts: RefCell::new(FlowContexts::default()) }
+    }
+    #[cfg(test)]
+    pub(super) fn context_state_counts(&self) -> (usize, usize, usize) {
+        let contexts = self.contexts.borrow();
+        (contexts.by_id.len(), contexts.ancestry.len(), contexts.contextual_owners.len())
+    }
+
     /// Project setup imports original global declaration names as canonical
     /// addresses. It creates no expression, flow node, value or declaration.
     pub(super) fn seed_original_global_reference_keys(&mut self, names: &[Vec<u8>]) {
-        for region in 0..self.references.len() {
+        let recipes = Arc::make_mut(&mut self.recipes);
+        for region in 0..recipes.references.len() {
             for name in names {
                 let path = vec![flow::Key::String(name.clone())];
                 for root in [flow::ReferenceRoot::EnvironmentObject, flow::ReferenceRoot::EnvironmentCell] {
-                    intern_reference(&mut self.references[region], &mut self.reference_indices[region],
+                    intern_reference(&mut recipes.references[region], &mut recipes.reference_indices[region],
                         &flow::Reference { root, path: path.clone() });
                 }
             }
         }
     }
     pub(super) fn set_runtime_type_intrinsic_enabled(&mut self, enabled: bool) {
-        self.runtime_type_intrinsic_enabled = enabled;
+        if self.runtime_type_intrinsic_enabled == enabled { return; }
+        Arc::make_mut(&mut self.recipes).runtime_type_intrinsic_enabled = enabled;
     }
     pub(super) fn set_opaque_runtime_type_enabled(&mut self, kind: NativeOpaqueRuntimeKind, enabled: bool) {
+        let current = match kind {
+            NativeOpaqueRuntimeKind::Userdata => self.runtime_userdata_enabled,
+            NativeOpaqueRuntimeKind::Thread => self.runtime_thread_enabled,
+        };
+        if current == enabled { return; }
+        let recipes = Arc::make_mut(&mut self.recipes);
         match kind {
-            NativeOpaqueRuntimeKind::Userdata => self.runtime_userdata_enabled = enabled,
-            NativeOpaqueRuntimeKind::Thread => self.runtime_thread_enabled = enabled,
+            NativeOpaqueRuntimeKind::Userdata => recipes.runtime_userdata_enabled = enabled,
+            NativeOpaqueRuntimeKind::Thread => recipes.runtime_thread_enabled = enabled,
         }
     }
-    pub(super) fn set_original_require_capability(&mut self, enabled: bool) { self.original_require_capability = enabled; }
+    pub(super) fn set_original_require_capability(&mut self, enabled: bool) {
+        if self.original_require_capability == enabled { return; }
+        Arc::make_mut(&mut self.recipes).original_require_capability = enabled;
+    }
     pub(super) fn has_original_require_capability(&self) -> bool { self.original_require_capability }
     pub(super) fn environment_cell_is_immutable(&self) -> bool { !self.environment_cell_written }
     fn loader_address_invalidates(&self, address: &flow::CapturedAddress) -> bool {
         self.loader_address_invalidates_with_capability(address, self.original_require_capability)
-    }
-    fn loader_address_invalidates_with_capability(&self, address: &flow::CapturedAddress, capability: bool) -> bool {
-        if !self.loader_mutations.contains(&(address.span.start, address.span.end)) { return false; }
-        if capability && address.reference.root == flow::ReferenceRoot::EnvironmentCell {
-            match address.reference.path.as_slice() {
-                [] => return false,
-                [flow::Key::String(name)] if name == b"require" => return false,
-                [flow::Key::String(root), flow::Key::String(name)] if root == b"_G" && name == b"require" => return false,
-                _ => {}
-            }
-        }
-        true
     }
 
     pub(super) fn new(
@@ -223,7 +246,7 @@ impl NativeFlowSources {
         let environment_cell_written = program.graphs.iter().flat_map(|graph| &graph.nodes).any(|node| {
             matches!(&node.kind, flow::NodeKind::Write { address, .. } if address.reference.root == flow::ReferenceRoot::EnvironmentCell && address.reference.path.is_empty())
         });
-        let mut result = Self {
+        let mut result = NativeFlowRecipes {
             references: vec![Vec::new(); program.graphs.len()],
             reference_indices: vec![HashMap::default(); program.graphs.len()],
             functions: HashMap::default(),
@@ -246,7 +269,6 @@ impl NativeFlowSources {
             environment_cell_written,
             pack_projections: HashMap::default(),
             iterator_projections: HashMap::default(),
-            contexts: RefCell::new(FlowContexts::default()),
             write_metadata: OriginalWriteMetadata::default(),
             program,
         };
@@ -514,7 +536,7 @@ impl NativeFlowSources {
             }
         }
         result.write_metadata = OriginalWriteMetadata::new(&result);
-        result
+        Self::from_shared_recipes(Arc::new(result))
     }
 
     pub(super) fn environment_reference(&self, graph: NativeGraphKey, binding: Option<BindingId>) -> Option<NativeReferenceKey> {
@@ -522,41 +544,6 @@ impl NativeFlowSources {
             root: binding.map_or(flow::ReferenceRoot::EnvironmentCell, flow::ReferenceRoot::Binding),
             path: Vec::new(),
         })
-    }
-    fn environment_candidate_paths(&self, reference: &flow::Reference) -> Vec<Vec<flow::Key>> {
-        match &reference.root {
-            flow::ReferenceRoot::EnvironmentCell => {
-                // This finite candidate domain retains exactly the two keys
-                // needed to distinguish a global value from loader namespace
-                // descendants. Actual address comparison keeps the full path.
-                let path = match reference.path.as_slice() { [flow::Key::String(name), rest @ ..] if name == b"_G" => rest.iter().take(2).cloned().collect(), other => other.iter().take(2).cloned().collect() };
-                vec![path]
-            }
-            flow::ReferenceRoot::Binding(binding) => self.environment_candidates.get(binding).into_iter().flatten().map(|parent| parent.iter().chain(&reference.path).take(2).cloned().collect()).collect(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// Only possible original value sources, never an intrinsic attestation.
-    /// Lua's logical operators select either operand's runtime value; treating
-    /// their result as an ordinary type can erase a structurally equal callee.
-    fn value_reference_candidates(&self, evaluation: flow::EvaluationId) -> Vec<flow::Reference> {
-        let mut pending = vec![evaluation];
-        let mut references = Vec::new();
-        while let Some(evaluation) = pending.pop() {
-            let evaluation = self.program.evaluation(evaluation);
-            if let Some(reference) = self.program.references.get(&evaluation.expression) {
-                references.push(reference.clone());
-                continue;
-            }
-            match &self.program.expression(evaluation.expression).expression.kind {
-                ExprKind::Parenthesized(_) | ExprKind::Binary {
-                    op: BinaryOperator::And | BinaryOperator::Or, ..
-                } => pending.extend(evaluation.operands.iter().copied()),
-                _ => {},
-            }
-        }
-        references
     }
     pub(super) fn loader_reference(&self, graph: NativeGraphKey) -> NativeReferenceKey {
         self.reference_key(graph, &flow::Reference { root: flow::ReferenceRoot::LoaderState, path: Vec::new() }).expect("each original graph has its loader state")
@@ -1971,5 +1958,56 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             .source_node(at)
             .map_or(Span::default(), |node| node.span);
         self.values.report_flow_error(span, error);
+    }
+}
+
+impl NativeFlowRecipes {
+    fn loader_address_invalidates_with_capability(&self, address: &flow::CapturedAddress, capability: bool) -> bool {
+        if !self.loader_mutations.contains(&(address.span.start, address.span.end)) { return false; }
+        if capability && address.reference.root == flow::ReferenceRoot::EnvironmentCell {
+            match address.reference.path.as_slice() {
+                [] => return false,
+                [flow::Key::String(name)] if name == b"require" => return false,
+                [flow::Key::String(root), flow::Key::String(name)] if root == b"_G" && name == b"require" => return false,
+                _ => {}
+            }
+        }
+        true
+    }
+
+    fn environment_candidate_paths(&self, reference: &flow::Reference) -> Vec<Vec<flow::Key>> {
+        match &reference.root {
+            flow::ReferenceRoot::EnvironmentCell => {
+                // This finite candidate domain retains exactly the two keys
+                // needed to distinguish a global value from loader namespace
+                // descendants. Actual address comparison keeps the full path.
+                let path = match reference.path.as_slice() { [flow::Key::String(name), rest @ ..] if name == b"_G" => rest.iter().take(2).cloned().collect(), other => other.iter().take(2).cloned().collect() };
+                vec![path]
+            }
+            flow::ReferenceRoot::Binding(binding) => self.environment_candidates.get(binding).into_iter().flatten().map(|parent| parent.iter().chain(&reference.path).take(2).cloned().collect()).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Only possible original value sources, never an intrinsic attestation.
+    /// Lua's logical operators select either operand's runtime value; treating
+    /// their result as an ordinary type can erase a structurally equal callee.
+    fn value_reference_candidates(&self, evaluation: flow::EvaluationId) -> Vec<flow::Reference> {
+        let mut pending = vec![evaluation];
+        let mut references = Vec::new();
+        while let Some(evaluation) = pending.pop() {
+            let evaluation = self.program.evaluation(evaluation);
+            if let Some(reference) = self.program.references.get(&evaluation.expression) {
+                references.push(reference.clone());
+                continue;
+            }
+            match &self.program.expression(evaluation.expression).expression.kind {
+                ExprKind::Parenthesized(_) | ExprKind::Binary {
+                    op: BinaryOperator::And | BinaryOperator::Or, ..
+                } => pending.extend(evaluation.operands.iter().copied()),
+                _ => {},
+            }
+        }
+        references
     }
 }
