@@ -382,16 +382,27 @@ impl ProjectRegistry {
     }
 
     pub(crate) fn check_roots(&self, queries: &mut dyn TypeQueries, roots: &[FileId]) -> Vec<FileCheckReport> {
-        self.check_roots_mode(queries, roots, false)
+        self.check_roots_mode(queries, roots, false, None)
     }
 
     /// A planned task validates its own roots. Sibling recipes remain available
     /// to lazy queries, and their emitted diagnostics stay with their source.
     pub(crate) fn check_owned_roots(&self, queries: &mut dyn TypeQueries, roots: &[FileId]) -> Vec<FileCheckReport> {
-        self.check_roots_mode(queries, roots, true)
+        self.check_roots_mode(queries, roots, true, None)
     }
 
-    fn check_roots_mode(&self, queries: &mut dyn TypeQueries, roots: &[FileId], owned_only: bool) -> Vec<FileCheckReport> {
+    /// Explicit scheduled sources have their own tasks. This task follows only
+    /// proven dependencies outside that plan, including transitive discoveries.
+    pub(crate) fn check_scheduled_roots(
+        &self,
+        queries: &mut dyn TypeQueries,
+        roots: &[FileId],
+        scheduled: &HashSet<FileId>,
+    ) -> Vec<FileCheckReport> {
+        self.check_roots_mode(queries, roots, true, Some(scheduled))
+    }
+
+    fn check_roots_mode(&self, queries: &mut dyn TypeQueries, roots: &[FileId], owned_only: bool, scheduled: Option<&HashSet<FileId>>) -> Vec<FileCheckReport> {
         // Canonical scope identities must exist for every sibling extension
         // before any alias head can publish a class's captured outer mapper.
         for file in &self.files { file.source.prepare_documentation_scope_keys(queries); }
@@ -407,6 +418,10 @@ impl ProjectRegistry {
         let mut checked = HashSet::new();
         let mut emitted = HashSet::new();
         let owned: HashSet<_> = roots.iter().copied().collect();
+        let selected = |file: FileId| {
+            owned.contains(&file) || self.modules.required_files.borrow().contains(&file)
+                && (!owned_only || scheduled.is_some_and(|scheduled| !scheduled.contains(&file)))
+        };
         let mut reports: Vec<_> = self.files.iter().map(|file| FileCheckReport {
                 file: file.id,
                 report: CheckReport::default(),
@@ -417,9 +432,7 @@ impl ProjectRegistry {
         let mut unresolved_reported = false;
         loop {
             for (index, file) in self.files.iter().enumerate() {
-                let selected = if owned_only { owned.contains(&file.id) }
-                    else { self.modules.required_files.borrow().contains(&file.id) };
-                if !selected || !checked.insert(index) {
+                if !selected(file.id) || !checked.insert(index) {
                     continue;
                 }
                 file.source.check_named_declarations(queries);
@@ -461,8 +474,7 @@ impl ProjectRegistry {
                 report.report.render(queries);
             }
             let unchecked = self.files.iter().enumerate().any(|(index, file)| {
-                !checked.contains(&index) && if owned_only { owned.contains(&file.id) }
-                    else { self.modules.required_files.borrow().contains(&file.id) }
+                !checked.contains(&index) && selected(file.id)
             });
             if !published && !unchecked {
                 if owned_only && !unresolved_reported {
@@ -1301,6 +1313,21 @@ mod tests {
             assert!(reports.iter().any(|file| file.file == provider.files[1].id
                 && file.report.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("missingDependencyValue"))));
         });
+        for dependency_scheduled in [true, false] {
+            Engine::new().with_native_provider(make, move |provider, queries| {
+                let root = provider.files[0].id;
+                let dependency = provider.files[1].id;
+                let mut scheduled = HashSet::from([root, provider.files[2].id]);
+                if dependency_scheduled { scheduled.insert(dependency); }
+                let reports = provider.check_scheduled_roots(queries, &[root], &scheduled);
+                assert!(provider.required_files().contains(&dependency));
+                assert_eq!(provider.files[1].source.checked_bodies.borrow().is_empty(), dependency_scheduled);
+                assert_eq!(reports.iter().any(|file| file.file == dependency && file.report.diagnostics.iter()
+                    .any(|diagnostic| diagnostic.message.contains("missingDependencyValue"))), !dependency_scheduled);
+                assert!(!provider.required_files().contains(&provider.files[3].id));
+                assert!(reports.iter().all(|file| file.file != provider.files[3].id));
+            });
+        }
     }
 
     #[test]
