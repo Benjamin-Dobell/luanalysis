@@ -91,12 +91,15 @@ local function ordinary(value, meta) return value end
 fn provisional_constructor_metadata_does_not_keep_report_publication_alive() {
     let fixture = Fixture::new();
     let source = "---@class Static\n---@overload fun():Static\nlocal Static={}\nsetmetatable(Static,{\n ---@param class self\n ---@param unknown number\n ---@return self|nil\n __call=function(class)\n  ---@return number\n  local function child() return 'wrong' end\n  child()\n  return --[[---@type self]] {}\n end,\n})\n";
-    let invoke = |source: &str| {
+    let invoke = |source: &str, jobs: usize| {
         fixture.file("main.lua", source);
+        let jobs = jobs.to_string();
         let mut child = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
             .current_dir(&fixture.0)
             .args([
                 "check",
+                "--jobs",
+                &jobs,
                 "--lua-version",
                 "5.4",
                 "--module-root",
@@ -123,21 +126,23 @@ fn provisional_constructor_metadata_does_not_keep_report_publication_alive() {
     };
     // The original source looped forever while repeatedly publishing the same
     // annotation error from a still-provisional constructor body.
-    let invalid = invoke(source);
-    assert_eq!(invalid.status.code(), Some(1), "{}", text(&invalid));
-    for code in ["LUA2011", "LUA2040", "LUA2041", "TS2322"] {
-        assert_eq!(
-            text(&invalid).matches(&format!("error[{code}]")).count(),
-            1,
-            "{}",
-            text(&invalid)
-        );
-    }
     let corrected = source
         .replace(" ---@param unknown number\n", "")
         .replace("---@return self|nil", "---@return self")
         .replace("return 'wrong'", "return 1");
-    clean(&invoke(&corrected));
+    for jobs in [1, 2, 4] {
+        let invalid = invoke(source, jobs);
+        assert_eq!(invalid.status.code(), Some(1), "jobs={jobs}: {}", text(&invalid));
+        for code in ["LUA2011", "LUA2040", "LUA2041", "TS2322"] {
+            assert_eq!(
+                text(&invalid).matches(&format!("error[{code}]")).count(),
+                1,
+                "jobs={jobs}: {}",
+                text(&invalid)
+            );
+        }
+        clean(&invoke(&corrected, jobs));
+    }
 }
 
 #[test]

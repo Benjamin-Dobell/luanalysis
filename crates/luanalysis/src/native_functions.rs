@@ -1550,7 +1550,9 @@ impl NativeRegistry {
                 // parameter/return caches. Demanding its base signature would
                 // invent an unrelated untyped declaration and bogus TS7006.
                 for facet in facets {
-                    queries.format(&facet);
+                    // Retain the native implementation frame directly. A
+                    // printer demand can re-run still-provisional metadata and
+                    // publish its annotation errors on every report-drain pass.
                     self.retain_selected_body_frame(key, &facet, queries);
                 }
                 for context in self.expressions.final_contexts(key) {
