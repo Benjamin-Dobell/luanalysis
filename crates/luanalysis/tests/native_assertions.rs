@@ -328,7 +328,14 @@ fn asserted_table_context_types_nested_callbacks_and_preserves_body_errors() {
     let report = accepted(source);
     assert_eq!(ty(&report, "value"), "number");
     assert_eq!(ty(&report, "result"), "number");
-    let bad = check(&source.replace("return value", "return \"wrong\""));
+    // An authoritative v1 assertion also overrides the inferred callback
+    // result. It still supplies the parameter context and checks actual body
+    // operations and written declarations independently of that conversion.
+    accepted(&source.replace("return value", "return \"wrong\""));
+    let bad = check(&source.replace(
+        "return value",
+        "\n---@type string\nlocal invalid=value\nreturn value",
+    ));
     assert!(
         bad.diagnostics.iter().any(|error| error.code == "TS2322"),
         "{:#?}",
