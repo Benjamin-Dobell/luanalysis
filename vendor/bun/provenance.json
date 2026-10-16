@@ -2016,6 +2016,48 @@
       "patch": "vendor/patches/bun-sema-native-reached-numeric-stores.patch",
       "reason": "Infer bounded reached numeric stores on eligible unannotated local runtime tables, transport original key/scope recipes, prepare eligibility before RHS demands, and guard written numeric contracts and current-only completion through kernel 73f49a4.",
       "patch_sha256": "d144f0c23644e9ab7a7b6fccd2e940ca23e78da4526c330c5487d8264615a654"
+    },
+    {
+      "path": "src/sema/check/check_source_file.rs",
+      "patch": "vendor/patches/bun-sema-native-shared-program-publication.patch",
+      "reason": "Publish completed snapshot-qualified native module/global/head results through shared Program buffers and provider-aware linking, retain task-local failures and guarded current-only results under unchanged inherited flow, and preserve deterministic union sorting through kernel f6512d7.",
+      "patch_sha256": "bd2a0e07023669dc5813a78ef5c2749239aa50ecea9bfa2791f956f86de9eedf"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-shared-program-publication.patch",
+      "reason": "Publish completed snapshot-qualified native module/global/head results through shared Program buffers and provider-aware linking, retain task-local failures and guarded current-only results under unchanged inherited flow, and preserve deterministic union sorting through kernel f6512d7.",
+      "patch_sha256": "bd2a0e07023669dc5813a78ef5c2749239aa50ecea9bfa2791f956f86de9eedf"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-native-shared-program-publication.patch",
+      "reason": "Publish completed snapshot-qualified native module/global/head results through shared Program buffers and provider-aware linking, retain task-local failures and guarded current-only results under unchanged inherited flow, and preserve deterministic union sorting through kernel f6512d7.",
+      "patch_sha256": "bd2a0e07023669dc5813a78ef5c2749239aa50ecea9bfa2791f956f86de9eedf"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-shared-program-publication.patch",
+      "reason": "Publish completed snapshot-qualified native module/global/head results through shared Program buffers and provider-aware linking, retain task-local failures and guarded current-only results under unchanged inherited flow, and preserve deterministic union sorting through kernel f6512d7.",
+      "patch_sha256": "bd2a0e07023669dc5813a78ef5c2749239aa50ecea9bfa2791f956f86de9eedf"
+    },
+    {
+      "path": "src/sema/check/native_project.rs",
+      "patch": "vendor/patches/bun-sema-native-shared-program-publication.patch",
+      "reason": "Publish completed snapshot-qualified native module/global/head results through shared Program buffers and provider-aware linking, retain task-local failures and guarded current-only results under unchanged inherited flow, and preserve deterministic union sorting through kernel f6512d7.",
+      "patch_sha256": "bd2a0e07023669dc5813a78ef5c2749239aa50ecea9bfa2791f956f86de9eedf"
+    },
+    {
+      "path": "src/sema/check/native_query_context.rs",
+      "patch": "vendor/patches/bun-sema-native-shared-program-publication.patch",
+      "reason": "Publish completed snapshot-qualified native module/global/head results through shared Program buffers and provider-aware linking, retain task-local failures and guarded current-only results under unchanged inherited flow, and preserve deterministic union sorting through kernel f6512d7.",
+      "patch_sha256": "bd2a0e07023669dc5813a78ef5c2749239aa50ecea9bfa2791f956f86de9eedf"
+    },
+    {
+      "path": "src/sema/check/unions.rs",
+      "patch": "vendor/patches/bun-sema-native-shared-program-publication.patch",
+      "reason": "Publish completed snapshot-qualified native module/global/head results through shared Program buffers and provider-aware linking, retain task-local failures and guarded current-only results under unchanged inherited flow, and preserve deterministic union sorting through kernel f6512d7.",
+      "patch_sha256": "bd2a0e07023669dc5813a78ef5c2749239aa50ecea9bfa2791f956f86de9eedf"
     }
   ],
   "source_additions": {
@@ -2044,7 +2086,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "6150ff8d9290fe5d50d72438fa90868389f770abf95cf84a68ab3380d8a35f87",
+      "extracted_sha256": "f8aa93a3e3c164b2e395176a119febc1454bf3ccade5c95a6179df990e6f41c7",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -2056,7 +2098,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "e2242d3c1e3b0e72e685b708747afa48e31810f2e449b383cdb8476684fad159",
+      "extracted_sha256": "01fc32b4316c109488c53ca7173605e3df352972d99ae0772d4c46f60bab8955",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -2064,11 +2106,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
-      "extracted_sha256": "17f1124e6fe2361a7ca2c40123239994a9a8f51557fb4b11e6f9245a9cd5ef96",
+      "extracted_sha256": "fc870168fa68821611e881b07144524aa9bb3c3e82942e8078c8bfea6599210b",
       "introduced_by_patch": "vendor/patches/bun-sema-native-module-queries.patch"
     },
     "src/sema/check/native_query_context.rs": {
-      "extracted_sha256": "852845a44307f13ca1b5cde6b80e9eeb0af5a638aadb89f6b450ec6fec594cb1",
+      "extracted_sha256": "d7ef7800fe27df6a25baabf537a705777e271c04f0c7abcd78b4bb462008ba21",
       "introduced_by_patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch"
     },
     "src/sema/check/native_runtime.rs": {
@@ -2791,7 +2833,7 @@
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
       "sha256": "9329b7117eb9eb92b9b8ceadb1d29189b3e71ef8c8898a8e71e697d7d5951748",
-      "extracted_sha256": "f0f4adacba236d9aee02e7b8a4b0ca039d1a0c5cf61849119d3b5f48a9f62eae"
+      "extracted_sha256": "77ce7962e70faabce0b5ba747464f5d741adfe8962c9f9736d62d9f2f70f5aac"
     },
     "src/sema/check/context.rs": {
       "upstream": "src/sema/check/context.rs",
@@ -3046,7 +3088,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "5302ddb717ff001b54f799bb64eb5b86d6f8174625638ab22e64cd8e5daf443d"
+      "extracted_sha256": "042c28c99d0c8c96aaef7124d3fd698618d1213d8840122c192889945eda58ea"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -3161,7 +3203,7 @@
     "src/sema/check/unions.rs": {
       "upstream": "src/sema/check/unions.rs",
       "sha256": "80987181d7283550317b7096535b41e417eab932147592c0524e02c698f40776",
-      "extracted_sha256": "624658daf7c5f32bd913ae43f2309ebd7887aafa569c9661044405ea4835327e"
+      "extracted_sha256": "b5f70ff9571ea9f6bd7eb65796b6f13a79b2940e2bb75f82a8e26fd97bfe6ac4"
     },
     "src/sema/components.rs": {
       "upstream": "src/sema/components.rs",

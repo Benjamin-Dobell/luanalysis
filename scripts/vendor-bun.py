@@ -463,6 +463,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Infer bounded reached numeric stores on eligible unannotated local runtime tables, transport original key/scope recipes, prepare eligibility before RHS demands, and guard written numeric contracts and current-only completion through kernel 73f49a4.",
 } for path in ["native_flow.rs", "native_named.rs", "native_runtime_tables.rs", "native_tables.rs", "sink.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-shared-program-publication.patch",
+    "reason": "Publish completed snapshot-qualified native module/global/head results through shared Program buffers and provider-aware linking, retain task-local failures and guarded current-only results under unchanged inherited flow, and preserve deterministic union sorting through kernel f6512d7.",
+} for path in ["check_source_file.rs", "mod.rs", "native_globals.rs", "native_named.rs", "native_project.rs", "native_query_context.rs", "unions.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
