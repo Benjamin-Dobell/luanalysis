@@ -23,10 +23,17 @@ impl<'p, 's> Checker<'p, 's> {
     /// Declaration identity and ancestry only. Runtime classification must not
     /// expand a class's members, method contracts or inferred implementations.
     fn native_opaque_runtime_declaration(&mut self, declaration: NativeTypeDeclarationId) -> Result<NativeOpaqueRuntimeDomain, NativeNamedTypeError> {
+        if let Some(&known) = self.native_runtime_domains.get(&declaration) { return Ok(Complete(known)) }
         let roots = [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread]
             .map(|kind| (kind, self.native_opaque_runtime_root(kind)));
-        if roots.iter().all(|(_, root)| root.is_none()) { return Ok(Complete(None)) }
-        if let Some((kind, _)) = roots.iter().find(|(_, root)| *root == Some(declaration)) { return Ok(Complete(Some(*kind))) }
+        if roots.iter().all(|(_, root)| root.is_none()) {
+            self.native_runtime_domains.insert(declaration, None);
+            return Ok(Complete(None));
+        }
+        if let Some((kind, _)) = roots.iter().find(|(_, root)| *root == Some(declaration)) {
+            self.native_runtime_domains.insert(declaration, Some(*kind));
+            return Ok(Complete(Some(*kind)));
+        }
         let query_kind = NativeTypeDeclarationQuery::RuntimeDomain(declaration);
         let query = Query::NativeNamed(query_kind);
         if !self.enter(query) {
@@ -59,7 +66,10 @@ impl<'p, 's> Checker<'p, 's> {
         if let Err(error) = result { self.report_native_named(error); return Err(error) }
         if matches!(result, Ok(Pending)) { self.mark_tainted_from(0); self.note_cycle(); return result }
         match ended {
-            Ok(_) if completed.is_some() => result,
+            Ok(_) if completed.is_some() => {
+                if let Ok(Complete(kind)) = result { self.native_runtime_domains.insert(declaration, kind); }
+                result
+            }
             Err(_) if self.native_complete_without_cache(context, completed.is_some()) => result,
             _ => {
                 // An Ok base value can still be a provisional fallback. Never

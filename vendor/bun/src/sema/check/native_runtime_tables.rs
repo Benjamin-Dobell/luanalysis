@@ -28,7 +28,7 @@ impl<'p, 's> Checker<'p, 's> {
     pub fn native_runtime_table_schema(&self, ty: TypeId) -> Option<TypeId> {
         if let Some(reference) = self.native_runtime_table_ref(ty) { return Some(self.intern(TypeData::NativeObject(reference.schema))) }
         if let TypeData::NativeObject(reference) = *self.data(ty)
-            && self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_header(self, reference.declaration).kind == NativeTypeDeclarationKind::RuntimeTable)
+            && self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_kind(self, reference.declaration) == NativeTypeDeclarationKind::RuntimeTable)
         { return Some(ty) }
         None
     }

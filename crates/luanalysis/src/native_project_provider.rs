@@ -777,6 +777,11 @@ impl NativeTypeProvider for ProjectRegistry {
     fn type_declaration_header(&self,key:NativeTypeDeclarationKey)->TypeDeclarationHeader {
         self.declaration_header_metadata(key)
     }
+    fn header_revision(&self) -> Option<u64> {
+        // Headers derive only from original metadata, and every change to it
+        // advances the clock.
+        Some(crate::native_types::metadata_clock())
+    }
     fn type_declaration_owner_scope(&self, key: NativeTypeDeclarationKey) -> luanalysis_engine::OwnerScopeRecipe {
         self.owner(key.snapshot).named_owner_scope_recipe(key)
     }

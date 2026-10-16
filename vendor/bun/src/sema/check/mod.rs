@@ -813,6 +813,7 @@ impl<'s> Program<'s> {
             native_contextual_scopes: FxHashMap::default(),
             native_argument_types: FxHashMap::default(),
             native_argument_log: Vec::new(),
+            native_runtime_domains: FxHashMap::default(),
             arena,
             task: Task::new_in(arena),
             left_frame: None,
@@ -1370,6 +1371,9 @@ pub struct Checker<'p, 's> {
     /// `native_argument_types` keys in insertion order, so that the host can
     /// forget results recorded under a report it discards.
     native_argument_log: Vec<(NativeExpressionId, u8, Option<NativeFunctionContext>, Option<NativeCapturedFunctionContext>)>,
+    /// Completed userdata/thread runtime domains of declarations: their own
+    /// identity and ancestry, which do not change.
+    native_runtime_domains: FxHashMap<crate::types::NativeTypeDeclarationId, Option<native_flow::NativeOpaqueRuntimeKind>>,
     /// The arena of the thread that runs the task: for the records that the task creates, which may be
     /// published. Everything else that a task allocates is on the regular heap.
     pub arena: &'s Arena,
@@ -2871,7 +2875,7 @@ impl<'p, 's> Checker<'p, 's> {
             Query::NativeProject(_) => true,
             Query::NativeNamed(NativeTypeDeclarationQuery::Bases(_) | NativeTypeDeclarationQuery::RuntimeDomain(_)) => true,
             Query::NativeNamed(NativeTypeDeclarationQuery::DeclaredHead(id)) => self.native_type_declaration_provider
-                .is_some_and(|p| p.contains_type_declaration(id) && p.type_declaration_header(self, id).kind == native_named::NativeTypeDeclarationKind::Alias),
+                .is_some_and(|p| p.contains_type_declaration(id) && p.type_declaration_kind(self, id) == native_named::NativeTypeDeclarationKind::Alias),
             Query::Return(..)
             | Query::ReturnOfSignature(_)
             | Query::MappedProp(..)

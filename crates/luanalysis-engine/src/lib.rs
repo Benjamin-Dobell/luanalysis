@@ -206,6 +206,15 @@ pub struct InvalidSessionType(pub SessionTypeRef);
 struct TypeHandles {
     epoch: u64,
     state: std::cell::RefCell<TypeHandleState>,
+    /// Converted declaration and member headers, each with the provider's
+    /// header revision it was read at (`NativeTypeProvider::header_revision`).
+    headers: std::cell::RefCell<NativeHeaderCache>,
+}
+
+#[derive(Default)]
+struct NativeHeaderCache {
+    declarations: FxHashMap<bun_sema::check::native_named::NativeTypeDeclarationId, (u64, bun_sema::check::native_named::NativeTypeDeclarationHeader)>,
+    members: FxHashMap<bun_sema::check::native_named::NativeTypeMemberId, (u64, bun_sema::check::native_named::NativeTypeMemberHeader)>,
 }
 
 #[derive(Default)]
@@ -226,6 +235,7 @@ impl TypeHandles {
         Self {
             epoch: NEXT_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             state: Default::default(),
+            headers: Default::default(),
         }
     }
     fn retain(&self, ty: TypeId) -> Type {
@@ -359,6 +369,10 @@ pub trait NativeTypeProvider {
     /// Exact selected original declaration identity for an opaque Lua runtime
     /// category. A matching user-written class name does not grant this fact.
     fn runtime_type_declaration(&self, _: NativeOpaqueRuntimeKind) -> Option<NativeTypeDeclarationKey> { None }
+    /// A revision that changes whenever a declaration or member header may
+    /// change, letting the session reuse converted headers. `None` (the
+    /// default) reads every header afresh.
+    fn header_revision(&self) -> Option<u64> { None }
     fn project_flow_provider(&self) -> Option<&dyn NativeFlowProvider> { None }
     fn contextual_type_owner(&self, _: NativeFunctionKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> ContextualTypeOwner { ContextualTypeOwner::Absent }
     fn function_calling_convention(&self, _: NativeFunctionKey) -> FunctionCallingConvention { FunctionCallingConvention::TypeScript }

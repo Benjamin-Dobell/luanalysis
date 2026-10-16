@@ -239,6 +239,10 @@ pub trait NativeTypeDeclarationProvider {
     fn contains_type_declaration(&self, declaration: NativeTypeDeclarationId) -> bool;
     fn type_declaration_self_parameter(&self, _: NativeTypeDeclarationId) -> Option<NativeTypeParamId> { None }
     fn type_declaration_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeTypeDeclarationHeader;
+    /// `type_declaration_header(..).kind`, for callers that need nothing else.
+    fn type_declaration_kind(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeTypeDeclarationKind {
+        self.type_declaration_header(checker, declaration).kind
+    }
     fn type_declaration_owner_scope(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeOwnerScopeRecipe {
         let _ = (checker, declaration);
         NativeOwnerScopeRecipe::ResolvedHead
@@ -1000,7 +1004,7 @@ impl<'p, 's> Checker<'p, 's> {
         match *self.data(ty) {
             TypeData::NativeDefinition(reference) => Some(reference.class),
             TypeData::NativeObject(reference) => self.native_named_provider(reference.declaration).ok()
-                .filter(|p| p.type_declaration_header(self, reference.declaration).kind.is_nominal())
+                .filter(|p| p.type_declaration_kind(self, reference.declaration).is_nominal())
                 .map(|_| reference),
             TypeData::NativeTable(ref table) => table.nominal_origin,
             _ => None,
@@ -1245,7 +1249,7 @@ impl<'p, 's> Checker<'p, 's> {
         let Ok(bases) = self.native_object_bases(source) else { return false };
         bases.into_iter().any(|base| {
             let TypeData::NativeObject(reference) = *self.data(base) else { return false };
-            let nominal = self.native_named_provider(reference.declaration).is_ok_and(|p| p.type_declaration_header(self, reference.declaration).kind == NativeTypeDeclarationKind::Class);
+            let nominal = self.native_named_provider(reference.declaration).is_ok_and(|p| p.type_declaration_kind(self, reference.declaration) == NativeTypeDeclarationKind::Class);
             nominal && self.native_nominal_reference_compatible(reference, target, false)
         })
     }
@@ -1478,7 +1482,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// A literal field read demands just that field, preserving laziness across sibling members.
     /// Indexers and full structural operations use the ordinary NativeTable description worker.
     pub(super) fn native_named_read(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
-        if self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_header(self, reference.declaration).kind == NativeTypeDeclarationKind::RuntimeTable) {
+        if self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_kind(self, reference.declaration) == NativeTypeDeclarationKind::RuntimeTable) {
             let key = self.native_table_access(key)?;
             let object = self.intern(TypeData::NativeObject(reference));
             if let Some(value) = self.native_runtime_seed_read(reference, key).map_err(|error| error.table_error(object))? { return Ok(value) }
@@ -1530,7 +1534,7 @@ impl<'p, 's> Checker<'p, 's> {
         let valid = match *self.data(class) {
             TypeData::NativeObject(reference) => reference.declaration == expected
                 && provider.contains_type_declaration(expected)
-                && provider.type_declaration_header(self, expected).kind == NativeTypeDeclarationKind::Class,
+                && provider.type_declaration_kind(self, expected) == NativeTypeDeclarationKind::Class,
             _ => false,
         };
         if !valid { return Err(NativeNamedTypeError::DefinitionOwner { owner, expected, actual: class }) }

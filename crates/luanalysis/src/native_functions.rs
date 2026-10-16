@@ -2381,6 +2381,9 @@ impl NativeTypeProvider for NativeRegistry {
     fn type_declaration_header(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> luanalysis_engine::TypeDeclarationHeader {
         self.named_declaration_header(key)
     }
+    fn header_revision(&self) -> Option<u64> {
+        Some(crate::native_types::metadata_clock())
+    }
     fn runtime_table_constructor(&self,key:luanalysis_engine::NativeTypeDeclarationKey)->Option<NativeExpressionKey> {self.runtime_schema_constructor(key)}
     fn runtime_table_constructor_owner(&self,key:luanalysis_engine::NativeTypeDeclarationKey)->Option<NativeFunctionKey> {self.runtime_tables.schema(key)?.owner}
     fn runtime_table_seed(&self,key:luanalysis_engine::NativeTypeDeclarationKey,queries:&mut dyn TypeQueries)->Option<Type> {self.runtime_schema_seed(key,queries)}

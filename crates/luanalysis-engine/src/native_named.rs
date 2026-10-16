@@ -251,6 +251,76 @@ fn source_kind(kind: NativeTypeDeclarationKind) -> TypeDeclarationKind {
     }
 }
 
+impl<P: NativeTypeProvider> ProviderAdapter<'_, P> {
+    fn type_declaration_header_uncached(&self, checker: &Checker<'_, '_>, key: NativeTypeDeclarationId) -> NativeTypeDeclarationHeader {
+        let header = self
+            .provider
+            .type_declaration_header(source_declaration(key));
+        NativeTypeDeclarationHeader {
+            kind: match header.kind {
+                TypeDeclarationKind::Alias => NativeTypeDeclarationKind::Alias,
+                TypeDeclarationKind::Shape => NativeTypeDeclarationKind::Shape,
+                TypeDeclarationKind::Class => NativeTypeDeclarationKind::Class,
+                TypeDeclarationKind::Module => NativeTypeDeclarationKind::Module,
+                TypeDeclarationKind::RuntimeTable => NativeTypeDeclarationKind::RuntimeTable,
+            },
+            name: checker.atoms().intern(header.name.as_bytes()),
+            object_form: header.object_form.map(|form| match form {
+                ObjectDeclarationForm::Record => NativeObjectDeclarationForm::Record,
+                ObjectDeclarationForm::Array => NativeObjectDeclarationForm::Array,
+                ObjectDeclarationForm::Table {
+                    type_argument_count,
+                } => NativeObjectDeclarationForm::Table {
+                    type_argument_count,
+                },
+            }),
+            parameters: header
+                .parameters
+                .into_iter()
+                .map(core_parameter_key)
+                .collect(),
+            outer_parameters: header
+                .outer_parameters
+                .into_iter()
+                .map(core_parameter_key)
+                .collect(),
+        }
+    }
+    fn type_member_header_uncached(&self, checker: &Checker<'_, '_>, key: NativeTypeMemberId) -> NativeTypeMemberHeader {
+        let header = self.provider.type_member_header(source_member(key));
+        NativeTypeMemberHeader {
+            owner: match header.owner {
+                TypeMemberOwner::Declared(key) => {
+                    NativeTypeMemberOwner::Declared(core_declaration(key))
+                }
+                TypeMemberOwner::Reference { name, candidates } => {
+                    NativeTypeMemberOwner::Reference {
+                        name: checker.atoms().intern(name.as_bytes()),
+                        candidates: candidates.into_iter().map(core_declaration).collect(),
+                    }
+                }
+                TypeMemberOwner::RuntimeStore(store) => NativeTypeMemberOwner::RuntimeStore(store),
+            },
+            key: match header.key {
+                TypeMemberKeyRecipe::Fixed(key) => CoreMemberKey::Fixed(match key {
+                    LuaKey::String(bytes) => NativeTableKey::String(checker.atoms().intern(&bytes)),
+                    LuaKey::Integer(value) => NativeTableKey::Integer(value),
+                    LuaKey::Number(value) => NativeTableKey::Float(value.to_bits()),
+                    LuaKey::Boolean(value) => NativeTableKey::Boolean(value),
+                }),
+                TypeMemberKeyRecipe::Indexer { sparse } => CoreMemberKey::Indexer { sparse },
+            },
+            visibility: match header.visibility {
+                TypeMemberVisibility::Public => NativeTypeMemberVisibility::Public,
+                TypeMemberVisibility::Protected => NativeTypeMemberVisibility::Protected,
+                TypeMemberVisibility::Private => NativeTypeMemberVisibility::Private,
+            },
+            optional: header.optional,
+            readonly: header.readonly,
+        }
+    }
+}
+
 impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_, P> {
     fn runtime_type_declaration(&self, kind: super::NativeOpaqueRuntimeKind) -> Option<NativeTypeDeclarationId> {
         self.provider.runtime_type_declaration(kind).map(core_declaration)
@@ -301,38 +371,27 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
         checker: &Checker<'_, '_>,
         key: NativeTypeDeclarationId,
     ) -> NativeTypeDeclarationHeader {
-        let header = self
-            .provider
-            .type_declaration_header(source_declaration(key));
-        NativeTypeDeclarationHeader {
-            kind: match header.kind {
-                TypeDeclarationKind::Alias => NativeTypeDeclarationKind::Alias,
-                TypeDeclarationKind::Shape => NativeTypeDeclarationKind::Shape,
-                TypeDeclarationKind::Class => NativeTypeDeclarationKind::Class,
-                TypeDeclarationKind::Module => NativeTypeDeclarationKind::Module,
-                TypeDeclarationKind::RuntimeTable => NativeTypeDeclarationKind::RuntimeTable,
-            },
-            name: checker.atoms().intern(header.name.as_bytes()),
-            object_form: header.object_form.map(|form| match form {
-                ObjectDeclarationForm::Record => NativeObjectDeclarationForm::Record,
-                ObjectDeclarationForm::Array => NativeObjectDeclarationForm::Array,
-                ObjectDeclarationForm::Table {
-                    type_argument_count,
-                } => NativeObjectDeclarationForm::Table {
-                    type_argument_count,
-                },
-            }),
-            parameters: header
-                .parameters
-                .into_iter()
-                .map(core_parameter_key)
-                .collect(),
-            outer_parameters: header
-                .outer_parameters
-                .into_iter()
-                .map(core_parameter_key)
-                .collect(),
+        let revision = self.provider.header_revision();
+        if let Some(revision) = revision
+            && let Some((known, header)) = self.handles.headers.borrow().declarations.get(&key)
+            && *known == revision
+        {
+            return header.clone();
         }
+        let header = self.type_declaration_header_uncached(checker, key);
+        if let Some(revision) = revision {
+            self.handles.headers.borrow_mut().declarations.insert(key, (revision, header.clone()));
+        }
+        header
+    }
+    fn type_declaration_kind(&self, checker: &Checker<'_, '_>, key: NativeTypeDeclarationId) -> NativeTypeDeclarationKind {
+        if let Some(revision) = self.provider.header_revision()
+            && let Some((known, header)) = self.handles.headers.borrow().declarations.get(&key)
+            && *known == revision
+        {
+            return header.kind;
+        }
+        self.type_declaration_header(checker, key).kind
     }
     fn contains_type_member(&self, key: NativeTypeMemberId) -> bool {
         self.provider.contains_type_member(source_member(key))
@@ -370,37 +429,18 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
         checker: &Checker<'_, '_>,
         key: NativeTypeMemberId,
     ) -> NativeTypeMemberHeader {
-        let header = self.provider.type_member_header(source_member(key));
-        NativeTypeMemberHeader {
-            owner: match header.owner {
-                TypeMemberOwner::Declared(key) => {
-                    NativeTypeMemberOwner::Declared(core_declaration(key))
-                }
-                TypeMemberOwner::Reference { name, candidates } => {
-                    NativeTypeMemberOwner::Reference {
-                        name: checker.atoms().intern(name.as_bytes()),
-                        candidates: candidates.into_iter().map(core_declaration).collect(),
-                    }
-                }
-                TypeMemberOwner::RuntimeStore(store) => NativeTypeMemberOwner::RuntimeStore(store),
-            },
-            key: match header.key {
-                TypeMemberKeyRecipe::Fixed(key) => CoreMemberKey::Fixed(match key {
-                    LuaKey::String(bytes) => NativeTableKey::String(checker.atoms().intern(&bytes)),
-                    LuaKey::Integer(value) => NativeTableKey::Integer(value),
-                    LuaKey::Number(value) => NativeTableKey::Float(value.to_bits()),
-                    LuaKey::Boolean(value) => NativeTableKey::Boolean(value),
-                }),
-                TypeMemberKeyRecipe::Indexer { sparse } => CoreMemberKey::Indexer { sparse },
-            },
-            visibility: match header.visibility {
-                TypeMemberVisibility::Public => NativeTypeMemberVisibility::Public,
-                TypeMemberVisibility::Protected => NativeTypeMemberVisibility::Protected,
-                TypeMemberVisibility::Private => NativeTypeMemberVisibility::Private,
-            },
-            optional: header.optional,
-            readonly: header.readonly,
+        let revision = self.provider.header_revision();
+        if let Some(revision) = revision
+            && let Some((known, header)) = self.handles.headers.borrow().members.get(&key)
+            && *known == revision
+        {
+            return header.clone();
         }
+        let header = self.type_member_header_uncached(checker, key);
+        if let Some(revision) = revision {
+            self.handles.headers.borrow_mut().members.insert(key, (revision, header.clone()));
+        }
+        header
     }
     fn type_declaration_members(&self, key: NativeTypeDeclarationId) -> Vec<NativeTypeMemberId> {
         self.provider
