@@ -6,7 +6,7 @@ const BRANCHES: &str = include_str!("fixtures/json-dispatch/branches.lua.fixture
 const WRONG_NUMBER: &str = include_str!("fixtures/json-dispatch/wrong-number.lua.fixture");
 
 #[test]
-fn indexed_function_unions_require_shared_arguments_and_explicit_branches_check_each_type() {
+fn indexed_function_unions_accept_gradual_any_and_reject_unknown_and_wrong_typed_arguments() {
     let directory = std::env::temp_dir().join(format!(
         "luanalysis json dispatch union {}",
         std::process::id()
@@ -35,9 +35,13 @@ fn indexed_function_unions_require_shared_arguments_and_explicit_branches_check_
     };
     for version in ["5.2", "5.4"] {
         run(BRANCHES, version, 0);
+        run(CORRELATED, version, 0);
+        run(INDEPENDENT, version, 0);
+        let unknown_correlated = CORRELATED.replace("---@param v any", "---@param v unknown");
+        let unknown_independent = INDEPENDENT.replace("---@param v any", "---@param v unknown");
         for (source, argument, expected_type) in [
-            (CORRELATED, "v", "never"),
-            (INDEPENDENT, "v", "never"),
+            (unknown_correlated.as_str(), "v", "never"),
+            (unknown_independent.as_str(), "v", "never"),
             (WRONG_NUMBER, "'wrong'", "number"),
         ] {
             let rejected = run(source, version, 1);

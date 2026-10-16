@@ -63,13 +63,18 @@ fn unicode_crlf_error_locations_use_original_source() {
 }
 
 #[test]
-fn unsupported_features_cannot_silently_pass() {
-    for source in [
-        "local value = identity(42)",
-        "local function identity(value) return value end",
-    ] {
-        assert!(!check(source).diagnostics.is_empty(), "{source}");
-    }
+fn unresolved_calls_are_reported_and_implicit_parameter_errors_are_opt_in() {
+    assert!(!check("local value = identity(42)").diagnostics.is_empty());
+    let source = "local function identity(value) return value end";
+    assert!(check(source).diagnostics.is_empty());
+    let report = luanalysis::check_with_options(source, luanalysis::CheckOptions {
+        no_implicit_any: true,
+        ..Default::default()
+    });
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS7006");
+    let span = report.diagnostics[0].span;
+    assert_eq!(&source[span.start..span.end], "value");
 }
 
 #[test]
@@ -254,7 +259,7 @@ fn duplicate_constructor_candidates_form_a_union_in_both_source_orders() {
         );
         let actual = report.type_at(source.find("item.x").unwrap() + "item.".len()).unwrap();
         let alternatives: std::collections::BTreeSet<_> = actual.split(" | ").collect();
-        assert_eq!(alternatives, ["number", "string"].into_iter().collect());
+        assert_eq!(alternatives, ["1", "\"text\""].into_iter().collect());
         let corrected = source.replace("---@type string", "---@type number|string");
         assert!(check(&corrected).diagnostics.is_empty());
     }
