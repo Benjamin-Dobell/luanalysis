@@ -348,3 +348,20 @@ fn watch_retries_missing_modules_and_observes_package_path_priority_changes() {
     fs::remove_file(fallback).unwrap();
     assert!(watch.report(1, 1).contains("\"code\":\"TS2307\""));
 }
+
+#[test]
+fn watch_recovers_from_invalid_utf8_without_rechecking_unchanged_invalid_bytes() {
+    let fixture = Fixture::new();
+    let source = fixture.file("main.lua", "");
+    fs::write(&source, [0xff]).unwrap();
+    let mut watch = fixture.watch(&["main.lua"]);
+    assert!(watch.report(2, 0).contains("\"code\":\"LUA0001\""));
+    watch.unchanged();
+    fs::write(&source, "local value=42\n").unwrap();
+    watch.report(0, 1);
+    fs::write(&source, [0xfe]).unwrap();
+    assert!(watch.report(2, 0).contains("\"code\":\"LUA0001\""));
+    watch.unchanged();
+    fs::write(&source, "local value=42\n").unwrap();
+    watch.report(0, 1);
+}

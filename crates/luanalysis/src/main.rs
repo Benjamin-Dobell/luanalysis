@@ -363,6 +363,10 @@ impl WatchSnapshot {
             )
             .collect();
         let mut loaded = HashMap::new();
+        let mut failed = HashMap::new();
+        for error in project.entry_errors.iter().chain(&project.library_errors) {
+            failed.insert(error.path.clone(), error);
+        }
         for source in &project.files {
             if source.origin == SourceOrigin::Filesystem {
                 paths.insert(source.path.clone());
@@ -378,6 +382,7 @@ impl WatchSnapshot {
                 DependencyOutcome::Unresolved(error) => Some(Err(error.clone())),
                 DependencyOutcome::Unreadable(error) => {
                     paths.insert(error.path.clone());
+                    failed.insert(error.path.clone(), error);
                     Some(Ok(error.path.clone()))
                 }
                 DependencyOutcome::InvalidSpan => None,
@@ -392,7 +397,24 @@ impl WatchSnapshot {
                 // Seed readable files with the bytes actually checked. If an editor
                 // changes them during checking, the next poll sees that change.
                 let contents = loaded.get(&identity(&path)).map_or_else(
-                    || file_contents(&path),
+                    || {
+                        let current = file_contents(&path);
+                        if let Some(error) = failed.get(&path) {
+                            // Keep the failure that was actually reported if a
+                            // file recovered between loading and this snapshot.
+                            // Invalid UTF-8 still compares its exact bytes while
+                            // that same decoding failure remains present.
+                            if let FileContents::Bytes(bytes) = &current {
+                                if error.kind == io::ErrorKind::InvalidData
+                                    && std::str::from_utf8(bytes).is_err()
+                                {
+                                    return current;
+                                }
+                            }
+                            return FileContents::Error(error.kind, error.message.clone());
+                        }
+                        current
+                    },
                     |bytes| FileContents::Bytes(bytes.to_vec()),
                 );
                 (path, contents)
