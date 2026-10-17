@@ -64,7 +64,17 @@ pub(crate) struct ProjectRegistrySnapshot {
     overload_mode: crate::OverloadMode,
     no_implicit_any: bool,
     environment: luanalysis_engine::NativeEnvironmentKey,
-    shared_flows: Option<Vec<Arc<super::super::native_flow::NativeFlowRecipes>>>,
+    prepared_flows: PreparedFlows,
+}
+
+/// Flow recipes built for each source of a project, and the global names they were seeded
+/// with. Recipes are syntactic (flow graphs, references and write indexes) and hold no type,
+/// so a later session over the same source revisions and global names reuses them.
+#[derive(Clone, Default)]
+pub(crate) struct PreparedFlows {
+    /// Empty, or one per source: the recipes to use instead of building them.
+    pub(crate) recipes: Vec<Option<Arc<super::super::native_flow::NativeFlowRecipes>>>,
+    pub(crate) names: Vec<Vec<u8>>,
 }
 
 impl ProjectRegistrySnapshot {
@@ -92,7 +102,7 @@ impl ProjectRegistrySnapshot {
             snapshot: identities.first().map_or_else(|| SourceRecipeIdentity::new().source, |identity| identity.source),
             index: 0,
         };
-        Self { inputs, identities, dependencies, policy, environment_profile, overload_mode, no_implicit_any: false, environment, shared_flows: None }
+        Self { inputs, identities, dependencies, policy, environment_profile, overload_mode, no_implicit_any: false, environment, prepared_flows: PreparedFlows::default() }
     }
 
     pub(crate) fn with_no_implicit_any(mut self, enabled: bool) -> Self {
@@ -104,10 +114,20 @@ impl ProjectRegistrySnapshot {
     /// ordinary constructor establishes canonical keys, globals and profile flags;
     /// no native query or function body is evaluated during this preparation.
     pub(crate) fn prepare_shared_flows(&mut self) {
-        if self.shared_flows.is_some() { return; }
-        let registry = self.worker_registry();
-        self.shared_flows = Some(registry.files.iter()
-            .map(|file| file.source.flow.shared_recipes()).collect());
+        // Recipes from a previous session are reused unless they were seeded with other
+        // global names, which only building a registry reveals.
+        self.prepared_flows = self.worker_registry().flow_recipes();
+    }
+
+    /// Recipes a previous session built for these sources, under the same identities.
+    pub(crate) fn with_prepared_flows(mut self, prepared: PreparedFlows) -> Self {
+        assert!(prepared.recipes.is_empty() || prepared.recipes.len() == self.inputs.len(), "one prepared flow per original source");
+        self.prepared_flows = prepared;
+        self
+    }
+
+    pub(crate) fn prepared_flows(&self) -> &PreparedFlows {
+        &self.prepared_flows
     }
 
     /// Mutable scopes, report queues, body facets and session handles belong to
@@ -116,7 +136,7 @@ impl ProjectRegistrySnapshot {
         ProjectRegistry::new_with_recipe_identities(
             self.inputs.clone(), &self.identities, self.dependencies.clone(), self.policy,
             self.environment_profile, self.overload_mode, self.no_implicit_any,
-            self.environment, self.shared_flows.as_deref(),
+            self.environment, &self.prepared_flows,
         )
     }
 }
@@ -150,9 +170,19 @@ pub(crate) struct ProjectRegistry {
     /// Whether reports describe binding and expression types. Diagnostics never
     /// depend on it; only callers that print or query types need them.
     describe_types: bool,
+    /// The global names each source's flow recipes were seeded with.
+    global_names: Vec<Vec<u8>>,
 }
 
 impl ProjectRegistry {
+    /// Each source's flow recipes, for a later session over the same revisions.
+    pub(crate) fn flow_recipes(&self) -> PreparedFlows {
+        PreparedFlows {
+            recipes: self.files.iter().map(|file| Some(file.source.flow.shared_recipes())).collect(),
+            names: self.global_names.clone(),
+        }
+    }
+
     pub(crate) fn set_describe_types(&mut self, describe: bool) { self.describe_types = describe; }
     pub(crate) fn set_inspections(&mut self, enabled: bool) {
         for file in &mut self.files { file.source.set_inspections(enabled); }
@@ -204,11 +234,12 @@ impl ProjectRegistry {
         overload_mode: crate::OverloadMode,
         no_implicit_any: bool,
         environment: luanalysis_engine::NativeEnvironmentKey,
-        prepared_flows: Option<&[Arc<super::super::native_flow::NativeFlowRecipes>]>,
+        prepared_flows: &PreparedFlows,
     ) -> Self {
-        if let Some(flows) = prepared_flows {
-            assert_eq!(inputs.len(), flows.len(), "one prepared flow per original source");
-        }
+        assert!(prepared_flows.recipes.is_empty() || prepared_flows.recipes.len() == inputs.len(), "one prepared flow per original source");
+        let prepared = |index: usize| prepared_flows.recipes.get(index).cloned().flatten();
+        // Recipes seeded with other global names are rebuilt; keep the inputs to do so.
+        let rebuild = prepared_flows.recipes.iter().any(Option::is_some).then(|| inputs.clone());
         let mut snapshots = HashMap::default();
         let mut flow_snapshots = HashMap::default();
         let mut names = ProjectNamedIndex::default();
@@ -216,8 +247,7 @@ impl ProjectRegistry {
             .into_iter()
             .enumerate()
             .map(|(index, input)| {
-                let prepared_flow = prepared_flows.map(|flows|
-                    super::super::native_flow::NativeFlowSources::from_shared_recipes(Arc::clone(&flows[index])));
+                let prepared_flow = prepared(index).map(super::super::native_flow::NativeFlowSources::from_shared_recipes);
                 let mut source = NativeRegistry::new_with_identity_and_flow(input.syntax, input.bound, identities[index], prepared_flow);
                 source.set_overload_mode(overload_mode);
                 source.set_no_implicit_any(no_implicit_any);
@@ -252,8 +282,16 @@ impl ProjectRegistry {
         }
         let globals = Rc::new(super::globals::ProjectGlobalIndex::new(environment, &files.iter().map(|file| &file.source).collect::<Vec<_>>()));
         let original_names: Vec<_> = globals.bindings().into_iter().map(|(name, _)| name).collect();
-        if prepared_flows.is_none() {
-            for file in &mut files { file.source.seed_original_global_reference_keys(&original_names); }
+        if let Some(inputs) = rebuild
+            && prepared_flows.names != original_names
+        {
+            return Self::new_with_recipe_identities(
+                inputs, identities, dependencies, policy, environment_profile, overload_mode,
+                no_implicit_any, environment, &PreparedFlows::default(),
+            );
+        }
+        for (index, file) in files.iter_mut().enumerate() {
+            if prepared(index).is_none() { file.source.seed_original_global_reference_keys(&original_names); }
         }
         let modules_by_file: HashMap<_, _> = files
             .iter()
@@ -366,6 +404,7 @@ impl ProjectRegistry {
             modules,
             header_metadata: RefCell::new(super::named_provider::SourceHeaderMetadata::default()),
             describe_types: true,
+            global_names: original_names,
         }
     }
 

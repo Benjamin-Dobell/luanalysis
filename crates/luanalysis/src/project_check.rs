@@ -143,6 +143,8 @@ pub fn check_project_with_options(
 /// The sources of a program, prepared for native sessions as `check` prepares them.
 struct PreparedProgram {
     snapshot: ProjectRegistrySnapshot,
+    /// Each input's source revision, in order, to retain its flow recipes by.
+    revisions: Vec<u64>,
     /// Reports for sources that could not be prepared (syntax errors).
     files: Vec<FileCheckReport>,
     source_costs: HashMap<FileId, usize>,
@@ -165,6 +167,7 @@ fn prepare_program(
         };
     let standard_library_files = selection.files();
     let mut inputs = Vec::new();
+    let mut revisions = Vec::new();
     let mut files = Vec::new();
     let plan_options = NativePlanOptions::default();
     let mut source_costs = HashMap::default();
@@ -175,6 +178,7 @@ fn prepare_program(
                 source.id,
                 crate::project_cost::checking_cost(parsed, bound, plan_options.type_node_cost),
             );
+            revisions.push(source.snapshot.revision());
             inputs.push(RegistryInput {
                 id: source.id,
                 role: source.role,
@@ -201,14 +205,18 @@ fn prepare_program(
             });
         }
     }
-    let snapshot = ProjectRegistrySnapshot::new(
+    // An unchanged source keeps its identity, so the flow recipes a previous session built for
+    // it are reused.
+    let (identities, prepared) = workspace.flow_inputs(&revisions);
+    let snapshot = ProjectRegistrySnapshot::with_identities(
         inputs,
+        identities,
         project.dependencies.clone(),
         options.loader_policy,
         selection.profile,
         options.overload_mode,
-    ).with_no_implicit_any(options.no_implicit_any);
-    PreparedProgram { snapshot, files, source_costs, standard_library_files, environment_errors }
+    ).with_no_implicit_any(options.no_implicit_any).with_prepared_flows(prepared);
+    PreparedProgram { snapshot, revisions, files, source_costs, standard_library_files, environment_errors }
 }
 
 /// Runs `query` in one native session over the project, as one checking task runs, for the
@@ -222,7 +230,7 @@ pub(crate) fn with_project_session<R: Send>(
     let prepared = prepare_program(&mut project, options, workspace);
     let snapshot = &prepared.snapshot;
     let project = &project;
-    Engine::new().with_native_provider(
+    let (result, flows) = Engine::new().with_native_provider(
         || {
             let mut registry = snapshot.worker_registry();
             registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
@@ -230,8 +238,13 @@ pub(crate) fn with_project_session<R: Send>(
             registry.set_inspections(options.inspections);
             registry
         },
-        |registry, queries| query(project, registry, queries),
-    )
+        |registry, queries| {
+            let flows = registry.flow_recipes();
+            (query(project, registry, queries), flows)
+        },
+    );
+    workspace.retain_flows(&prepared.revisions, flows);
+    result
 }
 
 pub(crate) fn check_project_with_workspace(
@@ -241,7 +254,7 @@ pub(crate) fn check_project_with_workspace(
 ) -> ProjectCheckReport {
     let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
     let started = Instant::now();
-    let PreparedProgram { mut snapshot, mut files, source_costs, standard_library_files, environment_errors } =
+    let PreparedProgram { mut snapshot, revisions, mut files, source_costs, standard_library_files, environment_errors } =
         prepare_program(&mut project, options, workspace);
     // As in Bun, the program is every file the load reached: explicit inputs and
     // the targets of their syntactic require calls. Each is checked once, by one
@@ -267,7 +280,10 @@ pub(crate) fn check_project_with_workspace(
     let workers = tasks.len().max(1);
     let source_prepare = started.elapsed();
     let flow_started = Instant::now();
-    if workers > 1 { snapshot.prepare_shared_flows(); }
+    if workers > 1 {
+        snapshot.prepare_shared_flows();
+        workspace.retain_flows(&revisions, snapshot.prepared_flows().clone());
+    }
     let flow_prepare = flow_started.elapsed();
     let factory_nanos = AtomicU64::new(0);
     let factories = AtomicU64::new(0);
@@ -285,10 +301,14 @@ pub(crate) fn check_project_with_workspace(
     };
     let checking_started = Instant::now();
     let (checked, execution) = if workers == 1 {
-        let checked = Engine::new().with_native_provider(
+        let (checked, flows) = Engine::new().with_native_provider(
             || make_registry(0),
-            |registry, queries| registry.check_roots(queries, &roots),
+            |registry, queries| {
+                let flows = registry.flow_recipes();
+                (registry.check_roots(queries, &roots), flows)
+            },
         );
+        workspace.retain_flows(&revisions, flows);
         (checked, None)
     } else {
         // Each task checks only the files it owns, as a Bun task checks its
