@@ -4,7 +4,7 @@ use crate::native_functions::project_provider::{ProjectRegistrySnapshot, Registr
 use crate::standard_environment::{StandardEnvironmentProfile, StandardEnvironmentSelection};
 use crate::{CheckReport, Diagnostic};
 use luanalysis_engine::{
-    Engine, NativeCheckPlan, NativeLoaderPolicy, NativePlanOptions, NativeTaskRunStats,
+    Engine, NativeLoaderPolicy, NativePlanOptions, NativeTaskRunStats,
 };
 use luanalysis_project::{
     DeclarationSourceError, FileId, Project, RequireRequest, SourceFile, SourceRole,
@@ -204,18 +204,15 @@ pub(crate) fn check_project_with_workspace(
     ).with_no_implicit_any(options.no_implicit_any);
     let requested = NonZeroUsize::new(options.jobs)
         .unwrap_or_else(|| std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN));
-    // Use the extracted Bun driver policy: sampled light-file warmups and
-    // source-cost chunks. Module edges do not impose publication barriers.
-    // Lua has no TS declaration-statement range task adapter, so ranges are empty.
-    let plan = NativeCheckPlan::new(
-        roots.len(),
-        &|index| project.file(roots[index]).unwrap().source.len(),
-        &|index| source_costs[&roots[index]],
-        &|_, _| Vec::new(),
-        &plan_options,
-    );
-    let capacity = plan.steps.iter().map(Vec::len).max().unwrap_or(1);
-    let workers = requested.get().min(capacity).max(1);
+    // One task per worker, a measured deviation from Bun's warm-up and chunk plan
+    // (docs/BUN-CHECK-COMPARISON.md, item 9). Bun's plan relies on cheap tasks and
+    // on publishing what a task derives; here a task builds the whole project
+    // registry and derives the native results it needs itself, so every extra
+    // task repeats that work. On Prototype Inertia Bun's plan took 4.1 to 4.6 s
+    // wall at 4 and 10 workers, against 2.2 s for this plan and 3.7 s serially.
+    let capacity = requested.get().min(roots.len()).max(1);
+    let tasks = pool_tasks(roots.len(), &|index| source_costs[&roots[index]], capacity);
+    let workers = tasks.len().max(1);
     let source_prepare = started.elapsed();
     let flow_started = Instant::now();
     if workers > 1 { snapshot.prepare_shared_flows(); }
@@ -248,7 +245,7 @@ pub(crate) fn check_project_with_workspace(
         let mut batches = Vec::new();
         let mut steps = Vec::new();
         let mut batch_costs = Vec::new();
-        for step in plan.steps {
+        for step in [tasks] {
             let mut jobs = Vec::new();
             for task in step {
                 jobs.push(batches.len());
@@ -306,6 +303,25 @@ pub(crate) fn check_project_with_workspace(
         execution,
         planned_parallelism: capacity,
     }
+}
+
+/// Roots assigned heaviest first to the least loaded of `workers` tasks, each task's roots in
+/// program order.
+fn pool_tasks(count: usize, cost: &dyn Fn(usize) -> usize, workers: usize) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..count).collect();
+    order.sort_by_key(|&index| (std::cmp::Reverse(cost(index)), index));
+    let mut tasks: Vec<(usize, Vec<usize>)> = (0..workers.max(1)).map(|_| (0, Vec::new())).collect();
+    for index in order {
+        let lightest = (0..tasks.len()).min_by_key(|&task| (tasks[task].0, task)).unwrap();
+        tasks[lightest].0 += cost(index);
+        tasks[lightest].1.push(index);
+    }
+    let mut tasks: Vec<Vec<usize>> = tasks.into_iter()
+        .map(|(_, mut task)| { task.sort_unstable(); task })
+        .filter(|task| !task.is_empty())
+        .collect();
+    tasks.sort_unstable();
+    tasks
 }
 
 fn merge_reports(reports: Vec<FileCheckReport>) -> Vec<FileCheckReport> {
