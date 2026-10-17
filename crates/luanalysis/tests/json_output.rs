@@ -51,7 +51,8 @@ fn json(output: &Output, exit: i32) -> String {
 #[test]
 fn original_utf8_byte_ranges_positions_paths_and_correction_are_machine_readable() {
     let fixture = Fixture::new();
-    let name = "résumé\".ttslua";
+    // Windows file names cannot contain the quote that tests path escaping.
+    let name = if cfg!(windows) { "résumé.ttslua" } else { "résumé\".ttslua" };
     let source = "-- 前置\r\n---@type number\r\nlocal résultat='wrong'\r\n";
     fixture.file(name, source);
     let invalid = json(&fixture.run(&["--format", "json", "--dump-types", name]), 1);
@@ -69,7 +70,7 @@ fn original_utf8_byte_ranges_positions_paths_and_correction_are_machine_readable
         "{invalid}"
     );
     assert!(
-        invalid.contains("résumé\\\".ttslua")
+        invalid.contains(if cfg!(windows) { "résumé.ttslua" } else { "résumé\\\".ttslua" })
             && invalid.contains("\"rangeEncoding\":\"utf-8-bytes\""),
         "{invalid}"
     );
