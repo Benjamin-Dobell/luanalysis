@@ -1,0 +1,192 @@
+diff --git a/src/sema/check/native_globals.rs b/src/sema/check/native_globals.rs
+index 2718e00..1e1bccf 100644
+--- a/src/sema/check/native_globals.rs
++++ b/src/sema/check/native_globals.rs
+@@ -314,21 +314,13 @@ impl<'p, 's> Checker<'p, 's> {
+             self.report_native_global(error.clone());
+             return Err(error);
+         }
+-        // A pure written declaration can be demanded while its consumer is
+-        // traversing an incomplete loop. Its result remains usable in that
+-        // original context without becoming a completed cached declaration.
++        // A declaration can be demanded while its consumer is traversing an
++        // incomplete loop, or under another context that is not cacheable. It is
++        // computed at its own lexical root (`native_globals_at_lexical_root`), so
++        // its result remains usable in that original context, without becoming a
++        // completed cached declaration, when nothing it depends on is unsettled.
+         let frame = self.frames.last().expect("entered global declaration query");
+-        let is_declaration = |declaration| provider.contains_value_declaration(declaration)
+-            && provider.value_declaration_header(declaration).role == NativeGlobalSourceRole::Declaration;
+-        let declaration_only = match demand {
+-            NativeGlobalsQuery::ValueDeclarationContract(declaration)
+-            | NativeGlobalsQuery::ValueDeclaration(declaration) => is_declaration(declaration),
+-            NativeGlobalsQuery::GlobalBinding(binding) => {
+-                let declarations = provider.global_binding_declarations(binding);
+-                !declarations.is_empty() && declarations.into_iter().all(is_declaration)
+-            }
+-        };
+-        let context = (declaration_only && frame.tainted && !frame.circular).then_some(NativeGlobalDeclarationContext {
++        let context = (frame.tainted && !frame.circular).then_some(NativeGlobalDeclarationContext {
+             serial: frame.serial,
+             incomplete_flow: frame.incomplete_flow,
+             cuts: self.cuts(),
+diff --git a/src/sema/check/native_project.rs b/src/sema/check/native_project.rs
+index bd69b3d..3f61138 100644
+--- a/src/sema/check/native_project.rs
++++ b/src/sema/check/native_project.rs
+@@ -141,6 +141,7 @@ impl<'p, 's> Checker<'p, 's> {
+         // entered. Preserve that demand-local limit cause when it taints an
+         // otherwise successful fallback; unrelated Pending stays unresolved.
+         let cuts = self.cuts();
++        let (serial, height) = (self.work, self.stack.len() - 1);
+         let result = compute(self, provider);
+         let left = self.leave(query);
+         if self.left_a_cycle {
+@@ -157,6 +158,9 @@ impl<'p, 's> Checker<'p, 's> {
+             Err(open) => {
+                 if let Ok(ty) = result {
+                     self.cache_provisionally(query, u64::from(ty.0), open);
++                    // Entered under a context that is not cacheable, with nothing unsettled since: a
++                    // module's exports come from its own chunk, so they are only not cacheable here.
++                    if self.cuts() == cuts && self.lowest_taint_since(serial) > height { return Ok(ty) }
+                     let error = if self.cuts() != cuts { NativeProjectError::TooDeep(demand) }
+                         else { NativeProjectError::UnresolvedQuery(demand) };
+                     self.report_native_project(error);
+diff --git a/src/sema/check/native_standard_assumptions.rs b/src/sema/check/native_standard_assumptions.rs
+index acc90a5..c8e0ee7 100644
+--- a/src/sema/check/native_standard_assumptions.rs
++++ b/src/sema/check/native_standard_assumptions.rs
+@@ -64,6 +64,26 @@ impl<'p, 's> Checker<'p, 's> {
+         use crate::types::TypeId;
+         let invalid = NativeFlowResult { ty: TypeId::FALSE, incomplete: false, unresolved_auto: false };
+         if reference.graph != at.graph || !provider.contains_reference(reference) || provider.node(at).is_none() { return invalid }
++        // A straight run of nodes has one predecessor each. Follow it here rather than with a
++        // frame per node, which a long chunk demanded from deep in another query ran out of
++        // stack on, so the result depended on where the demand came from.
++        let mut at = at;
++        loop {
++            match provider.node(at) {
++                Some(NativeFlowNode::Write { before, target, .. }) => {
++                    if matches!(provider.write_affects_ignoring_descendants(reference, target, at, self), NativeWriteRelation::Exact | NativeWriteRelation::PossibleExact | NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor) { return invalid }
++                    at = before;
++                }
++                Some(NativeFlowNode::Call { before, .. }) => {
++                    if provider.known_standard_loader_write(at) { return invalid }
++                    at = before;
++                }
++                Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
++                    | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => at = before,
++                Some(_) => break,
++                None => return invalid,
++            }
++        }
+         if self.is_stack_low() { self.mark_tainted_from(0); return NativeFlowResult { incomplete: true, ..invalid } }
+         let key = (reference, at, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
+         if let Some(result) = self.native_alias_cache.standard_loaders.get(&key) { return *result }
+@@ -71,6 +91,7 @@ impl<'p, 's> Checker<'p, 's> {
+         // otherwise create indefinitely many frames for the same source node.
+         let query = Query::NativeStandardLoader(reference, at, key.2);
+         if !self.enter(query) { self.mark_tainted_from(0); return NativeFlowResult { incomplete: true, ..invalid } }
++        let (serial, height) = (self.work, self.stack.len() - 1);
+         let (mut result, completed) = self.run_memoizable(|checker| match provider.node(at) {
+             Some(NativeFlowNode::Start) => {
+                 if let Some(index) = checker.native_alias_cache.executions.iter().rposition(|frame| frame.entry == at) {
+@@ -117,7 +138,12 @@ impl<'p, 's> Checker<'p, 's> {
+             },
+             _ => invalid,
+         });
+-        if self.leave(query).is_err() || completed.is_none() || result.incomplete { result.incomplete = true; self.mark_tainted_from(0); }
++        let left = self.leave(query);
++        // Entered under a context that is not cacheable, with nothing unsettled since: the
++        // loader's state follows this source's flow alone, so it is only not cacheable here.
++        let uncacheable = left.is_err() && completed.is_some() && !result.incomplete && self.lowest_taint_since(serial) > height;
++        if uncacheable { return result }
++        if left.is_err() || completed.is_none() || result.incomplete { result.incomplete = true; self.mark_tainted_from(0); }
+         if !result.incomplete && !self.is_stack_low() { self.native_alias_cache.standard_loaders.insert(key, result); }
+         result
+     }
+diff --git a/src/sema/check/unions.rs b/src/sema/check/unions.rs
+index c64b522..42b79be 100644
+--- a/src/sema/check/unions.rs
++++ b/src/sema/check/unions.rs
+@@ -2338,6 +2338,7 @@ impl<'p, 's> Checker<'p, 's> {
+         types.take_has_ordered_by_own_id();
+         let order = self
+             .compare_types_without_ids(s, t)
++            .then_with(|| self.native_structural_order(s, t, 0))
+             .then_with(|| types.creation_order(s, t));
+         // Here, or further in: `mapping_in_declaration_order`.
+         if types.take_has_ordered_by_own_id() {
+@@ -2347,6 +2348,72 @@ impl<'p, 's> Checker<'p, 's> {
+         order
+     }
+ 
++    /// An order for Lua types without names, from their structure and declarations. tsgo orders
++    /// such types by creation, which differs between tasks that evaluate in different orders, and
++    /// a union's members are printed in its order.
++    fn native_structural_order(&self, a: TypeId, b: TypeId, depth: u32) -> std::cmp::Ordering {
++        use super::native_tables::NativeTableKey;
++        use std::cmp::Ordering::Equal;
++        if a == b || depth > 8 { return Equal }
++        let types = |x: TypeId, y: TypeId| self.compare_types_without_ids(x, y)
++            .then_with(|| self.native_structural_order(x, y, depth + 1));
++        let atoms = &self.atoms();
++        let key = |x: &NativeTableKey, y: &NativeTableKey| {
++            let rank = |key: &NativeTableKey| match key {
++                NativeTableKey::Boolean(_) => 0, NativeTableKey::Integer(_) => 1, NativeTableKey::Float(_) => 2, NativeTableKey::String(_) => 3,
++            };
++            rank(x).cmp(&rank(y)).then_with(|| match (x, y) {
++                (NativeTableKey::Boolean(x), NativeTableKey::Boolean(y)) => x.cmp(y),
++                (NativeTableKey::Integer(x), NativeTableKey::Integer(y)) => x.cmp(y),
++                (NativeTableKey::Float(x), NativeTableKey::Float(y)) => x.cmp(y),
++                (NativeTableKey::String(x), NativeTableKey::String(y)) => atoms.bytes(*x).cmp(atoms.bytes(*y)),
++                _ => Equal,
++            })
++        };
++        let declaration = |x: super::native_named::NativeTypeDeclarationId| (x.snapshot, x.index);
++        match (self.data(a), self.data(b)) {
++            (&TypeData::NativeArray { element: x, readonly: r }, &TypeData::NativeArray { element: y, readonly: q }) => {
++                r.cmp(&q).then_with(|| types(x, y))
++            }
++            (TypeData::NativeTable(x), TypeData::NativeTable(y)) => {
++                let fields = x.fields.len().cmp(&y.fields.len()).then_with(|| x.fields.iter().zip(y.fields.iter())
++                    .map(|(f, g)| key(&f.key, &g.key).then_with(|| types(f.value, g.value))
++                        .then_with(|| f.optional.cmp(&g.optional)).then_with(|| f.readonly.cmp(&g.readonly)))
++                    .find(|order| order.is_ne()).unwrap_or(Equal));
++                let indexers = || x.indexers.len().cmp(&y.indexers.len()).then_with(|| x.indexers.iter().zip(y.indexers.iter())
++                    .map(|(f, g)| types(f.key, g.key).then_with(|| types(f.value, g.value)).then_with(|| f.sparse.cmp(&g.sparse)))
++                    .find(|order| order.is_ne()).unwrap_or(Equal));
++                let tails = || x.sequence_tails.len().cmp(&y.sequence_tails.len()).then_with(|| x.sequence_tails.iter().zip(y.sequence_tails.iter())
++                    .map(|(f, g)| f.start.cmp(&g.start).then_with(|| types(f.value, g.value)))
++                    .find(|order| order.is_ne()).unwrap_or(Equal));
++                fields.then_with(indexers).then_with(tails)
++                    .then_with(|| x.is_array.cmp(&y.is_array)).then_with(|| x.fresh.cmp(&y.fresh))
++            }
++            (&TypeData::NativeRuntimeTable(x), &TypeData::NativeRuntimeTable(y)) => {
++                declaration(x.schema.declaration).cmp(&declaration(y.schema.declaration)).then_with(|| types(x.view, y.view))
++            }
++            (&TypeData::NativeDefinition(x), &TypeData::NativeDefinition(y)) => {
++                declaration(x.class.declaration).cmp(&declaration(y.class.declaration)).then_with(|| types(x.view, y.view))
++            }
++            _ => self.native_declaration_place(a).cmp(&self.native_declaration_place(b)),
++        }
++    }
++
++    /// Where a Lua function type is declared: the original declaration of its first signature.
++    /// Such a type has no symbol, so tsgo's order would fall back to creation order, which
++    /// differs between tasks that evaluate in different orders.
++    fn native_declaration_place(&self, ty: TypeId) -> Option<(u64, u32, bool)> {
++        let TypeData::Synth(shape) = self.data(ty) else { return None };
++        let &first = shape.call.first().or(shape.construct.first())?;
++        match *self.types().sig(first) {
++            crate::types::SigData::Native { declaration, .. }
++            | crate::types::SigData::NativeCaptured { declaration, .. }
++            | crate::types::SigData::NativeContextual { declaration, .. } => Some((declaration.snapshot, declaration.index, false)),
++            crate::types::SigData::NativeDeclarationSignature { declaration, .. } => Some((declaration.snapshot, declaration.index, true)),
++            _ => None,
++        }
++    }
++
+     /// See `Types::creation_order`.
+     #[inline]
+     pub(super) fn creation_order(&self, a: TypeId, b: TypeId) -> std::cmp::Ordering {

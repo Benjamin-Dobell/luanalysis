@@ -2334,6 +2334,36 @@
       "patch": "vendor/patches/bun-sema-assert-any.patch",
       "reason": "Return the results of a call to `any` unchanged from the assert intrinsic, through kernel a66fe8a.",
       "patch_sha256": "f573fc3770637da0aea57aca763a1303b9b620a8ef6efc7e280abe921545d59b"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-runtime-member-cycles.patch",
+      "reason": "Infer a runtime-table store whose value reads the member it stores with that member unresolved, as a class member is, through kernel 0c301c2.",
+      "patch_sha256": "83abde9dda3bc5388fb24474df65f53d5f97928cf3dea63c750701eb04c51f1c"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-task-independence.patch",
+      "reason": "Use module exports, global declarations and loader states completed under an uncacheable context, uncached; follow straight runs of flow nodes in the loader walk without a frame each; and order unnamed Lua types in unions by declaration and structure rather than creation, so reports do not depend on how files are grouped into tasks, through kernel 8b93185.",
+      "patch_sha256": "0ddb627972aee5b2b5f305d938d34d0c862a6b7a0bf81d724d3a2efc32490b6b"
+    },
+    {
+      "path": "src/sema/check/native_project.rs",
+      "patch": "vendor/patches/bun-sema-task-independence.patch",
+      "reason": "Use module exports, global declarations and loader states completed under an uncacheable context, uncached; follow straight runs of flow nodes in the loader walk without a frame each; and order unnamed Lua types in unions by declaration and structure rather than creation, so reports do not depend on how files are grouped into tasks, through kernel 8b93185.",
+      "patch_sha256": "0ddb627972aee5b2b5f305d938d34d0c862a6b7a0bf81d724d3a2efc32490b6b"
+    },
+    {
+      "path": "src/sema/check/native_standard_assumptions.rs",
+      "patch": "vendor/patches/bun-sema-task-independence.patch",
+      "reason": "Use module exports, global declarations and loader states completed under an uncacheable context, uncached; follow straight runs of flow nodes in the loader walk without a frame each; and order unnamed Lua types in unions by declaration and structure rather than creation, so reports do not depend on how files are grouped into tasks, through kernel 8b93185.",
+      "patch_sha256": "0ddb627972aee5b2b5f305d938d34d0c862a6b7a0bf81d724d3a2efc32490b6b"
+    },
+    {
+      "path": "src/sema/check/unions.rs",
+      "patch": "vendor/patches/bun-sema-task-independence.patch",
+      "reason": "Use module exports, global declarations and loader states completed under an uncacheable context, uncached; follow straight runs of flow nodes in the loader walk without a frame each; and order unnamed Lua types in unions by declaration and structure rather than creation, so reports do not depend on how files are grouped into tasks, through kernel 8b93185.",
+      "patch_sha256": "0ddb627972aee5b2b5f305d938d34d0c862a6b7a0bf81d724d3a2efc32490b6b"
     }
   ],
   "source_additions": {
@@ -2358,7 +2388,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "8e8cbb84edeec5331a19b978f2d1af8cd852fea5e841bf10cda391f19e651f57",
+      "extracted_sha256": "8551da6229ee83cc5930f129e3a968b54af0c12e7cecdbfc30b247b7994d5b94",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -2378,7 +2408,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
-      "extracted_sha256": "fc870168fa68821611e881b07144524aa9bb3c3e82942e8078c8bfea6599210b",
+      "extracted_sha256": "56c1bc1301382d62fb15b4a0a09983da239fa72003f7f9155f7e9ea44e5ba7ab",
       "introduced_by_patch": "vendor/patches/bun-sema-native-module-queries.patch"
     },
     "src/sema/check/native_query_context.rs": {
@@ -2390,7 +2420,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "0c17469338a6738c78dd7e2cc5cfe13a56296dd501d6100768a9f2f3a02d3868",
+      "extracted_sha256": "440325ffe05143a2cd260fe1ef7abd82d9c3b5df638703284d8993981409fdb4",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -2398,7 +2428,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_standard_assumptions.rs": {
-      "extracted_sha256": "b42a6947112e84773e1d040ee0b42c3c153257d85875f4713886dfe352d26a7c",
+      "extracted_sha256": "e423d40b1fd5f09e5100524d7e0e7c0c13c9e5fcc39772cb07813917a925dd1b",
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
@@ -3475,7 +3505,7 @@
     "src/sema/check/unions.rs": {
       "upstream": "src/sema/check/unions.rs",
       "sha256": "80987181d7283550317b7096535b41e417eab932147592c0524e02c698f40776",
-      "extracted_sha256": "fc4399fc415234294ca18ee243e862f10345f91a881bcfaed2614c61ac692a48"
+      "extracted_sha256": "005c46645d9cd4fa1dd9cc2df1c5baaaa2323658e57b105202e208bbbe76ae42"
     },
     "src/sema/components.rs": {
       "upstream": "src/sema/components.rs",

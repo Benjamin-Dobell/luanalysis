@@ -557,6 +557,18 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Return the results of a call to `any` unchanged from the assert intrinsic, through kernel a66fe8a.",
 })
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_runtime_tables.rs",
+    "patch": "vendor/patches/bun-sema-runtime-member-cycles.patch",
+    "reason": "Infer a runtime-table store whose value reads the member it stores with that member unresolved, as a class member is, through kernel 0c301c2.",
+})
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-task-independence.patch",
+    "reason": "Use module exports, global declarations and loader states completed under an uncacheable context, uncached; follow straight runs of flow nodes in the loader walk without a frame each; and order unnamed Lua types in unions by declaration and structure rather than creation, so reports do not depend on how files are grouped into tasks, through kernel 8b93185.",
+} for path in ["native_globals.rs", "native_project.rs", "native_standard_assumptions.rs", "unions.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
