@@ -1,6 +1,5 @@
 //! Acceptance gates for native Lua result packs. `ignore` means the named
 //! backend/source contract is pending, not that an unsupported diagnostic passes.
-//! Provenance and intentional legacy differences: docs/LUA-VALUES-ACCEPTANCE.md.
 
 use luanalysis::{CheckReport, check};
 

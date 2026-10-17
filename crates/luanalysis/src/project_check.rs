@@ -269,8 +269,8 @@ pub(crate) fn check_project_with_workspace(
     roots.extend(project.files.iter().map(|file| file.id).filter(|file| !explicit.contains(file)));
     let requested = NonZeroUsize::new(options.jobs)
         .unwrap_or_else(|| std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN));
-    // One task per worker, a measured deviation from Bun's warm-up and chunk plan
-    // (docs/BUN-CHECK-COMPARISON.md, item 9). Bun's plan relies on cheap tasks and
+    // One task per worker, a measured deviation from Bun's warm-up and chunk plan.
+    // Bun's plan relies on cheap tasks and
     // on publishing what a task derives; here a task builds the whole project
     // registry and derives the native results it needs itself, so every extra
     // task repeats that work. On Prototype Inertia Bun's plan took 4.1 to 4.6 s

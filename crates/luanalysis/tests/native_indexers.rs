@@ -1,6 +1,5 @@
 //! Lua keyed-table/indexer acceptance gates. Pending gates assert the eventual
 //! type behavior; an unsupported diagnostic never substitutes for that behavior.
-//! Exact legacy/corpus reductions are listed in docs/LUA-VALUES-ACCEPTANCE.md.
 
 use luanalysis::{CheckReport, check};
 

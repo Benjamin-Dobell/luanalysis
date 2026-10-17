@@ -11,8 +11,8 @@ fn uncertain_projected_capture_identity_does_not_hide_a_later_local_store() {
 
 // A captured read uses the table's prospective schema. Its members currently
 // come from every store whose receiver has that table's type, stores through
-// copies included, so the closure's read is typed by the copy's store.
-// docs/BUN-CHECK-COMPARISON.md item 4 recommends binder-level ownership.
+// copies included, so the closure's read is typed by the copy's store, where
+// binder-level ownership would type it by the table's own stores.
 #[test]
 fn captured_reads_use_the_prospective_schema_of_stores_through_copies() {
     for later in ["root.child={}\nmutate()\n", "local writer=root\nwriter.child={}\nmutate()\n", "root.other={}\n"] {
