@@ -65,3 +65,18 @@ fn an_unresolved_module_is_any_once_reported() {
     assert_eq!(report.matches("error[").count(), 1, "{report}");
     assert!(report.contains("error[TS2307]"), "{report}");
 }
+
+#[test]
+fn a_require_before_the_chunk_rebinds_its_environment_is_standard() {
+    // LuaLS's relabel and fs-utility modules end their imports with `_ENV = nil`.
+    let fixture = Fixture::new(&[
+        ("lp.lua", "return { P = function() return 1 end }\n"),
+        ("main.lua", "local m = require 'lp'\n_ENV = nil\nlocal p = m.P()\n"),
+        ("late.lua", "_ENV = nil\nlocal m = require 'lp'\n"),
+    ]);
+    let report = text(&fixture.check(&["main.lua"]));
+    assert!(report.contains("main.lua:3:7: p: number"), "{report}");
+    assert!(!report.contains("error["), "{report}");
+    // After the rebinding, `require` is a field of nil.
+    assert!(text(&fixture.check(&["late.lua"])).contains("late.lua:2:11: error[LUA2036]"));
+}

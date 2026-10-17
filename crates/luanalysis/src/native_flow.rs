@@ -169,6 +169,10 @@ pub(super) struct NativeFlowRecipes {
     capability_bindings: HashSet<BindingId>,
     environment_candidates: HashMap<BindingId, HashSet<Vec<flow::Key>>>,
     environment_cell_written: bool,
+    /// The position before which a main-chunk read sees the chunk's original environment: the
+    /// first write of `_ENV`, when every write is a top-level statement of the main chunk and no
+    /// label there lets a `goto` run an earlier statement again.
+    original_environment_until: Option<usize>,
     pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
     iterator_projections: HashMap<BindingId, (flow::IteratorId, usize)>,
     write_metadata: OriginalWriteMetadata,
@@ -255,6 +259,7 @@ impl NativeFlowSources {
         let environment_cell_written = program.graphs.iter().flat_map(|graph| &graph.nodes).any(|node| {
             matches!(&node.kind, flow::NodeKind::Write { address, .. } if address.reference.root == flow::ReferenceRoot::EnvironmentCell && address.reference.path.is_empty())
         });
+        let original_environment_until = environment_cell_written.then(|| original_environment_until(file, bound)).flatten();
         let mut result = NativeFlowRecipes {
             references: vec![Vec::new(); program.graphs.len()],
             reference_indices: vec![HashMap::default(); program.graphs.len()],
@@ -277,6 +282,7 @@ impl NativeFlowSources {
             capability_bindings: HashSet::default(),
             environment_candidates: HashMap::default(),
             environment_cell_written,
+            original_environment_until,
             pack_projections: HashMap::default(),
             iterator_projections: HashMap::default(),
             write_metadata: OriginalWriteMetadata::default(),
@@ -695,7 +701,9 @@ impl NativeFlowSources {
                         continue;
                     }
                     let Some(bit) = standard(name.text.as_bytes()) else { return Lexical::Ordinary; };
-                    if self.environment_cell_written || replaced & 1 << bit != 0 || bound.environment_binding_at(name.span.start).is_some() {
+                    let original_environment = graph.region == 0
+                        && self.original_environment_until.is_some_and(|until| name.span.start < until);
+                    if self.environment_cell_written && !original_environment || replaced & 1 << bit != 0 || bound.environment_binding_at(name.span.start).is_some() {
                         return Lexical::Unknown;
                     }
                     let reference = flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: vec![flow::Key::String(name.text.as_bytes().to_vec())] };
@@ -2165,4 +2173,24 @@ fn written_expression(value: &flow::ValueDemand) -> Option<flow::EvaluationId> {
         flow::ValueDemand::Evaluation(evaluation) | flow::ValueDemand::PackElement { evaluation, index: 0 } => Some(*evaluation),
         _ => None,
     }
+}
+
+fn original_environment_until(file: &luanalysis_syntax::File, bound: &super::bind::BoundFile) -> Option<usize> {
+    use luanalysis_syntax::StmtKind;
+    fn has_label(statements: &[luanalysis_syntax::Stmt]) -> bool {
+        statements.iter().any(|statement| match &statement.kind {
+            StmtKind::Label(_) => true,
+            StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
+            | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => has_label(body),
+            StmtKind::If { branches, else_branch } => branches.iter().any(|branch| has_label(&branch.body))
+                || else_branch.as_ref().is_some_and(|branch| has_label(&branch.body)),
+            _ => false,
+        })
+    }
+    if has_label(&file.statements) { return None }
+    bound.environment_rebindings().iter().map(|span| {
+        file.statements.iter().find(|statement| matches!(&statement.kind,
+            StmtKind::Assign { targets, .. } if targets.iter().any(|target| target.span == *span)))
+            .map(|statement| statement.span.start)
+    }).collect::<Option<Vec<_>>>()?.into_iter().min()
 }
