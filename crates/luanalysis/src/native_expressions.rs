@@ -48,13 +48,6 @@ impl NativeExpressions {
     pub(super) fn sources(&self) -> impl Iterator<Item=(NativeExpressionKey,&SourceExpression)> {
         self.expressions.iter().enumerate().map(|(index,source)| (NativeExpressionKey {snapshot:self.snapshot,node:index.try_into().expect("original expression index fits u32")},source))
     }
-    pub(super) fn new(
-        snapshot: u64,
-        file: &File,
-        functions: &HashMap<(usize, usize), u32>,
-    ) -> Self {
-        Self::from_recipes(std::sync::Arc::new(ExpressionRecipes::new(snapshot, file, functions)))
-    }
     pub(super) fn from_recipes(recipes: std::sync::Arc<ExpressionRecipes>) -> Self {
         Self {
             recipes,

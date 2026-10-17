@@ -78,6 +78,7 @@ pub(crate) struct PreparedSources {
 }
 
 impl ProjectRegistrySnapshot {
+    #[cfg(test)]
     pub(crate) fn new(
         inputs: Vec<RegistryInput>,
         dependencies: Vec<Dependency>,
@@ -205,6 +206,7 @@ impl ProjectRegistry {
         Self::new_with_environment(inputs, dependencies, policy, StandardEnvironmentProfile::LegacyMinimal)
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_environment(
         inputs: Vec<RegistryInput>,
         dependencies: Vec<Dependency>,
@@ -214,6 +216,7 @@ impl ProjectRegistry {
         Self::new_with_environment_and_overloads(inputs, dependencies, policy, environment_profile, crate::OverloadMode::default())
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_environment_and_overloads(
         inputs: Vec<RegistryInput>,
         dependencies: Vec<Dependency>,

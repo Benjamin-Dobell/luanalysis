@@ -6,6 +6,7 @@ members = [
     "crates/luanalysis-engine",
     "crates/luanalysis-fixtures",
     "crates/luanalysis-project",
+    "crates/luanalysis-ffi",
 ]
 exclude = ["vendor/bun"]
 

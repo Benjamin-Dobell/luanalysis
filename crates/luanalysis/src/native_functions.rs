@@ -200,6 +200,7 @@ impl SourceRecipes {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn flow(&self) -> &std::sync::Arc<super::native_flow::NativeFlowRecipes> {
         &self.flow
     }

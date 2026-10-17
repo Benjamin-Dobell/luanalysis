@@ -1,0 +1,18 @@
+[package]
+name = "luanalysis-ffi"
+description = "The C interface of Luanalysis: checking and the language server in the calling process."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The library is libluanalysis.so, libluanalysis.dylib or luanalysis.dll (and a static library).
+[lib]
+name = "luanalysis"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+checker = { package = "luanalysis", path = "../luanalysis" }
+
+[lints]
+workspace = true

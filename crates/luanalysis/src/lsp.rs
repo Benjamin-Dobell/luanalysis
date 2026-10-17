@@ -1,54 +1,135 @@
-//! `luanalysis lsp`: a language server over stdio. Each revision of the editor's buffers is
-//! checked as one complete project, as `check` checks it; hover and go-to-definition answer from
-//! the last completed check. Checks run on their own thread and coalesce: requests are answered
-//! while a check runs, and edits made meanwhile are checked next. Completions are language-service
-//! queries on the current text, answered on a thread of their own (`language_service`).
+//! A language server: `luanalysis lsp` over stdio, or `LanguageServer` in this process. Each
+//! revision of the editor's buffers is checked as one complete project, as `check` checks it;
+//! hover and go-to-definition answer from the last completed check. Checks run on their own
+//! thread and coalesce: requests are answered while a check runs, and edits made meanwhile are
+//! checked next. Completions are language-service queries on the current text, answered on a
+//! thread of their own (`language_service`).
 
-use crate::CheckInputs;
-use crate::lsp_json::Json;
-use luanalysis::DiagnosticCategory;
-use luanalysis::incremental::ProjectWorkspace;
-use luanalysis::language_service::{self, CompletionKind, CompletionSite};
-use luanalysis::project_check::{ProjectCheckOptions, ProjectCheckReport};
+use crate::DiagnosticCategory;
+use crate::cli::CheckInputs;
+use crate::incremental::ProjectWorkspace;
+use crate::json::Json;
+use crate::language_service::{self, CompletionKind, CompletionSite};
+use crate::project_check::{ProjectCheckOptions, ProjectCheckReport};
 use luanalysis_project::{DependencyOutcome, Project, SourceOrigin};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 /// LSP error codes.
+const PARSE_ERROR: i64 = -32700;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_REQUEST: i64 = -32600;
 const SERVER_NOT_INITIALIZED: i64 = -32002;
 
-pub(crate) fn run(inputs: CheckInputs, mut options: ProjectCheckOptions) -> i32 {
-    // Hover reads the described types of the last check; an editor shows inspections.
+/// Receives each message for the client: one JSON-RPC message, without framing.
+type Output = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// A language server running in this process, as `luanalysis lsp` runs over stdio.
+pub struct LanguageServer {
+    connection: Connection,
+    server: Option<std::thread::JoinHandle<i32>>,
+}
+
+/// Delivers the client's messages to a `LanguageServer`, from any thread.
+#[derive(Clone)]
+pub struct Connection {
+    events: mpsc::Sender<Event>,
+}
+
+impl Connection {
+    /// Delivers one message from the client: a JSON-RPC message, without framing. Returns false
+    /// once the server has stopped.
+    pub fn send(&self, message: &str) -> bool {
+        let event = match Json::parse(message) {
+            Ok(message) => Event::Message(message),
+            Err(error) => Event::Malformed(error.to_string()),
+        };
+        self.events.send(event).is_ok()
+    }
+
+    /// Ends the client's stream, as a closed stdin ends `luanalysis lsp`.
+    pub fn close(&self) {
+        let _ = self.events.send(Event::Closed);
+    }
+}
+
+impl LanguageServer {
+    /// Starts a server for `inputs` and `options`, as `luanalysis lsp` takes them. `output` is
+    /// called with each message for the client, in order, from the server's own thread.
+    pub fn start(inputs: CheckInputs, options: ProjectCheckOptions, output: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        let options = server_options(options);
+        let (events, received) = mpsc::channel();
+        let server_events = events.clone();
+        let output: Output = Arc::new(output);
+        let server = std::thread::Builder::new()
+            .name("luanalysis-lsp".into())
+            .spawn(move || Server::new(inputs, options, server_events, output).serve(received))
+            .expect("start the language server's thread");
+        Self { connection: Connection { events }, server: Some(server) }
+    }
+
+    /// The connection delivering the client's messages.
+    pub fn connection(&self) -> Connection {
+        self.connection.clone()
+    }
+
+    /// Delivers one message from the client (`Connection::send`).
+    pub fn send(&self, message: &str) -> bool {
+        self.connection.send(message)
+    }
+
+    /// Waits for the server to end, after the client's `exit` notification or the end of its
+    /// stream. The exit code is 0 after `shutdown` and `exit`, and 1 otherwise.
+    pub fn wait(mut self) -> i32 {
+        self.server.take().map_or(1, |server| server.join().unwrap_or(1))
+    }
+
+    /// Ends the client's stream and waits for the server (`Connection::close`, `wait`).
+    pub fn stop(self) -> i32 {
+        self.connection.close();
+        self.wait()
+    }
+}
+
+impl Drop for LanguageServer {
+    fn drop(&mut self) {
+        if let Some(server) = self.server.take() {
+            self.connection.close();
+            let _ = server.join();
+        }
+    }
+}
+
+/// Hover reads the described types of the last check, and an editor shows inspections. Checks
+/// leave a core to the query thread, so a completion does not wait on a check.
+fn server_options(mut options: ProjectCheckOptions) -> ProjectCheckOptions {
     options.describe_types = true;
     options.inspections = true;
-    // Checks leave a core to the query thread, so a completion does not wait on a check.
     if options.jobs == 0 {
         options.jobs = std::thread::available_parallelism().map_or(1, |cores| cores.get().saturating_sub(1).max(1));
     }
-    let (events, received) = mpsc::channel();
-    let reader = events.clone();
+    options
+}
+
+/// `luanalysis lsp`: the server over stdin and stdout, with LSP's Content-Length framing.
+pub fn run_stdio(inputs: CheckInputs, options: ProjectCheckOptions) -> i32 {
+    let server = LanguageServer::start(inputs, options, |message| {
+        let mut out = io::stdout().lock();
+        // A closed client ends the server through its input.
+        let _ = write!(out, "Content-Length: {}\r\n\r\n{message}", message.len());
+        let _ = out.flush();
+    });
+    let connection = server.connection();
     std::thread::spawn(move || {
         let mut input = BufReader::new(io::stdin().lock());
-        loop {
-            match read_message(&mut input) {
-                Ok(Some(text)) => match Json::parse(&text) {
-                    Ok(message) => {
-                        if reader.send(Event::Message(message)).is_err() { return; }
-                    }
-                    Err(error) => eprintln!("luanalysis lsp: ignoring a malformed message: {error}"),
-                },
-                Ok(None) | Err(_) => {
-                    let _ = reader.send(Event::Closed);
-                    return;
-                }
-            }
+        while let Ok(Some(text)) = read_message(&mut input) {
+            if !connection.send(&text) { return; }
         }
+        connection.close();
     });
-    Server::new(inputs, options, events).serve(received)
+    server.wait()
 }
 
 fn read_message(input: &mut impl BufRead) -> io::Result<Option<String>> {
@@ -78,6 +159,8 @@ fn read_message(input: &mut impl BufRead) -> io::Result<Option<String>> {
 
 enum Event {
     Message(Json),
+    /// A message that is not JSON.
+    Malformed(String),
     Closed,
     Checked(Box<Snapshot>),
     /// A response computed off the main thread.
@@ -117,6 +200,7 @@ struct Server {
     inputs: Option<CheckInputs>,
     options: ProjectCheckOptions,
     events: mpsc::Sender<Event>,
+    output: Output,
     jobs: Option<mpsc::Sender<Job>>,
     queries: Option<mpsc::Sender<Query>>,
     encoding: Encoding,
@@ -136,11 +220,12 @@ struct Server {
 }
 
 impl Server {
-    fn new(inputs: CheckInputs, options: ProjectCheckOptions, events: mpsc::Sender<Event>) -> Self {
+    fn new(inputs: CheckInputs, options: ProjectCheckOptions, events: mpsc::Sender<Event>, output: Output) -> Self {
         Self {
             inputs: Some(inputs),
             options,
             events,
+            output,
             jobs: None,
             queries: None,
             encoding: Encoding::Utf16,
@@ -168,6 +253,7 @@ impl Server {
                     }
                     Event::Checked(snapshot) => self.checked(*snapshot),
                     Event::Answered(id, result) => self.respond(id, result),
+                    Event::Malformed(error) => self.respond_error(Json::Null, PARSE_ERROR, &format!("a message that is not JSON: {error}")),
                 }
                 next = received.try_recv().ok();
             }
@@ -479,11 +565,11 @@ impl Server {
     }
 
     fn respond(&self, id: Json, result: Json) {
-        write_message(&Json::object([("jsonrpc", Json::from("2.0")), ("id", id), ("result", result)]));
+        self.write(&Json::object([("jsonrpc", Json::from("2.0")), ("id", id), ("result", result)]));
     }
 
     fn respond_error(&self, id: Json, code: i64, message: &str) {
-        write_message(&Json::object([
+        self.write(&Json::object([
             ("jsonrpc", Json::from("2.0")),
             ("id", id),
             ("error", Json::object([("code", Json::from(code)), ("message", Json::from(message))])),
@@ -491,17 +577,14 @@ impl Server {
     }
 
     fn notify(&self, method: &str, params: Json) {
-        write_message(&Json::object([("jsonrpc", Json::from("2.0")), ("method", Json::from(method)), ("params", params)]));
+        self.write(&Json::object([("jsonrpc", Json::from("2.0")), ("method", Json::from(method)), ("params", params)]));
+    }
+
+    fn write(&self, message: &Json) {
+        (self.output)(&message.to_string());
     }
 }
 
-fn write_message(message: &Json) {
-    let body = message.to_string();
-    let mut out = io::stdout().lock();
-    // A closed client ends the server through its input.
-    let _ = write!(out, "Content-Length: {}\r\n\r\n{body}", body.len());
-    let _ = out.flush();
-}
 
 fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Receiver<Job>, events: mpsc::Sender<Event>) {
     let mut workspace = ProjectWorkspace::new();

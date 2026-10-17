@@ -383,6 +383,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "luanalysis-ffi"
+version = "0.1.0"
+dependencies = [
+ "luanalysis",
+]
+
+[[package]]
 name = "luanalysis-fixtures"
 version = "0.1.0"
 dependencies = [

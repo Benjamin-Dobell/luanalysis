@@ -1,5 +1,5 @@
 //! CLI transport over owned original-source reports. No checker IDs escape.
-use luanalysis::{location, project_check::ProjectCheckReport};
+use crate::{location, project_check::ProjectCheckReport};
 use luanalysis_syntax::Span;
 use std::{collections::HashMap, ffi::OsString, fmt::Write, path::PathBuf};
 
@@ -195,7 +195,8 @@ impl CliReport {
             println!("No type errors in {} file(s).", self.files_checked);
         }
     }
-    fn to_json(&self) -> String {
+    /// The report as `--format json` prints it.
+    pub fn to_json(&self) -> String {
         let mut json = format!(
             "{{\"formatVersion\":1,\"success\":{},\"exitCode\":{},\"filesChecked\":{},\"rangeEncoding\":\"utf-8-bytes\",\"positionEncoding\":\"unicode-scalars-1-based\",\"diagnostics\":[",
             self.exit_code == 0,
