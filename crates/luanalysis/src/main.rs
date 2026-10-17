@@ -12,6 +12,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 mod cli_output;
+mod lsp;
+mod lsp_json;
 use cli_output::{CliReport, HostDiagnostic, OutputFormat};
 
 fn main() {
@@ -36,6 +38,13 @@ fn run() -> i32 {
         );
         return 0;
     }
+    if command == "lsp" {
+        return match parse_arguments(args.collect()) {
+            Ok(Parsed::Help) => { help(); 0 }
+            Ok(Parsed::Run(arguments)) => lsp::run(arguments.inputs, arguments.options),
+            Err(message) => { eprintln!("luanalysis: {message}"); 2 }
+        };
+    }
     if command != "check" {
         eprintln!("luanalysis: unknown command {:?}", command);
         help();
@@ -43,156 +52,14 @@ fn run() -> i32 {
     }
     let remaining: Vec<_> = args.collect();
     let format = OutputFormat::requested(&remaining);
-    let mut args = remaining.into_iter();
-    let mut dump = false;
-    let mut watch = false;
-    let mut jobs = 0;
-    let mut files = Vec::new();
-    let mut libraries = Vec::new();
-    let mut module_roots = Vec::new();
-    let mut package_path = None;
-    let mut environment = StandardEnvironmentProfile::LegacyMinimal;
-    let mut overload_mode = luanalysis::OverloadMode::default();
-    let mut no_implicit_any = false;
-    let mut assume_unknown_standard_effects = true;
-    let mut positional = false;
-    while let Some(arg) = args.next() {
-        if !positional && arg == "--" {
-            positional = true;
-            continue;
-        }
-        if !positional && arg == "--dump-types" {
-            dump = true;
-            continue;
-        }
-        if !positional && arg == "--watch" {
-            watch = true;
-            continue;
-        }
-        if !positional && arg == "--jobs" {
-            let Some(count) = args.next().and_then(|value| {
-                let value = value.to_str()?;
-                if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                    return None;
-                }
-                value.parse::<usize>().ok().filter(|count| *count != 0)
-            }) else {
-                return usage_error(format, "--jobs requires a positive integer");
-            };
-            jobs = count;
-            continue;
-        }
-        if !positional && arg == "--legacy-overloads" {
-            overload_mode = luanalysis::OverloadMode::LegacyExposeImplementation;
-            continue;
-        }
-        if !positional && arg == "--no-implicit-any" {
-            no_implicit_any = true;
-            continue;
-        }
-        if !positional && arg == "--strict-standard-effects" {
-            assume_unknown_standard_effects = false;
-            continue;
-        }
-        if !positional && arg == "--format" {
-            if !matches!(
-                args.next().as_deref().and_then(|value| value.to_str()),
-                Some("text" | "json")
-            ) {
-                return usage_error(format, "--format requires text or json");
-            }
-            continue;
-        }
-        if !positional && arg == "--library" {
-            let Some(path) = args.next() else {
-                return usage_error(format, "--library requires a file or directory path");
-            };
-            libraries.push(PathBuf::from(path));
-            continue;
-        }
-        if !positional && arg == "--no-stdlib" {
-            environment = StandardEnvironmentProfile::None;
-            continue;
-        }
-        if !positional && arg == "--lua-version" {
-            let Some(version) = args.next() else {
-                return usage_error(
-                    format,
-                    "--lua-version requires a supported version (5.0, 5.1, 5.2, 5.3 or 5.4)",
-                );
-            };
-            environment = match version.to_str() {
-                Some("5.0") => StandardEnvironmentProfile::Lua50,
-                Some("5.1") => StandardEnvironmentProfile::Lua51,
-                Some("5.2") => StandardEnvironmentProfile::Lua52,
-                Some("5.3") => StandardEnvironmentProfile::Lua53,
-                Some("5.4") => StandardEnvironmentProfile::Lua54,
-                _ => {
-                    return usage_error(
-                        format,
-                        &format!(
-                            "Lua standard environment {:?} is not implemented; supported versions: 5.0, 5.1, 5.2, 5.3, 5.4",
-                            version
-                        ),
-                    );
-                }
-            };
-            continue;
-        }
-        if !positional && arg == "--module-root" {
-            let Some(path) = args.next() else {
-                return usage_error(format, "--module-root requires a directory path");
-            };
-            module_roots.push(PathBuf::from(path));
-            continue;
-        }
-        if !positional && arg == "--package-path" {
-            let Some(path) = args.next().and_then(|value| value.into_string().ok()) else {
-                return usage_error(
-                    format,
-                    "--package-path requires UTF-8 package.path templates",
-                );
-            };
-            package_path = Some(path);
-            continue;
-        }
-        if !positional && (arg == "--help" || arg == "-h") {
-            help();
-            return 0;
-        }
-        if !positional && arg.to_string_lossy().starts_with('-') {
-            return usage_error(format, &format!("unknown option {:?}", arg));
-        }
-        files.push(PathBuf::from(arg));
-    }
-    if files.is_empty() && libraries.is_empty() {
+    let Arguments { dump, watch, inputs, options } = match parse_arguments(remaining) {
+        Ok(Parsed::Run(arguments)) => arguments,
+        Ok(Parsed::Help) => { help(); return 0; }
+        Err(message) => return usage_error(format, &message),
+    };
+    if inputs.files.is_empty() && inputs.libraries.is_empty() {
         return usage_error(format, "check requires at least one Lua file");
     }
-
-    let inputs = CheckInputs {
-        files,
-        libraries,
-        module_roots,
-        package_path,
-    };
-    let loader_policy = match environment {
-        StandardEnvironmentProfile::Lua50 => NativeLoaderPolicy::Lua50StandardFile,
-        StandardEnvironmentProfile::Lua51 => NativeLoaderPolicy::Lua51StandardFile,
-        StandardEnvironmentProfile::Lua52 => NativeLoaderPolicy::Lua52StandardFile,
-        StandardEnvironmentProfile::Lua53 => NativeLoaderPolicy::Lua53StandardFile,
-        StandardEnvironmentProfile::Lua54
-        | StandardEnvironmentProfile::LegacyMinimal
-        | StandardEnvironmentProfile::None => NativeLoaderPolicy::Lua54StandardFile,
-    };
-    let options = ProjectCheckOptions {
-        environment,
-        overload_mode,
-        no_implicit_any,
-        loader_policy,
-        assume_unknown_standard_effects,
-        jobs,
-        describe_types: dump,
-    };
     let mut workspace = ProjectWorkspace::new();
     let mut discovery = match inputs.discover() {
         Ok(discovery) => discovery,
@@ -243,6 +110,160 @@ fn run() -> i32 {
             }
         }
     }
+}
+
+/// The options of `check` and `lsp`.
+struct Arguments {
+    dump: bool,
+    watch: bool,
+    inputs: CheckInputs,
+    options: ProjectCheckOptions,
+}
+
+enum Parsed {
+    Run(Arguments),
+    Help,
+}
+
+fn parse_arguments(remaining: Vec<std::ffi::OsString>) -> Result<Parsed, String> {
+    let mut args = remaining.into_iter();
+    let mut dump = false;
+    let mut watch = false;
+    let mut jobs = 0;
+    let mut files = Vec::new();
+    let mut libraries = Vec::new();
+    let mut module_roots = Vec::new();
+    let mut package_path = None;
+    let mut environment = StandardEnvironmentProfile::LegacyMinimal;
+    let mut overload_mode = luanalysis::OverloadMode::default();
+    let mut no_implicit_any = false;
+    let mut assume_unknown_standard_effects = true;
+    let mut positional = false;
+    while let Some(arg) = args.next() {
+        if !positional && arg == "--" {
+            positional = true;
+            continue;
+        }
+        if !positional && arg == "--dump-types" {
+            dump = true;
+            continue;
+        }
+        if !positional && arg == "--watch" {
+            watch = true;
+            continue;
+        }
+        if !positional && arg == "--jobs" {
+            let Some(count) = args.next().and_then(|value| {
+                let value = value.to_str()?;
+                if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return None;
+                }
+                value.parse::<usize>().ok().filter(|count| *count != 0)
+            }) else {
+                return Err("--jobs requires a positive integer".into());
+            };
+            jobs = count;
+            continue;
+        }
+        if !positional && arg == "--legacy-overloads" {
+            overload_mode = luanalysis::OverloadMode::LegacyExposeImplementation;
+            continue;
+        }
+        if !positional && arg == "--no-implicit-any" {
+            no_implicit_any = true;
+            continue;
+        }
+        if !positional && arg == "--strict-standard-effects" {
+            assume_unknown_standard_effects = false;
+            continue;
+        }
+        if !positional && arg == "--format" {
+            if !matches!(
+                args.next().as_deref().and_then(|value| value.to_str()),
+                Some("text" | "json")
+            ) {
+                return Err("--format requires text or json".into());
+            }
+            continue;
+        }
+        if !positional && arg == "--library" {
+            let Some(path) = args.next() else {
+                return Err("--library requires a file or directory path".into());
+            };
+            libraries.push(PathBuf::from(path));
+            continue;
+        }
+        if !positional && arg == "--no-stdlib" {
+            environment = StandardEnvironmentProfile::None;
+            continue;
+        }
+        if !positional && arg == "--lua-version" {
+            let Some(version) = args.next() else {
+                return Err("--lua-version requires a supported version (5.0, 5.1, 5.2, 5.3 or 5.4)".into());
+            };
+            environment = match version.to_str() {
+                Some("5.0") => StandardEnvironmentProfile::Lua50,
+                Some("5.1") => StandardEnvironmentProfile::Lua51,
+                Some("5.2") => StandardEnvironmentProfile::Lua52,
+                Some("5.3") => StandardEnvironmentProfile::Lua53,
+                Some("5.4") => StandardEnvironmentProfile::Lua54,
+                _ => {
+                    return Err(format!(
+                        "Lua standard environment {:?} is not implemented; supported versions: 5.0, 5.1, 5.2, 5.3, 5.4",
+                        version
+                    ));
+                }
+            };
+            continue;
+        }
+        if !positional && arg == "--module-root" {
+            let Some(path) = args.next() else {
+                return Err("--module-root requires a directory path".into());
+            };
+            module_roots.push(PathBuf::from(path));
+            continue;
+        }
+        if !positional && arg == "--package-path" {
+            let Some(path) = args.next().and_then(|value| value.into_string().ok()) else {
+                return Err("--package-path requires UTF-8 package.path templates".into());
+            };
+            package_path = Some(path);
+            continue;
+        }
+        if !positional && (arg == "--help" || arg == "-h") {
+            return Ok(Parsed::Help);
+        }
+        if !positional && arg.to_string_lossy().starts_with('-') {
+            return Err(format!("unknown option {:?}", arg));
+        }
+        files.push(PathBuf::from(arg));
+    }
+
+    let inputs = CheckInputs {
+        files,
+        libraries,
+        module_roots,
+        package_path,
+    };
+    let loader_policy = match environment {
+        StandardEnvironmentProfile::Lua50 => NativeLoaderPolicy::Lua50StandardFile,
+        StandardEnvironmentProfile::Lua51 => NativeLoaderPolicy::Lua51StandardFile,
+        StandardEnvironmentProfile::Lua52 => NativeLoaderPolicy::Lua52StandardFile,
+        StandardEnvironmentProfile::Lua53 => NativeLoaderPolicy::Lua53StandardFile,
+        StandardEnvironmentProfile::Lua54
+        | StandardEnvironmentProfile::LegacyMinimal
+        | StandardEnvironmentProfile::None => NativeLoaderPolicy::Lua54StandardFile,
+    };
+    let options = ProjectCheckOptions {
+        environment,
+        overload_mode,
+        no_implicit_any,
+        loader_policy,
+        assume_unknown_standard_effects,
+        jobs,
+        describe_types: dump,
+    };
+    Ok(Parsed::Run(Arguments { dump, watch, inputs, options }))
 }
 
 struct CheckInputs {
@@ -488,5 +509,8 @@ fn help() {
     );
     println!(
         "Selected standard profiles preserve reached builtin/environment bindings across unknown calls and property effects; known assignments still apply.\n--strict-standard-effects requires runtime-effect preservation proofs instead."
+    );
+    println!(
+        "\nluanalysis lsp [check options] [<file.lua|directory>...]\n\nA language server over stdio: diagnostics, hover and go-to-definition. It accepts the options of check; without paths it checks the editor's workspace root. Each revision of the editor's buffers is checked as one project."
     );
 }

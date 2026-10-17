@@ -418,6 +418,17 @@ impl Project {
     pub fn load_plan(
         resolver: &Resolver,
         plan: ProjectLoadPlan,
+        requires: impl FnMut(&SourceFile) -> Vec<RequireRequest>,
+    ) -> Self {
+        Self::load_plan_with_overlays(resolver, plan, &HashMap::new(), requires)
+    }
+
+    /// As `load_plan`, but a file whose canonical path is in `overlays` is read
+    /// from there instead of the filesystem: an editor's unsaved buffers.
+    pub fn load_plan_with_overlays(
+        resolver: &Resolver,
+        plan: ProjectLoadPlan,
+        overlays: &HashMap<PathBuf, String>,
         mut requires: impl FnMut(&SourceFile) -> Vec<RequireRequest>,
     ) -> Self {
         let id = NEXT_PROJECT.fetch_add(1, Ordering::Relaxed);
@@ -437,7 +448,7 @@ impl Project {
         };
         let mut pending = VecDeque::new();
         for input in plan.libraries {
-            match project.register(&input.path, Some(input.role)) {
+            match project.register(&input.path, Some(input.role), overlays) {
                 Ok((file, new)) => {
                     if !project.libraries.contains(&file) {
                         project.libraries.push(file);
@@ -451,7 +462,7 @@ impl Project {
             }
         }
         for path in plan.entries {
-            match project.register(&path, Some(SourceRole::Implementation)) {
+            match project.register(&path, Some(SourceRole::Implementation), overlays) {
                 Ok((file, new)) => {
                     if !project.entries.contains(&file) {
                         project.entries.push(file);
@@ -476,7 +487,7 @@ impl Project {
                 } else {
                     match resolver.resolve(&request.module) {
                         Err(error) => DependencyOutcome::Unresolved(error),
-                        Ok(module) => match project.register(&module.path, None) {
+                        Ok(module) => match project.register(&module.path, None, overlays) {
                             Ok((target, new)) => {
                                 if new
                                     && project.files[target.index as usize].role
@@ -559,6 +570,7 @@ impl Project {
         &mut self,
         path: &Path,
         role: Option<SourceRole>,
+        overlays: &HashMap<PathBuf, String>,
     ) -> Result<(FileId, bool), RegisterError> {
         let alias = std::path::absolute(path)
             .map_err(|error| RegisterError::Path(PathFailure::new(path, error)))?;
@@ -578,8 +590,11 @@ impl Project {
             self.by_path.insert(alias, id);
             return Ok((id, false));
         }
-        let source = fs::read_to_string(&canonical)
-            .map_err(|error| RegisterError::Path(PathFailure::new(canonical.clone(), error)))?;
+        let source = match overlays.get(&canonical) {
+            Some(source) => source.clone(),
+            None => fs::read_to_string(&canonical)
+                .map_err(|error| RegisterError::Path(PathFailure::new(canonical.clone(), error)))?,
+        };
         let id = FileId {
             project: self.id,
             index: u32::try_from(self.files.len()).expect("file index fits u32"),
