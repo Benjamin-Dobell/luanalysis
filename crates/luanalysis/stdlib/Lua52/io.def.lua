@@ -236,12 +236,12 @@ function file:write(...) end
 
 --- * `io.stderr`: Standard error.
 ---@type file
-stderr = nil
+io.stderr = nil
 
 --- * `io.stdin`: Standard in.
 ---@type file
-stdin = nil
+io.stdin = nil
 
 --- * `io.stdout`: Standard out.
 ---@type file
-stdout = nil
+io.stdout = nil

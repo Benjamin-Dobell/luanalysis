@@ -91,3 +91,13 @@ fn asserting_the_results_of_an_unresolved_modules_call_is_any() {
     assert!(report.contains("main.lua:2:7: fd: any"), "{report}");
     assert_eq!(report.matches("error[").count(), 1, "{report}");
 }
+
+#[test]
+fn the_standard_streams_are_fields_of_io() {
+    let fixture = Fixture::new(&[("main.lua", "io.stderr:write('x')\nlocal out = io.stdout\nlocal input = io.stdin\n")]);
+    for version in ["5.1", "5.2", "5.3", "5.4"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&fixture.0)
+            .args(["check", "--lua-version", version, "main.lua"]).output().unwrap();
+        assert!(output.status.success(), "{version}: {}", text(&output));
+    }
+}
