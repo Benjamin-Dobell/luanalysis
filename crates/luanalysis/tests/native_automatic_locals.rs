@@ -278,3 +278,17 @@ fn cli_reports_original_automatic_flow_error_and_accepts_the_correction() {
     );
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn a_local_a_nested_function_assigns_is_undetermined_where_no_own_write_reaches() {
+    // The declaring function cannot see the callback's write: `found` is not merely nil after
+    // the call, and its guard does not leave `never`.
+    let source = "---@param callback fun(value: number)\nlocal function each(callback) callback(1) end\nlocal found\neach(function(value) found = value end)\nif not found then return end\nlocal after = found + 1\nfound = 'text'\nlocal own = found\n";
+    let report = clean(source);
+    assert_eq!(report.type_at(source.find("own =").unwrap()).unwrap(), "string");
+    let codes: Vec<_> = check_strict(source).diagnostics.iter().map(|diagnostic| diagnostic.code).collect();
+    assert!(codes.contains(&"TS7034") && codes.contains(&"TS7005"), "{codes:?}");
+    // A local only its own function assigns keeps its flow type.
+    let plain = "local value\nlocal read = value\n";
+    assert_eq!(clean(plain).type_at(plain.find("read =").unwrap()).unwrap(), "nil");
+}

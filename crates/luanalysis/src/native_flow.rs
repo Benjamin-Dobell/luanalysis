@@ -33,6 +33,8 @@ pub(super) enum ValueRecipe {
         index: usize,
     },
     Nil,
+    /// The nil a local declaration without a value writes.
+    DeclarationNil(BindingId),
     Function(u32),
     NumericIteration,
     IteratorHeader(flow::IteratorId),
@@ -362,7 +364,12 @@ impl NativeFlowSources {
                         }
                         other => {
                             let recipe = match other {
-                                flow::ValueDemand::Nil => ValueRecipe::Nil,
+                                flow::ValueDemand::Nil => match &address.reference.root {
+                                    flow::ReferenceRoot::Binding(binding) if *declaration && address.reference.path.is_empty() => {
+                                        ValueRecipe::DeclarationNil(*binding)
+                                    }
+                                    _ => ValueRecipe::Nil,
+                                },
                                 flow::ValueDemand::Function(graph) => ValueRecipe::Function(*graph),
                                 flow::ValueDemand::NumericIteration => {
                                     ValueRecipe::NumericIteration
@@ -1762,7 +1769,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             }
             ValueRecipe::Evaluation(evaluation)=>self.sources.program.evaluation(*evaluation),
             ValueRecipe::Function(region) => return self.alias_function_value(*region, input),
-            ValueRecipe::Nil=>return NativeAliasValue::NotTable,
+            ValueRecipe::Nil | ValueRecipe::DeclarationNil(_)=>return NativeAliasValue::NotTable,
             ValueRecipe::NumericIteration=>return NativeAliasValue::NonNilScalar,
             _=>return NativeAliasValue::Unknown,
         };

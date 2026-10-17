@@ -1091,6 +1091,17 @@ impl NativeRegistry {
             .insert(binding, captured);
     }
 
+    /// An automatic local is declared nil, unless a nested function assigns it. Its declaring
+    /// function cannot see that write, so a read there that no assignment of its own reaches
+    /// cannot be determined, and is `any` as in TypeScript, reported under `--no-implicit-any`.
+    fn automatic_declaration_value(&self, binding: BindingId, queries: &mut dyn TypeQueries) -> Type {
+        if self.binding_is_automatic(binding) && self.bound.written_in_nested_function(binding) {
+            queries.auto_variable_constraint()
+        } else {
+            Type::Nil
+        }
+    }
+
     pub(super) fn binding_is_automatic(&self, binding: BindingId) -> bool {
         matches!(self.declarations.get(&binding), Some(DeclarationSource::Local { automatic: true, .. }))
     }
@@ -2197,6 +2208,7 @@ impl NativeRegistry {
     ) -> Type {
         match value {
             ValueRecipe::Nil => Type::Nil,
+            ValueRecipe::DeclarationNil(binding) => self.automatic_declaration_value(*binding, queries),
             ValueRecipe::PackElement { evaluation, index } => {
                 let expression = &sources
                     .program

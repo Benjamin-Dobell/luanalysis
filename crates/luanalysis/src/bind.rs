@@ -246,6 +246,25 @@ impl BoundFile {
             occurrence.binding == Some(binding) && occurrence.kind != OccurrenceKind::Declaration
         })
     }
+
+    /// Whether a function nested in the one that declares `binding` assigns it, a write that
+    /// the declaring function's control flow cannot see.
+    pub fn written_in_nested_function(&self, binding: BindingId) -> bool {
+        let owner = self.function_scope(self.declaration(binding).scope);
+        self.references(binding).any(|occurrence| {
+            occurrence.kind == OccurrenceKind::Write && self.function_scope(occurrence.scope) != owner
+        })
+    }
+
+    fn function_scope(&self, mut scope: ScopeId) -> ScopeId {
+        loop {
+            let current = self.scope(scope);
+            match (current.kind, current.parent) {
+                (ScopeKind::Function | ScopeKind::File, _) | (_, None) => return scope,
+                (_, Some(parent)) => scope = parent,
+            }
+        }
+    }
 }
 
 /// Resolves Lua names without constructing a TypeScript AST or invoking a checker.
