@@ -201,7 +201,8 @@ mod tests {
         let server = unsafe { luanalysis_server_start(pointers.as_ptr(), pointers.len(), Some(collect), user_data) };
         assert!(!server.is_null());
         let send = |message: &str| unsafe { luanalysis_server_send(server, message.as_ptr().cast(), message.len()) };
-        let uri = format!("file://{}", directory.display());
+        let path = directory.display().to_string().replace('\\', "/");
+        let uri = if path.starts_with('/') { format!("file://{path}") } else { format!("file:///{path}") };
         assert_eq!(send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":"{uri}","capabilities":{{}}}}}}"#)), 0);
         let initialized = received.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
         assert!(initialized.contains(r#""id":1"#) && initialized.contains("completionProvider"), "{initialized}");

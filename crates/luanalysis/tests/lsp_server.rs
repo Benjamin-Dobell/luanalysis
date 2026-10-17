@@ -25,8 +25,14 @@ fn fixture() -> PathBuf {
 }
 
 fn uri(path: &Path) -> String {
+    let mut path = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        if let Some(rest) = path.strip_prefix(r"\\?\") { path = rest.to_owned() }
+        path = path.replace('\\', "/");
+        if path.as_bytes().get(1) == Some(&b':') { path.insert(0, '/') }
+    }
     let mut uri = String::from("file://");
-    for byte in path.to_string_lossy().bytes() {
+    for byte in path.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
             uri.push(byte as char);
         } else {

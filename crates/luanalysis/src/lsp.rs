@@ -854,14 +854,28 @@ fn uri_to_path(uri: &str) -> Option<PathBuf> {
             index += 1;
         }
     }
-    let path = PathBuf::from(String::from_utf8(decoded).ok()?);
+    let path = String::from_utf8(decoded).ok()?;
+    // A Windows path in a URI follows a slash: file:///C:/Users.
+    let path = match path.as_bytes() {
+        [b'/', drive, b':', ..] if cfg!(windows) && drive.is_ascii_alphabetic() => PathBuf::from(&path[1..]),
+        _ => PathBuf::from(path),
+    };
     // Checked paths are canonical; an editor's may name a link to the same file.
     Some(std::fs::canonicalize(&path).unwrap_or(path))
 }
 
 fn path_to_uri(path: &Path) -> String {
-    let mut uri = String::from("file://");
-    for byte in path.to_string_lossy().bytes() {
+    let mut path = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        // Canonical Windows paths are verbatim (\\?\C:\Users); URIs name C:/Users.
+        if let Some(rest) = path.strip_prefix(r"\\?\UNC\") { path = format!(r"\\{rest}") }
+        else if let Some(rest) = path.strip_prefix(r"\\?\") { path = rest.to_owned() }
+        path = path.replace('\\', "/");
+        if path.as_bytes().get(1) == Some(&b':') { path.insert(0, '/') }
+    }
+    // A UNC path (//server/share) names its host: file://server/share.
+    let mut uri = String::from(if path.starts_with("//") { "file:" } else { "file://" });
+    for byte in path.bytes() {
         if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
             uri.push(byte as char);
         } else {
