@@ -1686,6 +1686,12 @@ impl<'p, 's> Checker<'p, 's> {
             (None, &TypeData::NativeTypeParam { declaration, .. }) => {
                 self.native_type_parameter_name(declaration)
             }
+            // A named object has the name of its declaration, as a class or interface has that of
+            // its symbol. Without it, unions of them were ordered by ids, which differ by task.
+            (None, &TypeData::NativeObject(reference)) => {
+                let provider = self.native_named_provider(reference.declaration).ok()?;
+                provider.type_declaration_header(self, reference.declaration).name
+            }
             (None, &TypeData::StringMapping { kind, .. }) => {
                 return Some(super::print::string_mapping_name(kind));
             }
@@ -2278,8 +2284,31 @@ impl<'p, 's> Checker<'p, 's> {
                 let (s, t) = self.members_that_order_intersections(a, b);
                 self.compare_types_ordered_by(a, b, s, t)
             }
+            // Two applications of one named declaration: their type arguments decide, as tsgo
+            // compares the arguments of two references to one target, not their ids.
+            (&TypeData::NativeObject(s), &TypeData::NativeObject(t)) if s.declaration == t.declaration && a != b => {
+                let (s, t) = (self.native_object_arguments(s), self.native_object_arguments(t));
+                for (x, y) in s.iter().zip(&t) {
+                    if x != y {
+                        let order = self.compare_types(*x, *y);
+                        if order != std::cmp::Ordering::Equal { return order }
+                    }
+                }
+                self.compare_types_ordered_by(a, b, a, b)
+            }
             _ => self.compare_types_ordered_by(a, b, a, b),
         }
+    }
+
+    /// The written type arguments of a named object: its declaration's outer, then own parameters,
+    /// through its mapper.
+    fn native_object_arguments(&self, reference: crate::types::NativeObjectReference) -> Vec<TypeId> {
+        let Some(header) = self.native_named_provider(reference.declaration).ok()
+            .map(|provider| provider.type_declaration_header(self, reference.declaration)) else { return Vec::new() };
+        header.outer_parameters.into_iter().chain(header.parameters)
+            .filter_map(|parameter| self.native_type_parameter(parameter))
+            .map(|formal| self.types().map(reference.mapper, formal).unwrap_or(formal))
+            .collect()
     }
 
     /// `compareTypeLists` calls `CompareTypes`: of two intersections, the first pair of distinct

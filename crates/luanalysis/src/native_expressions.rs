@@ -578,6 +578,7 @@ impl NativeRegistry {
                 let value = self.build_source_function_value(self.function(function), mode, queries, false);
                 let ty = queries.contextual_function_value(&value, key, expected, mode);
                 self.expressions().retain_final(function, mode, &ty);
+                self.retain_canonical_frame(function, mode, &ty, queries);
                 return (ty, false);
             }
         }
@@ -609,6 +610,7 @@ impl NativeRegistry {
         let value = self.build_source_function_value(function, mode, queries, false);
         let value = queries.contextual_function_value(&value, self.expression_key(target), expected, mode);
         self.expressions().retain_final(self.key_for(function), mode, &value);
+        self.retain_canonical_frame(self.key_for(function), mode, &value, queries);
         value
     }
 
@@ -683,6 +685,7 @@ impl NativeRegistry {
         // parameter contract and must not be checked as a second function.
         if publish_final {
             self.expressions().retain_final(key, mode, &value);
+            self.retain_canonical_frame(key, mode, &value, queries);
         }
         value
     }

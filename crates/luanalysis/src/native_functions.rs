@@ -108,6 +108,14 @@ pub(super) struct NativeRegistry {
     checked_bodies: RefCell<HashSet<NativeFunctionKey>>,
     checked_contextual_bodies: RefCell<HashSet<(NativeFunctionKey, ContextualFunctionContext, Option<CapturedFunctionContext>)>>,
     checked_captured_bodies: RefCell<HashSet<(NativeFunctionKey, CapturedFunctionContext)>>,
+    /// Functions whose body diagnostics one complete check has reported, in any frame. As in
+    /// TypeScript, a body is checked once: further contextual or captured instances of the same
+    /// function are not checked again.
+    bodies_checked: RefCell<HashSet<NativeFunctionKey>>,
+    /// The frame of each function's single body check: the frame of its value as created in its
+    /// lexical parent's own canonical frame (declaration space outside any function). Captures
+    /// and contextual instances are interned by content, so this does not depend on order.
+    canonical_frames: RefCell<HashMap<NativeFunctionKey, (Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
     pending_contextual_owners: RefCell<HashSet<(NativeFunctionKey, NativeFlowKey)>>,
     pending_owner_observations: Cell<u64>,
     pending_owner_bodies: RefCell<HashSet<(NativeFunctionKey, Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
@@ -286,6 +294,8 @@ impl NativeRegistry {
             checked_bodies: RefCell::new(HashSet::default()),
             checked_contextual_bodies: RefCell::new(HashSet::default()),
             checked_captured_bodies: RefCell::new(HashSet::default()),
+            bodies_checked: RefCell::new(HashSet::default()),
+            canonical_frames: RefCell::new(HashMap::default()),
             pending_contextual_owners: RefCell::new(HashSet::default()),
             pending_owner_observations: Cell::new(0),
             pending_owner_bodies: RefCell::new(HashSet::default()),
@@ -903,6 +913,27 @@ impl NativeRegistry {
             }
             Err(error) => std::panic::resume_unwind(error),
         }
+    }
+
+    /// Records `value`'s frame as `function`'s canonical body frame when the value is created, in a
+    /// publishing mode, inside its lexical parent's canonical frame.
+    pub(super) fn retain_canonical_frame(&self, function: NativeFunctionKey, mode: NativeCheckMode, value: &Type, queries: &mut dyn TypeQueries) {
+        if !super::native_expressions::publishes(mode) || self.canonical_frames.borrow().contains_key(&function) { return; }
+        let parent = self.flow.lexical_parent(function)
+            .and_then(|parent| self.canonical_frames.borrow().get(&parent).copied())
+            .unwrap_or((None, None));
+        if (queries.current_contextual_function(), queries.current_captured_function()) != parent { return; }
+        let frame = if matches!(value, Type::NativeFunction(key) if *key == function) {
+            (None, None)
+        } else {
+            let captured = queries.function_capture_context(value);
+            (captured.as_ref().and_then(|captured| queries.captured_function_context(captured)), captured)
+        };
+        self.canonical_frames.borrow_mut().insert(function, frame);
+    }
+
+    pub(super) fn body_checked_once(&self, key: NativeFunctionKey) -> bool {
+        self.bodies_checked.borrow().contains(&key)
     }
 
     /// Records a written generic reference for `check_deferred_constraints`.
@@ -1619,12 +1650,18 @@ impl NativeRegistry {
         }
         self.pending_owner_bodies.borrow_mut().remove(&(key, contextual, captured));
         if let Some(context) = contextual {
+            if super::native_expressions::publishes(context.mode)
+                && checker.engine.contextual_function_check_state(&context) == NativeFunctionCheckState::Final
+            {
+                self.bodies_checked.borrow_mut().insert(key);
+            }
             self.contextual_report(&context, checker.report, checker.engine);
             self.checked_contextual_bodies
                 .borrow_mut()
                 .insert((key, context, captured));
         } else {
             self.merge_report(checker.report);
+            self.bodies_checked.borrow_mut().insert(key);
             if let Some(captured) = captured {
                 self.checked_captured_bodies
                     .borrow_mut()
@@ -1672,6 +1709,24 @@ impl NativeRegistry {
             for parameter in self.types.own_parameters(key) {
                 queries.type_parameter_constraint(parameter);
             }
+            if self.bodies_checked.borrow().contains(&key) { continue; }
+            // As TypeScript, the body is checked once, in the frame its value has where it is
+            // written (`canonical_frames`); other instances of the same function are not checked.
+            let canonical = self.canonical_frames.borrow().get(&key).copied();
+            if let Some((contextual, captured)) = canonical
+                && (contextual.is_some() || captured.is_some())
+            {
+                if self.body_frame_check_state(contextual.as_ref(), captured.as_ref(), queries) != NativeFunctionCheckState::Final { continue; }
+                match (contextual, captured) {
+                    (Some(context), Some(captured)) => queries.with_captured_function(&captured, &mut |queries| {
+                        self.check_body_in_context(key, &context, queries);
+                    }),
+                    (Some(context), None) => { self.check_body_in_context(key, &context, queries); }
+                    (None, Some(captured)) => { self.check_body_in_capture(key, &captured, queries); }
+                    (None, None) => unreachable!(),
+                }
+                continue;
+            }
             let facets = self.expressions.final_facets(key);
             if !facets.is_empty() {
                 // The selected session capability owns this callback's
@@ -1698,6 +1753,7 @@ impl NativeRegistry {
                         if self.body_frame_check_state(Some(&context), captured.as_ref(), queries) != NativeFunctionCheckState::Final { continue; }
                         final_body_frame = true;
                         if self.checked_contextual_bodies.borrow().contains(&(key, context, captured)) { continue; }
+                        if self.bodies_checked.borrow().contains(&key) { break; }
                         if let Some(captured) = captured {
                             queries.with_captured_function(&captured, &mut |queries| {
                                 self.check_body_in_context(key, &context, queries);
@@ -1707,21 +1763,10 @@ impl NativeRegistry {
                         }
                     }
                 }
-                let contextual_captures = self.expressions.contextual_captures(key);
-                for context in self.expressions.final_captures(key) {
-                    if contextual_captures.contains(&context) {
-                        continue;
-                    }
-                    if self.body_frame_check_state(None, Some(&context), queries) != NativeFunctionCheckState::Final { continue; }
-                    final_body_frame = true;
-                    let checked = self
-                        .checked_captured_bodies
-                        .borrow()
-                        .contains(&(key, context));
-                    if !checked {
-                        self.check_body_in_capture(key, &context, queries);
-                    }
-                }
+                // A function whose only frames are captures (a closure created once per outer
+                // instance) is checked once in declaration space below, as TypeScript checks a
+                // body once: its upvalues resolve through the lexical owner chain to their
+                // declared types, whichever instances exist.
                 if final_body_frame {
                     continue;
                 }

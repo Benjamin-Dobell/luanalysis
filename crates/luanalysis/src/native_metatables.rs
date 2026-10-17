@@ -462,6 +462,11 @@ impl NativeRegistry {
             self.contextual_owner_query(scope, input, queries);
         }
         for &(key, contextual, captured) in &bodies {
+            // Another frame of this function has already been checked completely.
+            if self.body_checked_once(key) {
+                self.pending_owner_bodies.borrow_mut().remove(&(key, contextual, captured));
+                continue;
+            }
             match self.body_frame_check_state(contextual.as_ref(), captured.as_ref(), queries) {
                 NativeFunctionCheckState::Expired => { self.pending_owner_bodies.borrow_mut().remove(&(key, contextual, captured)); continue; }
                 NativeFunctionCheckState::Provisional => continue,
