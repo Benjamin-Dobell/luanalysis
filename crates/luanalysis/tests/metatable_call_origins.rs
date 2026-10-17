@@ -214,22 +214,15 @@ fn original_required_module_execution_preserves_only_unchanged_standard_values()
 }
 
 #[test]
-fn loader_mutations_inside_known_calls_prevent_source_imports_from_certifying_execution() {
+fn loader_mutations_inside_calls_preserve_imports_but_reached_writes_refuse_them() {
     let fixture = Fixture::new();
     fixture.file("helper.lua", "return {}\n");
     let source = format!(
         "local function replace_loader() package.path='custom/?.lua' end\nreplace_loader()\nrequire('helper')\n{FACTORY}"
     );
-    // The directly reached function explicitly changes the loader. The
-    // default assumption does not discard that observed current-scope write.
-    let refused = fixture.check(&source);
-    assert_eq!(refused.status.code(), Some(1), "{}", text(&refused));
-    assert!(text(&refused).contains("LUA2036"), "{}", text(&refused));
-    assert!(
-        !text(&refused).contains("Property 'read'"),
-        "{}",
-        text(&refused)
-    );
+    // A call preserves the loader, as an unknown effect does: only a loader
+    // write the importing flow itself reaches refuses the import.
+    clean(&fixture.check(&source));
     no_owner(&fixture.check_strict(&source));
     clean(&fixture.check(&format!("require('helper')\n{FACTORY}")));
     clean(&fixture.check_strict(&format!("require('helper')\n{FACTORY}")));
@@ -269,12 +262,11 @@ fn a_blocked_import_does_not_apply_original_module_writes_to_saved_standard_valu
         let rejected = fixture.check(&wrong);
         assert!(text(&rejected).contains("TS2322"), "{}", text(&rejected));
 
-        // Restoring the loader activates the real module write, including
-        // when the caller holds the original require function in a local.
+        // Restoring the loader certifies the import. The imported module's
+        // own global writes do not reach the importer: the import is a call,
+        // which preserves the original setmetatable.
         let reached = source.replace("package.path='custom/?.lua'\n", "");
-        let replaced = fixture.check(&reached);
-        no_owner(&replaced);
-        assert!(!text(&replaced).contains("LUA2036"), "{}", text(&replaced));
+        clean(&fixture.check(&reached));
 
         // A builtin value captured before that reached replacement still
         // supplies the original operation independently of its global slot.

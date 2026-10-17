@@ -113,6 +113,9 @@ pub struct BoundFile {
     /// `rawset(_G, k, v)`). The loader walk treats them as possible
     /// replacements; the project replacement summary does not.
     computed_environment_mutations: Vec<Span>,
+    /// Rebinding this chunk's `_ENV` itself (`_ENV = nil`). Its own loader walk
+    /// treats it as a replacement; other chunks' environments are unchanged.
+    environment_rebindings: Vec<Span>,
     modified_type_intrinsic: bool,
     modified_assert_intrinsic: bool,
     assert_intrinsic_mutations: Vec<Span>,
@@ -207,6 +210,7 @@ impl BoundFile {
         self.modified_module_environment
     }
     pub fn module_environment_mutations(&self) -> &[Span] { &self.module_environment_mutations }
+    pub fn environment_rebindings(&self) -> &[Span] { &self.environment_rebindings }
     pub fn computed_environment_mutations(&self) -> &[Span] { &self.computed_environment_mutations }
 
     /// Direct replacement of the initially standard `type` value. This is a
@@ -254,6 +258,7 @@ pub fn bind(file: &File) -> BoundFile {
             intrinsic_occurrences: Vec::new(),
             modified_module_environment: false,
             module_environment_mutations: Vec::new(),
+            environment_rebindings: Vec::new(),
             computed_environment_mutations: Vec::new(),
             modified_type_intrinsic: false,
             modified_assert_intrinsic: false,
@@ -523,6 +528,7 @@ impl Binder {
         if self.modifies_module_environment(expression) {
             self.file.modified_module_environment = true;
             if computed_environment_target(expression, None) { self.file.computed_environment_mutations.push(expression.span); }
+            else if matches!(&expression.kind, ExprKind::Name(name) if name.text == "_ENV") { self.file.environment_rebindings.push(expression.span); }
             else { self.file.module_environment_mutations.push(expression.span); }
         }
         if self.modifies_standard_intrinsic(expression, "type") {

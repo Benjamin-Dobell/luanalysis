@@ -270,7 +270,7 @@ impl NativeFlowSources {
             runtime_type_intrinsic_enabled: false,
             runtime_userdata_enabled: false,
             runtime_thread_enabled: false,
-            loader_mutations: bound.module_environment_mutations().iter().chain(bound.computed_environment_mutations()).map(|span| (span.start, span.end)).collect(),
+            loader_mutations: bound.module_environment_mutations().iter().chain(bound.computed_environment_mutations()).chain(bound.environment_rebindings()).map(|span| (span.start, span.end)).collect(),
             original_require_capability: false,
             capability_bindings: HashSet::default(),
             environment_candidates: HashMap::default(),

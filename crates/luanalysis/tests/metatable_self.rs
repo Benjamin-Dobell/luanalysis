@@ -299,13 +299,17 @@ fn a_generic_return_type_promise_cannot_attest_the_runtime_standard_value() {
 }
 
 #[test]
-fn an_original_saved_value_survives_an_ordinary_call_that_replaces_the_global_slot() {
+fn a_call_that_replaces_the_global_slot_preserves_the_original_operation() {
     let fixture = Fixture::new();
     let prefix = format!(
         "{ORDINARY}local saved=setmetatable\nlocal function replace() setmetatable=ordinary end\nreplace()\n"
     );
+    // A call preserves standard bindings, as an unknown effect does; only an
+    // assignment the flow itself reaches replaces one.
+    clean(&fixture.check(&format!("{prefix}{}", FACTORY.replace("ATTACH", "setmetatable"))));
+    clean(&fixture.check(&format!("{prefix}{}", FACTORY.replace("ATTACH", "saved"))));
     let output = fixture.check(&format!(
-        "{prefix}{}",
+        "{ORDINARY}local saved=setmetatable\nsetmetatable=ordinary\n{}",
         FACTORY.replace("ATTACH", "setmetatable")
     ));
     assert!(
@@ -313,5 +317,4 @@ fn an_original_saved_value_survives_an_ordinary_call_that_replaces_the_global_sl
         "{}",
         text(&output)
     );
-    clean(&fixture.check(&format!("{prefix}{}", FACTORY.replace("ATTACH", "saved"))));
 }

@@ -119,7 +119,6 @@ fn restoring_a_callee_copy_cannot_hide_loop_mutation_of_the_original_standard_sl
     for (setup, mutation) in [
         ("", "  assert=ordinary\n"),
         ("local environment=_G\n", "  environment.assert=ordinary\n"),
-        ("local function replace() assert=ordinary end\n", "  replace()\n"),
     ] {
         let source = format!("{ORDINARY}{setup}---@param value number|nil\n---@param again boolean\nlocal function read(value,again)\n ---@type fun(value:any):any\n local guard=assert\n while again do\n  guard=assert\n  guard(value)\n  ---@type number\n  local narrowed=value\n{mutation}  value=nil\n end\nend\nread(42,true)\n");
         let fixture = Fixture::new(&source);
@@ -128,12 +127,13 @@ fn restoring_a_callee_copy_cannot_hide_loop_mutation_of_the_original_standard_sl
         assert!(!text(&output).contains("LUA2041"), "{}", text(&output));
         let narrowed_line = source.lines().position(|line| line.contains("local narrowed=value")).unwrap() + 1;
         assert!(text(&output).contains(&format!("main.lua:{narrowed_line}:18: error[TS2322]")), "{}", text(&output));
-        let corrected = if setup.contains("local function replace()") {
-            source.replace("local function replace() assert=ordinary end", "local function replace() end")
-        } else { source.replace(mutation, "") };
-        fs::write(fixture.0.join("main.lua"), corrected).unwrap();
+        fs::write(fixture.0.join("main.lua"), source.replace(mutation, "")).unwrap();
         pass(&fixture.check());
     }
+    // A call preserves the standard slot, as an unknown effect does, even when
+    // its body replaces it.
+    let source = format!("{ORDINARY}local function replace() assert=ordinary end\n---@param value number|nil\n---@param again boolean\nlocal function read(value,again)\n ---@type fun(value:any):any\n local guard=assert\n while again do\n  guard=assert\n  guard(value)\n  ---@type number\n  local narrowed=value\n  replace()\n  value=nil\n end\nend\nread(42,true)\n");
+    pass(&Fixture::new(&source).check());
 }
 
 #[test]

@@ -1096,7 +1096,6 @@ enum Query {
     NativeStandardValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
     /// The last field distinguishes the continuation scope and whether a loop
     /// invariant supplied the callee: those are different computations.
-    NativeStandardCall(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64, u8),
     NativeAliasProjectedReference(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u32, u64, u64),
     NativeAliasProjectedValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u32, u64, u64),
     NativeAliasReturn(crate::types::NativeFunctionId, usize),
@@ -1207,7 +1206,7 @@ impl Query {
             | Query::NativeAliasLoaderState(..)
             | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
             | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
-            | Query::NativeStandardReference(..) | Query::NativeStandardValue(..) | Query::NativeStandardCall(..) | Query::NativeStandardLoader(..)
+            | Query::NativeStandardReference(..) | Query::NativeStandardValue(..) | Query::NativeStandardLoader(..)
             | Query::NativeNamed(_)
             | Query::NativeGlobals(_)
             | Query::NativeProject(_)

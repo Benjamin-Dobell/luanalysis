@@ -148,12 +148,15 @@ fn unknown_host_calls_property_reads_and_arithmetic_keep_standard_assumptions() 
 }
 
 #[test]
-fn explicit_direct_alias_and_captured_replacements_survive_later_unknown_calls() {
+fn explicit_direct_and_alias_replacements_survive_later_unknown_calls() {
     let fixture = Fixture::new();
+    // A call preserves standard bindings, even when its body replaces them:
+    // only an assignment the flow itself reaches replaces one.
+    let called = "local env=_G\nlocal function replace()\nenv.require=ordinaryLoader\nenv.type=ordinaryKind\nend\nreplace()\n";
+    clean(fixture.check(&format!("{ORDINARY}{called}{}", probe("hostEffect()", "require", "type")), true, None));
     for replacement in [
         "_G.require=ordinaryLoader\n_G.type=ordinaryKind\n",
         "local env=_G\nenv.require=ordinaryLoader\nenv.type=ordinaryKind\n",
-        "local env=_G\nlocal function replace()\nenv.require=ordinaryLoader\nenv.type=ordinaryKind\nend\nreplace()\n",
     ] {
         let source = format!("{ORDINARY}{replacement}{}", probe("hostEffect()", "require", "type"));
         let rejected = report(fixture.check(&source, true, None), 1);
@@ -222,18 +225,18 @@ fn reached_fixed_slot_replacements_are_not_reset_to_standard_contracts() {
     let ordinary = "---@generic T\n---@param value T\n---@vararg unknown\n---@return T\nlocal function ordinary(value,...) return value end\n";
     let consumer = "---@param value number|nil\nlocal function consume(value)\nassert(value)\n---@type number\nlocal narrowed=value\nend\n";
     for write in ["assert=ordinary", "(--[[---@type table]] _G)['assert']=ordinary"] {
-        let source = format!("{ordinary}local function replace() {write} end\nreplace()\nhostEffect()\n{consumer}");
+        let source = format!("{ordinary}{write}\nhostEffect()\n{consumer}");
         let rejected = report(fixture.check(&source, true, None), 1);
         error_on(&rejected, &source, "TS2322", "local narrowed=value", "value");
         clean(fixture.check(&source.replace(write, ""), true, None));
+        // A call preserves the standard slot even when its body replaces it.
+        let called = format!("{ordinary}local function replace() {write} end\nreplace()\nhostEffect()\n{consumer}");
+        clean(fixture.check(&called, true, None));
     }
+    // An invalid replacement is still reported where it is written.
     let source = format!("local function replace() assert=42 end\nreplace()\nhostEffect()\n{consumer}");
     let rejected = report(fixture.check(&source, true, None), 1);
     error_on(&rejected, &source, "TS2322", "assert=42", "42");
-    error_on(&rejected, &source, "TS2322", "local narrowed=value", "value");
-    // An invalid assignment can retain its written callable contract during
-    // recovery. Require the write error and loss of assertion effects, rather
-    // than an arbitrary second uncallable-value diagnostic.
     clean(fixture.check(&source.replace("assert=42", ""), true, None));
 }
 

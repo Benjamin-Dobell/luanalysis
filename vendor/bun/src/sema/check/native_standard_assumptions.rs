@@ -1,12 +1,14 @@
 //! Ordinary host assumptions for selected original standard bindings.
 //! These results classify operations; they never certify heap identity,
 //! metatable absence, or purity of an unknown call.
+//!
+//! A call preserves standard bindings and the module loader, as TypeScript's
+//! unknown effects do: only an assignment the walked flow reaches replaces
+//! one. Proving each reached body (or required module) free of such writes
+//! made every walk interprocedural and its results uncacheable.
 use super::*;
 
 struct StandardLoop { reference: NativeReferenceKey, head: NativeFlowKey, entry: NativeFlowKey, seed: Origins }
-#[derive(Clone, Copy)]
-struct StandardScope { function: bool, module: bool, loader: bool }
-impl StandardScope { const ROOT: Self = Self { function: true, module: true, loader: false }; }
 
 impl<'p, 's> Checker<'p, 's> {
     pub fn native_flow_standard_operation(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> NativeStandardOperation {
@@ -88,13 +90,9 @@ impl<'p, 's> Checker<'p, 's> {
                 if matches!(provider.write_affects_ignoring_descendants(reference, target, at, checker), NativeWriteRelation::Exact | NativeWriteRelation::PossibleExact | NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor) { invalid }
                 else { checker.native_standard_loader_state(provider, before, reference) }
             },
-            Some(NativeFlowNode::Call { before, value, input }) => {
+            Some(NativeFlowNode::Call { before, .. }) => {
                 if provider.known_standard_loader_write(at) { return invalid }
-                match checker.native_standard_call_continuation(provider, reference, value, input, StandardScope { loader: true, ..StandardScope::ROOT }, None) {
-                    NativeCallPreservation::Preserved => checker.native_standard_loader_state(provider, before, reference),
-                    NativeCallPreservation::Unknown => invalid,
-                    NativeCallPreservation::Pending => NativeFlowResult { incomplete: true, ..invalid },
-                }
+                checker.native_standard_loader_state(provider, before, reference)
             },
             Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
                 | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => checker.native_standard_loader_state(provider, before, reference),
@@ -111,7 +109,7 @@ impl<'p, 's> Checker<'p, 's> {
                 let Some((&entry, backedges)) = edges.split_first() else { return invalid };
                 let seed = checker.native_standard_loader_state(provider, entry, reference);
                 if seed.incomplete || seed.ty != TypeId::TRUE { return seed }
-                match checker.native_standard_scope_writes(provider, reference, at, backedges, None, StandardScope { loader: true, ..StandardScope::ROOT }, None) {
+                match checker.native_standard_scope_writes(provider, reference, at, backedges, true, None) {
                     NativeCallPreservation::Preserved => seed,
                     NativeCallPreservation::Unknown => invalid,
                     NativeCallPreservation::Pending => NativeFlowResult { incomplete: true, ..invalid },
@@ -307,12 +305,7 @@ impl<'p, 's> Checker<'p, 's> {
                     _ => self.native_standard_reference(provider, reference, before),
                 }
             },
-            Some(NativeFlowNode::Call { before, value, input }) => match self.native_standard_call_continuation(provider, reference, value, input, StandardScope::ROOT, None) {
-                NativeCallPreservation::Preserved => self.native_standard_reference(provider, reference, before),
-                NativeCallPreservation::Unknown => Origins::unavailable(),
-                NativeCallPreservation::Pending => Origins::unknown(),
-            },
-            Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
+            Some(NativeFlowNode::Call { before, .. } | NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
                 | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => self.native_standard_reference(provider, reference, before),
             Some(NativeFlowNode::Merge { edges }) => {
                 let mut result = Origins::default();
@@ -324,7 +317,7 @@ impl<'p, 's> Checker<'p, 's> {
                 let seed = self.native_standard_reference(provider, reference, entry);
                 if seed.uncertain || seed.unknown || seed.tokens.len() != 1 { return seed }
                 let invariant = StandardLoop { reference, head: at, entry, seed };
-                match self.native_standard_scope_writes(provider, reference, at, backedges, None, StandardScope::ROOT, Some(&invariant)) {
+                match self.native_standard_scope_writes(provider, reference, at, backedges, false, Some(&invariant)) {
                     NativeCallPreservation::Preserved => invariant.seed,
                     NativeCallPreservation::Unknown => Origins::unavailable(),
                     NativeCallPreservation::Pending => Origins::unknown(),
@@ -385,62 +378,10 @@ impl<'p, 's> Checker<'p, 's> {
     pub fn native_flow_standard_call_continuation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
         let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
         if self.native_assumed_environment().is_none() { return self.native_alias_call_preservation(provider, reference, call, input) }
-        self.native_standard_call_continuation(provider, reference, call, input, StandardScope::ROOT, None)
-    }
-
-    fn native_standard_call_continuation(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey, scope: StandardScope, callee: Option<Origins>) -> NativeCallPreservation {
-        // Unknown calls are ordinary continuations under the selected policy.
-        // Inspect at most one module top level and one reached function.
-        // There is no recursive host/metamethod purity proof.
-        if !scope.function && !scope.module { return NativeCallPreservation::Preserved }
-        // A loop-invariant callee hypothesis is well-founded: it does not
-        // resolve the callee through the loop that requested it. Sharing the
-        // ordinary continuation identity would report a false cycle.
-        let variant = u8::from(scope.function) | u8::from(scope.module) << 1 | u8::from(scope.loader) << 2 | u8::from(callee.is_some()) << 3;
-        let query = Query::NativeStandardCall(reference, call, input, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame(), variant);
-        if !self.enter(query) { self.mark_tainted_from(0); return NativeCallPreservation::Pending }
-        let (result, completed) = self.run_memoizable(|checker| checker.native_standard_call_worker(provider, reference, call, input, scope, callee));
-        if self.leave(query).is_err() || completed.is_none() || result == NativeCallPreservation::Pending {
-            self.mark_tainted_from(0);
-            return NativeCallPreservation::Pending;
-        }
-        result
-    }
-
-    fn native_standard_call_worker(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey, scope: StandardScope, callee: Option<Origins>) -> NativeCallPreservation {
-        let Some(recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Preserved };
-        let callee = callee.unwrap_or_else(|| self.native_standard_value(provider, recipe.callee.value, recipe.callee.input));
-        if callee.uncertain { return NativeCallPreservation::Pending }
-        if callee.unknown || callee.tokens.len() != 1 { return NativeCallPreservation::Preserved }
-        let (executions, function, next) = match callee.tokens.into_iter().next().unwrap() {
-            Origin::Function(function, creation, activation) if scope.function => {
-                let Some(execution) = provider.function_alias_execution(function, creation) else { return NativeCallPreservation::Preserved };
-                (vec![execution], Some((function, creation, activation)), StandardScope { function: false, module: false, loader: scope.loader })
-            },
-            Origin::Standard(site) if site.kind == NativeIntrinsicKind::Require && scope.module => {
-                // An original import recipe is only a candidate execution.
-                // A reached loader replacement must not activate the former
-                // target module while classifying ordinary builtin operations.
-                let Some(loader) = provider.require_alias_loader_reference(call, input) else { return NativeCallPreservation::Preserved };
-                let state = self.native_standard_loader_state(provider, recipe.execution_input, loader);
-                if state.incomplete { return NativeCallPreservation::Pending }
-                if state.ty != crate::types::TypeId::TRUE { return NativeCallPreservation::Preserved }
-                let Some(executions) = provider.require_alias_execution(call, input) else { return NativeCallPreservation::Preserved };
-                (executions, None, StandardScope { function: scope.function, module: false, loader: scope.loader })
-            },
-            _ => return NativeCallPreservation::Preserved,
-        };
-        for execution in executions {
-            let Some(watched) = provider.reference_in_graph(reference, execution.entry.graph) else { continue };
-            let result = self.with_native_alias_execution(call, recipe.execution_input, &execution, function, |checker| {
-                checker.native_standard_scope_writes(provider, watched, execution.entry, &execution.terminals, Some(execution.entry), next, None)
-            });
-            if result != NativeCallPreservation::Preserved { return result }
-        }
         NativeCallPreservation::Preserved
     }
 
-    fn native_standard_scope_writes(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, boundary: NativeFlowKey, terminals: &[NativeFlowKey], entry: Option<NativeFlowKey>, scope: StandardScope, invariant: Option<&StandardLoop>) -> NativeCallPreservation {
+    fn native_standard_scope_writes(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, boundary: NativeFlowKey, terminals: &[NativeFlowKey], loader: bool, invariant: Option<&StandardLoop>) -> NativeCallPreservation {
         let mut work = terminals.to_vec();
         let mut visited = HashSet::default();
         while let Some(at) = work.pop() {
@@ -449,7 +390,6 @@ impl<'p, 's> Checker<'p, 's> {
             if at.graph != boundary.graph || visited.len() >= 4_096 { return NativeCallPreservation::Preserved }
             if !visited.insert(at) { continue }
             match provider.node(at) {
-                Some(NativeFlowNode::Start) if Some(at) == entry => {},
                 Some(NativeFlowNode::Write { before, target, .. }) => {
                     let relation = if provider.reference_is_cell(reference) { provider.write_affects(reference, target, at) }
                         else if let Some(invariant) = invariant {
@@ -469,13 +409,8 @@ impl<'p, 's> Checker<'p, 's> {
                     }
                     work.push(before);
                 },
-                Some(NativeFlowNode::Call { before, value, input }) => {
-                    if scope.loader && provider.known_standard_loader_write(at) { return NativeCallPreservation::Unknown }
-                    let callee = invariant.and_then(|invariant| provider.alias_call_source(value, input).map(|recipe| {
-                        self.native_standard_loop_value(provider, recipe.callee.value, recipe.callee.input, invariant, &mut HashSet::default())
-                    }));
-                    let result = self.native_standard_call_continuation(provider, reference, value, input, scope, callee);
-                    if result != NativeCallPreservation::Preserved { return result }
+                Some(NativeFlowNode::Call { before, .. }) => {
+                    if loader && provider.known_standard_loader_write(at) { return NativeCallPreservation::Unknown }
                     work.push(before);
                 },
                 Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
