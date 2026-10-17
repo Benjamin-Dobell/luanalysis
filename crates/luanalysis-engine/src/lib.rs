@@ -833,6 +833,9 @@ pub trait TypeQueries {
 
     fn class_definition_context(&mut self, owner: NativeClassDefinitionKey, class_type: &Type) -> Result<Type, NamedTypeError>;
     fn class_definition_value(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError>;
+    /// A class declared in several places, reopened on a value that is already the class or
+    /// its definition; any other value is an ordinary definition value.
+    fn class_definition_reopen(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError>;
     fn class_definition_member_contract(&mut self, owner: NativeClassDefinitionKey, actual: &Type) -> Option<Type>;
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool;
     /// The language service's members of a value: each string key a read of it accepts, with the
@@ -2178,6 +2181,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn class_definition_context(&mut self, owner: NativeClassDefinitionKey, class_type: &Type) -> Result<Type, NamedTypeError> {
         native_named::definition_context(self, owner, class_type)
+    }
+    fn class_definition_reopen(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
+        native_named::definition_reopen(self, owner, class_type, actual)
     }
     fn class_definition_value(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
         native_named::definition_value(self, owner, class_type, actual)

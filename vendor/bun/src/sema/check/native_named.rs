@@ -1715,6 +1715,27 @@ impl<'p, 's> Checker<'p, 's> {
         Ok(self.intern(TypeData::NativeTable(self.boxed(context))))
     }
 
+    /// Reopening a class, as a repeated `---@class X` on another module's value does when
+    /// a class is declared in several places: a definition of the class remains that
+    /// definition, and the class itself starts a definition from all its members.
+    pub fn native_definition_reopen(&mut self, owner: NativeDefinitionId, class: TypeId, actual: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+        let reference = self.native_definition_class(owner, class)?;
+        match *self.data(actual) {
+            TypeData::NativeDefinition(existing) if existing.class.declaration == reference.declaration => Ok(actual),
+            TypeData::NativeObject(existing) if existing.declaration == reference.declaration => {
+                let schema = self.native_object_resolved(actual)?;
+                let (fields, indexers, tails) = {
+                    let TypeData::NativeTable(data) = self.data(schema) else { return Ok(actual) };
+                    (data.fields.to_vec(), data.indexers.to_vec(), data.sequence_tails.to_vec())
+                };
+                let view = self.native_table_with_context_and_sequence_policy(&fields, &indexers, &tails, NativeTableFlavor::Declared, false, None)
+                    .map_err(|error| NativeNamedTypeError::DefinitionField { owner, error })?;
+                Ok(self.intern(TypeData::NativeDefinition(NativeDefinitionRef { owner, class: reference, view })))
+            }
+            _ => self.native_definition_value(owner, class, actual),
+        }
+    }
+
     pub fn native_definition_value(&mut self, owner: NativeDefinitionId, class: TypeId, actual: TypeId) -> Result<TypeId, NativeNamedTypeError> {
         let reference = self.native_definition_class(owner, class)?;
         let TypeData::NativeTable(data) = self.data(actual) else {

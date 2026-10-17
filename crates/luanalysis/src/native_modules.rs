@@ -215,7 +215,7 @@ impl Checker<'_> {
         }
         let result:String=match recipe.outcome {
             ImportOutcome::Module(module)=>match self.engine.require_pack(module,policy) {
-                Ok(pack)=>return Some(pack),
+                Ok(pack)=>return Some(self.merged_class_export(pack)),
                 Err(error)=>module_error_message(error).into(),
             },
             ImportOutcome::Missing(message)=>{
@@ -232,6 +232,23 @@ impl Checker<'_> {
         };
         self.error("LUA2036", recipe.argument_span, result);
         Some(ValuePack::single(Type::Unknown))
+    }
+}
+
+impl Checker<'_> {
+    /// The definition table of a class declared in several places is, to its importers,
+    /// the class, with the members every one of its definitions gives it (as LuaLS reads
+    /// `require`). Other definitions keep their partial view, so an importer still sees
+    /// which declared members a module assigns.
+    fn merged_class_export(&mut self, pack: ValuePack) -> ValuePack {
+        let Some(native) = self.native else { return pack };
+        let value = self.engine.pack_slot(&pack, 0);
+        let Some(declaration) = self.engine.named_object_declaration(&value) else { return pack };
+        if !native.is_merged_declaration(declaration) { return pack }
+        match self.engine.named_declared_type(declaration) {
+            Ok(class) if class != value => ValuePack::single(class),
+            _ => pack,
+        }
     }
 }
 

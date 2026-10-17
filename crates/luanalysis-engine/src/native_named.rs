@@ -205,6 +205,14 @@ pub(super) fn definition_value(queries: &mut SessionQueries<'_, '_, '_>, owner: 
         .map_err(|error| export_error(queries.checker,queries.handles,error))
 }
 
+pub(super) fn definition_reopen(queries: &mut SessionQueries<'_, '_, '_>, owner: NativeClassDefinitionKey, class: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
+    let class = import_type(queries.checker, queries.handles, class);
+    let actual = import_type(queries.checker, queries.handles, actual);
+    queries.checker.native_definition_reopen(core_definition(owner), class, actual)
+        .map(|ty| export_type(queries.checker,queries.handles,ty))
+        .map_err(|error| export_error(queries.checker,queries.handles,error))
+}
+
 pub(super) fn definition_member_contract(queries: &mut SessionQueries<'_, '_, '_>, owner: NativeClassDefinitionKey, actual: &Type) -> Option<Type> {
     let actual = import_type(queries.checker, queries.handles, actual);
     queries.checker.native_definition_member_contract(core_definition(owner), actual)

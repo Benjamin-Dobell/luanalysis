@@ -896,7 +896,7 @@ impl NativeRegistry {
                     message:format!("Shape '{}' attachment is unsupported: {reason}.",source.syntax.name.text),
                 });
             }
-            if !seen.insert(&source.syntax.name.text) {
+            if !seen.insert(&source.syntax.name.text) && !self.is_merged_declaration(declaration(source.key)) {
                 self.report.borrow_mut().diagnostics.push(Diagnostic {
                     code: "TS2300",
                     span: source.syntax.name.span,

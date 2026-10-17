@@ -145,10 +145,37 @@ impl ProjectRegistrySnapshot {
 #[derive(Default)]
 pub(crate) struct ProjectNamedIndex {
     names: HashMap<String, Vec<NativeTypeDeclarationKey>>,
+    /// Classes declared more than once are one class, as LuaLS reads repeated
+    /// `---@class X` and TypeScript merges interface declarations: each later
+    /// declaration is merged into the first.
+    merged: HashMap<NativeTypeDeclarationKey, NativeTypeDeclarationKey>,
+    merges: HashMap<NativeTypeDeclarationKey, Vec<NativeTypeDeclarationKey>>,
 }
 impl ProjectNamedIndex {
     pub(crate) fn candidates(&self, name: &str) -> &[NativeTypeDeclarationKey] {
         self.names.get(name).map_or(&[], Vec::as_slice)
+    }
+    /// The declaration that `key` is merged into, or `key` itself.
+    pub(crate) fn canonical(&self, key: NativeTypeDeclarationKey) -> NativeTypeDeclarationKey {
+        self.merged.get(&key).copied().unwrap_or(key)
+    }
+    /// The later declarations merged into `key`.
+    pub(crate) fn merged_into(&self, key: NativeTypeDeclarationKey) -> &[NativeTypeDeclarationKey] {
+        self.merges.get(&key).map_or(&[], Vec::as_slice)
+    }
+    pub(crate) fn is_merged(&self, key: NativeTypeDeclarationKey) -> bool {
+        self.merged.contains_key(&key) || self.merges.contains_key(&key)
+    }
+    fn merge_classes(&mut self, classes: &HashSet<NativeTypeDeclarationKey>) {
+        for keys in self.names.values_mut() {
+            if keys.len() < 2 || !keys.iter().all(|key| classes.contains(key)) { continue }
+            let canonical = keys[0];
+            for &key in &keys[1..] {
+                self.merged.insert(key, canonical);
+                self.merges.entry(canonical).or_default().push(key);
+            }
+            keys.truncate(1);
+        }
     }
 }
 
@@ -246,6 +273,7 @@ impl ProjectRegistry {
         let mut snapshots = HashMap::default();
         let mut flow_snapshots = HashMap::default();
         let mut names = ProjectNamedIndex::default();
+        let mut classes = HashSet::default();
         let mut files: Vec<_> = inputs
             .into_iter()
             .enumerate()
@@ -257,14 +285,11 @@ impl ProjectRegistry {
                 assert!(snapshots.insert(source.snapshot, index).is_none());
                 assert!(flow_snapshots.insert(source.iterator_sources().program.snapshot, index).is_none());
                 for declaration in source.named.declarations() {
-                    names
-                        .names
-                        .entry(declaration.syntax.name.text.clone())
-                        .or_default()
-                        .push(NativeTypeDeclarationKey {
-                            snapshot: declaration.key.snapshot,
-                            index: declaration.key.index,
-                        });
+                    let key = NativeTypeDeclarationKey { snapshot: declaration.key.snapshot, index: declaration.key.index };
+                    names.names.entry(declaration.syntax.name.text.clone()).or_default().push(key);
+                    if matches!(declaration.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor: luanalysis_syntax::NamedRecordKind::Class, .. }) {
+                        classes.insert(key);
+                    }
                 }
                 FileRegistry {
                     id: input.id,
@@ -274,6 +299,7 @@ impl ProjectRegistry {
                 }
             })
             .collect();
+        names.merge_classes(&classes);
         let names = Rc::new(names);
         let original_scopes:Vec<_>=files.iter().map(|file|file.source.types.original_scopes()).collect();
         for file in &mut files {
@@ -830,8 +856,11 @@ impl NativeTypeProvider for ProjectRegistry {
     }
     fn type_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
         let mut header = self.owner(key.snapshot).type_member_header(key);
-        if let TypeMemberOwner::Reference { name, candidates } = &mut header.owner {
-            *candidates = self.names.candidates(name).to_vec();
+        match &mut header.owner {
+            TypeMemberOwner::Reference { name, candidates } => *candidates = self.names.candidates(name).to_vec(),
+            // A merged class declaration's members belong to the class it merges into.
+            TypeMemberOwner::Declared(owner) => *owner = self.names.canonical(*owner),
+            TypeMemberOwner::RuntimeStore(_) => {}
         }
         header
     }
@@ -861,8 +890,33 @@ impl NativeTypeProvider for ProjectRegistry {
     fn type_member_is_assignment(&self, key: NativeTypeMemberKey) -> bool {
         self.owner(key.snapshot).type_member_is_assignment(key)
     }
+    // A merged class's signatures and bases are those of all its declarations.
+    fn type_declaration_call_signatures(&self, key: NativeTypeDeclarationKey) -> Vec<NativeSignatureKey> {
+        let mut heads = self.owner(key.snapshot).type_declaration_call_signatures(key);
+        for &merged in self.names.merged_into(key) {
+            heads.extend(self.owner(merged.snapshot).type_declaration_call_signatures(merged));
+        }
+        heads
+    }
+    fn type_declaration_operator_signatures(&self, key: NativeTypeDeclarationKey, operator: luanalysis_engine::NativeOperator) -> Vec<NativeSignatureKey> {
+        let mut heads = self.owner(key.snapshot).type_declaration_operator_signatures(key, operator);
+        for &merged in self.names.merged_into(key) {
+            heads.extend(self.owner(merged.snapshot).type_declaration_operator_signatures(merged, operator));
+        }
+        heads
+    }
+    fn type_declaration_bases(&self, key: NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Vec<Type> {
+        let mut bases = self.owner(key.snapshot).type_declaration_bases(key, queries);
+        for &merged in self.names.merged_into(key) {
+            bases.extend(self.owner(merged.snapshot).type_declaration_bases(merged, queries));
+        }
+        bases
+    }
     fn type_declaration_members(&self, key: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> {
         let mut members = self.owner(key.snapshot).type_declaration_members(key);
+        for &merged in self.names.merged_into(key) {
+            members.extend(self.owner(merged.snapshot).type_declaration_members(merged));
+        }
         // A runtime schema's members are the stores its own file's receivers
         // name syntactically; another file's store cannot name its constructor.
         if self.owner(key.snapshot).runtime_schema_contains(key) {
@@ -950,8 +1004,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn signature_declared_return_pack(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> ValuePack;
         fn signature_return_cycle(key: NativeSignatureKey) -> ();
         fn signature_return_type_too_deep(key: NativeSignatureKey) -> ();
-        fn type_declaration_call_signatures(key: NativeTypeDeclarationKey) -> Vec<NativeSignatureKey>;
-        fn type_declaration_operator_signatures(key: NativeTypeDeclarationKey, operator: luanalysis_engine::NativeOperator) -> Vec<NativeSignatureKey>;
+
         fn function_declared_scalar_contract(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn function_declared_scalar_contract_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn function_declared_scalar_contract_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
@@ -962,7 +1015,6 @@ impl NativeTypeProvider for ProjectRegistry {
         fn type_member_effective_metadata(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::TypeMemberEffectiveMetadata;
         fn contextual_type_owner(key: NativeFunctionKey, input: luanalysis_engine::NativeFlowKey, queries: &mut dyn TypeQueries) -> luanalysis_engine::ContextualTypeOwner;
         fn type_indexer_key(key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Type;
-        fn type_declaration_bases(key: NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Vec<Type>;
         fn type_parameter_owner(key: NativeTypeParameterKey) -> Option<TypeDeclarationOwner>;
         fn check_expression_pack(key: NativeExpressionKey, expected: Option<&ValuePack>, mode: NativeCheckMode, queries: &mut dyn TypeQueries) -> ValuePack;
         fn function_has_result_pack(key: NativeFunctionKey) -> bool;

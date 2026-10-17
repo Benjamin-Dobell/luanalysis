@@ -120,10 +120,11 @@ impl NativeRegistry {
                 snapshot: self.snapshot,
                 index: index.try_into().expect("source definition index fits u32"),
             },
-            declaration: NativeTypeDeclarationKey {
+            // A repeated `---@class X` defines the class it is merged into.
+            declaration: self.canonical_declaration(NativeTypeDeclarationKey {
                 snapshot: source.key.snapshot,
                 index: source.key.index,
-            },
+            }),
             binding: *binding,
             initializer: value.span,
             declaration_span: source.syntax.name.span,
@@ -204,9 +205,14 @@ impl Checker<'_> {
         let Some(class) = self.class_definition_instance(&directive) else {
             return actual;
         };
-        match self
-            .engine
-            .class_definition_value(directive.key, &class, &actual)
+        // A class declared in several places (LuaLS) is reopened on its module's value.
+        let reopened = self.native.is_some_and(|native| native.is_merged_declaration(directive.declaration));
+        let value = if reopened {
+            self.engine.class_definition_reopen(directive.key, &class, &actual)
+        } else {
+            self.engine.class_definition_value(directive.key, &class, &actual)
+        };
+        match value
         {
             Ok(value) => value,
             Err(error) => {

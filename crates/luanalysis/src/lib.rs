@@ -862,7 +862,9 @@ impl Checker<'_> {
                             self.engine,
                         );
                         self.incomplete_flow |= result.incomplete;
-                        if result.unresolved_auto && !result.incomplete
+                        // As in TypeScript, an automatic local whose type cannot be determined
+                        // is reported only under `--no-implicit-any`; otherwise it is `any`.
+                        if result.unresolved_auto && !result.incomplete && native.no_implicit_any()
                             && native_expressions::publishes(self.check_mode)
                         {
                             let declaration = self.bound.declaration(self.bound.binding_at(name.span.start).unwrap());

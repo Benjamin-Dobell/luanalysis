@@ -1,5 +1,12 @@
 //! Original Lua acceptance for automatic local declarations and closure crossings.
-use luanalysis::{CheckReport, check, location};
+use luanalysis::{CheckOptions, CheckReport, check, check_with_options, location};
+
+fn check_strict(source: &str) -> CheckReport {
+    let report = check_with_options(source, CheckOptions { no_implicit_any: true, ..CheckOptions::default() });
+    // Without --no-implicit-any the undetermined local is `any`, as in TypeScript.
+    assert!(check(source).diagnostics.is_empty(), "{source}");
+    report
+}
 use std::{fs, process::Command};
 
 fn clean(source: &str) -> CheckReport {
@@ -146,7 +153,7 @@ fn later_and_nested_writes_report_unresolved_auto_at_original_declaration_and_re
         let source = format!(
             "local value\nlocal function read() return value end\n{tail}\nlocal result=read()"
         );
-        let report = check(&source);
+        let report = check_strict(&source);
         assert_eq!(
             report.diagnostics.len(),
             2,
@@ -167,7 +174,7 @@ fn later_and_nested_writes_report_unresolved_auto_at_original_declaration_and_re
 #[test]
 fn a_closure_inside_the_writing_loop_does_not_capture_one_iteration_type() {
     let source = "---@param flag boolean\nlocal function run(flag)\nlocal value\nwhile flag do\nvalue=42\nlocal function read() return value end\nlocal result=read()\nflag=false\nend\nend\nrun(true)";
-    let report = check(source);
+    let report = check_strict(source);
     assert_eq!(report.diagnostics.len(), 2, "{:#?}", report.diagnostics);
     assert_eq!(report.diagnostics[0].code, "TS7034");
     assert_eq!(location(source, report.diagnostics[0].span), (3, 7));

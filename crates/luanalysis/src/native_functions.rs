@@ -450,6 +450,13 @@ impl NativeRegistry {
         }
     }
 
+    /// The declaration a repeated `---@class` is merged into, or `key` itself.
+    pub(crate) fn canonical_declaration(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> luanalysis_engine::NativeTypeDeclarationKey {
+        self.project_names.as_ref().map_or(key, |names| names.canonical(key))
+    }
+    pub(crate) fn is_merged_declaration(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> bool {
+        self.project_names.as_ref().is_some_and(|names| names.is_merged(key))
+    }
     pub(super) fn set_project_names(&mut self, names: std::rc::Rc<project_provider::ProjectNamedIndex>) {
         self.header_metadata.get_mut().invalidate();
         self.project_names = Some(names);
