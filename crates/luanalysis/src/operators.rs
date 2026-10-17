@@ -2,11 +2,11 @@
 //!
 //! Numeric/string bounds and result unions use the shared engine. Lua's
 //! operand-valued short circuiting and its two falsey values are language
-//! semantics, not JavaScript operator rules. Metamethods, integer domains and
-//! arbitrary table indexers require their own later native boundaries.
+//! semantics, not JavaScript operator rules. A table operand's operators are
+//! those its type declares with `---@operator`; metatables are not traced.
 
 use super::Checker;
-use luanalysis_engine::{PackArgument, TableError, Type, ValuePack};
+use luanalysis_engine::{NativeOperator, PackArgument, TableError, Type, ValuePack};
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, Name, Span, UnaryOperator};
 
 impl Checker<'_> {
@@ -31,13 +31,16 @@ impl Checker<'_> {
                 }
             }
             UnaryOperator::Length => {
+                if let Some(result) = self.engine.operator_call(NativeOperator::Length, &value_type, None) {
+                    return self.declared_operator_result(result, value.span, "#", &[&value_type]);
+                }
                 if self.length_operand(&value_type) {
                     Type::Number
                 } else {
                     self.error_types(
                         "LUA2020",
                         value.span,
-                        "Operator '#' requires a string or table operand; got '{}'. Length metamethods are not implemented.",
+                        "Operator '#' requires a string or table operand; got '{}'. A table type declares its length with ---@operator len.",
                         &[&value_type],
                     );
                     Type::Any
@@ -53,12 +56,18 @@ impl Checker<'_> {
                         }
                     }
                     Type::Number
+                } else if let Some(result) = self.engine.operator_call(
+                    if op == UnaryOperator::Negate { NativeOperator::Negate } else { NativeOperator::BitwiseNot },
+                    &value_type,
+                    None,
+                ) {
+                    self.declared_operator_result(result, value.span, unary_spelling(op), &[&value_type])
                 } else {
                     self.error_types(
                         "TS2356",
                         value.span,
                         format!(
-                            "Operator '{}' requires a number operand; got '{{}}'. Arithmetic metamethods are not implemented.",
+                            "Operator '{}' requires a number operand; got '{{}}'. A table type declares arithmetic with ---@operator.",
                             unary_spelling(op)
                         ),
                         &[&value_type],
@@ -133,6 +142,11 @@ impl Checker<'_> {
                 let accepted = Type::Union(vec![Type::String, Type::Number]);
                 let valid_left = self.engine.is_assignable(&left_type, &accepted);
                 let valid_right = self.engine.is_assignable(&right_type, &accepted);
+                if !(valid_left && valid_right)
+                    && let Some(result) = self.declared_binary_operator(NativeOperator::Concat, &left_type, &right_type)
+                {
+                    return self.declared_operator_result(result, op_span, "..", &[&left_type, &right_type]);
+                }
                 if !valid_left {
                     self.concat_error(left.span, &left_type);
                 }
@@ -155,12 +169,22 @@ impl Checker<'_> {
                     && self.engine.is_assignable(&right_type, &Type::String);
                 if both_numbers || both_strings {
                     Type::Boolean
+                } else if let Some(result) = {
+                    // `a > b` is `b < a`, and `a >= b` is `b <= a`.
+                    let operator = if matches!(op, BinaryOperator::Less | BinaryOperator::Greater) { NativeOperator::Less } else { NativeOperator::LessEqual };
+                    if matches!(op, BinaryOperator::Less | BinaryOperator::LessEqual) {
+                        self.declared_binary_operator(operator, &left_type, &right_type)
+                    } else {
+                        self.declared_binary_operator(operator, &right_type, &left_type)
+                    }
+                } {
+                    self.declared_operator_result(result, op_span, binary_spelling(op), &[&left_type, &right_type])
                 } else {
                     self.error_types(
                         "TS2365",
                         op_span,
                         format!(
-                            "Operator '{}' requires two numbers or two strings; got '{{}}' and '{{}}'. Comparison metamethods are not implemented.",
+                            "Operator '{}' requires two numbers or two strings; got '{{}}' and '{{}}'. A table type declares comparisons with ---@operator lt and le.",
                             binary_spelling(op)
                         ),
                         &[&left_type, &right_type],
@@ -182,6 +206,12 @@ impl Checker<'_> {
             | BinaryOperator::ShiftRight => {
                 let valid_left = self.engine.is_assignable(&left_type, &Type::Number);
                 let valid_right = self.engine.is_assignable(&right_type, &Type::Number);
+                if !(valid_left && valid_right)
+                    && let Some(operator) = arithmetic_operator(op)
+                    && let Some(result) = self.declared_binary_operator(operator, &left_type, &right_type)
+                {
+                    return self.declared_operator_result(result, op_span, binary_spelling(op), &[&left_type, &right_type]);
+                }
                 if !valid_left {
                     self.numeric_error("TS2362", left.span, op, &left_type);
                 }
@@ -210,12 +240,38 @@ impl Checker<'_> {
         self.engine.is_assignable(ty, &Type::Union(vec![Type::String, Type::RuntimeTable]))
     }
 
+    /// A binary operator as the first operand's type declares it, or else as the
+    /// second's, with the operands in that order, as Lua dispatches a metamethod
+    /// from either operand. A type that declares the operator but no head for
+    /// the other operand is an error rather than a fallback.
+    fn declared_binary_operator(&mut self, operator: NativeOperator, first: &Type, second: &Type) -> Option<luanalysis_engine::CallResult> {
+        self.engine.operator_call(operator, first, Some(second))
+            .or_else(|| self.engine.operator_call(operator, second, Some(first)))
+    }
+
+    fn declared_operator_result(&mut self, result: luanalysis_engine::CallResult, span: Span, spelling: &str, operands: &[&Type]) -> Type {
+        if result.errors.is_empty() {
+            return result.return_type;
+        }
+        if let [left, right] = operands {
+            self.error_types(
+                "TS2365",
+                span,
+                format!("Operator '{spelling}' cannot be applied to types '{{}}' and '{{}}'."),
+                &[left, right],
+            );
+        } else {
+            self.error_types("TS2365", span, format!("Operator '{spelling}' cannot be applied to type '{{}}'."), operands);
+        }
+        Type::Any
+    }
+
     fn numeric_error(&mut self, code: &'static str, span: Span, op: BinaryOperator, ty: &Type) {
         self.error_types(
             code,
             span,
             format!(
-                "Operator '{}' requires a number operand; got '{{}}'. Arithmetic metamethods are not implemented.",
+                "Operator '{}' requires a number operand; got '{{}}'. A table type declares arithmetic with ---@operator.",
                 binary_spelling(op)
             ),
             &[ty],
@@ -226,7 +282,7 @@ impl Checker<'_> {
         self.error_types(
             "LUA2020",
             span,
-            "Operator '..' requires a string or number operand; got '{}'. Concatenation metamethods are not implemented.",
+            "Operator '..' requires a string or number operand; got '{}'. A table type declares concatenation with ---@operator concat.",
             &[ty],
         );
     }
@@ -340,6 +396,24 @@ pub(super) fn literal_string_key(expr: &Expr) -> Option<&[u8]> {
         ExprKind::Parenthesized(inner) => literal_string_key(inner),
         _ => None,
     }
+}
+
+fn arithmetic_operator(op: BinaryOperator) -> Option<NativeOperator> {
+    Some(match op {
+        BinaryOperator::Add => NativeOperator::Add,
+        BinaryOperator::Subtract => NativeOperator::Subtract,
+        BinaryOperator::Multiply => NativeOperator::Multiply,
+        BinaryOperator::Divide => NativeOperator::Divide,
+        BinaryOperator::FloorDivide => NativeOperator::FloorDivide,
+        BinaryOperator::Modulo => NativeOperator::Modulo,
+        BinaryOperator::Power => NativeOperator::Power,
+        BinaryOperator::BitwiseAnd => NativeOperator::BitwiseAnd,
+        BinaryOperator::BitwiseOr => NativeOperator::BitwiseOr,
+        BinaryOperator::BitwiseXor => NativeOperator::BitwiseXor,
+        BinaryOperator::ShiftLeft => NativeOperator::ShiftLeft,
+        BinaryOperator::ShiftRight => NativeOperator::ShiftRight,
+        _ => return None,
+    })
 }
 
 fn unary_spelling(op: UnaryOperator) -> &'static str {

@@ -685,7 +685,8 @@ impl Checker<'_> {
                 "never" => Type::Never,
                 "nil" => Type::Nil,
                 "boolean" => Type::Boolean,
-                "number" => Type::Number,
+                // LuaLS's `integer` is a number; Lua's number domain is not split here.
+                "number" | "integer" => Type::Number,
                 "string" => Type::String,
                 "table" => Type::RuntimeTable,
                 "function" => Type::RuntimeFunction,

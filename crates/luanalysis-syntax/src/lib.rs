@@ -85,6 +85,8 @@ pub struct File {
     /// Canonical original @overload heads. Documentation/function associations
     /// reference these nodes instead of cloning signature-local generic scopes.
     pub overload_annotations: Vec<OverloadAnnotation>,
+    /// `---@operator` declarations of the named types in their documentation groups.
+    pub operator_annotations: Vec<OperatorAnnotation>,
     /// Original documentation links. These do not introduce annotation types
     /// or runtime reads; the source identities remain available to editor hosts.
     pub documentation_references: Vec<DocumentationReference>,
@@ -572,6 +574,74 @@ pub struct OverloadAnnotation {
     pub group_span: Span,
     /// Neutral documentation candidates. The registry selects semantic owner;
     /// multiple candidates are not silently resolved by source order.
+    pub named_candidates: Vec<NamedTypeDeclarationId>,
+}
+
+/// A Lua operator a named type declares with `---@operator`. `call` is a class
+/// `@overload`, and `==` always compares identity, so neither appears here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LuaOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    FloorDivide,
+    Modulo,
+    Power,
+    Concat,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    ShiftLeft,
+    ShiftRight,
+    Negate,
+    BitwiseNot,
+    Length,
+    Less,
+    LessEqual,
+}
+
+impl LuaOperator {
+    /// The metamethod name, without its `__` prefix, as `---@operator` spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Subtract => "sub",
+            Self::Multiply => "mul",
+            Self::Divide => "div",
+            Self::FloorDivide => "idiv",
+            Self::Modulo => "mod",
+            Self::Power => "pow",
+            Self::Concat => "concat",
+            Self::BitwiseAnd => "band",
+            Self::BitwiseOr => "bor",
+            Self::BitwiseXor => "bxor",
+            Self::ShiftLeft => "shl",
+            Self::ShiftRight => "shr",
+            Self::Negate => "unm",
+            Self::BitwiseNot => "bnot",
+            Self::Length => "len",
+            Self::Less => "lt",
+            Self::LessEqual => "le",
+        }
+    }
+
+    pub fn unary(self) -> bool {
+        matches!(self, Self::Negate | Self::BitwiseNot | Self::Length)
+    }
+}
+
+/// `---@operator add(Other): Result`: the declared type's `+` with a right operand
+/// assignable to `Other` gives `Result`. Its signature is `fun(other: Other): Result`,
+/// or `fun(): Result` for a unary operator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OperatorAnnotation {
+    pub operator: LuaOperator,
+    pub signature: Box<FunctionType>,
+    pub span: Span,
+    pub tag_span: Span,
+    pub group_span: Span,
+    /// The named declarations in the same documentation group, as for `@overload`.
     pub named_candidates: Vec<NamedTypeDeclarationId>,
 }
 

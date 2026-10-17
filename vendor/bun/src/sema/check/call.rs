@@ -702,7 +702,29 @@ impl<'p, 's> Checker<'p, 's> {
             };
         }
         let signatures = self.signatures(callee, false);
-        let candidates = self.candidates_in_order(&signatures);
+        self.resolve_native_signatures(&signatures, args, type_args, expected_return, expected_result_pack, role)
+    }
+
+    /// A Lua operator on `receiver` that its type declares (`---@operator`):
+    /// the declared heads resolved against `other`, as a call of one argument
+    /// (none for a unary operator). None if the type declares no such operator.
+    pub fn native_operator_call(&mut self, operator: super::native_named::NativeOperator, receiver: TypeId, other: Option<TypeId>) -> Option<ResolvedTypeCall> {
+        let heads = self.native_object_operator_heads(receiver, operator);
+        if heads.is_empty() { return None }
+        let arguments: Args = other.into_iter().map(Arg::Resolved).collect();
+        Some(self.resolve_native_signatures(&heads, &arguments, &[], None, None, NativeCallRole::Explicit))
+    }
+
+    fn resolve_native_signatures(
+        &mut self,
+        signatures: &[SigId],
+        args: &[Arg],
+        type_args: &[TypeId],
+        expected_return: Option<TypeId>,
+        expected_result_pack: Option<NativeResultPack>,
+        role: NativeCallRole,
+    ) -> ResolvedTypeCall {
+        let candidates = self.candidates_in_order(signatures);
         let error = if candidates.is_empty() {
             Some(ResolvedTypeCallError::NotCallable)
         } else {

@@ -362,6 +362,9 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
     fn type_declaration_call_signatures(&self, key: NativeTypeDeclarationId) -> Vec<bun_sema::types::NativeSignatureId> {
         self.provider.type_declaration_call_signatures(source_declaration(key)).into_iter().map(super::core_signature_key).collect()
     }
+    fn type_declaration_operator_signatures(&self, key: NativeTypeDeclarationId, operator: bun_sema::check::native_named::NativeOperator) -> Vec<bun_sema::types::NativeSignatureId> {
+        self.provider.type_declaration_operator_signatures(source_declaration(key), operator).into_iter().map(super::core_signature_key).collect()
+    }
     fn contains_type_declaration(&self, key: NativeTypeDeclarationId) -> bool {
         self.provider
             .contains_type_declaration(source_declaration(key))

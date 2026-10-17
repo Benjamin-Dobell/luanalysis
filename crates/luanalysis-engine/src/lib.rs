@@ -98,6 +98,7 @@ pub use bun_sema::check::CheckMode as NativeCheckMode;
 /// Deterministic, fast hashing for host tables keyed by original source ids.
 pub use bun_sema::util::{FxBuild as FxBuildHasher, FxHashMap, FxHashSet};
 pub use bun_sema::check::NativeFunctionCheckState;
+pub use bun_sema::check::native_named::NativeOperator;
 use bun_sema::check::{
     Checker, NativeFunctionProvider, NativePackResult, NativeTypeResult, Program,
     ResolvedTypeCallError,
@@ -467,6 +468,8 @@ pub trait NativeTypeProvider {
     fn type_member_signatures(&self, _: NativeTypeMemberKey) -> Option<Vec<NativeSignatureKey>> { None }
     fn type_declaration_members(&self, _: NativeTypeDeclarationKey) -> Vec<NativeTypeMemberKey> { Vec::new() }
     fn type_declaration_call_signatures(&self, _: NativeTypeDeclarationKey) -> Vec<NativeSignatureKey> { Vec::new() }
+    /// Declared operator heads (`---@operator`), each taking the other operand.
+    fn type_declaration_operator_signatures(&self, _: NativeTypeDeclarationKey, _: NativeOperator) -> Vec<NativeSignatureKey> { Vec::new() }
     fn type_alias_target(&self, _: NativeTypeDeclarationKey, _: &mut dyn TypeQueries) -> Type {
         panic!("native named alias provider is not installed")
     }
@@ -1132,6 +1135,9 @@ pub trait TypeQueries {
     fn auto_variable_constraint(&mut self) -> Type;
     fn is_auto_variable_constraint(&mut self, ty: &Type) -> bool;
     fn call(&mut self, callee: &Type, arguments: &[Type]) -> CallResult;
+    /// `operator` applied to `receiver` (and `other`, for a binary operator) as
+    /// `receiver`'s type declares it with `---@operator`; None if it declares none.
+    fn operator_call(&mut self, operator: NativeOperator, receiver: &Type, other: Option<&Type>) -> Option<CallResult>;
     fn call_with_type_arguments(
         &mut self,
         callee: &Type,
@@ -2127,6 +2133,13 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
 
     fn call(&mut self, callee: &Type, arguments: &[Type]) -> CallResult {
         self.call_with_type_arguments(callee, arguments, &[], None)
+    }
+
+    fn operator_call(&mut self, operator: NativeOperator, receiver: &Type, other: Option<&Type>) -> Option<CallResult> {
+        let receiver = import_type(self.checker, self.handles, receiver);
+        let other = other.map(|other| import_type(self.checker, self.handles, other));
+        let result = self.checker.native_operator_call(operator, receiver, other)?;
+        Some(self.export_call_result(result))
     }
 
     fn call_with_type_arguments(

@@ -82,7 +82,7 @@ pub(crate) fn validate(documentation: &ParsedDocumentation, diagnostics: &mut Ve
                 }
                 roots.push(&field.ty);
             }
-            DeclarationItem::Overload { signature, .. } => function(signature, &mut roots),
+            DeclarationItem::Overload { signature, .. } | DeclarationItem::Operator { signature, .. } => function(signature, &mut roots),
             DeclarationItem::Function { signature, annotations, .. } => {
                 function(signature, &mut roots);
                 generics(&annotations.generics, &mut roots);

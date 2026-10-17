@@ -522,6 +522,7 @@ pub(super) struct NativeSignatures {
     functions: HashMap<NativeFunctionKey, Vec<NativeSignatureKey>>,
     ambient_mains: HashMap<NativeFunctionKey, NativeSignatureKey>,
     named: HashMap<NativeNamedKey, Vec<NativeSignatureKey>>,
+    operators: HashMap<(NativeNamedKey, luanalysis_engine::NativeOperator), Vec<NativeSignatureKey>>,
     documentation: HashMap<DocFunctionDeclarationId,NativeSignatureKey>,
     sites: HashMap<(usize, usize), SignatureSite>,
     pub diagnostics: Vec<Diagnostic>,
@@ -542,6 +543,7 @@ impl NativeSignatures {
             functions: HashMap::default(),
             ambient_mains: HashMap::default(),
             named: HashMap::default(),
+            operators: HashMap::default(),
             documentation: HashMap::default(),
             sites: HashMap::default(),
             diagnostics: Vec::new(),
@@ -634,6 +636,33 @@ impl NativeSignatures {
             } else if let Some(function) = function {
                 result.functions.entry(function).or_default().push(key);
             }
+        }
+        for head in &file.operator_annotations {
+            let named_key = match head.named_candidates.as_slice() {
+                [id] => named.key_for_syntax(*id),
+                candidates => {
+                    result.diagnostics.push(Diagnostic {
+                        code: "LUA2034",
+                        span: head.tag_span,
+                        message: if candidates.is_empty() {
+                            "@operator has no class, shape or alias in its documentation group".into()
+                        } else {
+                            "operator documentation has multiple candidate named owners".into()
+                        },
+                    });
+                    continue;
+                }
+            };
+            let Some(named_key) = named_key else { continue };
+            let key = result.insert(
+                SignatureOwner::NamedType(NativeTypeDeclarationKey { snapshot: named_key.snapshot, index: named_key.index }),
+                Some(NativeTypeContext::NamedType(named_key)),
+                None,
+                &head.signature,
+                head.span,
+                head.group_span,
+            );
+            result.operators.entry((named_key, native_operator(head.operator))).or_default().push(key);
         }
         for (index, function) in functions.iter().enumerate() {
             let key = NativeFunctionKey {
@@ -1022,6 +1051,9 @@ impl NativeSignatures {
     pub(super) fn named_heads(&self, key: NativeNamedKey) -> Vec<NativeSignatureKey> {
         self.named.get(&key).cloned().unwrap_or_default()
     }
+    pub(super) fn operator_heads(&self, key: NativeNamedKey, operator: luanalysis_engine::NativeOperator) -> Vec<NativeSignatureKey> {
+        self.operators.get(&(key, operator)).cloned().unwrap_or_default()
+    }
     pub(super) fn scopes(&self, file: &File) -> Vec<NamedGenericScopeRecipe> {
         self.recipes
             .iter()
@@ -1044,5 +1076,30 @@ impl NativeSignatures {
                     .collect(),
             }))
             .collect()
+    }
+}
+
+fn native_operator(operator: luanalysis_syntax::LuaOperator) -> luanalysis_engine::NativeOperator {
+    use luanalysis_engine::NativeOperator as Native;
+    use luanalysis_syntax::LuaOperator as Lua;
+    match operator {
+        Lua::Add => Native::Add,
+        Lua::Subtract => Native::Subtract,
+        Lua::Multiply => Native::Multiply,
+        Lua::Divide => Native::Divide,
+        Lua::FloorDivide => Native::FloorDivide,
+        Lua::Modulo => Native::Modulo,
+        Lua::Power => Native::Power,
+        Lua::Concat => Native::Concat,
+        Lua::BitwiseAnd => Native::BitwiseAnd,
+        Lua::BitwiseOr => Native::BitwiseOr,
+        Lua::BitwiseXor => Native::BitwiseXor,
+        Lua::ShiftLeft => Native::ShiftLeft,
+        Lua::ShiftRight => Native::ShiftRight,
+        Lua::Negate => Native::Negate,
+        Lua::BitwiseNot => Native::BitwiseNot,
+        Lua::Length => Native::Length,
+        Lua::Less => Native::Less,
+        Lua::LessEqual => Native::LessEqual,
     }
 }

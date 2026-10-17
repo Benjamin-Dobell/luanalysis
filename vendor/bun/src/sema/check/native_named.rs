@@ -222,6 +222,30 @@ pub enum NativeNamedTypeError {
     Table { declaration: NativeTypeDeclarationId, error: NativeTableError },
 }
 
+/// A Lua operator a named type may declare (`---@operator`). Comparison
+/// operators are `Less` and `LessEqual`; `>` and `>=` swap their operands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NativeOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    FloorDivide,
+    Modulo,
+    Power,
+    Concat,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXor,
+    ShiftLeft,
+    ShiftRight,
+    Negate,
+    BitwiseNot,
+    Length,
+    Less,
+    LessEqual,
+}
+
 /// Declaration provider contract for native named-type integration. Every returned type
 /// is in declaration space, including member/indexer/bases queries. The backend owns resolving,
 /// substitution, recursive publication, inference, relation checks and semantic diagnostics.
@@ -262,6 +286,9 @@ pub trait NativeTypeDeclarationProvider {
     /// original owner candidate before publishing or inheriting its member origin.
     fn type_declaration_members(&self, declaration: NativeTypeDeclarationId) -> Vec<NativeTypeMemberId>;
     fn type_declaration_call_signatures(&self, _: NativeTypeDeclarationId) -> Vec<NativeSignatureId> { Vec::new() }
+    /// Declared operator heads (`---@operator add(Other): Result`), each with the
+    /// other operand as its only parameter, or none for a unary operator.
+    fn type_declaration_operator_signatures(&self, _: NativeTypeDeclarationId, _: NativeOperator) -> Vec<NativeSignatureId> { Vec::new() }
 
     /// Alias target only. Record/class/module heads are created by the checker from their header
     /// before it requests members, rather than supplied as an eagerly expanded source table.
@@ -1378,6 +1405,22 @@ impl<'p, 's> Checker<'p, 's> {
             }
             _ => unreachable!("native object signature classification"),
         }
+    }
+
+    /// The declared heads of `operator` for an object, with its own before its
+    /// bases', as for call heads. An undeclared operator has none.
+    pub(super) fn native_object_operator_heads(&mut self, ty: TypeId, operator: NativeOperator) -> Vec<SigId> {
+        let Some(reference) = self.native_object_call_reference(ty) else { return Vec::new() };
+        let Ok(provider) = self.native_named_provider(reference.declaration) else { return Vec::new() };
+        let mapper = self.native_member_mapper(reference);
+        let mut heads: Vec<_> = provider.type_declaration_operator_signatures(reference.declaration, operator).into_iter().map(|declaration| {
+            self.native_signature_provider_for(declaration);
+            self.types().intern_sig(SigData::NativeDeclarationSignature { declaration, mapper, implementation: None })
+        }).collect();
+        if let Ok(bases) = self.native_object_bases(reference) {
+            for base in bases { for head in self.native_object_operator_heads(base, operator) { if !heads.contains(&head) { heads.push(head); } } }
+        }
+        heads
     }
 
     pub(super) fn native_object_call_heads(&mut self, ty: TypeId) -> Vec<SigId> {

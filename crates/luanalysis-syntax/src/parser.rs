@@ -33,6 +33,7 @@ pub fn parse(source: &str) -> File {
         type_extensions: Vec::new(),
         expression_assertions: Vec::new(),
         overload_annotations: Vec::new(),
+        operator_annotations: Vec::new(),
         documentation_references: Vec::new(),
         return_annotations: Vec::new(),
         documentation_group: None,
@@ -50,6 +51,7 @@ pub fn parse(source: &str) -> File {
         function_declarations: parser.function_declarations,
         type_extensions: parser.type_extensions,
         overload_annotations: parser.overload_annotations,
+        operator_annotations: parser.operator_annotations,
         documentation_references: parser.documentation_references,
         return_annotations: parser.return_annotations,
         comments,
@@ -69,6 +71,7 @@ struct Parser<'a> {
     type_extensions: Vec<TypeExtension>,
     expression_assertions: Vec<crate::ExpressionAssertion>,
     overload_annotations: Vec<OverloadAnnotation>,
+    operator_annotations: Vec<crate::OperatorAnnotation>,
     documentation_references: Vec<crate::DocumentationReference>,
     return_annotations: Vec<crate::ReturnAnnotation>,
     documentation_group: Option<DocumentationGroup>,
@@ -84,6 +87,7 @@ struct DocumentationGroup {
     extensions: Vec<usize>,
     record: Option<usize>,
     overloads: Vec<usize>,
+    operators: Vec<usize>,
     functions: Vec<usize>,
     active_function: Option<usize>,
 }
@@ -284,6 +288,7 @@ impl Parser<'_> {
                 extensions: Vec::new(),
                 record: None,
                 overloads: Vec::new(),
+                operators: Vec::new(),
                 functions: Vec::new(),
                 active_function: None,
             });
@@ -368,6 +373,13 @@ impl Parser<'_> {
                         group.record = Some(index);
                     }
                 }
+                types::DeclarationItem::Operator { operator, signature, span, tag_span } => {
+                    group.active_function = None;
+                    group.operators.push(self.operator_annotations.len());
+                    self.operator_annotations.push(crate::OperatorAnnotation {
+                        operator, signature, span, tag_span, group_span: group.span, named_candidates: Vec::new(),
+                    });
+                }
                 types::DeclarationItem::Field(field) => {
                     group.active_function = None;
                     let record = group.record.filter(|&index| {
@@ -414,6 +426,10 @@ impl Parser<'_> {
         for &index in &group.overloads {
             self.overload_annotations[index].group_span = group.span;
             self.overload_annotations[index].named_candidates.clone_from(&named_candidates);
+        }
+        for &index in &group.operators {
+            self.operator_annotations[index].group_span = group.span;
+            self.operator_annotations[index].named_candidates.clone_from(&named_candidates);
         }
         let owners: Vec<_> = group.declarations.iter().filter_map(|&index| {
             matches!(self.type_declarations[index].kind,

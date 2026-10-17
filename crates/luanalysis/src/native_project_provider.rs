@@ -948,6 +948,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn signature_return_cycle(key: NativeSignatureKey) -> ();
         fn signature_return_type_too_deep(key: NativeSignatureKey) -> ();
         fn type_declaration_call_signatures(key: NativeTypeDeclarationKey) -> Vec<NativeSignatureKey>;
+        fn type_declaration_operator_signatures(key: NativeTypeDeclarationKey, operator: luanalysis_engine::NativeOperator) -> Vec<NativeSignatureKey>;
         fn function_declared_scalar_contract(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn function_declared_scalar_contract_in_context(key: NativeFunctionKey, context: &ContextualFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn function_declared_scalar_contract_in_capture(key: NativeFunctionKey, context: &CapturedFunctionContext, queries: &mut dyn TypeQueries) -> Option<ValuePack>;

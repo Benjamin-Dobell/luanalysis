@@ -158,3 +158,30 @@ fn return_lines_continue_only_within_one_documentation_group() {
         ["multiple @return annotations for one function", "multiple @return annotations for one function"],
     );
 }
+
+#[test]
+fn operators_attach_to_their_named_type_with_one_operand_parameter() {
+    let file = checked(concat!(
+        "---@class Vector\n",
+        "---@operator add(Vector): Vector\n",
+        "---@operator unm: Vector\n",
+        "---@operator mul: number # any right operand\n",
+        "---@operator call(string): Vector\n",
+        "---@operator eq(Vector): boolean\n",
+        "local Vector = {}\n",
+    ));
+    let operators: Vec<_> = file.operator_annotations.iter().map(|operator| {
+        assert_eq!(operator.named_candidates, [file.type_declarations[0].id]);
+        (operator.operator, operator.signature.params.len())
+    }).collect();
+    assert_eq!(operators, [(LuaOperator::Add, 1), (LuaOperator::Negate, 0), (LuaOperator::Multiply, 1)]);
+    // `call` is a class overload; `eq` declares nothing, since `==` compares identity.
+    assert_eq!(file.overload_annotations.len(), 1);
+    assert_eq!(file.overload_annotations[0].named_candidates, [file.type_declarations[0].id]);
+    assert_eq!(messages("---@class A\n---@operator unm(A): A\nlocal A = {}\n"), ["unary operator 'unm' takes no operand"]);
+}
+
+#[test]
+fn async_functions_and_named_results_are_ordinary_function_types() {
+    checked("---@type fun(): (ok: boolean, message: string?)\nlocal f\n---@type fun(): ok: boolean, string\nlocal g\n---@param callback async fun(value: number): string\n---@param data lightuserdata\n---@return integer\nlocal function h(callback, data) return 1 end\n");
+}

@@ -36,6 +36,12 @@ pub(crate) enum DeclarationItem {
         span: Span,
         tag_span: Span,
     },
+    Operator {
+        operator: crate::LuaOperator,
+        signature: Box<FunctionType>,
+        span: Span,
+        tag_span: Span,
+    },
 }
 
 /// Parse only documentation tags. Ordinary prose remains a retained comment.
@@ -86,7 +92,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 tag_name,
                 "async" | "nodiscard" | "deprecated" | "package" | "private" | "protected"
                     | "public" | "meta" | "diagnostic" | "format" | "version" | "source"
-                    | "operator" | "cast" | "as"
+                    | "cast" | "as"
             ) {
                 line_offset += line.len();
                 continue;
@@ -106,6 +112,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     | "field"
                     | "function"
                     | "overload"
+                    | "operator"
                     | "see"
                     | "enum"
             ) {
@@ -255,6 +262,13 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                                 span: annotation_span,
                             });
                             parser.documentation_tail();
+                        }
+                    }
+                    "operator" => {
+                        active_function = None;
+                        let tag_span = Span::new(tag_offset, tag_offset + 1 + tag_len);
+                        if let Some(item) = parser.operator_declaration(annotation_span, tag_span) {
+                            result.declarations.push(item);
                         }
                     }
                     "field" => {
@@ -675,6 +689,87 @@ impl TypeParser {
         })
     }
 
+    /// `---@operator name[(Other)][:] Result`, as proposed in LuaLS issue 599 and
+    /// implemented by LuaLS. A binary operator without an operand accepts any
+    /// right operand; `call` declares a call signature, as a class `@overload`.
+    fn operator_declaration(&mut self, span: Span, tag_span: Span) -> Option<DeclarationItem> {
+        let name = self.declaration_name("operator")?;
+        let operator = match name.text.as_str() {
+            "add" => Some(crate::LuaOperator::Add),
+            "sub" => Some(crate::LuaOperator::Subtract),
+            "mul" => Some(crate::LuaOperator::Multiply),
+            "div" => Some(crate::LuaOperator::Divide),
+            "idiv" => Some(crate::LuaOperator::FloorDivide),
+            "mod" => Some(crate::LuaOperator::Modulo),
+            "pow" => Some(crate::LuaOperator::Power),
+            "concat" => Some(crate::LuaOperator::Concat),
+            "band" => Some(crate::LuaOperator::BitwiseAnd),
+            "bor" => Some(crate::LuaOperator::BitwiseOr),
+            "bxor" => Some(crate::LuaOperator::BitwiseXor),
+            "shl" => Some(crate::LuaOperator::ShiftLeft),
+            "shr" => Some(crate::LuaOperator::ShiftRight),
+            "unm" => Some(crate::LuaOperator::Negate),
+            "bnot" => Some(crate::LuaOperator::BitwiseNot),
+            "len" => Some(crate::LuaOperator::Length),
+            "lt" => Some(crate::LuaOperator::Less),
+            "le" => Some(crate::LuaOperator::LessEqual),
+            "call" | "eq" => None,
+            _ => {
+                self.diagnostics.push(Diagnostic {
+                    origin: crate::DiagnosticOrigin::Annotation,
+                    span: name.span,
+                    message: format!("unknown operator '{}'; expected add, sub, mul, div, idiv, mod, pow, concat, band, bor, bxor, shl, shr, unm, bnot, len, lt, le, eq or call", name.text),
+                });
+                return None;
+            }
+        };
+        let open = self.take("(");
+        let operand = match open {
+            Some(_) if self.symbol(")") => None,
+            Some(_) => Some(self.union()),
+            None => None,
+        };
+        let parameters_span = match open {
+            Some(open) => Some(open.join(self.expect(")"))),
+            None => None,
+        };
+        let colon = self.take(":");
+        let result = self.union();
+        let unary = operator.is_some_and(crate::LuaOperator::unary);
+        if unary && let Some(operand) = &operand {
+            self.diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
+                span: operand.span,
+                message: format!("unary operator '{}' takes no operand", name.text),
+            });
+        }
+        let any = |span| TypeExpr { kind: TypeExprKind::Named("any".to_owned()), span };
+        let parameter = |ty: TypeExpr| FunctionTypeParam { name: Name { text: "other".to_owned(), span: ty.span }, span: ty.span, ty: Some(ty), optional: false };
+        let (params, vararg) = match (operator, operand) {
+            (Some(operator), _) if operator.unary() => (Vec::new(), None),
+            (_, Some(operand)) => (vec![parameter(operand)], None),
+            // `---@operator call: R` is called with any arguments.
+            (None, None) if name.text == "call" => (Vec::new(), Some(Box::new(VarargAnnotation { ty: any(name.span), span: name.span, ellipsis_span: None }))),
+            (_, None) => (vec![parameter(any(name.span))], None),
+        };
+        let signature = Box::new(FunctionType {
+            generics: Vec::new(),
+            parameters_span: Some(parameters_span.unwrap_or(name.span)),
+            params,
+            vararg,
+            returns_span: Some(colon.map_or(result.span, |colon| colon.join(result.span))),
+            span: name.span.join(result.span),
+            returns: vec![result],
+            packs: None,
+        });
+        match operator {
+            Some(operator) => Some(DeclarationItem::Operator { operator, signature, span, tag_span }),
+            None if name.text == "call" => Some(DeclarationItem::Overload { signature, span, tag_span }),
+            // `==` compares identity whatever a type declares, as in TypeScript.
+            None => None,
+        }
+    }
+
     fn function_declaration(&mut self) -> Option<(Name, Option<Name>, Option<Span>, FunctionType)> {
         let start = self.current().span;
         let leading_colon = self.take(":");
@@ -940,6 +1035,28 @@ impl TypeParser {
             pending,
         )
     }
+    /// LuaLS names function-type results: `fun(): (ok: boolean, message: string)`.
+    /// The names document the results; they do not change their types.
+    #[inline(never)]
+    fn skip_result_name(&mut self) {
+        if matches!(self.current().kind, TokenKind::Identifier(_))
+            && self.symbol_at(self.pos + 1, ":")
+        {
+            self.pos += 2;
+        }
+    }
+
+    #[inline(never)]
+    fn result_list(&mut self) -> Vec<TypeExpr> {
+        self.skip_result_name();
+        let mut types = vec![self.union()];
+        while self.take(",").is_some() {
+            self.skip_result_name();
+            types.push(self.union());
+        }
+        types
+    }
+
     // A bare `...` (LuaLS) returns any number of values of any type. Kept out of
     // the recursive return parsers so their frames stay small.
     #[cold]
@@ -976,6 +1093,7 @@ impl TypeParser {
         (ty, pending)
     }
     fn return_unit(&mut self) -> ReturnUnit {
+        self.skip_result_name();
         if self.symbol("...") {
             return self.bare_variadic_return();
         }
@@ -989,7 +1107,7 @@ impl TypeParser {
         // must remain owned by that callback, even at this group's depth.
         self.comma_ends_type = 0;
         self.depth += 1;
-        let mut types = self.list();
+        let mut types = self.result_list();
         let ellipsis_span = self.take("...");
         let end = self.expect(")");
         self.depth -= 1;
@@ -1046,6 +1164,13 @@ impl TypeParser {
                 TypeExpr { kind: TypeExprKind::CompletionHint(text), span: start }
             }
             TokenKind::Identifier(name) if name == "fun" => self.function_type(),
+            // LuaLS's `async fun(...)`: an async function is an ordinary function type.
+            TokenKind::Identifier(name) if name == "async"
+                && matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(next)) if next == "fun") =>
+            {
+                self.pos += 1;
+                self.function_type()
+            }
             TokenKind::Identifier(name) => {
                 self.pos += 1;
                 self.qualified(name, start)
@@ -1222,6 +1347,10 @@ impl TypeParser {
         if name == "file" && self.symbol("*") && self.current().span.start == span.end {
             span = span.join(self.current().span);
             self.pos += 1;
+        }
+        // LuaLS's `lightuserdata` is a userdata: Lua's `type` reports "userdata".
+        if name == "lightuserdata" {
+            name = "userdata".to_owned();
         }
         TypeExpr { kind: TypeExprKind::Named(name), span }
     }

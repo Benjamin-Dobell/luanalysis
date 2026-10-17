@@ -2548,6 +2548,9 @@ impl NativeTypeProvider for NativeRegistry {
     fn type_declaration_call_signatures(&self,key:luanalysis_engine::NativeTypeDeclarationKey)->Vec<luanalysis_engine::NativeSignatureKey>{
         self.signatures.named_heads(super::native_named::NativeNamedKey{snapshot:key.snapshot,index:key.index})
     }
+    fn type_declaration_operator_signatures(&self,key:luanalysis_engine::NativeTypeDeclarationKey,operator:luanalysis_engine::NativeOperator)->Vec<luanalysis_engine::NativeSignatureKey>{
+        self.signatures.operator_heads(super::native_named::NativeNamedKey{snapshot:key.snapshot,index:key.index},operator)
+    }
     fn contains_type_declaration(&self, key: luanalysis_engine::NativeTypeDeclarationKey) -> bool {
         self.named_contains_declaration(key)
     }
