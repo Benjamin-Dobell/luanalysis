@@ -213,8 +213,11 @@ impl Checker<'_> {
         let Some(class) = self.class_definition_instance(&directive) else {
             return actual;
         };
-        // A class declared in several places (LuaLS) is reopened on its module's value.
-        let reopened = self.native.is_some_and(|native| native.is_merged_declaration(directive.declaration));
+        // A class declared in several places (LuaLS) is reopened on its module's value. A
+        // declaration file's definition, such as the standard library's `string` table, is the
+        // one that others extend, and keeps its own value.
+        let reopened = self.native.is_some_and(|native| native.is_merged_declaration(directive.declaration)
+            && native.source_role() != luanalysis_project::SourceRole::Declaration);
         let value = if reopened {
             self.engine.class_definition_reopen(directive.key, &class, &actual)
         } else {

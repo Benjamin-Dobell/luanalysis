@@ -709,7 +709,11 @@ impl<'p, 's> Checker<'p, 's> {
     /// the declared heads resolved against `other`, as a call of one argument
     /// (none for a unary operator). None if the type declares no such operator.
     pub fn native_operator_call(&mut self, operator: super::native_named::NativeOperator, receiver: TypeId, other: Option<TypeId>) -> Option<ResolvedTypeCall> {
-        let heads = self.native_object_operator_heads(receiver, operator);
+        let mut heads = self.native_object_operator_heads(receiver, operator);
+        // A string has the operators its library's class declares.
+        if heads.is_empty() && let Some(namespace) = self.native_primitive_namespace(receiver) {
+            heads = self.native_object_operator_heads(namespace, operator);
+        }
         if heads.is_empty() { return None }
         let arguments: Args = other.into_iter().map(Arg::Resolved).collect();
         Some(self.resolve_native_signatures(&heads, &arguments, &[], None, None, NativeCallRole::Explicit))

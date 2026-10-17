@@ -113,3 +113,19 @@ fn a_metamethod_stored_from_a_method_of_its_own_class_is_not_too_deep() {
     let report = text(&fixture.check());
     assert!(!report.contains("TS2589") && !report.contains("LUA2031"), "{report}");
 }
+
+#[test]
+fn a_class_declared_as_string_extends_the_string_library() {
+    // LuaLS adds operators to strings this way. The standard library's own `string` stays the
+    // class that the declaration extends.
+    let fixture = Fixture::new(&[
+        ("format.lua", "---@class string\n---@operator mod(table): string\n\nreturn {}\n"),
+        ("main.lua", "require 'format'\nlocal byte = string.byte('x')\nlocal upper = ('x'):upper()\nlocal formatted = ('x') % {}\nlocal wrong = ('x') % 1\n"),
+    ]);
+    let output = fixture.check();
+    let report = text(&output);
+    assert!(report.contains("main.lua:3:7: upper: string"), "{report}");
+    assert!(report.contains("main.lua:4:7: formatted: string"), "{report}");
+    assert!(report.contains("main.lua:5:21: error[TS2365]: Operator '%' cannot be applied to types '\"x\"' and '1'"), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+}

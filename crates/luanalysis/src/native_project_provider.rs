@@ -166,15 +166,17 @@ impl ProjectNamedIndex {
     pub(crate) fn is_merged(&self, key: NativeTypeDeclarationKey) -> bool {
         self.merged.contains_key(&key) || self.merges.contains_key(&key)
     }
-    fn merge_classes(&mut self, classes: &HashSet<NativeTypeDeclarationKey>) {
+    /// A class declared in a declaration file, such as the standard library's `string`, is the
+    /// one its other declarations extend.
+    fn merge_classes(&mut self, classes: &HashSet<NativeTypeDeclarationKey>, declared: &HashSet<NativeTypeDeclarationKey>) {
         for keys in self.names.values_mut() {
             if keys.len() < 2 || !keys.iter().all(|key| classes.contains(key)) { continue }
-            let canonical = keys[0];
-            for &key in &keys[1..] {
+            let canonical = keys.iter().copied().find(|key| declared.contains(key)).unwrap_or(keys[0]);
+            for &key in keys.iter().filter(|&&key| key != canonical) {
                 self.merged.insert(key, canonical);
                 self.merges.entry(canonical).or_default().push(key);
             }
-            keys.truncate(1);
+            *keys = vec![canonical];
         }
     }
 }
@@ -274,6 +276,7 @@ impl ProjectRegistry {
         let mut flow_snapshots = HashMap::default();
         let mut names = ProjectNamedIndex::default();
         let mut classes = HashSet::default();
+        let mut declared = HashSet::default();
         let mut files: Vec<_> = inputs
             .into_iter()
             .enumerate()
@@ -289,6 +292,7 @@ impl ProjectRegistry {
                     names.names.entry(declaration.syntax.name.text.clone()).or_default().push(key);
                     if matches!(declaration.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor: luanalysis_syntax::NamedRecordKind::Class, .. }) {
                         classes.insert(key);
+                        if input.role == SourceRole::Declaration { declared.insert(key); }
                     }
                 }
                 FileRegistry {
@@ -299,7 +303,7 @@ impl ProjectRegistry {
                 }
             })
             .collect();
-        names.merge_classes(&classes);
+        names.merge_classes(&classes, &declared);
         let names = Rc::new(names);
         let original_scopes:Vec<_>=files.iter().map(|file|file.source.types.original_scopes()).collect();
         for file in &mut files {

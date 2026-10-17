@@ -253,6 +253,20 @@ impl<'p, 's> Checker<'p, 's> {
         Some(self.native_table_read(namespace, key))
     }
 
+    /// The namespace a string's metatable indexes, the string library, whose class can declare
+    /// the operators strings have (LuaLS's `---@class string` with `---@operator`).
+    pub(super) fn native_primitive_namespace(&mut self, ty: TypeId) -> Option<TypeId> {
+        let provider = self.native_globals_provider?;
+        let environment = provider.primitive_member_environment()?;
+        let apparent = self.base_constraint_of(ty).unwrap_or(ty);
+        if self.is_union(apparent) || self.flags(apparent) & crate::types::tf::STRING_LIKE == 0 { return None }
+        if !provider.contains_global_environment(environment) { return None }
+        let binding = provider.primitive_member_binding(environment, NativePrimitiveMemberKind::String)?;
+        if binding.environment != environment { return None }
+        let namespace = self.native_global_binding_type(binding).ok()?;
+        matches!(self.data(namespace), crate::types::TypeData::NativeTable(_) | crate::types::TypeData::NativeObject(_)).then_some(namespace)
+    }
+
     pub fn set_native_globals_provider(&mut self, provider: &'p dyn NativeGlobalsProvider) {
         assert!(self.native_globals_provider.is_none(), "native globals provider already installed");
         self.native_globals_provider = Some(provider);
