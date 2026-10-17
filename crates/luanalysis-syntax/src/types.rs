@@ -628,12 +628,13 @@ impl TypeParser {
     fn field_declaration(&mut self, span: Span) -> Option<FieldDeclaration> {
         let visibility = match &self.current().kind {
             TokenKind::Identifier(word)
-                if matches!(word.as_str(), "public" | "protected" | "private") =>
+                if matches!(word.as_str(), "public" | "protected" | "private" | "package") =>
             {
                 let kind = match word.as_str() {
                     "public" => FieldVisibility::Public,
                     "protected" => FieldVisibility::Protected,
                     "private" => FieldVisibility::Private,
+                    "package" => FieldVisibility::Package,
                     _ => unreachable!(),
                 };
                 let span = self.current().span;

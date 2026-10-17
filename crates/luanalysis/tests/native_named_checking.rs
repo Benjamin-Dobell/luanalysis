@@ -216,10 +216,9 @@ fn fixed_alias_fields_apply_only_to_the_canonical_matching_arguments() {
 }
 
 #[test]
-fn module_and_visibility_semantics_stay_explicit_gates() {
+fn module_semantics_stay_an_explicit_gate() {
     for source in [
         "---@module Module\n",
-        "---@shape Private\n---@field private value number\n",
     ] {
         let report = check(source);
         assert!(

@@ -185,3 +185,12 @@ fn operators_attach_to_their_named_type_with_one_operand_parameter() {
 fn async_functions_and_named_results_are_ordinary_function_types() {
     checked("---@type fun(): (ok: boolean, message: string?)\nlocal f\n---@type fun(): ok: boolean, string\nlocal g\n---@param callback async fun(value: number): string\n---@param data lightuserdata\n---@return integer\nlocal function h(callback, data) return 1 end\n");
 }
+
+#[test]
+fn package_fields_name_their_visibility() {
+    let file = checked("---@class gc\n---@field package _list table\n---@field private _max integer\nlocal gc = {}\n");
+    let NamedTypeDeclarationKind::Record { fields, .. } = &file.type_declarations[0].kind else { panic!("a class") };
+    let visibilities: Vec<_> = fields.iter().map(|field| field.visibility.map(|visibility| visibility.kind)).collect();
+    assert_eq!(visibilities, [Some(FieldVisibility::Package), Some(FieldVisibility::Private)]);
+    assert!(matches!(&fields[0].key, TypeFieldKey::Named(name) if name.text == "_list"));
+}

@@ -210,6 +210,8 @@ pub enum FieldVisibility {
     Public,
     Protected,
     Private,
+    /// LuaLS: visible in the file that declares it.
+    Package,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

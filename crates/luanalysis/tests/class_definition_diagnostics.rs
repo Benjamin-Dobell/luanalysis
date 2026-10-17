@@ -1,59 +1,24 @@
-use luanalysis::{CheckReport, check};
+//! A field's visibility (`private`, `protected`, LuaLS's `package`) is for editors, as in
+//! Luanalysis for IntelliJ, where it chooses completions: whatever it is, the field is a member
+//! of its class. Class definition errors describe types, never internal identities, at the
+//! original spans.
+use luanalysis::check;
 use std::{fs, process::Command};
 
 fn source(visibility: &str) -> String {
-    format!("---@class Example\n---@field {visibility}value number\nlocal Example={{}}\n")
+    format!("---@class Example\n---@field {visibility}value number\nlocal Example={{value=1}}\n---@return number\nfunction Example:read() return self.value end\n")
 }
 
-fn readable(report: &CheckReport, source: &str) {
-    assert!(!report.diagnostics.is_empty());
-    for diagnostic in &report.diagnostics {
-        assert_eq!(diagnostic.code, "LUA2031", "{diagnostic:?}");
-        assert!(
-            diagnostic
-                .message
-                .contains("Private/protected member semantics"),
-            "{diagnostic:?}"
-        );
-        for internal in [
-            "NativeTypeMemberKey",
-            "NativeTypeDeclarationKey",
-            "snapshot:",
-            "index:",
-            "UnsupportedVisibility(",
-        ] {
-            assert!(!diagnostic.message.contains(internal), "{diagnostic:?}");
-        }
-    }
-    let class_start = source.find("Example").unwrap();
-    let initializer_start = source.rfind("{}").unwrap();
-    for (start, end) in [
-        (class_start, class_start + "Example".len()),
-        (initializer_start, initializer_start + 2),
-    ] {
-        assert!(
-            report
-                .diagnostics
-                .iter()
-                .any(|error| error.span.start == start && error.span.end == end),
-            "{:#?}",
-            report.diagnostics
-        );
+#[test]
+fn fields_of_every_visibility_are_members() {
+    for visibility in ["", "public ", "protected ", "private ", "package "] {
+        let report = check(&source(visibility));
+        assert!(report.diagnostics.is_empty(), "{visibility}: {:#?}", report.diagnostics);
     }
 }
 
 #[test]
-fn unsupported_private_and_protected_class_errors_render_text_at_original_spans() {
-    for visibility in ["private ", "protected "] {
-        let original = source(visibility);
-        readable(&check(&original), &original);
-        let public = source("");
-        assert!(check(&public).diagnostics.is_empty());
-    }
-}
-
-#[test]
-fn cli_class_definition_errors_hide_declaration_ids_and_public_correction_passes() {
+fn cli_class_definition_errors_hide_declaration_ids_at_original_spans() {
     let directory = std::env::temp_dir().join(format!(
         "luanalysis class definition diagnostics {}",
         std::process::id()
@@ -73,38 +38,17 @@ fn cli_class_definition_errors_hide_declaration_ids_and_public_correction_passes
         assert!(stderr.is_empty(), "{stderr}");
         text
     };
+    let original = "---@class Example\n---@field value number\nlocal Example=1\n";
     for version in ["5.2", "5.4"] {
-        for visibility in ["private ", "protected "] {
-            let original = source(visibility);
-            let rejected = run(&original, version, 1);
-            assert!(rejected.contains("\"code\":\"LUA2031\""), "{rejected}");
-            assert!(
-                rejected.contains("Private/protected member semantics"),
-                "{rejected}"
-            );
-            for internal in [
-                "NativeTypeMemberKey",
-                "snapshot:",
-                "index:",
-                "UnsupportedVisibility(",
-            ] {
-                assert!(!rejected.contains(internal), "{rejected}");
-            }
-            for (start, count) in [
-                (original.find("Example").unwrap(), "Example".len()),
-                (original.rfind("{}").unwrap(), 2),
-            ] {
-                assert!(
-                    rejected.contains(&format!(
-                        "\"range\":{{\"start\":{start},\"end\":{}}}",
-                        start + count
-                    )),
-                    "{rejected}"
-                );
-            }
-            let corrected = run(&source(""), version, 0);
-            assert!(corrected.contains("\"diagnostics\":[]"), "{corrected}");
+        let rejected = run(original, version, 1);
+        assert!(rejected.contains("Class definition requires a table, found '1'."), "{rejected}");
+        for internal in ["NativeTypeMemberKey", "NativeTypeDeclarationKey", "snapshot:", "index:"] {
+            assert!(!rejected.contains(internal), "{rejected}");
         }
+        let start = original.rfind('1').unwrap();
+        assert!(rejected.contains(&format!("\"range\":{{\"start\":{start},\"end\":{}}}", start + 1)), "{rejected}");
+        let corrected = run(&source("private "), version, 0);
+        assert!(corrected.contains("\"diagnostics\":[]"), "{corrected}");
     }
     fs::remove_dir_all(directory).unwrap();
 }

@@ -517,28 +517,15 @@ fn methods_keep_receiver_mappers_and_unrelated_classes_keep_nominal_origins() {
     fixture.file("main.lua", main);
     clean(&fixture.minimal(&entries, &declarations));
 
-    // Visibility enforcement is currently an explicit feature gate. Parallel
-    // execution must retain that diagnostic rather than silently erasing it.
+    // A private member is a member, as in Luanalysis for IntelliJ, in a parallel check too.
     fixture.file(
         "private.def.lua",
         "---@class Secret\n---@field private value number\n\n---@class Descendant:Secret\n",
     );
+    fixture.file("descendant.lua", "---@param item Descendant\n---@return number\nlocal function read(item) return item.value end\n");
+    let private_entries = ["main.lua", "dot.lua", "other.lua", "fourth.lua", "descendant.lua"];
     let private_declarations = ["base.def.lua", "derived.def.lua", "private.def.lua"];
-    let gated = fixture.minimal(&entries, &private_declarations);
-    assert!(
-        gated.files.iter().any(|file| file
-            .report
-            .diagnostics
-            .iter()
-            .any(|error| error.code == "LUA2031")),
-        "{:#?}",
-        gated.files
-    );
-    fixture.file(
-        "private.def.lua",
-        "---@class Secret\n---@field value number\n\n---@class Descendant:Secret\n",
-    );
-    clean(&fixture.minimal(&entries, &private_declarations));
+    clean(&fixture.minimal(&private_entries, &private_declarations));
 }
 
 #[test]

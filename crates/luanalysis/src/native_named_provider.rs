@@ -11,7 +11,7 @@ use luanalysis_engine::{
     TypeMemberOwner, TypeMemberVisibility, TypeQueries,
 };
 use luanalysis_syntax::{
-    FieldVisibility, NamedRecordKind, NamedTypeDeclarationKind, Span, TypeExpr, TypeExprKind,
+    NamedRecordKind, NamedTypeDeclarationKind, Span, TypeExpr, TypeExprKind,
     TypeFieldKey,
 };
 use crate::collections::{HashMap, HashSet};
@@ -474,14 +474,9 @@ impl NativeRegistry {
                     },
                 },
                 key: key_recipe(&source.field.key),
-                visibility: source.field.visibility.map_or(
-                    TypeMemberVisibility::Public,
-                    |visibility| match visibility.kind {
-                        FieldVisibility::Public => TypeMemberVisibility::Public,
-                        FieldVisibility::Protected => TypeMemberVisibility::Protected,
-                        FieldVisibility::Private => TypeMemberVisibility::Private,
-                    },
-                ),
+                // A field's visibility is for editors, as in Luanalysis for IntelliJ, where it
+                // chooses completions: whatever it is, the field is a member of its class.
+                visibility: TypeMemberVisibility::Public,
                 optional: false,
                 readonly: false,
             };

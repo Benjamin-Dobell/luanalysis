@@ -428,17 +428,14 @@ fn complete_definition_values_satisfy_ancestors_while_partial_and_unrelated_valu
 }
 
 #[test]
-fn private_and_protected_inherited_members_remain_explicitly_gated() {
-    for visibility in ["private", "protected"] {
+fn private_and_protected_members_are_inherited() {
+    // As in Luanalysis for IntelliJ, visibility chooses completions; it does not hide members.
+    for visibility in ["private", "protected", "package"] {
         let source = format!(
-            "---@class Base\n---@field {visibility} value number\n\n---@class Child:Base\n"
+            "---@class Base\n---@field {visibility} value number\n\n---@class Child:Base\n\n---@param child Child\n---@return number\nlocal function read(child) return child.value end\n"
         );
-        assert!(
-            check(&source)
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "LUA2031")
-        );
+        let report = check(&source);
+        assert!(report.diagnostics.is_empty(), "{visibility}: {:#?}", report.diagnostics);
     }
 }
 
