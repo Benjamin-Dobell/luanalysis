@@ -329,6 +329,7 @@ impl Parser<'_> {
                         types::merge_annotations(
                             &mut annotations,
                             std::mem::take(&mut self.pending_annotations),
+                            true,
                             &mut self.diagnostics,
                         );
                     }
@@ -435,6 +436,7 @@ impl Parser<'_> {
             types::merge_annotations(
                 &mut self.function_declarations[index].annotations,
                 std::mem::take(&mut documentation.functions),
+                true,
                 &mut self.diagnostics,
             );
         }
@@ -477,6 +479,10 @@ impl Parser<'_> {
                     let (annotations, diagnostics) = types::annotations(&comment);
                     self.diagnostics.extend(diagnostics);
                     let annotations = self.record_documentation(&comment, annotations);
+                    // Earlier @return lines continue only within this documentation group.
+                    let contiguous = self.documentation_group.as_ref().is_some_and(|group| {
+                        self.pending_annotations.returns.as_ref().is_some_and(|returns| returns.span.start >= group.span.start)
+                    });
                     if !types::annotation_spans(&annotations).is_empty() {
                         let line_start = self.source[..comment.span.start]
                             .rfind(['\r', '\n'])
@@ -490,6 +496,7 @@ impl Parser<'_> {
                             types::merge_annotations(
                                 &mut self.pending_annotations,
                                 annotations,
+                                contiguous,
                                 &mut self.diagnostics,
                             );
                         }
@@ -527,14 +534,7 @@ impl Parser<'_> {
                     }
                     self.pos += 1;
                     if comment.kind == CommentKind::Documentation {
-                        let (annotations, diagnostics) = types::annotations(&comment);
-                        self.diagnostics.extend(diagnostics);
-                        let outer = self.documentation_group.take();
-                        let annotations = self.record_documentation(&comment, annotations);
-                        if let Some(group) = self.documentation_group.take() {
-                            self.finish_documentation_functions(&group);
-                        }
-                        self.documentation_group = outer;
+                        let annotations = self.expression_documentation_comment(&comment);
                         for span in types::annotation_spans(&annotations) {
                             self.diagnostics.push(Diagnostic {
                                 origin: crate::DiagnosticOrigin::Annotation,
@@ -546,6 +546,53 @@ impl Parser<'_> {
                 _ => break,
             }
         }
+    }
+    // Documentation inside an expression is its own group; it never joins the
+    // statement-level group around the expression.
+    fn expression_documentation_comment(&mut self, comment: &Comment) -> FunctionAnnotations {
+        let (annotations, diagnostics) = types::annotations(comment);
+        self.diagnostics.extend(diagnostics);
+        let outer = self.documentation_group.take();
+        let annotations = self.record_documentation(comment, annotations);
+        if let Some(group) = self.documentation_group.take() {
+            self.finish_documentation_functions(&group);
+        }
+        self.documentation_group = outer;
+        annotations
+    }
+    // Extends `group`, the span of consecutive documentation lines, with `comment`.
+    // Whether the @return lines in `annotations` so far are in that group.
+    fn documentation_run(&self, group: &mut Option<Span>, comment: Span, annotations: &FunctionAnnotations) -> bool {
+        *group = Some(match *group {
+            Some(span) if documentation_gap_is_contiguous(&self.source[span.end..comment.start]) => span.join(comment),
+            _ => comment,
+        });
+        let start = group.map_or(comment.start, |span| span.start);
+        annotations.returns.as_ref().is_some_and(|returns| returns.span.start >= start)
+    }
+    // Documentation between the parts of a call chain, which LuaLS binds to a
+    // callback in the call that follows it.
+    fn suffix_documentation(&mut self) -> FunctionAnnotations {
+        let mut annotations = FunctionAnnotations::default();
+        let mut group = None;
+        loop {
+            match self.current().kind.clone() {
+                TokenKind::Newline => self.pos += 1,
+                TokenKind::Comment(comment) => {
+                    if expression_assertion_comment(&comment) {
+                        break;
+                    }
+                    self.pos += 1;
+                    if comment.kind == CommentKind::Documentation {
+                        let contiguous = self.documentation_run(&mut group, comment.span, &annotations);
+                        let documentation = self.expression_documentation_comment(&comment);
+                        types::merge_annotations(&mut annotations, documentation, contiguous, &mut self.diagnostics);
+                    }
+                }
+                _ => break,
+            }
+        }
+        annotations
     }
     fn name(&mut self) -> Option<Name> {
         self.inner_trivia();
@@ -714,13 +761,13 @@ impl Parser<'_> {
         }
         let mut targets = self.expr_list();
         if !self.significant_symbol("=") {
-            self.unattached_annotations(&annotations);
             if targets.len() == 1
                 && matches!(
                     targets[0].kind,
                     ExprKind::Call { .. } | ExprKind::MethodCall { .. }
                 )
             {
+                self.attach_function_annotations(&mut targets, annotations);
                 let call = targets.pop().unwrap();
                 let span = call.span;
                 return Some(Stmt {
@@ -728,6 +775,7 @@ impl Parser<'_> {
                     span,
                 });
             }
+            self.unattached_annotations(&annotations);
             self.error("expected an assignment or function call; other expression statements are invalid Lua");
             self.recover_statement();
             return None;
@@ -820,7 +868,7 @@ impl Parser<'_> {
                     }
                 }),
             );
-            types::merge_annotations(annotations, documentation.functions, &mut self.diagnostics);
+            types::merge_annotations(annotations, documentation.functions, false, &mut self.diagnostics);
         }
     }
 
@@ -834,29 +882,44 @@ impl Parser<'_> {
         }
         if let [value] = values {
             if let Some(function) = function_initializer(value) {
-                // Documentation before a declaration/field precedes any
-                // documentation directly on its initializer in source order.
-                let mut combined = annotations;
-                types::merge_annotations(
-                    &mut combined,
-                    std::mem::take(&mut function.annotations),
-                    &mut self.diagnostics,
-                );
-                function.annotations = combined;
-                // Field/declaration docs and initializer docs describe the same
-                // original function. Keep one declaration site and source order.
-                let group=function.annotations.overloads.iter()
-                    .map(|reference|self.overload_annotations[reference.id.0 as usize].group_span)
-                    .reduce(Span::join);
-                if let Some(group)=group {
-                    for reference in &function.annotations.overloads {
-                        self.overload_annotations[reference.id.0 as usize].group_span=group;
-                    }
-                }
+                self.annotate_function(function, annotations);
                 return;
             }
         }
+        // LuaLS binds signature documentation that no declaration takes to a
+        // function starting on the line after it, such as a callback argument.
+        if annotations.type_annotation.is_none()
+            && let Some(end) = types::annotation_spans(&annotations).iter().map(|span| span.end).max()
+            && let Some(function) = values.iter_mut().find_map(first_function)
+            && function.span.start >= end
+            && line_breaks(&self.source[end..function.span.start]) == 1
+        {
+            self.annotate_function(function, annotations);
+            return;
+        }
         self.unattached_annotations(&annotations);
+    }
+    fn annotate_function(&mut self, function: &mut Function, annotations: FunctionAnnotations) {
+        // Documentation before a declaration/field precedes any
+        // documentation directly on its initializer in source order.
+        let mut combined = annotations;
+        types::merge_annotations(
+            &mut combined,
+            std::mem::take(&mut function.annotations),
+            false,
+            &mut self.diagnostics,
+        );
+        function.annotations = combined;
+        // Field/declaration docs and initializer docs describe the same
+        // original function. Keep one declaration site and source order.
+        let group=function.annotations.overloads.iter()
+            .map(|reference|self.overload_annotations[reference.id.0 as usize].group_span)
+            .reduce(Span::join);
+        if let Some(group)=group {
+            for reference in &function.annotations.overloads {
+                self.overload_annotations[reference.id.0 as usize].group_span=group;
+            }
+        }
     }
     fn expect_end(&mut self) -> Span {
         self.expect_keyword("end")
@@ -1057,6 +1120,7 @@ impl Parser<'_> {
     fn expr_binding_power(&mut self, min_precedence: u8) -> (Expr, usize) {
         let mut assertions = Vec::new();
         let mut function_annotations = FunctionAnnotations::default();
+        let mut group = None;
         loop {
             self.expression_trivia();
             let TokenKind::Comment(comment) = self.current().kind.clone() else {
@@ -1083,9 +1147,11 @@ impl Parser<'_> {
                 ));
             }
             self.record_expression_overloads(comment.span,documentation.declarations,&mut documentation.functions,"an inline expression");
+            let contiguous = self.documentation_run(&mut group, comment.span, &function_annotations);
             types::merge_annotations(
                 &mut function_annotations,
                 documentation.functions,
+                contiguous,
                 &mut self.diagnostics,
             );
         }
@@ -1298,8 +1364,11 @@ impl Parser<'_> {
             || self.significant_symbol("[")
             || self.significant_symbol(":"))
         {
-            self.inner_trivia();
+            let documentation = self.suffix_documentation();
             let postfix_start = self.current().span;
+            if self.symbol("[") || self.symbol(".") {
+                self.unattached_annotations(&documentation);
+            }
             if self.symbol("[") {
                 self.pos += 1;
                 let (index, index_depth) = self.expr_with_depth();
@@ -1337,7 +1406,8 @@ impl Parser<'_> {
                     break;
                 }
                 self.inner_trivia();
-                let (args, args_span, args_depth) = self.call_arguments();
+                let (mut args, args_span, args_depth) = self.call_arguments();
+                self.attach_function_annotations(&mut args, documentation);
                 let span = expr.span.join(args_span);
                 if postfix_exceeded || built_depth.max(args_depth) >= 128 {
                     if !postfix_exceeded {
@@ -1363,7 +1433,8 @@ impl Parser<'_> {
                 continue;
             }
             if self.symbol("(") || self.symbol("{") || matches!(self.current().kind, TokenKind::String(_)) {
-                let (args, args_span, args_depth) = self.call_arguments();
+                let (mut args, args_span, args_depth) = self.call_arguments();
+                self.attach_function_annotations(&mut args, documentation);
                 let span = expr.span.join(args_span);
                 if postfix_exceeded || built_depth.max(args_depth) >= 128 {
                     if !postfix_exceeded {
@@ -1518,6 +1589,7 @@ impl Parser<'_> {
                 types::merge_annotations(
                     &mut function_annotations,
                     documentation.functions,
+                    true,
                     &mut self.diagnostics,
                 );
                 self.expression_trivia();
@@ -1752,6 +1824,42 @@ fn binary_operator(kind: &TokenKind) -> Option<(BinaryOperator, u8, u8)> {
             precedence + 1
         },
     ))
+}
+
+/// The first function expression in `expr`, in source order, without entering
+/// function bodies.
+fn first_function(expr: &mut Expr) -> Option<&mut Function> {
+    match &mut expr.kind {
+        ExprKind::Function(function) => Some(function),
+        ExprKind::Parenthesized(inner) | ExprKind::Unary { value: inner, .. } | ExprKind::Field { base: inner, .. } => {
+            first_function(inner)
+        }
+        ExprKind::Index { base, index } => first_function(base).or_else(|| first_function(index)),
+        ExprKind::Binary { left, right, .. } => first_function(left).or_else(|| first_function(right)),
+        ExprKind::Call { callee: receiver, args } | ExprKind::MethodCall { receiver, args, .. } => {
+            first_function(receiver).or_else(|| args.iter_mut().find_map(first_function))
+        }
+        ExprKind::Table(fields) => fields.iter_mut().find_map(|field| {
+            let key = match &mut field.kind {
+                crate::TableFieldKind::Keyed(key) => first_function(key),
+                _ => None,
+            };
+            key.or_else(|| first_function(&mut field.value))
+        }),
+        _ => None,
+    }
+}
+
+fn line_breaks(text: &str) -> usize {
+    let mut lines = 0;
+    let mut carriage_return = false;
+    for character in text.chars() {
+        if character == '\r' || character == '\n' && !carriage_return {
+            lines += 1;
+        }
+        carriage_return = character == '\r';
+    }
+    lines
 }
 
 fn function_initializer(value: &mut Expr) -> Option<&mut Function> {

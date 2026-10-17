@@ -438,7 +438,6 @@ fn malformed_vararg_and_pack_annotations_are_diagnosed_and_recover() {
         "(number..., string)",
         "(number,)",
         "number | (string,)",
-        "...",
     ] {
         let file = parse(&format!(
             "---@return {ty}\nlocal function bad() end\nlocal recovery = 1\n"

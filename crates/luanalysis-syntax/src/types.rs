@@ -68,7 +68,8 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
     };
     let mut line_offset = 0;
     let mut active_function = None;
-    for line in body.split_inclusive('\n') {
+    let lines: Vec<&str> = body.split_inclusive('\n').collect();
+    for (index, line) in lines.iter().copied().enumerate() {
         let trimmed = line.trim_start_matches([' ', '\t', '\r']);
         let stripped = trimmed
             .trim_start_matches('-')
@@ -79,6 +80,17 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
                 .unwrap_or(tag.len());
             let tag_name = &tag[..tag_len];
+            // LuaLS annotations that state nothing this checker uses: editor and diagnostic
+            // directives, visibility, deprecation, and operators and casts not yet modelled.
+            if matches!(
+                tag_name,
+                "async" | "nodiscard" | "deprecated" | "package" | "private" | "protected"
+                    | "public" | "meta" | "diagnostic" | "format" | "version" | "source"
+                    | "operator" | "cast" | "as"
+            ) {
+                line_offset += line.len();
+                continue;
+            }
             if !matches!(
                 tag_name,
                 "type"
@@ -95,6 +107,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     | "function"
                     | "overload"
                     | "see"
+                    | "enum"
             ) {
                 diagnostics.push(Diagnostic {
                     origin: crate::DiagnosticOrigin::Annotation,
@@ -136,11 +149,11 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         }
                     })
                     .collect();
-                diagnostics.extend(lexed.diagnostics.into_iter().map(|mut diagnostic| {
+                let lexer_diagnostics: Vec<Diagnostic> = lexed.diagnostics.into_iter().map(|mut diagnostic| {
                     diagnostic.span.start += types_offset;
                     diagnostic.span.end += types_offset;
                     diagnostic
-                }));
+                }).collect();
                 let mut parser = TypeParser {
                     tokens,
                     pos: 0,
@@ -185,12 +198,22 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     }
                     "alias" | "shape" | "class" | "module" => {
                         active_function = None;
+                        // LuaLS's `---@class (exact) Name` and `(partial)` modifiers.
+                        if tag_name == "class" && parser.take("(").is_some() {
+                            parser.declaration_name("@class modifier");
+                            parser.expect(")");
+                        }
                         if let Some(name) = parser.declaration_name("named type") {
                             let generics = parser.declaration_parameters();
                             let kind = if tag_name == "alias" {
-                                NamedTypeDeclarationKind::Alias {
-                                    target: parser.union(),
-                                }
+                                // An alias without a type lists its members on the `---|` lines
+                                // that follow it (LuaLS).
+                                let target = if parser.eof() {
+                                    alias_continuation(&lines[index + 1..], base + line_offset + line.len(), annotation_span, &mut diagnostics)
+                                } else {
+                                    parser.union()
+                                };
+                                NamedTypeDeclarationKind::Alias { target }
                             } else {
                                 let base = parser.take(":").map(|_| parser.union());
                                 NamedTypeDeclarationKind::Record {
@@ -213,11 +236,31 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                             parser.documentation_tail();
                         }
                     }
+                    "enum" => {
+                        active_function = None;
+                        // LuaLS's `---@enum (key) Name` names the values (or keys) of the table
+                        // after it. Until enumerations are modelled, the name is an alias of
+                        // any value (of string for keys).
+                        let mut keys = false;
+                        if parser.take("(").is_some() {
+                            keys = parser.declaration_name("@enum modifier").is_some_and(|modifier| modifier.text == "key");
+                            parser.expect(")");
+                        }
+                        if let Some(name) = parser.declaration_name("@enum") {
+                            let target = TypeExpr { kind: TypeExprKind::Named(if keys { "string" } else { "any" }.to_owned()), span: name.span };
+                            result.declarations.push(DeclarationItem::Named {
+                                name,
+                                generics: Vec::new(),
+                                kind: NamedTypeDeclarationKind::Alias { target },
+                                span: annotation_span,
+                            });
+                            parser.documentation_tail();
+                        }
+                    }
                     "field" => {
                         active_function = None;
                         if let Some(field) = parser.field_declaration(annotation_span) {
                             result.declarations.push(DeclarationItem::Field(field));
-                            parser.documentation_tail();
                         }
                     }
                     "function" => {
@@ -240,7 +283,19 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         group.generics = parser.generic_parameters();
                     }
                     "param" => {
-                        if let Some(name) = parser.name() {
+                        // `---@param ... T` (LuaLS) types the variadic parameters, as @vararg does.
+                        if let Some(ellipsis_span) = parser.take("...") {
+                            let ty = if parser.eof() || parser.description_start().is_some() {
+                                TypeExpr { kind: TypeExprKind::Named("any".to_owned()), span: ellipsis_span }
+                            } else {
+                                parser.union()
+                            };
+                            group.vararg = Some(Box::new(VarargAnnotation {
+                                ty,
+                                span: annotation_span,
+                                ellipsis_span: None,
+                            }));
+                        } else if let Some(name) = parser.name() {
                             let optional = parser.take("?").is_some();
                             let ty = parser.union();
                             group.params.push(ParamAnnotation {
@@ -284,18 +339,22 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     }
                     _ => unreachable!(),
                 }
-                if !parser.eof() {
+                // Text after a complete type is its description, as LuaLS and EmmyLua read it:
+                // `---@param path string # the file`, `---@return integer count`.
+                let description = (!parser.eof()).then(|| parser.description_start()).flatten();
+                if !parser.eof() && description.is_none() {
                     parser.error(format!(
                         "unsupported or unexpected syntax after @{tag_name}"
                     ));
                 }
+                diagnostics.extend(lexer_diagnostics.into_iter().filter(|diagnostic| description.is_none_or(|start| diagnostic.span.start < start)));
                 diagnostics.extend(parser.diagnostics);
                 if let Some(DeclarationItem::Function { annotations, .. }) =
                     active_function.map(|index| &mut result.declarations[index])
                 {
-                    merge_annotations(annotations, group, &mut diagnostics);
+                    merge_annotations(annotations, group, true, &mut diagnostics);
                 } else {
-                    merge_annotations(&mut result.functions, group, &mut diagnostics);
+                    merge_annotations(&mut result.functions, group, true, &mut diagnostics);
                 }
             }
         }
@@ -360,9 +419,12 @@ fn annotation_type_text(text: &str) -> &str {
     text[..end].trim_end()
 }
 
+/// `contiguous` documentation is one group, where LuaLS writes one @return line per
+/// result; @return lines in separate groups still conflict.
 pub(crate) fn merge_annotations(
     target: &mut FunctionAnnotations,
     incoming: FunctionAnnotations,
+    contiguous: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     target.overloads.extend(incoming.overloads);
@@ -408,7 +470,27 @@ pub(crate) fn merge_annotations(
         }
     }
     if let Some(returns) = incoming.returns {
-        if target.returns.is_some() {
+        // LuaLS writes one @return line per value: they list the function's results in order.
+        if contiguous
+            && let Some(existing) = target.returns.as_mut()
+            && existing.packs.is_none()
+            && returns.packs.as_ref().is_none_or(|packs| packs.alternatives.len() == 1)
+        {
+            let offset = existing.types.len();
+            existing.types.extend(returns.types);
+            existing.span = existing.span.join(returns.span);
+            // A variadic final line, `---@return ...`, continues the results before it.
+            if let Some(mut packs) = returns.packs {
+                let pack = &mut packs.alternatives[0];
+                pack.fixed = 0..pack.fixed.end + offset;
+                if let Some(variadic) = pack.variadic.as_mut() {
+                    variadic.type_index += offset;
+                }
+                pack.span = existing.span;
+                packs.span = existing.span;
+                existing.packs = Some(packs);
+            }
+        } else if target.returns.is_some() {
             diagnostics.push(Diagnostic {
                 origin: crate::DiagnosticOrigin::Annotation,
                 span: returns.span,
@@ -476,6 +558,9 @@ impl TypeParser {
             TokenKind::Identifier(text) | TokenKind::Keyword(text) => {
                 let span = self.current().span;
                 self.pos += 1;
+                let TypeExpr { kind: TypeExprKind::Named(text), span } = self.qualified(text, span) else {
+                    unreachable!("a qualified name is a named type")
+                };
                 Some(Name { text, span })
             }
             _ => {
@@ -557,18 +642,29 @@ impl TypeParser {
             self.expect("]");
             TypeFieldKey::Indexed(Box::new(ty))
         } else {
-            let first = self.declaration_name("field")?;
-            if self.take(".").is_some() {
+            let (owner, member) = split_owner(self.declaration_name("field")?);
+            if let Some(owner) = owner {
                 if explicit_owner.is_some() {
-                    self.error("@field cannot combine qualified and angle-bracket owners".into());
+                    self.diagnostics.push(Diagnostic {
+                        origin: crate::DiagnosticOrigin::Annotation,
+                        span: member.span,
+                        message: "@field cannot combine qualified and angle-bracket owners".into(),
+                    });
                 }
-                explicit_owner = Some(first);
-                TypeFieldKey::Named(self.declaration_name("field member")?)
-            } else {
-                TypeFieldKey::Named(first)
+                explicit_owner = Some(owner);
             }
+            TypeFieldKey::Named(member)
         };
-        let ty = self.union();
+        // `---@field name? T` (LuaLS): the field may be nil.
+        let optional = self.take("?");
+        let mut ty = self.union();
+        if let Some(question) = optional {
+            let span = ty.span;
+            ty = TypeExpr {
+                kind: TypeExprKind::Union(vec![ty, TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span: question }]),
+                span,
+            };
+        }
         Some(FieldDeclaration {
             key,
             ty,
@@ -585,19 +681,26 @@ impl TypeParser {
         let first = self.declaration_name("function")?;
         let (name, owner, method_colon) = if leading_colon.is_some() {
             (first, None, leading_colon)
-        } else if self.take(".").is_some() {
-            (self.declaration_name("function member")?, Some(first), None)
         } else if let Some(colon) = self.take(":") {
             let method_colon = Some(colon);
             (self.declaration_name("function member")?, Some(first), method_colon)
         } else {
-            (first, None, None)
+            let (owner, name) = split_owner(first);
+            (name, owner, None)
         };
         let signature = self.function_type_tail(start);
         if signature.parameters_span.is_none() {
             self.error("@function requires a parenthesized parameter list".into());
         }
         Some((name, owner, method_colon, signature))
+    }
+
+    /// Where a description starts: the current token, when it is `#` or a word, string or
+    /// number rather than punctuation continuing a malformed type.
+    fn description_start(&self) -> Option<usize> {
+        let starts = matches!(&self.current().kind, TokenKind::Symbol(symbol) if symbol == "#")
+            || matches!(self.current().kind, TokenKind::Identifier(_) | TokenKind::Keyword(_) | TokenKind::String(_) | TokenKind::Number(_) | TokenKind::CompletionHint(_));
+        starts.then_some(self.current().span.start)
     }
 
     fn documentation_tail(&mut self) {
@@ -787,8 +890,16 @@ impl TypeParser {
         let start = first.span;
         let (first, mut pending) = self.return_scalar_union(first);
         let mut types = vec![first];
+        let mut bare_tail = None;
         if pending.is_none() && self.comma_ends_type == 0 {
             while self.take(",").is_some() {
+                // `A, ...` (LuaLS): any number of further values of any type.
+                if self.symbol("...") {
+                    let ReturnUnit::Pack(mut pack) = self.bare_variadic_return() else { unreachable!() };
+                    types.append(&mut pack.types);
+                    bare_tail = pack.ellipsis_span;
+                    break;
+                }
                 let first = match self.return_unit() {
                     ReturnUnit::Scalar(ty) => ty,
                     ReturnUnit::Pack(pack) => {
@@ -812,7 +923,9 @@ impl TypeParser {
                 }
             }
         }
-        let ellipsis_span = if pending.is_none() {
+        let ellipsis_span = if bare_tail.is_some() {
+            bare_tail
+        } else if pending.is_none() {
             self.take("...")
         } else {
             None
@@ -826,6 +939,18 @@ impl TypeParser {
             },
             pending,
         )
+    }
+    // A bare `...` (LuaLS) returns any number of values of any type. Kept out of
+    // the recursive return parsers so their frames stay small.
+    #[cold]
+    #[inline(never)]
+    fn bare_variadic_return(&mut self) -> ReturnUnit {
+        let ellipsis_span = self.expect("...");
+        ReturnUnit::Pack(ParsedReturnPack {
+            types: vec![TypeExpr { kind: TypeExprKind::Named("any".to_owned()), span: ellipsis_span }],
+            ellipsis_span: Some(ellipsis_span),
+            span: ellipsis_span,
+        })
     }
     fn return_scalar_union(&mut self, first: TypeExpr) -> (TypeExpr, Option<ParsedReturnPack>) {
         let mut types = vec![first];
@@ -851,6 +976,9 @@ impl TypeParser {
         (ty, pending)
     }
     fn return_unit(&mut self) -> ReturnUnit {
+        if self.symbol("...") {
+            return self.bare_variadic_return();
+        }
         if !self.symbol("(") || self.depth >= 128 {
             return ReturnUnit::Scalar(self.primary());
         }
@@ -872,7 +1000,7 @@ impl TypeParser {
                 kind: TypeExprKind::Parenthesized(Box::new(types.pop().unwrap())),
                 span,
             };
-            ReturnUnit::Scalar(self.array_suffix(ty))
+            ReturnUnit::Scalar(self.type_suffixes(ty))
         } else {
             ReturnUnit::Pack(ParsedReturnPack {
                 types,
@@ -920,10 +1048,7 @@ impl TypeParser {
             TokenKind::Identifier(name) if name == "fun" => self.function_type(),
             TokenKind::Identifier(name) => {
                 self.pos += 1;
-                TypeExpr {
-                    kind: TypeExprKind::Named(name),
-                    span: start,
-                }
+                self.qualified(name, start)
             }
             TokenKind::Keyword(name) if name == "true" || name == "false" => {
                 self.pos += 1;
@@ -986,6 +1111,8 @@ impl TypeParser {
                 }
             }
             TokenKind::Symbol(symbol) if symbol == "{" => self.record(),
+            // LuaLS's tuple `[T1, T2]`: the positional record `{T1, T2}`.
+            TokenKind::Symbol(symbol) if symbol == "[" => self.tuple(),
             _ => {
                 self.error(
                     "expected a named, union, or record type; this annotation form is unsupported"
@@ -1052,9 +1179,77 @@ impl TypeParser {
                 }
             }
         }
-        ty = self.array_suffix(ty);
+        ty = self.type_suffixes(ty);
         self.depth -= 1;
         ty
+    }
+
+    /// Array suffixes, then LuaLS's `T?`: T or nil. Out of line, as one call, to keep
+    /// the recursive type parsers' frames small.
+    #[inline(never)]
+    fn type_suffixes(&mut self, ty: TypeExpr) -> TypeExpr {
+        let mut ty = self.array_suffix(ty);
+        if let Some(question) = self.take("?") {
+            let span = ty.span.join(question);
+            ty = TypeExpr {
+                kind: TypeExprKind::Union(vec![ty, TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span: question }]),
+                span,
+            };
+            ty = self.array_suffix(ty);
+        }
+        ty
+    }
+
+    /// A dotted or hyphenated name continued from `first` (`parser.object`, `fs.path`,
+    /// `require-manager.result`): parts that touch, with nothing between them.
+    #[inline(never)]
+    fn qualified(&mut self, first: String, start: Span) -> TypeExpr {
+        let mut name = first;
+        let mut span = start;
+        while (self.symbol(".") || self.symbol("-"))
+            && self.current().span.start == span.end
+            && let Some(next) = self.tokens.get(self.pos + 1)
+            && next.span.start == self.current().span.end
+            && let TokenKind::Identifier(part) | TokenKind::Keyword(part) = &next.kind
+        {
+            let separator = if self.symbol(".") { '.' } else { '-' };
+            name.push(separator);
+            name.push_str(part);
+            span = span.join(next.span);
+            self.pos += 2;
+        }
+        // LuaLS spells the io file class `file*`, after C's `FILE*`.
+        if name == "file" && self.symbol("*") && self.current().span.start == span.end {
+            span = span.join(self.current().span);
+            self.pos += 1;
+        }
+        TypeExpr { kind: TypeExprKind::Named(name), span }
+    }
+
+    #[inline(never)]
+    fn vararg_type(&mut self, untyped: bool, ellipsis: Span) -> TypeExpr {
+        if untyped {
+            return TypeExpr { kind: TypeExprKind::Named("any".to_owned()), span: ellipsis };
+        }
+        self.comma_ends_type += 1;
+        let ty = self.union();
+        self.comma_ends_type -= 1;
+        ty
+    }
+
+    #[inline(never)]
+    fn tuple(&mut self) -> TypeExpr {
+        let start = self.expect("[");
+        let mut fields = Vec::new();
+        while !self.eof() && !self.symbol("]") {
+            self.comma_ends_type += 1;
+            let ty = self.union();
+            self.comma_ends_type -= 1;
+            fields.push(TypeField { key: TypeFieldKey::Sequence { index: fields.len() + 1 }, span: ty.span, ty });
+            if self.take(",").is_none() { break; }
+        }
+        let end = self.expect("]");
+        TypeExpr { kind: TypeExprKind::Record(fields), span: start.join(end) }
     }
     fn array_suffix(&mut self, mut ty: TypeExpr) -> TypeExpr {
         let mut depth = type_depth(&ty);
@@ -1115,12 +1310,12 @@ impl TypeParser {
                     && !self.symbol_at(self.pos + 1, "?");
                 if ellipsis || word {
                     self.pos += 1;
-                    if ellipsis {
+                    // LuaLS also writes an untyped `...`, which is `any`.
+                    let untyped = ellipsis && !self.symbol(":");
+                    if ellipsis && !untyped {
                         self.expect(":");
                     }
-                    self.comma_ends_type += 1;
-                    let ty = self.union();
-                    self.comma_ends_type -= 1;
+                    let ty = self.vararg_type(untyped, param_start);
                     let span = param_start.join(ty.span);
                     vararg = Some(Box::new(VarargAnnotation {
                         ty,
@@ -1302,6 +1497,57 @@ impl TypeParser {
     fn recover_record(&mut self) {
         while !self.eof() && !self.symbol(",") && !self.symbol("}") {
             self.pos += 1;
+        }
+    }
+}
+
+/// `Owner.member` as its owner and member; dotted owners (`parser.object.member`)
+/// keep every part but the last.
+fn split_owner(name: Name) -> (Option<Name>, Name) {
+    let Some(dot) = name.text.rfind('.') else { return (None, name) };
+    let start = name.span.start;
+    let owner = Name { text: name.text[..dot].to_owned(), span: Span::new(start, start + dot) };
+    let member = Name { text: name.text[dot + 1..].to_owned(), span: Span::new(start + dot + 1, name.span.end) };
+    (Some(owner), member)
+}
+
+/// The members of an alias written on the `---| type # description` lines after it, as one union.
+/// `offset` is where the first of `lines` starts in the source.
+fn alias_continuation(lines: &[&str], mut offset: usize, alias: Span, diagnostics: &mut Vec<Diagnostic>) -> TypeExpr {
+    let mut members = Vec::new();
+    for line in lines {
+        let stripped = line.trim_start_matches([' ', '\t', '\r']).trim_start_matches('-').trim_start_matches([' ', '\t']);
+        let Some(member) = stripped.strip_prefix('|') else { break };
+        let start = offset + line.len() - member.len();
+        // A member's description follows `#`, outside a quoted value.
+        let tokens = crate::lexer::lex_annotation(member).tokens;
+        let end = tokens.iter()
+            .find(|token| matches!(&token.kind, TokenKind::Symbol(symbol) if symbol == "#"))
+            .map_or(member.trim_end().len(), |token| token.span.start);
+        let text = member[..end].trim_end();
+        let tokens = crate::lexer::lex_annotation(text).tokens.into_iter().map(|mut token| {
+            token.span.start += start;
+            token.span.end += start;
+            token
+        }).collect();
+        let mut parser = TypeParser { tokens, pos: 0, diagnostics: Vec::new(), depth: 0, comma_ends_type: 0 };
+        members.push(parser.union());
+        diagnostics.extend(parser.diagnostics);
+        offset += line.len();
+    }
+    match members.len() {
+        0 => {
+            diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
+                span: alias,
+                message: "an alias needs a type, or `---|` lines listing its members".to_owned(),
+            });
+            TypeExpr { kind: TypeExprKind::Error, span: alias }
+        }
+        1 => members.pop().expect("one member"),
+        _ => {
+            let span = members[0].span.join(members.last().expect("members").span);
+            TypeExpr { kind: TypeExprKind::Union(members), span }
         }
     }
 }

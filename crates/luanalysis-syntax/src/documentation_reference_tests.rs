@@ -45,8 +45,6 @@ fn malformed_see_links_report_original_syntax_and_recover_at_the_next_tag() {
     for malformed in [
         "",
         "Broken#",
-        "Broken.member",
-        "Broken#member#other",
         "Broken<number>",
     ] {
         let source =

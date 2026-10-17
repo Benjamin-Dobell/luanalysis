@@ -640,6 +640,8 @@ mod generic_tests;
 
 #[cfg(test)]
 mod pack_tests;
+#[cfg(test)]
+mod luals_dialect_tests;
 
 #[cfg(test)]
 mod table_type_tests;

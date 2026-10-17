@@ -185,23 +185,31 @@ impl Parser<'_> {
 /// block or an enclosing one), and a label may not repeat a visible label's name (Lua 5.4).
 /// Nested functions are validated with their own bodies.
 pub(crate) fn validate_labels(body: &[Stmt], diagnostics: &mut Vec<Diagnostic>) {
-    fn block(statements: &[Stmt], visible: &mut Vec<Vec<String>>, diagnostics: &mut Vec<Diagnostic>) {
-        let mut labels = Vec::new();
-        for statement in statements {
-            if let StmtKind::Label(name) = &statement.kind {
-                if visible.iter().flatten().chain(&labels).any(|label| *label == name.text) {
-                    diagnostics.push(Diagnostic {
-                        origin: crate::DiagnosticOrigin::LuaSyntax,
-                        span: name.span,
-                        message: format!("label '{}' already defined", name.text),
-                    });
-                }
-                labels.push(name.text.clone());
-            }
-        }
-        visible.push(labels);
+    // A goto sees every label of its open blocks, while a label repeats only
+    // one declared before it in an open block (Lua 5.4's findlabel).
+    fn block(
+        statements: &[Stmt],
+        visible: &mut Vec<Vec<String>>,
+        declared: &mut Vec<String>,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        visible.push(statements.iter().filter_map(|statement| match &statement.kind {
+            StmtKind::Label(name) => Some(name.text.clone()),
+            _ => None,
+        }).collect());
+        let outer = declared.len();
         for statement in statements {
             match &statement.kind {
+                StmtKind::Label(name) => {
+                    if declared.contains(&name.text) {
+                        diagnostics.push(Diagnostic {
+                            origin: crate::DiagnosticOrigin::LuaSyntax,
+                            span: name.span,
+                            message: format!("label '{}' already defined", name.text),
+                        });
+                    }
+                    declared.push(name.text.clone());
+                }
                 StmtKind::Goto(name) if !visible.iter().flatten().any(|label| *label == name.text) => {
                     diagnostics.push(Diagnostic {
                         origin: crate::DiagnosticOrigin::LuaSyntax,
@@ -210,15 +218,16 @@ pub(crate) fn validate_labels(body: &[Stmt], diagnostics: &mut Vec<Diagnostic>) 
                     });
                 }
                 StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
-                | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => block(body, visible, diagnostics),
+                | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => block(body, visible, declared, diagnostics),
                 StmtKind::If { branches, else_branch } => {
-                    for branch in branches { block(&branch.body, visible, diagnostics); }
-                    if let Some(branch) = else_branch { block(&branch.body, visible, diagnostics); }
+                    for branch in branches { block(&branch.body, visible, declared, diagnostics); }
+                    if let Some(branch) = else_branch { block(&branch.body, visible, declared, diagnostics); }
                 }
                 _ => {}
             }
         }
+        declared.truncate(outer);
         visible.pop();
     }
-    block(body, &mut Vec::new(), diagnostics);
+    block(body, &mut Vec::new(), &mut Vec::new(), diagnostics);
 }

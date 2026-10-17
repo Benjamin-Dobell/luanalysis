@@ -175,8 +175,16 @@ impl Lexer<'_> {
     fn comment(&mut self, start: usize) {
         self.pos += 2;
         if let Some((equals, body)) = self.long_open(self.pos) {
-            let doc = self.source[body..].trim_start_matches([' ', '\t', '\r', '\n']).starts_with("---");
-            self.long_content(equals, body, start, true);
+            // A long comment documents when `---` opens its body, as in v1's
+            // `--[[---@type T]]`, or when every line of it is a `---` line.
+            // Commented-out code containing annotations does not document.
+            let direct = self.source[body..].starts_with("---");
+            let content = self.long_content(equals, body, start, true);
+            let doc = direct || {
+                let content = String::from_utf8_lossy(&content);
+                content.trim_start().starts_with("---")
+                    && content.lines().map(str::trim).all(|line| line.is_empty() || line.starts_with("---"))
+            };
             self.push_comment(
                 start,
                 if doc {
@@ -188,6 +196,9 @@ impl Lexer<'_> {
         } else {
             self.line_end();
             let doc = self.source[start..].starts_with("---");
+            if doc {
+                self.documentation_continuation();
+            }
             self.push_comment(
                 start,
                 if doc {
@@ -196,6 +207,28 @@ impl Lexer<'_> {
                     CommentKind::Line
                 },
             );
+        }
+    }
+
+    // LuaLS lists an annotation's members on the `---|` lines after it; they belong
+    // to the documentation comment they continue.
+    fn documentation_continuation(&mut self) {
+        loop {
+            let rest = &self.source[self.pos..];
+            let newline = if rest.starts_with("\r\n") {
+                2
+            } else if rest.starts_with(['\r', '\n']) {
+                1
+            } else {
+                return;
+            };
+            let next = &rest[newline..];
+            let indent = next.len() - next.trim_start_matches([' ', '\t']).len();
+            if !next[indent..].starts_with("---|") {
+                return;
+            }
+            self.pos += newline + indent;
+            self.line_end();
         }
     }
 
