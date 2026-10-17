@@ -1722,7 +1722,9 @@ impl NativeRegistry {
                 .return_pack
                 .as_ref()
                 .is_some_and(|pack| checker.engine.pack_assignable(&ValuePack::empty(), pack));
-            if !terminated && !checker.engine.allows_implicit_return(expected) && !accepts_empty {
+            // In a LuaLS `---@meta` file, a function with an empty body only declares its signature.
+            let declared_only = function.body.is_empty() && self.file.meta().is_some();
+            if !terminated && !checker.engine.allows_implicit_return(expected) && !accepts_empty && !declared_only {
                 let origin = self
                     .declared_pack_recipe(key)
                     .map_or(function.span, |recipe| recipe.span);

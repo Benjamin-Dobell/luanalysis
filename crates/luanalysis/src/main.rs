@@ -153,6 +153,10 @@ impl WatchSnapshot {
         }
         let mut modules = BTreeMap::new();
         for dependency in &project.dependencies {
+            // A module provided by name follows its provider's source, which is already watched.
+            if project.provider(&dependency.request.module).is_some() {
+                continue;
+            }
             let resolution = match &dependency.outcome {
                 DependencyOutcome::Resolved(file) => {
                     project.file(*file).map(|source| Ok(source.path.clone()))

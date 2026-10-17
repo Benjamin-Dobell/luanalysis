@@ -222,7 +222,7 @@ fn declaration_roles_are_explicit_and_belong_to_an_owned_immutable_snapshot() {
         declaration.clone(),
         SourceRole::Declaration,
     ));
-    let first = Project::load_plan(&resolver(&temp.0), plan, |_| {
+    let first = Project::load_plan(&resolver(&temp.0), plan, |_| -> Vec<RequireRequest> {
         panic!("a declaration has no runtime require demand")
     });
     fs::write(&declaration, "return 'updated'").unwrap();
@@ -272,7 +272,7 @@ fn canonical_library_aliases_deduplicate_and_conflicting_alias_roles_are_precise
             ProjectInput::new(alias.clone(), SourceRole::Implementation),
         ],
     };
-    let project = Project::load_plan(&resolver(&temp.0), plan, |_| {
+    let project = Project::load_plan(&resolver(&temp.0), plan, |_| -> Vec<RequireRequest> {
         panic!("only declarations were successfully loaded")
     });
     assert_eq!(project.files.len(), 1);

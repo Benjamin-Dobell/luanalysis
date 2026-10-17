@@ -218,9 +218,10 @@ impl Checker<'_> {
                 Ok(pack)=>return Some(self.merged_class_export(pack)),
                 Err(error)=>module_error_message(error).into(),
             },
+            // As TypeScript types an unresolved import, the value is `any` once reported.
             ImportOutcome::Missing(message)=>{
                 self.error("TS2307",recipe.argument_span,message);
-                return Some(ValuePack::single(Type::Unknown));
+                return Some(ValuePack::single(Type::Any));
             },
             ImportOutcome::InvalidSource=>"Required module has syntax errors or is not a valid source in this project.".into(),
             ImportOutcome::Dynamic=>"Dynamic require needs an explicit external-module or loader contract.".into(),

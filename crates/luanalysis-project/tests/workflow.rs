@@ -1,5 +1,6 @@
 use luanalysis_project::{
-    DependencyOutcome, Project, ProjectConfig, RequireRequest, ResolveError, Resolver,
+    DependencyOutcome, FileRequests, Project, ProjectConfig, RequireRequest, ResolveError,
+    Resolver,
 };
 use std::{
     fs,
@@ -225,4 +226,24 @@ fn symlinked_roots_and_directory_cycles_deduplicate_canonical_sources() {
     );
     assert_eq!(project.files.len(), 1);
     assert_eq!(project.entries.len(), 1);
+}
+
+#[test]
+fn a_module_an_entry_provides_by_name_resolves_before_its_path() {
+    let temp = Temp::new();
+    // `main` is read first, yet finds the module that `meta/native.lua` provides.
+    let main = temp.file("main.lua", "require 'native'");
+    let provider = temp.file("meta/native.lua", "---@meta native");
+    temp.file("native.lua", "return 1");
+    let project = Project::load(&resolver(&temp.0), [main.clone(), provider.clone()], |source| {
+        if source.path.ends_with("main.lua") {
+            FileRequests { requires: vec![RequireRequest::new("native", 8..16)], provides: None }
+        } else {
+            FileRequests { requires: Vec::new(), provides: Some("native".into()) }
+        }
+    });
+    let provider = project.file_by_path(&provider).unwrap().id;
+    assert_eq!(project.provider("native"), Some(provider));
+    assert_eq!(project.dependencies[0].outcome, DependencyOutcome::Resolved(provider));
+    assert_eq!(project.files.len(), 2, "the path candidate is never loaded");
 }

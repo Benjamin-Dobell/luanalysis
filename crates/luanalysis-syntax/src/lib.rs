@@ -103,6 +103,18 @@ impl File {
             .iter()
             .any(|diagnostic| diagnostic.origin == DiagnosticOrigin::LuaSyntax)
     }
+
+    /// A LuaLS definition file's `---@meta` tag, and the module it provides to `require`
+    /// when it names one. `---@meta _` provides none.
+    pub fn meta(&self) -> Option<Option<&str>> {
+        self.comments.iter().find_map(|comment| {
+            let tag = comment.text.strip_prefix("---")?.trim_start_matches(['-', ' ', '\t']).strip_prefix("@meta")?;
+            if tag.starts_with(|ch: char| !ch.is_whitespace()) {
+                return None;
+            }
+            Some(tag.split_whitespace().next().filter(|name| *name != "_"))
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

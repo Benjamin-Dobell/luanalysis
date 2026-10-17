@@ -5,7 +5,7 @@ use luanalysis_project::{
 use std::{fs, path::PathBuf};
 
 fn empty_project() -> Project {
-    Project::load(&Resolver::new(ProjectConfig::new([])).unwrap(), [], |_| {
+    Project::load(&Resolver::new(ProjectConfig::new([])).unwrap(), [], |_| -> Vec<luanalysis_project::RequireRequest> {
         panic!("a declaration resource must not become a runtime source")
     })
 }

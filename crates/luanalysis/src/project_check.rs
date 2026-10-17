@@ -7,7 +7,7 @@ use luanalysis_engine::{
     Engine, NativeLoaderPolicy, NativePlanOptions, NativeTaskRunStats,
 };
 use luanalysis_project::{
-    DeclarationSourceError, FileId, Project, RequireRequest, SourceFile, SourceRole,
+    DeclarationSourceError, FileId, FileRequests, Project, RequireRequest, SourceFile, SourceRole,
 };
 use crate::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
@@ -54,16 +54,16 @@ impl Default for ProjectCheckOptions {
 /// Collects the static require calls whose targets join the program, as Bun's
 /// load collects imports. Whether a call returns its module is still decided
 /// by checking; comments and strings are never scanned for imports.
-pub fn static_require_requests(source: &SourceFile) -> Vec<RequireRequest> {
+pub fn static_require_requests(source: &SourceFile) -> FileRequests {
     if source.role == SourceRole::Declaration {
-        return Vec::new();
+        return FileRequests::default();
     }
     let file = luanalysis_syntax::parse(&source.source);
     if file.has_lua_syntax_errors() {
-        return Vec::new();
+        return FileRequests::default();
     }
     let bound = crate::bind::bind(&file);
-    crate::module_requests::require_calls(&file, &bound)
+    let requires = crate::module_requests::require_calls(&file, &bound)
         .into_iter()
         .filter_map(|call| {
             let crate::module_requests::RequireTarget::Static(module) = call.target else {
@@ -74,7 +74,8 @@ pub fn static_require_requests(source: &SourceFile) -> Vec<RequireRequest> {
                 call.argument_span.start..call.argument_span.end,
             ))
         })
-        .collect()
+        .collect();
+    FileRequests { requires, provides: file.meta().flatten().map(str::to_owned) }
 }
 
 #[derive(Clone, Debug)]

@@ -5,7 +5,7 @@
 //! type, diagnostic, module result or project namespace as current.
 
 use crate::bind::{self, BoundFile};
-use luanalysis_project::{FileId, Project, RequireRequest, SourceFile, SourceOrigin, SourceRole};
+use luanalysis_project::{FileId, FileRequests, Project, RequireRequest, SourceFile, SourceOrigin, SourceRole};
 use luanalysis_syntax::File;
 use crate::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -172,9 +172,9 @@ impl ProjectWorkspace {
     /// Supplies the source-host's static candidates from the same cached
     /// syntax/bind inputs used by checking. Resolution still runs on every load;
     /// candidate discovery never grants the runtime callee require provenance.
-    pub fn static_require_requests(&mut self, source: &SourceFile) -> Vec<RequireRequest> {
+    pub fn static_require_requests(&mut self, source: &SourceFile) -> FileRequests {
         if source.role == SourceRole::Declaration {
-            return Vec::new();
+            return FileRequests::default();
         }
         let (snapshot, created) = self.snapshot_for(source);
         if created {
@@ -182,9 +182,9 @@ impl ProjectWorkspace {
                 .insert(snapshot.revision, snapshot.bound.is_some());
         }
         let Some(bound) = snapshot.bound() else {
-            return Vec::new();
+            return FileRequests::default();
         };
-        crate::module_requests::require_calls(snapshot.syntax(), bound)
+        let requires = crate::module_requests::require_calls(snapshot.syntax(), bound)
             .into_iter()
             .filter_map(|call| {
                 let crate::module_requests::RequireTarget::Static(module) = call.target else {
@@ -195,7 +195,9 @@ impl ProjectWorkspace {
                     call.argument_span.start..call.argument_span.end,
                 ))
             })
-            .collect()
+            .collect();
+        let provides = snapshot.syntax().meta().flatten().map(str::to_owned);
+        FileRequests { requires, provides }
     }
 
     fn snapshot_for(&mut self, source: &SourceFile) -> (Arc<SourceSnapshot>, bool) {

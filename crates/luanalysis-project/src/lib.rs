@@ -367,6 +367,18 @@ impl RequireRequest {
         }
     }
 }
+/// A file's static require requests, and the module it provides to `require` by name
+/// whatever its path, as a LuaLS `---@meta name` definition file does.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileRequests {
+    pub requires: Vec<RequireRequest>,
+    pub provides: Option<String>,
+}
+impl From<Vec<RequireRequest>> for FileRequests {
+    fn from(requires: Vec<RequireRequest>) -> Self {
+        Self { requires, provides: None }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DependencyOutcome {
     Resolved(FileId),
@@ -399,15 +411,17 @@ pub struct Project {
     pub cycles: Vec<DependencyCycle>,
     by_path: HashMap<PathBuf, FileId>,
     declaration_sources: HashMap<String, FileId>,
+    /// Modules provided by name, which `require` resolves before searching paths.
+    provided: HashMap<String, FileId>,
 }
 impl Project {
     /// The callback must return only source-resolved static require requests.
     /// Shadowing/intrinsic recognition and dynamic-require diagnostics belong
     /// to the caller's parser/binder, not a textual scanner in this host.
-    pub fn load(
+    pub fn load<R: Into<FileRequests>>(
         resolver: &Resolver,
         entries: impl IntoIterator<Item = PathBuf>,
-        requires: impl FnMut(&SourceFile) -> Vec<RequireRequest>,
+        requires: impl FnMut(&SourceFile) -> R,
     ) -> Self {
         Self::load_plan(resolver, ProjectLoadPlan::new(entries), requires)
     }
@@ -415,21 +429,24 @@ impl Project {
     /// Registers explicit library roles before loading implementation entries
     /// and their dependency closure. The callback is never invoked for a
     /// declaration source, even when a require resolves to that canonical file.
-    pub fn load_plan(
+    pub fn load_plan<R: Into<FileRequests>>(
         resolver: &Resolver,
         plan: ProjectLoadPlan,
-        requires: impl FnMut(&SourceFile) -> Vec<RequireRequest>,
+        requires: impl FnMut(&SourceFile) -> R,
     ) -> Self {
         Self::load_plan_with_overlays(resolver, plan, &HashMap::new(), requires)
     }
 
     /// As `load_plan`, but a file whose canonical path is in `overlays` is read
     /// from there instead of the filesystem: an editor's unsaved buffers.
-    pub fn load_plan_with_overlays(
+    ///
+    /// Every entry and library is read before any request is resolved, so a module an entry
+    /// provides by name is found by every file that requires it.
+    pub fn load_plan_with_overlays<R: Into<FileRequests>>(
         resolver: &Resolver,
         plan: ProjectLoadPlan,
         overlays: &HashMap<PathBuf, String>,
-        mut requires: impl FnMut(&SourceFile) -> Vec<RequireRequest>,
+        mut requires: impl FnMut(&SourceFile) -> R,
     ) -> Self {
         let id = NEXT_PROJECT.fetch_add(1, Ordering::Relaxed);
         assert_ne!(id, u64::MAX, "project identities exhausted");
@@ -445,6 +462,7 @@ impl Project {
             cycles: Vec::new(),
             by_path: HashMap::new(),
             declaration_sources: HashMap::new(),
+            provided: HashMap::new(),
         };
         let mut pending = VecDeque::new();
         for input in plan.libraries {
@@ -475,8 +493,12 @@ impl Project {
                 Err(RegisterError::Role(error)) => project.role_conflicts.push(error),
             }
         }
-        while let Some(file) = pending.pop_front() {
-            for request in requires(&project.files[file.index as usize]) {
+        let mut read: VecDeque<(FileId, Vec<RequireRequest>)> = pending
+            .into_iter()
+            .map(|file| (file, project.requests(file, &mut requires)))
+            .collect();
+        while let Some((file, requests)) = read.pop_front() {
+            for request in requests {
                 let source = &project.files[file.index as usize].source;
                 let valid = request.span.start <= request.span.end
                     && request.span.end <= source.len()
@@ -484,6 +506,8 @@ impl Project {
                     && source.is_char_boundary(request.span.end);
                 let outcome = if !valid {
                     DependencyOutcome::InvalidSpan
+                } else if let Some(&target) = project.provided.get(&request.module) {
+                    DependencyOutcome::Resolved(target)
                 } else {
                     match resolver.resolve(&request.module) {
                         Err(error) => DependencyOutcome::Unresolved(error),
@@ -493,7 +517,8 @@ impl Project {
                                     && project.files[target.index as usize].role
                                         == SourceRole::Implementation
                                 {
-                                    pending.push_back(target);
+                                    let requests = project.requests(target, &mut requires);
+                                    read.push_back((target, requests));
                                 }
                                 DependencyOutcome::Resolved(target)
                             }
@@ -513,6 +538,25 @@ impl Project {
         }
         project.cycles = project.find_cycles();
         project
+    }
+
+    /// Reads a file's requests, recording the module it provides. The first file to provide
+    /// a module keeps it.
+    fn requests<R: Into<FileRequests>>(
+        &mut self,
+        file: FileId,
+        requires: &mut impl FnMut(&SourceFile) -> R,
+    ) -> Vec<RequireRequest> {
+        let FileRequests { requires, provides } = requires(&self.files[file.index as usize]).into();
+        if let Some(module) = provides {
+            self.provided.entry(module).or_insert(file);
+        }
+        requires
+    }
+
+    /// The file that provides `module` by name, if one does.
+    pub fn provider(&self, module: &str) -> Option<FileId> {
+        self.provided.get(module).copied()
     }
 
     /// Adds immutable original declaration text without filesystem IO, runtime
@@ -558,9 +602,14 @@ impl Project {
     /// order: the loaded files and their resolutions stay as they are, and only the requests'
     /// spans move. Returns false, changing nothing, when the requests differ; the project must
     /// then be loaded again.
-    pub fn replace_source(&mut self, id: FileId, source: String, requests: Vec<RequireRequest>) -> bool {
+    pub fn replace_source(&mut self, id: FileId, source: String, requests: impl Into<FileRequests>) -> bool {
         let Some(file) = self.file(id) else { return false };
         if file.role != SourceRole::Implementation { return false; }
+        let FileRequests { requires: requests, provides } = requests.into();
+        let provided = self.provided.iter().find(|&(_, &file)| file == id).map(|(module, _)| module.as_str());
+        if provided != provides.as_deref() {
+            return false;
+        }
         let edges: Vec<usize> = (0..self.dependencies.len()).filter(|&index| self.dependencies[index].from == id).collect();
         if edges.len() != requests.len()
             || edges.iter().zip(&requests).any(|(&index, request)| self.dependencies[index].request.module != request.module)
