@@ -54,16 +54,19 @@ fn plain_colon_methods_use_a_structural_receiver_and_check_public_arguments() {
 }
 
 #[test]
-fn returning_a_captured_table_does_not_export_its_future_contract_as_present() {
+fn a_captured_table_has_its_stored_fields_in_another_function() {
+    // Its own function reads the table at each point of its flow. Another function cannot
+    // know which stores have run, and reads it with all of them, as TypeScript reads a
+    // JavaScript object with expando properties.
     let source = "local value={}\nlocal function same() return value end\nlocal alias=same()\nlocal direct=value.future\nlocal indirect=alias.future\nvalue.future=1\n";
     let report = check(source);
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     assert_eq!(report.type_at(source.find("direct=").unwrap()), Some("nil"));
     assert_eq!(
         report.type_at(source.find("indirect=").unwrap()),
-        Some("nil")
+        Some("number")
     );
-    let invalid = source.replace("local indirect=", "---@type number\nlocal indirect=");
+    let invalid = source.replace("local indirect=", "---@type string\nlocal indirect=");
     assert!(
         check(&invalid)
             .diagnostics
@@ -83,4 +86,14 @@ fn an_rhs_call_rebinding_the_receiver_is_not_tracked() {
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
     assert_eq!(report.type_at(source.find("current=").unwrap()), Some("number"));
     assert_eq!(report.type_at(source.find("previous=").unwrap()), Some("nil"));
+}
+
+#[test]
+fn a_store_in_a_function_leaves_the_tables_other_fields() {
+    // LuaLS's log module: a conditional store, and a store reading the field it stores.
+    let source = "local m={}\nm.size=0\nm.file=nil\nfunction m.open() m.file={} end\nfunction m.raw(msg)\n if msg then m.firstError=msg end\n local before=m.size\n m.size=m.size+1\n if m.file then\n  local after=m.size\n end\nend\nreturn m\n";
+    let report = check(source);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    assert_eq!(report.type_at(source.find("before=").unwrap()), Some("number"));
+    assert_eq!(report.type_at(source.find("after=").unwrap()), Some("number"));
 }

@@ -656,7 +656,9 @@ impl Checker<'_> {
             && matches!(metatable.kind, ExprKind::Name(_))
         {
             let metatable = self.expression(metatable);
-            if let Some(declaration) = self.engine.named_object_declaration(&metatable)
+            // A table's own schema, which a captured runtime table reads as, is not a class.
+            if self.engine.runtime_table_schema(&metatable).is_none()
+                && let Some(declaration) = self.engine.named_object_declaration(&metatable)
                 && let Ok(class) = self.engine.named_declared_type(declaration)
             {
                 return class;

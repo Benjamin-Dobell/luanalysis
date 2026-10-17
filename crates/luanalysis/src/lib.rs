@@ -854,13 +854,15 @@ impl Checker<'_> {
             {
                 Some(binding) => {
                     if let (Some(native), Some(at)) = (self.native, self.flow_at) {
-                        let result = native.flow_reference_type(
-                            expr,
-                            at,
-                            &binding.constraint,
-                            &binding.initial,
-                            self.engine,
-                        );
+                        // A table that stores in several functions describe enters another
+                        // function as its schema, as a JavaScript object with expando
+                        // properties has all of them inside a function, wherever it was created.
+                        let id = self.bound.binding_at(name.span.start).unwrap();
+                        let schema = (self.type_context.is_some() && native.binding_function_owner(id) != self.type_context)
+                            .then(|| self.engine.runtime_table_schema(&binding.constraint)).flatten();
+                        let declared = schema.clone().unwrap_or_else(|| binding.constraint.clone());
+                        let initial = schema.unwrap_or_else(|| binding.initial.clone());
+                        let result = native.flow_reference_type(expr, at, &declared, &initial, self.engine);
                         self.incomplete_flow |= result.incomplete;
                         // As in TypeScript, an automatic local whose type cannot be determined
                         // is reported only under `--no-implicit-any`; otherwise it is `any`.

@@ -77,7 +77,12 @@ impl<'p, 's> Checker<'p, 's> {
         let native_query = NativeTypeDeclarationQuery::RuntimeTableMember(object, member, indexer);
         if let Some(&known) = self.native_named_cache.types.get(&native_query) { return Ok(known) }
         let query = Query::NativeNamed(native_query);
-        if !self.enter(query) { return Err(NativeNamedTypeError::TooDeep(native_query)) }
+        if !self.enter(query) {
+            // A store whose value reads the member it stores (`m.size = m.size + 1`) is inferred
+            // with that member unresolved, as a class member is (`native_named_member_demand`).
+            if !indexer && self.is_reentry(query) { return Ok(TypeId::UNRESOLVED) }
+            return Err(NativeNamedTypeError::TooDeep(native_query))
+        }
         let value = self.with_runtime_table_context(reference, |checker| {
             if indexer { provider.type_indexer_key(checker, member) } else { provider.type_member_type(checker, member) }
         });
