@@ -3061,6 +3061,7 @@ impl RegistryIndex<'_> {
                     names,
                     values,
                     annotation,
+                    ..
                 } => {
                     for (index, name) in names.iter().enumerate() {
                         let binding = self
@@ -3184,7 +3185,7 @@ impl RegistryIndex<'_> {
                     }
                     self.statements(body, owner);
                 }
-                StmtKind::Break => {}
+                StmtKind::Break | StmtKind::Goto(_) | StmtKind::Label(_) => {}
             }
         }
     }

@@ -246,7 +246,7 @@ impl OriginalTypes {
                     }
                     self.statements(body);
                 }
-                StmtKind::Break => {}
+                StmtKind::Break | StmtKind::Goto(_) | StmtKind::Label(_) => {}
             }
         }
     }

@@ -6,7 +6,7 @@ use luanalysis_syntax::{
     BinaryOperator, Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TableFieldKind,
     UnaryOperator,
 };
-use crate::collections::HashMap;
+use crate::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
@@ -347,6 +347,7 @@ pub(crate) fn build_with_snapshot(file: &File, bound: &BoundFile, snapshot: u64)
         breaks: Vec::new(),
         live: true,
         enclosing_statements: Vec::new(),
+        labels: Vec::new(),
     };
     builder.statements(&mut context, &file.statements);
     builder.program.graphs[graph as usize].exit = context.current;
@@ -367,6 +368,20 @@ struct Context {
     breaks: Vec<Vec<FlowId>>,
     live: bool,
     enclosing_statements: Vec<Span>,
+    /// The labels of each enclosing block of this function, innermost last.
+    labels: Vec<LabelScope>,
+}
+
+/// One block's labels, as `goto` resolves them: a label is visible in its block and the blocks
+/// nested in it.
+#[derive(Default)]
+struct LabelScope {
+    /// Labels a later `goto` in the block jumps back to: their node is a loop head.
+    backward: HashSet<String>,
+    /// The labels defined so far, with their node.
+    defined: Vec<(String, FlowId)>,
+    /// Forward `goto`s not yet resolved: the label they name and the position they jump from.
+    pending: Vec<(String, FlowId)>,
 }
 struct Builder<'a> {
     program: ProgramFlow,
@@ -469,6 +484,7 @@ impl Builder<'_> {
             breaks: Vec::new(),
             live: true,
             enclosing_statements: Vec::new(),
+            labels: Vec::new(),
         };
         self.statements(&mut context, &function.body);
         self.program.graphs[graph as usize].exit = context.current;
@@ -767,8 +783,15 @@ impl Builder<'_> {
     }
 
     fn statements(&mut self, context: &mut Context, statements: &[Stmt]) {
+        context.labels.push(LabelScope { backward: backward_labels(statements), ..LabelScope::default() });
         for statement in statements {
             self.statement(context, statement);
+        }
+        let scope = context.labels.pop().expect("the block's own label scope");
+        // A forward `goto` may name a label later in an enclosing block. One that names no
+        // visible label is a syntax error the parser reports; its path simply ends.
+        if let Some(parent) = context.labels.last_mut() {
+            parent.pending.extend(scope.pending);
         }
     }
     fn statement(&mut self, context: &mut Context, statement: &Stmt) {
@@ -881,6 +904,39 @@ impl Builder<'_> {
                 }
                 context.live = false;
                 self.node(context, NodeKind::Unreachable, Vec::new(), span);
+            }
+            StmtKind::Goto(name) => {
+                if context.live {
+                    let at = context.current;
+                    // A label already defined in this or an enclosing block is a loop head this
+                    // jump returns to; any other is resolved when its label is reached.
+                    let head = context.labels.iter().rev()
+                        .find_map(|scope| scope.defined.iter().find(|(label, _)| *label == name.text).map(|(_, node)| *node));
+                    if let Some(head) = head {
+                        self.program.graphs[context.graph as usize].nodes[head.index as usize].antecedents.push(at);
+                    } else if let Some(scope) = context.labels.last_mut() {
+                        scope.pending.push((name.text.clone(), at));
+                    }
+                }
+                context.live = false;
+                self.node(context, NodeKind::Unreachable, Vec::new(), span);
+            }
+            StmtKind::Label(name) => {
+                let scope = context.labels.last_mut().expect("a statement belongs to a block");
+                let mut entries: Vec<FlowId> = context.live.then_some(context.current).into_iter().collect();
+                let pending = std::mem::take(&mut scope.pending);
+                let (jumps, others): (Vec<_>, Vec<_>) = pending.into_iter().partition(|(label, _)| *label == name.text);
+                scope.pending = others;
+                entries.extend(jumps.into_iter().map(|(_, at)| at));
+                let backward = scope.backward.contains(&name.text);
+                context.live = !entries.is_empty() || backward;
+                let entry = match entries.as_slice() {
+                    [] => self.node(context, NodeKind::Unreachable, Vec::new(), span),
+                    [only] if backward => *only,
+                    _ => self.node(context, NodeKind::Merge, entries, span),
+                };
+                let node = if backward { self.node(context, NodeKind::Loop, vec![entry], span) } else { entry };
+                context.labels.last_mut().expect("a statement belongs to a block").defined.push((name.text.clone(), node));
             }
             StmtKind::Break => {
                 let node = self.append(context, NodeKind::Break, span);
@@ -1271,4 +1327,32 @@ impl Builder<'_> {
         context.live = !exits.is_empty();
         self.node(context, NodeKind::Merge, exits, span);
     }
+}
+
+/// The labels of `statements` that a `goto` after them, in the block or a block nested in it but
+/// not in a nested function, jumps back to.
+fn backward_labels(statements: &[Stmt]) -> HashSet<String> {
+    fn gotos(statements: &[Stmt], names: &mut HashSet<String>) {
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::Goto(name) => { names.insert(name.text.clone()); }
+                StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
+                | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => gotos(body, names),
+                StmtKind::If { branches, else_branch } => {
+                    for branch in branches { gotos(&branch.body, names); }
+                    if let Some(branch) = else_branch { gotos(&branch.body, names); }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut backward = HashSet::default();
+    for (index, statement) in statements.iter().enumerate() {
+        if let StmtKind::Label(name) = &statement.kind {
+            let mut later = HashSet::default();
+            gotos(&statements[index + 1..], &mut later);
+            if later.contains(&name.text) { backward.insert(name.text.clone()); }
+        }
+    }
+    backward
 }

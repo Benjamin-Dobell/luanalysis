@@ -315,6 +315,7 @@ impl NativePacks {
                     names,
                     values,
                     annotation,
+                    ..
                 } => {
                     let list = self.list(
                         values,
@@ -429,7 +430,7 @@ impl NativePacks {
                     }
                     self.statements(body, owner, functions, expression_key);
                 }
-                StmtKind::Break => {}
+                StmtKind::Break | StmtKind::Goto(_) | StmtKind::Label(_) => {}
             }
         }
     }

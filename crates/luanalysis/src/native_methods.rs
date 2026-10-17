@@ -277,7 +277,7 @@ fn collect_written_local_owners(
 ) {
     for statement in statements {
         match &statement.kind {
-            StmtKind::Local { names, values, annotation } => {
+            StmtKind::Local { names, values, annotation, .. } => {
                 for (index, name) in names.iter().enumerate() {
                     let written = annotation.as_ref().and_then(|annotation| annotation.types.get(index))
                         .or_else(|| values.get(index).and_then(|value| assertions.get(&(value.span.start, value.span.end)).copied()));

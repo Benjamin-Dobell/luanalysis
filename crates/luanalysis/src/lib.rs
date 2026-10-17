@@ -499,6 +499,7 @@ impl Checker<'_> {
                     names,
                     values,
                     annotation,
+                    ..
                 } => {
                     self.local(names, values, annotation.as_ref());
                 }
@@ -512,7 +513,8 @@ impl Checker<'_> {
                 StmtKind::Block { body, .. } => {
                     if self.statements(body) {
                         if !unreachable_reported { self.report_unreachable(rest); }
-                        return true;
+                        if !rest.iter().any(|statement| matches!(statement.kind, StmtKind::Label(_))) { return true; }
+                        unreachable_reported = true;
                     }
                 }
                 StmtKind::LocalFunction { name, function } => self.local_function(name, function),
@@ -545,7 +547,9 @@ impl Checker<'_> {
                     };
                     if terminates {
                         if !unreachable_reported { self.report_unreachable(rest); }
-                        return true;
+                        // Statements after a later label are reached by the `goto`s naming it.
+                        if !rest.iter().any(|statement| matches!(statement.kind, StmtKind::Label(_))) { return true; }
+                        unreachable_reported = true;
                     }
                 }
                 StmtKind::If {
@@ -632,12 +636,14 @@ impl Checker<'_> {
                     }
                     self.statements(body);
                 }
-                StmtKind::Break => {
+                StmtKind::Break | StmtKind::Goto(_) => {
                     if !unreachable_reported {
                         unreachable_reported = true;
                         self.report_unreachable(rest);
                     }
                 }
+                // A label is reached by the `goto`s naming it.
+                StmtKind::Label(_) => unreachable_reported = false,
             }
         }
         false
@@ -1042,6 +1048,14 @@ impl Checker<'_> {
     }
 
     fn assign(&mut self, targets: &[Expr], values: &[Expr], annotation: Option<&TypeAnnotation>) {
+        for target in targets {
+            if let ExprKind::Name(name) = &target.kind
+                && let Some(binding) = self.bound.binding_at(name.span.start)
+                && self.bound.declaration(binding).constant
+            {
+                self.error("TS2588", name.span, format!("Cannot assign to '{}' because it is a constant.", name.text));
+            }
+        }
         if let Some(annotation) = annotation
             && !targets.iter().all(|target| self.is_global_annotation_target(target)
                 || self.native.is_some_and(|native| native.is_original_assignment_field(target.span)))

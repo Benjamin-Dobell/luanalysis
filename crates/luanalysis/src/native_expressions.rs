@@ -373,7 +373,7 @@ impl ExpressionRecipes {
                     }
                     self.statements(body, owner, parent);
                 }
-                StmtKind::Break => {}
+                StmtKind::Break | StmtKind::Goto(_) | StmtKind::Label(_) => {}
             }
         }
     }

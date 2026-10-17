@@ -971,7 +971,7 @@ fn source_index(statements: &[Stmt]) -> SourceIndex<'_> {
                         }
                     }
                     StmtKind::Call(expression) => pending.push(Node::Expression(expression)),
-                    StmtKind::Break => {}
+                    StmtKind::Break | StmtKind::Goto(_) | StmtKind::Label(_) => {}
                 }
             }
             Node::Expression(expression) => match &expression.kind {

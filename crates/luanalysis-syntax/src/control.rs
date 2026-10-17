@@ -18,6 +18,19 @@ impl Parser<'_> {
             }
             return Some(Stmt { kind: StmtKind::Break, span: start });
         }
+        if self.keyword("goto") {
+            self.pos += 1;
+            let Some(name) = self.name() else {
+                self.diagnostics.push(Diagnostic {
+                    origin: crate::DiagnosticOrigin::LuaSyntax,
+                    span: start,
+                    message: "expected a label name after 'goto'".to_owned(),
+                });
+                return None;
+            };
+            let span = start.join(name.span);
+            return Some(Stmt { kind: StmtKind::Goto(name), span });
+        }
         None
     }
 
@@ -167,3 +180,45 @@ impl Parser<'_> {
     }
 }
 
+
+/// Lua's rules for one function's labels: a `goto` jumps to a label visible from it (in its
+/// block or an enclosing one), and a label may not repeat a visible label's name (Lua 5.4).
+/// Nested functions are validated with their own bodies.
+pub(crate) fn validate_labels(body: &[Stmt], diagnostics: &mut Vec<Diagnostic>) {
+    fn block(statements: &[Stmt], visible: &mut Vec<Vec<String>>, diagnostics: &mut Vec<Diagnostic>) {
+        let mut labels = Vec::new();
+        for statement in statements {
+            if let StmtKind::Label(name) = &statement.kind {
+                if visible.iter().flatten().chain(&labels).any(|label| *label == name.text) {
+                    diagnostics.push(Diagnostic {
+                        origin: crate::DiagnosticOrigin::LuaSyntax,
+                        span: name.span,
+                        message: format!("label '{}' already defined", name.text),
+                    });
+                }
+                labels.push(name.text.clone());
+            }
+        }
+        visible.push(labels);
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::Goto(name) if !visible.iter().flatten().any(|label| *label == name.text) => {
+                    diagnostics.push(Diagnostic {
+                        origin: crate::DiagnosticOrigin::LuaSyntax,
+                        span: name.span,
+                        message: format!("no visible label '{}' for goto", name.text),
+                    });
+                }
+                StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
+                | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => block(body, visible, diagnostics),
+                StmtKind::If { branches, else_branch } => {
+                    for branch in branches { block(&branch.body, visible, diagnostics); }
+                    if let Some(branch) = else_branch { block(&branch.body, visible, diagnostics); }
+                }
+                _ => {}
+            }
+        }
+        visible.pop();
+    }
+    block(body, &mut Vec::new(), diagnostics);
+}

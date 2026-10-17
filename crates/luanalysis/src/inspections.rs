@@ -46,6 +46,8 @@ impl Checker<'_> {
     /// The statements after one that never completes normally (TS7027).
     pub(crate) fn report_unreachable(&mut self, rest: &[Stmt]) {
         if !self.inspecting() { return; }
+        // A label is reached by the `goto`s naming it.
+        let rest = &rest[..rest.iter().position(|statement| matches!(statement.kind, luanalysis_syntax::StmtKind::Label(_))).unwrap_or(rest.len())];
         let (Some(first), Some(last)) = (rest.first(), rest.last()) else { return };
         self.error("TS7027", Span { start: first.span.start, end: last.span.end }, "Unreachable code detected.");
     }

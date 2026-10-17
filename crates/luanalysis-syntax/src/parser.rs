@@ -42,6 +42,7 @@ pub fn parse(source: &str) -> File {
         vararg_allowed: true,
     };
     let statements = parser.statements(&[]);
+    control::validate_labels(&statements, &mut parser.diagnostics);
     File {
         statements,
         expression_assertions: parser.expression_assertions,
@@ -557,6 +558,18 @@ impl Parser<'_> {
             None
         }
     }
+    /// A Lua 5.4 attribute after a local's name: `<const>` or `<close>`.
+    fn local_attribute(&mut self) -> Option<Name> {
+        if !self.significant_symbol("<") { return None; }
+        self.inner_trivia();
+        self.pos += 1;
+        let name = self.name()?;
+        self.expect(">");
+        if name.text != "const" && name.text != "close" {
+            self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, name.span, format!("unknown attribute '{}'", name.text));
+        }
+        Some(name)
+    }
     fn statement(&mut self) -> Option<Stmt> {
         let start = self.current().span;
         let mut annotations = std::mem::take(&mut self.pending_annotations);
@@ -564,10 +577,17 @@ impl Parser<'_> {
             return self.function_declaration(start, annotations);
         }
         if matches!(&self.current().kind, TokenKind::Keyword(word)
-            if matches!(word.as_str(), "if" | "while" | "repeat" | "for" | "break"))
+            if matches!(word.as_str(), "if" | "while" | "repeat" | "for" | "break" | "goto"))
         {
             self.unattached_annotations(&annotations);
             return self.control_statement(start);
+        }
+        if self.symbol("::") {
+            self.unattached_annotations(&annotations);
+            self.pos += 1;
+            let name = self.name()?;
+            let end = self.expect("::");
+            return Some(Stmt { kind: StmtKind::Label(name), span: start.join(end) });
         }
         if self.keyword("do") {
             self.unattached_annotations(&annotations);
@@ -645,6 +665,7 @@ impl Parser<'_> {
                 return None;
             };
             let mut names = vec![first];
+            let mut attributes = vec![self.local_attribute()];
             while self.significant_symbol(",") {
                 self.inner_trivia();
                 self.pos += 1;
@@ -653,6 +674,7 @@ impl Parser<'_> {
                     return None;
                 };
                 names.push(name);
+                attributes.push(self.local_attribute());
             }
             let mut values = if self.significant_symbol("=") {
                 self.inner_trivia();
@@ -677,6 +699,7 @@ impl Parser<'_> {
             return Some(Stmt {
                 kind: StmtKind::Local {
                     names,
+                    attributes,
                     values,
                     annotation,
                 },
@@ -918,6 +941,7 @@ impl Parser<'_> {
         self.loop_depth = 0;
         self.vararg_allowed = vararg.is_some();
         let mut body = self.statements(&["end"]);
+        control::validate_labels(&body, &mut self.diagnostics);
         self.loop_depth = enclosing_loop_depth;
         self.vararg_allowed = enclosing_vararg;
         self.block_depth -= 1;
@@ -1270,7 +1294,7 @@ impl Parser<'_> {
         };
         let mut postfix_exceeded = false;
         while suffix_eligible && (self.significant_symbol(".")
-            || self.significant_symbol("(")
+            || self.significant_call_arguments()
             || self.significant_symbol("[")
             || self.significant_symbol(":"))
         {
@@ -1308,11 +1332,12 @@ impl Parser<'_> {
                 let Some(name) = self.name() else {
                     break;
                 };
-                if !self.significant_symbol("(") {
+                if !self.significant_call_arguments() {
                     self.error("Lua ':' access requires a method call argument list");
                     break;
                 }
-                let (args, args_span, args_depth) = self.call_args();
+                self.inner_trivia();
+                let (args, args_span, args_depth) = self.call_arguments();
                 let span = expr.span.join(args_span);
                 if postfix_exceeded || built_depth.max(args_depth) >= 128 {
                     if !postfix_exceeded {
@@ -1337,8 +1362,8 @@ impl Parser<'_> {
                 }
                 continue;
             }
-            if self.symbol("(") {
-                let (args, args_span, args_depth) = self.call_args();
+            if self.symbol("(") || self.symbol("{") || matches!(self.current().kind, TokenKind::String(_)) {
+                let (args, args_span, args_depth) = self.call_arguments();
                 let span = expr.span.join(args_span);
                 if postfix_exceeded || built_depth.max(args_depth) >= 128 {
                     if !postfix_exceeded {
@@ -1419,6 +1444,27 @@ impl Parser<'_> {
             }
             self.pos += 1;
         }
+    }
+    /// Whether the next significant token starts call arguments: `(`, a table constructor or a
+    /// string literal (`f{...}`, `f"..."`), as Lua reads them even after a newline.
+    fn significant_call_arguments(&self) -> bool {
+        self.significant_symbol("(")
+            || self.significant_symbol("{")
+            || matches!(self.tokens[self.significant_index()].kind, TokenKind::String(_))
+    }
+    /// A call's arguments in any of Lua's three forms.
+    fn call_arguments(&mut self) -> (Vec<Expr>, Span, usize) {
+        if let TokenKind::String(value) = self.current().kind.clone() {
+            let span = self.current().span;
+            self.pos += 1;
+            return (vec![Expr { kind: ExprKind::String(value), span }], span, 1);
+        }
+        if self.symbol("{") {
+            let (table, depth) = self.table();
+            let span = table.span;
+            return (vec![table], span, depth);
+        }
+        self.call_args()
     }
     fn call_args(&mut self) -> (Vec<Expr>, Span, usize) {
         let start = self.expect("(");
@@ -1836,7 +1882,7 @@ fn statements_depth(body: &[Stmt]) -> usize {
                     );
                     pending.extend(body.iter().map(|stmt| (Node::Statement(stmt), depth + 1)));
                 }
-                StmtKind::Break => {}
+                StmtKind::Break | StmtKind::Goto(_) | StmtKind::Label(_) => {}
             },
             Node::Expression(expr) => match &expr.kind {
                 ExprKind::Parenthesized(base)

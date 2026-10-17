@@ -5,6 +5,7 @@ fn locals(file: &File, index: usize) -> (&[Name], &[Expr], Option<&TypeAnnotatio
         names,
         values,
         annotation,
+        ..
     } = &file.statements[index].kind
     else {
         panic!("expected local")
@@ -870,4 +871,48 @@ fn field_nesting_bound_includes_surrounding_parentheses_and_tables() {
     assert_eq!(locals(&file, 1).0[0].text, "recovery");
     drop(file.clone());
     drop(file);
+}
+
+#[test]
+fn string_and_table_arguments_call_without_parentheses() {
+    let source = "local files = require 'files'\nlocal list = make{1, 2}\nlocal text = f:read 'a'\nlocal map = builder:with{key = 1}\nrequire\n\"after newline\"\nlocal chained = s:sub(1, 1):match '%w'\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let call = |index: usize| {
+        let (_, values, _) = locals(&file, index);
+        values[0].clone()
+    };
+    let ExprKind::Call { args, .. } = &call(0).kind else { panic!("a string call") };
+    assert!(matches!(&args[..], [Expr { kind: ExprKind::String(name), .. }] if name == b"files"));
+    let ExprKind::Call { args, .. } = &call(1).kind else { panic!("a table call") };
+    assert!(matches!(&args[..], [Expr { kind: ExprKind::Table(fields), .. }] if fields.len() == 2));
+    let ExprKind::MethodCall { name, args, .. } = &call(2).kind else { panic!("a string method call") };
+    assert_eq!(name.text, "read");
+    assert!(matches!(&args[..], [Expr { kind: ExprKind::String(mode), .. }] if mode == b"a"));
+    let ExprKind::MethodCall { args, .. } = &call(3).kind else { panic!("a table method call") };
+    assert!(matches!(&args[..], [Expr { kind: ExprKind::Table(_), .. }]));
+    // A string or table after a newline still continues the call, as Lua reads it.
+    let StmtKind::Call(Expr { kind: ExprKind::Call { args, .. }, .. }) = &file.statements[4].kind else { panic!("a call statement") };
+    assert!(matches!(&args[..], [Expr { kind: ExprKind::String(text), .. }] if text == b"after newline"));
+    let ExprKind::MethodCall { receiver, name, .. } = &call(5).kind else { panic!("a chained method call") };
+    assert_eq!(name.text, "match");
+    assert!(matches!(receiver.kind, ExprKind::MethodCall { .. }));
+}
+
+#[test]
+fn goto_labels_and_local_attributes_parse_and_validate() {
+    let file = parse("for i = 1, 3 do\n  if i == 2 then goto continue end\n  ::continue::\nend\n::top::\nlocal limit <const>, file <close> = 1, nil\ngoto top\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    assert!(matches!(&file.statements[1].kind, StmtKind::Label(name) if name.text == "top"));
+    let StmtKind::Local { attributes, .. } = &file.statements[2].kind else { panic!("a local") };
+    let attributes: Vec<_> = attributes.iter().map(|attribute| attribute.as_ref().map(|name| name.text.as_str())).collect();
+    assert_eq!(attributes, [Some("const"), Some("close")]);
+    assert!(matches!(&file.statements[3].kind, StmtKind::Goto(name) if name.text == "top"));
+
+    let messages = |source: &str| parse(source).diagnostics.into_iter().map(|diagnostic| diagnostic.message).collect::<Vec<_>>();
+    assert_eq!(messages("goto nowhere\n"), ["no visible label 'nowhere' for goto"]);
+    assert_eq!(messages("::twice::\ndo ::twice:: end\n"), ["label 'twice' already defined"]);
+    // A label in a nested function is not visible to the enclosing function.
+    assert_eq!(messages("local function f() ::inner:: end\ngoto inner\n"), ["no visible label 'inner' for goto"]);
+    assert_eq!(messages("local value <static> = 1\n"), ["unknown attribute 'static'"]);
 }

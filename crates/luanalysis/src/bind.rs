@@ -60,6 +60,8 @@ pub struct Declaration {
     /// Original byte offset after which this declaration is active.
     /// For parameters this is the start of the function body.
     pub activation: usize,
+    /// A `<const>` or `<close>` local (Lua 5.4), which no assignment may change.
+    pub constant: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -328,6 +330,7 @@ impl Binder {
             scope,
             kind,
             activation,
+            constant: false,
         });
         self.file.scopes[scope.0].bindings.push(id);
         self.active
@@ -399,12 +402,15 @@ impl Binder {
     fn statements(&mut self, statements: &[Stmt]) {
         for statement in statements {
             match &statement.kind {
-                StmtKind::Local { names, values, .. } => {
+                StmtKind::Local { names, attributes, values, .. } => {
                     for value in values {
                         self.expression(value);
                     }
-                    for name in names {
+                    for (name, attribute) in names.iter().zip(attributes) {
                         self.declare(name, DeclarationKind::Local, statement.span.end);
+                        if attribute.is_some() {
+                            self.file.declarations.last_mut().expect("the declaration just made").constant = true;
+                        }
                     }
                 }
                 StmtKind::Assign {
@@ -508,7 +514,7 @@ impl Binder {
                     self.statements(body);
                     self.leave_scope();
                 }
-                StmtKind::Break => {}
+                StmtKind::Break | StmtKind::Goto(_) | StmtKind::Label(_) => {}
             }
         }
     }

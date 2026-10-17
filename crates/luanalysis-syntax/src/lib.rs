@@ -243,6 +243,8 @@ pub enum StmtKind {
     /// The names enter scope after ALL initializers have been evaluated.
     Local {
         names: Vec<Name>,
+        /// Each name's Lua 5.4 attribute: `const` or `close` (`local f <close> = ...`).
+        attributes: Vec<Option<Name>>,
         values: Vec<Expr>,
         annotation: Option<TypeAnnotation>,
     },
@@ -300,6 +302,10 @@ pub enum StmtKind {
         body: Vec<Stmt>,
         body_span: Span,
     },
+    /// `goto name` (Lua 5.2 and later): jumps to the visible label `name` of the same function.
+    Goto(Name),
+    /// `::name::`: a label, visible in its block and the blocks nested in it.
+    Label(Name),
     Break,
 }
 

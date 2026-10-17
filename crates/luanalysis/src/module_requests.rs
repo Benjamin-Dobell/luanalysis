@@ -127,7 +127,7 @@ fn local_value_candidates<'a>(body: &'a [Stmt], result: &mut Vec<(&'a luanalysis
                 for value in values { expression_value_candidates(value, result); }
                 local_value_candidates(body, result);
             }
-            StmtKind::Break => {}
+            StmtKind::Break | StmtKind::Goto(_) | StmtKind::Label(_) => {}
         }
     }
 }
@@ -237,7 +237,7 @@ fn statements(body: &[Stmt], visit: &mut impl FnMut(&Expr)) {
                 }
                 statements(body, visit);
             }
-            StmtKind::Break => {}
+            StmtKind::Break | StmtKind::Goto(_) | StmtKind::Label(_) => {}
         }
     }
 }
