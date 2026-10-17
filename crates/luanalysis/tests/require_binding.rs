@@ -156,15 +156,13 @@ fn a_parenthesized_call_continuation_does_not_become_an_environment_assignment()
 fn package_loader_mutations_invalidate_require_including_nested_or_computed_writes() {
     for mutation in [
         "package = {}",
-        "package.path = 'custom'",
-        "package.cpath = 'custom'",
         "package.loaded.module = {}",
         "package.preload['module'] = custom",
         "package.searchers[1] = custom",
         "package.loaders = {}",
         "package['lo\\097ded'].module = {}",
         "package[key] = custom",
-        "_G.package.path = custom",
+        "_G.package.searchers = custom",
         "_ENV['package']['searchers'][1] = custom",
         "_G[key].path = custom",
     ] {
@@ -183,6 +181,10 @@ fn package_loader_mutations_invalidate_require_including_nested_or_computed_writ
 fn unmodified_loader_reads_unrelated_fields_and_shadowed_writes_preserve_identity() {
     for statement in [
         "local path = package.path",
+        // Search paths are configuration that the project's package path describes.
+        "package.path = 'custom'",
+        "package.cpath = 'custom'",
+        "_G.package.path = custom",
         "local searcher = package.searchers[1]",
         "package.config = 'custom'",
         "local package = {}\npackage.path = 'local'",

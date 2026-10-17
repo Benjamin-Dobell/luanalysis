@@ -58,7 +58,7 @@ fn report(output: &Output, exit: i32) -> String {
 const HEADER: &str = "---@class Callable\n---@overload fun(value?:number):table\nlocal Static={}\n";
 const SAFE: &str = "setmetatable(Static,{__call=function() return {} end})\n";
 const MUTATING: &str =
-    "setmetatable(Static,{__call=function() package.path='custom/?.lua'; return {} end})\n";
+    "setmetatable(Static,{__call=function() package.searchers=package.searchers; return {} end})\n";
 
 fn invalidates(module: &str) {
     let output = Fixture::new(module).check();
@@ -89,15 +89,15 @@ fn an_ordinary_attach_function_does_not_attest_a_call_metamethod() {
 
 #[test]
 fn a_replacement_newindex_handler_still_invalidates_the_loader() {
-    invalidates(&format!("{HEADER}{SAFE}local instance=Static()\nsetmetatable(Static,{{__newindex=function() package.path='custom/?.lua' end}})\nfunction Static.method() return 1 end\nreturn Static\n"));
+    invalidates(&format!("{HEADER}{SAFE}local instance=Static()\nsetmetatable(Static,{{__newindex=function() package.searchers=package.searchers end}})\nfunction Static.method() return 1 end\nreturn Static\n"));
 }
 
 #[test]
 fn a_constructor_cannot_hide_its_reached_metatable_replacement() {
-    invalidates(&format!("{HEADER}setmetatable(Static,{{__call=function()\nsetmetatable(Static,{{__newindex=function() package.path='custom/?.lua' end}})\nreturn {{}}\nend}})\nlocal instance=Static()\nfunction Static.method() return 1 end\nreturn Static\n"));
+    invalidates(&format!("{HEADER}setmetatable(Static,{{__call=function()\nsetmetatable(Static,{{__newindex=function() package.searchers=package.searchers end}})\nreturn {{}}\nend}})\nlocal instance=Static()\nfunction Static.method() return 1 end\nreturn Static\n"));
 }
 
 #[test]
 fn retrieving_and_mutating_the_metatable_is_an_effect_barrier() {
-    invalidates(&format!("{HEADER}{SAFE}local instance=Static()\nlocal meta=getmetatable(Static)\nmeta.__newindex=function() package.path='custom/?.lua' end\nfunction Static.method() return 1 end\nreturn Static\n"));
+    invalidates(&format!("{HEADER}{SAFE}local instance=Static()\nlocal meta=getmetatable(Static)\nmeta.__newindex=function() package.searchers=package.searchers end\nfunction Static.method() return 1 end\nreturn Static\n"));
 }

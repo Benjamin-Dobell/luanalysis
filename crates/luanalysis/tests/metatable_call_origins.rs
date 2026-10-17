@@ -218,7 +218,7 @@ fn loader_mutations_inside_calls_preserve_imports_but_reached_writes_refuse_them
     let fixture = Fixture::new();
     fixture.file("helper.lua", "return {}\n");
     let source = format!(
-        "local function replace_loader() package.path='custom/?.lua' end\nreplace_loader()\nrequire('helper')\n{FACTORY}"
+        "local function replace_loader() package.searchers=package.searchers end\nreplace_loader()\nrequire('helper')\n{FACTORY}"
     );
     // A call preserves the loader, as an unknown effect does: only a loader
     // write the importing flow itself reaches refuses the import.
@@ -226,7 +226,7 @@ fn loader_mutations_inside_calls_preserve_imports_but_reached_writes_refuse_them
     no_owner(&fixture.check_strict(&source));
     clean(&fixture.check(&format!("require('helper')\n{FACTORY}")));
     clean(&fixture.check_strict(&format!("require('helper')\n{FACTORY}")));
-    let direct = format!("package.path='custom/?.lua'\nrequire('helper')\n{FACTORY}");
+    let direct = format!("package.searchers=package.searchers\nrequire('helper')\n{FACTORY}");
     for strict in [false, true] {
         let output = fixture.check_effects(&direct, strict);
         assert_eq!(output.status.code(), Some(1), "{}", text(&output));
@@ -247,7 +247,7 @@ fn a_blocked_import_does_not_apply_original_module_writes_to_saved_standard_valu
         } else {
             ""
         };
-        let source = format!("{prefix}package.path='custom/?.lua'\n{loader}('helper')\n{FACTORY}");
+        let source = format!("{prefix}package.searchers=package.searchers\n{loader}('helper')\n{FACTORY}");
         let refused = fixture.check(&source);
         assert_eq!(refused.status.code(), Some(1), "{}", text(&refused));
         assert!(text(&refused).contains("LUA2036"), "{}", text(&refused));
@@ -265,7 +265,7 @@ fn a_blocked_import_does_not_apply_original_module_writes_to_saved_standard_valu
         // Restoring the loader certifies the import. The imported module's
         // own global writes do not reach the importer: the import is a call,
         // which preserves the original setmetatable.
-        let reached = source.replace("package.path='custom/?.lua'\n", "");
+        let reached = source.replace("package.searchers=package.searchers\n", "");
         clean(&fixture.check(&reached));
 
         // A builtin value captured before that reached replacement still
@@ -321,7 +321,7 @@ fn namespace_newindex_metatables_do_not_affect_require() {
     let namespace = "---@class UserClass\nlocal Class={}\n\n---@param value number\n---@return number\nfunction Class.identity(value) return value end\n\nreturn Class\n";
     let changing_loader = namespace.replace(
         "local Class={}\n",
-        "local Class={}\n\nsetmetatable(Class, {\n---@param target table\n---@param key string\n---@param value function\n__newindex=function(target,key,value) package.path='custom/?.lua' end,\n})\n",
+        "local Class={}\n\nsetmetatable(Class, {\n---@param target table\n---@param key string\n---@param value function\n__newindex=function(target,key,value) package.searchers=package.searchers end,\n})\n",
     );
     fixture.file("Class.lua", &changing_loader);
     clean(&fixture.check(source));

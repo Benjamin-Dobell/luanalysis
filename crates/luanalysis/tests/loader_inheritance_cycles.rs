@@ -96,7 +96,7 @@ fn repeated_acyclic_imports_keep_independent_completed_loader_inputs() {
 #[test]
 fn a_required_module_loader_write_still_invalidates_the_following_import() {
     let fixture = Fixture::new();
-    fixture.file("mutate.lua", "package.path='custom/?.lua'\nreturn {}\n");
+    fixture.file("mutate.lua", "package.searchers=package.searchers\nreturn {}\n");
     fixture.file("leaf.lua", "return {value=42}\n");
     fixture.file(
         "main.lua",

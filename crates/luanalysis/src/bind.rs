@@ -806,12 +806,13 @@ fn string_key(expression: &Expr) -> Option<&[u8]> {
     }
 }
 
+/// Whether a write under `package` can change what `require` loads. Search paths
+/// (`package.path`, `package.cpath`) are configuration, which the project's module roots and
+/// package path describe, so setting them leaves `require` standard.
 pub(crate) fn modifies_package(keys: &[Option<&[u8]>]) -> bool {
     matches!(
         keys.first(),
         None | Some(None)
-            | Some(Some(
-                b"path" | b"cpath" | b"loaded" | b"preload" | b"searchers" | b"loaders"
-            ))
+            | Some(Some(b"loaded" | b"preload" | b"searchers" | b"loaders"))
     )
 }
