@@ -1,5 +1,11 @@
 use luanalysis::{CheckReport, check};
 
+/// As TypeScript reports `noImplicitAny` element access, an inferred table read or written
+/// at a computed key it lacks is an error only under `--no-implicit-any`.
+fn check_strict(source: &str) -> luanalysis::CheckReport {
+    luanalysis::check_with_options(source, luanalysis::CheckOptions { no_implicit_any: true, ..luanalysis::CheckOptions::default() })
+}
+
 fn clean(source: &str) -> CheckReport {
     let report = check(source);
     assert!(report.diagnostics.is_empty(), "{source}\n{:#?}", report.diagnostics);
@@ -82,7 +88,8 @@ fn numeric_reads_use_reached_stores_without_future_value_pollution() {
     has_parts(&report, source, "later=", &["nil", "string", "boolean"]);
 
     let before = "---@param index number\nlocal function fill(index)\n local ary={}\n local before=ary[index]\n ary[index]='word'\nend\n";
-    error_at(&check(before), before, "TS2339", "local before=ary[index]", "index");
+    error_at(&check_strict(before), before, "TS2339", "local before=ary[index]", "index");
+    assert!(check(before).diagnostics.is_empty());
     let corrected = before.replace(
         "local before=ary[index]\n ary[index]='word'",
         "ary[index]='word'\n local before=ary[index]",
@@ -116,7 +123,7 @@ fn string_unknown_any_and_unconstrained_generic_keys_do_not_infer_numeric_storag
         let report = check(&source);
         error_at(&report, &source, "TS2339", "local absent=ary[1]", "1");
         if key_type == "string" {
-            error_at(&report, &source, "TS2339", "ary[key]='word'", "key");
+            error_at(&check_strict(&source), &source, "TS2339", "ary[key]='word'", "key");
         }
         let corrected = source.replace(&format!("---@param key {key_type}"), "---@param key number");
         clean(&corrected);

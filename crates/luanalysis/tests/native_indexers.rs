@@ -3,6 +3,12 @@
 
 use luanalysis::{CheckReport, check};
 
+/// As TypeScript reports `noImplicitAny` element access, an inferred table read or written
+/// at a computed key it lacks is an error only under `--no-implicit-any`.
+fn check_strict(source: &str) -> luanalysis::CheckReport {
+    luanalysis::check_with_options(source, luanalysis::CheckOptions { no_implicit_any: true, ..luanalysis::CheckOptions::default() })
+}
+
 fn accepted(source: &str) -> CheckReport {
     let report = check(source);
     assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
@@ -135,7 +141,8 @@ fn closed_record_keys_require_complete_domain_coverage() {
             "---@param key {parameter}\nlocal function invalid(key)\n\
 local item={{x=1,y=2}}\nreturn item[key]\nend"
         );
-        let report = check(&source);
+        assert!(check(&source).diagnostics.is_empty());
+        let report = check_strict(&source);
         assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
         let error = &report.diagnostics[0];
         assert_eq!(error.code, "TS2339");

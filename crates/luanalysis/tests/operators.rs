@@ -1,5 +1,11 @@
 use luanalysis::{CheckReport, check, location};
 
+/// As TypeScript reports `noImplicitAny` element access, an inferred table read or written
+/// at a computed key it lacks is an error only under `--no-implicit-any`.
+fn check_strict(source: &str) -> luanalysis::CheckReport {
+    luanalysis::check_with_options(source, luanalysis::CheckOptions { no_implicit_any: true, ..luanalysis::CheckOptions::default() })
+}
+
 fn ty<'a>(report: &'a CheckReport, name: &str) -> &'a str {
     &report
         .bindings
@@ -237,7 +243,7 @@ fn literal_string_indexing_uses_original_member_facts_without_key_coercion() {
             "\"\\255\"",
         ),
     ] {
-        let report = check(source);
+        let report = if original == "key" { check_strict(source) } else { check(source) };
         assert_eq!(
             report.diagnostics.len(),
             1,
@@ -259,7 +265,8 @@ fn literal_string_indexing_uses_original_member_facts_without_key_coercion() {
 
     let broad = "---@param key string\nlocal function invalid(key)\n\
 local item = {x = 1}\nreturn item[key]\nend";
-    let report = check(broad);
+    assert!(check(broad).diagnostics.is_empty());
+    let report = check_strict(broad);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(report.diagnostics[0].code, "TS2339");
     assert_eq!(

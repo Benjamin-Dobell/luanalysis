@@ -1,6 +1,12 @@
 //! End-to-end original-Lua source gates for the shared native flow worker.
 //! These exercise the public checker/CLI, rather than joining graph types here.
 use luanalysis::{CheckReport, check, location};
+
+/// As TypeScript reports `noImplicitAny` element access, an inferred table read or written
+/// at a computed key it lacks is an error only under `--no-implicit-any`.
+fn check_strict(source: &str) -> luanalysis::CheckReport {
+    luanalysis::check_with_options(source, luanalysis::CheckOptions { no_implicit_any: true, ..luanalysis::CheckOptions::default() })
+}
 use std::{fs, process::Command};
 
 fn clean(source: &str) -> CheckReport {
@@ -280,7 +286,8 @@ fn generic_iteration_checks_its_two_implicit_arguments_through_native_calls() {
 #[test]
 fn dynamic_indexed_writes_check_the_declared_key_domain_and_original_origins() {
     let source = "---@param key string\nlocal function write(key)\nlocal record={x=1}\nrecord[key]=2\nreturn record.x\nend\nwrite(\"x\")";
-    let report = check(source);
+    assert!(check(source).diagnostics.is_empty());
+    let report = check_strict(source);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
     assert_eq!(report.diagnostics[0].code, "TS2339");
     assert_eq!(

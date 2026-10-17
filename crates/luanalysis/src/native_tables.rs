@@ -209,11 +209,33 @@ impl Checker<'_> {
                 self.incomplete_flow = true;
                 self.engine.error_type()
             }
+            Err(TableError::MissingKey { .. }) if self.implicitly_indexed(receiver, key) => self.implicit_index_read(receiver, key),
             Err(error) => {
                 self.native_table_error_with_owner(error, span, span, Some(receiver));
                 Type::Unknown
             }
         }
+    }
+
+    /// A lookup table read at a computed string key is one of its values, or nil for a key it
+    /// lacks; any other implicitly indexed read is `any`.
+    fn implicit_index_read(&mut self, receiver: &Type, key: &TableKey) -> Type {
+        let TableKey::Type(key) = key else { return Type::Any };
+        if !self.engine.is_assignable(key, &Type::String) { return Type::Any }
+        let mut values: Vec<Type> = self.engine.type_members(receiver).into_iter().map(|(_, ty)| ty).collect();
+        if values.is_empty() { return Type::Any }
+        values.push(Type::Nil);
+        self.engine.union_reduced(&values)
+    }
+
+    /// As TypeScript reads an object without an index signature at a key that is not a
+    /// literal, a table that only its constructor and stores describe is indexed at any
+    /// computed key, with an `any` result, unless `--no-implicit-any`. Declared types,
+    /// classes included, remain closed.
+    fn implicitly_indexed(&mut self, receiver: &Type, key: &TableKey) -> bool {
+        matches!(key, TableKey::Type(_))
+            && self.native.is_some_and(|native| !native.no_implicit_any())
+            && self.engine.runtime_table_declaration(receiver).is_some()
     }
 
     pub(super) fn native_named_property_read(
@@ -273,6 +295,7 @@ impl Checker<'_> {
         } else { self.engine.table_write(receiver, key, value) };
         match result {
             Ok(()) => true,
+            Err(TableError::MissingKey { .. }) if self.implicitly_indexed(receiver, key) => true,
             Err(error) => {
                 self.native_table_error_with_owner(error, key_span, value_span, Some(receiver));
                 false
