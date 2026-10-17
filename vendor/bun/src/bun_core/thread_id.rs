@@ -95,8 +95,9 @@ pub fn current() -> ThreadId {
 fn current_uncached() -> ThreadId {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
-        // SAFETY: `gettid` takes no arguments and cannot fail.
-        return unsafe { libc::gettid() } as ThreadId;
+        // SAFETY: the `gettid` system call takes no arguments and cannot fail. It is
+        // called directly because glibc only wraps it from 2.30.
+        return unsafe { libc::syscall(libc::SYS_gettid) } as ThreadId;
     }
     #[cfg(any(
         target_os = "macos",

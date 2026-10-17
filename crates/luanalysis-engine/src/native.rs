@@ -1103,3 +1103,127 @@ unsafe extern "C" fn WTF__parseDouble(p: *const u8, len: usize, counted: *mut us
 extern "Rust" fn __bun_crash_handler_out_of_memory() -> ! {
     std::process::abort()
 }
+
+// ───────────────────────────── Windows ─────────────────────────────
+
+// The MSVC linker resolves every symbol an included object references before it
+// discards unused functions, unlike the Unix linkers, so Bun's Windows code needs
+// definitions even where the checker never calls it. Process setup is a no-op;
+// the rest is unreachable from checking and aborts if reached.
+#[cfg(windows)]
+#[allow(non_snake_case, non_upper_case_globals)]
+mod windows {
+    use core::ffi::c_int;
+
+    #[unsafe(no_mangle)]
+    extern "C" fn clock_gettime_monotonic(sec: &mut i64, nsec: &mut i64) {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let elapsed = START.get_or_init(std::time::Instant::now).elapsed();
+        *sec = elapsed.as_secs() as i64;
+        *nsec = i64::from(elapsed.subsec_nanos());
+    }
+    #[unsafe(no_mangle)]
+    extern "C" fn getpid() -> c_int { std::process::id() as c_int }
+    #[unsafe(no_mangle)]
+    extern "C" fn Bun__ramSize() -> usize { 16 << 30 }
+    // Whether each standard stream was closed at startup; none is.
+    #[unsafe(no_mangle)]
+    static bun_is_stdio_null: [core::sync::atomic::AtomicI32; 3] =
+        [core::sync::atomic::AtomicI32::new(0), core::sync::atomic::AtomicI32::new(0), core::sync::atomic::AtomicI32::new(0)];
+    #[unsafe(no_mangle)]
+    extern "C" fn bun_initialize_process() {}
+    #[unsafe(no_mangle)]
+    extern "C" fn Bun__lockThreadSuspensionForExit() {}
+    #[unsafe(no_mangle)]
+    extern "C" fn windows_enable_stdio_inheritance() {}
+    #[unsafe(no_mangle)]
+    extern "C" fn uv_disable_stdio_inheritance() {}
+
+    macro_rules! unreachable_symbols {
+        ($($name:ident),* $(,)?) => {
+            $(#[unsafe(no_mangle)] extern "C" fn $name() -> ! { std::process::abort() })*
+        };
+    }
+    unreachable_symbols!(
+        BunString__createAtom,
+        BunString__createExternalGloballyAllocatedLatin1,
+        BunString__createExternalGloballyAllocatedUTF16,
+        BunString__createStaticExternal,
+        BunString__createStaticExternalLatin1WithHash,
+        BunString__createStaticExternalUTF16WithHash,
+        BunString__fromBytes,
+        BunString__fromLatin1,
+        BunString__fromLatin1Unitialized,
+        BunString__fromUTF16,
+        BunString__fromUTF16ToLatin1,
+        BunString__fromUTF16Unitialized,
+        BunString__makeThreadShareable,
+        BunString__threadIsolatedCopy,
+        BunString__tryCreateAtom,
+        Bun__ANSI__next,
+        Bun__WTFStringImpl__destroy,
+        Bun__WTFStringImpl__ensureHash,
+        Bun__collateUTF16,
+        Bun__collateUTF8,
+        Bun__visibleWidthExcludeANSI_latin1,
+        Bun__visibleWidthExcludeANSI_utf16,
+        WTFStringImpl__isThreadIsolated,
+        WTFStringImpl__isThreadShareable,
+        WTF__numberToExponential,
+        WTF__numberToFixed,
+        WTF__numberToPrecision,
+        WTF__parseES5Date,
+        __bun_crash_handler_dump_stack_trace,
+        highway_copy_ascii_prefix,
+        highway_encode_hex_lower,
+        highway_index_of_newline_or_non_ascii,
+        highway_index_of_not_char,
+        highway_memmem16,
+        rescle__setWindowsMetadata,
+        simdutf__base64_decode_from_binary,
+        simdutf__base64_decode_from_binary_lenient,
+        simdutf__base64_length_from_binary,
+        simdutf__convert_valid_utf16le_to_utf8,
+        simdutf__utf8_length_from_latin1,
+        simdutf__validate_utf16le,
+        uv_close,
+        uv_fs_chmod,
+        uv_fs_chown,
+        uv_fs_close,
+        uv_fs_fchmod,
+        uv_fs_fchown,
+        uv_fs_fdatasync,
+        uv_fs_fstat,
+        uv_fs_fsync,
+        uv_fs_ftruncate,
+        uv_fs_lchown,
+        uv_fs_link,
+        uv_fs_lstat,
+        uv_fs_mkdir,
+        uv_fs_open,
+        uv_fs_read,
+        uv_fs_readlink,
+        uv_fs_rename,
+        uv_fs_req_cleanup,
+        uv_fs_rmdir,
+        uv_fs_stat,
+        uv_fs_statfs,
+        uv_fs_symlink,
+        uv_fs_unlink,
+        uv_fs_utime,
+        uv_fs_write,
+        uv_get_osfhandle,
+        uv_guess_handle,
+        uv_handle_get_type,
+        uv_handle_type_name,
+        uv_has_ref,
+        uv_is_active,
+        uv_is_closing,
+        uv_loop_close,
+        uv_loop_init,
+        uv_open_osfhandle,
+        uv_pipe,
+        uv_run,
+        uv_walk,
+    );
+}
