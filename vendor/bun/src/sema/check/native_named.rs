@@ -1845,7 +1845,9 @@ impl<'p, 's> Checker<'p, 's> {
             }
         }
         let mut indexers = supplied.indexers.to_vec();
-        indexers.extend(declared.indexers.iter().map(|indexer| NativeTableIndexer { sparse: true, ..*indexer }));
+        // A declared indexer answers for every key, assigned or not, as a TypeScript index
+        // signature does; only fixed fields wait for their assignment.
+        indexers.extend(declared.indexers.iter().copied());
         let view = self.native_table_with_context_and_sequence_policy(&fields, &indexers, &supplied.sequence_tails, NativeTableFlavor::Declared, false, None)
             .map_err(|error| NativeNamedTypeError::DefinitionField { owner, error })?;
         Ok(self.intern(TypeData::NativeDefinition(NativeDefinitionRef { owner, class: reference, view })))

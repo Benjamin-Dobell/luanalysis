@@ -35,3 +35,12 @@ fn a_class_definition_through_setmetatable_is_still_the_class() {
     let (output, report) = check("---@class Null\nlocal NULL = setmetatable({}, { __metatable = false })\n\n---@return Null\nlocal function null() return NULL end\n");
     assert!(output.status.success(), "{report}");
 }
+
+#[test]
+fn a_class_definitions_declared_indexer_answers_for_every_key() {
+    // LuaLS's config template: an `__index` function provides each unit, which the class
+    // declares with an indexer. Reading one while defining the class is not nil.
+    let (output, report) = check("---@class Unit\n---@field name string\n\n---@class Units\n---@field [string] Unit\nlocal Type = setmetatable({}, { __index = function(_, name) return { name = name } end })\nlocal name = Type.Array.name\n");
+    assert!(output.status.success(), "{report}");
+    assert!(report.contains("main.lua:7:7: name: string"), "{report}");
+}
