@@ -545,6 +545,18 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Infer `any` for a type parameter a Lua call infers nothing for, as TypeScript does for a JavaScript call (InferenceFlags.AnyDefault), through kernel e1f2434.",
 })
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-declared-indexer-views.patch",
+    "reason": "Keep a class's declared indexers as declared in its partial definition view, as a TypeScript index signature answers for every key, through kernel 3f56cb6.",
+})
+
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_intrinsics.rs",
+    "patch": "vendor/patches/bun-sema-assert-any.patch",
+    "reason": "Return the results of a call to `any` unchanged from the assert intrinsic, through kernel a66fe8a.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

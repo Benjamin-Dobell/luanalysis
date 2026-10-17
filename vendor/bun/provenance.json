@@ -2322,6 +2322,18 @@
       "patch": "vendor/patches/bun-sema-any-default.patch",
       "reason": "Infer `any` for a type parameter a Lua call infers nothing for, as TypeScript does for a JavaScript call (InferenceFlags.AnyDefault), through kernel e1f2434.",
       "patch_sha256": "19c301b9eaa8ac9fc11f34100f24e23c00ae05e9418f42eefbc343fe2a65d74e"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-declared-indexer-views.patch",
+      "reason": "Keep a class's declared indexers as declared in its partial definition view, as a TypeScript index signature answers for every key, through kernel 3f56cb6.",
+      "patch_sha256": "e652473cdfb1e3ac104cf4560c75e7806807b4056fcfc4e10d9a52b390a550f5"
+    },
+    {
+      "path": "src/sema/check/native_intrinsics.rs",
+      "patch": "vendor/patches/bun-sema-assert-any.patch",
+      "reason": "Return the results of a call to `any` unchanged from the assert intrinsic, through kernel a66fe8a.",
+      "patch_sha256": "f573fc3770637da0aea57aca763a1303b9b620a8ef6efc7e280abe921545d59b"
     }
   ],
   "source_additions": {
@@ -2350,7 +2362,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
-      "extracted_sha256": "cc8babf2df96a9a68634e3477b819bc7538df14c3319a31f7fa166eb1d067df0",
+      "extracted_sha256": "6669b610573b3d68844088d45361c8470ea10af2ba60d3b882717ffad8835c7c",
       "introduced_by_patch": "vendor/patches/bun-sema-native-recovery-checkpoint.patch"
     },
     "src/sema/check/native_iterators.rs": {
@@ -2358,7 +2370,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "9cf2ded7918499ef35b3bd2c161d5c9c2010229e3bc2e60e1bf353322b623d60",
+      "extracted_sha256": "e43b6083c5dbe907ec3c5c864354573ac3fc34c2b9fdbe4a181fb0bbbe3bc3a0",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
