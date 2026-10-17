@@ -6,6 +6,10 @@
 #![feature(linkage)]
 
 mod native;
+
+/// The checker's recursion budget. It is the same on every platform, so that results do not
+/// depend on the platform; Windows threads reserve more stack, which only adds headroom.
+pub(crate) const CHECKER_STACK_BUDGET: usize = (4 << 20) - (256 << 10);
 mod parallel;
 pub use parallel::{NativeTaskRun, NativeTaskRunStats};
 mod native_plan;
@@ -1194,7 +1198,7 @@ impl Engine {
         with_program(|program, handles| {
             let mut checker = program.checker();
             checker.set_stack_limit(
-                bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize - (256 << 10),
+                crate::CHECKER_STACK_BUDGET,
             );
             checker.enable_native_arrays();
             work(&mut SessionQueries {
@@ -1219,7 +1223,7 @@ impl Engine {
             };
             let mut checker = program.checker_with_native_provider(&adapter);
             checker.set_stack_limit(
-                bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize - (256 << 10),
+                crate::CHECKER_STACK_BUDGET,
             );
             checker.set_native_type_declaration_provider(&adapter);
             checker.set_native_globals_provider(&adapter);
@@ -2366,7 +2370,7 @@ fn with_program<R: Send>(work: impl FnOnce(&mut Program<'_>, &TypeHandles) -> R 
             .stack_size(bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize)
             .spawn_scoped(scope, || {
                 native::set_stack_size(
-                    bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize - (256 << 10),
+                    crate::CHECKER_STACK_BUDGET,
                 );
                 let session = Session::new();
                 let options = Options {

@@ -925,7 +925,7 @@ thread_local! {
 /// Called by a thread of the pool when it starts, near the top of its stack.
 #[unsafe(no_mangle)]
 extern "C" fn Bun__StackCheck__initialize() {
-    set_stack_size(bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize - (256 << 10));
+    set_stack_size(crate::CHECKER_STACK_BUDGET);
 }
 #[unsafe(no_mangle)]
 extern "C" fn WTF__numberOfProcessorCores() -> c_int {
