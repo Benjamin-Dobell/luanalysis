@@ -179,6 +179,18 @@ fn hover_and_definition_answer_at_utf16_positions() {
     assert!(module.contains(&uri(&util)), "{module}");
     let nothing = server.request(5, "textDocument/hover", &main, 40, 0);
     assert!(nothing.contains(r#""result":null"#), "{nothing}");
+    // `n` is declared once and read once.
+    for (id, include, count) in [(6, true, 2), (7, false, 1)] {
+        server.send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/references","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":2,"character":10}},"context":{{"includeDeclaration":{include}}}}}}}"#,
+            uri(&main),
+        ));
+        let references = server.wait(|message| message.contains(&format!(r#""id":{id},"#)));
+        assert_eq!(references.matches(r#""uri""#).count(), count, "{references}");
+        assert!(references.contains(r#""range":{"start":{"line":2,"character":10},"end":{"line":2,"character":11}}"#), "{references}");
+    }
+    let highlights = server.request(8, "textDocument/documentHighlight", &main, 1, 21);
+    assert_eq!(highlights.matches(r#""range""#).count(), 2, "{highlights}");
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }

@@ -193,6 +193,20 @@ impl Server {
                 let result = self.definition(params);
                 self.respond(id, result);
             }
+            "textDocument/references" => {
+                let declaration = params.path(&["context", "includeDeclaration"]) == Some(&Json::Bool(true));
+                let result = self.occurrences(params, declaration, |path, file, start, end| Json::object([
+                    ("uri", Json::from(path_to_uri(path))),
+                    ("range", file.range(start, end, self.encoding)),
+                ]));
+                self.respond(id, result);
+            }
+            "textDocument/documentHighlight" => {
+                let result = self.occurrences(params, true, |_, file, start, end| Json::object([
+                    ("range", file.range(start, end, self.encoding)),
+                ]));
+                self.respond(id, result);
+            }
             _ => self.respond_error(id, METHOD_NOT_FOUND, &format!("unsupported request {method}")),
         }
     }
@@ -270,6 +284,8 @@ impl Server {
                 ])),
                 ("hoverProvider", Json::from(true)),
                 ("definitionProvider", Json::from(true)),
+                ("referencesProvider", Json::from(true)),
+                ("documentHighlightProvider", Json::from(true)),
             ])),
             ("serverInfo", Json::object([
                 ("name", Json::from("luanalysis")),
@@ -367,6 +383,20 @@ impl Server {
             ]);
         }
         Json::Null
+    }
+
+    /// Every occurrence in the file of the local under the position, the declaration only when
+    /// `declaration` is set. Locals are lexical, so all their occurrences are in this file.
+    fn occurrences(&self, params: &Json, declaration: bool, item: impl Fn(&Path, &CheckedFile, usize, usize) -> Json) -> Json {
+        let Some((path, file, offset)) = self.file_at(params) else { return Json::Null };
+        let Some(target) = file.occurrences.iter()
+            .find(|occurrence| occurrence.start <= offset && offset <= occurrence.end)
+            .map(|occurrence| occurrence.declaration) else { return Json::Null };
+        Json::Array(file.occurrences.iter()
+            .filter(|occurrence| occurrence.declaration == target)
+            .filter(|occurrence| declaration || (occurrence.start, occurrence.end) != target)
+            .map(|occurrence| item(path, file, occurrence.start, occurrence.end))
+            .collect())
     }
 
     fn respond(&self, id: Json, result: Json) {
