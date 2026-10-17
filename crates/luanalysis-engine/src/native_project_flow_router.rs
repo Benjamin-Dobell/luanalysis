@@ -136,6 +136,7 @@ impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> 
     fn write_index_value(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> {
         self.project_flow_adapter().write_index_value(reference, target, at)
     }
+    fn write_index_appends(&self, at: NativeFlowKey) -> bool { self.project_flow_adapter().write_index_appends(at) }
 
     fn runtime_table_store_in_scope(&self, declaration: bun_sema::check::native_named::NativeTypeDeclarationId, at: NativeFlowKey) -> bool {
         self.project_flow_adapter().runtime_table_store_in_scope(declaration, at)

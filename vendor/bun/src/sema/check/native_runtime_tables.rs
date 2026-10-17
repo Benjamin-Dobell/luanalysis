@@ -299,15 +299,47 @@ impl<'p, 's> Checker<'p, 's> {
         Ok(candidates)
     }
 
-    pub(in crate::check) fn native_runtime_table_flow_numeric_write(&mut self, table: TypeId, candidates: &[(TypeId, NativeRuntimeTableRef)], value: TypeId) -> TypeId {
+    pub(in crate::check) fn native_runtime_table_flow_numeric_write(&mut self, table: TypeId, candidates: &[(TypeId, NativeRuntimeTableRef)], value: TypeId, append: bool) -> TypeId {
         let mut values = Vec::new();
         for part in self.parts(table).to_vec() {
             values.push(match candidates.iter().find(|(original, _)| *original == part) {
+                Some((_, reference)) if append => self.native_runtime_append_view(*reference, value),
                 Some((_, reference)) => self.native_runtime_numeric_store_view(*reference, value),
                 None => part,
             });
         }
         self.union_or_evolving_with(&values, false)
+    }
+
+    /// `list[#list + 1] = value` extends a sequence: its open tail holds every appended value.
+    /// A table that is not a sequence remains a numeric dictionary.
+    fn native_runtime_append_view(&mut self, reference: NativeRuntimeTableRef, value: TypeId) -> TypeId {
+        let (sequence, mut description) = {
+            let TypeData::NativeTable(data) = self.data(reference.view) else { unreachable!("a runtime table retains its original table view"); };
+            let data = (**data).clone_in(self.arena);
+            (self.native_array_source_is_sequence(&data), data)
+        };
+        if !sequence { return self.native_runtime_numeric_store_view(reference, value) }
+        let present = self.without_undefined(value);
+        let present = self.widened(present);
+        let mut tails = description.sequence_tails.to_vec();
+        if let Some(tail) = tails.iter_mut().min_by_key(|tail| tail.start) {
+            tail.value = self.union_reduced(&[tail.value, present]);
+        } else {
+            let prefix = description.constructor_sequence
+                .and_then(|pack| self.native_pack_alternatives(pack))
+                .and_then(|rows| rows.first().map(|row| row.fixed.len() as i64))
+                .unwrap_or(0);
+            let count = description.fields.iter().filter_map(|field| match field.key {
+                NativeTableKey::Integer(index) if !field.optional => Some(index),
+                _ => None,
+            }).max().unwrap_or(0).max(prefix);
+            tails.push(crate::types::NativeTableSequenceTail { start: count + 1, value: present, readonly: false, origin: NativeTableFieldOrigin::Inferred });
+        }
+        description.sequence_tails = self.list(&tails);
+        description.fresh = false;
+        let view = self.intern(TypeData::NativeTable(self.boxed(description)));
+        self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { view, ..reference }))
     }
 
     fn native_runtime_numeric_store_view(&mut self, reference: NativeRuntimeTableRef, value: TypeId) -> TypeId {

@@ -1984,6 +1984,12 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         let evaluation = self.sources.program.evaluation(address.key?);
         Some((self.sources.evaluation_value(evaluation.id), self.sources.flow_key(evaluation.input, at.graph.context)))
     }
+    fn write_index_appends(&self, at: NativeFlowKey) -> bool {
+        let Some(flow::Node { kind: flow::NodeKind::Write { address, .. }, .. }) = self.sources.source_node(at) else { return false };
+        let (Some(key), Some(receiver)) = (address.key, address.receiver) else { return false };
+        let expression = |evaluation| &self.sources.program.expression(self.sources.program.evaluation(evaluation).expression).expression;
+        appends(expression(key), expression(receiver))
+    }
     fn runtime_table_store_in_scope(&self, declaration: luanalysis_engine::NativeTypeDeclarationKey, at: NativeFlowKey) -> bool {
         self.values.runtime_table_store_in_scope(declaration, at)
     }
@@ -2124,4 +2130,22 @@ impl NativeFlowRecipes {
         }
         references
     }
+}
+
+/// `#receiver + 1` (or `1 + #receiver`): the key that appends to `receiver`'s sequence.
+fn appends(key: &Expr, receiver: &Expr) -> bool {
+    fn place(left: &Expr, right: &Expr) -> bool {
+        match (&left.kind, &right.kind) {
+            (ExprKind::Parenthesized(inner), _) => place(inner, right),
+            (_, ExprKind::Parenthesized(inner)) => place(left, inner),
+            (ExprKind::Name(left), ExprKind::Name(right)) => left.text == right.text,
+            (ExprKind::Field { base: left, name: a }, ExprKind::Field { base: right, name: b }) => a.text == b.text && place(left, right),
+            _ => false,
+        }
+    }
+    let length = |expression: &Expr| matches!(&expression.kind, ExprKind::Unary { op: luanalysis_syntax::UnaryOperator::Length, value, .. } if place(value, receiver));
+    let one = |expression: &Expr| matches!(&expression.kind, ExprKind::Number(text) if text == "1");
+    let mut key = key;
+    while let ExprKind::Parenthesized(inner) = &key.kind { key = inner; }
+    matches!(&key.kind, ExprKind::Binary { op: BinaryOperator::Add, left, right, .. } if length(left) && one(right) || one(left) && length(right))
 }

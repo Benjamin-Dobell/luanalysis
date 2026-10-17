@@ -126,6 +126,8 @@ pub trait NativeFlowProvider {
     /// Original computed child key; the existing descendant relation selects
     /// its receiver before this immutable recipe is requested.
     fn write_index_value(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> { None }
+    /// Whether the store at `at` appends to its receiver's sequence (`list[#list + 1] = value`).
+    fn write_index_appends(&self, _: NativeFlowKey) -> bool { false }
     /// Whether this unannotated constructor and store share an original scope.
     fn runtime_table_store_in_scope(&self, _: super::NativeTypeDeclarationKey, _: NativeFlowKey) -> bool { false }
     /// A tested fixed child of the same original receiver.
@@ -288,6 +290,7 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     fn write_index_value(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> {
         self.provider.write_index_value(reference, target, at)
     }
+    fn write_index_appends(&self, at: NativeFlowKey) -> bool { self.provider.write_index_appends(at) }
     fn runtime_table_store_in_scope(&self, declaration: bun_sema::check::native_named::NativeTypeDeclarationId, at: NativeFlowKey) -> bool {
         self.provider.runtime_table_store_in_scope(super::native_named::source_declaration(declaration), at)
     }

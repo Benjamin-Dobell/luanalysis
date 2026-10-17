@@ -68,3 +68,16 @@ fn a_class_declared_once_still_exports_its_partial_definition() {
     let output = fixture.check();
     assert!(text(&output).contains("TS2345"), "{}", text(&output));
 }
+
+#[test]
+fn appending_with_the_length_operator_builds_a_sequence() {
+    let fixture = Fixture::new(&[
+        ("main.lua", "local list = {}\nfor i = 1, 3 do list[#list + 1] = { start = i } end\nfor _, item in ipairs(list) do\n    local start = item.start\nend\nlocal sparse = {}\nfor i = 1, 3 do sparse[i * 2] = i end\n---@type number[]\nlocal wrong = sparse\n"),
+    ]);
+    let output = fixture.check();
+    let report = text(&output);
+    assert!(report.contains("main.lua:4:11: start: number"), "{report}");
+    // A store at any other computed key still makes a numeric dictionary.
+    assert!(report.contains("main.lua:9:15: error[TS2322]"), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+}

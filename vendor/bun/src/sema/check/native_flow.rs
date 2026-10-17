@@ -336,6 +336,8 @@ pub trait NativeFlowProvider {
     /// The original computed child key and its frozen evaluation input. The
     /// existing descendant relation, not this recipe, selects the receiver.
     fn write_index_value(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey) -> Option<(NativeValueKey, NativeFlowKey)> { None }
+    /// Whether the store at `at` appends to its receiver's sequence (`list[#list + 1] = value`).
+    fn write_index_appends(&self, _: NativeFlowKey) -> bool { false }
     /// Pure allocation/store scope metadata. A contextual or written receiver
     /// contract is independently excluded by the native value carrier.
     fn runtime_table_store_in_scope(&self, _: super::native_named::NativeTypeDeclarationId, _: NativeFlowKey) -> bool { false }
@@ -542,9 +544,10 @@ impl NativeDomain<'_> {
         }
         let Ok(candidates) = candidates else { return Some(previous); };
         if candidates.is_empty() { return Some(previous); }
+        let append = self.provider.write_index_appends(at);
         let (ty, completed) = checker.run_memoizable(|checker| {
             let value = checker.native_flow_value(self.provider, value, input);
-            checker.native_runtime_table_flow_numeric_write(previous.ty, &candidates, value)
+            checker.native_runtime_table_flow_numeric_write(previous.ty, &candidates, value, append)
         });
         Some(FlowType::new(ty, previous.incomplete || completed.is_none()))
     }
