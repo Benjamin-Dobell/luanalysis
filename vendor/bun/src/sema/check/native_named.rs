@@ -1828,6 +1828,11 @@ impl<'p, 's> Checker<'p, 's> {
     /// the full class instance or grants an ordinary table a declaration origin.
     pub fn native_definition_fixed_write(&mut self, table: TypeId, key: NativeTableKey, value: TypeId) -> Result<TypeId, NativeTableError> {
         let Some(reference) = self.native_definition_ref(table) else { return Err(NativeTableError::NotTable { ty: table }) };
+        // A class's own table stored in one of its fields (`mt.__index = mt`) is the class.
+        let value = match self.native_definition_ref(value) {
+            Some(own) if own.class.declaration == reference.class.declaration => self.intern(TypeData::NativeObject(reference.class)),
+            _ => value,
+        };
         let key = key.normalize()?;
         self.native_definition_write(reference, NativeTableAccessKey::Literal(key), value)?;
         let declared = self.native_definition_value_context(reference, NativeTableAccessKey::Literal(key));

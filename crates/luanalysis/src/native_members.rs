@@ -276,6 +276,10 @@ impl NativeRegistry {
                         _ => {},
                     }
                 }
+                // A class's table stored in its own field (`mt.__index = mt`) is the
+                // class, as LuaLS reads it. Typing the table there would resolve the
+                // class from inside its own definition.
+                if let Some(class) = self.own_definition_value(*key, queries) { return class }
                 let ty = self.original_member_expression_type(*key, queries);
                 // Original inferred Lua fields retain their literal contract.
                 // This leaves functions, generics and written contexts alone;

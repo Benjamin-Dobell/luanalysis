@@ -81,3 +81,12 @@ fn appending_with_the_length_operator_builds_a_sequence() {
     assert!(report.contains("main.lua:9:15: error[TS2322]"), "{report}");
     assert_eq!(report.matches("error[").count(), 1, "{report}");
 }
+
+#[test]
+fn a_class_table_stored_in_its_own_field_is_the_class() {
+    let fixture = Fixture::new(&[
+        ("main.lua", "---@class Node\nlocal mt = {}\nmt.__index = mt\nmt.self = mt\nfunction mt:name() return 'node' end\n---@type Node\nlocal index = mt.__index\n"),
+    ]);
+    let output = fixture.check();
+    assert!(output.status.success(), "{}", text(&output));
+}

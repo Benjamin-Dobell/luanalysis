@@ -130,6 +130,14 @@ impl NativeRegistry {
             declaration_span: source.syntax.name.span,
         }))
     }
+    /// The class whose definition table `key` names, when it is a class definition's local.
+    pub(crate) fn own_definition_value(&self, key: luanalysis_engine::NativeExpressionKey, queries: &mut dyn luanalysis_engine::TypeQueries) -> Option<Type> {
+        let mut expression = &self.expressions().get(key).expression;
+        while let luanalysis_syntax::ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
+        let luanalysis_syntax::ExprKind::Name(name) = &expression.kind else { return None };
+        let directive = self.class_definition_for_binding(self.bound.binding_at(name.span.start)?)?;
+        queries.named_declared_type(directive.declaration).ok()
+    }
     fn class_definition_for_binding(&self, binding: BindingId) -> Option<ClassDefinitionDirective> {
         self.class_definitions.sources.iter().find_map(|&key| {
             self.class_definition_directive(self.named.declaration(key)?)

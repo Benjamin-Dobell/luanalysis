@@ -1089,7 +1089,7 @@ impl Checker<'_> {
                     .collect(),
                 tail: None,
             }]);
-        let values = self.adjusted_list_values(
+        let mut adjusted = self.adjusted_list_values(
             values,
             targets.len(),
             Some(&expected_pack),
@@ -1097,7 +1097,17 @@ impl Checker<'_> {
                 .first()
                 .map_or(Span::default(), |target| target.span),
         );
-        self.assign_values(targets, values);
+        // A class's table stored into one of its fields (`mt.__index = mt`) is the class,
+        // as its inferred member is.
+        for (index, (value, _)) in adjusted.iter_mut().enumerate() {
+            if let (Some(native), Some(expression)) = (self.native, values.get(index))
+                && matches!(targets.get(index).map(|target| &target.kind), Some(ExprKind::Field { .. } | ExprKind::Index { .. }))
+                && let Some(class) = native.own_definition_value(native.expression_key(expression), self.engine)
+            {
+                *value = class;
+            }
+        }
+        self.assign_values(targets, adjusted);
     }
 
     fn assign_values(&mut self, targets: &[Expr], values: Vec<(Type, Span)>) {
