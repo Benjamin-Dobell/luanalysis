@@ -1,0 +1,190 @@
+name: Build
+
+# The command line tool and the shared and static libraries (with luanalysis.h) for Linux, macOS
+# and Windows, on x86-64 and ARM64. Linux tools are static musl executables; Linux libraries link
+# glibc 2.17 so any glibc process can load them. macOS builds are universal (lipo).
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  test:
+    name: Test (Linux x86-64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --workspace -- --test-threads=4
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal \
+            --target ${{ matrix.arch }}-unknown-linux-musl --target ${{ matrix.arch }}-unknown-linux-gnu
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-${{ matrix.arch }}
+      - name: Install cargo-zigbuild
+        run: cargo install --locked cargo-zigbuild
+      - name: Command line tool (static musl)
+        run: cargo zigbuild --locked --release -p luanalysis --target ${{ matrix.arch }}-unknown-linux-musl
+      - name: Libraries (glibc 2.17)
+        run: cargo zigbuild --locked --release -p luanalysis-ffi --target ${{ matrix.arch }}-unknown-linux-gnu.2.17
+      - name: Package
+        run: |
+          out=luanalysis-linux-${{ matrix.arch }}
+          mkdir -p $out/bin $out/lib $out/include
+          cp target/${{ matrix.arch }}-unknown-linux-musl/release/luanalysis $out/bin/
+          cp target/${{ matrix.arch }}-unknown-linux-gnu/release/libluanalysis.so $out/lib/
+          cp target/${{ matrix.arch }}-unknown-linux-gnu/release/libluanalysis.a $out/lib/
+          cp crates/luanalysis-ffi/include/luanalysis.h $out/include/
+          cp LICENSE* $out/ 2>/dev/null || true
+          file $out/bin/luanalysis $out/lib/libluanalysis.so
+          tar czf $out.tar.gz $out
+      - name: Smoke test
+        if: matrix.arch == 'x86_64'
+        run: |
+          out=luanalysis-linux-x86_64
+          printf 'local x = 1\n' > smoke.lua
+          $out/bin/luanalysis --version
+          $out/bin/luanalysis check --lua-version 5.4 smoke.lua
+          cc -I$out/include crates/luanalysis-ffi/examples/smoke.c -L$out/lib -lluanalysis -Wl,-rpath,'$ORIGIN/'$out/lib -o smoke
+          ./smoke smoke.lua
+          echo "Newest glibc symbol the library needs:"
+          objdump -T $out/lib/libluanalysis.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luanalysis-linux-${{ matrix.arch }}
+          path: luanalysis-linux-${{ matrix.arch }}.tar.gz
+
+  macos:
+    name: macOS universal
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal \
+            --target aarch64-apple-darwin --target x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --locked --release -p luanalysis -p luanalysis-ffi --target $target
+          done
+      - name: Package
+        run: |
+          out=luanalysis-macos-universal
+          mkdir -p $out/bin $out/lib $out/include
+          for file in bin/luanalysis:luanalysis lib/libluanalysis.dylib:libluanalysis.dylib lib/libluanalysis.a:libluanalysis.a; do
+            lipo -create -output $out/${file%%:*} \
+              target/aarch64-apple-darwin/release/${file##*:} target/x86_64-apple-darwin/release/${file##*:}
+          done
+          cp crates/luanalysis-ffi/include/luanalysis.h $out/include/
+          cp LICENSE* $out/ 2>/dev/null || true
+          lipo -info $out/bin/luanalysis $out/lib/libluanalysis.dylib $out/lib/libluanalysis.a
+          otool -D $out/lib/libluanalysis.dylib
+          tar czf $out.tar.gz $out
+      - name: Smoke test
+        run: |
+          out=luanalysis-macos-universal
+          printf 'local x = 1\n' > smoke.lua
+          $out/bin/luanalysis --version
+          $out/bin/luanalysis check --lua-version 5.4 smoke.lua
+          cc -I$out/include crates/luanalysis-ffi/examples/smoke.c -L$out/lib -lluanalysis -Wl,-rpath,@executable_path/$out/lib -o smoke
+          ./smoke smoke.lua
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luanalysis-macos-universal
+          path: luanalysis-macos-universal.tar.gz
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal \
+            --target ${{ matrix.arch }}-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-${{ matrix.arch }}
+      - name: Build
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --locked --release -p luanalysis -p luanalysis-ffi --target ${{ matrix.arch }}-pc-windows-msvc
+      - name: Package
+        run: |
+          out=luanalysis-windows-${{ matrix.arch }}
+          release=target/${{ matrix.arch }}-pc-windows-msvc/release
+          mkdir -p $out/bin $out/lib $out/include
+          cp $release/luanalysis.exe $out/bin/
+          cp $release/luanalysis.dll $out/bin/
+          cp $release/luanalysis.dll.lib $out/lib/
+          cp $release/luanalysis.lib $out/lib/
+          cp crates/luanalysis-ffi/include/luanalysis.h $out/include/
+          cp LICENSE* $out/ 2>/dev/null || true
+          7z a $out.zip $out
+      - name: Smoke test
+        if: matrix.arch == 'x86_64'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          set out=luanalysis-windows-x86_64
+          echo local x = 1> smoke.lua
+          %out%\bin\luanalysis.exe --version || exit /b 1
+          %out%\bin\luanalysis.exe check --lua-version 5.4 smoke.lua || exit /b 1
+          cl /nologo /I%out%\include crates\luanalysis-ffi\examples\smoke.c /link %out%\lib\luanalysis.dll.lib /OUT:smoke.exe || exit /b 1
+          copy %out%\bin\luanalysis.dll . || exit /b 1
+          smoke.exe smoke.lua || exit /b 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: luanalysis-windows-${{ matrix.arch }}
+          path: luanalysis-windows-${{ matrix.arch }}.zip
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, linux, macos, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
