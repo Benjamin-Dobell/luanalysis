@@ -509,6 +509,30 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Remove the exponential paths LuaLS's own sources exposed: a flow value computed inside an unfinished query is cached provisionally, a literal-key runtime-table read resolves its own key's members, and calls preserve standard bindings and the loader instead of proving each reached body free of writes, through kernel 0345818.",
 } for path in ["mod.rs", "native_flow.rs", "native_named.rs", "native_standard_assumptions.rs", "sink.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-declared-operators.patch",
+    "reason": "Resolve a binary or unary operator through the operator signatures a class declares with ---@operator, selecting the declaration by the other operand's type through the shared native signature workers, through kernel db66071.",
+} for path in ["call.rs", "native_named.rs"])
+
+SOURCE_ADAPTATIONS.append({
+    "path": "src/bun_core/thread_id.rs",
+    "patch": "vendor/patches/bun-core-thread-id-syscall.patch",
+    "reason": "Read the Linux thread id through the gettid system call, which glibc 2.28 has no wrapper for, through kernel 5425aee.",
+})
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-luals-classes.patch",
+    "reason": "Reopen a class's definition on another module's value when the class is declared in several places, keep a class table stored in its own field as the class, and build a sequence from stores at the length operator's next index, through kernel 37dd96c.",
+} for path in ["native_flow.rs", "native_named.rs", "native_runtime_tables.rs"])
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-member-cycles.patch",
+    "reason": "Leave a member, a class's members or its validation requested again while in progress provisional, as TypeScript has a class's member symbols before their types: members without a type yet are unresolved, a read of a key no field has reads only the indexers, and a pending owner application taints from its own cycle, through kernel 239121f.",
+} for path in ["mod.rs", "native_named.rs", "native_runtime_tables.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

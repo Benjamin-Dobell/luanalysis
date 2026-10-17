@@ -2250,6 +2250,60 @@
       "patch": "vendor/patches/bun-sema-luals-pathologies.patch",
       "reason": "Remove the exponential paths LuaLS's own sources exposed: a flow value computed inside an unfinished query is cached provisionally, a literal-key runtime-table read resolves its own key's members, and calls preserve standard bindings and the loader instead of proving each reached body free of writes, through kernel 0345818.",
       "patch_sha256": "d5d90e28c90a2b3e73cea9f52d7f0054d1d22c28328c48b575e06ff06a6c3844"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-declared-operators.patch",
+      "reason": "Resolve a binary or unary operator through the operator signatures a class declares with ---@operator, selecting the declaration by the other operand's type through the shared native signature workers, through kernel db66071.",
+      "patch_sha256": "00c95bd1f4d59336f162aeac5d8a8e0e8490d83dc851d9422d71bcf651df3401"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-declared-operators.patch",
+      "reason": "Resolve a binary or unary operator through the operator signatures a class declares with ---@operator, selecting the declaration by the other operand's type through the shared native signature workers, through kernel db66071.",
+      "patch_sha256": "00c95bd1f4d59336f162aeac5d8a8e0e8490d83dc851d9422d71bcf651df3401"
+    },
+    {
+      "path": "src/bun_core/thread_id.rs",
+      "patch": "vendor/patches/bun-core-thread-id-syscall.patch",
+      "reason": "Read the Linux thread id through the gettid system call, which glibc 2.28 has no wrapper for, through kernel 5425aee.",
+      "patch_sha256": "35b6ee595cbaec0c091a7e968d5aed09794a300f57fefacba09c013f7ac4f1da"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-luals-classes.patch",
+      "reason": "Reopen a class's definition on another module's value when the class is declared in several places, keep a class table stored in its own field as the class, and build a sequence from stores at the length operator's next index, through kernel 37dd96c.",
+      "patch_sha256": "eeffd7fbe0c8d3527dd8d36e78b30e75f5be69caf9cad0f8a4b6d6148fb8f102"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-luals-classes.patch",
+      "reason": "Reopen a class's definition on another module's value when the class is declared in several places, keep a class table stored in its own field as the class, and build a sequence from stores at the length operator's next index, through kernel 37dd96c.",
+      "patch_sha256": "eeffd7fbe0c8d3527dd8d36e78b30e75f5be69caf9cad0f8a4b6d6148fb8f102"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-luals-classes.patch",
+      "reason": "Reopen a class's definition on another module's value when the class is declared in several places, keep a class table stored in its own field as the class, and build a sequence from stores at the length operator's next index, through kernel 37dd96c.",
+      "patch_sha256": "eeffd7fbe0c8d3527dd8d36e78b30e75f5be69caf9cad0f8a4b6d6148fb8f102"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-member-cycles.patch",
+      "reason": "Leave a member, a class's members or its validation requested again while in progress provisional, as TypeScript has a class's member symbols before their types: members without a type yet are unresolved, a read of a key no field has reads only the indexers, and a pending owner application taints from its own cycle, through kernel 239121f.",
+      "patch_sha256": "fd970eff1364fe50e2ba9d34e928b3c0d01a72b652f22b724d457a49f56c415e"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-member-cycles.patch",
+      "reason": "Leave a member, a class's members or its validation requested again while in progress provisional, as TypeScript has a class's member symbols before their types: members without a type yet are unresolved, a read of a key no field has reads only the indexers, and a pending owner application taints from its own cycle, through kernel 239121f.",
+      "patch_sha256": "fd970eff1364fe50e2ba9d34e928b3c0d01a72b652f22b724d457a49f56c415e"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-member-cycles.patch",
+      "reason": "Leave a member, a class's members or its validation requested again while in progress provisional, as TypeScript has a class's member symbols before their types: members without a type yet are unresolved, a read of a key no field has reads only the indexers, and a pending owner application taints from its own cycle, through kernel 239121f.",
+      "patch_sha256": "fd970eff1364fe50e2ba9d34e928b3c0d01a72b652f22b724d457a49f56c415e"
     }
   ],
   "source_additions": {
@@ -2270,7 +2324,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "9a367ea0426096b91d0cbdc03cbd7872d236eb8284c13dbde7ff91425cf04d27",
+      "extracted_sha256": "ecd81dfd57547876e95c2e136f098fba6f1a7753dc1123d5694b76e7dac3b598",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
@@ -2286,7 +2340,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "267f1bd27a2da15a4729549dc2e91e68c45351307811b5e6bdd291f4761c1817",
+      "extracted_sha256": "9cf2ded7918499ef35b3bd2c161d5c9c2010229e3bc2e60e1bf353322b623d60",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -2306,7 +2360,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "15f4df854e4f53a2baef154d3b11f2a60dc2dcf124aba2b7fc85dd85e2031f6a",
+      "extracted_sha256": "0c17469338a6738c78dd7e2cc5cfe13a56296dd501d6100768a9f2f3a02d3868",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -2611,7 +2665,7 @@
     "src/bun_core/thread_id.rs": {
       "upstream": "src/bun_core/thread_id.rs",
       "sha256": "4145ba84597c1a9d76b088ed5f3cdeb85135c9fd2b0c92d16e5850a1b8c10155",
-      "extracted_sha256": "4145ba84597c1a9d76b088ed5f3cdeb85135c9fd2b0c92d16e5850a1b8c10155"
+      "extracted_sha256": "9e31e66cd95de94ff75244ea9b6cfc8355582c459f1c006c6c3592c2d94f7f94"
     },
     "src/bun_core/tty.rs": {
       "upstream": "src/bun_core/tty.rs",
@@ -3016,7 +3070,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "e7d73412ac690d88bcb1c20dd414523fb6d9e5668a7f9d4cea1c186d32b49b15"
+      "extracted_sha256": "93ddb650975df995a80288ad23057e45453412f37d7b135d3c46c9781b9a6fe8"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -3276,7 +3330,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "4f9a5634aa636cbd735ca0cda2859e245986969427ba37203dea5a3d1e82dc88"
+      "extracted_sha256": "30c85d53388c2fbf481ebe8fb15b8e5c40248e4d4db42e7aae345c559f935650"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
