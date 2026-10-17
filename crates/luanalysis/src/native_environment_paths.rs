@@ -34,6 +34,20 @@ impl NativeRegistry {
         // identity fact; asking its written class assertion to prove it would
         // recursively validate that class while resolving its own methods.
         if self.immutable_fresh_table(expression, &mut HashSet::default()) { return None; }
+        // Only `_G`, `_ENV` and locals an original store gives an environment
+        // reference name the environment, as only `globalThis` and the values
+        // assigned from it do in TypeScript; a value passed in as an argument
+        // is not followed. Typing every other receiver at each store made a
+        // global read's walk exponential in the stores before it.
+        let mut root = expression;
+        while let ExprKind::Field { base, .. } | ExprKind::Index { base, .. } | ExprKind::Parenthesized(base) = &root.kind { root = base; }
+        if let ExprKind::Name(name) = &root.kind {
+            match self.bound.binding_at(name.span.start) {
+                Some(binding) if !self.flow.environment_candidate(binding) => return None,
+                None if name.text != "_G" && name.text != "_ENV" => return None,
+                _ => {}
+            }
+        }
 
         // This primitive query bypasses the assertion on the original receiver.
         // An equal-looking table schema cannot manufacture a runtime identity.

@@ -50,3 +50,16 @@ fn fields_stored_from_one_another_resolve_one_key_at_a_time() {
     assert_eq!(main.report.diagnostics.iter().filter(|diagnostic| diagnostic.code == "TS2339").count(), 10, "{:#?}", main.report.diagnostics);
     assert!(main.report.diagnostics.iter().all(|diagnostic| diagnostic.code != "TS2589"), "{:#?}", main.report.diagnostics);
 }
+
+/// LuaLS's test/completion/common.lua: stores into a global table between global calls. Each
+/// store once asked whether that global might be the environment by reading it at the store,
+/// which revisited every store before it.
+#[test]
+fn stores_into_a_global_table_between_global_reads_are_not_revisited() {
+    let mut source = String::from("Cared = {}\n---@param script string\n---@return fun(expect: table)\nfunction TEST(script) return function(expect) end end\n");
+    for index in 0..40 {
+        source.push_str(&format!("Cared['key{}'] = {}\nTEST [[case {index}]] {{ {{ label = 'x', kind = {index} }} }}\n", index % 3, index % 2 == 0));
+    }
+    let report = check(&source);
+    assert_eq!(report.checked_file_count(), 1);
+}

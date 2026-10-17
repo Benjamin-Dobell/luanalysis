@@ -607,6 +607,12 @@ impl NativeFlowSources {
         NativeVariableWrite { owner: self.graph(node.graph, context), statement_end: address.statement_end }
     }
 
+    /// Whether some original store gives `binding` a value that may be the
+    /// global environment or one of its members.
+    pub(super) fn environment_candidate(&self, binding: BindingId) -> bool {
+        self.environment_candidates.contains_key(&binding)
+    }
+
     pub(super) fn immutable_initializer(&self, binding: BindingId) -> Option<&flow::Evaluation> {
         let reference = flow::Reference { root: flow::ReferenceRoot::Binding(binding), path: Vec::new() };
         let [write] = self.write_metadata.exact.get(&reference)?.as_slice() else { return None; };
