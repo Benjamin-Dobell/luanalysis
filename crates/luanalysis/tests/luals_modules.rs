@@ -114,3 +114,13 @@ fn a_require_before_the_rebinding_is_standard_when_another_file_may_replace_requ
     let report = text(&fixture.check(&["main.lua", "runner.lua"]));
     assert!(report.contains("main.lua:3:7: p: number"), "{report}");
 }
+
+#[test]
+fn table_concat_accepts_a_packed_list() {
+    let fixture = Fixture::new(&[("main.lua", "local function join(...)\n    local packed = table.pack(...)\n    return table.concat(packed, '\\t')\nend\nlocal text = join('a', 'b')\n")]);
+    for version in ["5.2", "5.3", "5.4"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&fixture.0)
+            .args(["check", "--lua-version", version, "main.lua"]).output().unwrap();
+        assert!(output.status.success(), "{version}: {}", text(&output));
+    }
+}

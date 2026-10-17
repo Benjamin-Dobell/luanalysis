@@ -88,12 +88,13 @@ fn tonumber() -> &'static str {
 }
 fn concat() -> String {
     let owner = excerpt(ACTIVE_TABLE, "---@class std__Table", "table = {}");
+    let packed = excerpt(ACTIVE_TABLE, "---@shape std__Packed<T>", "---@field n number");
     let method = excerpt(
         ACTIVE_TABLE,
-        "---@overload fun(list:string[]|number[]|(string|number)[]):string",
+        "---@overload fun(list:string[]|number[]|(string|number)[]|std__Packed<string|number>):string",
         "function table.concat(list, sep, i, j) end",
     );
-    format!("{owner}\n{method}\n")
+    format!("{owner}\n{packed}\n{method}\n")
 }
 
 #[test]
