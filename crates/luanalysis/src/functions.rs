@@ -651,6 +651,17 @@ impl Checker<'_> {
         // The same syntactic `setmetatable` that attributes the stores to that table's schema.
         let ExprKind::Name(name) = &callee.kind else { return ty };
         if name.text != "setmetatable" || self.bound.binding_at(name.span.start).is_some() { return ty }
+        // A class's definition table as the metatable makes the table an instance of the class.
+        if let Some(metatable) = args.get(1)
+            && matches!(metatable.kind, ExprKind::Name(_))
+        {
+            let metatable = self.expression(metatable);
+            if let Some(declaration) = self.engine.named_object_declaration(&metatable)
+                && let Ok(class) = self.engine.named_declared_type(declaration)
+            {
+                return class;
+            }
+        }
         let Some(declaration) = self.native.and_then(|native| native.runtime_table_owner_declaration(first)) else { return ty };
         self.engine.runtime_table_value(declaration, &ty).unwrap_or(ty)
     }

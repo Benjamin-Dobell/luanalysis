@@ -44,3 +44,11 @@ fn a_class_definitions_declared_indexer_answers_for_every_key() {
     assert!(output.status.success(), "{report}");
     assert!(report.contains("main.lua:7:7: name: string"), "{report}");
 }
+
+#[test]
+fn a_table_given_a_class_as_its_metatable_is_an_instance_of_the_class() {
+    // LuaLS's markdown module returns `setmetatable({}, mt)` for its `---@class markdown`.
+    let (output, report) = check("---@class Markdown\nlocal mt = {}\nmt.__index = mt\n---@param text string\n---@return Markdown\nfunction mt:add(text) return self end\nlocal function markdown() return setmetatable({}, mt) end\nlocal md = markdown()\nlocal same = md:add('x')\n");
+    assert!(output.status.success(), "{report}");
+    assert!(report.contains("main.lua:8:7: md: Markdown"), "{report}");
+}
