@@ -126,6 +126,8 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     fn native_assert_pack(&mut self, pack: NativeResultPack) -> Option<NativeResultPack> {
+        // The results of a call to `any` are `any`, and so is what asserting them returns.
+        if self.is_any(pack.ty) { return Some(pack) }
         if let Some(mut rows) = self.native_pack_alternatives(pack) {
             rows.retain_mut(|row| {
                 if let Some(first) = row.fixed.first_mut() {

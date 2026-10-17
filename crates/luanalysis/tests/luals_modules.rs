@@ -80,3 +80,14 @@ fn a_require_before_the_chunk_rebinds_its_environment_is_standard() {
     // After the rebinding, `require` is a field of nil.
     assert!(text(&fixture.check(&["late.lua"])).contains("late.lua:2:11: error[LUA2036]"));
 }
+
+#[test]
+fn asserting_the_results_of_an_unresolved_modules_call_is_any() {
+    // LuaLS's brave worker: `assert(epoll.create(16))` with `bee.epoll` unresolved.
+    let fixture = Fixture::new(&[
+        ("main.lua", "local epoll = require 'bee.epoll'\nlocal fd = assert(epoll.create(16))\nfd:event_add(1)\n"),
+    ]);
+    let report = text(&fixture.check(&["main.lua"]));
+    assert!(report.contains("main.lua:2:7: fd: any"), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+}
