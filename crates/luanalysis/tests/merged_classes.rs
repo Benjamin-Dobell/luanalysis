@@ -129,3 +129,14 @@ fn a_class_declared_as_string_extends_the_string_library() {
     assert!(report.contains("main.lua:5:21: error[TS2365]: Operator '%' cannot be applied to types '\"x\"' and '1'"), "{report}");
     assert_eq!(report.matches("error[").count(), 1, "{report}");
 }
+
+#[test]
+fn a_methods_self_stores_assign_fields_of_its_class() {
+    // As `this.x = v` in a JavaScript class method declares a property, and as Luanalysis for
+    // IntelliJ indexed `self` assignments as members.
+    let fixture = Fixture::new(&[
+        ("main.lua", "---@class Lens\nlocal mt = {}\nmt.__index = mt\n---@param uri string\nfunction mt:init(uri)\n    self.uri = uri\n    self.results = {}\nend\n---@return string\nfunction mt:read() return self.uri end\nreturn mt\n"),
+    ]);
+    let output = fixture.check();
+    assert!(output.status.success(), "{}", text(&output));
+}

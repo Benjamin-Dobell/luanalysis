@@ -121,6 +121,14 @@ impl NativeMethods {
             owner_applications,
         };
         methods.statements(&file.statements, spans, bound, &owners, &declaration_owners, &contextual_owners);
+        // A method's `self` is an instance of its class, so `self.x = v` in its body assigns a
+        // field of the class, as `this.x = v` in a JavaScript class method declares a property.
+        let receivers: Vec<_> = methods.sources()
+            .filter_map(|method| Some((method.implicit_receiver?, method.class_owner?)))
+            .collect();
+        for (receiver, owner) in receivers {
+            owners.entry(receiver).or_insert_with(|| vec![owner]);
+        }
         // Each original function body is indexed once; expression nesting was
         // already traversed by the original function identity collector.
         for function in functions {
