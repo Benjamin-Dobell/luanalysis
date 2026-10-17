@@ -533,6 +533,18 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Leave a member, a class's members or its validation requested again while in progress provisional, as TypeScript has a class's member symbols before their types: members without a type yet are unresolved, a read of a key no field has reads only the indexers, and a pending owner application taints from its own cycle, through kernel 239121f.",
 } for path in ["mod.rs", "native_named.rs", "native_runtime_tables.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-string-operators.patch",
+    "reason": "Resolve an operator on a string through the operator signatures its library's class declares (LuaLS's ---@class string with ---@operator), as the string library supplies a string's members, through kernel 9c1410f.",
+} for path in ["call.rs", "native_globals.rs"])
+
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/call.rs",
+    "patch": "vendor/patches/bun-sema-any-default.patch",
+    "reason": "Infer `any` for a type parameter a Lua call infers nothing for, as TypeScript does for a JavaScript call (InferenceFlags.AnyDefault), through kernel e1f2434.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

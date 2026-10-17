@@ -1,0 +1,42 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+index 73f6313..fab2f86 100644
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -709,7 +709,11 @@ impl<'p, 's> Checker<'p, 's> {
+     /// the declared heads resolved against `other`, as a call of one argument
+     /// (none for a unary operator). None if the type declares no such operator.
+     pub fn native_operator_call(&mut self, operator: super::native_named::NativeOperator, receiver: TypeId, other: Option<TypeId>) -> Option<ResolvedTypeCall> {
+-        let heads = self.native_object_operator_heads(receiver, operator);
++        let mut heads = self.native_object_operator_heads(receiver, operator);
++        // A string has the operators its library's class declares.
++        if heads.is_empty() && let Some(namespace) = self.native_primitive_namespace(receiver) {
++            heads = self.native_object_operator_heads(namespace, operator);
++        }
+         if heads.is_empty() { return None }
+         let arguments: Args = other.into_iter().map(Arg::Resolved).collect();
+         Some(self.resolve_native_signatures(&heads, &arguments, &[], None, None, NativeCallRole::Explicit))
+diff --git a/src/sema/check/native_globals.rs b/src/sema/check/native_globals.rs
+index 824fe2f..2718e00 100644
+--- a/src/sema/check/native_globals.rs
++++ b/src/sema/check/native_globals.rs
+@@ -253,6 +253,20 @@ impl<'p, 's> Checker<'p, 's> {
+         Some(self.native_table_read(namespace, key))
+     }
+ 
++    /// The namespace a string's metatable indexes, the string library, whose class can declare
++    /// the operators strings have (LuaLS's `---@class string` with `---@operator`).
++    pub(super) fn native_primitive_namespace(&mut self, ty: TypeId) -> Option<TypeId> {
++        let provider = self.native_globals_provider?;
++        let environment = provider.primitive_member_environment()?;
++        let apparent = self.base_constraint_of(ty).unwrap_or(ty);
++        if self.is_union(apparent) || self.flags(apparent) & crate::types::tf::STRING_LIKE == 0 { return None }
++        if !provider.contains_global_environment(environment) { return None }
++        let binding = provider.primitive_member_binding(environment, NativePrimitiveMemberKind::String)?;
++        if binding.environment != environment { return None }
++        let namespace = self.native_global_binding_type(binding).ok()?;
++        matches!(self.data(namespace), crate::types::TypeData::NativeTable(_) | crate::types::TypeData::NativeObject(_)).then_some(namespace)
++    }
++
+     pub fn set_native_globals_provider(&mut self, provider: &'p dyn NativeGlobalsProvider) {
+         assert!(self.native_globals_provider.is_none(), "native globals provider already installed");
+         self.native_globals_provider = Some(provider);

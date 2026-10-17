@@ -2304,6 +2304,24 @@
       "patch": "vendor/patches/bun-sema-member-cycles.patch",
       "reason": "Leave a member, a class's members or its validation requested again while in progress provisional, as TypeScript has a class's member symbols before their types: members without a type yet are unresolved, a read of a key no field has reads only the indexers, and a pending owner application taints from its own cycle, through kernel 239121f.",
       "patch_sha256": "fd970eff1364fe50e2ba9d34e928b3c0d01a72b652f22b724d457a49f56c415e"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-string-operators.patch",
+      "reason": "Resolve an operator on a string through the operator signatures its library's class declares (LuaLS's ---@class string with ---@operator), as the string library supplies a string's members, through kernel 9c1410f.",
+      "patch_sha256": "04167c686f5a71fa3ec501acaaacdb5ff99f4a89072d3f9f050358ac1df4de2b"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-string-operators.patch",
+      "reason": "Resolve an operator on a string through the operator signatures its library's class declares (LuaLS's ---@class string with ---@operator), as the string library supplies a string's members, through kernel 9c1410f.",
+      "patch_sha256": "04167c686f5a71fa3ec501acaaacdb5ff99f4a89072d3f9f050358ac1df4de2b"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-any-default.patch",
+      "reason": "Infer `any` for a type parameter a Lua call infers nothing for, as TypeScript does for a JavaScript call (InferenceFlags.AnyDefault), through kernel e1f2434.",
+      "patch_sha256": "19c301b9eaa8ac9fc11f34100f24e23c00ae05e9418f42eefbc343fe2a65d74e"
     }
   ],
   "source_additions": {
@@ -2328,7 +2346,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "32e5b9d2824cf50c04b2ca4685a226ac3ab53fbd8944a75d82b9efde68a6c4f1",
+      "extracted_sha256": "8e8cbb84edeec5331a19b978f2d1af8cd852fea5e841bf10cda391f19e651f57",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -3070,7 +3088,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "93ddb650975df995a80288ad23057e45453412f37d7b135d3c46c9781b9a6fe8"
+      "extracted_sha256": "065e2e022dbc9556dead4e741ea4c900690fd631ccdee61a3a3539931ab15397"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
