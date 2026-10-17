@@ -595,8 +595,12 @@ impl Project {
     ) -> Result<(FileId, bool), RegisterError> {
         let alias = std::path::absolute(path)
             .map_err(|error| RegisterError::Path(PathFailure::new(path, error)))?;
-        let canonical = fs::canonicalize(&alias)
-            .map_err(|error| RegisterError::Path(PathFailure::new(path, error)))?;
+        let canonical = match fs::canonicalize(&alias) {
+            Ok(canonical) => canonical,
+            // An editor's open document need not exist on disk: its text is its source.
+            Err(_) if overlays.contains_key(&alias) => alias.clone(),
+            Err(error) => return Err(RegisterError::Path(PathFailure::new(path, error))),
+        };
         if let Some(id) = self.by_path.get(&canonical).copied() {
             let existing_role = self.files[id.index as usize].role;
             if let Some(requested_role) = role.filter(|role| *role != existing_role) {

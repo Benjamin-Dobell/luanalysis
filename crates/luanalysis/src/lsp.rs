@@ -11,7 +11,7 @@ use crate::incremental::ProjectWorkspace;
 use crate::json::Json;
 use crate::language_service::{self, CompletionKind, CompletionSite};
 use crate::project_check::{ProjectCheckOptions, ProjectCheckReport};
-use luanalysis_project::{DependencyOutcome, Project, SourceOrigin};
+use luanalysis_project::{DependencyOutcome, Project, ProjectLoadPlan, SourceOrigin};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -663,7 +663,7 @@ fn load(inputs: &CheckInputs, workspace: &mut ProjectWorkspace, loaded: &mut Opt
     }
     let discovery = inputs.discover().ok()?;
     let resolver = inputs.resolver(&discovery).ok()?;
-    let project = Project::load_plan_with_overlays(&resolver, discovery.plan.clone(), &query.overlays, |source| {
+    let project = Project::load_plan_with_overlays(&resolver, with_documents(&discovery.plan, &query.overlays), &query.overlays, |source| {
         workspace.static_require_requests(source)
     });
     *loaded = Some(LoadedProject { disk: query.disk, path: query.path.clone(), others, project: project.clone() });
@@ -694,10 +694,24 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
 fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, job: &Job) -> Result<ProjectCheckReport, String> {
     let discovery = inputs.discover().map_err(|error| error.to_string())?;
     let resolver = inputs.resolver(&discovery).map_err(|error| error.to_string())?;
-    let project = Project::load_plan_with_overlays(&resolver, discovery.plan.clone(), &job.overlays, |source| {
+    let project = Project::load_plan_with_overlays(&resolver, with_documents(&discovery.plan, &job.overlays), &job.overlays, |source| {
         workspace.static_require_requests(source)
     });
     Ok(workspace.check_project(project, options))
+}
+
+/// The workspace's inputs and every open `.lua` or `.ttslua` document, including one outside
+/// the workspace or with no file on disk (a host such as a game may serve scripts it keeps in
+/// memory).
+fn with_documents(plan: &ProjectLoadPlan, documents: &HashMap<PathBuf, String>) -> ProjectLoadPlan {
+    let mut plan = plan.clone();
+    let mut opened: Vec<_> = documents.keys()
+        .filter(|path| !plan.entries.contains(path))
+        .filter(|path| path.extension().is_some_and(|extension| extension == "lua" || extension == "ttslua"))
+        .cloned().collect();
+    opened.sort();
+    plan.entries.extend(opened);
+    plan
 }
 
 /// What hover, definition and diagnostics read from one completed check.

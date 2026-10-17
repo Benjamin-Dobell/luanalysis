@@ -268,3 +268,20 @@ fn inspections_are_published_as_warnings_and_faded_hints() {
     assert!(!published.contains(r#""severity":1"#), "{published}");
     server.finish();
 }
+
+#[test]
+fn an_open_document_with_no_file_on_disk_is_checked() {
+    let root = fixture();
+    // A host such as a game may serve a script it keeps in memory, outside the workspace.
+    let script = root.join("memory").join("Global.lua");
+    assert!(!script.exists());
+    let mut server = Server::start(&["--no-stdlib"]);
+    server.initialize(&root);
+    server.open(&script, "---@type string\nlocal text = 42\nreturn text\n");
+    let published = server.diagnostics(&script, |message| message.contains("TS2322"));
+    assert!(published.contains(r#""range":{"start":{"line":1,"character":13}"#), "{published}");
+    server.change(&script, 2, "---@type string\nlocal text = 'fixed'\nreturn text\n");
+    server.diagnostics(&script, |message| message.contains(r#""diagnostics":[]"#));
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
