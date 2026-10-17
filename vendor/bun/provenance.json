@@ -2208,6 +2208,18 @@
       "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
       "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
       "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-language-service-members.patch",
+      "reason": "List the members of a Lua value for the language service, as properties_of_type lists a TypeScript type's: names from every native table representation, kept where a native table read accepts them, through kernel a6f9b25.",
+      "patch_sha256": "c5c407f2ba154a849470e165c6cbfec44b5e4fde5cfd3254c2e98e534a4b0913"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-language-service-members.patch",
+      "reason": "List the members of a Lua value for the language service, as properties_of_type lists a TypeScript type's: names from every native table representation, kept where a native table read accepts them, through kernel a6f9b25.",
+      "patch_sha256": "c5c407f2ba154a849470e165c6cbfec44b5e4fde5cfd3254c2e98e534a4b0913"
     }
   ],
   "source_additions": {
@@ -2244,7 +2256,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "08bf56dcbfa6112f3c389db0b35678a65aa8e1991046478b554cdf56d05a3823",
+      "extracted_sha256": "a140258bb4b04abaebc3b7a58180c960c14598608ff780038a95942d4e157eed",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -2276,7 +2288,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "59f9789c6f1069aeb7b99e0954d71222ed98ad6b84edf67b99cb2cfdd120b8d8",
+      "extracted_sha256": "4e2a5c0c5d030e36057fd88a030b53047ccc2d90533d0b1737d1aa14fdebd757",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },

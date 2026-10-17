@@ -497,6 +497,12 @@ SOURCE_ADAPTATIONS.extend({
     "native_runtime_tables.rs", "native_standard_assumptions.rs", "native_tables.rs", "sink.rs", "unions.rs",
 ])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-language-service-members.patch",
+    "reason": "List the members of a Lua value for the language service, as properties_of_type lists a TypeScript type's: names from every native table representation, kept where a native table read accepts them, through kernel a6f9b25.",
+} for path in ["native_named.rs", "native_tables.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

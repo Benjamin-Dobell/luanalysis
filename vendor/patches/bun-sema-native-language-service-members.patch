@@ -1,0 +1,108 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 64b4de5..64e9876 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -1235,6 +1235,19 @@ impl<'p, 's> Checker<'p, 's> {
+         result
+     }
+ 
++    /// The string keys of an object's own and inherited members, for the language service.
++    pub(super) fn native_object_member_names(&mut self, reference: NativeObjectReference) -> Vec<Atom> {
++        let Ok(members) = self.native_object_members(reference) else { return Vec::new() };
++        let Ok(provider) = self.native_named_provider(reference.declaration) else { return Vec::new() };
++        members.iter().filter_map(|member| match provider.type_member_header(self, member.member).key {
++            NativeTypeMemberKey::Fixed(key) => match key.normalize() {
++                Ok(NativeTableKey::String(name)) => Some(name),
++                _ => None,
++            },
++            NativeTypeMemberKey::Indexer { .. } => None,
++        }).collect()
++    }
++
+     /// Written value context needs only this key's declared recipes. Resolving
+     /// an inferred store's receiver here would let an initializer demand its
+     /// own prospective schema before its actual allocation is published.
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+index d4aac6c..7a79114 100644
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -708,6 +708,79 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+     }
+ 
++    /// The language service's members of a Lua value, as `properties_of_type` lists a
++    /// TypeScript type's: each string key a read of `table` accepts, with the type that read
++    /// returns. Names come from every table representation; a read decides which remain, so a
++    /// union keeps the keys all its constituents accept.
++    pub fn native_completion_members(&mut self, table: TypeId) -> Vec<(Atom, TypeId)> {
++        let mut names = Vec::new();
++        self.native_completion_names(table, &mut names, 0);
++        let mut seen = std::collections::HashSet::new();
++        names.retain(|name| seen.insert(*name));
++        names.into_iter().filter_map(|name| {
++            let key = NativeTableAccessKey::Literal(NativeTableKey::String(name));
++            self.native_table_read(table, key).ok().map(|value| (name, value))
++        }).collect()
++    }
++
++    fn native_completion_names(&mut self, ty: TypeId, names: &mut Vec<Atom>, depth: usize) {
++        if depth > 16 { return }
++        let ty = self.native_runtime_carrier(ty);
++        if self.is_union(ty) || self.is_intersection(ty) {
++            for part in self.parts(ty).to_vec() { self.native_completion_names(part, names, depth + 1); }
++            return;
++        }
++        if let Some(provider) = self.native_globals_provider
++            && let Some(environment) = provider.primitive_member_environment()
++        {
++            let apparent = self.base_constraint_of(ty).unwrap_or(ty);
++            if self.flags(apparent) & crate::types::tf::STRING_LIKE != 0 {
++                if let Some(binding) = provider.primitive_member_binding(environment, super::native_globals::NativePrimitiveMemberKind::String)
++                    && let Ok(namespace) = self.native_global_binding_type(binding)
++                    && namespace != ty
++                {
++                    self.native_completion_names(namespace, names, depth + 1);
++                }
++                return;
++            }
++        }
++        if let Some(reference) = self.native_runtime_table_ref(ty) {
++            self.native_completion_names(reference.view, names, depth + 1);
++            names.extend(self.native_object_member_names(reference.schema));
++            return;
++        }
++        if let Some(reference) = self.native_definition_ref(ty)
++            && reference.view != ty
++        {
++            self.native_completion_names(reference.view, names, depth + 1);
++            return;
++        }
++        match self.data(ty) {
++            TypeData::NativeObject(reference) => names.extend(self.native_object_member_names(*reference)),
++            TypeData::NativeTable(data) => {
++                if let Some(environment) = data.environment_origin {
++                    names.extend(self.native_global_environment_properties(environment).into_iter().map(|(name, _)| name));
++                    return;
++                }
++                names.extend(data.fields.iter().filter_map(|field| match field.key {
++                    NativeTableKey::String(name) => Some(name),
++                    _ => None,
++                }));
++                if let Some(origin) = data.nominal_origin { names.extend(self.native_object_member_names(origin)); }
++            }
++            _ => {
++                if let Some(base) = self.base_constraint_of(ty)
++                    && base != ty
++                {
++                    return self.native_completion_names(base, names, depth + 1);
++                }
++                if self.is_object_type(ty) && let Some(members) = self.members(ty) {
++                    names.extend(members.shape().props.iter().map(|prop| prop.name));
++                }
++            }
++        }
++    }
++
+     pub fn native_table_read(&mut self, table: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
+         // Lua dot/index reads and colon calls share the initial primitive
+         // namespace and preserve its original member/signature capability.
