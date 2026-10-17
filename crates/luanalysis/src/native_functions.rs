@@ -1263,7 +1263,7 @@ impl NativeRegistry {
                         checker.engine,
                     )
                     .unwrap_or_else(|| parameter.ty.clone());
-                let ty = if parameter.optional {
+                let ty = if parameter.optional && !crate::functions::untyped_parameters(&self.functions[function as usize]) {
                     Type::Union(vec![parameter_type, Type::Nil])
                 } else {
                     parameter_type
@@ -1319,7 +1319,7 @@ impl NativeRegistry {
                         queries,
                     )
                     .unwrap_or_else(|| parameter.ty.clone());
-                let ty = if parameter.optional {
+                let ty = if parameter.optional && !crate::functions::untyped_parameters(&self.functions[function as usize]) {
                     Type::Union(vec![parameter_type, Type::Nil])
                 } else {
                     parameter_type
@@ -1421,7 +1421,7 @@ impl NativeRegistry {
                     checker.engine,
                 )
                 .unwrap_or_else(|| parameter.ty.clone());
-            let ty = if parameter.optional {
+            let ty = if parameter.optional && !crate::functions::untyped_parameters(function) {
                 Type::Union(vec![parameter_type, Type::Nil])
             } else {
                 parameter_type

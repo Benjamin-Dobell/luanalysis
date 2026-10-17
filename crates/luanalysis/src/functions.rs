@@ -407,7 +407,7 @@ impl Checker<'_> {
                     &param.text,
                     format!("Parameter '{}' implicitly has an 'any' type.", param.text),
                 );
-                (Type::Any, false)
+                (Type::Any, untyped_parameters(function))
             };
             if optional_seen && !optional {
                 self.error(
@@ -537,7 +537,7 @@ impl Checker<'_> {
                 .bound
                 .binding_at(name.span.start)
                 .expect("bound parameter");
-            let ty = if param.optional {
+            let ty = if param.optional && !untyped_parameters(function) {
                 Type::Union(vec![param.ty.clone(), Type::Nil])
             } else {
                 param.ty.clone()
@@ -684,4 +684,11 @@ fn arity_range(minimum: usize, maximum: Option<usize>) -> String {
         Some(maximum) => format!("{minimum}-{maximum}"),
         None => format!("at least {minimum}"),
     }
+}
+
+/// A function written with no parameter types, neither `---@param` nor `---@type`. As TypeScript
+/// reads a JavaScript function without JSDoc, a call can omit its parameters, for which Lua
+/// passes nil: that makes them optional to callers, not nil in the body.
+pub(crate) fn untyped_parameters(function: &Function) -> bool {
+    function.annotations.params.is_empty() && function.annotations.type_annotation.is_none()
 }
