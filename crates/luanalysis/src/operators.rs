@@ -319,12 +319,10 @@ impl Checker<'_> {
             }
         };
         self.record_expression_type(name.span, &callee);
-        let receiver_argument = if let Some(native) = self.native {
-            PackArgument::Expression(native.expression_key(receiver))
-        } else {
-            PackArgument::Resolved(receiver_type)
-        };
-        let mut arguments = vec![receiver_argument];
+        // A receiver is never contextually typed: its type, computed once above, is the `self`
+        // argument of every resolution pass. Checking it again per pass made a chain of method
+        // calls (`builder:a(1):b(2):c(3)`) exponential in its length.
+        let mut arguments = vec![PackArgument::Resolved(receiver_type)];
         arguments.extend(self.call_arguments(args));
         let mut origins = vec![receiver.span];
         origins.extend(args.iter().map(|argument| argument.span));

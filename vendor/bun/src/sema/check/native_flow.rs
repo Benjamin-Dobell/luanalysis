@@ -1607,10 +1607,28 @@ impl<'s, 'p> Checker<'s, 'p> {
         if let Some(&cached) = self.flow_memo.native_state.value_types.get(&key) {
             return cached;
         }
+        // A value computed while an enclosing query is unfinished depends on it. As tsgo's
+        // provisional caches, it is kept for that query's lifetime: values whose recipes read one
+        // another (`local b = a * a; local c = b * b`) are each computed once per frame, rather
+        // than once per path to them.
+        let query = super::Query::NativeFlowValue(value, input);
+        if let Some(raw) = self.provisional(query) {
+            return TypeId(raw as u32);
+        }
+        if !self.enter(query) {
+            // `enter` has tainted the dependent queries; the value depends on itself.
+            return TypeId::ANY;
+        }
+        let context = self.native_query_context();
         let (ty, stored) =
             self.run_memoizable(|checker| provider.value_type(value, input, checker));
-        if stored.is_some() && !self.is_stack_low() {
-            self.flow_memo.native_state.value_types.insert(key, ty);
+        match self.leave(query) {
+            Ok(_) if stored.is_some() && !self.is_stack_low() => {
+                self.flow_memo.native_state.value_types.insert(key, ty);
+            }
+            Err(_) if self.native_complete_without_cache(context, stored.is_some()) => {}
+            Err(open) => self.cache_provisionally(query, u64::from(ty.0), open),
+            _ => {}
         }
         ty
     }

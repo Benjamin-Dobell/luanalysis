@@ -327,6 +327,7 @@ pub(crate) fn check_project_with_workspace(
             make_registry,
             |job, registry, queries| {
                 let started = profile.then(Instant::now);
+                if profile { eprintln!("luanalysis profile: job={job} started files={:?}", batches[job].iter().map(|&file| project.file(file).unwrap().path.display().to_string()).collect::<Vec<_>>()); }
                 let reports = registry.check_owned_roots(queries, &batches[job]);
                 if let Some(started) = started {
                     let names: Vec<_> = batches[job].iter().map(|&file| {

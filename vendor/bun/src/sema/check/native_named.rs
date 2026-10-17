@@ -1524,6 +1524,19 @@ impl<'p, 's> Checker<'p, 's> {
             let key = self.native_table_access(key)?;
             let object = self.intern(TypeData::NativeObject(reference));
             if let Some(value) = self.native_runtime_seed_read(reference, key).map_err(|error| error.table_error(object))? { return Ok(value) }
+            // A literal key reads its own members and the declared key domains alone, as a
+            // TypeScript property's type resolves alone. A store whose value reads another field
+            // of the same table then demands that field, not the whole schema again.
+            if let NativeTableAccessKey::Literal(literal) = key {
+                let members = self.native_object_members(reference).map_err(|error| error.table_error(object))?;
+                let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
+                let selected: Vec<_> = members.into_iter().filter(|origin| match provider.type_member_header(self, origin.member).key {
+                    NativeTypeMemberKey::Fixed(member_key) => member_key.normalize() == Ok(literal),
+                    NativeTypeMemberKey::Indexer { .. } => provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared,
+                }).collect();
+                let table = self.native_runtime_schema_resolved(reference, &selected).map_err(|error| error.table_error(object))?;
+                return self.native_table_read(table, key);
+            }
             let resolved = self.native_object_resolved(object).map_err(|error| error.table_error(object))?;
             return self.native_table_read(resolved, key);
         }
