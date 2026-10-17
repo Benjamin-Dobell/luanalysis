@@ -521,8 +521,12 @@ impl NativeFlowSources {
         // Environment member references are addresses of an actual table, not
         // whichever local/global alias currently names it. Intern the source
         // keys up front; native queries later prove each receiver's identity.
+        // Each key once, in order of first occurrence: a repeated key interns nothing.
+        let mut seen = HashSet::default();
         let members: Vec<_> = result.references.iter().flatten()
-            .filter_map(|reference| reference.path.last().cloned()).collect();
+            .filter_map(|reference| reference.path.last().cloned())
+            .filter(|key| seen.insert(key.clone()))
+            .collect();
         for region in 0..result.references.len() {
             intern_reference(&mut result.references[region], &mut result.reference_indices[region],
                 &flow::Reference { root: flow::ReferenceRoot::EnvironmentCell, path: Vec::new() });

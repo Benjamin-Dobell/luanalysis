@@ -18,15 +18,20 @@ pub(super) struct SourceExpression {
     pub parent: Option<NativeExpressionKey>,
 }
 
-/// Source recipes never contain backend IDs or a mutable "last context".
-/// Final selected facets are exact session capabilities owned by the provider.
-pub(super) struct NativeExpressions {
+/// Source recipes never contain backend IDs or a mutable "last context". They are built once per
+/// source revision and shared by every session over it (`NativeExpressions` adds a session's state).
+pub(super) struct ExpressionRecipes {
     snapshot: u64,
     expressions: Vec<SourceExpression>,
     spans: HashMap<(usize, usize), NativeExpressionKey>,
     functions: HashMap<(usize, usize), NativeFunctionKey>,
     /// Original field syntax only; no inferred receiver or contextual type.
     table_function_owners: HashMap<NativeFunctionKey, NativeExpressionKey>,
+}
+
+/// Final selected facets are exact session capabilities owned by the provider.
+pub(super) struct NativeExpressions {
+    recipes: std::sync::Arc<ExpressionRecipes>,
     // Native assignments retain their exact lifetime. Keeping a value here
     // never promotes it: deferred body replay checks its native state again.
     final_facets: RefCell<HashMap<NativeFunctionKey, Vec<Type>>>,
@@ -34,6 +39,10 @@ pub(super) struct NativeExpressions {
     final_captures: RefCell<HashMap<NativeFunctionKey, Vec<CapturedFunctionContext>>>,
     context_captures:
         RefCell<HashMap<(NativeFunctionKey, ContextualFunctionContext), Vec<CapturedFunctionContext>>>,
+}
+impl std::ops::Deref for NativeExpressions {
+    type Target = ExpressionRecipes;
+    fn deref(&self) -> &ExpressionRecipes { &self.recipes }
 }
 impl NativeExpressions {
     pub(super) fn sources(&self) -> impl Iterator<Item=(NativeExpressionKey,&SourceExpression)> {
@@ -44,37 +53,19 @@ impl NativeExpressions {
         file: &File,
         functions: &HashMap<(usize, usize), u32>,
     ) -> Self {
-        let mut registry = Self {
-            snapshot,
-            expressions: Vec::new(),
-            spans: HashMap::default(),
-            functions: functions
-                .iter()
-                .map(|(span, index)| {
-                    (
-                        *span,
-                        NativeFunctionKey {
-                            snapshot,
-                            index: *index,
-                        },
-                    )
-                })
-                .collect(),
-            table_function_owners: HashMap::default(),
+        Self::from_recipes(std::sync::Arc::new(ExpressionRecipes::new(snapshot, file, functions)))
+    }
+    pub(super) fn from_recipes(recipes: std::sync::Arc<ExpressionRecipes>) -> Self {
+        Self {
+            recipes,
             final_facets: RefCell::new(HashMap::default()),
             final_contexts: RefCell::new(HashMap::default()),
             final_captures: RefCell::new(HashMap::default()),
             context_captures: RefCell::new(HashMap::default()),
-        };
-        registry.statements(&file.statements, None, None);
-        registry
+        }
     }
-    pub(super) fn contains(&self, key: NativeExpressionKey) -> bool {
-        key.snapshot == self.snapshot && (key.node as usize) < self.expressions.len()
-    }
-    pub(super) fn get(&self, key: NativeExpressionKey) -> &SourceExpression {
-        assert!(self.contains(key), "foreign original Lua expression");
-        &self.expressions[key.node as usize]
+    pub(super) fn recipes(&self) -> std::sync::Arc<ExpressionRecipes> {
+        std::sync::Arc::clone(&self.recipes)
     }
     pub(super) fn original_sources(&self) -> &[SourceExpression] {
         &self.expressions
@@ -84,20 +75,6 @@ impl NativeExpressions {
             .spans
             .get(&(span.start, span.end))
             .expect("expression belongs to original Lua snapshot")
-    }
-    pub(super) fn function_for(&self, key: NativeExpressionKey) -> Option<NativeFunctionKey> {
-        let mut expression = &self.get(key).expression;
-        while let ExprKind::Parenthesized(inner) = &expression.kind {
-            expression = inner;
-        }
-        if let ExprKind::Function(function) = &expression.kind {
-            Some(self.function_key(function))
-        } else {
-            None
-        }
-    }
-    fn function_key(&self, function: &Function) -> NativeFunctionKey {
-        self.functions[&(function.span.start, function.span.end)]
     }
     pub(super) fn table_function_owner(
         &self,
@@ -286,6 +263,41 @@ impl NativeExpressions {
                 facets.push(ty.clone());
             }
         }
+    }
+}
+
+impl ExpressionRecipes {
+    pub(super) fn contains(&self, key: NativeExpressionKey) -> bool {
+        key.snapshot == self.snapshot && (key.node as usize) < self.expressions.len()
+    }
+    pub(super) fn get(&self, key: NativeExpressionKey) -> &SourceExpression {
+        assert!(self.contains(key), "foreign original Lua expression");
+        &self.expressions[key.node as usize]
+    }
+    pub(super) fn function_for(&self, key: NativeExpressionKey) -> Option<NativeFunctionKey> {
+        let mut expression = &self.get(key).expression;
+        while let ExprKind::Parenthesized(inner) = &expression.kind {
+            expression = inner;
+        }
+        if let ExprKind::Function(function) = &expression.kind {
+            Some(self.function_key(function))
+        } else {
+            None
+        }
+    }
+    pub(super) fn new(snapshot: u64, file: &File, functions: &HashMap<(usize, usize), u32>) -> Self {
+        let mut recipes = Self {
+            snapshot,
+            expressions: Vec::new(),
+            spans: HashMap::default(),
+            functions: functions.iter().map(|(span, index)| (*span, NativeFunctionKey { snapshot, index: *index })).collect(),
+            table_function_owners: HashMap::default(),
+        };
+        recipes.statements(&file.statements, None, None);
+        recipes
+    }
+    fn function_key(&self, function: &Function) -> NativeFunctionKey {
+        self.functions[&(function.span.start, function.span.end)]
     }
     fn statements(
         &mut self,

@@ -22,8 +22,8 @@ fn input(
             SourceRole::Implementation
         },
         standard_library,
-        syntax,
-        bound,
+        syntax: syntax.into(),
+        bound: bound.into(),
     }
 }
 

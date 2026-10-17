@@ -95,7 +95,7 @@ impl SourceIdentity {
     }
 }
 
-/// Retains only immutable parse/bind inputs and flow recipes between project checks.
+/// Retains only immutable parse/bind inputs and source recipes between project checks.
 ///
 /// Call preparation after registering the selected standard declaration
 /// sources. The host must refresh project membership and module resolution on
@@ -108,12 +108,12 @@ pub struct ProjectWorkspace {
     /// Parse/bind work performed by dependency discovery before preparation.
     pending_preparation: HashMap<u64, bool>,
     last_preparation: PreparationStats,
-    /// Each retained revision's recipe identity, kept so its flow recipes stay valid.
+    /// Each retained revision's recipe identity, kept so its source recipes stay valid.
     identities: HashMap<u64, crate::native_functions::project_provider::SourceRecipeIdentity>,
-    /// The flow recipes of the last session, by revision, and the global names they were seeded
-    /// with. A session over the same names reuses them; flow recipes hold no type.
-    flows: HashMap<u64, std::sync::Arc<crate::native_flow::NativeFlowRecipes>>,
-    flow_names: Vec<Vec<u8>>,
+    /// The source recipes of the last session, by revision, and the global names their flow
+    /// recipes were seeded with. A session over the same names reuses them; they hold no type.
+    recipes: HashMap<u64, crate::native_functions::SourceRecipes>,
+    recipe_names: Vec<Vec<u8>>,
 }
 
 impl ProjectWorkspace {
@@ -129,26 +129,26 @@ impl ProjectWorkspace {
         self.last_preparation
     }
 
-    /// The recipe identity of each revision, kept across sessions, and the flow recipes the last
+    /// The recipe identity of each revision, kept across sessions, and the source recipes the last
     /// session built for them.
-    pub(crate) fn flow_inputs(&mut self, revisions: &[u64]) -> (Vec<crate::native_functions::project_provider::SourceRecipeIdentity>, crate::native_functions::project_provider::PreparedFlows) {
+    pub(crate) fn source_inputs(&mut self, revisions: &[u64]) -> (Vec<crate::native_functions::project_provider::SourceRecipeIdentity>, crate::native_functions::project_provider::PreparedSources) {
         let identities = revisions.iter()
             .map(|revision| *self.identities.entry(*revision).or_insert_with(crate::native_functions::project_provider::SourceRecipeIdentity::new))
             .collect();
-        let prepared = crate::native_functions::project_provider::PreparedFlows {
-            recipes: revisions.iter().map(|revision| self.flows.get(revision).cloned()).collect(),
-            names: self.flow_names.clone(),
+        let prepared = crate::native_functions::project_provider::PreparedSources {
+            recipes: revisions.iter().map(|revision| self.recipes.get(revision).cloned()).collect(),
+            names: self.recipe_names.clone(),
         };
         (identities, prepared)
     }
 
-    /// Keeps the flow recipes a session built for `revisions` (in order) for the next session.
-    pub(crate) fn retain_flows(&mut self, revisions: &[u64], prepared: crate::native_functions::project_provider::PreparedFlows) {
-        if prepared.names != self.flow_names { self.flows.clear(); }
+    /// Keeps the source recipes a session built for `revisions` (in order) for the next session.
+    pub(crate) fn retain_sources(&mut self, revisions: &[u64], prepared: crate::native_functions::project_provider::PreparedSources) {
+        if prepared.names != self.recipe_names { self.recipes.clear(); }
         for (revision, recipes) in revisions.iter().zip(prepared.recipes) {
-            if let Some(recipes) = recipes { self.flows.insert(*revision, recipes); }
+            if let Some(recipes) = recipes { self.recipes.insert(*revision, recipes); }
         }
-        self.flow_names = prepared.names;
+        self.recipe_names = prepared.names;
     }
 
     /// Check a freshly loaded project while retaining unchanged source inputs.
@@ -254,7 +254,7 @@ impl ProjectWorkspace {
             .retain(|identity, _| current.contains(identity));
         let revisions: HashSet<u64> = sources.iter().map(|source: &PreparedProjectSource| source.snapshot.revision).collect();
         self.identities.retain(|revision, _| revisions.contains(revision));
-        self.flows.retain(|revision, _| revisions.contains(revision));
+        self.recipes.retain(|revision, _| revisions.contains(revision));
         stats.evicted = before - self.sources.len();
         self.last_preparation = stats;
         PreparedSources { sources, stats }
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_sources_reuse_flow_recipes_until_global_names_change() {
+    fn unchanged_sources_reuse_their_recipes_until_global_names_change() {
         let fixture = Fixture::new();
         let stable = fixture.file("stable.lua", "local function stable(value) return value end\nreturn stable\n");
         let edited = fixture.file("edited.lua", "local count=1\n");
@@ -561,7 +561,7 @@ mod tests {
         let mut check = |workspace: &mut ProjectWorkspace| {
             let report = workspace.check_project(fixture.load(&[stable.clone(), edited.clone()], &[]), options);
             let revision = workspace.sources.values().find(|snapshot| snapshot.source().starts_with("local function stable")).unwrap().revision;
-            (std::sync::Arc::clone(&workspace.flows[&revision]), report.has_errors())
+            (std::sync::Arc::clone(workspace.recipes[&revision].flow()), report.has_errors())
         };
         let (first, _) = check(&mut workspace);
         fixture.file("edited.lua", "local count=2\n");

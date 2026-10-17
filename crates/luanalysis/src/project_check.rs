@@ -183,8 +183,8 @@ fn prepare_program(
                 id: source.id,
                 role: source.role,
                 standard_library: selection.kind(source.id),
-                syntax: parsed.clone(),
-                bound: bound.clone(),
+                syntax: source.snapshot.syntax_arc(),
+                bound: source.snapshot.bound_arc().expect("a bound source"),
             });
         } else {
             source_costs.insert(source.id, 1);
@@ -207,7 +207,7 @@ fn prepare_program(
     }
     // An unchanged source keeps its identity, so the flow recipes a previous session built for
     // it are reused.
-    let (identities, prepared) = workspace.flow_inputs(&revisions);
+    let (identities, prepared) = workspace.source_inputs(&revisions);
     let snapshot = ProjectRegistrySnapshot::with_identities(
         inputs,
         identities,
@@ -215,7 +215,7 @@ fn prepare_program(
         options.loader_policy,
         selection.profile,
         options.overload_mode,
-    ).with_no_implicit_any(options.no_implicit_any).with_prepared_flows(prepared);
+    ).with_no_implicit_any(options.no_implicit_any).with_prepared_sources(prepared);
     PreparedProgram { snapshot, revisions, files, source_costs, standard_library_files, environment_errors }
 }
 
@@ -239,11 +239,11 @@ pub(crate) fn with_project_session<R: Send>(
             registry
         },
         |registry, queries| {
-            let flows = registry.flow_recipes();
+            let flows = registry.source_recipes();
             (query(project, registry, queries), flows)
         },
     );
-    workspace.retain_flows(&prepared.revisions, flows);
+    workspace.retain_sources(&prepared.revisions, flows);
     result
 }
 
@@ -282,7 +282,7 @@ pub(crate) fn check_project_with_workspace(
     let flow_started = Instant::now();
     if workers > 1 {
         snapshot.prepare_shared_flows();
-        workspace.retain_flows(&revisions, snapshot.prepared_flows().clone());
+        workspace.retain_sources(&revisions, snapshot.prepared_sources().clone());
     }
     let flow_prepare = flow_started.elapsed();
     let factory_nanos = AtomicU64::new(0);
@@ -304,11 +304,11 @@ pub(crate) fn check_project_with_workspace(
         let (checked, flows) = Engine::new().with_native_provider(
             || make_registry(0),
             |registry, queries| {
-                let flows = registry.flow_recipes();
+                let flows = registry.source_recipes();
                 (registry.check_roots(queries, &roots), flows)
             },
         );
-        workspace.retain_flows(&revisions, flows);
+        workspace.retain_sources(&revisions, flows);
         (checked, None)
     } else {
         // Each task checks only the files it owns, as a Bun task checks its

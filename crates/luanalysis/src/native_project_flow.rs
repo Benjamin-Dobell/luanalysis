@@ -215,8 +215,8 @@ mod tests {
             id: FileId { project: 778, index },
             role: SourceRole::Implementation,
             standard_library: None,
-            syntax,
-            bound,
+            syntax: syntax.into(),
+            bound: bound.into(),
         }
     }
 

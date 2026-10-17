@@ -553,6 +553,27 @@ impl Project {
         self.libraries.push(id);
         Ok(id)
     }
+    /// Replaces an implementation file's text in place, as an editor's buffer changes, when its
+    /// static require requests (`requests`, of the new text) name the same modules in the same
+    /// order: the loaded files and their resolutions stay as they are, and only the requests'
+    /// spans move. Returns false, changing nothing, when the requests differ; the project must
+    /// then be loaded again.
+    pub fn replace_source(&mut self, id: FileId, source: String, requests: Vec<RequireRequest>) -> bool {
+        let Some(file) = self.file(id) else { return false };
+        if file.role != SourceRole::Implementation { return false; }
+        let edges: Vec<usize> = (0..self.dependencies.len()).filter(|&index| self.dependencies[index].from == id).collect();
+        if edges.len() != requests.len()
+            || edges.iter().zip(&requests).any(|(&index, request)| self.dependencies[index].request.module != request.module)
+        {
+            return false;
+        }
+        for (index, request) in edges.into_iter().zip(requests) {
+            self.dependencies[index].request = request;
+        }
+        self.files[id.index as usize].source = source;
+        true
+    }
+
     pub fn file(&self, id: FileId) -> Option<&SourceFile> {
         (id.project == self.id)
             .then(|| self.files.get(id.index as usize))

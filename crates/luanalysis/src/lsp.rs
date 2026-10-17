@@ -25,6 +25,10 @@ pub(crate) fn run(inputs: CheckInputs, mut options: ProjectCheckOptions) -> i32 
     // Hover reads the described types of the last check; an editor shows inspections.
     options.describe_types = true;
     options.inspections = true;
+    // Checks leave a core to the query thread, so a completion does not wait on a check.
+    if options.jobs == 0 {
+        options.jobs = std::thread::available_parallelism().map_or(1, |cores| cores.get().saturating_sub(1).max(1));
+    }
     let (events, received) = mpsc::channel();
     let reader = events.clone();
     std::thread::spawn(move || {
@@ -89,6 +93,8 @@ struct Query {
     id: Json,
     path: PathBuf,
     overlays: HashMap<PathBuf, String>,
+    /// The server's `disk_generation` when the query was made.
+    disk: u64,
     site: CompletionSite,
     /// The document's text, which the site's word indexes.
     lines: LineIndex,
@@ -119,6 +125,9 @@ struct Server {
     documents: HashMap<PathBuf, Document>,
     /// Advanced by every change to what a check reads.
     revision: u64,
+    /// Advanced by every change a completion's cached project cannot see: files saved or
+    /// changed on disk, and documents opened or closed.
+    disk_generation: u64,
     /// The revision of the last job sent to the checker.
     requested: Option<u64>,
     checking: bool,
@@ -139,6 +148,7 @@ impl Server {
             shutdown: false,
             documents: HashMap::new(),
             revision: 0,
+            disk_generation: 0,
             requested: None,
             checking: false,
             snapshot: None,
@@ -244,6 +254,7 @@ impl Server {
                     let version = document.and_then(|document| document.get("version")).and_then(Json::as_u64).unwrap_or(0) as i64;
                     self.documents.insert(path, Document { uri: uri.to_owned(), text: text.to_owned(), version });
                     self.revision += 1;
+                    self.disk_generation += 1;
                 }
             }
             "textDocument/didChange" => {
@@ -264,9 +275,13 @@ impl Server {
                     && self.documents.remove(&path).is_some()
                 {
                     self.revision += 1;
+                    self.disk_generation += 1;
                 }
             }
-            "textDocument/didSave" | "workspace/didChangeWatchedFiles" => self.revision += 1,
+            "textDocument/didSave" | "workspace/didChangeWatchedFiles" => {
+                self.revision += 1;
+                self.disk_generation += 1;
+            }
             _ => {}
         }
         None
@@ -443,7 +458,7 @@ impl Server {
         let mut overlays: HashMap<PathBuf, String> = self.documents.iter()
             .map(|(path, document)| (path.clone(), document.text.clone())).collect();
         overlays.insert(path.clone(), site.text.clone());
-        let query = Query { id: id.clone(), path, overlays, site, lines, encoding: self.encoding };
+        let query = Query { id: id.clone(), path, overlays, disk: self.disk_generation, site, lines, encoding: self.encoding };
         if self.queries.as_ref().is_none_or(|queries| queries.send(query).is_err()) {
             self.respond(id, empty);
         }
@@ -508,35 +523,75 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
 
 fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>) {
     let mut workspace = ProjectWorkspace::new();
+    let mut loaded = None;
+    let incomplete = |id: Json| Event::Answered(id, Json::object([("isIncomplete", Json::from(true)), ("items", Json::Array(Vec::new()))]));
     while let Ok(mut query) = queries.recv() {
         // A completion superseded by a newer one is answered as incomplete, unchecked.
         while let Ok(newer) = queries.try_recv() {
-            let stale = Json::object([("isIncomplete", Json::from(true)), ("items", Json::Array(Vec::new()))]);
-            if events.send(Event::Answered(std::mem::replace(&mut query, newer).id, stale)).is_err() { return; }
+            if events.send(incomplete(std::mem::replace(&mut query, newer).id)).is_err() { return; }
         }
         let started = std::time::Instant::now();
-        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| complete(&inputs, options, &mut workspace, &query)));
-        if std::env::var_os("LUANALYSIS_PROFILE").is_some() {
-            eprintln!("luanalysis profile: completion={:.6}s", started.elapsed().as_secs_f64());
-        }
-        let items = answered.unwrap_or_else(|_| {
+        let mut answered = false;
+        // The answer is sent as soon as it is known, before the session's state is dropped.
+        let mut answer = |items: Vec<Json>| {
+            answered = true;
+            if std::env::var_os("LUANALYSIS_PROFILE").is_some() {
+                eprintln!("luanalysis profile: completion={:.6}s", started.elapsed().as_secs_f64());
+            }
+            let result = Json::object([("isIncomplete", Json::from(false)), ("items", Json::Array(items))]);
+            let _ = events.send(Event::Answered(query.id.clone(), result));
+        };
+        let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| complete(&inputs, options, &mut workspace, &mut loaded, &query, &mut answer)));
+        if completed.is_err() {
             workspace = ProjectWorkspace::new();
-            Vec::new()
-        });
-        let result = Json::object([("isIncomplete", Json::from(false)), ("items", Json::Array(items))]);
-        if events.send(Event::Answered(query.id, result)).is_err() { return; }
+            loaded = None;
+        }
+        if !answered && events.send(incomplete(query.id)).is_err() { return; }
     }
 }
 
-fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, query: &Query) -> Vec<Json> {
-    let Ok(discovery) = inputs.discover() else { return Vec::new() };
-    let Ok(resolver) = inputs.resolver(&discovery) else { return Vec::new() };
+/// The project a completion last loaded, before any session registered sources in it.
+struct LoadedProject {
+    disk: u64,
+    path: PathBuf,
+    /// The other documents' texts it was loaded with.
+    others: HashMap<PathBuf, String>,
+    project: Project,
+}
+
+/// The project for a completion. Between completions usually only the document being typed
+/// changes: when nothing on disk or in other documents did, and its requires name the same
+/// modules, the last project is reused with its new text instead of being discovered, read and
+/// resolved again.
+fn load(inputs: &CheckInputs, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query) -> Option<Project> {
+    let others: HashMap<PathBuf, String> = query.overlays.iter()
+        .filter(|(path, _)| **path != query.path)
+        .map(|(path, text)| (path.clone(), text.clone()))
+        .collect();
+    if let Some(last) = loaded.as_mut()
+        && last.disk == query.disk && last.path == query.path && last.others == others
+        && let Some(file) = last.project.file_by_path(&query.path).cloned()
+    {
+        let edited = luanalysis_project::SourceFile { source: query.site.text.clone(), ..file };
+        let requests = workspace.static_require_requests(&edited);
+        if last.project.replace_source(edited.id, edited.source, requests) {
+            return Some(last.project.clone());
+        }
+    }
+    let discovery = inputs.discover().ok()?;
+    let resolver = inputs.resolver(&discovery).ok()?;
     let project = Project::load_plan_with_overlays(&resolver, discovery.plan.clone(), &query.overlays, |source| {
         workspace.static_require_requests(source)
     });
-    let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return Vec::new() };
+    *loaded = Some(LoadedProject { disk: query.disk, path: query.path.clone(), others, project: project.clone() });
+    Some(project)
+}
+
+fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, answer: &mut (dyn FnMut(Vec<Json>) + Send)) {
+    let Some(project) = load(inputs, workspace, loaded, query) else { return };
+    let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
     let range = query.lines.range(query.site.word.start, query.site.word.end, query.encoding);
-    language_service::complete(project, options, workspace, file, &query.site).into_iter().map(|item| {
+    language_service::complete(project, options, workspace, file, &query.site, |items| answer(items.into_iter().map(|item| {
         let mut fields = vec![
             ("label".to_owned(), Json::from(item.label.as_str())),
             ("kind".to_owned(), Json::from(match item.kind {
@@ -550,7 +605,7 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
         ];
         if let Some(detail) = item.detail { fields.push(("detail".to_owned(), Json::from(detail))); }
         Json::Object(fields)
-    }).collect()
+    }).collect()));
 }
 
 fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, job: &Job) -> Result<ProjectCheckReport, String> {

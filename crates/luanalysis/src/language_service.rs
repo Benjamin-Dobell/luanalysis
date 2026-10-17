@@ -167,67 +167,78 @@ fn closers(prefix: &str) -> String {
     }).collect()
 }
 
-/// The completions at `site` in `file`, whose text in `project` is `site.text`.
+/// The completions at `site` in `file`, whose text in `project` is `site.text`. `deliver`
+/// receives them as soon as they are known, before the session's state is dropped.
 pub fn complete(
     project: Project,
     options: ProjectCheckOptions,
     workspace: &mut ProjectWorkspace,
     file: FileId,
     site: &CompletionSite,
-) -> Vec<CompletionItem> {
+    deliver: impl FnOnce(Vec<CompletionItem>) + Send,
+) {
     let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
-        let Some(source) = registry.source(file) else { return Vec::new() };
-        let mut items = Vec::new();
-        match site.context {
-            CompletionContext::Member { method } => {
-                let mut receiver = None;
-                crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| match &expression.kind {
-                    ExprKind::Field { base, name } | ExprKind::MethodCall { receiver: base, name, .. } if name.span == site.placeholder => {
-                        receiver = Some(base.span);
-                    }
-                    _ => {}
-                });
-                let Some(receiver) = receiver else { return items };
-                for (name, value) in receiver_members(registry, file, receiver, queries) {
-                    if !is_identifier(&name) || items.iter().any(|item: &CompletionItem| item.label == name) { continue; }
-                    let callable = matches!(value, Type::Any) || !queries.call_signature_types(&value).is_empty();
-                    if method && !callable { continue; }
-                    let kind = match (callable, method) {
-                        (false, _) => CompletionKind::Field,
-                        (true, true) => CompletionKind::Method,
-                        (true, false) => CompletionKind::Function,
-                    };
+        deliver(completions(registry, file, site, queries));
+    });
+}
+
+fn completions(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    site: &CompletionSite,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Vec<CompletionItem> {
+    let Some(source) = registry.source(file) else { return Vec::new() };
+    let mut items = Vec::new();
+    match site.context {
+        CompletionContext::Member { method } => {
+            let mut receiver = None;
+            crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| match &expression.kind {
+                ExprKind::Field { base, name } | ExprKind::MethodCall { receiver: base, name, .. } if name.span == site.placeholder => {
+                    receiver = Some(base.span);
+                }
+                _ => {}
+            });
+            let Some(receiver) = receiver else { return items };
+            for (name, value) in receiver_members(registry, file, receiver, queries) {
+                if !is_identifier(&name) || items.iter().any(|item: &CompletionItem| item.label == name) { continue; }
+                let callable = matches!(value, Type::Any) || !queries.call_signature_types(&value).is_empty();
+                if method && !callable { continue; }
+                let kind = match (callable, method) {
+                    (false, _) => CompletionKind::Field,
+                    (true, true) => CompletionKind::Method,
+                    (true, false) => CompletionKind::Function,
+                };
+                items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())) });
+            }
+        }
+        CompletionContext::Name => {
+            // Names need no check: a local's detail is its declared type.
+            let bound = source.bound();
+            for binding in visible_bindings(bound, site.placeholder.start) {
+                let declaration = bound.declaration(binding);
+                let detail = source.resolve_binding(binding, queries)
+                    .map(|binding| describe_native(&binding.constraint, queries, &mut Vec::new()));
+                let kind = match declaration.kind {
+                    bind::DeclarationKind::LocalFunction => CompletionKind::Function,
+                    _ => CompletionKind::Variable,
+                };
+                items.push(CompletionItem { label: declaration.name.clone(), kind, detail });
+            }
+            if let Some(environment) = source.global_environment()
+                && let Ok(environment) = queries.global_environment_type(environment)
+            {
+                for (name, value) in queries.type_members(&environment) {
+                    if !is_identifier(&name) || items.iter().any(|item| item.label == name) { continue; }
+                    let kind = if queries.call_signature_types(&value).is_empty() { CompletionKind::Variable } else { CompletionKind::Function };
                     items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())) });
                 }
             }
-            CompletionContext::Name => {
-                // Names need no check: a local's detail is its declared type.
-                let bound = source.bound();
-                for binding in visible_bindings(bound, site.placeholder.start) {
-                    let declaration = bound.declaration(binding);
-                    let detail = source.resolve_binding(binding, queries)
-                        .map(|binding| describe_native(&binding.constraint, queries, &mut Vec::new()));
-                    let kind = match declaration.kind {
-                        bind::DeclarationKind::LocalFunction => CompletionKind::Function,
-                        _ => CompletionKind::Variable,
-                    };
-                    items.push(CompletionItem { label: declaration.name.clone(), kind, detail });
-                }
-                if let Some(environment) = source.global_environment()
-                    && let Ok(environment) = queries.global_environment_type(environment)
-                {
-                    for (name, value) in queries.type_members(&environment) {
-                        if !is_identifier(&name) || items.iter().any(|item| item.label == name) { continue; }
-                        let kind = if queries.call_signature_types(&value).is_empty() { CompletionKind::Variable } else { CompletionKind::Function };
-                        items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())) });
-                    }
-                }
-                items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None }));
-            }
+            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None }));
         }
-        items
-    })
+    }
+    items
 }
 
 /// The members of the receiver at `span`. Asked alone, the receiver has its type at its flow

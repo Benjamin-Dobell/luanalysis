@@ -77,15 +77,15 @@ pub(super) struct NativeRegistry {
     /// Report inspections (`ProjectCheckOptions::inspections`).
     inspections: bool,
     legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy,
-    file: File,
-    bound: BoundFile,
-    functions: Vec<Function>,
-    function_names: Vec<Option<Name>>,
-    declaration_functions: HashSet<u32>,
-    function_spans: HashMap<(usize, usize), u32>,
-    declarations: HashMap<BindingId, DeclarationSource>,
+    file: std::sync::Arc<File>,
+    bound: std::sync::Arc<BoundFile>,
+    functions: std::sync::Arc<Vec<Function>>,
+    function_names: std::sync::Arc<Vec<Option<Name>>>,
+    declaration_functions: std::sync::Arc<HashSet<u32>>,
+    function_spans: std::sync::Arc<HashMap<(usize, usize), u32>>,
+    declarations: std::sync::Arc<HashMap<BindingId, DeclarationSource>>,
     pub(super) types: NativeTypes,
-    named: NativeNamed,
+    named: std::sync::Arc<NativeNamed>,
     header_metadata: RefCell<named_provider::SourceHeaderMetadata>,
     pub(super) members: super::native_members::NativeMembers,
     pub(super) doc_members: super::native_doc_members::NativeDocMembers,
@@ -132,6 +132,79 @@ pub(super) struct NativeRegistry {
     deferred_constraint_spans: RefCell<HashSet<(usize, usize)>>,
 }
 
+/// What a registry builds from one source revision alone: its functions and declarations, named
+/// declarations, expressions and flow recipes. They hold no type and no session state, so every
+/// session over the same revision and identity shares them (`ProjectWorkspace`).
+#[derive(Clone)]
+pub(crate) struct SourceRecipes {
+    snapshot: u64,
+    functions: std::sync::Arc<Vec<Function>>,
+    function_names: std::sync::Arc<Vec<Option<Name>>>,
+    declaration_functions: std::sync::Arc<HashSet<u32>>,
+    function_spans: std::sync::Arc<HashMap<(usize, usize), u32>>,
+    declarations: std::sync::Arc<HashMap<BindingId, DeclarationSource>>,
+    named: std::sync::Arc<NativeNamed>,
+    expressions: std::sync::Arc<super::native_expressions::ExpressionRecipes>,
+    flow: std::sync::Arc<super::native_flow::NativeFlowRecipes>,
+}
+
+impl SourceRecipes {
+    fn new(file: &File, bound: &BoundFile, identity: project_provider::SourceRecipeIdentity) -> Self {
+        let snapshot = identity.source;
+        let mut index = RegistryIndex {
+            bound,
+            assertions: file.expression_assertions.iter().filter(|assertion| assertion.kind == luanalysis_syntax::ExpressionAssertionKind::Type)
+                .map(|assertion| ((assertion.expression.start, assertion.expression.end), &assertion.annotation)).collect(),
+            functions: Vec::new(),
+            function_names: Vec::new(),
+            declaration_functions: HashSet::default(),
+            function_spans: HashMap::default(),
+            declarations: HashMap::default(),
+        };
+        index.statements(&file.statements, None);
+        let RegistryIndex {
+            functions,
+            function_names,
+            declaration_functions,
+            function_spans,
+            mut declarations,
+            ..
+        } = index;
+        let source_function_keys = function_spans
+            .iter()
+            .map(|(&span, &index)| (span, NativeFunctionKey { snapshot, index }))
+            .collect();
+        let named = NativeNamed::new(snapshot, file, bound, &source_function_keys)
+            .expect("original named declaration metadata");
+        for (index, function) in functions.iter().enumerate() {
+            if let Some(receiver) = bound.implicit_receiver(function.span) {
+                declarations.insert(receiver, DeclarationSource::Parameter { function: index as u32, index: 0 });
+                for (parameter_index, parameter) in function.params.iter().enumerate() {
+                    let binding = bound.binding_at(parameter.span.start).expect("original written method parameter");
+                    declarations.insert(binding, DeclarationSource::Parameter { function: index as u32, index: parameter_index + 1 });
+                }
+            }
+        }
+        let expressions = super::native_expressions::ExpressionRecipes::new(snapshot, file, &function_spans);
+        let flow = NativeFlowSources::new_with_snapshot(file, bound, snapshot, &function_spans, identity.flow).shared_recipes();
+        Self {
+            snapshot,
+            functions: std::sync::Arc::new(functions),
+            function_names: std::sync::Arc::new(function_names),
+            declaration_functions: std::sync::Arc::new(declaration_functions),
+            function_spans: std::sync::Arc::new(function_spans),
+            declarations: std::sync::Arc::new(declarations),
+            named: std::sync::Arc::new(named),
+            expressions: std::sync::Arc::new(expressions),
+            flow,
+        }
+    }
+
+    pub(crate) fn flow(&self) -> &std::sync::Arc<super::native_flow::NativeFlowRecipes> {
+        &self.flow
+    }
+}
+
 #[path = "native_standard_environment.rs"]
 pub(crate) mod standard;
 
@@ -165,55 +238,24 @@ impl NativeRegistry {
     }
 
     pub(super) fn new(file: File, bound: BoundFile) -> Self {
-        Self::new_with_identity(file, bound, project_provider::SourceRecipeIdentity::new())
+        Self::new_with_identity(std::sync::Arc::new(file), std::sync::Arc::new(bound), project_provider::SourceRecipeIdentity::new())
     }
 
-    fn new_with_identity(file: File, bound: BoundFile, identity: project_provider::SourceRecipeIdentity) -> Self {
+    fn new_with_identity(file: std::sync::Arc<File>, bound: std::sync::Arc<BoundFile>, identity: project_provider::SourceRecipeIdentity) -> Self {
         Self::new_with_identity_and_flow(file, bound, identity, None)
     }
 
     fn new_with_identity_and_flow(
-        file: File,
-        bound: BoundFile,
+        file: std::sync::Arc<File>,
+        bound: std::sync::Arc<BoundFile>,
         identity: project_provider::SourceRecipeIdentity,
-        prepared_flow: Option<NativeFlowSources>,
+        prepared: Option<SourceRecipes>,
     ) -> Self {
         let snapshot = identity.source;
-        let mut index = RegistryIndex {
-            bound: &bound,
-            assertions: file.expression_assertions.iter().filter(|assertion| assertion.kind == luanalysis_syntax::ExpressionAssertionKind::Type)
-                .map(|assertion| ((assertion.expression.start, assertion.expression.end), &assertion.annotation)).collect(),
-            functions: Vec::new(),
-            function_names: Vec::new(),
-            declaration_functions: HashSet::default(),
-            function_spans: HashMap::default(),
-            declarations: HashMap::default(),
-        };
-        index.statements(&file.statements, None);
-        let RegistryIndex {
-            functions,
-            function_names,
-            declaration_functions,
-            function_spans,
-            mut declarations,
-            ..
-        } = index;
-        let source_function_keys = function_spans
-            .iter()
-            .map(|(&span, &index)| (span, NativeFunctionKey { snapshot, index }))
-            .collect();
-        let named = NativeNamed::new(snapshot, &file, &bound, &source_function_keys)
-            .expect("original named declaration metadata");
+        let source = prepared.unwrap_or_else(|| SourceRecipes::new(&file, &bound, identity));
+        assert_eq!(source.snapshot, snapshot, "prepared recipes belong to their original source identity");
+        let SourceRecipes { functions, function_names, declaration_functions, function_spans, declarations, named, expressions, flow, .. } = source;
         let class_definitions = class_definitions::NativeClassDefinitions::new(snapshot, &named);
-        for (index, function) in functions.iter().enumerate() {
-            if let Some(receiver) = bound.implicit_receiver(function.span) {
-                declarations.insert(receiver, DeclarationSource::Parameter { function: index as u32, index: 0 });
-                for (parameter_index, parameter) in function.params.iter().enumerate() {
-                    let binding = bound.binding_at(parameter.span.start).expect("original written method parameter");
-                    declarations.insert(binding, DeclarationSource::Parameter { function: index as u32, index: parameter_index + 1 });
-                }
-            }
-        }
         let signatures=super::native_signatures::NativeSignatures::new(snapshot,&file,&functions,&named);
         let mut types = NativeTypes::new_with_named(
             snapshot,
@@ -237,7 +279,7 @@ impl NativeRegistry {
                 types.register_self_parameter(source.key, source.syntax.name.span);
             }
         }
-        let expressions = NativeExpressions::new(snapshot, &file, &function_spans);
+        let expressions = NativeExpressions::from_recipes(expressions);
         let metatables = metatables::NativeMetatables::new(&expressions, &functions, &bound, &named);
         let methods = methods::NativeMethods::new(snapshot, &file, &functions, &function_spans, &bound, &named, &types, &metatables);
         for method in methods.sources() {
@@ -247,7 +289,7 @@ impl NativeRegistry {
         let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
             expressions.key_for_span(expression.span)
         });
-        let flow = prepared_flow.unwrap_or_else(|| NativeFlowSources::new_with_snapshot(&file, &bound, snapshot, &function_spans, identity.flow));
+        let flow = NativeFlowSources::from_shared_recipes(flow);
         assert_eq!(flow.program.snapshot, identity.flow, "prepared flow belongs to its original source recipe");
         let runtime_tables=super::native_runtime_tables::NativeRuntimeTables::new(&file,&expressions,&flow);
         let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
@@ -346,6 +388,23 @@ impl NativeRegistry {
 
     pub(super) fn bound(&self) -> &BoundFile {
         &self.bound
+    }
+    pub(super) fn bound_arc(&self) -> std::sync::Arc<BoundFile> {
+        std::sync::Arc::clone(&self.bound)
+    }
+    /// This registry's source recipes, for a later session over the same revision.
+    pub(super) fn source_recipes(&self) -> SourceRecipes {
+        SourceRecipes {
+            snapshot: self.snapshot,
+            functions: std::sync::Arc::clone(&self.functions),
+            function_names: std::sync::Arc::clone(&self.function_names),
+            declaration_functions: std::sync::Arc::clone(&self.declaration_functions),
+            function_spans: std::sync::Arc::clone(&self.function_spans),
+            declarations: std::sync::Arc::clone(&self.declarations),
+            named: std::sync::Arc::clone(&self.named),
+            expressions: self.expressions.recipes(),
+            flow: self.flow.shared_recipes(),
+        }
     }
     pub(crate) fn binding_function_owner(&self,binding:BindingId)->Option<NativeFunctionKey> {self.flow.binding_function_owner(binding)}
 

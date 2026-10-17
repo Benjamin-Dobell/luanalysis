@@ -92,7 +92,7 @@ struct NormalizedFileReport {
     diagnostics: Vec<Diagnostic>,
     bindings: Vec<BindingInfo>,
     types: Vec<TypeInfo>,
-    bound: Option<BoundFile>,
+    bound: Option<std::sync::Arc<BoundFile>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]

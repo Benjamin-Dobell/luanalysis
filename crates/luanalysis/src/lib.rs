@@ -118,7 +118,7 @@ pub struct CheckReport {
     pub diagnostics: Vec<Diagnostic>,
     pub bindings: Vec<BindingInfo>,
     pub types: Vec<TypeInfo>,
-    pub bound: Option<BoundFile>,
+    pub bound: Option<std::sync::Arc<BoundFile>>,
     pending_bindings: Vec<(BindingId, Type)>,
     pending_types: Vec<(Span, Type)>,
     pending_diagnostics: Vec<diagnostic_types::PendingDiagnostic>,
@@ -389,7 +389,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
                 .types
                 .sort_by_key(|info| (info.span.start, info.span.end));
             report.types.dedup();
-            report.bound = Some(registry.bound().clone());
+            report.bound = Some(registry.bound_arc());
             report
         },
     )

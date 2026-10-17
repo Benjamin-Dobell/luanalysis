@@ -35,8 +35,8 @@ pub(crate) struct RegistryInput {
     pub id: FileId,
     pub role: SourceRole,
     pub standard_library: Option<StandardLibrarySource>,
-    pub syntax: File,
-    pub bound: BoundFile,
+    pub syntax: Arc<File>,
+    pub bound: Arc<BoundFile>,
 }
 
 /// Original recipe identities survive task-local provider construction. They
@@ -64,16 +64,16 @@ pub(crate) struct ProjectRegistrySnapshot {
     overload_mode: crate::OverloadMode,
     no_implicit_any: bool,
     environment: luanalysis_engine::NativeEnvironmentKey,
-    prepared_flows: PreparedFlows,
+    prepared_flows: PreparedSources,
 }
 
-/// Flow recipes built for each source of a project, and the global names they were seeded
-/// with. Recipes are syntactic (flow graphs, references and write indexes) and hold no type,
-/// so a later session over the same source revisions and global names reuses them.
+/// The recipes built for each source of a project (`SourceRecipes`), and the global names their
+/// flow recipes were seeded with. Recipes hold no type, so a later session over the same source
+/// revisions and global names reuses them.
 #[derive(Clone, Default)]
-pub(crate) struct PreparedFlows {
+pub(crate) struct PreparedSources {
     /// Empty, or one per source: the recipes to use instead of building them.
-    pub(crate) recipes: Vec<Option<Arc<super::super::native_flow::NativeFlowRecipes>>>,
+    pub(crate) recipes: Vec<Option<super::SourceRecipes>>,
     pub(crate) names: Vec<Vec<u8>>,
 }
 
@@ -102,7 +102,7 @@ impl ProjectRegistrySnapshot {
             snapshot: identities.first().map_or_else(|| SourceRecipeIdentity::new().source, |identity| identity.source),
             index: 0,
         };
-        Self { inputs, identities, dependencies, policy, environment_profile, overload_mode, no_implicit_any: false, environment, prepared_flows: PreparedFlows::default() }
+        Self { inputs, identities, dependencies, policy, environment_profile, overload_mode, no_implicit_any: false, environment, prepared_flows: PreparedSources::default() }
     }
 
     pub(crate) fn with_no_implicit_any(mut self, enabled: bool) -> Self {
@@ -116,17 +116,17 @@ impl ProjectRegistrySnapshot {
     pub(crate) fn prepare_shared_flows(&mut self) {
         // Recipes from a previous session are reused unless they were seeded with other
         // global names, which only building a registry reveals.
-        self.prepared_flows = self.worker_registry().flow_recipes();
+        self.prepared_flows = self.worker_registry().source_recipes();
     }
 
     /// Recipes a previous session built for these sources, under the same identities.
-    pub(crate) fn with_prepared_flows(mut self, prepared: PreparedFlows) -> Self {
+    pub(crate) fn with_prepared_sources(mut self, prepared: PreparedSources) -> Self {
         assert!(prepared.recipes.is_empty() || prepared.recipes.len() == self.inputs.len(), "one prepared flow per original source");
         self.prepared_flows = prepared;
         self
     }
 
-    pub(crate) fn prepared_flows(&self) -> &PreparedFlows {
+    pub(crate) fn prepared_sources(&self) -> &PreparedSources {
         &self.prepared_flows
     }
 
@@ -176,9 +176,9 @@ pub(crate) struct ProjectRegistry {
 
 impl ProjectRegistry {
     /// Each source's flow recipes, for a later session over the same revisions.
-    pub(crate) fn flow_recipes(&self) -> PreparedFlows {
-        PreparedFlows {
-            recipes: self.files.iter().map(|file| Some(file.source.flow.shared_recipes())).collect(),
+    pub(crate) fn source_recipes(&self) -> PreparedSources {
+        PreparedSources {
+            recipes: self.files.iter().map(|file| Some(file.source.source_recipes())).collect(),
             names: self.global_names.clone(),
         }
     }
@@ -234,7 +234,7 @@ impl ProjectRegistry {
         overload_mode: crate::OverloadMode,
         no_implicit_any: bool,
         environment: luanalysis_engine::NativeEnvironmentKey,
-        prepared_flows: &PreparedFlows,
+        prepared_flows: &PreparedSources,
     ) -> Self {
         assert!(prepared_flows.recipes.is_empty() || prepared_flows.recipes.len() == inputs.len(), "one prepared flow per original source");
         let prepared = |index: usize| prepared_flows.recipes.get(index).cloned().flatten();
@@ -247,8 +247,7 @@ impl ProjectRegistry {
             .into_iter()
             .enumerate()
             .map(|(index, input)| {
-                let prepared_flow = prepared(index).map(super::super::native_flow::NativeFlowSources::from_shared_recipes);
-                let mut source = NativeRegistry::new_with_identity_and_flow(input.syntax, input.bound, identities[index], prepared_flow);
+                let mut source = NativeRegistry::new_with_identity_and_flow(input.syntax, input.bound, identities[index], prepared(index));
                 source.set_overload_mode(overload_mode);
                 source.set_no_implicit_any(no_implicit_any);
                 source.set_source_role(input.role);
@@ -287,7 +286,7 @@ impl ProjectRegistry {
         {
             return Self::new_with_recipe_identities(
                 inputs, identities, dependencies, policy, environment_profile, overload_mode,
-                no_implicit_any, environment, &PreparedFlows::default(),
+                no_implicit_any, environment, &PreparedSources::default(),
             );
         }
         for (index, file) in files.iter_mut().enumerate() {
@@ -620,7 +619,7 @@ impl ProjectRegistry {
                 .types
                 .sort_by_key(|ty| (ty.span.start, ty.span.end));
             report.report.types.dedup();
-            report.report.bound = Some(file.source.bound().clone());
+            report.report.bound = Some(file.source.bound_arc());
         }
         reports = reports.into_iter().enumerate().filter_map(|(index, report)| {
             (self.modules.required_files.borrow().contains(&report.file) || owned_only && emitted.contains(&index))
@@ -1111,8 +1110,8 @@ mod tests {
             },
             role: SourceRole::Implementation,
             standard_library: None,
-            syntax,
-            bound,
+            syntax: syntax.into(),
+            bound: bound.into(),
         }
     }
 
