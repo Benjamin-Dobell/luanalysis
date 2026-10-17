@@ -720,6 +720,11 @@ impl<'p, 's> Checker<'p, 's> {
         let query = Query::NativeNamed(native_query);
         if let Some(raw) = self.provisional(query) { return Ok(TypeId(raw as u32)) }
         if !self.enter(query) {
+            // tsgo resolves a member's type only where it is read, so a class's definition table,
+            // built for a read in one of the class's own stores (`m.x = m.y`), never requests the
+            // member being inferred. Here the table is built whole, and that member is unresolved
+            // in it: the cycle leaves what is built in the meantime provisional.
+            if !key && self.is_reentry(query) { return Ok(TypeId::UNRESOLVED) }
             let error = NativeNamedTypeError::TooDeep(native_query);
             self.report_native_named(error);
             return Err(error);
@@ -775,11 +780,21 @@ impl<'p, 's> Checker<'p, 's> {
             self.mark_tainted_from(0);
             return Err(error);
         }
+        let serial = self.work;
         let (application, completed) = self.run_memoizable(|checker| provider.type_member_owner_application(checker, member));
         match self.leave(query) {
             Ok(_) if completed.is_some() => { self.native_named_cache.owner_applications.insert(member, application.clone()); }
+            // Completed under a cycle that is still in progress further down, an application it
+            // found is provisional, as a member's type is (`native_named_member_demand`), and the
+            // cycle has left its callers provisional too. Finding none there is no evidence that
+            // the member has none. Under a context that is not cacheable, with nothing unsettled
+            // since, the application is only not cacheable.
+            Err(_) if completed.is_some() && (application.is_some() || self.lowest_taint_since(serial) == usize::MAX) => {}
             _ => {
-                self.mark_tainted_from(0);
+                // What that cycle left in progress above it is provisional already. Nothing
+                // below it depends on this application, or any other unsettled one.
+                let from = match self.lowest_taint_since(serial) { usize::MAX => 0, from => from.min(self.frames.len()) };
+                self.mark_tainted_from(from);
                 return Err(NativeNamedTypeError::PendingContext { member });
             }
         }
@@ -1329,11 +1344,14 @@ impl<'p, 's> Checker<'p, 's> {
         // Publish the complete declaration shape before comparing overrides.
         // A method parameter can refer to this same class: the shared relation
         // worker needs its shape without recursively validating the declaration.
-        self.native_object_schema_resolved(ty)?;
+        let schema = self.native_object_schema_resolved(ty)?;
         let members = self.native_object_members(reference)?;
         let native_query = NativeTypeDeclarationQuery::ObjectValidation(ty);
         let query = Query::NativeNamed(native_query);
         if !self.enter(query) {
+            // Requested again while it is being validated, as a member's inference builds its
+            // class's definition table, the object is the shape published above.
+            if self.is_reentry(query) { return Ok(schema) }
             let error = NativeNamedTypeError::TooDeep(native_query);
             self.report_native_named(error);
             return Err(error);
@@ -1359,6 +1377,7 @@ impl<'p, 's> Checker<'p, 's> {
         let native_query = NativeTypeDeclarationQuery::ObjectMembers(ty);
         let query = Query::NativeNamed(native_query);
         if !self.enter(query) {
+            if self.is_reentry(query) { return Ok(self.native_object_provisional_schema(reference, &members)) }
             let error = NativeNamedTypeError::TooDeep(native_query);
             self.report_native_named(error);
             return Err(error);
@@ -1367,6 +1386,28 @@ impl<'p, 's> Checker<'p, 's> {
         if let Ok(stored) = self.leave(query) { self.native_named_cache.schema(ty, result, stored); }
         if let Err(error) = result { self.report_native_named(error); }
         result
+    }
+
+    /// The members of an object requested again while they are being resolved, as a member's
+    /// inference reads or relates its own class: TypeScript has a class's member symbols before
+    /// their types, and each member here has the type it already has, or none yet. Nothing is
+    /// resolved for it, and the cycle leaves what is built from it provisional.
+    fn native_object_provisional_schema(&mut self, reference: NativeObjectReference, members: &[NativeObjectMember]) -> TypeId {
+        let Ok(provider) = self.native_named_provider(reference.declaration) else { return TypeId::UNRESOLVED };
+        let mut fields: Vec<NativeTableField> = Vec::new();
+        for origin in members {
+            let header = provider.type_member_header(self, origin.member);
+            let NativeTypeMemberKey::Fixed(key) = header.key else { continue };
+            let Ok(key) = key.normalize() else { continue };
+            if fields.iter().any(|field| field.key == key) { continue }
+            let value = match self.native_named_cache.types.get(&NativeTypeDeclarationQuery::MemberType(origin.member)) {
+                Some(&raw) if origin.via.is_none() => self.native_member_type(raw, origin.owner),
+                _ => TypeId::UNRESOLVED,
+            };
+            fields.push(NativeTableField { key, value, optional: header.optional, readonly: header.readonly, origin: provider.type_member_origin(origin.member) });
+        }
+        self.native_table_with_context_and_sequence_policy(&fields, &[], &[], NativeTableFlavor::Declared, false, None)
+            .unwrap_or(TypeId::UNRESOLVED)
     }
 
     /// Callable named objects keep their original signature view in recursive
@@ -1613,6 +1654,19 @@ impl<'p, 's> Checker<'p, 's> {
                 }
             }
             if let Some((_, _, value)) = found { return Ok(value) }
+            // A member's inference can read its own class while the class's members are being
+            // resolved (`m.x = m.y` in a method). A key that no field has then reads the indexers
+            // alone, as a TypeScript property lookup does not resolve the other members.
+            let object = self.intern(TypeData::NativeObject(reference));
+            if self.stack.contains(&Query::NativeNamed(NativeTypeDeclarationQuery::ObjectMembers(object))) {
+                let members = self.native_object_members(reference).map_err(|error| error.table_error(object))?;
+                let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
+                let indexers: Vec<_> = members.into_iter()
+                    .filter(|origin| matches!(provider.type_member_header(self, origin.member).key, NativeTypeMemberKey::Indexer { .. }))
+                    .collect();
+                let table = self.native_object_resolved_uncached(reference, &indexers, false).map_err(|error| error.table_error(object))?;
+                return self.native_table_read(table, NativeTableAccessKey::Literal(key));
+            }
         }
         let object = self.intern(TypeData::NativeObject(reference));
         let resolved = self.native_object_resolved(object).map_err(|error| error.table_error(object))?;

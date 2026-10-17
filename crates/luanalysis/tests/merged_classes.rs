@@ -90,3 +90,26 @@ fn a_class_table_stored_in_its_own_field_is_the_class() {
     let output = fixture.check();
     assert!(output.status.success(), "{}", text(&output));
 }
+
+#[test]
+fn a_class_field_stored_from_another_field_is_inferred() {
+    // Building the class's definition table for the read of `m.y` once requested `x` again,
+    // which was reported as excessively deep, and the class was unusable.
+    let fixture = Fixture::new(&[
+        ("main.lua", "---@class Pair\nlocal m = {}\nm.y = 1\nm.x = m.y\nfunction m.f()\n    m.z = m.missing\nend\nlocal x = m.x\nreturn m\n"),
+    ]);
+    let output = fixture.check();
+    let report = text(&output);
+    assert!(report.contains("main.lua:8:7: x: number"), "{report}");
+    assert!(report.contains("main.lua:6:13: error[TS2339]: Property 'missing' does not exist on type 'Pair'"), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+}
+
+#[test]
+fn a_metamethod_stored_from_a_method_of_its_own_class_is_not_too_deep() {
+    let fixture = Fixture::new(&[
+        ("main.lua", "---@class Hash\nlocal mt = {}\nmt.__index = mt\n---@param text string\n---@return integer\nfunction mt:hash(text) return #text end\nmt.__call = mt.hash\nreturn mt\n"),
+    ]);
+    let report = text(&fixture.check());
+    assert!(!report.contains("TS2589") && !report.contains("LUA2031"), "{report}");
+}

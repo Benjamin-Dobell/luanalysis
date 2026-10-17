@@ -396,10 +396,17 @@ impl<'p, 's> Checker<'p, 's> {
             }
             let object = self.intern(TypeData::NativeObject(reference.schema));
             let query = Query::NativeNamed(NativeTypeDeclarationQuery::RuntimeTableWrittenContext(object, key));
-            if !self.enter(query) { self.mark_tainted_from(0); return None }
+            // A context requested again while it is being written has none there; the cycle has
+            // left what is in progress provisional.
+            if !self.enter(query) {
+                if !self.is_reentry(query) { self.mark_tainted_from(0); }
+                return None
+            }
             let (result, completed) = self.run_memoizable(|checker| checker.native_runtime_written_context(reference.schema, key));
-            let ended = self.leave(query);
-            if completed.is_none() || ended.is_err() { self.mark_tainted_from(0); return None }
+            // Completed under a cycle that is in progress further down, the context is provisional,
+            // and so are its callers.
+            let _ = self.leave(query);
+            if completed.is_none() { self.mark_tainted_from(0); return None }
             return result.ok().flatten();
         }
         None

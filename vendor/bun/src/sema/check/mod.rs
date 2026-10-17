@@ -825,6 +825,7 @@ impl<'s> Program<'s> {
             in_progress: [0; 1024],
             frames: Vec::new(),
             last_enter: EnterOutcome::Entered,
+            refused_reentry: false,
             resolution_start: 0,
             eager: Vec::new(),
             loop_values: Vec::new(),
@@ -1398,6 +1399,8 @@ pub struct Checker<'p, 's> {
     in_progress: [u16; 1024],
     /// How the last `enter` ended. `leave` and `excessively_deep` reset it to `Entered`.
     last_enter: EnterOutcome,
+    /// Whether the last `enter` refused its query because it is in progress further down.
+    refused_reentry: bool,
     /// The patterns whose implied type is being computed as the contextual type of their
     /// initializer, and the stack depth when that began.
     contextual_binding_patterns: Vec<(FileId, PatId, usize)>,
@@ -2201,11 +2204,18 @@ impl<'p, 's> Checker<'p, 's> {
         self.deepest_stack.get()
     }
 
+    /// After `enter` refused `q`: whether it refused because `q` is in progress further down the
+    /// stack, rather than for lack of time, stack or depth.
+    fn is_reentry(&self, q: Query) -> bool {
+        self.refused_reentry && self.stack.contains(&q)
+    }
+
     /// `false`: the query is already in progress further down the stack.
     #[inline]
     fn enter(&mut self, q: Query) -> bool {
         self.work += 1;
         self.found_cycle = false;
+        self.refused_reentry = false;
         if (self.work == self.work_trap || self.is_stack_low()) && self.refuse_for_lack_of_stack(q)
         {
             return false;
@@ -2550,6 +2560,7 @@ impl<'p, 's> Checker<'p, 's> {
             return false;
         }
         self.last_enter = EnterOutcome::Refused;
+        self.refused_reentry = true;
         // Everything in progress between there and here is computed without the result, so it is
         // provisional.
         let from = i + usize::from(!self.is_requested_eagerly(i));
