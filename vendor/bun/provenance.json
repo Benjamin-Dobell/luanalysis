@@ -2220,6 +2220,36 @@
       "patch": "vendor/patches/bun-sema-native-language-service-members.patch",
       "reason": "List the members of a Lua value for the language service, as properties_of_type lists a TypeScript type's: names from every native table representation, kept where a native table read accepts them, through kernel a6f9b25.",
       "patch_sha256": "c5c407f2ba154a849470e165c6cbfec44b5e4fde5cfd3254c2e98e534a4b0913"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-luals-pathologies.patch",
+      "reason": "Remove the exponential paths LuaLS's own sources exposed: a flow value computed inside an unfinished query is cached provisionally, a literal-key runtime-table read resolves its own key's members, and calls preserve standard bindings and the loader instead of proving each reached body free of writes, through kernel 0345818.",
+      "patch_sha256": "d5d90e28c90a2b3e73cea9f52d7f0054d1d22c28328c48b575e06ff06a6c3844"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-luals-pathologies.patch",
+      "reason": "Remove the exponential paths LuaLS's own sources exposed: a flow value computed inside an unfinished query is cached provisionally, a literal-key runtime-table read resolves its own key's members, and calls preserve standard bindings and the loader instead of proving each reached body free of writes, through kernel 0345818.",
+      "patch_sha256": "d5d90e28c90a2b3e73cea9f52d7f0054d1d22c28328c48b575e06ff06a6c3844"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-luals-pathologies.patch",
+      "reason": "Remove the exponential paths LuaLS's own sources exposed: a flow value computed inside an unfinished query is cached provisionally, a literal-key runtime-table read resolves its own key's members, and calls preserve standard bindings and the loader instead of proving each reached body free of writes, through kernel 0345818.",
+      "patch_sha256": "d5d90e28c90a2b3e73cea9f52d7f0054d1d22c28328c48b575e06ff06a6c3844"
+    },
+    {
+      "path": "src/sema/check/native_standard_assumptions.rs",
+      "patch": "vendor/patches/bun-sema-luals-pathologies.patch",
+      "reason": "Remove the exponential paths LuaLS's own sources exposed: a flow value computed inside an unfinished query is cached provisionally, a literal-key runtime-table read resolves its own key's members, and calls preserve standard bindings and the loader instead of proving each reached body free of writes, through kernel 0345818.",
+      "patch_sha256": "d5d90e28c90a2b3e73cea9f52d7f0054d1d22c28328c48b575e06ff06a6c3844"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-luals-pathologies.patch",
+      "reason": "Remove the exponential paths LuaLS's own sources exposed: a flow value computed inside an unfinished query is cached provisionally, a literal-key runtime-table read resolves its own key's members, and calls preserve standard bindings and the loader instead of proving each reached body free of writes, through kernel 0345818.",
+      "patch_sha256": "d5d90e28c90a2b3e73cea9f52d7f0054d1d22c28328c48b575e06ff06a6c3844"
     }
   ],
   "source_additions": {
@@ -2240,7 +2270,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "0d4b3fed348d9b3b97e21370483541ba11570792dc79e4c76555503701989b72",
+      "extracted_sha256": "9a367ea0426096b91d0cbdc03cbd7872d236eb8284c13dbde7ff91425cf04d27",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
@@ -2256,7 +2286,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "a140258bb4b04abaebc3b7a58180c960c14598608ff780038a95942d4e157eed",
+      "extracted_sha256": "267f1bd27a2da15a4729549dc2e91e68c45351307811b5e6bdd291f4761c1817",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -2284,7 +2314,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_standard_assumptions.rs": {
-      "extracted_sha256": "bcdf2033957acf122a7fd30d2d808224a5bb04a655caaf4175e84a1c28f827f2",
+      "extracted_sha256": "b42a6947112e84773e1d040ee0b42c3c153257d85875f4713886dfe352d26a7c",
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
@@ -3246,7 +3276,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "d7f24ca22bf991ca306b135a1cccbef4b2a8907809dff774b2e736242cbd4bfb"
+      "extracted_sha256": "4f9a5634aa636cbd735ca0cda2859e245986969427ba37203dea5a3d1e82dc88"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -3331,7 +3361,7 @@
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "da1032a0e57e7c54734e64a24131bf60852ae8cddc2a2c269cdc2fea3296a368"
+      "extracted_sha256": "bf4fbc4c64207b18d9405443950a457f049a2e2eb798706ba89219ea11d336ee"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",

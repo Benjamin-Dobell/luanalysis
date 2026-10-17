@@ -503,6 +503,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "List the members of a Lua value for the language service, as properties_of_type lists a TypeScript type's: names from every native table representation, kept where a native table read accepts them, through kernel a6f9b25.",
 } for path in ["native_named.rs", "native_tables.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-luals-pathologies.patch",
+    "reason": "Remove the exponential paths LuaLS's own sources exposed: a flow value computed inside an unfinished query is cached provisionally, a literal-key runtime-table read resolves its own key's members, and calls preserve standard bindings and the loader instead of proving each reached body free of writes, through kernel 0345818.",
+} for path in ["mod.rs", "native_flow.rs", "native_named.rs", "native_standard_assumptions.rs", "sink.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
