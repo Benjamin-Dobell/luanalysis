@@ -146,6 +146,10 @@ impl NativeRegistry {
                 .filter(|directive| directive.binding == binding)
         })
     }
+    /// Whether the expression at `span` initializes a class definition.
+    pub(crate) fn is_class_definition_initializer(&self, span: Span) -> bool {
+        self.class_definition_for_initializer(span).is_some()
+    }
     fn class_definition_for_initializer(&self, span: Span) -> Option<ClassDefinitionDirective> {
         self.class_definitions.sources.iter().find_map(|&key| {
             self.class_definition_directive(self.named.declaration(key)?)

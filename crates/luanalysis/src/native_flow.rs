@@ -1054,14 +1054,15 @@ impl NativeFlowSources {
     pub(super) fn latest_binding_write_before(&self, binding: BindingId, region: u32, position: usize) -> Option<&flow::Evaluation> {
         let reference = flow::Reference { root: flow::ReferenceRoot::Binding(binding), path: Vec::new() };
         self.write_metadata.exact.get(&reference)?.iter().filter_map(|&write| {
-            let flow::NodeKind::Write { address, value: flow::ValueDemand::Evaluation(value), .. } = &self.program.node(write).kind else { return None; };
-            (write.graph == region && address.statement_end <= position).then_some((address.statement_end, *value))
+            let flow::NodeKind::Write { address, value, .. } = &self.program.node(write).kind else { return None; };
+            let value = written_expression(value)?;
+            (write.graph == region && address.statement_end <= position).then_some((address.statement_end, value))
         }).max_by_key(|(end, _)| *end).map(|(_, value)| self.program.evaluation(value))
     }
 
     pub(super) fn declaration_initializer(&self, binding: BindingId) -> Option<&flow::Evaluation> {
-        let flow::NodeKind::Write { value: flow::ValueDemand::Evaluation(initializer), .. } = &self.declaration_write(binding)?.kind else { return None; };
-        Some(self.program.evaluation(*initializer))
+        let flow::NodeKind::Write { value, .. } = &self.declaration_write(binding)?.kind else { return None; };
+        Some(self.program.evaluation(written_expression(value)?))
     }
 
     pub(super) fn declaration_write(&self, binding: BindingId) -> Option<&flow::Node> {
@@ -2155,4 +2156,13 @@ fn appends(key: &Expr, receiver: &Expr) -> bool {
     let mut key = key;
     while let ExprKind::Parenthesized(inner) = &key.kind { key = inner; }
     matches!(&key.kind, ExprKind::Binary { op: BinaryOperator::Add, left, right, .. } if length(left) && one(right) || one(left) && length(right))
+}
+
+/// The expression a write stores: its value, or the call whose first result it is
+/// (`local t = setmetatable({}, mt)`).
+fn written_expression(value: &flow::ValueDemand) -> Option<flow::EvaluationId> {
+    match value {
+        flow::ValueDemand::Evaluation(evaluation) | flow::ValueDemand::PackElement { evaluation, index: 0 } => Some(*evaluation),
+        _ => None,
+    }
 }

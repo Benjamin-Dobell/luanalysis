@@ -170,7 +170,12 @@ impl Checker<'_> {
                 .call_native_arguments_in_frame(&callee_type, call, &arguments, &[], expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
-        self.pack_call_result(result, &callee_type, &origins, callee.span, span)
+        let pack = self.pack_call_result(result, &callee_type, &origins, callee.span, span);
+        let first = self.engine.pack_slot(&pack, 0);
+        // A class definition's table is the class's, not a runtime table's.
+        let defines_class = self.native.is_some_and(|native| native.is_class_definition_initializer(span));
+        let table = if defines_class { first.clone() } else { self.setmetatable_result(callee, args, first.clone()) };
+        if table == first { pack } else { ValuePack::single(table) }
     }
 
     pub(super) fn call_arguments(&mut self, args: &[Expr]) -> Vec<PackArgument> {
@@ -633,7 +638,21 @@ impl Checker<'_> {
                 .call_native_arguments_scalar_in_frame(&callee_type, call, &arguments, &[], expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
-        self.call_result(result, &callee_type, &origins, callee.span, span)
+        let ty = self.call_result(result, &callee_type, &origins, callee.span, span);
+        if self.native.is_some_and(|native| native.is_class_definition_initializer(span)) { return ty }
+        self.setmetatable_result(callee, args, ty)
+    }
+
+    /// Lua's `setmetatable` returns the table it is given. A table that a constructor names keeps
+    /// that identity through the call, so stores after it extend the table as they would directly.
+    fn setmetatable_result(&mut self, callee: &Expr, args: &[Expr], ty: Type) -> Type {
+        let Some(first) = args.first() else { return ty };
+        if self.engine.runtime_table_declaration(&ty).is_some() { return ty }
+        // The same syntactic `setmetatable` that attributes the stores to that table's schema.
+        let ExprKind::Name(name) = &callee.kind else { return ty };
+        if name.text != "setmetatable" || self.bound.binding_at(name.span.start).is_some() { return ty }
+        let Some(declaration) = self.native.and_then(|native| native.runtime_table_owner_declaration(first)) else { return ty };
+        self.engine.runtime_table_value(declaration, &ty).unwrap_or(ty)
     }
 
     pub(super) fn call_result(

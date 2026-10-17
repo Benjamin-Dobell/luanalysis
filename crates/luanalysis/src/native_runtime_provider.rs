@@ -26,10 +26,16 @@ impl NativeRegistry {
             let mut memo = HashMap::default();
             self.runtime_tables.stores().iter().map(|store| {
                 let receiver = &self.expressions().get(store.receiver).expression;
-                self.syntactic_table_owner(receiver, Some(store.key.graph.region), 0, &mut memo)
-                    .filter(|&owner| self.runtime_tables.schema_key(owner).is_some())
+                let owner = self.syntactic_table_owner(receiver, Some(store.key.graph.region), 0, &mut memo);
+                owner.filter(|&owner| self.runtime_tables.schema_key(owner).is_some())
             }).collect()
         }).get(store).copied().flatten()
+    }
+
+    /// The runtime schema of the constructor `expression` names syntactically, if it has one.
+    pub(crate) fn runtime_table_owner_declaration(&self, expression: &Expr) -> Option<NativeTypeDeclarationKey> {
+        let owner = self.syntactic_table_owner(expression, None, 0, &mut HashMap::default())?;
+        self.runtime_tables.schema_key(owner)
     }
 
     /// The constructor `expression` names syntactically: the constructor itself,
@@ -91,7 +97,7 @@ impl NativeRegistry {
             let receiver = &self.expressions().get(store.receiver).expression;
             let store_region = Some(store.key.graph.region);
             if self.syntactic_table_owner(receiver, store_region, depth + 1, memo) != Some(owner) { continue; }
-            let Some(ValueRecipe::Evaluation(value)) = sources.value(store.value) else { continue; };
+            let (Some(ValueRecipe::Evaluation(value)) | Some(ValueRecipe::PackElement { evaluation: value, index: 0 })) = sources.value(store.value) else { continue; };
             let value = &sources.program.expression(sources.program.evaluation(*value).expression).expression;
             let Some(nested) = self.syntactic_table_owner(value, store_region, depth + 1, memo) else { continue; };
             if store_region == region && store.statement_end <= position
