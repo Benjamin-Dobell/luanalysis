@@ -101,3 +101,16 @@ fn the_standard_streams_are_fields_of_io() {
         assert!(output.status.success(), "{version}: {}", text(&output));
     }
 }
+
+#[test]
+fn a_require_before_the_rebinding_is_standard_when_another_file_may_replace_require() {
+    // LuaLS's test runner swaps the global require for a while, so require's provenance is
+    // walked everywhere, its relabel module included.
+    let fixture = Fixture::new(&[
+        ("lp.lua", "return { P = function() return 1 end }\n"),
+        ("runner.lua", "local function test(name)\n    local original = require\n    require = function(n) return original(n) end\n    require(name)\n    require = original\nend\nreturn test\n"),
+        ("main.lua", "local m = require 'lp'\n_ENV = nil\nlocal p = m.P()\n"),
+    ]);
+    let report = text(&fixture.check(&["main.lua", "runner.lua"]));
+    assert!(report.contains("main.lua:3:7: p: number"), "{report}");
+}

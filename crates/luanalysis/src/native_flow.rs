@@ -235,6 +235,11 @@ impl NativeFlowSources {
     }
     pub(super) fn has_original_require_capability(&self) -> bool { self.original_require_capability }
     pub(super) fn environment_cell_is_immutable(&self) -> bool { !self.environment_cell_written }
+    /// Whether a read at `position` in `graph` sees the chunk's original environment.
+    pub(super) fn reads_original_environment(&self, graph: NativeGraphKey, position: usize) -> bool {
+        !self.environment_cell_written
+            || graph.region == 0 && self.original_environment_until.is_some_and(|until| position < until)
+    }
     fn loader_address_invalidates(&self, address: &flow::CapturedAddress) -> bool {
         self.loader_address_invalidates_with_capability(address, self.original_require_capability)
     }
@@ -547,7 +552,9 @@ impl NativeFlowSources {
                 &flow::Reference { root: flow::ReferenceRoot::LoaderState, path: Vec::new() });
             intern_reference(&mut result.references[region], &mut result.reference_indices[region],
                 &flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: Vec::new() });
-            if !result.environment_cell_written {
+            // Reads of the original environment: everywhere, unless the chunk rebinds `_ENV`, and
+            // then main-chunk reads before the first rebinding (`original_environment_until`).
+            if !result.environment_cell_written || region == 0 && result.original_environment_until.is_some() {
                 let original: Vec<_> = result.references[region].iter().filter(|reference| reference.root == flow::ReferenceRoot::EnvironmentCell)
                     .map(|reference| flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: reference.path.clone() }).collect();
                 for reference in original {
@@ -701,9 +708,7 @@ impl NativeFlowSources {
                         continue;
                     }
                     let Some(bit) = standard(name.text.as_bytes()) else { return Lexical::Ordinary; };
-                    let original_environment = graph.region == 0
-                        && self.original_environment_until.is_some_and(|until| name.span.start < until);
-                    if self.environment_cell_written && !original_environment || replaced & 1 << bit != 0 || bound.environment_binding_at(name.span.start).is_some() {
+                    if !self.reads_original_environment(graph, name.span.start) || replaced & 1 << bit != 0 || bound.environment_binding_at(name.span.start).is_some() {
                         return Lexical::Unknown;
                     }
                     let reference = flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: vec![flow::Key::String(name.text.as_bytes().to_vec())] };
@@ -1542,8 +1547,10 @@ impl FlowAdapter<'_> {
         }))
     }
 
-    fn alias_read_reference(&self, original: &flow::Reference, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
-        if original.root == flow::ReferenceRoot::EnvironmentCell && self.sources.environment_cell_is_immutable() {
+    fn alias_read_reference(&self, original: &flow::Reference, graph: NativeGraphKey, position: usize) -> Option<NativeReferenceKey> {
+        if original.root == flow::ReferenceRoot::EnvironmentCell
+            && (self.sources.environment_cell_is_immutable() || self.sources.reads_original_environment(graph, position))
+        {
             self.sources.reference_key(graph, &flow::Reference {
                 root: flow::ReferenceRoot::EnvironmentObject, path: original.path.clone(),
             })
@@ -1790,7 +1797,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             return NativeAliasValue::Projection {value:self.sources.evaluation_value(inner),input:self.sources.flow_key(source.input,input.graph.context),index:0};
         }
         if let Some(reference)=self.sources.program.references.get(&evaluation.expression)
-            && let Some(reference)=self.alias_read_reference(reference,at.graph)
+            && let Some(reference)=self.alias_read_reference(reference,at.graph,self.sources.program.expression(evaluation.expression).expression.span.start)
         {return NativeAliasValue::Reference {reference,input:at};}
         let expression=&self.sources.program.expression(evaluation.expression).expression;
         match &expression.kind {
