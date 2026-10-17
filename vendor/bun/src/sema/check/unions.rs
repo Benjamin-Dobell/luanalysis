@@ -2338,6 +2338,7 @@ impl<'p, 's> Checker<'p, 's> {
         types.take_has_ordered_by_own_id();
         let order = self
             .compare_types_without_ids(s, t)
+            .then_with(|| self.native_structural_order(s, t, 0))
             .then_with(|| types.creation_order(s, t));
         // Here, or further in: `mapping_in_declaration_order`.
         if types.take_has_ordered_by_own_id() {
@@ -2345,6 +2346,72 @@ impl<'p, 's> Checker<'p, 's> {
             types.mark_ordered_by_id(b);
         }
         order
+    }
+
+    /// An order for Lua types without names, from their structure and declarations. tsgo orders
+    /// such types by creation, which differs between tasks that evaluate in different orders, and
+    /// a union's members are printed in its order.
+    fn native_structural_order(&self, a: TypeId, b: TypeId, depth: u32) -> std::cmp::Ordering {
+        use super::native_tables::NativeTableKey;
+        use std::cmp::Ordering::Equal;
+        if a == b || depth > 8 { return Equal }
+        let types = |x: TypeId, y: TypeId| self.compare_types_without_ids(x, y)
+            .then_with(|| self.native_structural_order(x, y, depth + 1));
+        let atoms = &self.atoms();
+        let key = |x: &NativeTableKey, y: &NativeTableKey| {
+            let rank = |key: &NativeTableKey| match key {
+                NativeTableKey::Boolean(_) => 0, NativeTableKey::Integer(_) => 1, NativeTableKey::Float(_) => 2, NativeTableKey::String(_) => 3,
+            };
+            rank(x).cmp(&rank(y)).then_with(|| match (x, y) {
+                (NativeTableKey::Boolean(x), NativeTableKey::Boolean(y)) => x.cmp(y),
+                (NativeTableKey::Integer(x), NativeTableKey::Integer(y)) => x.cmp(y),
+                (NativeTableKey::Float(x), NativeTableKey::Float(y)) => x.cmp(y),
+                (NativeTableKey::String(x), NativeTableKey::String(y)) => atoms.bytes(*x).cmp(atoms.bytes(*y)),
+                _ => Equal,
+            })
+        };
+        let declaration = |x: super::native_named::NativeTypeDeclarationId| (x.snapshot, x.index);
+        match (self.data(a), self.data(b)) {
+            (&TypeData::NativeArray { element: x, readonly: r }, &TypeData::NativeArray { element: y, readonly: q }) => {
+                r.cmp(&q).then_with(|| types(x, y))
+            }
+            (TypeData::NativeTable(x), TypeData::NativeTable(y)) => {
+                let fields = x.fields.len().cmp(&y.fields.len()).then_with(|| x.fields.iter().zip(y.fields.iter())
+                    .map(|(f, g)| key(&f.key, &g.key).then_with(|| types(f.value, g.value))
+                        .then_with(|| f.optional.cmp(&g.optional)).then_with(|| f.readonly.cmp(&g.readonly)))
+                    .find(|order| order.is_ne()).unwrap_or(Equal));
+                let indexers = || x.indexers.len().cmp(&y.indexers.len()).then_with(|| x.indexers.iter().zip(y.indexers.iter())
+                    .map(|(f, g)| types(f.key, g.key).then_with(|| types(f.value, g.value)).then_with(|| f.sparse.cmp(&g.sparse)))
+                    .find(|order| order.is_ne()).unwrap_or(Equal));
+                let tails = || x.sequence_tails.len().cmp(&y.sequence_tails.len()).then_with(|| x.sequence_tails.iter().zip(y.sequence_tails.iter())
+                    .map(|(f, g)| f.start.cmp(&g.start).then_with(|| types(f.value, g.value)))
+                    .find(|order| order.is_ne()).unwrap_or(Equal));
+                fields.then_with(indexers).then_with(tails)
+                    .then_with(|| x.is_array.cmp(&y.is_array)).then_with(|| x.fresh.cmp(&y.fresh))
+            }
+            (&TypeData::NativeRuntimeTable(x), &TypeData::NativeRuntimeTable(y)) => {
+                declaration(x.schema.declaration).cmp(&declaration(y.schema.declaration)).then_with(|| types(x.view, y.view))
+            }
+            (&TypeData::NativeDefinition(x), &TypeData::NativeDefinition(y)) => {
+                declaration(x.class.declaration).cmp(&declaration(y.class.declaration)).then_with(|| types(x.view, y.view))
+            }
+            _ => self.native_declaration_place(a).cmp(&self.native_declaration_place(b)),
+        }
+    }
+
+    /// Where a Lua function type is declared: the original declaration of its first signature.
+    /// Such a type has no symbol, so tsgo's order would fall back to creation order, which
+    /// differs between tasks that evaluate in different orders.
+    fn native_declaration_place(&self, ty: TypeId) -> Option<(u64, u32, bool)> {
+        let TypeData::Synth(shape) = self.data(ty) else { return None };
+        let &first = shape.call.first().or(shape.construct.first())?;
+        match *self.types().sig(first) {
+            crate::types::SigData::Native { declaration, .. }
+            | crate::types::SigData::NativeCaptured { declaration, .. }
+            | crate::types::SigData::NativeContextual { declaration, .. } => Some((declaration.snapshot, declaration.index, false)),
+            crate::types::SigData::NativeDeclarationSignature { declaration, .. } => Some((declaration.snapshot, declaration.index, true)),
+            _ => None,
+        }
     }
 
     /// See `Types::creation_order`.

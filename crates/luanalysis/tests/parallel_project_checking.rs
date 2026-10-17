@@ -662,3 +662,19 @@ fn numeric_expandos_use_reached_values_and_replaced_receivers_on_every_worker() 
     fixture.file("bounded.lua", "---@param index number\nlocal function fill(index)\n---@type {[number]:string}\nlocal values={}\nvalues[index]='word'\nend\n");
     clean(&fixture.minimal(&entries, &[]));
 }
+
+#[test]
+fn unions_of_unnamed_types_print_alike_in_every_task() {
+    // Lua function and array types have no name, so their order in a union came from the order
+    // a task created them in. A diagnostic printing one differed between job counts, and both
+    // spellings survived the merge of task reports.
+    let fixture = Fixture::new();
+    fixture.file("path.lua", "---@class Path\nlocal Path = {}\n---@param suffix string\n---@return string\nfunction Path:name(suffix) return suffix end\nreturn Path\n");
+    fixture.file("dummy.lua", "---@class Dummy\nlocal Dummy = {}\n---@param suffix number\n---@return string\nfunction Dummy:name(suffix) return '' end\nreturn Dummy\n");
+    fixture.file("lists.lua", "---@param list string[]|number[]\nlocal function count(list) return #list end\ncount({ true })\nreturn count\n");
+    fixture.file("first.lua", "require 'dummy'\n---@param dummy Dummy\nlocal function name(dummy) return dummy:name(1) end\nlocal numbers = { 1 }\n");
+    fixture.file("second.lua", "require 'path'\nrequire 'dummy'\n---@param target Path|Dummy\nlocal function name(target) return target:name(true) end\nlocal strings = { 'a' }\n");
+    let entries = ["path.lua", "dummy.lua", "lists.lua", "first.lua", "second.lua"];
+    let report = fixture.minimal(&entries, &[]);
+    error_at(&report, "lists.lua", "TS2345", "{ true }");
+}

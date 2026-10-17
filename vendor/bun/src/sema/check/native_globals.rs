@@ -314,21 +314,13 @@ impl<'p, 's> Checker<'p, 's> {
             self.report_native_global(error.clone());
             return Err(error);
         }
-        // A pure written declaration can be demanded while its consumer is
-        // traversing an incomplete loop. Its result remains usable in that
-        // original context without becoming a completed cached declaration.
+        // A declaration can be demanded while its consumer is traversing an
+        // incomplete loop, or under another context that is not cacheable. It is
+        // computed at its own lexical root (`native_globals_at_lexical_root`), so
+        // its result remains usable in that original context, without becoming a
+        // completed cached declaration, when nothing it depends on is unsettled.
         let frame = self.frames.last().expect("entered global declaration query");
-        let is_declaration = |declaration| provider.contains_value_declaration(declaration)
-            && provider.value_declaration_header(declaration).role == NativeGlobalSourceRole::Declaration;
-        let declaration_only = match demand {
-            NativeGlobalsQuery::ValueDeclarationContract(declaration)
-            | NativeGlobalsQuery::ValueDeclaration(declaration) => is_declaration(declaration),
-            NativeGlobalsQuery::GlobalBinding(binding) => {
-                let declarations = provider.global_binding_declarations(binding);
-                !declarations.is_empty() && declarations.into_iter().all(is_declaration)
-            }
-        };
-        let context = (declaration_only && frame.tainted && !frame.circular).then_some(NativeGlobalDeclarationContext {
+        let context = (frame.tainted && !frame.circular).then_some(NativeGlobalDeclarationContext {
             serial: frame.serial,
             incomplete_flow: frame.incomplete_flow,
             cuts: self.cuts(),

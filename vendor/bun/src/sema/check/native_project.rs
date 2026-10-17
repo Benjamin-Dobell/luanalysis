@@ -141,6 +141,7 @@ impl<'p, 's> Checker<'p, 's> {
         // entered. Preserve that demand-local limit cause when it taints an
         // otherwise successful fallback; unrelated Pending stays unresolved.
         let cuts = self.cuts();
+        let (serial, height) = (self.work, self.stack.len() - 1);
         let result = compute(self, provider);
         let left = self.leave(query);
         if self.left_a_cycle {
@@ -157,6 +158,9 @@ impl<'p, 's> Checker<'p, 's> {
             Err(open) => {
                 if let Ok(ty) = result {
                     self.cache_provisionally(query, u64::from(ty.0), open);
+                    // Entered under a context that is not cacheable, with nothing unsettled since: a
+                    // module's exports come from its own chunk, so they are only not cacheable here.
+                    if self.cuts() == cuts && self.lowest_taint_since(serial) > height { return Ok(ty) }
                     let error = if self.cuts() != cuts { NativeProjectError::TooDeep(demand) }
                         else { NativeProjectError::UnresolvedQuery(demand) };
                     self.report_native_project(error);

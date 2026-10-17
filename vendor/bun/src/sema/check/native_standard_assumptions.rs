@@ -64,6 +64,26 @@ impl<'p, 's> Checker<'p, 's> {
         use crate::types::TypeId;
         let invalid = NativeFlowResult { ty: TypeId::FALSE, incomplete: false, unresolved_auto: false };
         if reference.graph != at.graph || !provider.contains_reference(reference) || provider.node(at).is_none() { return invalid }
+        // A straight run of nodes has one predecessor each. Follow it here rather than with a
+        // frame per node, which a long chunk demanded from deep in another query ran out of
+        // stack on, so the result depended on where the demand came from.
+        let mut at = at;
+        loop {
+            match provider.node(at) {
+                Some(NativeFlowNode::Write { before, target, .. }) => {
+                    if matches!(provider.write_affects_ignoring_descendants(reference, target, at, self), NativeWriteRelation::Exact | NativeWriteRelation::PossibleExact | NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor) { return invalid }
+                    at = before;
+                }
+                Some(NativeFlowNode::Call { before, .. }) => {
+                    if provider.known_standard_loader_write(at) { return invalid }
+                    at = before;
+                }
+                Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
+                    | NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => at = before,
+                Some(_) => break,
+                None => return invalid,
+            }
+        }
         if self.is_stack_low() { self.mark_tainted_from(0); return NativeFlowResult { incomplete: true, ..invalid } }
         let key = (reference, at, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
         if let Some(result) = self.native_alias_cache.standard_loaders.get(&key) { return *result }
@@ -71,6 +91,7 @@ impl<'p, 's> Checker<'p, 's> {
         // otherwise create indefinitely many frames for the same source node.
         let query = Query::NativeStandardLoader(reference, at, key.2);
         if !self.enter(query) { self.mark_tainted_from(0); return NativeFlowResult { incomplete: true, ..invalid } }
+        let (serial, height) = (self.work, self.stack.len() - 1);
         let (mut result, completed) = self.run_memoizable(|checker| match provider.node(at) {
             Some(NativeFlowNode::Start) => {
                 if let Some(index) = checker.native_alias_cache.executions.iter().rposition(|frame| frame.entry == at) {
@@ -117,7 +138,12 @@ impl<'p, 's> Checker<'p, 's> {
             },
             _ => invalid,
         });
-        if self.leave(query).is_err() || completed.is_none() || result.incomplete { result.incomplete = true; self.mark_tainted_from(0); }
+        let left = self.leave(query);
+        // Entered under a context that is not cacheable, with nothing unsettled since: the
+        // loader's state follows this source's flow alone, so it is only not cacheable here.
+        let uncacheable = left.is_err() && completed.is_some() && !result.incomplete && self.lowest_taint_since(serial) > height;
+        if uncacheable { return result }
+        if left.is_err() || completed.is_none() || result.incomplete { result.incomplete = true; self.mark_tainted_from(0); }
         if !result.incomplete && !self.is_stack_low() { self.native_alias_cache.standard_loaders.insert(key, result); }
         result
     }

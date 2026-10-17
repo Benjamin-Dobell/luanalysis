@@ -103,7 +103,9 @@ impl GlobalContexts {
                 queries.value_declaration_type(declaration())
             };
             match self.contract {
-                Contract::Constant => {
+                // An implementation declaration is computed at its own lexical root too: with
+                // nothing unsettled, it is usable here as a written declaration is.
+                Contract::Constant | Contract::Implementation => {
                     let ty = result.expect("an independent declaration is usable in this context");
                     assert!(queries.is_assignable(&ty, &Type::Number));
                     assert!(!queries.is_assignable(&Type::String, &ty));
@@ -115,9 +117,9 @@ impl GlobalContexts {
                     result,
                     Err(GlobalQueryError::CircularQuery(_) | GlobalQueryError::UnresolvedQuery(_))
                 ), "recursive declarations must remain unavailable: {result:?}"),
-                Contract::PendingMember | Contract::FlowDependency | Contract::Implementation => {
+                Contract::PendingMember | Contract::FlowDependency => {
                     assert!(matches!(result, Err(GlobalQueryError::UnresolvedQuery(_))),
-                        "a fresh dependency or implementation must remain unresolved: {result:?}");
+                        "a fresh dependency must remain unresolved: {result:?}");
                 }
                 Contract::DepthRefusal => assert!(matches!(
                     result,
@@ -125,7 +127,7 @@ impl GlobalContexts {
                 ), "a refused declaration must not expose the provider's fallback: {result:?}"),
             }
         }
-        if self.contract == Contract::Constant {
+        if matches!(self.contract, Contract::Constant | Contract::Implementation) {
             assert_eq!(self.contract_calls.get(), before + 4,
                 "neither declaration nor global queries may enter a completed cache under inherited context");
         }
@@ -396,7 +398,7 @@ fn missing_global_declaration_contracts_are_not_accepted_as_current_only_values(
 }
 
 #[test]
-fn implementation_global_contracts_do_not_use_declaration_only_completion() {
+fn implementation_global_contracts_complete_uncached_as_declarations_do() {
     Engine::new().with_native_provider(
         || GlobalContexts::new(Inherited::Member, Contract::Implementation),
         |provider, queries| inherited_argument(provider, queries),
