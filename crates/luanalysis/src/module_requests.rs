@@ -1,5 +1,7 @@
-//! Original call candidates selected from binder-owned names and value recipes.
-//! No source text scanning, module execution or type construction happens here.
+//! Original require calls selected syntactically from binder-owned names and their
+//! lexical aliases. As in Bun's program load, the targets of these calls are the
+//! project's files; no source text scanning, module execution or type
+//! construction happens here.
 use crate::bind::{BindingId, BoundFile, BuiltinIntrinsic};
 use luanalysis_syntax::{Expr, ExprKind, File, Span, Stmt, StmtKind, TableFieldKind};
 use crate::collections::HashSet;
@@ -11,17 +13,11 @@ pub(crate) enum RequireTarget {
     NonUtf8,
     Arity(usize),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RequireDiscovery {
-    Lexical,
-    Value,
-}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RequireCall {
     pub span: Span,
     pub argument_span: Span,
     pub target: RequireTarget,
-    pub discovery: RequireDiscovery,
 }
 
 pub(crate) fn require_calls(file: &File, bound: &BoundFile) -> Vec<RequireCall> {
@@ -30,32 +26,24 @@ pub(crate) fn require_calls(file: &File, bound: &BoundFile) -> Vec<RequireCall> 
     local_value_candidates(&file.statements, &mut locals);
     let mut loaders = HashSet::default();
     let mut environments = HashSet::default();
-    let mut values = HashSet::default();
     // This is candidate collection, not value propagation. A later assignment
     // never erases a request candidate; the actual native callee must still
     // retain the original require capability at that evaluation's flow input.
     loop {
-        let before = loaders.len() + environments.len() + values.len();
+        let before = loaders.len() + environments.len();
         for (name, value) in &locals {
             let Some(binding) = bound.binding_at(name.span.start) else { continue; };
             if environment_candidate(value, bound, &environments) { environments.insert(binding); }
             if require_candidate(value, bound, &loaders, &environments) { loaders.insert(binding); }
-            if value_candidate(value, bound, &values) { values.insert(binding); }
         }
-        if before == loaders.len() + environments.len() + values.len() { break; }
+        if before == loaders.len() + environments.len() { break; }
     }
     statements(&file.statements, &mut |expression| {
         let ExprKind::Call { callee, args } = &expression.kind else {
             return;
         };
         let callee = unparenthesized(callee);
-        let discovery = if require_candidate(callee, bound, &loaders, &environments) {
-            RequireDiscovery::Lexical
-        } else if let ExprKind::Name(name) = &callee.kind
-            && bound.binding_at(name.span.start).is_some_and(|binding| values.contains(&binding))
-        {
-            RequireDiscovery::Value
-        } else { return; };
+        if !require_candidate(callee, bound, &loaders, &environments) { return; }
         let argument_span = args.first().map_or(callee.span, |argument| argument.span);
         let target = match args.as_slice() {
             [argument] => match &unparenthesized(argument).kind {
@@ -71,21 +59,10 @@ pub(crate) fn require_calls(file: &File, bound: &BoundFile) -> Vec<RequireCall> 
             span: expression.span,
             argument_span,
             target,
-            discovery,
         });
     });
     calls.sort_by_key(|call| (call.span.start, call.span.end));
     calls
-}
-fn value_candidate(expression: &Expr, bound: &BoundFile, aliases: &HashSet<BindingId>) -> bool {
-    match &unparenthesized(expression).kind {
-        // These original values can contain saved loaders. This does not
-        // identify their runtime value: native operation and loader queries
-        // must prove every value-discovered request before it is activated.
-        ExprKind::Field { .. } | ExprKind::Index { .. } | ExprKind::Call { .. } => true,
-        ExprKind::Name(name) => bound.binding_at(name.span.start).is_some_and(|binding| aliases.contains(&binding)),
-        _ => false,
-    }
 }
 fn environment_candidate(expression: &Expr, bound: &BoundFile, aliases: &HashSet<BindingId>) -> bool {
     let ExprKind::Name(name) = &unparenthesized(expression).kind else { return false; };

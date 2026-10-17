@@ -284,7 +284,6 @@ impl ProjectRegistry {
                     (file.source.snapshot, call.span.start, call.span.end),
                     ImportRecipe {
                         argument_span: call.argument_span,
-                        discovery: call.discovery,
                         target: dependency.and_then(|edge| match edge.outcome {
                             DependencyOutcome::Resolved(target) => Some(target),
                             _ => None,
@@ -414,6 +413,7 @@ impl ProjectRegistry {
             .expect("native source key belongs to this immutable project provider")
     }
 
+    #[cfg(test)]
     pub(crate) fn required_files(&self) -> HashSet<FileId> {
         self.modules.required_files.borrow().clone()
     }

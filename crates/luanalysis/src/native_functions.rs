@@ -2156,7 +2156,7 @@ impl NativeRegistry {
         // The import query owns its result. Reachability must not ask a
         // builtin's source spelling for a function signature or infer a
         // module's result merely to classify an unused call.
-        if self.module_import(expression.span).is_some_and(|(_, recipe)| recipe.discovery == crate::module_requests::RequireDiscovery::Lexical) {
+        if self.module_import(expression.span).is_some() {
             return NativeCallEffects::None;
         }
         if let ExprKind::Call { .. } = &expression.kind

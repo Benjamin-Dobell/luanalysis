@@ -182,10 +182,13 @@ fn unused_errors_in_required_modules_keep_their_original_owner_source() {
     );
 }
 
+// As in Bun, program membership is decided at load: the targets of syntactic
+// require calls, transitively, are checked once each whether or not checking
+// later proves the call's loader.
 #[test]
-fn rejected_candidates_keep_source_identities_without_checking_their_transitive_bodies() {
+fn rejected_candidates_and_their_transitive_targets_remain_program_files() {
     let fixture = Fixture::new();
-    let candidate = fixture.file("candidate.lua", "local unused=require('poison')\nreturn 42\n");
+    fixture.file("candidate.lua", "local unused=require('poison')\nreturn 42\n");
     let poison = fixture.file("poison.lua", "---@type number\nlocal unused='wrong'\nreturn 42\n");
     let run = |source: &str| check_project_with_options(
         fixture.project(fixture.file("main.lua", source)),
@@ -194,26 +197,25 @@ fn rejected_candidates_keep_source_identities_without_checking_their_transitive_
             ..ProjectCheckOptions::default()
         },
     );
-    let rejected = run("local loader=require\nloader=function(name) return 42 end\nlocal value=loader('candidate')\n");
-    clean(&rejected);
-    assert_eq!(rejected.project.dependencies.len(), 2);
-    assert_eq!(rejected.checked_file_count(), 1);
-    for path in [&candidate, &poison] {
-        let original = rejected.project.file_by_path(path).unwrap();
-        assert!(rejected.file(original.id).is_none());
+    for source in [
+        "local loader=require\nloader=function(name) return 42 end\nlocal value=loader('candidate')\n",
+        "local value=require('candidate')\n",
+    ] {
+        let report = run(source);
+        assert!(report.has_errors());
+        assert_eq!(report.project.dependencies.len(), 2);
+        assert_eq!(report.checked_file_count(), 3);
+        assert!(report.file(report.project.entries[0]).unwrap().report.diagnostics.is_empty());
+        let original = report.project.file_by_path(&poison).unwrap();
+        let poisoned = report.file(original.id).unwrap();
+        assert!(poisoned.report.diagnostics.iter().any(|error| error.code == "TS2322"
+            && &original.source[error.span.start..error.span.end] == "'wrong'"));
     }
-
-    let proven = run("local value=require('candidate')\n");
-    assert!(proven.has_errors());
-    assert_eq!(proven.checked_file_count(), 3);
-    let original = proven.project.file_by_path(&poison).unwrap();
-    let report = proven.file(original.id).unwrap();
-    assert!(report.report.diagnostics.iter().any(|error| error.code == "TS2322"
-        && &original.source[error.span.start..error.span.end] == "'wrong'"));
 }
 
 // `require` is recognised by name (Luanalysis v1 semantics): a saved field or a
-// returned function holding it is an ordinary call that activates no module.
+// returned function holding it is an ordinary call that loads and activates no
+// module.
 #[test]
 fn saved_field_and_returned_loaders_are_ordinary_calls() {
     let fixture = Fixture::new();
@@ -253,12 +255,12 @@ fn a_holder_loader_field_never_activates_a_module() {
         let ordinary = run(&source);
         clean(&ordinary);
         assert_eq!(ordinary.checked_file_count(), 1);
-        assert!(ordinary.file(ordinary.project.file_by_path(&target).unwrap().id).is_none());
+        assert!(ordinary.project.file_by_path(&target).is_none());
     }
 }
 
 #[test]
-fn ordinary_value_candidates_do_not_check_target_bodies_or_publish_host_errors() {
+fn ordinary_value_calls_do_not_load_target_files_or_publish_host_errors() {
     let fixture = Fixture::new();
     let candidate = fixture.file("candidate.lua", "type=nil\nlocal ignored=require('poison')\nreturn 42\n");
     let poison = fixture.file("poison.lua", "---@type number\nlocal invalid='wrong'\nreturn 42\n");
@@ -283,8 +285,7 @@ fn ordinary_value_candidates_do_not_check_target_bodies_or_publish_host_errors()
             assert_eq!(report.checked_file_count(), 1);
             assert_eq!(ty(&report, "accepted"), "number");
             for path in [&candidate, &poison, &broken] {
-                let original = report.project.file_by_path(path).unwrap();
-                assert!(report.file(original.id).is_none());
+                assert!(report.project.file_by_path(path).is_none());
             }
         }
     }
@@ -316,7 +317,7 @@ fn values_holding_error_do_not_supply_nonreturning_effects() {
 }
 
 #[test]
-fn invalid_candidate_syntax_is_published_only_after_the_original_target_is_required() {
+fn invalid_target_syntax_is_published_for_every_program_file() {
     let fixture = Fixture::new();
     let broken = fixture.file("broken.lua", "local invalid=\n");
     let run = |source: &str| check_project_with_options(
@@ -326,11 +327,14 @@ fn invalid_candidate_syntax_is_published_only_after_the_original_target_is_requi
             ..ProjectCheckOptions::default()
         },
     );
+    // A rejected loader's call is ordinary: it imports nothing, so only the
+    // target's own syntax error is reported.
     let rejected = run("local loader=require\nloader=function(name) return 42 end\nlocal value=loader('broken')\n");
-    clean(&rejected);
+    assert!(rejected.has_errors());
     let original = rejected.project.file_by_path(&broken).unwrap();
-    assert!(rejected.file(original.id).is_none());
-    assert_eq!(rejected.checked_file_count(), 1);
+    assert!(rejected.file(original.id).unwrap().report.diagnostics.iter().any(|error| error.code == "LUA1001"));
+    assert!(rejected.file(rejected.project.entries[0]).unwrap().report.diagnostics.is_empty());
+    assert_eq!(rejected.checked_file_count(), 2);
 
     let proven = run("local value=require('broken')\n");
     assert!(proven.has_errors());
@@ -341,7 +345,7 @@ fn invalid_candidate_syntax_is_published_only_after_the_original_target_is_requi
 }
 
 #[test]
-fn explicit_entries_and_implementation_libraries_remain_checking_roots() {
+fn explicit_entries_implementation_libraries_and_require_targets_are_checked() {
     let fixture = Fixture::new();
     let main = fixture.file("main.lua", "local loader=require\nloader=function(name) return 42 end\nlocal value=loader('candidate')\n");
     let candidate = fixture.file("candidate.lua", "---@type number\nlocal ignored='candidate error'\nreturn 42\n");
@@ -359,14 +363,12 @@ fn explicit_entries_and_implementation_libraries_remain_checking_roots() {
         environment: luanalysis::standard_environment::StandardEnvironmentProfile::Lua54,
         ..ProjectCheckOptions::default()
     });
-    assert_eq!(report.checked_file_count(), 3);
+    assert_eq!(report.checked_file_count(), 4);
     assert!(report.has_errors());
-    for path in [&entry, &library] {
+    for path in [&entry, &library, &candidate] {
         let original = report.project.file_by_path(path).unwrap();
         assert!(report.file(original.id).unwrap().report.diagnostics.iter().any(|error| error.code == "TS2322"));
     }
-    let original = report.project.file_by_path(&candidate).unwrap();
-    assert!(report.file(original.id).is_none());
 }
 #[test]
 fn missing_dynamic_and_invalid_require_requests_fail_at_original_call_arguments() {

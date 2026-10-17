@@ -109,11 +109,15 @@ fn replaced_alias_is_an_ordinary_call_and_does_not_publish_candidate_module_fail
 }
 
 #[test]
-fn rejected_existing_loader_candidate_is_checked_only_after_actual_require_proof() {
+fn rejected_loader_candidate_keeps_its_own_result_while_its_target_is_a_program_file() {
     let fixture = Fixture::new();
     fixture.file("poison.lua", "---@type number\nlocal invalid='wrong'\nreturn 42\n");
+    // As a Bun program includes every file its syntactic requires name, the
+    // target is checked; the replaced loader's call still returns its own value.
     let replacement = "local loader=require\nloader=function(name) return 42 end\nlocal result=loader('poison')\n---@type number\nlocal checked=result\n";
-    clean(&fixture.check(replacement));
+    let rejected = fixture.check(replacement);
+    assert!(text(&rejected).contains("poison.lua:2:15: error[TS2322]"), "{}", text(&rejected));
+    assert!(!text(&rejected).lines().any(|line| line.starts_with("main.lua") && line.contains("error[")), "{}", text(&rejected));
 
     let proven = "local loader=require\nlocal result=loader('poison')\n---@type number\nlocal checked=result\n";
     let invalid = fixture.check(proven);

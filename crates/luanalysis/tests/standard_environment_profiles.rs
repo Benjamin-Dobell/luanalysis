@@ -347,10 +347,12 @@ fn matching_minimal_resource_text_and_display_path_do_not_attest_an_unselected_r
     }).unwrap();
     let report = check_project_with_options(project, ProjectCheckOptions { environment: StandardEnvironmentProfile::None, ..Default::default() });
     assert!(report.standard_library_files.is_empty());
-    clean(&report);
     let main = report.file(report.project.entries[0]).unwrap();
+    assert!(main.report.diagnostics.is_empty(), "{:#?}", main.report.diagnostics);
     assert_eq!(main.report.bindings.iter().find(|binding| binding.name == "value").unwrap().ty, "any", "the unselected declaration's result must not become the module's number export");
-    assert!(!code(&report, "TS2322"), "an unselected loader cannot schedule the candidate's poison body: {:#?}", report.files);
+    // The syntactic require still names a program file, checked in its own right.
+    let first = report.files.iter().find(|file| report.source(file.file).unwrap().path.ends_with("first.lua")).unwrap();
+    assert!(first.report.diagnostics.iter().any(|error| error.code == "TS2322"), "{:#?}", report.files);
 }
 
 #[test]
