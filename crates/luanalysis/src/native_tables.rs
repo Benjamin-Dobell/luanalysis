@@ -210,9 +210,11 @@ impl Checker<'_> {
                 self.engine.error_type()
             }
             Err(TableError::MissingKey { .. }) if self.implicitly_indexed(receiver, key) => self.implicit_index_read(receiver, key),
+            // As TypeScript recovers from a failed property access, the read has the error type,
+            // so its uses do not report it again.
             Err(error) => {
                 self.native_table_error_with_owner(error, span, span, Some(receiver));
-                Type::Unknown
+                self.engine.error_type()
             }
         }
     }
@@ -265,11 +267,11 @@ impl Checker<'_> {
                     ),
                     &[receiver],
                 );
-                Type::Unknown
+                self.engine.error_type()
             }
             Err(error) => {
                 self.native_table_error(error, name.span, receiver_span);
-                Type::Unknown
+                self.engine.error_type()
             }
         }
     }
