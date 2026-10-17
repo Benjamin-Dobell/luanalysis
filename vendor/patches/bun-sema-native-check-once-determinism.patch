@@ -1,0 +1,1690 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+index 3e4210a..a3a609d 100644
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -315,6 +315,18 @@ impl<'p, 's> Checker<'p, 's> {
+         self.native_capture_contexts.last().copied()
+     }
+ 
++    pub fn native_argument_results_mark(&self) -> usize {
++        self.native_argument_log.len()
++    }
++
++    /// Forgets the argument results recorded since `mark`, so that they are
++    /// checked (and report) again.
++    pub fn discard_native_argument_results_since(&mut self, mark: usize) {
++        for key in self.native_argument_log.drain(mark.min(self.native_argument_log.len())..) {
++            self.native_argument_types.remove(&key);
++        }
++    }
++
+     pub fn with_native_capture_context<R>(
+         &mut self,
+         context: NativeCapturedFunctionContext,
+@@ -3710,7 +3722,23 @@ impl<'p, 's> Checker<'p, 's> {
+         let (mode, outside) = self.push_inference_context_for_origin(
+             ExpressionOrigin::Native(expression), inference_context.as_deref_mut(), mode,
+         );
+-        let mut ty = provider.check_expression(self, expression, expected, mode);
++        // An argument whose type does not depend on the expected type or
++        // inference is checked once per mode and function frame (stable results
++        // only) instead of on every resolution pass, as Bun memoises the types
++        // of arguments that are not context sensitive.
++        let memo = (expression, mode.bits(), self.current_native_function_context(), self.current_native_captured_function());
++        let mut ty = match self.native_argument_types.get(&memo) {
++            Some(&known) => known,
++            None => {
++                let ((ty, reusable), stored) =
++                    self.run_memoizable(|checker| provider.check_reusable_expression(checker, expression, expected, mode));
++                if reusable && stored.is_some() && !self.is_stack_low() {
++                    self.native_argument_types.insert(memo, ty);
++                    self.native_argument_log.push(memo);
++                }
++                ty
++            }
++        };
+         // Contextual declarations are checked while their actual native inference context is
+         // active. Their distinct signature identity retains these results for later relations.
+         if let Some(sig) = self.single_call_signature(ty)
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+index 080e71b..8c446c5 100644
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -2792,7 +2792,7 @@ impl<'p, 's> Checker<'p, 's> {
+     /// `compare`: `InferenceContext.compareTypes`, as "is not `TernaryFalse`". A comparison of two
+     /// signatures passes its own `isRelatedTo`, so that what is in progress and how deep it is
+     /// count for the constraint of an inferred type too. Otherwise `compareTypesAssignable`.
+-    fn get_inferred_type_comparing(
++    pub(super) fn get_inferred_type_comparing(
+         &mut self,
+         n: &Inference,
+         index: usize,
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index 3eb7028..0fd08a6 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -148,7 +148,6 @@ pub enum NativeTypeResult {
+ pub trait NativeFunctionProvider {
+     fn project_flow_provider(&self) -> Option<&dyn native_flow::NativeFlowProvider> { None }
+     /// Original normal-completion graph under the exact selected callee frame.
+-    fn function_flow_execution(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId, _: native_flow::NativeFlowKey) -> Option<native_aliases::NativeAliasExecution> { None }
+     fn contextual_type_owner(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId, _: native_flow::NativeFlowKey) -> native_named::NativeContextualTypeOwner { native_named::NativeContextualTypeOwner::Absent }
+     fn calling_convention(&self, _: NativeFunctionId) -> native_signatures::NativeCallingConvention { native_signatures::NativeCallingConvention::TypeScript }
+     /// Exact original method declaration syntax, not merely a callable property.
+@@ -223,6 +222,12 @@ pub trait NativeFunctionProvider {
+     fn check_expression(&self, _: &mut Checker<'_, '_>, _: NativeExpressionId, _: Option<TypeId>, _: CheckMode) -> TypeId {
+         panic!("native expression provider is not installed")
+     }
++    /// `check_expression`, and whether the result may be reused for the same
++    /// expression, mode and function frame: it cannot depend on the expected
++    /// type or inference.
++    fn check_reusable_expression(&self, checker: &mut Checker<'_, '_>, expression: NativeExpressionId, expected: Option<TypeId>, mode: CheckMode) -> (TypeId, bool) {
++        (self.check_expression(checker, expression, expected, mode), false)
++    }
+     fn check_expression_pack(&self, checker: &mut Checker<'_, '_>, expression: NativeExpressionId, expected: Option<NativeResultPack>, mode: CheckMode) -> NativeResultPack {
+         let expected = expected.map(|pack| checker.native_pack_slot(pack, 0));
+         let ty = self.check_expression(checker, expression, expected, mode);
+@@ -806,6 +811,9 @@ impl<'s> Program<'s> {
+             native_function_contexts: Vec::new(),
+             native_capture_contexts: Vec::new(),
+             native_contextual_scopes: FxHashMap::default(),
++            native_argument_types: FxHashMap::default(),
++            native_argument_log: Vec::new(),
++            native_runtime_domains: FxHashMap::default(),
+             arena,
+             task: Task::new_in(arena),
+             left_frame: None,
+@@ -821,6 +829,8 @@ impl<'s> Program<'s> {
+             eager: Vec::new(),
+             loop_values: Vec::new(),
+             unmarked_refusals: 0,
++            reach_refinements: Vec::new(),
++            reach_cuts: 0,
+             non_circular_returns: Vec::new(),
+             array_or_tuple_constraint_requests: Vec::new(),
+             mapped_instantiations_in_progress: Vec::new(),
+@@ -1084,18 +1094,18 @@ enum Query {
+     NativeStandardLoader(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u64),
+     NativeStandardReference(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u64, u64),
+     NativeStandardValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
+-    NativeStandardCall(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
++    /// The last field distinguishes the continuation scope and whether a loop
++    /// invariant supplied the callee: those are different computations.
++    NativeStandardCall(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64, u8),
+     NativeAliasProjectedReference(native_flow::NativeReferenceKey, native_flow::NativeFlowKey, u32, u64, u64),
+     NativeAliasProjectedValue(native_flow::NativeValueKey, native_flow::NativeFlowKey, usize, u32, u64, u64),
+     NativeAliasReturn(crate::types::NativeFunctionId, usize),
+     NativeCallPreserves(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
+     NativeAliasLoaderState(native_flow::NativeReferenceKey, native_flow::NativeFlowKey),
+     NativeAliasMetatableAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
+-    NativeAliasCallableTable(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
+     NativeAliasNewIndexAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
+     NativeAliasMetatableCall(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
+     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
+-    NativeFlowCallState(native_flow::NativeReferenceKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, TypeId, SigId, u64, u64),
+     NativeGlobals(NativeGlobalsQuery),
+     NativeProject(NativeProjectQuery),
+     NativeNamed(NativeTypeDeclarationQuery),
+@@ -1190,8 +1200,8 @@ impl Query {
+             Query::BaseConstructor(sym) => (sym.file, 13),
+             Query::ReturnOfSignature(_)
+             | Query::NativeContextualTypeOwner(..)
+-            | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallState(..)
+-            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..) | Query::NativeAliasCallableTable(..)
++            | Query::NativeFlowCallEffects(..)
++            | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
+             | Query::NativeAliasLoaderState(..)
+             | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
+             | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
+@@ -1353,6 +1363,17 @@ pub struct Checker<'p, 's> {
+     /// Native counterpart of `context_checked_under`. Scope indices/serials
+     /// stay task-local; only the immutable provisional bit follows a signature.
+     native_contextual_scopes: FxHashMap<u64, (usize, u64)>,
++    /// Provider results for context-free native arguments, per check mode and
++    /// function frame: the same argument is otherwise re-evaluated on every
++    /// inference, applicability and overload pass (as Bun memoises the types
++    /// of non-context-sensitive arguments).
++    native_argument_types: FxHashMap<(NativeExpressionId, u8, Option<NativeFunctionContext>, Option<NativeCapturedFunctionContext>), TypeId>,
++    /// `native_argument_types` keys in insertion order, so that the host can
++    /// forget results recorded under a report it discards.
++    native_argument_log: Vec<(NativeExpressionId, u8, Option<NativeFunctionContext>, Option<NativeCapturedFunctionContext>)>,
++    /// Completed userdata/thread runtime domains of declarations: their own
++    /// identity and ancestry, which do not change.
++    native_runtime_domains: FxHashMap<crate::types::NativeTypeDeclarationId, Option<native_flow::NativeOpaqueRuntimeKind>>,
+     /// The arena of the thread that runs the task: for the records that the task creates, which may be
+     /// published. Everything else that a task allocates is on the regular heap.
+     pub arena: &'s Arena,
+@@ -1497,6 +1518,12 @@ pub struct Checker<'p, 's> {
+     /// How many cycles `mark_cycle_from` has left unmarked because of `eager`. A walk of a loop
+     /// during which it grows is not one tsgo makes: see `Flow::Loop` in `flow_type`.
+     unmarked_refusals: u64,
++    /// The stack height at each original-source reachability refinement in
++    /// progress. TypeScript decides reachability without operand types, so a
++    /// return type re-requested through one is not circular: see `on_reentry`.
++    pub(super) reach_refinements: Vec<usize>,
++    /// How many re-requested return types a reachability refinement has cut.
++    pub(super) reach_cuts: u64,
+     /// The height of `stack` at each request of `getNonCircularReturnTypeOfSignature` in progress.
+     non_circular_returns: Vec<usize>,
+     /// The height of `stack` at each request of `hasArrayOrTypeTypeConstraint` in progress.
+@@ -2567,10 +2594,20 @@ impl<'p, 's> Checker<'p, 's> {
+         // is different (`resolvingSignature`): the caller gets no result, and that is not an error.
+         // The same holds for members that are already installed, and for a path that leads to
+         // `typeToStringEx` first.
+-        let marked = !self.ends_at_members_in_place(i)
++        // A reachability refinement can re-request the return type that is
++        // being inferred from the returns it classifies. TypeScript never makes
++        // that request: the refinement keeps its structural answer, and the
++        // return type is not circular.
++        let reach_cut = matches!(q, Query::ReturnOfSignature(_))
++            && self.reach_refinements.iter().any(|&from| from > i);
++        if reach_cut {
++            self.reach_cuts += 1;
++        }
++        let marked = !reach_cut
++            && !self.ends_at_members_in_place(i)
+             && (self.is_resolution(q) || !is_through_printing)
+             && self.mark_cycle_from(i);
+-        self.found_cycle = marked && self.is_resolution(q);
++        self.found_cycle = (marked || reach_cut) && self.is_resolution(q);
+         if self.has_members_in_place(q) {
+             self.note_members_in_place();
+         } else {
+@@ -2838,7 +2875,7 @@ impl<'p, 's> Checker<'p, 's> {
+             Query::NativeProject(_) => true,
+             Query::NativeNamed(NativeTypeDeclarationQuery::Bases(_) | NativeTypeDeclarationQuery::RuntimeDomain(_)) => true,
+             Query::NativeNamed(NativeTypeDeclarationQuery::DeclaredHead(id)) => self.native_type_declaration_provider
+-                .is_some_and(|p| p.contains_type_declaration(id) && p.type_declaration_header(self, id).kind == native_named::NativeTypeDeclarationKind::Alias),
++                .is_some_and(|p| p.contains_type_declaration(id) && p.type_declaration_kind(self, id) == native_named::NativeTypeDeclarationKind::Alias),
+             Query::Return(..)
+             | Query::ReturnOfSignature(_)
+             | Query::MappedProp(..)
+diff --git a/src/sema/check/native_alias_loops.rs b/src/sema/check/native_alias_loops.rs
+index bd6b5ce..1f28ac7 100644
+--- a/src/sema/check/native_alias_loops.rs
++++ b/src/sema/check/native_alias_loops.rs
+@@ -21,8 +21,8 @@ impl<'p, 's> Checker<'p, 's> {
+         { return Origins::unavailable() }
+         let invariant = Invariant { reference, head, entry, seed };
+         let mut work: Vec<_> = backedges.iter().map(|&at| (at, false)).collect();
+-        let mut active = HashSet::new();
+-        let mut completed = HashSet::new();
++        let mut active = HashSet::default();
++        let mut completed = HashSet::default();
+         let mut steps = 0usize;
+         while let Some((at, leaving)) = work.pop() {
+             steps += 1;
+@@ -37,7 +37,7 @@ impl<'p, 's> Checker<'p, 's> {
+                         && provider.write_affects(reference, target, at) == NativeWriteRelation::Unaffected
+                         && Self::native_loop_dispatch_safe(provider, at, &invariant) => before,
+                 Some(NativeFlowNode::Call { before, value, input }) => {
+-                    if self.native_loop_call_preservation(provider, reference, value, input, &invariant, &mut HashSet::new()) != NativeCallPreservation::Preserved { return Origins::unavailable() }
++                    if self.native_loop_call_preservation(provider, reference, value, input, &invariant, &mut HashSet::default()) != NativeCallPreservation::Preserved { return Origins::unavailable() }
+                     before
+                 },
+                 Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }
+@@ -86,7 +86,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let Some(execution) = provider.function_alias_execution(function, creation) else { return false };
+         if execution.terminals.is_empty() || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) { return false }
+         let mut work = execution.terminals;
+-        let mut visited = HashSet::new();
++        let mut visited = HashSet::default();
+         while let Some(at) = work.pop() {
+             if at.graph != execution.entry.graph || visited.len() >= 16_384 { return false }
+             if !visited.insert(at) { continue }
+diff --git a/src/sema/check/native_aliases.rs b/src/sema/check/native_aliases.rs
+index d230bc8..af76b64 100644
+--- a/src/sema/check/native_aliases.rs
++++ b/src/sema/check/native_aliases.rs
+@@ -5,7 +5,7 @@ use super::native_flow::*;
+ use super::task::Stored;
+ use crate::util::FxHashMap;
+ use crate::types::NativeTableKey;
+-use std::collections::HashSet;
++use crate::util::FxHashSet as HashSet;
+ use super::native_globals::{NativeEnvironmentId, NativeGlobalBindingId, NativeGlobalSourceRole};
+ use super::native_intrinsics::{NativeIntrinsicKind, NativeIntrinsicSite};
+ use crate::types::NativeFunctionId;
+@@ -62,11 +62,6 @@ pub struct NativeAliasCall {
+ pub enum NativeAliasDispatch { NoDispatch, ReferenceRead(NativeReferenceKey), Unknown }
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum NativeCallPreservation { Preserved, Unknown, Pending }
+-pub(super) enum NativeReachedCallee {
+-    Function { function: NativeFunctionId, creation: NativeFlowKey, activation: u64, call: NativeAliasCall },
+-    Unsupported,
+-    Pending,
+-}
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum NativeAliasIntrinsic { Standard(NativeIntrinsicSite), Unknown, Pending }
+ /// Ordinary language operation under the selected host policy. This is not
+@@ -112,13 +107,6 @@ pub(super) struct NativeAliasCache {
+ #[derive(Clone, Copy)]
+ struct AliasExecutionFrame { id: u64, entry: NativeFlowKey, caller: NativeFlowKey, function: Option<(NativeFunctionId, NativeFlowKey, u64)> }
+ #[derive(Clone, Copy)]
+-struct AliasCallableTable {
+-    callee: NativeAliasReturnValue,
+-    function: NativeFunctionId,
+-    creation: NativeFlowKey,
+-    activation: u64,
+-}
+-#[derive(Clone, Copy)]
+ enum AliasMetatableCall { Preserved, Replaced(NativeAliasReturnValue), Unknown, Pending }
+ impl NativeAliasCache {
+     fn reference(&mut self, key: (NativeReferenceKey, NativeFlowKey, u64, u64), result: Origins, _: Stored) { self.references.insert(key, result); }
+@@ -141,7 +129,7 @@ impl Origins {
+     fn unavailable() -> Self { Self { unknown: true, ..Self::default() } }
+     fn non_table() -> Self { Self { non_table: true, maybe_nil: true, ..Self::default() } }
+     fn non_nil_scalar() -> Self { Self { non_table: true, ..Self::default() } }
+-    fn one(token: Origin, unknown: bool) -> Self { Self { tokens: HashSet::from([token]), unknown, non_table: false, uncertain: false, maybe_nil: false } }
++    fn one(token: Origin, unknown: bool) -> Self { Self { tokens: HashSet::from_iter([token]), unknown, non_table: false, uncertain: false, maybe_nil: false } }
+     fn merge(&mut self, other: Self) { self.tokens.extend(other.tokens); self.unknown |= other.unknown; self.non_table |= other.non_table; self.uncertain |= other.uncertain; self.maybe_nil |= other.maybe_nil; }
+     fn relation(&self, other: &Self) -> NativeAliasRelation {
+         if self.tokens.is_empty() && !self.unknown || other.tokens.is_empty() && !other.unknown { return NativeAliasRelation::Different }
+@@ -156,27 +144,6 @@ impl Origin {
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
+-    pub(super) fn native_alias_execution_key(&self) -> u64 { self.native_alias_cache.frame() }
+-    pub(super) fn native_alias_execution_depth(&self) -> usize { self.native_alias_cache.executions.len() }
+-    /// Selects an original callee only within the caller-state replay capability.
+-    pub(super) fn native_reached_callee(&mut self, provider: &dyn NativeFlowProvider, call: NativeValueKey, input: NativeFlowKey) -> NativeReachedCallee {
+-        let Some(recipe) = provider.alias_call_source(call, input) else { return NativeReachedCallee::Unsupported };
+-        // Formal/actual substitution is unsupported. Reject the original
+-        // argument recipe before asking for physical callee provenance.
+-        if !recipe.arguments.is_empty() { return NativeReachedCallee::Unsupported }
+-        if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeReachedCallee::Unsupported }
+-        let origins = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
+-        if origins.uncertain { return NativeReachedCallee::Pending }
+-        if origins.unknown || origins.non_table || origins.tokens.len() != 1 { return NativeReachedCallee::Unsupported }
+-        let Origin::Function(function, creation, activation) = origins.tokens.into_iter().next().unwrap() else { return NativeReachedCallee::Unsupported };
+-        // The first transfer capability covers only a closure invoked in its
+-        // actual creating activation. Escaped closures need a separate proof.
+-        if creation.graph != recipe.execution_input.graph
+-            || activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation)
+-        { return NativeReachedCallee::Unsupported }
+-        if self.native_alias_cache.executions.iter().any(|frame| frame.function.is_some_and(|active| active.0 == function)) { return NativeReachedCallee::Pending }
+-        NativeReachedCallee::Function { function, creation, activation, call: recipe }
+-    }
+     fn native_alias_stable_cell(&self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey) -> bool {
+         provider.reference_is_cell(reference) && provider.reference_declaration(reference).is_some_and(|declaration| declaration.writes.iter().all(|write| write.owner == declaration.owner))
+     }
+@@ -196,6 +163,13 @@ impl<'p, 's> Checker<'p, 's> {
+         self.native_alias_call_preservation(provider, reference, call, input)
+     }
+ 
++    /// The standard intrinsic an original environment member holds initially.
++    pub(super) fn native_initial_standard(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Option<NativeIntrinsicSite> {
++        let origins = self.native_alias_initial(provider, reference, at);
++        if origins.unknown || origins.uncertain || origins.non_table || origins.tokens.len() != 1 { return None }
++        match origins.tokens.into_iter().next() { Some(Origin::Standard(site)) => Some(site), _ => None }
++    }
++
+     fn native_alias_initial(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, at: NativeFlowKey) -> Origins {
+         let opaque = || Origins::one(Origin::OpaqueReference(reference, at), true);
+         let Some(globals) = self.native_globals_provider else { return opaque() };
+@@ -322,8 +296,8 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     fn native_alias_newindex_absent_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
+-        let mut active = HashSet::new();
+-        let mut completed = HashSet::new();
++        let mut active = HashSet::default();
++        let mut completed = HashSet::default();
+         let mut work = vec![(before, false)];
+         let mut steps = 0usize;
+         while let Some((at, leaving)) = work.pop() {
+@@ -381,7 +355,7 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     fn native_alias_metatable_call_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, call: NativeValueKey, input: NativeFlowKey) -> AliasMetatableCall {
+-        let Some(mut recipe) = provider.alias_call_source(call, input) else { return AliasMetatableCall::Unknown };
++        let Some(recipe) = provider.alias_call_source(call, input) else { return AliasMetatableCall::Unknown };
+         if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return AliasMetatableCall::Unknown }
+         let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
+         if callee.uncertain { return AliasMetatableCall::Pending }
+@@ -402,17 +376,6 @@ impl<'p, 's> Checker<'p, 's> {
+                 NativeIntrinsicKind::Require => AliasMetatableCall::Unknown,
+             },
+             Origin::Function(function, creation, activation) => (function, creation, activation),
+-            target @ Origin::Allocation(..) => {
+-                let callable = match self.native_alias_callable_table(provider, &target, recipe.execution_input) {
+-                    Ok(Some(callable)) => callable,
+-                    Ok(None) => return AliasMetatableCall::Unknown,
+-                    Err(()) => return AliasMetatableCall::Pending,
+-                };
+-                let receiver = recipe.callee;
+-                recipe.callee = callable.callee;
+-                recipe.arguments.insert(0, receiver);
+-                (callable.function, callable.creation, callable.activation)
+-            },
+             _ => return AliasMetatableCall::Unknown,
+         };
+         if activation != 0 && !self.native_alias_cache.executions.iter().any(|frame| frame.id == activation) { return AliasMetatableCall::Unknown }
+@@ -420,8 +383,8 @@ impl<'p, 's> Checker<'p, 's> {
+         let Some(execution) = provider.function_alias_execution(function, creation) else { return AliasMetatableCall::Unknown };
+         if !provider.contains_graph(execution.entry.graph) || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start)) || execution.terminals.is_empty() { return AliasMetatableCall::Unknown }
+         self.with_native_alias_execution(call, recipe.execution_input, &execution, Some((function, creation, activation)), |checker| {
+-            let mut active = HashSet::new();
+-            let mut completed = HashSet::new();
++            let mut active = HashSet::default();
++            let mut completed = HashSet::default();
+             let mut work: Vec<_> = execution.terminals.iter().rev().map(|&at| (at, false)).collect();
+             let mut steps = 0usize;
+             while let Some((at, leaving)) = work.pop() {
+@@ -479,8 +442,8 @@ impl<'p, 's> Checker<'p, 's> {
+ 
+     fn native_alias_allocation_clear_since(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, before: NativeFlowKey) -> bool {
+         let graph = before.graph;
+-        let mut active = HashSet::new();
+-        let mut completed = HashSet::new();
++        let mut active = HashSet::default();
++        let mut completed = HashSet::default();
+         let mut work = vec![(before, false)];
+         let mut steps = 0usize;
+         while let Some((at, leaving)) = work.pop() {
+@@ -558,8 +521,22 @@ impl<'p, 's> Checker<'p, 's> {
+         result
+     }
+ 
++    /// Useful rather than sound, as in TypeScript: an unresolved call preserves
++    /// what it does not visibly write, unless strict runtime effects were
++    /// requested. Tables are callable only through their declared callable
++    /// types; metatables and `__call` are not traced.
++    /// The opt-in strict runtime-effect mode, from the globals provider.
++    pub fn native_strict_runtime_effects(&self) -> bool {
++        self.native_globals_provider.is_some_and(|globals| globals.strict_runtime_effects())
++    }
++
++    fn native_unresolved_call_preservation(&self) -> NativeCallPreservation {
++        if self.native_strict_runtime_effects() { NativeCallPreservation::Unknown }
++        else { NativeCallPreservation::Preserved }
++    }
++
+     fn native_alias_call_preservation_uncached(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey) -> NativeCallPreservation {
+-        let Some(recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Unknown };
++        let Some(recipe) = provider.alias_call_source(call, input) else { return self.native_unresolved_call_preservation() };
+         if recipe.execution_input.graph != input.graph || provider.node(recipe.execution_input).is_none() { return NativeCallPreservation::Unknown }
+         let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
+         self.native_alias_call_preservation_for_callee(provider, reference, call, input, recipe, callee)
+@@ -567,7 +544,7 @@ impl<'p, 's> Checker<'p, 's> {
+ 
+     fn native_alias_call_preservation_for_callee(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey, recipe: NativeAliasCall, callee: Origins) -> NativeCallPreservation {
+         if callee.uncertain { return NativeCallPreservation::Pending }
+-        if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return NativeCallPreservation::Unknown }
++        if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return self.native_unresolved_call_preservation() }
+         match callee.tokens.into_iter().next().unwrap() {
+             Origin::Standard(site) => match site.kind {
+                 NativeIntrinsicKind::Type | NativeIntrinsicKind::Assert | NativeIntrinsicKind::SetMetatable => NativeCallPreservation::Preserved,
+@@ -585,22 +562,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 },
+             },
+             Origin::Function(function, creation, activation) => self.native_alias_function_preservation(provider, reference, call, &recipe, function, creation, activation),
+-            allocation @ Origin::Allocation(..) => {
+-                let callable = match self.native_alias_callable_table(provider, &allocation, recipe.execution_input) {
+-                    Ok(Some(callable)) => callable,
+-                    Ok(None) => return NativeCallPreservation::Unknown,
+-                    Err(()) => return NativeCallPreservation::Pending,
+-                };
+-                // Lua passes the frozen table as the first physical __call
+-                // argument. Keep it even when a later entry-state capability
+-                // cannot yet transport parameter aliases.
+-                let receiver = recipe.callee;
+-                let mut recipe = recipe;
+-                recipe.callee = callable.callee;
+-                recipe.arguments.insert(0, receiver);
+-                self.native_alias_function_preservation(provider, reference, call, &recipe, callable.function, callable.creation, callable.activation)
+-            },
+-            _ => NativeCallPreservation::Unknown,
++            _ => self.native_unresolved_call_preservation(),
+         }
+     }
+ 
+@@ -611,59 +573,6 @@ impl<'p, 's> Checker<'p, 's> {
+         self.native_alias_execution_preservation(provider, reference, call, recipe, &execution, Some((function, creation, activation)))
+     }
+ 
+-    fn native_alias_callable_table(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, before: NativeFlowKey) -> Result<Option<AliasCallableTable>, ()> {
+-        let Origin::Allocation(value, input) = allocation else { return Ok(None) };
+-        if input.graph != before.graph { return Ok(None) }
+-        let query = Query::NativeAliasCallableTable(*value, *input, before, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
+-        if !self.enter(query) { self.mark_tainted_from(0); return Err(()) }
+-        let (result, completed) = self.run_memoizable(|checker| checker.native_alias_callable_table_worker(provider, allocation, *input, before));
+-        if self.leave(query).is_err() || completed.is_none() || result.is_err() {
+-            self.mark_tainted_from(0);
+-            return Err(());
+-        }
+-        result
+-    }
+-
+-    /// Find the reached physical metamethod, rather than trusting a callable
+-    /// type or a future source-level setmetatable candidate. This first proof
+-    /// accepts a direct literal metatable and no intervening heap effects.
+-    fn native_alias_callable_table_worker(&mut self, provider: &dyn NativeFlowProvider, allocation: &Origin, input: NativeFlowKey, mut at: NativeFlowKey) -> Result<Option<AliasCallableTable>, ()> {
+-        let mut visited = HashSet::new();
+-        while at != input {
+-            if at.graph != input.graph || visited.len() >= 16_384 || !visited.insert(at) || self.is_stack_low() { return Ok(None) }
+-            match provider.node(at) {
+-                Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. })
+-                    if matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) => at = before,
+-                Some(NativeFlowNode::Write { before, target, .. })
+-                    if provider.reference_is_cell(target) && matches!(provider.alias_node_dispatch(at), NativeAliasDispatch::NoDispatch) => at = before,
+-                Some(NativeFlowNode::Call { before, value, input: call_input }) => {
+-                    let Some(recipe) = provider.alias_call_source(value, call_input) else { return Ok(None) };
+-                    if recipe.execution_input != before || recipe.arguments.len() < 2 { return Ok(None) }
+-                    let callee = self.native_alias_value(provider, recipe.callee.value, recipe.callee.input, 0);
+-                    if callee.uncertain { return Err(()) }
+-                    if callee.unknown || callee.non_table || callee.tokens.len() != 1 { return Ok(None) }
+-                    if !matches!(callee.tokens.into_iter().next(), Some(Origin::Standard(site)) if site.kind == NativeIntrinsicKind::SetMetatable) { return Ok(None) }
+-                    let receiver = recipe.arguments[0];
+-                    let receiver = self.native_alias_value(provider, receiver.value, receiver.input, 0);
+-                    if receiver.uncertain { return Err(()) }
+-                    if receiver.unknown || receiver.non_table || receiver.tokens.len() != 1 || !receiver.tokens.contains(allocation) { return Ok(None) }
+-                    let metatable = recipe.arguments[1];
+-                    // Recover only a field of the original literal itself.
+-                    // A mutable alias needs a separate reached-heap proof.
+-                    let key = NativeTableKey::String(self.atoms().intern(b"__call"));
+-                    let Some(callee) = provider.value_alias_member_source(metatable.value, metatable.input, key, self) else { return Ok(None) };
+-                    let function = self.native_alias_value(provider, callee.value, callee.input, 0);
+-                    if function.uncertain { return Err(()) }
+-                    if function.unknown || function.non_table || function.tokens.len() != 1 { return Ok(None) }
+-                    let Some(Origin::Function(function, creation, activation)) = function.tokens.into_iter().next() else { return Ok(None) };
+-                    return Ok(Some(AliasCallableTable { callee, function, creation, activation }));
+-                },
+-                _ => return Ok(None),
+-            }
+-        }
+-        Ok(None)
+-    }
+-
+     fn native_alias_loader_state(&mut self, provider: &dyn NativeFlowProvider, loader: NativeReferenceKey, input: NativeFlowKey) -> NativeFlowResult {
+         use crate::types::TypeId;
+         let unknown = NativeFlowResult { ty: TypeId::FALSE, incomplete: false, unresolved_auto: false };
+@@ -702,8 +611,8 @@ impl<'p, 's> Checker<'p, 's> {
+         let Some(watched) = provider.reference_in_graph(reference, execution.entry.graph) else { return NativeCallPreservation::Unknown };
+         if !provider.contains_reference(watched) { return NativeCallPreservation::Unknown }
+         self.with_native_alias_execution(call, recipe.execution_input, execution, function, |checker| {
+-            let mut active = HashSet::new();
+-            let mut completed = HashSet::new();
++            let mut active = HashSet::default();
++            let mut completed = HashSet::default();
+             let mut work: Vec<_> = execution.terminals.iter().rev().map(|&at| (at, false)).collect();
+             let mut steps = 0usize;
+             while let Some((at, leaving)) = work.pop() {
+@@ -753,7 +662,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let right_contract = if let NativeAliasValue::Reference { reference, .. } = provider.value_alias_source(right, right_at) { provider.reference_written_contract(reference, self) } else { None };
+         if right_contract.is_some_and(|contract| self.native_alias_written_non_table(contract)) { return NativeAliasRelation::Different }
+         if let (Some(left), Some(right)) = (left_contract, right_contract)
+-            && self.native_alias_written_disjoint(left, right, &mut HashSet::new())
++            && self.native_alias_written_disjoint(left, right, &mut HashSet::default())
+         { return NativeAliasRelation::Different }
+         let left = self.native_alias_reference(provider, left, left_at);
+         let right = self.native_alias_value(provider, right, right_at, 0);
+@@ -799,8 +708,15 @@ impl<'p, 's> Checker<'p, 's> {
+         let query = Query::NativeAlias(reference, at, frame);
+         if !self.enter(query) { self.mark_tainted_from(0); return Origins::unknown() }
+         let begun = self.begin_memoizable();
+-        let mut result = match provider.node(at) {
+-            Some(NativeFlowNode::Start) => {
++        // Steps that leave the reference as it was (unaffected stores,
++        // preserved calls, passes, predicates and iteration steps) are followed
++        // in this frame. One query and native frame per node exhausted the
++        // stack on long bodies, and nothing computed on a low stack is cached.
++        // Every node passed has this same answer, so each is cached with it.
++        let mut passed = Vec::new();
++        let mut at = at;
++        let mut result = loop { let before = match provider.node(at) {
++            Some(NativeFlowNode::Start) => break {
+                 let declaration = provider.reference_declaration(reference);
+                 let execution = self.native_alias_cache.executions.iter().rposition(|frame| frame.entry == at);
+                 let own_cell = provider.reference_is_cell(reference) && declaration.as_ref().is_some_and(|declaration| declaration.owner == at.graph);
+@@ -820,64 +736,76 @@ impl<'p, 's> Checker<'p, 's> {
+                     && let Some(outer) = provider.reference_in_graph(reference, creation.input.graph)
+                 { self.native_alias_reference(provider, outer, creation.input) }
+                 else { self.native_alias_initial(provider, reference, at) }
+-            }
+-            Some(NativeFlowNode::Write { before, .. }) if !self.native_alias_stable_cell(provider, reference) && !self.native_alias_dispatch_safe(provider, at, before) => Origins::one(Origin::OpaqueReference(reference, at), true),
++            },
++            Some(NativeFlowNode::Write { before, .. }) if !self.native_alias_stable_cell(provider, reference) && !self.native_alias_dispatch_safe(provider, at, before) => break Origins::one(Origin::OpaqueReference(reference, at), true),
+             Some(NativeFlowNode::Write { before, target, value, input }) => match if provider.reference_is_cell(reference) {
+                 // Heap stores cannot rebind a lexical cell. Resolve only the
+                 // cell's original assignments; classifying heap aliases here
+                 // recursively asks for the identity we are already tracing.
+                 provider.write_affects(reference, target, at)
+-            } else { provider.write_affects_with_types(reference, target, at, self) } {
+-                NativeWriteRelation::Exact => self.native_alias_value(provider, value, input, 0),
+-                NativeWriteRelation::PossibleExact => {
++            } else { provider.write_affects_ignoring_descendants(reference, target, at, self) } {
++                NativeWriteRelation::Exact => break self.native_alias_value(provider, value, input, 0),
++                NativeWriteRelation::PossibleExact => break {
+                     let mut previous = self.native_alias_reference(provider, reference, before);
+                     previous.merge(self.native_alias_value(provider, value, input, 0));
+                     previous
+-                }
+-                NativeWriteRelation::Ancestor => {
++                },
++                NativeWriteRelation::Ancestor => break {
+                     match provider.reference_member_path(target, reference, self).filter(|path| !path.is_empty()) {
+                         Some(path) => self.native_alias_projected_value(provider, value, input, 0, &path),
+-                        None => Origins::unknown(),
++                        None => Origins::unavailable(),
+                     }
+                 },
+-                NativeWriteRelation::PossibleAncestor => Origins::unknown(),
+-                _ => self.native_alias_reference(provider, reference, before),
++                // A completed write relation, not an unfinished dependency: the
++                // possibly replaced ancestor leaves provenance unsupported. An
++                // uncertain result here is never cached, and every walk through
++                // later stores repeats it (exponential in straight-line stores).
++                NativeWriteRelation::PossibleAncestor => break Origins::unavailable(),
++                _ => before,
+             },
+             Some(NativeFlowNode::Call { before, value, input }) => {
+                 let stable_cell = self.native_alias_stable_cell(provider, reference);
+                 let preservation = if stable_cell && !provider.call_invalidates_reference(reference, at, self) {
+                     NativeCallPreservation::Preserved
+                 } else { self.native_alias_call_preservation(provider, reference, value, input) };
+-                if preservation == NativeCallPreservation::Preserved {
+-                    self.native_alias_reference(provider, reference, before)
+-                } else if preservation == NativeCallPreservation::Pending { Origins::unknown() }
+-                else { Origins::one(Origin::OpaqueReference(reference, at), true) }
++                if preservation == NativeCallPreservation::Preserved { before }
++                else if preservation == NativeCallPreservation::Pending { break Origins::unknown() }
++                else { break Origins::one(Origin::OpaqueReference(reference, at), true) }
+             }
+-            Some(NativeFlowNode::Merge { edges }) => {
++            Some(NativeFlowNode::Merge { edges }) => break {
+                 let mut origins = Origins::default();
+                 for edge in edges { origins.merge(self.native_alias_reference(provider, reference, edge)); }
+                 origins
+-            }
++            },
+             // A static allocation site on a backedge can denote another
+             // physical object. Never equate iterations through a cycle token.
+             // This is a completed limit of the provenance proof, not an
+             // unresolved query. The memo scope below still propagates any
+             // actual recursive dependency as uncertain.
+-            Some(NativeFlowNode::Loop { edges }) => self.native_alias_loop_reference(provider, reference, at, &edges),
++            Some(NativeFlowNode::Loop { edges }) => break self.native_alias_loop_reference(provider, reference, at, &edges),
+             Some(NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. }) => {
+-                if self.native_alias_stable_cell(provider, reference) || self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_reference(provider, reference, before) }
+-                else { Origins::one(Origin::OpaqueReference(reference, at), true) }
++                if self.native_alias_stable_cell(provider, reference) || self.native_alias_dispatch_safe(provider, at, before) { before }
++                else { break Origins::one(Origin::OpaqueReference(reference, at), true) }
+             },
+             Some(NativeFlowNode::IteratorStart { before, .. } | NativeFlowNode::Iteration { before, .. }) => {
+-                if self.native_alias_dispatch_safe(provider, at, before) { self.native_alias_reference(provider, reference, before) }
+-                else { Origins::one(Origin::OpaqueReference(reference, at), true) }
++                if self.native_alias_dispatch_safe(provider, at, before) { before }
++                else { break Origins::one(Origin::OpaqueReference(reference, at), true) }
+             },
+-            Some(NativeFlowNode::Unreachable | NativeFlowNode::Return { .. }) => Origins::non_table(),
+-            _ => Origins::unknown(),
++            Some(NativeFlowNode::Unreachable | NativeFlowNode::Return { .. }) => break Origins::non_table(),
++            _ => break Origins::unknown(),
++        };
++            if before.graph != reference.graph || provider.node(before).is_none() { break Origins::unknown() }
++            let next = (reference, before, key.2, key.3);
++            if let Some(result) = self.native_alias_cache.references.get(&next) { break result.clone() }
++            passed.push(next);
++            at = before;
+         };
+         let memoizable = self.end_memoizable(begun);
+         match self.leave(query) {
+-            Ok(stored) if memoizable.is_some() && !result.uncertain && !self.is_stack_low() => self.native_alias_cache.reference(key, result.clone(), stored),
++            Ok(stored) if memoizable.is_some() && !result.uncertain && !self.is_stack_low() => {
++                for passed in passed { self.native_alias_cache.reference(passed, result.clone(), stored); }
++                self.native_alias_cache.reference(key, result.clone(), stored)
++            },
+             Ok(_) if memoizable.is_some() => {},
+             _ => { result.unknown = true; result.uncertain = true; self.mark_tainted_from(0); },
+         }
+@@ -1046,7 +974,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let cell_write = provider.reference_is_cell(target);
+         if cell_write || !provider.reference_is_cell(reference) {
+             let relation = if cell_write { provider.write_affects(reference, target, at) }
+-                else { provider.write_affects_with_types(reference, target, at, self) };
++                else { provider.write_affects_ignoring_descendants(reference, target, at, self) };
+             match relation {
+                 NativeWriteRelation::Exact => return self.native_alias_projected_value(provider, value, input, 0, path),
+                 NativeWriteRelation::Ancestor => {
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index 154e40d..f0f333a 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -5,8 +5,6 @@
+ use super::flow_walk::{FlowDomain, FlowStep, FlowType, ReachDomain, ReachStep, WalkState};
+ use super::*;
+ use crate::types::TypeId;
+-#[path = "native_flow_calls.rs"]
+-mod calls;
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+ pub struct NativeGraphKey {
+@@ -35,6 +33,20 @@ pub struct NativeValueKey {
+     pub index: u32,
+ }
+ 
++/// What an original callee names lexically, for ordinary standard-operation
++/// classification (Luanalysis v1 semantics: intrinsics are recognised by name,
++/// not traced through heap provenance).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum NativeLexicalStandard {
++    /// Leave the classification to the flow-sensitive provenance walk.
++    Unknown,
++    /// It cannot name a standard intrinsic.
++    Ordinary,
++    /// It names this original global environment member, which no source
++    /// in the project replaces.
++    Global(NativeReferenceKey),
++}
++
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum NativeWriteRelation {
+     Exact,
+@@ -311,6 +323,15 @@ pub trait NativeFlowProvider {
+     fn reference_tracks_runtime_value(&self, _: NativeReferenceKey) -> bool { false }
+     fn reference_follows_creation(&self, _: NativeReferenceKey) -> bool { false }
+     fn runtime_type_operation(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { true }
++    /// The truthiness of an original literal value (`nil`, `false`, `true`, a
++    /// number, string, table or function literal); `None` for anything else.
++    /// Reachability is structural: it never asks for operand types.
++    fn value_literal_truthiness(&self, _: NativeValueKey) -> Option<bool> { None }
++    /// What an original callee value names lexically; see `NativeLexicalStandard`.
++    fn value_lexical_standard(&self, _: NativeValueKey, _: NativeFlowKey) -> NativeLexicalStandard { NativeLexicalStandard::Unknown }
++    /// No source in the project may mutate the module loader (`require`,
++    /// `package` loader fields), so ordinary module checking needs no walk.
++    fn loader_never_mutated(&self, _: NativeGraphKey) -> bool { false }
+     fn write_member_key(&self, _: NativeReferenceKey, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<NativeTableKey> { None }
+     /// The original computed child key and its frozen evaluation input. The
+     /// existing descendant relation, not this recipe, selects the receiver.
+@@ -356,6 +377,12 @@ pub trait NativeFlowProvider {
+     fn write_affects_with_types(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, _: &mut Checker<'_, '_>) -> NativeWriteRelation {
+         self.write_affects(reference, target, at)
+     }
++    /// `write_affects_with_types` for a consumer that treats `Descendant`,
++    /// `PossibleDescendant` and `Unaffected` alike. A provider may omit proofs
++    /// that could only distinguish those relations.
++    fn write_affects_ignoring_descendants(&self, reference: NativeReferenceKey, target: NativeReferenceKey, at: NativeFlowKey, checker: &mut Checker<'_, '_>) -> NativeWriteRelation {
++        self.write_affects_with_types(reference, target, at, checker)
++    }
+     fn call_invalidates_reference(&self, _: NativeReferenceKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> bool { false }
+     /// Original explicit loader-mutating call metadata, without effect inference.
+     fn known_standard_loader_write(&self, _: NativeFlowKey) -> bool { false }
+@@ -408,7 +435,6 @@ pub(super) struct NativeFlowState {
+     latest_reachable: Option<(NativeFlowKey, bool)>,
+     disabled: FxHashMap<NativeGraphKey, ()>,
+     capture_graphs: Vec<NativeGraphKey>,
+-    call_executions: Vec<calls::NativeCallStateFrame>,
+ }
+ 
+ impl NativeFlowState {
+@@ -433,7 +459,6 @@ struct NativeDomain<'a> {
+ }
+ 
+ enum NativeTransfer {
+-    Call { value: NativeValueKey, input: NativeFlowKey },
+     PossibleWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, relation: NativeWriteRelation },
+     IncompleteCall,
+     DefinitionWrite { at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey },
+@@ -645,39 +670,46 @@ impl NativeDomain<'_> {
+         FlowStep::Follow { before, transfer, count_passed: true }
+     }
+ 
++    /// Operand types refine TypeScript's structural reachability. A return type
++    /// re-requested by the refinement is cut (`on_reentry`); the structural
++    /// answer, a reachable predecessor, then stands.
++    fn reach_refinement(&self, checker: &mut Checker<'_, '_>, before: NativeFlowKey, refine: impl FnOnce(&mut Checker<'_, '_>) -> ReachStep<NativeFlowKey>) -> ReachStep<NativeFlowKey> {
++        let cuts = checker.reach_cuts;
++        checker.reach_refinements.push(checker.stack.len());
++        let step = refine(checker);
++        checker.reach_refinements.pop();
++        if checker.reach_cuts != cuts { ReachStep::Follow(before) } else { step }
++    }
++
++    /// Reachability is structural, as in TypeScript: only literal conditions
++    /// (Lua truthiness), literal numeric ranges and explicit nonreturning or
++    /// assertion contracts make a branch unreachable. Operand types are never
++    /// requested: type-based dead-code findings belong to separate inspections.
+     fn predicate_reach_step(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey, before: NativeFlowKey, predicate: NativePredicate, sense: bool) -> ReachStep<NativeFlowKey> {
+         if !self.edge(at, before) || !self.predicate_valid(at, &predicate) { return ReachStep::Value(false) }
+         match predicate {
+-            predicate @ (NativePredicate::And(..) | NativePredicate::Or(..) | NativePredicate::Not(..)) => {
+-                if checker.native_predicate_possible(self.provider, &predicate, sense) { ReachStep::Follow(before) } else { ReachStep::Value(false) }
+-            }
+-            NativePredicate::Truthy { value, input, .. } => {
+-                let value = checker.native_flow_value(self.provider, value, input);
+-                if checker.lua_truthiness_type(value, sense).is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
+-            }
+-            NativePredicate::Equal { .. } => ReachStep::Follow(before),
+-            NativePredicate::RuntimeType { value, input, kind, equals, .. } => {
+-                // A lexical `type` candidate is insufficient after a real
+-                // environment write. Source providers prove the original call.
+-                if !self.provider.runtime_type_operation(value, input, checker) { return ReachStep::Follow(before); }
+-                let value = checker.native_flow_value(self.provider, value, input);
+-                if checker.native_runtime_type(value, &kind, equals == sense).is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
+-            }
+-            NativePredicate::NumericIteration { start, limit, step, stage } => {
+-                match checker.native_numeric_entry(self.provider, start, limit, step, stage) {
+-                    NumericEntry::Impossible => ReachStep::Value(false),
+-                    NumericEntry::Known(enters) if enters != sense => ReachStep::Value(false),
+-                    NumericEntry::Known(_) | NumericEntry::Unknown => ReachStep::Follow(before),
+-                }
+-            }
+-            NativePredicate::GenericIteration { frame, input } => {
+-                let pack = checker.native_flow_iterator_pack(self.provider, input, frame);
+-                if checker.native_iterator_filter(pack, sense).ty.is_never() { ReachStep::Value(false) } else { ReachStep::Follow(before) }
+-            }
++            NativePredicate::NumericIteration { start, limit, step, stage } => match checker.native_literal_numeric_entry(start, limit, step, stage) {
++                NumericEntry::Impossible => ReachStep::Value(false),
++                NumericEntry::Known(enters) if enters != sense => ReachStep::Value(false),
++                NumericEntry::Known(_) | NumericEntry::Unknown => ReachStep::Follow(before),
++            },
+             NativePredicate::Unsupported(feature) => {
+                 self.provider.flow_error(at, NativeFlowError::Unsupported(feature));
+                 ReachStep::Value(false)
+             }
++            predicate => if self.literal_predicate_possible(&predicate, sense) { ReachStep::Follow(before) } else { ReachStep::Value(false) },
++        }
++    }
++
++    fn literal_predicate_possible(&self, predicate: &NativePredicate, sense: bool) -> bool {
++        match predicate {
++            NativePredicate::And(left, right) => if sense { self.literal_predicate_possible(left, true) && self.literal_predicate_possible(right, true) }
++                else { self.literal_predicate_possible(left, false) || self.literal_predicate_possible(right, false) },
++            NativePredicate::Or(left, right) => if sense { self.literal_predicate_possible(left, true) || self.literal_predicate_possible(right, true) }
++                else { self.literal_predicate_possible(left, false) && self.literal_predicate_possible(right, false) },
++            NativePredicate::Not(inner) => self.literal_predicate_possible(inner, !sense),
++            NativePredicate::Truthy { value, .. } => self.provider.value_literal_truthiness(*value).is_none_or(|truthy| truthy == sense),
++            _ => true,
+         }
+     }
+ }
+@@ -727,7 +759,7 @@ impl FlowDomain for NativeDomain<'_> {
+             return FlowStep::Value(TypeId::ERROR);
+         };
+         match node {
+-            NativeFlowNode::Start => match checker.native_call_entry(self.provider, at, walk).or_else(|| self.auto_at_start(checker, walk, at)) {
++            NativeFlowNode::Start => match self.auto_at_start(checker, walk, at) {
+                 Some(result) => FlowStep::Complete(result),
+                 None => FlowStep::Initial,
+             },
+@@ -866,11 +898,7 @@ impl FlowDomain for NativeDomain<'_> {
+                         Ok(None) => FlowStep::Follow { before, transfer: None, count_passed: false },
+                         Err(()) => FlowStep::Value(TypeId::ERROR),
+                     },
+-                    NativeEffectResult::Complete(NativeCallEffects::None) => FlowStep::Follow {
+-                        before,
+-                        transfer: Some(NativeTransfer::Call { value, input }),
+-                        count_passed: false,
+-                    },
++                    NativeEffectResult::Complete(NativeCallEffects::None) => FlowStep::Follow { before, transfer: None, count_passed: false },
+                     NativeEffectResult::Complete(NativeCallEffects::Unsupported(feature)) => {
+                         self.provider
+                             .flow_error(at, NativeFlowError::Unsupported(feature));
+@@ -892,7 +920,6 @@ impl FlowDomain for NativeDomain<'_> {
+             return FlowType::new(previous.ty, true);
+         }
+         let ty = match transfer {
+-            NativeTransfer::Call { value, input } => return checker.native_call_state_transfer(self.provider, walk, value, input, previous),
+             NativeTransfer::PossibleWrite { at, target, value, input, relation } => {
+                 let assigned = match relation {
+                     NativeWriteRelation::PossibleExact => checker.native_flow_value(self.provider, value, input),
+@@ -1162,7 +1189,9 @@ impl ReachDomain for NativeDomain<'_> {
+                 if !self.edge(at, before) || !self.edge(at, input) {
+                     return ReachStep::Value(false);
+                 }
+-                match checker.native_flow_call_effects(self.provider, value, input) {
++                // Only an explicit nonreturning or assertion contract is a
++                // structural effect; its classification is a refinement too.
++                self.reach_refinement(checker, before, |checker| match checker.native_flow_call_effects(self.provider, value, input) {
+                     NativeEffectResult::Pending | NativeEffectResult::Incomplete { .. } => ReachStep::Follow(before),
+                     NativeEffectResult::Complete(NativeCallEffects::None) => ReachStep::Follow(before),
+                     NativeEffectResult::Complete(NativeCallEffects::Never) => ReachStep::Value(false),
+@@ -1176,7 +1205,7 @@ impl ReachDomain for NativeDomain<'_> {
+                             .flow_error(at, NativeFlowError::Unsupported(feature));
+                         ReachStep::Value(false)
+                     }
+-                }
++                })
+             }
+             NativeFlowNode::Merge { edges } => {
+                 if edges.iter().any(|&edge| !self.edge(at, edge)) {
+@@ -1194,9 +1223,6 @@ impl ReachDomain for NativeDomain<'_> {
+ }
+ 
+ impl<'s, 'p> Checker<'s, 'p> {
+-    pub fn is_native_call_execution(&self, graph: NativeGraphKey) -> bool {
+-        self.flow_memo.native_state.call_executions.last().is_some_and(|frame| frame.entry.graph == graph)
+-    }
+     /// Original runtime capabilities must not lose a structurally redundant
+     /// alternative before intrinsic provenance is classified.
+     pub fn native_runtime_value_union(&mut self, types: &[TypeId]) -> TypeId {
+@@ -1402,64 +1428,17 @@ impl<'s, 'p> Checker<'s, 'p> {
+         pack
+     }
+ 
+-    fn native_numeric_constant(
+-        &mut self,
+-        provider: &dyn NativeFlowProvider,
+-        header: NativeNumericInput,
+-    ) -> Option<NativeNumericConstant> {
+-        let ty = self.native_flow_value(provider, header.value, header.input);
+-        if header.literal.is_some() {
+-            return header.literal;
+-        }
+-        let TypeData::NumberLit { bits, .. } = *self.data(ty) else {
+-            return None;
+-        };
+-        let number = f64::from_bits(bits);
+-        // Without a Lua lexical integer/float fact, large integer literals
+-        // could have lost precision in the shared Number representation.
+-        (number.is_finite() && number.abs() < 9_007_199_254_740_992.0)
+-            .then_some(NativeNumericConstant::Float(number))
+-    }
+-
+-    fn native_numeric_entry(
+-        &mut self,
+-        provider: &dyn NativeFlowProvider,
+-        start: NativeNumericInput,
+-        limit: NativeNumericInput,
+-        step: Option<NativeNumericInput>,
+-        stage: NativeNumericIterationStage,
+-    ) -> NumericEntry {
+-        let known_kinds = start.literal.is_some() && limit.literal.is_some()
+-            && step.is_none_or(|step| step.literal.is_some());
+-        let step = step.map_or(Some(NativeNumericConstant::Integer(1)), |step| {
+-            self.native_numeric_constant(provider, step)
+-        });
++    /// Whether a numeric `for` is entered, from original numeric literals
++    /// alone (structural reachability): a non-literal bound leaves both paths
++    /// open, and a literal zero step raises before either continuation.
++    fn native_literal_numeric_entry(&self, start: NativeNumericInput, limit: NativeNumericInput, step: Option<NativeNumericInput>, stage: NativeNumericIterationStage) -> NumericEntry {
++        let step = step.map_or(Some(NativeNumericConstant::Integer(1)), |step| step.literal);
+         if matches!(step, Some(NativeNumericConstant::Integer(0)))
+             || matches!(step, Some(NativeNumericConstant::Float(value)) if value == 0.0)
+-        {
+-            // Lua raises before either continuation; the source header check
+-            // reports the original zero-step diagnostic independently.
+-            return NumericEntry::Impossible;
+-        }
+-        if stage == NativeNumericIterationStage::Next {
+-            // A body continuation can iterate or terminate. Its predecessor
+-            // exists only when the body completes; a guaranteed first return
+-            // has no such exit. Do not turn a finite literal range into while
+-            // (true), unroll it, or solve a second loop in this adapter.
+-            return NumericEntry::Unknown;
+-        }
+-        let start = self.native_numeric_constant(provider, start);
+-        let limit = self.native_numeric_constant(provider, limit);
+-        if !known_kinds && [start, limit, step].into_iter().flatten().any(|value| match value {
+-            NativeNumericConstant::Integer(value) => value.unsigned_abs() >= 9_007_199_254_740_992,
+-            NativeNumericConstant::Float(value) => value.abs() >= 9_007_199_254_740_992.0,
+-        }) {
+-            // Structural numeric literal types do not distinguish Lua's
+-            // integer and float values. At this scale their conversion can
+-            // change the first-entry comparison; retain both paths.
+-            return NumericEntry::Unknown;
+-        }
+-        numeric_first_entry(start, limit, step)
++        { return NumericEntry::Impossible }
++        if stage == NativeNumericIterationStage::Next { return NumericEntry::Unknown }
++        let (Some(start), Some(limit), Some(step)) = (start.literal, limit.literal, step) else { return NumericEntry::Unknown };
++        numeric_first_entry(Some(start), Some(limit), Some(step))
+     }
+ 
+     pub(super) fn native_runtime_type(&mut self, ty: TypeId, kind: &NativeRuntimeType, sense: bool) -> TypeId {
+@@ -1604,6 +1583,12 @@ impl<'s, 'p> Checker<'s, 'p> {
+         !reachable && stored.is_some()
+     }
+ 
++    /// The value of an original recipe at its frozen input, through the same
++    /// cache flow walks use (stored only when the computation was stable).
++    pub fn native_flow_value_cached(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> TypeId {
++        self.native_flow_value(provider, value, input)
++    }
++
+     fn native_flow_value(
+         &mut self,
+         provider: &dyn NativeFlowProvider,
+diff --git a/src/sema/check/native_flow_calls.rs b/src/sema/check/native_flow_calls.rs
+deleted file mode 100644
+index dd0f94c..0000000
+--- a/src/sema/check/native_flow_calls.rs
++++ /dev/null
+@@ -1,229 +0,0 @@
+-//! Reached caller state through a proved original zero-argument invocation.
+-//! Graph recipes remain immutable; all state and entry bridges are checker-local.
+-use super::*;
+-use crate::check::native_aliases::{NativeAliasExecution, NativeCallPreservation, NativeReachedCallee};
+-use std::collections::HashSet;
+-
+-#[derive(Default)]
+-struct CallCaches {
+-    loops: FxHashMap<LoopKey, TypeId>,
+-    values: FxHashMap<ValueContext, TypeId>,
+-    packs: FxHashMap<ValueContext, NativeResultPack>,
+-    effects: FxHashMap<(ValueContext, u64), NativeCallEffects>,
+-    reachable: FxHashMap<NativeFlowKey, bool>,
+-    latest: Option<(NativeFlowKey, bool)>,
+-    disabled: FxHashMap<NativeGraphKey, ()>,
+-    owners: FxHashMap<(NativeFunctionId, NativeFlowKey, u64), Option<TypeId>>,
+-}
+-
+-pub(super) struct NativeCallStateFrame {
+-    pub(super) entry: NativeFlowKey,
+-    caller: NativeFlowKey,
+-    watched: NativeReferenceKey,
+-    previous: FlowType,
+-    contextual: Option<NativeFunctionContext>,
+-    captured: Option<NativeCapturedFunctionContext>,
+-    outside: Option<CallCaches>,
+-    outside_epoch: u64,
+-    alias_depth: usize,
+-    unsupported: bool,
+-}
+-
+-enum CallState { Unsupported, Pending, Value(FlowType) }
+-
+-impl<'p, 's> Checker<'p, 's> {
+-    fn take_call_caches(&mut self) -> CallCaches {
+-        let state = &mut self.flow_memo.native_state;
+-        CallCaches {
+-            loops: std::mem::take(&mut state.loop_types),
+-            values: std::mem::take(&mut state.value_types),
+-            packs: std::mem::take(&mut state.pack_types),
+-            effects: std::mem::take(&mut state.call_effects),
+-            reachable: std::mem::take(&mut state.reachable),
+-            latest: state.latest_reachable.take(),
+-            disabled: std::mem::take(&mut state.disabled),
+-            owners: std::mem::take(&mut state.contextual_owners),
+-        }
+-    }
+-
+-    fn restore_call_caches(&mut self, cache: CallCaches) {
+-        let state = &mut self.flow_memo.native_state;
+-        state.loop_types = cache.loops;
+-        state.value_types = cache.values;
+-        state.pack_types = cache.packs;
+-        state.call_effects = cache.effects;
+-        state.reachable = cache.reachable;
+-        state.latest_reachable = cache.latest;
+-        state.disabled = cache.disabled;
+-        state.contextual_owners = cache.owners;
+-    }
+-
+-    fn with_call_parent<R>(&mut self, index: usize, work: impl FnOnce(&mut Self) -> R) -> R {
+-        let mut outside = self.flow_memo.native_state.call_executions.split_off(index);
+-        let parent = outside[0].outside.take().expect("call entry owns its caller caches");
+-        let epoch = self.flow_memo.native_state.effect_epoch;
+-        let current = self.take_call_caches();
+-        self.restore_call_caches(parent);
+-        self.flow_memo.native_state.effect_epoch = outside[0].outside_epoch;
+-        let contextual = outside[0].contextual;
+-        let captured = outside[0].captured;
+-        let alias_depth = outside[0].alias_depth;
+-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+-            self.with_native_alias_parent(alias_depth, |checker| {
+-                checker.with_native_function_frame(contextual, captured, work)
+-            })
+-        }));
+-        outside[0].outside = Some(self.take_call_caches());
+-        self.restore_call_caches(current);
+-        self.flow_memo.native_state.effect_epoch = epoch;
+-        self.flow_memo.native_state.call_executions.extend(outside);
+-        result.unwrap_or_else(|error| std::panic::resume_unwind(error))
+-    }
+-
+-    pub(super) fn native_call_entry(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, walk: &NativeWalk) -> Option<FlowType> {
+-        let index = self.flow_memo.native_state.call_executions.iter().rposition(|frame| frame.entry == at)?;
+-        let frame = &self.flow_memo.native_state.call_executions[index];
+-        let watched = frame.watched;
+-        let previous = frame.previous;
+-        let caller = frame.caller;
+-        if provider.reference_declaration(walk.reference).is_some_and(|declaration| declaration.owner == at.graph) {
+-            return None;
+-        }
+-        if walk.reference == watched { return Some(previous) }
+-        // Descendant reads use the actual incoming view, even if that spelling
+-        // never existed in the caller's original reference table.
+-        if let Some(path) = provider.reference_member_path(watched, walk.reference, self) {
+-            let mut ty = previous.ty;
+-            for key in path {
+-                match self.native_table_read(ty, crate::types::NativeTableAccessKey::Literal(key)) {
+-                    Ok(value) => ty = value,
+-                    Err(_) => {
+-                        self.flow_memo.native_state.call_executions[index].unsupported = true;
+-                        return Some(FlowType::new(TypeId::ERROR, false));
+-                    }
+-                }
+-            }
+-            return Some(FlowType::new(ty, previous.incomplete));
+-        }
+-        let Some(reference) = provider.reference_in_graph(walk.reference, caller.graph) else {
+-            self.flow_memo.native_state.call_executions[index].unsupported = true;
+-            return Some(FlowType::new(walk.initial, true));
+-        };
+-        let declared = walk.declared;
+-        let initial = walk.initial;
+-        let result = self.with_call_parent(index, |checker| checker.native_flow_capture_type(provider, caller, reference, declared, initial));
+-        Some(FlowType::new(result.ty, result.incomplete))
+-    }
+-
+-    pub(super) fn native_call_state_transfer(&mut self, provider: &dyn NativeFlowProvider, walk: &NativeWalk, call: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> FlowType {
+-        if previous.incomplete || !(self.native_has_runtime_table(previous.ty) || self.native_definition_flow_target(previous.ty)) { return previous }
+-        match self.native_call_state(provider, walk, call, input, previous) {
+-            CallState::Value(result) => result,
+-            CallState::Unsupported => previous,
+-            CallState::Pending => { self.mark_tainted_from(0); FlowType::new(previous.ty, true) },
+-        }
+-    }
+-
+-    fn native_call_state(&mut self, provider: &dyn NativeFlowProvider, walk: &NativeWalk, call: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> CallState {
+-        let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
+-        let (function, creation, activation, recipe) = match self.native_reached_callee(provider, call, input) {
+-            NativeReachedCallee::Function { function, creation, activation, call } => (function, creation, activation, call),
+-            NativeReachedCallee::Pending => return CallState::Pending,
+-            NativeReachedCallee::Unsupported => return CallState::Unsupported,
+-        };
+-        let ty = provider.alias_callee_type(recipe.callee.value, recipe.callee.input, self);
+-        let Some(signature) = self.native_implementation_signature(ty) else { return CallState::Unsupported };
+-        if self.sig_native_decl(signature).is_none_or(|actual| actual.0 != function)
+-            || !self.sig_type_params(signature).is_empty() || !self.sig_params(signature).is_empty()
+-        { return CallState::Unsupported }
+-        let epoch = self.flow_memo.native_state.effect_epoch;
+-        let query = Query::NativeFlowCallState(walk.reference, call, input, previous.ty, signature, epoch, self.native_alias_execution_key());
+-        if !self.enter(query) { self.mark_tainted_from(0); return CallState::Pending }
+-        let begun = self.begin_memoizable();
+-        let contextual = self.current_native_function_context();
+-        let captured = self.current_native_captured_function();
+-        let selected = NativeCapturedFunctionContext { signature };
+-        let callee_contextual = self.sig_native_context(signature);
+-        let result = self.with_native_function_frame(callee_contextual, Some(selected), |checker| {
+-            let Some(functions) = checker.native_function_provider else { return CallState::Unsupported };
+-            let Some(execution) = functions.function_flow_execution(checker, function, creation) else { return CallState::Unsupported };
+-            if !provider.contains_graph(execution.entry.graph) || !matches!(provider.node(execution.entry), Some(NativeFlowNode::Start))
+-                || execution.terminals.is_empty() || execution.terminals.iter().any(|terminal| terminal.graph != execution.entry.graph)
+-            { return CallState::Unsupported }
+-            let Some(watched) = provider.reference_in_graph(walk.reference, execution.entry.graph) else { return CallState::Unsupported };
+-            if !provider.contains_reference(watched) { return CallState::Unsupported }
+-            let outside = checker.take_call_caches();
+-            let outside_epoch = checker.flow_memo.native_state.effect_epoch;
+-            checker.flow_memo.native_state.fresh_effect_epoch();
+-            let alias_depth = checker.native_alias_execution_depth();
+-            checker.with_native_alias_execution(call, recipe.execution_input, &execution, Some((function, creation, activation)), |checker| {
+-                checker.flow_memo.native_state.call_executions.push(NativeCallStateFrame {
+-                    entry: execution.entry, caller: recipe.execution_input, watched,
+-                    previous, contextual, captured, outside: Some(outside), outside_epoch, alias_depth, unsupported: false,
+-                });
+-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+-                    checker.native_call_replay(provider, &execution, watched, walk.declared, previous)
+-                }));
+-                let frame = checker.flow_memo.native_state.call_executions.pop().expect("actual call-state entry scope");
+-                checker.restore_call_caches(frame.outside.expect("actual caller cache scope"));
+-                checker.flow_memo.native_state.effect_epoch = frame.outside_epoch;
+-                let result = result.unwrap_or_else(|error| std::panic::resume_unwind(error));
+-                if frame.unsupported { CallState::Unsupported } else { result }
+-            })
+-        });
+-        let complete = self.end_memoizable(begun);
+-        let left = self.leave(query);
+-        if complete.is_none() || left.is_err() { return CallState::Pending }
+-        result
+-    }
+-
+-    fn native_call_replay(&mut self, provider: &dyn NativeFlowProvider, execution: &NativeAliasExecution, watched: NativeReferenceKey, declared: TypeId, previous: FlowType) -> CallState {
+-        match self.native_call_replay_safe(provider, execution, watched) {
+-            NativeCallPreservation::Pending => return CallState::Pending,
+-            NativeCallPreservation::Unknown => return CallState::Unsupported,
+-            NativeCallPreservation::Preserved => {},
+-        }
+-        let mut values = Vec::new();
+-        for &terminal in &execution.terminals {
+-            if self.native_flow_definitely_unreachable(provider, terminal) { continue }
+-            let result = self.native_flow_capture_type(provider, terminal, watched, declared, previous.ty);
+-            if result.incomplete { return CallState::Pending }
+-            values.push(result.ty);
+-        }
+-        if values.is_empty() { return CallState::Unsupported }
+-        CallState::Value(FlowType::new(self.union_or_evolving_with(&values, false), false))
+-    }
+-
+-    fn native_call_replay_safe(&mut self, provider: &dyn NativeFlowProvider, execution: &NativeAliasExecution, watched: NativeReferenceKey) -> NativeCallPreservation {
+-        let mut pending: Vec<_> = execution.terminals.iter().rev().map(|&at| (at, false)).collect();
+-        let mut active = HashSet::new();
+-        let mut completed = HashSet::new();
+-        while let Some((at, leaving)) = pending.pop() {
+-            if leaving { active.remove(&at); completed.insert(at); continue }
+-            if completed.contains(&at) { continue }
+-            if at.graph != execution.entry.graph || self.is_stack_low() { return NativeCallPreservation::Unknown }
+-            if self.native_flow_definitely_unreachable(provider, at) { continue }
+-            if !active.insert(at) { self.mark_tainted_from(0); return NativeCallPreservation::Pending }
+-            let Some(node) = provider.node(at) else { return NativeCallPreservation::Unknown };
+-            let edges = match node {
+-                NativeFlowNode::Start if at == execution.entry => Vec::new(),
+-                NativeFlowNode::Write { before, .. } | NativeFlowNode::Pass { before } | NativeFlowNode::Predicate { before, .. } => {
+-                    if !self.native_alias_dispatch_safe(provider, at, before) { return NativeCallPreservation::Unknown }
+-                    vec![before]
+-                },
+-                NativeFlowNode::Call { before, value, input } => {
+-                    match self.native_flow_call_preservation(provider, watched, value, input) {
+-                        NativeCallPreservation::Preserved => vec![before],
+-                        other => return other,
+-                    }
+-                },
+-                NativeFlowNode::Merge { edges } if matches!(provider.alias_node_dispatch(at), super::super::native_aliases::NativeAliasDispatch::NoDispatch) => edges,
+-                NativeFlowNode::Unreachable => Vec::new(),
+-                _ => return NativeCallPreservation::Unknown,
+-            };
+-            pending.push((at, true));
+-            pending.extend(edges.into_iter().rev().map(|edge| (edge, false)));
+-        }
+-        NativeCallPreservation::Preserved
+-    }
+-}
+diff --git a/src/sema/check/native_globals.rs b/src/sema/check/native_globals.rs
+index ff4e79b..824fe2f 100644
+--- a/src/sema/check/native_globals.rs
++++ b/src/sema/check/native_globals.rs
+@@ -77,6 +77,10 @@ pub trait NativeGlobalsProvider {
+     /// reached standard binding state; this supplies no heap identity or
+     /// purity certificate and never overrides an observed assignment.
+     fn assumed_standard_environment(&self) -> Option<NativeEnvironmentId> { None }
++    /// The opt-in strict runtime-effect mode: an unresolved call is an effect
++    /// barrier for heap provenance. Ordinary checking is useful rather than
++    /// sound and preserves what such a call does not visibly write.
++    fn strict_runtime_effects(&self) -> bool { false }
+     /// Frozen initial-library capability, never a lookup of the current variable spelling.
+     fn primitive_member_environment(&self) -> Option<NativeEnvironmentId> { None }
+     fn primitive_member_binding(&self, _: NativeEnvironmentId, _: NativePrimitiveMemberKind) -> Option<NativeGlobalBindingId> { None }
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index f738ee1..64b4de5 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -239,6 +239,10 @@ pub trait NativeTypeDeclarationProvider {
+     fn contains_type_declaration(&self, declaration: NativeTypeDeclarationId) -> bool;
+     fn type_declaration_self_parameter(&self, _: NativeTypeDeclarationId) -> Option<NativeTypeParamId> { None }
+     fn type_declaration_header(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeTypeDeclarationHeader;
++    /// `type_declaration_header(..).kind`, for callers that need nothing else.
++    fn type_declaration_kind(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeTypeDeclarationKind {
++        self.type_declaration_header(checker, declaration).kind
++    }
+     fn type_declaration_owner_scope(&self, checker: &Checker<'_, '_>, declaration: NativeTypeDeclarationId) -> NativeOwnerScopeRecipe {
+         let _ = (checker, declaration);
+         NativeOwnerScopeRecipe::ResolvedHead
+@@ -480,7 +484,15 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     pub fn native_named_member_scope_owner(&mut self, member: NativeTypeMemberId) -> Result<NativeTypeDeclarationId, NativeNamedTypeError> {
+-        let result = (|| {
++        let result = self.native_named_member_scope_owner_unreported(member);
++        if let Err(error) = result { self.report_native_named(error); }
++        result
++    }
++
++    /// The member's scope owner without reporting a failure: the member's own
++    /// validation reports it once. Probing whether another file's candidate
++    /// belongs to an object must not report on every probe.
++    fn native_named_member_scope_owner_unreported(&mut self, member: NativeTypeMemberId) -> Result<NativeTypeDeclarationId, NativeNamedTypeError> {
+         let provider = self.native_type_declaration_provider.filter(|provider| provider.contains_type_member(member))
+             .ok_or(NativeNamedTypeError::InvalidMember(member))?;
+         let header = provider.type_member_header(self, member);
+@@ -494,9 +506,6 @@ impl<'p, 's> Checker<'p, 's> {
+             },
+         };
+         self.native_owner_scope(declaration)
+-        })();
+-        if let Err(error) = result { self.report_native_named(error); }
+-        result
+     }
+ 
+     pub fn native_named_member_owner(&mut self, member: NativeTypeMemberId) -> Result<(NativeTypeDeclarationId, TypeId), NativeNamedTypeError> {
+@@ -572,22 +581,33 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+         let filled = self.fill_type_args(&parameters, arguments);
+         let mapper = self.mapper_from(&parameters, &filled);
++        // As `getTypeFromTypeReference`, resolution does not check constraints: that is the
++        // separate `checkTypeArgumentConstraints` of the reference's own check
++        // (`native_type_reference_constraint_error`). Checking here made a reference resolved
++        // inside a cycle fail as a whole, so the result depended on evaluation order.
++        let declared = self.native_declared_head(declaration)?;
++        Ok(self.type_alias_instantiation(declared, mapper))
++    }
++
++    /// `checkTypeArgumentConstraints` for a written reference: the first argument that does not
++    /// satisfy its parameter's constraint. Arity errors belong to resolution.
++    pub fn native_type_reference_constraint_error(&mut self, declaration: NativeTypeDeclarationId, arguments: &[TypeId]) -> Option<NativeNamedTypeError> {
++        let provider = self.native_named_provider(declaration).ok()?;
++        let header = provider.type_declaration_header(self, declaration);
++        let parameters: Vec<_> = header.parameters.iter().map(|&id| self.native_type_parameter(id)).collect::<Option<_>>()?;
++        let filled = self.fill_type_args(&parameters, arguments);
++        let mapper = self.mapper_from(&parameters, &filled);
+         for (index, (&parameter, &actual)) in parameters.iter().zip(&filled).enumerate() {
+-            // A declaration parameter is assumed to satisfy its own bound. Demanding that bound
+-            // while resolving Node<T>'s F-bound Node<T> would otherwise manufacture a constraint
+-            // cycle before the structural head can be used by the ordinary relation worker.
++            // A declaration parameter is assumed to satisfy its own bound (Node<T>'s F-bound).
+             if actual == parameter { continue }
+             if let Some(constraint) = self.constraint_of_type_param(parameter) {
+                 let expected = self.instantiate(constraint, mapper);
+                 if !self.is_assignable(actual, expected) {
+-                    let error = NativeNamedTypeError::TypeArgumentConstraint { declaration, index, actual, expected };
+-                    self.report_native_named(error);
+-                    return Err(error);
++                    return Some(NativeNamedTypeError::TypeArgumentConstraint { declaration, index, actual, expected });
+                 }
+             }
+         }
+-        let declared = self.native_declared_head(declaration)?;
+-        Ok(self.type_alias_instantiation(declared, mapper))
++        None
+     }
+ 
+     /// Validate a declaration template without requiring actual arguments for its own parameters.
+@@ -826,7 +846,11 @@ impl<'p, 's> Checker<'p, 's> {
+         for (index, &parameter) in parameters.iter().enumerate() {
+             let candidate = &inference.candidates[index];
+             if candidate.covariant.is_empty() && candidate.contravariant.is_empty() && candidate.fixed.is_none() { return Ok(None) }
+-            let inferred = self.get_inferred_type(&inference, index, false);
++            // A declared subclass satisfies its ancestor without comparing members: a structural
++            // comparison here needed the member schema that is being resolved.
++            let inferred = self.get_inferred_type_comparing(&inference, index, false, &mut |checker, source, target| {
++                checker.native_nominally_derived(source, target) || checker.is_assignable(source, target)
++            });
+             pairs.push((parameter, inferred));
+             if let TypeData::NativeTypeParam { declaration, .. } = *self.data(parameter) {
+                 let original = self.native_type_parameter(declaration).ok_or(NativeNamedTypeError::InvalidTypeParameter(declaration))?;
+@@ -948,15 +972,18 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+         // Unrelated augmentation arguments must not be resolved while checking
+         // another owner's constraints. Their original scope identity is enough.
+-        let metadata = provider.type_member_header(self, member);
+-        let candidate = match &metadata.owner {
++        let candidate = match &header.owner {
+             NativeTypeMemberOwner::Declared(owner) => Some(*owner),
+             NativeTypeMemberOwner::Reference { candidates, .. } => match candidates.as_slice() { [owner] => Some(*owner), _ => None },
+             NativeTypeMemberOwner::RuntimeStore(_) => None,
+         };
++        // A candidate whose scope owner cannot be determined (an augmentation of
++        // an unsupported alias) is not this owner's member. Its own declaration
++        // check reports the error; propagating it here failed every object
++        // resolved while that candidate was listed.
+         if let Some(candidate) = candidate
+             && !matches!(provider.type_declaration_owner_scope(self, candidate), NativeOwnerScopeRecipe::ResolvedHead)
+-            && self.native_named_member_scope_owner(member)? != reference.declaration
++            && self.native_named_member_scope_owner_unreported(member).ok() != Some(reference.declaration)
+         { return Ok(None) }
+         let (owner, _) = self.native_named_member_origin(member)?;
+         if owner.declaration != reference.declaration { return Ok(None) }
+@@ -992,7 +1019,7 @@ impl<'p, 's> Checker<'p, 's> {
+         match *self.data(ty) {
+             TypeData::NativeDefinition(reference) => Some(reference.class),
+             TypeData::NativeObject(reference) => self.native_named_provider(reference.declaration).ok()
+-                .filter(|p| p.type_declaration_header(self, reference.declaration).kind.is_nominal())
++                .filter(|p| p.type_declaration_kind(self, reference.declaration).is_nominal())
+                 .map(|_| reference),
+             TypeData::NativeTable(ref table) => table.nominal_origin,
+             _ => None,
+@@ -1231,13 +1258,23 @@ impl<'p, 's> Checker<'p, 's> {
+         Ok(members)
+     }
+ 
++    /// Whether `target` is `source` or one of its declared, mapped bases. A declared subclass is
++    /// assignable to its ancestors (incompatible overrides are the declaration's own error).
++    pub(super) fn native_nominally_derived(&mut self, source: TypeId, target: TypeId) -> bool {
++        if source == target { return true }
++        if !matches!(self.data(target), TypeData::NativeObject(_)) { return false }
++        let TypeData::NativeObject(reference) = *self.data(source) else { return false };
++        let Ok(bases) = self.native_object_bases(reference) else { return false };
++        bases.into_iter().any(|base| self.native_nominally_derived(base, target))
++    }
++
+     pub(super) fn native_nominal_reference_compatible(&mut self, source: NativeObjectReference, target: NativeObjectReference, identity: bool) -> bool {
+         if source.declaration == target.declaration { return true }
+         if identity { return false }
+         let Ok(bases) = self.native_object_bases(source) else { return false };
+         bases.into_iter().any(|base| {
+             let TypeData::NativeObject(reference) = *self.data(base) else { return false };
+-            let nominal = self.native_named_provider(reference.declaration).is_ok_and(|p| p.type_declaration_header(self, reference.declaration).kind == NativeTypeDeclarationKind::Class);
++            let nominal = self.native_named_provider(reference.declaration).is_ok_and(|p| p.type_declaration_kind(self, reference.declaration) == NativeTypeDeclarationKind::Class);
+             nominal && self.native_nominal_reference_compatible(reference, target, false)
+         })
+     }
+@@ -1470,7 +1507,7 @@ impl<'p, 's> Checker<'p, 's> {
+     /// A literal field read demands just that field, preserving laziness across sibling members.
+     /// Indexers and full structural operations use the ordinary NativeTable description worker.
+     pub(super) fn native_named_read(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
+-        if self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_header(self, reference.declaration).kind == NativeTypeDeclarationKind::RuntimeTable) {
++        if self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_kind(self, reference.declaration) == NativeTypeDeclarationKind::RuntimeTable) {
+             let key = self.native_table_access(key)?;
+             let object = self.intern(TypeData::NativeObject(reference));
+             if let Some(value) = self.native_runtime_seed_read(reference, key).map_err(|error| error.table_error(object))? { return Ok(value) }
+@@ -1512,6 +1549,36 @@ impl<'p, 's> Checker<'p, 's> {
+         let resolved = self.native_object_resolved(object).map_err(|error| error.table_error(object))?;
+         self.native_table_read(resolved, key)
+     }
++
++    /// The type a contextual lookup sees for `key`, as `getTypeOfPropertyOfContextualType`: the
++    /// member's mapped type, without the receiver and override relations of a read. Context is
++    /// demanded while resolving members, and relating types there re-entered the schema being
++    /// resolved.
++    pub(super) fn native_named_context_value(&mut self, reference: NativeObjectReference, key: NativeTableAccessKey) -> Option<TypeId> {
++        if let NativeTableAccessKey::Literal(literal) = key
++            && self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_kind(self, reference.declaration) != NativeTypeDeclarationKind::RuntimeTable)
++        {
++            let literal = literal.normalize().ok()?;
++            let members = self.native_object_members(reference).ok()?;
++            let provider = self.native_named_provider(reference.declaration).ok()?;
++            for origin in members {
++                let metadata = provider.type_member_header(self, origin.member);
++                let NativeTypeMemberKey::Fixed(member_key) = metadata.key else { continue };
++                if member_key.normalize().ok()? != literal { continue }
++                if let Some((_, base)) = origin.via {
++                    let TypeData::NativeObject(owner) = *self.data(base) else { continue };
++                    return self.native_named_context_value(owner, key);
++                }
++                let Some(raw) = self.native_object_member_demand(&origin).ok()? else { continue };
++                let value = self.native_member_type(raw, origin.owner);
++                let value = if self.native_object_member_effective_origin(&origin).ok()? == Some(crate::types::NativeTableFieldOrigin::Declared) { self.regular(value) } else { value };
++                return Some(if metadata.optional { self.optional(value) } else { value });
++            }
++        }
++        let object = self.intern(TypeData::NativeObject(reference));
++        let schema = self.native_object_schema_resolved(object).ok()?;
++        self.native_table_read(schema, key).ok()
++    }
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
+@@ -1522,7 +1589,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let valid = match *self.data(class) {
+             TypeData::NativeObject(reference) => reference.declaration == expected
+                 && provider.contains_type_declaration(expected)
+-                && provider.type_declaration_header(self, expected).kind == NativeTypeDeclarationKind::Class,
++                && provider.type_declaration_kind(self, expected) == NativeTypeDeclarationKind::Class,
+             _ => false,
+         };
+         if !valid { return Err(NativeNamedTypeError::DefinitionOwner { owner, expected, actual: class }) }
+diff --git a/src/sema/check/native_runtime.rs b/src/sema/check/native_runtime.rs
+index 685a39f..54686ba 100644
+--- a/src/sema/check/native_runtime.rs
++++ b/src/sema/check/native_runtime.rs
+@@ -23,10 +23,17 @@ impl<'p, 's> Checker<'p, 's> {
+     /// Declaration identity and ancestry only. Runtime classification must not
+     /// expand a class's members, method contracts or inferred implementations.
+     fn native_opaque_runtime_declaration(&mut self, declaration: NativeTypeDeclarationId) -> Result<NativeOpaqueRuntimeDomain, NativeNamedTypeError> {
++        if let Some(&known) = self.native_runtime_domains.get(&declaration) { return Ok(Complete(known)) }
+         let roots = [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread]
+             .map(|kind| (kind, self.native_opaque_runtime_root(kind)));
+-        if roots.iter().all(|(_, root)| root.is_none()) { return Ok(Complete(None)) }
+-        if let Some((kind, _)) = roots.iter().find(|(_, root)| *root == Some(declaration)) { return Ok(Complete(Some(*kind))) }
++        if roots.iter().all(|(_, root)| root.is_none()) {
++            self.native_runtime_domains.insert(declaration, None);
++            return Ok(Complete(None));
++        }
++        if let Some((kind, _)) = roots.iter().find(|(_, root)| *root == Some(declaration)) {
++            self.native_runtime_domains.insert(declaration, Some(*kind));
++            return Ok(Complete(Some(*kind)));
++        }
+         let query_kind = NativeTypeDeclarationQuery::RuntimeDomain(declaration);
+         let query = Query::NativeNamed(query_kind);
+         if !self.enter(query) {
+@@ -59,7 +66,10 @@ impl<'p, 's> Checker<'p, 's> {
+         if let Err(error) = result { self.report_native_named(error); return Err(error) }
+         if matches!(result, Ok(Pending)) { self.mark_tainted_from(0); self.note_cycle(); return result }
+         match ended {
+-            Ok(_) if completed.is_some() => result,
++            Ok(_) if completed.is_some() => {
++                if let Ok(Complete(kind)) = result { self.native_runtime_domains.insert(declaration, kind); }
++                result
++            }
+             Err(_) if self.native_complete_without_cache(context, completed.is_some()) => result,
+             _ => {
+                 // An Ok base value can still be a provisional fallback. Never
+diff --git a/src/sema/check/native_runtime_tables.rs b/src/sema/check/native_runtime_tables.rs
+index bdc0a91..9b21180 100644
+--- a/src/sema/check/native_runtime_tables.rs
++++ b/src/sema/check/native_runtime_tables.rs
+@@ -28,7 +28,7 @@ impl<'p, 's> Checker<'p, 's> {
+     pub fn native_runtime_table_schema(&self, ty: TypeId) -> Option<TypeId> {
+         if let Some(reference) = self.native_runtime_table_ref(ty) { return Some(self.intern(TypeData::NativeObject(reference.schema))) }
+         if let TypeData::NativeObject(reference) = *self.data(ty)
+-            && self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_header(self, reference.declaration).kind == NativeTypeDeclarationKind::RuntimeTable)
++            && self.native_named_provider(reference.declaration).is_ok_and(|provider| provider.type_declaration_kind(self, reference.declaration) == NativeTypeDeclarationKind::RuntimeTable)
+         { return Some(ty) }
+         None
+     }
+diff --git a/src/sema/check/native_standard_assumptions.rs b/src/sema/check/native_standard_assumptions.rs
+index c69b8e1..5030a86 100644
+--- a/src/sema/check/native_standard_assumptions.rs
++++ b/src/sema/check/native_standard_assumptions.rs
+@@ -18,6 +18,18 @@ impl<'p, 's> Checker<'p, 's> {
+                 NativeAliasIntrinsic::Pending => NativeStandardOperation::Pending,
+             };
+         }
++        // Intrinsics are recognised by name, as in Luanalysis v1. A callee that
++        // cannot lexically name one is ordinary, and an unreplaced global name
++        // is its original declaration. Only the remaining spellings (aliases
++        // through mutable locals, members, replaced names) walk provenance.
++        match provider.value_lexical_standard(value, input) {
++            NativeLexicalStandard::Ordinary => return NativeStandardOperation::Ordinary,
++            NativeLexicalStandard::Global(reference) => return match self.native_initial_standard(provider, reference, input) {
++                Some(site) if Some(site.binding.environment) == self.native_assumed_environment() => NativeStandardOperation::Standard(site),
++                _ => NativeStandardOperation::Ordinary,
++            },
++            NativeLexicalStandard::Unknown => {},
++        }
+         // Reuse completed physical evidence without starting an expensive raw
+         // effect proof merely to classify an ordinary standard operation.
+         let raw_key = (value, input, 0, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
+@@ -38,6 +50,11 @@ impl<'p, 's> Checker<'p, 's> {
+     pub fn native_flow_standard_loader_state(&mut self, provider: &dyn NativeFlowProvider, at: NativeFlowKey, reference: NativeReferenceKey) -> NativeFlowResult {
+         let provider = self.native_function_provider.and_then(|provider| provider.project_flow_provider()).unwrap_or(provider);
+         if self.native_assumed_environment().is_none() { return self.native_flow_type(provider, at, reference, crate::types::TypeId::FALSE, crate::types::TypeId::TRUE) }
++        // Like intrinsic names, the loader is the original unless some source
++        // explicitly mutates it; only then walk the actual continuations.
++        if provider.loader_never_mutated(at.graph) && reference.graph == at.graph && provider.contains_reference(reference) && provider.node(at).is_some() {
++            return NativeFlowResult { ty: crate::types::TypeId::TRUE, incomplete: false, unresolved_auto: false };
++        }
+         self.native_standard_loader_state(provider, at, reference)
+     }
+ 
+@@ -68,7 +85,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 NativeFlowResult { ty: TypeId::TRUE, ..invalid }
+             },
+             Some(NativeFlowNode::Write { before, target, .. }) => {
+-                if matches!(provider.write_affects_with_types(reference, target, at, checker), NativeWriteRelation::Exact | NativeWriteRelation::PossibleExact | NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor) { invalid }
++                if matches!(provider.write_affects_ignoring_descendants(reference, target, at, checker), NativeWriteRelation::Exact | NativeWriteRelation::PossibleExact | NativeWriteRelation::Ancestor | NativeWriteRelation::PossibleAncestor) { invalid }
+                 else { checker.native_standard_loader_state(provider, before, reference) }
+             },
+             Some(NativeFlowNode::Call { before, value, input }) => {
+@@ -324,18 +341,26 @@ impl<'p, 's> Checker<'p, 's> {
+         let direct = provider.write_affects(reference, target, at);
+         if provider.reference_is_cell(reference) || provider.reference_is_cell(target) { return Ok(direct) }
+         let Some(prefixes) = provider.reference_proper_prefixes(reference) else {
+-            return Ok(provider.write_affects_with_types(reference, target, at, self));
++            return Ok(provider.write_affects_ignoring_descendants(reference, target, at, self));
+         };
+         let Some(receiver) = provider.write_alias_receiver(at) else {
+-            return Ok(provider.write_affects_with_types(reference, target, at, self));
++            return Ok(provider.write_affects_ignoring_descendants(reference, target, at, self));
+         };
+         let written = provider.write_member_key(reference, target, at, self).and_then(|key| key.normalize().ok());
+-        let receiver = self.native_standard_value(provider, receiver.value, receiver.input);
+-        if receiver.uncertain { return Err(()) }
+-        let mut possible = None;
++        // A known written key that differs from a watched member leaves that
++        // prefix unaffected whatever the receiver is. Prove receiver
++        // provenance only for prefixes that the store can actually reach.
++        let mut candidates = Vec::with_capacity(prefixes.len());
+         for prefix in prefixes {
+             let path = provider.reference_member_path(prefix, reference, self);
+             if let Some(path) = &path && written.is_some_and(|key| path.first().and_then(|key| key.normalize().ok()) != Some(key)) { continue }
++            candidates.push((prefix, path));
++        }
++        if candidates.is_empty() { return Ok(NativeWriteRelation::Unaffected) }
++        let receiver = self.native_standard_value(provider, receiver.value, receiver.input);
++        if receiver.uncertain { return Err(()) }
++        let mut possible = None;
++        for (prefix, path) in candidates {
+             let original = self.native_standard_reference(provider, prefix, before);
+             if original.uncertain { return Err(()) }
+             if !original.unknown && !receiver.unknown && original.tokens.is_disjoint(&receiver.tokens) { continue }
+@@ -368,7 +393,11 @@ impl<'p, 's> Checker<'p, 's> {
+         // Inspect at most one module top level and one reached function.
+         // There is no recursive host/metamethod purity proof.
+         if !scope.function && !scope.module { return NativeCallPreservation::Preserved }
+-        let query = Query::NativeStandardCall(reference, call, input, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame());
++        // A loop-invariant callee hypothesis is well-founded: it does not
++        // resolve the callee through the loop that requested it. Sharing the
++        // ordinary continuation identity would report a false cycle.
++        let variant = u8::from(scope.function) | u8::from(scope.module) << 1 | u8::from(scope.loader) << 2 | u8::from(callee.is_some()) << 3;
++        let query = Query::NativeStandardCall(reference, call, input, self.flow_memo.native_state.effect_epoch, self.native_alias_cache.frame(), variant);
+         if !self.enter(query) { self.mark_tainted_from(0); return NativeCallPreservation::Pending }
+         let (result, completed) = self.run_memoizable(|checker| checker.native_standard_call_worker(provider, reference, call, input, scope, callee));
+         if self.leave(query).is_err() || completed.is_none() || result == NativeCallPreservation::Pending {
+@@ -379,7 +408,7 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     fn native_standard_call_worker(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, call: NativeValueKey, input: NativeFlowKey, scope: StandardScope, callee: Option<Origins>) -> NativeCallPreservation {
+-        let Some(mut recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Preserved };
++        let Some(recipe) = provider.alias_call_source(call, input) else { return NativeCallPreservation::Preserved };
+         let callee = callee.unwrap_or_else(|| self.native_standard_value(provider, recipe.callee.value, recipe.callee.input));
+         if callee.uncertain { return NativeCallPreservation::Pending }
+         if callee.unknown || callee.tokens.len() != 1 { return NativeCallPreservation::Preserved }
+@@ -388,21 +417,6 @@ impl<'p, 's> Checker<'p, 's> {
+                 let Some(execution) = provider.function_alias_execution(function, creation) else { return NativeCallPreservation::Preserved };
+                 (vec![execution], Some((function, creation, activation)), StandardScope { function: false, module: false, loader: scope.loader })
+             },
+-            allocation @ Origin::Allocation(..) if scope.function => {
+-                // Reuse only the bounded original setmetatable/__call target
+-                // recipe. Unknown intervening effects still fail that raw
+-                // lookup; no purity or absence certificate is inferred here.
+-                let target = match self.native_alias_callable_table(provider, &allocation, recipe.execution_input) {
+-                    Ok(Some(target)) => target,
+-                    Ok(None) => return NativeCallPreservation::Preserved,
+-                    Err(()) => return NativeCallPreservation::Pending,
+-                };
+-                let Some(execution) = provider.function_alias_execution(target.function, target.creation) else { return NativeCallPreservation::Preserved };
+-                let receiver = recipe.callee;
+-                recipe.callee = target.callee;
+-                recipe.arguments.insert(0, receiver);
+-                (vec![execution], Some((target.function, target.creation, target.activation)), StandardScope { function: false, module: false, loader: scope.loader })
+-            },
+             Origin::Standard(site) if site.kind == NativeIntrinsicKind::Require && scope.module => {
+                 // An original import recipe is only a candidate execution.
+                 // A reached loader replacement must not activate the former
+@@ -428,7 +442,7 @@ impl<'p, 's> Checker<'p, 's> {
+ 
+     fn native_standard_scope_writes(&mut self, provider: &dyn NativeFlowProvider, reference: NativeReferenceKey, boundary: NativeFlowKey, terminals: &[NativeFlowKey], entry: Option<NativeFlowKey>, scope: StandardScope, invariant: Option<&StandardLoop>) -> NativeCallPreservation {
+         let mut work = terminals.to_vec();
+-        let mut visited = HashSet::new();
++        let mut visited = HashSet::default();
+         while let Some(at) = work.pop() {
+             if at == boundary { continue }
+             if self.is_stack_low() { self.mark_tainted_from(0); return NativeCallPreservation::Pending }
+@@ -441,7 +455,7 @@ impl<'p, 's> Checker<'p, 's> {
+                         else if let Some(invariant) = invariant {
+                             match self.native_standard_loop_environment_write(provider, reference, target, at, invariant) {
+                                 Ok(Some(relation)) => relation,
+-                                Ok(None) => provider.write_affects_with_types(reference, target, at, self),
++                                Ok(None) => provider.write_affects_ignoring_descendants(reference, target, at, self),
+                                 Err(()) => return NativeCallPreservation::Pending,
+                             }
+                         } else {
+@@ -458,7 +472,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 Some(NativeFlowNode::Call { before, value, input }) => {
+                     if scope.loader && provider.known_standard_loader_write(at) { return NativeCallPreservation::Unknown }
+                     let callee = invariant.and_then(|invariant| provider.alias_call_source(value, input).map(|recipe| {
+-                        self.native_standard_loop_value(provider, recipe.callee.value, recipe.callee.input, invariant, &mut HashSet::new())
++                        self.native_standard_loop_value(provider, recipe.callee.value, recipe.callee.input, invariant, &mut HashSet::default())
+                     }));
+                     let result = self.native_standard_call_continuation(provider, reference, value, input, scope, callee);
+                     if result != NativeCallPreservation::Preserved { return result }
+@@ -481,7 +495,7 @@ impl<'p, 's> Checker<'p, 's> {
+         // Use the store's original frozen receiver, not its flowed type: typing
+         // a captured environment alias here can demand this loop's call effect.
+         // The local loop substitution is never published as physical evidence.
+-        let receiver = self.native_standard_loop_value(provider, receiver.value, receiver.input, invariant, &mut HashSet::new());
++        let receiver = self.native_standard_loop_value(provider, receiver.value, receiver.input, invariant, &mut HashSet::default());
+         if receiver.uncertain { return Err(()) }
+         if !receiver.tokens.contains(&Origin::Environment(binding.environment)) {
+             // This host policy preserves standard bindings unless an original
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+index 18f9342..d4aac6c 100644
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -848,6 +848,7 @@ impl<'p, 's> Checker<'p, 's> {
+             for value in &mut values { if self.is_any(*value) { *value = TypeId::UNKNOWN; } }
+             return if values.is_empty() { None } else { Some(self.intersection(&values)) };
+         }
++        if let TypeData::NativeObject(reference) = *self.data(expected) { return self.native_named_context_value(reference, key) }
+         self.native_table_read(expected, key).ok()
+     }
+ 
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+index cc816ad..2b8f2b6 100644
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -271,9 +271,9 @@ fn is_task_independent(q: Query) -> bool {
+         | Query::Comparison(_) => true,
+         Query::NativeGlobals(_)
+         | Query::NativeContextualTypeOwner(..)
+-        | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallState(..)
++        | Query::NativeFlowCallEffects(..)
+         | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
+-        | Query::NativeAliasLoaderState(..) | Query::NativeAliasCallableTable(..)
++        | Query::NativeAliasLoaderState(..)
+         | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
+         | Query::NativeAliasProjectedReference(..) | Query::NativeAliasProjectedValue(..)
+         | Query::NativeStandardReference(..) | Query::NativeStandardValue(..) | Query::NativeStandardCall(..) | Query::NativeStandardLoader(..)
+diff --git a/src/sema/check/unions.rs b/src/sema/check/unions.rs
+index 97d4835..c64b522 100644
+--- a/src/sema/check/unions.rs
++++ b/src/sema/check/unions.rs
+@@ -1686,6 +1686,12 @@ impl<'p, 's> Checker<'p, 's> {
+             (None, &TypeData::NativeTypeParam { declaration, .. }) => {
+                 self.native_type_parameter_name(declaration)
+             }
++            // A named object has the name of its declaration, as a class or interface has that of
++            // its symbol. Without it, unions of them were ordered by ids, which differ by task.
++            (None, &TypeData::NativeObject(reference)) => {
++                let provider = self.native_named_provider(reference.declaration).ok()?;
++                provider.type_declaration_header(self, reference.declaration).name
++            }
+             (None, &TypeData::StringMapping { kind, .. }) => {
+                 return Some(super::print::string_mapping_name(kind));
+             }
+@@ -2278,10 +2284,33 @@ impl<'p, 's> Checker<'p, 's> {
+                 let (s, t) = self.members_that_order_intersections(a, b);
+                 self.compare_types_ordered_by(a, b, s, t)
+             }
++            // Two applications of one named declaration: their type arguments decide, as tsgo
++            // compares the arguments of two references to one target, not their ids.
++            (&TypeData::NativeObject(s), &TypeData::NativeObject(t)) if s.declaration == t.declaration && a != b => {
++                let (s, t) = (self.native_object_arguments(s), self.native_object_arguments(t));
++                for (x, y) in s.iter().zip(&t) {
++                    if x != y {
++                        let order = self.compare_types(*x, *y);
++                        if order != std::cmp::Ordering::Equal { return order }
++                    }
++                }
++                self.compare_types_ordered_by(a, b, a, b)
++            }
+             _ => self.compare_types_ordered_by(a, b, a, b),
+         }
+     }
+ 
++    /// The written type arguments of a named object: its declaration's outer, then own parameters,
++    /// through its mapper.
++    fn native_object_arguments(&self, reference: crate::types::NativeObjectReference) -> Vec<TypeId> {
++        let Some(header) = self.native_named_provider(reference.declaration).ok()
++            .map(|provider| provider.type_declaration_header(self, reference.declaration)) else { return Vec::new() };
++        header.outer_parameters.into_iter().chain(header.parameters)
++            .filter_map(|parameter| self.native_type_parameter(parameter))
++            .map(|formal| self.types().map(reference.mapper, formal).unwrap_or(formal))
++            .collect()
++    }
++
+     /// `compareTypeLists` calls `CompareTypes`: of two intersections, the first pair of distinct
+     /// members decides, by the ids if nothing else orders the two.
+     fn members_that_order_intersections(&self, a: TypeId, b: TypeId) -> (TypeId, TypeId) {

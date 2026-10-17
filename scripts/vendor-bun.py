@@ -487,6 +487,16 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Render unnamed native runtime-table declarations through the existing anonymous object printer, preserving named declaration formatting and cycle elision through kernel 5950739.",
 })
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+    "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+} for path in [
+    "call.rs", "infer.rs", "mod.rs", "native_alias_loops.rs", "native_aliases.rs", "native_flow.rs",
+    "native_flow_calls.rs", "native_globals.rs", "native_named.rs", "native_runtime.rs",
+    "native_runtime_tables.rs", "native_standard_assumptions.rs", "native_tables.rs", "sink.rs", "unions.rs",
+])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
@@ -524,7 +534,8 @@ def patched_sources(source):
                 raise SystemExit(f"patch paths differ from source adaptations: {patch_name}")
             subprocess.run(["git", "apply", "--whitespace=nowarn"],
                            input=patch, cwd=temporary, check=True)
-        return {path: (temporary / path).read_bytes() for path in all_paths}
+        # A later patch may delete a file that an earlier one added.
+        return {path: (temporary / path).read_bytes() for path in all_paths if (temporary / path).exists()}
 
 
 def main():

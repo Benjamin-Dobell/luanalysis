@@ -2118,6 +2118,96 @@
       "patch": "vendor/patches/bun-sema-native-runtime-table-printing.patch",
       "reason": "Render unnamed native runtime-table declarations through the existing anonymous object printer, preserving named declaration formatting and cycle elision through kernel 5950739.",
       "patch_sha256": "1a7482cee803b9a45526f49894fa0bc660e0d8e634fb38c8b17f2d7b13904082"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_alias_loops.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_aliases.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_flow_calls.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_runtime.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_standard_assumptions.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
+    },
+    {
+      "path": "src/sema/check/unions.rs",
+      "patch": "vendor/patches/bun-sema-native-check-once-determinism.patch",
+      "reason": "Reuse context-free native argument results per mode and frame (forgotten with discarded body reports), remove call-state replay (deleting native_flow_calls.rs) as Bun does not replay callee stores, cache declaration kinds and runtime domains, check type-argument constraints apart from reference resolution, resolve members without relations, and order native unions by declaration name and type arguments, through kernel e5e554f.",
+      "patch_sha256": "31d51d4c8323b89c5683c489b760af52f62f8ddcde4bbc2136218b3bdee03ecb"
     }
   ],
   "source_additions": {
@@ -2126,11 +2216,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_alias_loops.rs": {
-      "extracted_sha256": "00e1c322adfaf54a4ce5d593cc83bdd436d75442fce42b6e9eda5361b7f796d4",
+      "extracted_sha256": "1f073a5319ba2055c9b26154dd30da3f4bfcdf9cb98a905aea68e3c221721256",
       "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
     },
     "src/sema/check/native_aliases.rs": {
-      "extracted_sha256": "6e8cd0d1beb68392081d9920a7fde6e86572e6f4b440c1043a7a2a8aa66e4da0",
+      "extracted_sha256": "629963d899cd74628e62ae25838c0036ee8f3228c8fb879e2ae38476491c0672",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_assertions.rs": {
@@ -2138,15 +2228,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "91e6083d490968c4136f5586c76670ff35b13733efe9f4a7effd44bdd961a699",
+      "extracted_sha256": "0d4b3fed348d9b3b97e21370483541ba11570792dc79e4c76555503701989b72",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
-    "src/sema/check/native_flow_calls.rs": {
-      "extracted_sha256": "b58ce3afe6596c010de32ac8c6206ed241d4428c6113192eef1c385ddff48f67",
-      "introduced_by_patch": "vendor/patches/bun-sema-native-call-state-runtime-bounds-loops.patch"
-    },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "f8aa93a3e3c164b2e395176a119febc1454bf3ccade5c95a6179df990e6f41c7",
+      "extracted_sha256": "32e5b9d2824cf50c04b2ca4685a226ac3ab53fbd8944a75d82b9efde68a6c4f1",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
@@ -2158,7 +2244,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "01fc32b4316c109488c53ca7173605e3df352972d99ae0772d4c46f60bab8955",
+      "extracted_sha256": "08bf56dcbfa6112f3c389db0b35678a65aa8e1991046478b554cdf56d05a3823",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -2174,11 +2260,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch"
     },
     "src/sema/check/native_runtime.rs": {
-      "extracted_sha256": "ee8d22b6a42428c5a5a6b9f33e73bd8ae932fce288893ccc97cb539457ec2aa5",
+      "extracted_sha256": "15faa6979f1ee5ce48e219860fe019b9c8d5e294a721086832cbfbddf98f41c4",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "ea8e7509565ecf3cb176caa93b6fd142b3d4ef068e865083e7b543bc2605616f",
+      "extracted_sha256": "15f4df854e4f53a2baef154d3b11f2a60dc2dcf124aba2b7fc85dd85e2031f6a",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -2186,11 +2272,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_standard_assumptions.rs": {
-      "extracted_sha256": "c7763de5a67439be0e3119b85ceb61f1db4b8d0e2e59ca5f76ff260d031b0b1a",
+      "extracted_sha256": "bcdf2033957acf122a7fd30d2d808224a5bb04a655caaf4175e84a1c28f827f2",
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "5f336cf70376309882d188e586863de82c91d6c6c345ac192f027becb0ccb570",
+      "extracted_sha256": "59f9789c6f1069aeb7b99e0954d71222ed98ad6b84edf67b99cb2cfdd120b8d8",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -2888,7 +2974,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "2e9bc6887bddec29ac3234b756c43004b3b14bcf9d7d65856ae53da0a9f49a0c"
+      "extracted_sha256": "e7d73412ac690d88bcb1c20dd414523fb6d9e5668a7f9d4cea1c186d32b49b15"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -3113,7 +3199,7 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "4da5ebbea023a3560f7642f99fef4c1b5c1b050002f47138506ed20f0e100421"
+      "extracted_sha256": "62e28df0fd7d40251dd73020982373d19789fd995588330553a4cae5b506d588"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
@@ -3148,7 +3234,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "f8381e83979c79e314184ee05ac467b89c041c27e312079ee2ec8ec435dd3acf"
+      "extracted_sha256": "d7f24ca22bf991ca306b135a1cccbef4b2a8907809dff774b2e736242cbd4bfb"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -3233,7 +3319,7 @@
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "2a43cf242f76c2995c099d154a92209445ac56bb68bb67c24c3d60004761bd01"
+      "extracted_sha256": "da1032a0e57e7c54734e64a24131bf60852ae8cddc2a2c269cdc2fea3296a368"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",
@@ -3263,7 +3349,7 @@
     "src/sema/check/unions.rs": {
       "upstream": "src/sema/check/unions.rs",
       "sha256": "80987181d7283550317b7096535b41e417eab932147592c0524e02c698f40776",
-      "extracted_sha256": "b5f70ff9571ea9f6bd7eb65796b6f13a79b2940e2bb75f82a8e26fd97bfe6ac4"
+      "extracted_sha256": "fc4399fc415234294ca18ee243e862f10345f91a881bcfaed2614c61ac692a48"
     },
     "src/sema/components.rs": {
       "upstream": "src/sema/components.rs",
