@@ -486,7 +486,9 @@ impl ProjectRegistry {
             }
             let mut published = false;
             for (index, file) in self.files.iter().enumerate() {
-                if owned_only && file.role == SourceRole::Implementation { file.source.check_selected_bodies(queries); }
+                // A task checks the bodies of its own sources only, as a Bun task checks its files:
+                // another source's bodies are checked once, by the task that owns it.
+                if owned_only && file.role == SourceRole::Implementation && selected(file.id) { file.source.check_selected_bodies(queries); }
                 if owned_only || checked.contains(&index) { published |= file.source.retry_contextual_owner_validations(queries); }
             }
             for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {

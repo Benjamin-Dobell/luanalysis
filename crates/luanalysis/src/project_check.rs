@@ -241,51 +241,61 @@ pub(crate) fn check_project_with_workspace(
         );
         (checked, required, None)
     } else {
-        let scheduled: HashSet<_> = roots.iter().copied().collect();
-        let mut batches = Vec::new();
-        let mut steps = Vec::new();
-        let mut batch_costs = Vec::new();
-        for step in [tasks] {
-            let mut jobs = Vec::new();
-            for task in step {
-                jobs.push(batches.len());
-                batch_costs.push(
-                    task.iter()
-                        .map(|&index| source_costs[&roots[index]])
-                        .sum::<usize>(),
-                );
-                batches.push(
-                    task.into_iter()
-                        .map(|index| roots[index])
-                        .collect::<Vec<_>>(),
-                );
-            }
-            steps.push(jobs);
-        }
-        let run = Engine::new().with_native_task_plan_by_cost_report(
-            NonZeroUsize::new(workers).unwrap(),
-            &steps,
-            |job| batch_costs[job],
-            make_registry,
-            |job, registry, queries| {
-                let started = profile.then(Instant::now);
-                let reports = registry.check_scheduled_roots(queries, &batches[job], &scheduled);
-                if let Some(started) = started {
-                    let names: Vec<_> = batches[job].iter().map(|&file| {
-                        project.file(file).unwrap().path.file_name().unwrap().to_string_lossy()
-                    }).collect();
-                    eprintln!("luanalysis profile: job={job} elapsed={:.6}s files={names:?}", started.elapsed().as_secs_f64());
-                }
-                (reports, registry.required_files())
-            },
-        );
+        // Each task checks only the sources it owns, as a Bun task checks its
+        // files. A source reached only through `require` is checked once its
+        // require is proven, by one task of the next round, rather than by every
+        // task that requires it: each body is checked by one task.
+        let mut scheduled: HashSet<FileId> = roots.iter().copied().collect();
+        let mut round = roots.clone();
         let mut required = HashSet::default();
         let mut checked = Vec::new();
-        for (reports, targets) in run.results {
-            checked.extend(reports);
-            required.extend(targets);
+        let mut stats = NativeTaskRunStats::default();
+        let mut tasks = Some(tasks);
+        while !round.is_empty() {
+            let tasks = tasks.take().unwrap_or_else(|| {
+                pool_tasks(round.len(), &|index| source_costs[&round[index]], requested.get().min(round.len()).max(1))
+            });
+            let batches: Vec<Vec<FileId>> = tasks.into_iter()
+                .map(|task| task.into_iter().map(|index| round[index]).collect())
+                .collect();
+            let batch_costs: Vec<usize> = batches.iter()
+                .map(|batch| batch.iter().map(|file| source_costs[file]).sum())
+                .collect();
+            let steps = vec![(0..batches.len()).collect::<Vec<_>>()];
+            let run = Engine::new().with_native_task_plan_by_cost_report(
+                NonZeroUsize::new(batches.len().clamp(1, workers)).unwrap(),
+                &steps,
+                |job| batch_costs[job],
+                make_registry,
+                |job, registry, queries| {
+                    let started = profile.then(Instant::now);
+                    let reports = registry.check_owned_roots(queries, &batches[job]);
+                    if let Some(started) = started {
+                        let names: Vec<_> = batches[job].iter().map(|&file| {
+                            project.file(file).unwrap().path.file_name().unwrap().to_string_lossy()
+                        }).collect();
+                        eprintln!("luanalysis profile: job={job} elapsed={:.6}s files={names:?}", started.elapsed().as_secs_f64());
+                    }
+                    (reports, registry.required_files())
+                },
+            );
+            stats.workers = stats.workers.max(run.stats.workers);
+            stats.tasks += run.stats.tasks;
+            stats.retries += run.stats.retries;
+            stats.barriers += run.stats.barriers;
+            stats.linked_records += run.stats.linked_records;
+            stats.joined_records += run.stats.joined_records;
+            stats.published_entries += run.stats.published_entries;
+            for (reports, targets) in run.results {
+                checked.extend(reports);
+                required.extend(targets);
+            }
+            let mut next: Vec<FileId> = required.iter().copied().filter(|file| !scheduled.contains(file)).collect();
+            next.sort_by_key(|file| file.index);
+            scheduled.extend(next.iter().copied());
+            round = next;
         }
-        (merge_reports(checked), required, Some(run.stats))
+        (merge_reports(checked), required, Some(stats))
     };
     if profile {
         eprintln!("luanalysis profile: source_prepare={:.6}s flow_prepare={:.6}s checking={:.6}s registry_factory_sum={:.6}s factories={} execution={execution:?}",
