@@ -189,7 +189,7 @@ jobs:
           for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set vs=%%i
           call "%vs%\VC\Auxiliary\Build\${{ matrix.vcvars }}"
           set out=luanalysis-windows-${{ matrix.arch }}
-          echo local x = 1> smoke.lua
+          > smoke.lua echo local x = 1
           %out%\bin\luanalysis.exe --version || exit /b 1
           %out%\bin\luanalysis.exe check --lua-version 5.4 smoke.lua || exit /b 1
           cl /nologo /I%out%\include crates\luanalysis-ffi\examples\smoke.c /link %out%\lib\luanalysis.dll.lib /OUT:smoke.exe || exit /b 1

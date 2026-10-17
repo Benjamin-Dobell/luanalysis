@@ -1,2 +1,5 @@
+# Sources, fixtures and their byte offsets are LF on every platform.
+* text=auto eol=lf
+
 # Unified patches retain the required space prefix on blank context lines.
 vendor/patches/*.patch -whitespace
