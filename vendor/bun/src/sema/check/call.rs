@@ -2091,7 +2091,7 @@ impl<'p, 's> Checker<'p, 's> {
                     let mut context = Inference::for_params(&type_params, Some(candidate));
                     context.any_default = match s.site {
                         CallSite::Ts { file, .. } => self.hir(file).is_js,
-                        CallSite::Native { .. } => false,
+                        CallSite::Native { .. } => true,
                     };
                     let check_mode = s.arg_check_mode | CheckMode::SKIP_GENERIC_FUNCTIONS;
                     let mapper = self.infer_type_arguments(s, candidate, check_mode, &mut context);
@@ -2754,7 +2754,7 @@ impl<'p, 's> Checker<'p, 's> {
         let mut context = Inference::for_params(&type_params, Some(candidate));
         context.any_default = match s.site {
             CallSite::Ts { file, .. } => self.hir(file).is_js,
-            CallSite::Native { .. } => false,
+            CallSite::Native { .. } => true,
         };
         let check_mode = CheckMode::SKIP_CONTEXT_SENSITIVE | CheckMode::SKIP_GENERIC_FUNCTIONS;
         let mapper = self.infer_type_arguments(s, candidate, check_mode, &mut context);

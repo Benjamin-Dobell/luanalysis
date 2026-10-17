@@ -120,7 +120,8 @@ local function make(input) return input end\n\
 ---@type number\nlocal typed,untyped,last=make(1),make(\"text\"),99";
     let report = accepted(source);
     binding(&report, "typed", "number");
-    binding(&report, "untyped", "unknown");
+    // Nothing infers its T, which is `any`, as in a JavaScript call, rather than nil.
+    binding(&report, "untyped", "any");
 }
 
 #[test]
