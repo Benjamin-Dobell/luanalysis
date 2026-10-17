@@ -513,11 +513,13 @@ impl ProjectRegistry {
         // those source report queues before the arena ends; this schedules
         // report publication only and never iterates or joins inferred types.
         let mut unresolved_reported = false;
+        let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
         loop {
             for (index, file) in self.files.iter().enumerate() {
                 if !selected(file.id) || !checked.insert(index) {
                     continue;
                 }
+                let started = profile.then(std::time::Instant::now);
                 unresolved_reported = false;
                 file.source.check_named_declarations(queries);
                 file.source.check_global_declarations(queries);
@@ -530,13 +532,20 @@ impl ProjectRegistry {
                     reports[index].report.append(checker.report);
                     file.source.check_all_bodies(queries);
                 }
+                if let Some(started) = started {
+                    eprintln!("luanalysis profile: file_id={} checked={:.6}s", file.id.index, started.elapsed().as_secs_f64());
+                }
             }
             let mut published = false;
             for (index, file) in self.files.iter().enumerate() {
                 // A task checks the bodies of its own sources only, as a Bun task checks its files:
                 // another source's bodies are checked once, by the task that owns it.
+                let started = profile.then(std::time::Instant::now);
                 if owned_only && file.role == SourceRole::Implementation && selected(file.id) { file.source.check_selected_bodies(queries); }
                 if owned_only || checked.contains(&index) { published |= file.source.retry_contextual_owner_validations(queries); }
+                if let Some(started) = started.filter(|started| started.elapsed().as_secs_f64() >= 0.05) {
+                    eprintln!("luanalysis profile: file_id={} bodies_and_retries={:.6}s", file.id.index, started.elapsed().as_secs_f64());
+                }
             }
             for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
                 if !owned_only && !checked.contains(&index) { continue; }

@@ -634,6 +634,12 @@ impl NativeFlowSources {
         for node in self.program.graphs.iter().flat_map(|graph| &graph.nodes) {
             let flow::NodeKind::Write { address, .. } = &node.kind else { continue; };
             if matches!(address.reference.root, flow::ReferenceRoot::Binding(_)) && address.reference.path.is_empty() { continue; }
+            // Rebinding `_ENV` or `_G` itself replaces no member of the global
+            // environment: `_ENV = nil` changes only this chunk's free names,
+            // which `environment_cell_written` records.
+            if matches!(address.reference.root, flow::ReferenceRoot::EnvironmentCell)
+                && (address.reference.path.is_empty() || matches!(address.reference.path.as_slice(), [flow::Key::String(name)] if name == b"_G"))
+            { continue; }
             for path in self.environment_candidate_paths(&address.reference) {
                 match path.as_slice() {
                     [] => { names = u8::MAX; loader = true; },

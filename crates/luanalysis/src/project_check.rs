@@ -299,6 +299,9 @@ pub(crate) fn check_project_with_workspace(
         }
         registry
     };
+    if profile {
+        for &file in &roots { eprintln!("luanalysis profile: file_id={} path={}", file.index, project.file(file).unwrap().path.display()); }
+    }
     let checking_started = Instant::now();
     let (checked, execution) = if workers == 1 {
         let (checked, flows) = Engine::new().with_native_provider(

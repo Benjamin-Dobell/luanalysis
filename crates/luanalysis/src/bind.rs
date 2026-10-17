@@ -533,8 +533,12 @@ impl Binder {
             self.file.assert_intrinsic_mutations.push(expression.span);
         }
         // A computed environment key is an unknown effect, not a replacement.
+        // Rebinding `_ENV` or `_G` itself replaces no member of the global
+        // environment: `_ENV = nil` changes only this chunk's free names, which
+        // its flow records as an environment cell write.
+        let rebinds_environment = matches!(&expression.kind, ExprKind::Name(name) if name.text == "_ENV" || name.text == "_G");
         for (bit, name) in STANDARD_NAMES.iter().enumerate() {
-            if !computed_environment_target(expression, None) && self.modifies_standard_intrinsic(expression, name) { self.file.replaced_standard_names |= 1 << bit; }
+            if !rebinds_environment && !computed_environment_target(expression, None) && self.modifies_standard_intrinsic(expression, name) { self.file.replaced_standard_names |= 1 << bit; }
         }
         match &expression.kind {
             ExprKind::Name(name) => self.name(name, OccurrenceKind::Write),

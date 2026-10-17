@@ -193,3 +193,11 @@ fn a_forged_table_cast_cannot_turn_an_unrelated_table_into_the_global_environmen
     let fixture = Fixture::new();
     clean(&fixture.check("local unrelated=--[[---@type table]] {}\nunrelated.package={loaded={}}\nunrelated.package.loaded.module='cached'\nlocal value=require('module')\n---@type number\nlocal checked=value.value\n"));
 }
+
+#[test]
+fn rebinding_a_module_environment_replaces_no_standard_name_elsewhere() {
+    let fixture = Fixture::new();
+    fixture.file("sealed.lua", "local type, setmetatable = type, setmetatable\n_ENV = nil\nreturn setmetatable({value=42}, {})\n");
+    fixture.file("rebound.lua", "_G = _G\nreturn {}\n");
+    clean(&fixture.check("local sealed=require('sealed')\nlocal rebound=require('rebound')\n---@type number\nlocal checked=sealed.value\n---@param value number|string\nlocal function use(value)\nif type(value)=='number' then\n---@type number\nlocal numeric=value\nend\nend\nuse(42)\n"));
+}
