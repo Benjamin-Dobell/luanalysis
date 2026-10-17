@@ -154,6 +154,9 @@ pub(crate) struct ProjectRegistry {
 
 impl ProjectRegistry {
     pub(crate) fn set_describe_types(&mut self, describe: bool) { self.describe_types = describe; }
+    pub(crate) fn set_inspections(&mut self, enabled: bool) {
+        for file in &mut self.files { file.source.set_inspections(enabled); }
+    }
     pub(crate) fn set_standard_environment_assumptions(&mut self, enabled: bool) {
         self.standard_environment.assume_unknown_effects &= enabled;
         self.standard_environment.strict_effects = !enabled;
@@ -413,6 +416,11 @@ impl ProjectRegistry {
             .expect("native source key belongs to this immutable project provider")
     }
 
+    /// The checker registry of one source, for the language service.
+    pub(crate) fn source(&self, file: FileId) -> Option<&NativeRegistry> {
+        self.files.iter().find(|registry| registry.id == file).map(|registry| &registry.source)
+    }
+
     #[cfg(test)]
     pub(crate) fn required_files(&self) -> HashSet<FileId> {
         self.modules.required_files.borrow().clone()
@@ -476,6 +484,7 @@ impl ProjectRegistry {
                 file.source.check_named_declarations(queries);
                 file.source.check_global_declarations(queries);
                 file.source.check_module_requests(queries);
+                file.source.report_unused_declarations();
                 if file.role == SourceRole::Implementation {
                     let mut checker = file.source.checker(queries);
                     checker.flow_at = Some(file.source.flow_entry(None, None));

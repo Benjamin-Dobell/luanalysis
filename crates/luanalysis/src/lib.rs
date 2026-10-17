@@ -17,10 +17,12 @@ mod diagnostic_types;
 mod module_requests;
 pub mod flow;
 pub mod incremental;
+pub mod language_service;
 pub mod project_check;
 mod project_cost;
 pub mod standard_environment;
 mod functions;
+mod inspections;
 mod native_expressions;
 mod native_flow;
 mod native_assertions;
@@ -71,6 +73,30 @@ pub struct Diagnostic {
     pub code: &'static str,
     pub message: String,
     pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagnosticCategory {
+    Error,
+    Warning,
+    Suggestion,
+}
+
+impl Diagnostic {
+    /// As a TypeScript diagnostic message carries its category. Only inspections, which an
+    /// editor asks for, are warnings or suggestions.
+    pub fn category(&self) -> DiagnosticCategory {
+        match self.code {
+            "TS2367" | "LUA2872" | "LUA2873" => DiagnosticCategory::Warning,
+            "TS6133" | "TS7027" | "TS7044" | "TS7047" => DiagnosticCategory::Suggestion,
+            _ => DiagnosticCategory::Error,
+        }
+    }
+
+    /// Code that has no effect, unused or unreachable, which editors show faded.
+    pub fn is_unnecessary(&self) -> bool {
+        matches!(self.code, "TS6133" | "TS7027")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -453,6 +479,9 @@ impl Checker<'_> {
     }
 
     fn record_expression_type(&mut self, span: Span, ty: &Type) {
+        if !self.incomplete_flow && let Some(native) = self.native {
+            native.record_probed_type(span, ty);
+        }
         self.report.types.push(TypeInfo {
             span,
             ty: describe(ty),
@@ -462,7 +491,9 @@ impl Checker<'_> {
     /// Returns true when this straight-line block terminates with a return or
     /// an explicitly declared nonreturning call.
     fn statements(&mut self, statements: &[Stmt]) -> bool {
-        for statement in statements {
+        let mut unreachable_reported = false;
+        for (index, statement) in statements.iter().enumerate() {
+            let rest = &statements[index + 1..];
             match &statement.kind {
                 StmtKind::Local {
                     names,
@@ -480,6 +511,7 @@ impl Checker<'_> {
                 }
                 StmtKind::Block { body, .. } => {
                     if self.statements(body) {
+                        if !unreachable_reported { self.report_unreachable(rest); }
                         return true;
                     }
                 }
@@ -512,6 +544,7 @@ impl Checker<'_> {
                         _ => matches!(result, Type::Never),
                     };
                     if terminates {
+                        if !unreachable_reported { self.report_unreachable(rest); }
                         return true;
                     }
                 }
@@ -519,25 +552,34 @@ impl Checker<'_> {
                     branches,
                     else_branch,
                 } => {
+                    let mut every_branch_terminates = else_branch.is_some();
                     for branch in branches {
-                        self.expression(&branch.condition);
-                        self.statements(&branch.body);
+                        let condition = self.expression(&branch.condition);
+                        self.inspect_condition(&branch.condition, &condition);
+                        every_branch_terminates &= self.statements(&branch.body);
                     }
                     if let Some(branch) = else_branch {
-                        self.statements(&branch.body);
+                        every_branch_terminates &= self.statements(&branch.body);
+                    }
+                    // The rest is still checked, as before; it is only reported unreachable.
+                    if every_branch_terminates && !unreachable_reported {
+                        unreachable_reported = true;
+                        self.report_unreachable(rest);
                     }
                 }
                 StmtKind::While {
                     condition, body, ..
                 } => {
-                    self.expression(condition);
+                    let ty = self.expression(condition);
+                    self.inspect_condition(condition, &ty);
                     self.statements(body);
                 }
                 StmtKind::Repeat {
                     body, condition, ..
                 } => {
                     self.statements(body);
-                    self.expression(condition);
+                    let ty = self.expression(condition);
+                    self.inspect_condition(condition, &ty);
                 }
                 StmtKind::NumericFor {
                     name,
@@ -590,16 +632,15 @@ impl Checker<'_> {
                     }
                     self.statements(body);
                 }
-                StmtKind::Break => {}
+                StmtKind::Break => {
+                    if !unreachable_reported {
+                        unreachable_reported = true;
+                        self.report_unreachable(rest);
+                    }
+                }
             }
         }
         false
-    }
-
-    fn implicit_parameter_any(&mut self, code: &'static str, span: Span, message: impl Into<String>) {
-        if self.native.is_some_and(|native| native.no_implicit_any()) {
-            self.error(code, span, message);
-        }
     }
 
     fn error(&mut self, code: &'static str, span: Span, message: impl Into<String>) {

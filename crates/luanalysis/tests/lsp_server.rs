@@ -209,3 +209,62 @@ fn requests_before_initialize_and_unknown_requests_are_errors() {
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn completions_answer_from_the_unsaved_text_being_typed() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "---@class Point\n---@field x number\n---@field label string\nlocal Point = {}\n\n---@param point Point\nlocal function show(point)\n    return point.x\nend\n\n---@param each fun(point: Point)\nlocal function visit(each) end\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+
+    // A member at statement position, which does not parse until it is completed.
+    let typed = source.replace("    return point.x\n", "    point.la\n    return point.x\n");
+    server.change(&main, 2, &typed);
+    let response = server.request(3, "textDocument/completion", &main, 7, 12);
+    assert!(response.contains(r#""label":"x""#) && response.contains(r#""label":"label""#), "{response}");
+    assert!(response.contains(r#""detail":"string""#), "{response}");
+    // The completion replaces the word at the cursor.
+    assert!(response.contains(r#""range":{"start":{"line":7,"character":10},"end":{"line":7,"character":12}}"#), "{response}");
+
+    // A callback's parameter has its contextual type.
+    let typed = format!("{source}visit(function(point)\n    point.\nend)\n");
+    server.change(&main, 3, &typed);
+    let response = server.request(4, "textDocument/completion", &main, 13, 10);
+    assert!(response.contains(r#""label":"label""#), "{response}");
+
+    // Names: locals in scope, globals and keywords.
+    let typed = format!("{source}local count = 1\nprint(co)\n");
+    server.change(&main, 4, &typed);
+    let response = server.request(5, "textDocument/completion", &main, 13, 8);
+    for label in ["count", "show", "visit", "print", "string", "local"] {
+        assert!(response.contains(&format!(r#""label":"{label}""#)), "{label}: {response}");
+    }
+    assert!(!response.contains(r#""label":"point""#), "{response}");
+
+    // String methods after a colon.
+    let typed = format!("{source}local name = 'text'\nname:\n");
+    server.change(&main, 5, &typed);
+    let response = server.request(6, "textDocument/completion", &main, 13, 5);
+    assert!(response.contains(r#""label":"upper""#) && response.contains(r#""kind":2"#), "{response}");
+    server.finish();
+}
+
+#[test]
+fn inspections_are_published_as_warnings_and_faded_hints() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "---@param count number\nlocal function show(count)\n    if count == 'none' then print(count) end\n    local unused = 1\nend\nshow(1)\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    let published = server.diagnostics(&main, |message| message.contains("TS6133"));
+    assert!(published.contains(r#""severity":2,"code":"TS2367""#), "{published}");
+    assert!(published.contains(r#""severity":4,"code":"TS6133""#) && published.contains(r#""tags":[1]"#), "{published}");
+    assert!(!published.contains(r#""severity":1"#), "{published}");
+    server.finish();
+}

@@ -262,10 +262,12 @@ fn parse_arguments(remaining: Vec<std::ffi::OsString>) -> Result<Parsed, String>
         assume_unknown_standard_effects,
         jobs,
         describe_types: dump,
+        inspections: false,
     };
     Ok(Parsed::Run(Arguments { dump, watch, inputs, options }))
 }
 
+#[derive(Clone)]
 struct CheckInputs {
     files: Vec<PathBuf>,
     libraries: Vec<PathBuf>,

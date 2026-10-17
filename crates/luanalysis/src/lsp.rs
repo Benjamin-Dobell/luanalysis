@@ -1,11 +1,14 @@
 //! `luanalysis lsp`: a language server over stdio. Each revision of the editor's buffers is
 //! checked as one complete project, as `check` checks it; hover and go-to-definition answer from
 //! the last completed check. Checks run on their own thread and coalesce: requests are answered
-//! while a check runs, and edits made meanwhile are checked next.
+//! while a check runs, and edits made meanwhile are checked next. Completions are language-service
+//! queries on the current text, answered on a thread of their own (`language_service`).
 
 use crate::CheckInputs;
 use crate::lsp_json::Json;
+use luanalysis::DiagnosticCategory;
 use luanalysis::incremental::ProjectWorkspace;
+use luanalysis::language_service::{self, CompletionKind, CompletionSite};
 use luanalysis::project_check::{ProjectCheckOptions, ProjectCheckReport};
 use luanalysis_project::{DependencyOutcome, Project, SourceOrigin};
 use std::collections::{HashMap, HashSet};
@@ -19,8 +22,9 @@ const INVALID_REQUEST: i64 = -32600;
 const SERVER_NOT_INITIALIZED: i64 = -32002;
 
 pub(crate) fn run(inputs: CheckInputs, mut options: ProjectCheckOptions) -> i32 {
-    // Hover reads the described types of the last check.
+    // Hover reads the described types of the last check; an editor shows inspections.
     options.describe_types = true;
+    options.inspections = true;
     let (events, received) = mpsc::channel();
     let reader = events.clone();
     std::thread::spawn(move || {
@@ -72,10 +76,23 @@ enum Event {
     Message(Json),
     Closed,
     Checked(Box<Snapshot>),
+    /// A response computed off the main thread.
+    Answered(Json, Json),
 }
 
 struct Job {
     overlays: HashMap<PathBuf, String>,
+}
+
+/// A completion request, with the editor's buffers and the site in its document.
+struct Query {
+    id: Json,
+    path: PathBuf,
+    overlays: HashMap<PathBuf, String>,
+    site: CompletionSite,
+    /// The document's text, which the site's word indexes.
+    lines: LineIndex,
+    encoding: Encoding,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -95,6 +112,7 @@ struct Server {
     options: ProjectCheckOptions,
     events: mpsc::Sender<Event>,
     jobs: Option<mpsc::Sender<Job>>,
+    queries: Option<mpsc::Sender<Query>>,
     encoding: Encoding,
     initialized: bool,
     shutdown: bool,
@@ -115,6 +133,7 @@ impl Server {
             options,
             events,
             jobs: None,
+            queries: None,
             encoding: Encoding::Utf16,
             initialized: false,
             shutdown: false,
@@ -138,6 +157,7 @@ impl Server {
                         if let Some(code) = self.message(message) { return code; }
                     }
                     Event::Checked(snapshot) => self.checked(*snapshot),
+                    Event::Answered(id, result) => self.respond(id, result),
                 }
                 next = received.try_recv().ok();
             }
@@ -201,6 +221,7 @@ impl Server {
                 ]));
                 self.respond(id, result);
             }
+            "textDocument/completion" => self.completion(id, params),
             "textDocument/documentHighlight" => {
                 let result = self.occurrences(params, true, |_, file, start, end| Json::object([
                     ("range", file.range(start, end, self.encoding)),
@@ -264,9 +285,17 @@ impl Server {
                     .or_else(|| std::env::current_dir().ok());
                 inputs.files.extend(root);
             }
-            let (jobs, received) = mpsc::channel();
+            let (queries, received) = mpsc::channel();
             let events = self.events.clone();
             let options = self.options;
+            let query_inputs = inputs.clone();
+            std::thread::Builder::new()
+                .name("luanalysis-lsp-query".into())
+                .spawn(move || answer_queries(query_inputs, options, received, events))
+                .expect("start the language server's query thread");
+            self.queries = Some(queries);
+            let (jobs, received) = mpsc::channel();
+            let events = self.events.clone();
             std::thread::Builder::new()
                 .name("luanalysis-lsp-check".into())
                 .spawn(move || check_jobs(inputs, options, received, events))
@@ -286,6 +315,9 @@ impl Server {
                 ("definitionProvider", Json::from(true)),
                 ("referencesProvider", Json::from(true)),
                 ("documentHighlightProvider", Json::from(true)),
+                ("completionProvider", Json::object([
+                    ("triggerCharacters", Json::Array(vec![Json::from("."), Json::from(":")])),
+                ])),
             ])),
             ("serverInfo", Json::object([
                 ("name", Json::from("luanalysis")),
@@ -307,14 +339,24 @@ impl Server {
             // An open document always receives the result of the check, even an empty one.
             if file.diagnostics.is_empty() && !self.documents.contains_key(path) { continue; }
             published.insert(path.clone());
-            let diagnostics = file.diagnostics.iter().map(|diagnostic| Json::object([
-                ("range", file.range(diagnostic.start, diagnostic.end, self.encoding)),
-                ("severity", Json::from(1usize)),
-                ("code", Json::from(diagnostic.code)),
-                ("source", Json::from("luanalysis")),
-                ("message", Json::from(diagnostic.message.as_str())),
-            ])).collect();
-            self.publish(path, Json::Array(diagnostics), &file.text);
+            let diagnostics = file.diagnostics.iter().map(|diagnostic| {
+                // LSP severities: 1 error, 2 warning, 4 hint. Tag 1 shows unnecessary code faded.
+                let severity = match diagnostic.category {
+                    DiagnosticCategory::Error => 1usize,
+                    DiagnosticCategory::Warning => 2,
+                    DiagnosticCategory::Suggestion => 4,
+                };
+                let mut fields = vec![
+                    ("range".to_owned(), file.range(diagnostic.start, diagnostic.end, self.encoding)),
+                    ("severity".to_owned(), Json::from(severity)),
+                    ("code".to_owned(), Json::from(diagnostic.code)),
+                    ("source".to_owned(), Json::from("luanalysis")),
+                    ("message".to_owned(), Json::from(diagnostic.message.as_str())),
+                ];
+                if diagnostic.unnecessary { fields.push(("tags".to_owned(), Json::Array(vec![Json::from(1usize)]))); }
+                Json::Object(fields)
+            }).collect();
+            self.publish(path, Json::Array(diagnostics), &file.lines.text);
         }
         for path in self.published.difference(&published).cloned().collect::<Vec<_>>() {
             self.publish(&path, Json::Array(Vec::new()), "");
@@ -385,6 +427,28 @@ impl Server {
         Json::Null
     }
 
+    /// Completions read the document's current text, not the last check's: the query thread
+    /// checks what is needed of the text being typed.
+    fn completion(&mut self, id: Json, params: &Json) {
+        let empty = Json::object([("isIncomplete", Json::from(false)), ("items", Json::Array(Vec::new()))]);
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else {
+            return self.respond(id, empty);
+        };
+        let Some(document) = self.documents.get(&path) else { return self.respond(id, empty) };
+        let lines = LineIndex::new(document.text.clone());
+        let line = params.path(&["position", "line"]).and_then(Json::as_u64).unwrap_or(0) as usize;
+        let character = params.path(&["position", "character"]).and_then(Json::as_u64).unwrap_or(0) as usize;
+        let offset = lines.offset(line, character, self.encoding);
+        let Some(site) = language_service::completion_site(&lines.text, offset) else { return self.respond(id, empty) };
+        let mut overlays: HashMap<PathBuf, String> = self.documents.iter()
+            .map(|(path, document)| (path.clone(), document.text.clone())).collect();
+        overlays.insert(path.clone(), site.text.clone());
+        let query = Query { id: id.clone(), path, overlays, site, lines, encoding: self.encoding };
+        if self.queries.as_ref().is_none_or(|queries| queries.send(query).is_err()) {
+            self.respond(id, empty);
+        }
+    }
+
     /// Every occurrence in the file of the local under the position, the declaration only when
     /// `declaration` is set. Locals are lexical, so all their occurrences are in this file.
     fn occurrences(&self, params: &Json, declaration: bool, item: impl Fn(&Path, &CheckedFile, usize, usize) -> Json) -> Json {
@@ -442,6 +506,53 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
     }
 }
 
+fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>) {
+    let mut workspace = ProjectWorkspace::new();
+    while let Ok(mut query) = queries.recv() {
+        // A completion superseded by a newer one is answered as incomplete, unchecked.
+        while let Ok(newer) = queries.try_recv() {
+            let stale = Json::object([("isIncomplete", Json::from(true)), ("items", Json::Array(Vec::new()))]);
+            if events.send(Event::Answered(std::mem::replace(&mut query, newer).id, stale)).is_err() { return; }
+        }
+        let started = std::time::Instant::now();
+        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| complete(&inputs, options, &mut workspace, &query)));
+        if std::env::var_os("LUANALYSIS_PROFILE").is_some() {
+            eprintln!("luanalysis profile: completion={:.6}s", started.elapsed().as_secs_f64());
+        }
+        let items = answered.unwrap_or_else(|_| {
+            workspace = ProjectWorkspace::new();
+            Vec::new()
+        });
+        let result = Json::object([("isIncomplete", Json::from(false)), ("items", Json::Array(items))]);
+        if events.send(Event::Answered(query.id, result)).is_err() { return; }
+    }
+}
+
+fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, query: &Query) -> Vec<Json> {
+    let Ok(discovery) = inputs.discover() else { return Vec::new() };
+    let Ok(resolver) = inputs.resolver(&discovery) else { return Vec::new() };
+    let project = Project::load_plan_with_overlays(&resolver, discovery.plan.clone(), &query.overlays, |source| {
+        workspace.static_require_requests(source)
+    });
+    let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return Vec::new() };
+    let range = query.lines.range(query.site.word.start, query.site.word.end, query.encoding);
+    language_service::complete(project, options, workspace, file, &query.site).into_iter().map(|item| {
+        let mut fields = vec![
+            ("label".to_owned(), Json::from(item.label.as_str())),
+            ("kind".to_owned(), Json::from(match item.kind {
+                CompletionKind::Method => 2usize,
+                CompletionKind::Function => 3,
+                CompletionKind::Field => 5,
+                CompletionKind::Variable => 6,
+                CompletionKind::Keyword => 14,
+            })),
+            ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(item.label.as_str()))])),
+        ];
+        if let Some(detail) = item.detail { fields.push(("detail".to_owned(), Json::from(detail))); }
+        Json::Object(fields)
+    }).collect()
+}
+
 fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, job: &Job) -> Result<ProjectCheckReport, String> {
     let discovery = inputs.discover().map_err(|error| error.to_string())?;
     let resolver = inputs.resolver(&discovery).map_err(|error| error.to_string())?;
@@ -459,8 +570,7 @@ struct Snapshot {
 
 struct CheckedFile {
     /// The text that was checked, which the byte offsets below index.
-    text: String,
-    line_starts: Vec<usize>,
+    lines: LineIndex,
     diagnostics: Vec<CheckedDiagnostic>,
     bindings: Vec<CheckedBinding>,
     types: Vec<CheckedType>,
@@ -468,7 +578,7 @@ struct CheckedFile {
     requires: Vec<CheckedRequire>,
 }
 
-struct CheckedDiagnostic { start: usize, end: usize, code: &'static str, message: String }
+struct CheckedDiagnostic { start: usize, end: usize, code: &'static str, message: String, category: DiagnosticCategory, unnecessary: bool }
 struct CheckedBinding { start: usize, end: usize, name: String, ty: String }
 struct CheckedType { start: usize, end: usize, ty: String }
 struct CheckedOccurrence { start: usize, end: usize, declaration: (usize, usize) }
@@ -497,13 +607,11 @@ impl Snapshot {
                     target: report.project.file(target)?.path.clone(),
                 })
             }).collect();
-            let mut line_starts = vec![0];
-            line_starts.extend(source.source.match_indices('\n').map(|(index, _)| index + 1));
             files.insert(source.path.clone(), CheckedFile {
-                text: source.source.clone(),
-                line_starts,
+                lines: LineIndex::new(source.source.clone()),
                 diagnostics: result.diagnostics.iter().map(|diagnostic| CheckedDiagnostic {
                     start: diagnostic.span.start, end: diagnostic.span.end, code: diagnostic.code, message: diagnostic.message.clone(),
+                    category: diagnostic.category(), unnecessary: diagnostic.is_unnecessary(),
                 }).collect(),
                 bindings: result.bindings.iter().map(|binding| CheckedBinding {
                     start: binding.span.start, end: binding.span.end, name: binding.name.clone(), ty: binding.ty.clone(),
@@ -518,6 +626,28 @@ impl Snapshot {
 }
 
 impl CheckedFile {
+    fn range(&self, start: usize, end: usize, encoding: Encoding) -> Json {
+        self.lines.range(start, end, encoding)
+    }
+
+    fn offset(&self, line: usize, character: usize, encoding: Encoding) -> usize {
+        self.lines.offset(line, character, encoding)
+    }
+}
+
+/// Byte offsets of a text and LSP positions in it.
+struct LineIndex {
+    text: String,
+    line_starts: Vec<usize>,
+}
+
+impl LineIndex {
+    fn new(text: String) -> Self {
+        let mut line_starts = vec![0];
+        line_starts.extend(text.match_indices('\n').map(|(index, _)| index + 1));
+        Self { text, line_starts }
+    }
+
     fn floor(&self, mut offset: usize) -> usize {
         offset = offset.min(self.text.len());
         while !self.text.is_char_boundary(offset) { offset -= 1; }
@@ -563,7 +693,7 @@ fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
+        if bytes[index] == b'%' && index + 3 <= bytes.len() {
             let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok()?;
             decoded.push(u8::from_str_radix(hex, 16).ok()?);
             index += 3;

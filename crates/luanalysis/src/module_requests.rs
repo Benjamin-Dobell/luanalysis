@@ -165,6 +165,10 @@ fn unparenthesized(mut expression: &Expr) -> &Expr {
     }
     expression
 }
+/// Visits every expression of `body`, nested function bodies included.
+pub(crate) fn visit_expressions(body: &[Stmt], visit: &mut impl FnMut(&Expr)) {
+    statements(body, visit)
+}
 fn statements(body: &[Stmt], visit: &mut impl FnMut(&Expr)) {
     for statement in body {
         match &statement.kind {

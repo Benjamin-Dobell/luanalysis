@@ -31,6 +31,10 @@ pub struct ProjectCheckOptions {
     /// Describe binding and expression types in the report. Only `--dump-types`
     /// and library callers that query types need them.
     pub describe_types: bool,
+    /// Report inspections, as an editor shows them: warnings for conditions that are always
+    /// true or false and comparisons that cannot be equal, and suggestions for unreachable code,
+    /// unused locals and parameters without a type. Off for `check`; none is an error.
+    pub inspections: bool,
 }
 impl Default for ProjectCheckOptions {
     fn default() -> Self {
@@ -42,6 +46,7 @@ impl Default for ProjectCheckOptions {
             no_implicit_any: false,
             assume_unknown_standard_effects: true,
             describe_types: true,
+            inspections: false,
         }
     }
 }
@@ -115,7 +120,7 @@ impl ProjectCheckReport {
             || self
                 .files
                 .iter()
-                .any(|file| !file.report.diagnostics.is_empty())
+                .any(|file| file.report.diagnostics.iter().any(|diagnostic| diagnostic.category() == crate::DiagnosticCategory::Error))
             || !self.project.entry_errors.is_empty()
             || !self.project.library_errors.is_empty()
             || !self.project.role_conflicts.is_empty()
@@ -135,15 +140,23 @@ pub fn check_project_with_options(
     crate::incremental::ProjectWorkspace::new().check_project(project, options)
 }
 
-pub(crate) fn check_project_with_workspace(
-    mut project: Project,
+/// The sources of a program, prepared for native sessions as `check` prepares them.
+struct PreparedProgram {
+    snapshot: ProjectRegistrySnapshot,
+    /// Reports for sources that could not be prepared (syntax errors).
+    files: Vec<FileCheckReport>,
+    source_costs: HashMap<FileId, usize>,
+    standard_library_files: Vec<FileId>,
+    environment_errors: Vec<DeclarationSourceError>,
+}
+
+fn prepare_program(
+    project: &mut Project,
     options: ProjectCheckOptions,
     workspace: &mut crate::incremental::ProjectWorkspace,
-) -> ProjectCheckReport {
-    let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
-    let started = Instant::now();
+) -> PreparedProgram {
     let (selection, environment_errors) =
-        match StandardEnvironmentSelection::register(&mut project, options.environment) {
+        match StandardEnvironmentSelection::register(project, options.environment) {
             Ok(selection) => (selection, Vec::new()),
             Err(error) => (
                 StandardEnvironmentSelection::empty(StandardEnvironmentProfile::None),
@@ -155,7 +168,7 @@ pub(crate) fn check_project_with_workspace(
     let mut files = Vec::new();
     let plan_options = NativePlanOptions::default();
     let mut source_costs = HashMap::default();
-    for source in workspace.prepare_registered_sources(&project).sources {
+    for source in workspace.prepare_registered_sources(project).sources {
         let parsed = source.snapshot.syntax();
         if let Some(bound) = source.snapshot.bound() {
             source_costs.insert(
@@ -188,7 +201,48 @@ pub(crate) fn check_project_with_workspace(
             });
         }
     }
-    let dependencies = project.dependencies.clone();
+    let snapshot = ProjectRegistrySnapshot::new(
+        inputs,
+        project.dependencies.clone(),
+        options.loader_policy,
+        selection.profile,
+        options.overload_mode,
+    ).with_no_implicit_any(options.no_implicit_any);
+    PreparedProgram { snapshot, files, source_costs, standard_library_files, environment_errors }
+}
+
+/// Runs `query` in one native session over the project, as one checking task runs, for the
+/// language service: like tsgo's language service, it asks the checker only what an answer needs.
+pub(crate) fn with_project_session<R: Send>(
+    mut project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut crate::incremental::ProjectWorkspace,
+    query: impl FnOnce(&Project, &crate::native_functions::project_provider::ProjectRegistry, &mut dyn luanalysis_engine::TypeQueries) -> R + Send,
+) -> R {
+    let prepared = prepare_program(&mut project, options, workspace);
+    let snapshot = &prepared.snapshot;
+    let project = &project;
+    Engine::new().with_native_provider(
+        || {
+            let mut registry = snapshot.worker_registry();
+            registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
+            registry.set_describe_types(options.describe_types);
+            registry.set_inspections(options.inspections);
+            registry
+        },
+        |registry, queries| query(project, registry, queries),
+    )
+}
+
+pub(crate) fn check_project_with_workspace(
+    mut project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut crate::incremental::ProjectWorkspace,
+) -> ProjectCheckReport {
+    let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
+    let started = Instant::now();
+    let PreparedProgram { mut snapshot, mut files, source_costs, standard_library_files, environment_errors } =
+        prepare_program(&mut project, options, workspace);
     // As in Bun, the program is every file the load reached: explicit inputs and
     // the targets of their syntactic require calls. Each is checked once, by one
     // task, whether or not the checker later proves the call's loader.
@@ -200,13 +254,6 @@ pub(crate) fn check_project_with_workspace(
         .collect();
     let explicit: HashSet<FileId> = roots.iter().copied().collect();
     roots.extend(project.files.iter().map(|file| file.id).filter(|file| !explicit.contains(file)));
-    let mut snapshot = ProjectRegistrySnapshot::new(
-        inputs,
-        dependencies,
-        options.loader_policy,
-        selection.profile,
-        options.overload_mode,
-    ).with_no_implicit_any(options.no_implicit_any);
     let requested = NonZeroUsize::new(options.jobs)
         .unwrap_or_else(|| std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN));
     // One task per worker, a measured deviation from Bun's warm-up and chunk plan
@@ -229,6 +276,7 @@ pub(crate) fn check_project_with_workspace(
         let mut registry = snapshot.worker_registry();
         registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
         registry.set_describe_types(options.describe_types);
+        registry.set_inspections(options.inspections);
         if let Some(started) = started {
             factory_nanos.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
             factories.fetch_add(1, Ordering::Relaxed);

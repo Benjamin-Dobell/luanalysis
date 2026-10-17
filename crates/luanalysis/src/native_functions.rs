@@ -74,6 +74,8 @@ pub(super) struct NativeRegistry {
     source_role: luanalysis_project::SourceRole,
     overload_mode: crate::OverloadMode,
     no_implicit_any: bool,
+    /// Report inspections (`ProjectCheckOptions::inspections`).
+    inspections: bool,
     legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy,
     file: File,
     bound: BoundFile,
@@ -116,6 +118,8 @@ pub(super) struct NativeRegistry {
     /// lexical parent's own canonical frame (declaration space outside any function). Captures
     /// and contextual instances are interned by content, so this does not depend on order.
     canonical_frames: RefCell<HashMap<NativeFunctionKey, (Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
+    /// A language-service request's expression and the types it was checked to have.
+    completion_probe: RefCell<Option<(Span, Vec<Type>)>>,
     pending_contextual_owners: RefCell<HashSet<(NativeFunctionKey, NativeFlowKey)>>,
     pending_owner_observations: Cell<u64>,
     pending_owner_bodies: RefCell<HashSet<(NativeFunctionKey, Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
@@ -264,6 +268,7 @@ impl NativeRegistry {
             source_role: luanalysis_project::SourceRole::Implementation,
             overload_mode: crate::OverloadMode::default(),
             no_implicit_any: false,
+            inspections: false,
             legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy::Disabled,
             file,
             bound,
@@ -296,6 +301,7 @@ impl NativeRegistry {
             checked_captured_bodies: RefCell::new(HashSet::default()),
             bodies_checked: RefCell::new(HashSet::default()),
             canonical_frames: RefCell::new(HashMap::default()),
+            completion_probe: RefCell::new(None),
             pending_contextual_owners: RefCell::new(HashSet::default()),
             pending_owner_observations: Cell::new(0),
             pending_owner_bodies: RefCell::new(HashSet::default()),
@@ -365,6 +371,8 @@ impl NativeRegistry {
     pub(crate) fn source_role(&self) -> luanalysis_project::SourceRole { self.source_role }
     pub(crate) fn no_implicit_any(&self) -> bool { self.no_implicit_any }
     pub(crate) fn set_no_implicit_any(&mut self, enabled: bool) { self.no_implicit_any = enabled; }
+    pub(crate) fn inspections(&self) -> bool { self.inspections }
+    pub(crate) fn set_inspections(&mut self, enabled: bool) { self.inspections = enabled; }
     pub(crate) fn set_overload_mode(&mut self, mode: crate::OverloadMode) {
         self.overload_mode = mode;
     }
@@ -571,6 +579,7 @@ impl NativeRegistry {
                 checker.implicit_parameter_any(
                     "TS7019",
                     function.vararg.unwrap(),
+                    "...",
                     "Rest parameter '...' implicitly has an 'any[]' type.",
                 );
                 Type::Any
@@ -934,6 +943,34 @@ impl NativeRegistry {
 
     pub(super) fn body_checked_once(&self, key: NativeFunctionKey) -> bool {
         self.bodies_checked.borrow().contains(&key)
+    }
+
+    /// Collects the types checking gives the expression at `span`, for the language service.
+    pub(crate) fn probe_expression(&self, span: Span) {
+        *self.completion_probe.borrow_mut() = Some((span, Vec::new()));
+    }
+
+    pub(crate) fn probed_types(&self) -> Vec<Type> {
+        self.completion_probe.borrow_mut().take().map(|(_, types)| types).unwrap_or_default()
+    }
+
+    pub(super) fn record_probed_type(&self, span: Span, ty: &Type) {
+        if let Some((probe, types)) = self.completion_probe.borrow_mut().as_mut()
+            && *probe == span
+            && !types.contains(ty)
+        {
+            types.push(ty.clone());
+        }
+    }
+
+    /// The global environment of the project this source belongs to.
+    pub(crate) fn global_environment(&self) -> Option<luanalysis_engine::NativeEnvironmentKey> {
+        self.project_globals.as_ref().map(|globals| globals.environment)
+    }
+
+    /// The original syntax this registry checks.
+    pub(crate) fn syntax(&self) -> &File {
+        &self.file
     }
 
     /// Records a written generic reference for `check_deferred_constraints`.

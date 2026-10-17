@@ -1235,6 +1235,19 @@ impl<'p, 's> Checker<'p, 's> {
         result
     }
 
+    /// The string keys of an object's own and inherited members, for the language service.
+    pub(super) fn native_object_member_names(&mut self, reference: NativeObjectReference) -> Vec<Atom> {
+        let Ok(members) = self.native_object_members(reference) else { return Vec::new() };
+        let Ok(provider) = self.native_named_provider(reference.declaration) else { return Vec::new() };
+        members.iter().filter_map(|member| match provider.type_member_header(self, member.member).key {
+            NativeTypeMemberKey::Fixed(key) => match key.normalize() {
+                Ok(NativeTableKey::String(name)) => Some(name),
+                _ => None,
+            },
+            NativeTypeMemberKey::Indexer { .. } => None,
+        }).collect()
+    }
+
     /// Written value context needs only this key's declared recipes. Resolving
     /// an inferred store's receiver here would let an initializer demand its
     /// own prospective schema before its actual allocation is published.

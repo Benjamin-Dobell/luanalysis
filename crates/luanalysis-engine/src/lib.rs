@@ -17,6 +17,7 @@ mod parallel_tests;
 #[cfg(test)]
 mod native_overload_failure_tests;
 mod native_assertions;
+mod native_language_service;
 #[cfg(test)]
 mod native_runtime_primitive_tests;
 #[cfg(test)]
@@ -827,6 +828,12 @@ pub trait TypeQueries {
     fn class_definition_value(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError>;
     fn class_definition_member_contract(&mut self, owner: NativeClassDefinitionKey, actual: &Type) -> Option<Type>;
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool;
+    /// The language service's members of a value: each string key a read of it accepts, with the
+    /// type that read returns.
+    fn type_members(&mut self, _: &Type) -> Vec<(String, Type)> { Vec::new() }
+    /// TypeScript's comparable relation, in either direction, without widening: whether `==` can
+    /// equate the two (`isTypeEqualityComparableTo`).
+    fn types_comparable(&mut self, _: &Type, _: &Type) -> bool { true }
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type;
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack;
     fn signature_type(&mut self, declaration: NativeSignatureKey) -> Type;
@@ -1344,6 +1351,8 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn require_pack(&mut self, key: NativeModuleKey, policy: NativeLoaderPolicy) -> Result<ValuePack, NativeProjectError> { self.require_pack_native(key, policy) }
 
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool { self.assertion_overlap_native(source, target) }
+    fn type_members(&mut self, ty: &Type) -> Vec<(String, Type)> { self.type_members_native(ty) }
+    fn types_comparable(&mut self, left: &Type, right: &Type) -> bool { self.types_comparable_native(left, right) }
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type { self.exclude_type_native(source, excluded) }
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack { self.exclude_pack_native(source, fixed, tail) }
     fn signature_type(&mut self, declaration: NativeSignatureKey) -> Type { self.signature_type_native(declaration) }

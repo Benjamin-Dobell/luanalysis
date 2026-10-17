@@ -125,7 +125,10 @@ impl Checker<'_> {
             return Type::Never;
         }
         match op {
-            BinaryOperator::Equal | BinaryOperator::NotEqual => Type::Boolean,
+            BinaryOperator::Equal | BinaryOperator::NotEqual => {
+                self.inspect_comparison(left, right, &left_type, &right_type);
+                Type::Boolean
+            }
             BinaryOperator::Concat => {
                 let accepted = Type::Union(vec![Type::String, Type::Number]);
                 let valid_left = self.engine.is_assignable(&left_type, &accepted);
@@ -197,7 +200,7 @@ impl Checker<'_> {
 
     /// Keep opaque regular literals and generic constraints in the same native
     /// Lua truthiness domain used by graph predicates.
-    fn lua_truthiness(&mut self, ty: &Type) -> (Type, Type) {
+    pub(crate) fn lua_truthiness(&mut self, ty: &Type) -> (Type, Type) {
         (self.engine.lua_truthiness_type(ty, true), self.engine.lua_truthiness_type(ty, false))
     }
 

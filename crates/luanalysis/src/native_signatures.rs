@@ -224,6 +224,7 @@ impl NativeRegistry {
                         checker.implicit_parameter_any(
                             "TS7006",
                             parameter.name.span,
+                            "",
                             "Function-type parameter implicitly has an any type.",
                         );
                         Type::Any
