@@ -153,7 +153,7 @@ local number,text=object:pair()\nlocal absent=(object:empty())\n\
     assert_eq!(&source[span.start..span.end], "(object:pair())");
     fs::write(&path, source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)

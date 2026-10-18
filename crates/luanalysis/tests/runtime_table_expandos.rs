@@ -219,7 +219,7 @@ fn cli_exports_actual_plain_table_members_with_checked_calls_and_source_correcti
     let source = "local Api=require('api')\n---@type number\nlocal count=Api.count\nlocal result=Api.twice('wrong')\n";
     fs::write(directory.join("main.lua"), source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&directory)
             .args(["check", "--dump-types", "--module-root", ".", "main.lua"])
             .output()

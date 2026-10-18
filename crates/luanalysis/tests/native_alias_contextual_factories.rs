@@ -59,7 +59,7 @@ impl Fixture {
     }
     fn check_with_profile(&self, source: &str, lua54: bool) -> Output {
         fs::write(self.0.join("main.lua"), source).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
         command.current_dir(&self.0).arg("check");
         if lua54 {
             command.args(["--lua-version", "5.4"]);

@@ -509,7 +509,7 @@ fn actual_cli_reports_the_inherited_field_at_original_source_then_accepts_correc
     let source = "---@shape Base\n---@field value number\n\n---@shape Child:Base\n\n---@type Child\nlocal child={value=42}\nchild.value=\"wrong\"\n";
     let run = |source: &str| {
         fs::write(&path, source).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--dump-types"])
             .arg(&path)
             .output()

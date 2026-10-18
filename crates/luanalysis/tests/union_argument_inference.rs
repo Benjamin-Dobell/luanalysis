@@ -9,7 +9,7 @@ fn types(source: &str) -> String {
     let directory = std::env::temp_dir().join(format!("luanalysis union arguments {} {}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     fs::create_dir_all(&directory).unwrap();
     fs::write(directory.join("main.lua"), source).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&directory)
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&directory)
         .args(["check", "--lua-version", "5.4", "--dump-types", "main.lua"]).output().unwrap();
     fs::remove_dir_all(directory).unwrap();
     format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))

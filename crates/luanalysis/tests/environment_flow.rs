@@ -13,7 +13,7 @@ impl Fixture {
     fn file(&self, name: &str, source: &str) { fs::write(self.0.join(name), source).unwrap(); }
     fn check(&self, source: &str) -> Output {
         self.file("main.lua", source);
-        Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&self.0)
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&self.0)
             .args(["check", "--lua-version", "5.4", "--library", "api.def.lua", "--dump-types", "main.lua"]).output().unwrap()
     }
 }

@@ -289,7 +289,7 @@ fn cli_checks_captured_receivers_and_reports_bare_cr_locations() {
     let file = directory.join("input.lua");
     let source = "---@type {x: number}|{x: string}\rlocal item = {x = 1}\ritem, item.x = {x = \"new\"}, 2\r---@type string\rlocal accepted = item.x\r";
     fs::write(&file, source).unwrap();
-    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()
@@ -301,7 +301,7 @@ fn cli_checks_captured_receivers_and_reports_bare_cr_locations() {
         String::from_utf8_lossy(&accepted.stderr)
     );
     fs::write(&file, source.replace("---@type string", "---@type number")).unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()

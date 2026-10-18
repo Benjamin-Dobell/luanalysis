@@ -162,7 +162,7 @@ fn actual_cli_reports_the_original_definition_overload_argument_then_accepts_cor
     let source = "---@class Factory\n---@overload fun(value:number):number\nlocal factory={}\nlocal result=factory(\"wrong\")\n";
     let run = |source: &str| {
         fs::write(&path, source).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--dump-types"])
             .arg(&path)
             .output()

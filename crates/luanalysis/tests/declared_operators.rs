@@ -8,7 +8,7 @@ fn check(source: &str) -> Output {
     let root: PathBuf = std::env::temp_dir().join(format!("luanalysis operators {} {}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     fs::create_dir_all(&root).unwrap();
     fs::write(root.join("main.lua"), source).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&root)
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&root)
         .args(["check", "--lua-version", "5.4", "main.lua"]).output().unwrap();
     fs::remove_dir_all(&root).unwrap();
     output

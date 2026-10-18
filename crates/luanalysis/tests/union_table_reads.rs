@@ -160,7 +160,7 @@ fn actual_cli_accepts_numeric_fallback_and_rejects_its_wrong_type() {
     let source = "-- original Lua: café\r\n---@param v {x:number}|{[1]:number}\r\nlocal function read(v)\r\nlocal value=v.x or v[1]\r\n---@type number\r\nlocal accepted=value\r\nend\r\n";
     std::fs::write(&path, source).unwrap();
     let invoke = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib", "--format", "text"])
             .arg(&path)
             .output()

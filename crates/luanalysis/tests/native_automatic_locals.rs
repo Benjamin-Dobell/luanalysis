@@ -252,7 +252,7 @@ fn cli_reports_original_automatic_flow_error_and_accepts_the_correction() {
     let path = directory.join("automatic.ttslua");
     let source = "local value\nvalue=42\nvalue=\"later\"\n---@type number\nlocal result=value\n";
     fs::write(&path, source).unwrap();
-    let invalid = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let invalid = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()
@@ -261,7 +261,7 @@ fn cli_reports_original_automatic_flow_error_and_accepts_the_correction() {
     let errors = String::from_utf8(invalid.stderr).unwrap();
     assert!(errors.contains(":5:14: error[TS2322]"), "{errors}");
     fs::write(&path, source.replace("---@type number", "---@type string")).unwrap();
-    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()

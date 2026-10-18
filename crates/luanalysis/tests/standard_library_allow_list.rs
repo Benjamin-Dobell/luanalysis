@@ -21,7 +21,7 @@ impl Fixture {
         Self(fs::canonicalize(root).unwrap())
     }
     fn check(&self, arguments: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&self.0)
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&self.0)
             .args(["check", "--module-root", ".", "--dump-types"]).args(arguments).arg("main.lua").output().unwrap()
     }
 }

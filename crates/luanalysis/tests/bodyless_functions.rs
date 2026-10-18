@@ -101,7 +101,7 @@ impl Fixture {
         fs::write(self.0.join(name), source).unwrap();
     }
     fn run(&self, arguments: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&self.0)
             .arg("check")
             .args(["--no-stdlib", "--dump-types"])

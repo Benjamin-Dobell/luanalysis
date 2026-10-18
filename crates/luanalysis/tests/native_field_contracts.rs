@@ -272,11 +272,11 @@ fn cli_checks_original_field_initializer_and_accepts_its_source_correction() {
     let path = directory.join("original fields.lua");
     let source = "local fields={\n---@type number\nvalue=\"wrong\",\n}\n";
     std::fs::write(&path, source).unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis")).arg("check").arg(&path).output().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).arg("check").arg(&path).output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains(":3:7: error[TS2322]"), "{}", String::from_utf8_lossy(&output.stderr));
     std::fs::write(&path, source.replace("\"wrong\"", "1")).unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis")).arg("check").arg(&path).output().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).arg("check").arg(&path).output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -330,7 +330,7 @@ fn cli_checks_an_alias_node_update_and_its_wrong_length_correction() {
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("node.lua");
     let source = "---@alias ArrayNode {[1]:1,[2]:string[],[3]:number}\n---@param currentNode ArrayNode\nlocal function addValue(currentNode)\n local arrayNode=--[[---@type ArrayNode]] currentNode\n arrayNode[3]=arrayNode[3]+1\n arrayNode[2][arrayNode[3]]='value'\nend\n";
-    let run = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let run = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--format", "json", "--lua-version", "5.2"]).arg(&path).output().unwrap();
     std::fs::write(&path, source).unwrap();
     let output = run();

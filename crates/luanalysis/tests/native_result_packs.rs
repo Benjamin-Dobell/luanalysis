@@ -263,7 +263,7 @@ fn cli_expanded_slot_error_disappears_after_original_annotation_correction() {
     let source = format!("{PAIR}---@type number, number\nlocal first,second=pair()");
     fs::write(&path, &source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)

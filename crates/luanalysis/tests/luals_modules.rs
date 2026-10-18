@@ -17,7 +17,7 @@ impl Fixture {
         Self(root)
     }
     fn check(&self, paths: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&self.0)
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&self.0)
             .args(["check", "--lua-version", "5.4", "--module-root", ".", "--dump-types"]).args(paths).output().unwrap()
     }
 }
@@ -97,7 +97,7 @@ fn asserting_the_results_of_an_unresolved_modules_call_is_any() {
 fn the_standard_streams_are_fields_of_io() {
     let fixture = Fixture::new(&[("main.lua", "io.stderr:write('x')\nlocal out = io.stdout\nlocal input = io.stdin\n")]);
     for version in ["5.1", "5.2", "5.3", "5.4"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&fixture.0)
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&fixture.0)
             .args(["check", "--lua-version", version, "main.lua"]).output().unwrap();
         assert!(output.status.success(), "{version}: {}", text(&output));
     }
@@ -120,7 +120,7 @@ fn a_require_before_the_rebinding_is_standard_when_another_file_may_replace_requ
 fn table_concat_accepts_a_packed_list() {
     let fixture = Fixture::new(&[("main.lua", "local function join(...)\n    local packed = table.pack(...)\n    return table.concat(packed, '\\t')\nend\nlocal text = join('a', 'b')\n")]);
     for version in ["5.2", "5.3", "5.4"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&fixture.0)
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&fixture.0)
             .args(["check", "--lua-version", version, "main.lua"]).output().unwrap();
         assert!(output.status.success(), "{version}: {}", text(&output));
     }

@@ -25,7 +25,7 @@ impl Fixture {
     }
 
     fn check(&self, lua54: bool) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
         command
             .current_dir(&self.0)
             .args(["check", "--format", "json", "--strict-standard-effects"]);

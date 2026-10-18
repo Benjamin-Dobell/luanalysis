@@ -55,7 +55,7 @@ fn real_standard_setmetatable_can_initialize_a_checked_class_without_name_based_
     let source = "---@class JsonNull\nlocal NULL=setmetatable({}, {__index={}, __metatable=false})\n---@return JsonNull\nlocal function null() return NULL end\nlocal accepted=null()\n";
     let run = |source: &str| {
         fs::write(&path, source).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--format", "json", "--lua-version", "5.4"])
             .arg(&path)
             .output()

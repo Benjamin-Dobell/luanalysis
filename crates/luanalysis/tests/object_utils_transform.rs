@@ -40,7 +40,7 @@ fn actual_cli_rejects_a_bad_transform_and_accepts_the_correction() {
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("transform.lua");
     let invoke = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib", "--format", "text"])
             .arg(&path)
             .output()

@@ -18,7 +18,7 @@ impl Library {
         fs::create_dir_all(&library.0).unwrap();
         fs::write(library.0.join("library.def.lua"), source).unwrap();
         fs::write(library.0.join("main.lua"), "").unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&library.0)
             .args([
                 "check",

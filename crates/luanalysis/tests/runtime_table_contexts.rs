@@ -65,7 +65,7 @@ fn cli_written_callback_rejects_a_wrong_initializer_and_accepts_the_source_corre
     std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("main.lua");
     let corrected = "local callbacks={\n---@type fun(value:number):number\nmap=function(value) return value end,\n}\nlocal unrelated={}\nunrelated.child={}\nunrelated.child.label='ready'\ncallbacks.map=function(replacement) return replacement+1 end\n---@type number\nlocal result=callbacks.map(42)\n";
-    let invoke = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let invoke = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--no-stdlib"]).arg(&path).output().unwrap();
     std::fs::write(&path, corrected.replace("replacement+1", "'wrong'")).unwrap();
     let wrong = invoke();

@@ -190,7 +190,7 @@ fn text_and_json_render_ambient_implementation_contracts_without_checking_placeh
     let diagnostic = &check(OVERLOAD).diagnostics[0];
     for format in ["text", "json"] {
         let run = || {
-            Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+            Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
                 .args(["check", "--no-stdlib", "--format", format, "--library"])
                 .arg(&library)
                 .arg(&file)
@@ -269,7 +269,7 @@ fn named_generic_arguments_render_nil_and_preserve_the_undefined_string_literal(
     fs::create_dir_all(&directory).unwrap();
     let file = directory.join("main.lua");
     fs::write(&file, source).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--no-stdlib"])
         .arg(&file)
         .output()
@@ -292,7 +292,7 @@ fn cli_json_errors_render_actual_types_and_keep_original_codes_and_ranges() {
     fs::create_dir_all(&directory).unwrap();
     let file = directory.join("main.lua");
     fs::write(&file, SOURCE).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--format", "json", "--no-stdlib"])
         .arg(&file)
         .output()

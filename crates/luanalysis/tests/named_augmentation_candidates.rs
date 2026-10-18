@@ -24,7 +24,7 @@ impl Fixture {
         fs::write(self.0.join(name), source).unwrap();
     }
     fn check(&self, files: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&self.0)
             .args(["check", "--jobs", "1", "--lua-version", "5.2", "--module-root", "."])
             .args(files)

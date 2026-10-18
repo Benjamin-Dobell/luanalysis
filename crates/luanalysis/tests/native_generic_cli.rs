@@ -11,7 +11,7 @@ fn cli_rejects_a_constrained_generic_call_then_infers_the_corrected_call() {
     let source = "---@generic T : number\n---@param value T\n---@return T\nlocal function identity(value) return value end\nlocal inferred = identity(\"wrong\")\n---@type number\nlocal accepted = inferred\n";
     fs::write(&file, source).unwrap();
 
-    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&file)
         .output()
@@ -25,7 +25,7 @@ fn cli_rejects_a_constrained_generic_call_then_infers_the_corrected_call() {
     assert_eq!(errors.lines().count(), 1, "{errors}");
 
     fs::write(&file, source.replace("\"wrong\"", "42")).unwrap();
-    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&file)
         .output()

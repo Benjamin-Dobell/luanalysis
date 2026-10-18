@@ -143,7 +143,7 @@ fn cli_raw_runtime_annotation_error_uses_original_source_and_correction() {
     let source = "---@param value table\r\nlocal function use(value) return value.field end\r\nlocal é=use(function() end)";
     fs::write(&path, source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)

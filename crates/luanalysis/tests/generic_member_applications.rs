@@ -344,7 +344,7 @@ return attach
     let source = "local attach=require('augment')\n---@param input Box<number[]>\nlocal function use(input)\n local numberResult=attach(input).echo(1)\n ---@type number\n local result=numberResult\n return result\nend\n";
     let run = |source: &str| {
         fs::write(directory.join("main.lua"), source).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&directory)
             .args([
                 "check",

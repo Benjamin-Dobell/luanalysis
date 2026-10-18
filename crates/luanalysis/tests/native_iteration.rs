@@ -401,7 +401,7 @@ local function iterator(state,control)\nif control<1 then return 1,\"value\" end
 for key,value in iterator,nil,0 do\n---@type number\nlocal rejected=value\nend";
     fs::write(&path, source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)

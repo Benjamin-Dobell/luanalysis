@@ -39,7 +39,7 @@ fn imported_factory_callbacks_reject_wrong_results_then_accept_the_original_sour
     std::fs::write(directory.join("factory.lua"), format!("{GENERIC_DIRECT_FACTORY}return make\n")).unwrap();
     let path = directory.join("main.lua");
     let corrected = "local make=require('factory')\nlocal numbers=make(42)\nlocal strings=make('word')\n---@type number\nlocal numeric=numbers.callback()\n---@type string\nlocal text=strings.callback()\n";
-    let invoke = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let invoke = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .current_dir(&directory)
         .args(["check", "--no-stdlib", "--stdlib", "require", "--module-root", ".", "main.lua"])
         .output().unwrap();
@@ -76,7 +76,7 @@ fn imported_factory_keeps_original_deferred_body_frames_and_result_correction() 
     std::fs::write(directory.join("factory.lua"), format!("{GENERIC_FACTORY}return make\n")).unwrap();
     let path = directory.join("main.lua");
     let corrected = format!("local make=require('factory')\n{DEFERRED_CALLS}");
-    let invoke = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let invoke = || std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .current_dir(&directory)
         .args(["check", "--no-stdlib", "--stdlib", "require", "--module-root", ".", "main.lua"])
         .output().unwrap();

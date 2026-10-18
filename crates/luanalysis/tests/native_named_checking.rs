@@ -285,7 +285,7 @@ fn cli_checks_original_alias_annotation_then_accepts_a_source_correction() {
     let path = directory.join("alias.ttslua");
     let source = "---@alias Count number\n---@type Count\nlocal value=\"wrong\"\n";
     fs::write(&path, source).unwrap();
-    let failed = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let failed = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()
@@ -302,7 +302,7 @@ fn cli_checks_original_alias_annotation_then_accepts_a_source_correction() {
         String::from_utf8_lossy(&failed.stderr)
     );
     fs::write(&path, source.replace("\"wrong\"", "42")).unwrap();
-    let passed = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let passed = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()

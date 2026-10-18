@@ -138,7 +138,7 @@ impl Fixture {
     fn run(&self, source: &str, format: &str) -> Output {
         let file = self.0.join("main.lua");
         fs::write(&file, source).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib", "--format", format])
             .arg(file)
             .output()

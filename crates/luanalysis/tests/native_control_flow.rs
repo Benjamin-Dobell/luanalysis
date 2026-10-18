@@ -332,7 +332,7 @@ fn cli_reports_flow_inferred_original_lua_error_and_accepts_its_correction() {
     let path = directory.join("conditional.ttslua");
     let source = "local function choose()\nif 0 then return 42 else return \"unreachable\" end\nend\n---@type string\nlocal result=choose()\n";
     fs::write(&path, source).unwrap();
-    let invalid = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let invalid = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()
@@ -348,7 +348,7 @@ fn cli_reports_flow_inferred_original_lua_error_and_accepts_its_correction() {
         "{stderr}"
     );
     fs::write(&path, source.replace("---@type string", "---@type number")).unwrap();
-    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&path)
         .output()

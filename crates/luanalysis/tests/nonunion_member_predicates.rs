@@ -195,7 +195,7 @@ fn cli_checks_nonunion_storage_after_an_impossible_property_guard() {
     // the real host object's opaque runtime domain under the selected profile.
     let source = format!("{RECORDS}{}", ZONE_CONDITION.replace("---@class HostObject\n", "---@class HostObject : userdata\n"));
     fs::write(&file, &source).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--lua-version", "5.2"])
         .arg(&file)
         .output()
@@ -210,7 +210,7 @@ fn cli_checks_nonunion_storage_after_an_impossible_property_guard() {
         source.replace("record.child=42", "record.child='wrong'"),
     )
     .unwrap();
-    let wrong = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let wrong = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--lua-version", "5.2"])
         .arg(&file)
         .output()
@@ -220,7 +220,7 @@ fn cli_checks_nonunion_storage_after_an_impossible_property_guard() {
     assert!(text.contains("error[TS2322]"), "{text}");
     assert!(!text.contains("never"), "{text}");
     fs::write(&file, &source).unwrap();
-    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--lua-version", "5.2"])
         .arg(&file)
         .output()
@@ -231,7 +231,7 @@ fn cli_checks_nonunion_storage_after_an_impossible_property_guard() {
         String::from_utf8_lossy(&corrected.stderr)
     );
     fs::write(&file, source.replace("object.getPosition()", "object.getPosition('wrong')")).unwrap();
-    let wrong_argument = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let wrong_argument = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--lua-version", "5.2"])
         .arg(&file)
         .output()
@@ -241,7 +241,7 @@ fn cli_checks_nonunion_storage_after_an_impossible_property_guard() {
     assert!(text.contains("error[TS2554]"), "{text}");
     assert!(!text.contains("never"), "{text}");
     fs::write(&file, &source).unwrap();
-    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--lua-version", "5.2"])
         .arg(&file)
         .output()

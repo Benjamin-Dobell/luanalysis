@@ -84,7 +84,7 @@ impl Fixture {
     }
     fn cli(&self, source: &str, version: &str, expected_exit: i32) -> String {
         self.source(source);
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&self.0)
             .args(["check", "--format", "json", "--lua-version", version, "main.lua"])
             .output().unwrap();

@@ -24,7 +24,7 @@ impl Fixture {
         path
     }
     fn command(&self) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
         command.current_dir(&self.0).arg("check");
         command
     }

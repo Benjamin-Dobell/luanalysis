@@ -183,7 +183,7 @@ fn cli_overloaded_runtime_domain_error_is_corrected_in_original_unicode_source()
     assert_eq!(&source[error.span.start..error.span.end], "42");
     let (line, column) = location(&source, error.span);
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)

@@ -19,7 +19,7 @@ fn cli(source: &str, declarations: Option<&str>, legacy: bool) -> Output {
     fs::create_dir_all(&directory).unwrap();
     let path = directory.join("example.lua");
     fs::write(&path, source).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
     command.args(["check", "--lua-version", "5.4", "--format", "text"]);
     if let Some(declarations) = declarations {
         let library = directory.join("counter.def.lua");

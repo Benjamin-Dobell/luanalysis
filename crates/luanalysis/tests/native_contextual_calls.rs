@@ -368,7 +368,7 @@ fn cli_contextual_member_error_disappears_after_original_lua_correction() {
         "{TRANSFORM}local result=transform({{id=42}},function(value) return value.missing end)"
     );
     fs::write(&path, &source).unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&path)
         .output()
@@ -381,7 +381,7 @@ fn cli_contextual_member_error_disappears_after_original_lua_correction() {
     );
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("TS2339"));
     fs::write(&path, source.replace("value.missing", "value.id")).unwrap();
-    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&path)
         .output()

@@ -51,7 +51,7 @@ fn cli_prints_full_pack_signature_and_original_slot_error_then_accepts_correctio
     let path = directory.join("pack.ttslua");
     let source = "-- α😀\r\n---@return number,string\r\nlocal function pair() return 42,\"text\" end\r\n---@type number,number\r\nlocal first,second=pair()";
     fs::write(&path, source).unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()
@@ -69,7 +69,7 @@ fn cli_prints_full_pack_signature_and_original_slot_error_then_accepts_correctio
         source.replace("---@type number,number", "---@type number,string"),
     )
     .unwrap();
-    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&path)
         .output()

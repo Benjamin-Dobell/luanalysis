@@ -69,7 +69,7 @@ fn cli_original_json_sparse_fill_uses_its_declared_namespace_function() {
     let source = include_str!("fixtures/native_effects/json_sparse_fill.lua");
     let invoke = |source: &str| {
         std::fs::write(&path, source).unwrap();
-        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&directory).args(["check", "--lua-version", "5.4", "main.lua"]).output().unwrap()
     };
     let correct = invoke(source);
@@ -291,7 +291,7 @@ fn actual_cli_checks_definition_initializer_then_instance_completeness() {
     let path = directory.join("class.ttslua");
     let run = |source: &str| {
         fs::write(&path, source).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--dump-types"])
             .arg(&path)
             .output()

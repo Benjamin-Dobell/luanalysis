@@ -10,7 +10,7 @@ fn check(source: &str) -> String {
     let root = std::env::temp_dir().join(format!("luanalysis assignment annotations {} {}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     fs::create_dir_all(&root).unwrap();
     fs::write(root.join("main.lua"), source).unwrap();
-    let output: Output = Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&root)
+    let output: Output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&root)
         .args(["check", "--lua-version", "5.4", "--dump-types", "main.lua"]).output().unwrap();
     let _ = fs::remove_dir_all(PathBuf::from(&root));
     format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))

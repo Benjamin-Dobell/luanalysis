@@ -350,7 +350,7 @@ impl Fixture {
         }
     }
     fn cli(&self, jobs: usize, no_implicit_any: bool) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
         command
             .current_dir(&self.0)
             .args([

@@ -132,7 +132,7 @@ fn text_and_json_publish_anonymous_container_contracts_and_accept_numeric_correc
     for format in ["text", "json"] {
         fs::write(&file, CONTRACTS).unwrap();
         let run = || {
-            Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+            Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
                 .args(["check", "--no-stdlib", "--format", format])
                 .arg(&file)
                 .output()

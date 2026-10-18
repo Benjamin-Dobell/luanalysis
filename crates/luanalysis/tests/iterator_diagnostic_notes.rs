@@ -11,7 +11,7 @@ fn iterator_feedback_keeps_concrete_types_and_its_explanation_in_text_and_json()
     let file = directory.join("input.lua");
     fs::write(&file, source).unwrap();
     for format in ["text", "json"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib", "--format", format])
             .arg(&file)
             .output()
@@ -37,7 +37,7 @@ fn iterator_feedback_keeps_concrete_types_and_its_explanation_in_text_and_json()
         ),
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--no-stdlib"])
         .arg(&file)
         .output()

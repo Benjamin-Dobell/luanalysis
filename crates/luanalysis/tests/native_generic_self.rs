@@ -92,7 +92,7 @@ fn generic_self_cli_error_keeps_original_utf8_crlf_range_and_accepts_correction(
     let source = format!("-- é😀\n{FACTORY}local textual=make('word')\n---@type number\nlocal wrong=textual:identity():again()\n").replace('\n', "\r\n");
     fs::write(&path, &source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib", "--dump-types"])
             .arg(&path)
             .output()

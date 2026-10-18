@@ -280,7 +280,7 @@ fn native_inference_cli_rejects_then_accepts_an_annotation_correction() {
     let source =
         "local function answer() return 42 end\n---@type string\nlocal result = answer()\n";
     fs::write(&file, source).unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()
@@ -293,7 +293,7 @@ fn native_inference_cli_rejects_then_accepts_an_annotation_correction() {
     );
     assert!(!error.contains("LUA2014"), "{error}");
     fs::write(&file, source.replace("---@type string", "---@type number")).unwrap();
-    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()

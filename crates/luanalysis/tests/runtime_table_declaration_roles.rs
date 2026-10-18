@@ -19,7 +19,7 @@ fn runtime_expando_candidates_never_execute_opaque_declaration_bodies() {
         "local value={}\nvalue.count=1\n---@type number\nlocal count=value.count\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .current_dir(&directory)
         .args([
             "check",
@@ -43,7 +43,7 @@ fn runtime_expando_candidates_never_execute_opaque_declaration_bodies() {
         "local value={}\nvalue.count=1\n---@type string\nlocal count=value.count\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .current_dir(&directory)
         .args([
             "check",

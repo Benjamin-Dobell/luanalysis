@@ -54,7 +54,7 @@ struct Server {
 
 impl Server {
     fn start(arguments: &[&str]) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("lsp")
             .args(arguments)
             .stdin(Stdio::piped())

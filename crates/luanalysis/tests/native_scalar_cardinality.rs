@@ -104,7 +104,7 @@ fn cli_cardinality_error_is_corrected_by_scalarizing_the_original_lua_argument()
     assert_eq!(&source[span.start..span.end], "consume(maybe(false))");
     fs::write(&path, source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)

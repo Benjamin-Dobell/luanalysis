@@ -173,7 +173,7 @@ fn actual_cli_rejects_the_original_shape_field_then_accepts_correction() {
     let path = directory.join("shape.ttslua");
     let wrong = include_str!("fixtures/named/implicit_shape_wrong.lua");
     fs::write(&path, wrong).unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()
@@ -195,7 +195,7 @@ fn actual_cli_rejects_the_original_shape_field_then_accepts_correction() {
         include_str!("fixtures/named/implicit_shape_corrected.lua"),
     )
     .unwrap();
-    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()

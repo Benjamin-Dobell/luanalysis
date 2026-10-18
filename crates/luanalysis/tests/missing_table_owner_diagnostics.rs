@@ -70,7 +70,7 @@ fn text_and_json_keep_the_table_owner_and_accept_the_original_correction() {
     let path = directory.join("main.lua");
     fs::write(&path, SOURCE).unwrap();
     for format in ["text", "json"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib", "--format", format])
             .arg(&path)
             .output()
@@ -94,7 +94,7 @@ fn text_and_json_keep_the_table_owner_and_accept_the_original_correction() {
             .replace("record.missing=42", "record.value=42"),
     )
     .unwrap();
-    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--no-stdlib"])
         .arg(&path)
         .output()

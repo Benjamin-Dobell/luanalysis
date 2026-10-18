@@ -124,7 +124,7 @@ fn actual_cli_checks_a_selected_private_body_and_its_source_correction() {
     let path = directory.join("original transform.lua");
     std::fs::write(&path, &wrong).unwrap();
     let invoke = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--lua-version", "5.4"])
             .arg(&path)
             .output()

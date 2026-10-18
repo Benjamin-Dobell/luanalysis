@@ -166,7 +166,7 @@ fn authoritative_casts_and_real_errors_agree_in_serial_and_parallel_cli_projects
         start + "callback".len()
     );
     let run = |jobs: usize| {
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args([
                 "check",
                 "--no-stdlib",
@@ -298,7 +298,7 @@ fn cli_assertion_error_uses_original_unicode_crlf_source_and_correction() {
     let source = "---@param value number|string\r\nlocal function read(value)\r\n---@type number\r\nlocal é=--[[---@not number]] value\r\nreturn é\r\nend";
     fs::write(&path, source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)

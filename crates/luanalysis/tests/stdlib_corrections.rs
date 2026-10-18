@@ -23,7 +23,7 @@ impl Fixture {
         fs::write(self.0.join("main.lua"), source).unwrap();
     }
     fn check(&self) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
         command.current_dir(&self.0).args(["check", "--no-stdlib", "--dump-types", "--library", "api.def.lua"]);
         for name in ["math.def.lua", "table.def.lua"] {
             if self.0.join(name).exists() { command.args(["--library", name]); }

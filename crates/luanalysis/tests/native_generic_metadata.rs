@@ -134,7 +134,7 @@ fn native_generic_metadata_cli_rejects_then_accepts_a_constraint_correction() {
     let file = directory.join("generic.lua");
     let source = "---@generic T : Missing\n---@param value T\nlocal function identity(value) return value end";
     fs::write(&file, source).unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()
@@ -146,7 +146,7 @@ fn native_generic_metadata_cli_rejects_then_accepts_a_constraint_correction() {
         "{error}"
     );
     fs::write(&file, source.replace("Missing", "number")).unwrap();
-    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()

@@ -173,7 +173,7 @@ fn cli_module_return_contract_reports_original_utf8_crlf_then_accepts_correction
     )
     .unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&directory)
             .args(["check", "--format", "json", "main.lua"])
             .output()

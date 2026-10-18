@@ -43,7 +43,7 @@ impl Fixture {
         strict: bool,
     ) -> Output {
         fs::write(self.0.join("main.lua"), source).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
         command.current_dir(&self.0).args([
             "check",
             "--format",

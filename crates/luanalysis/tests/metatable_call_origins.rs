@@ -28,7 +28,7 @@ impl Fixture {
     }
     fn check_effects(&self, source: &str, strict: bool) -> Output {
         self.file("main.lua", source);
-        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
         command.current_dir(&self.0).args([
             "check",
             "--lua-version",
@@ -94,7 +94,7 @@ fn provisional_constructor_metadata_does_not_keep_report_publication_alive() {
     let invoke = |source: &str, jobs: usize| {
         fixture.file("main.lua", source);
         let jobs = jobs.to_string();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&fixture.0)
             .args([
                 "check",

@@ -51,7 +51,7 @@ fn recursive_fixed_return_contract_preserves_callback_and_implementation_checkin
     let file = directory.join("main.lua");
     let run = |source: &str, version: &str, exit: i32| {
         fs::write(&file, source).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--format", "json", "--lua-version", version])
             .arg(&file)
             .output()

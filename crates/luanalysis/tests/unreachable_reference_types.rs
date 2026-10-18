@@ -172,7 +172,7 @@ fn cli_checks_encoder_cycle_guard_and_preserves_strict_errors_and_corrections() 
         (ENCODER_VISITED.to_owned(), None),
     ] {
         fs::write(&file, &source).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--lua-version", "5.2"])
             .arg(&file)
             .output()
@@ -266,7 +266,7 @@ fn cli_preserves_dead_code_argument_errors_and_accepts_the_original_correction()
     fs::create_dir_all(&directory).unwrap();
     let file = directory.join("main.lua");
     fs::write(&file, DEAD_CONTINUATION).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--lua-version", "5.2"])
         .arg(&file)
         .output()
@@ -278,7 +278,7 @@ fn cli_preserves_dead_code_argument_errors_and_accepts_the_original_correction()
     );
     let wrong = DEAD_CONTINUATION.replacen("callback(record.value)", "callback('wrong')", 1);
     fs::write(&file, &wrong).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--lua-version", "5.2"])
         .arg(&file)
         .output()
@@ -294,7 +294,7 @@ fn cli_preserves_dead_code_argument_errors_and_accepts_the_original_correction()
     );
     assert!(!text.contains("'never'"), "{text}");
     fs::write(&file, DEAD_CONTINUATION).unwrap();
-    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--lua-version", "5.2"])
         .arg(&file)
         .output()

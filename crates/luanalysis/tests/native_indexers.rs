@@ -397,7 +397,7 @@ fn cli_numeric_string_key_error_disappears_after_original_read_correction() {
 ---@type boolean\nlocal bytes=item[\"\\xFF\"]";
     fs::write(&path, source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)
@@ -443,7 +443,7 @@ fn cli_sequence_expansion_error_keeps_original_source_and_correction() {
 local item={7,pair()}\n---@type number\nlocal rejected=item[3]";
     fs::write(&path, source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)

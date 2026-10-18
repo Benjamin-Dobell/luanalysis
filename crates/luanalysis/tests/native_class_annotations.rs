@@ -83,7 +83,7 @@ fn cli_rejects_unrelated_class_return_and_accepts_same_origin_correction() {
     let path = directory.join("class-origin.ttslua");
     let wrong = "---@class A\n\n---@class B\n\n---@param value A\n---@return B\nlocal function convert(value)\n    return value\nend\n";
     fs::write(&path, wrong).unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()
@@ -101,7 +101,7 @@ fn cli_rejects_unrelated_class_return_and_accepts_same_origin_correction() {
         String::from_utf8_lossy(&rejected.stderr)
     );
     fs::write(&path, wrong.replace("---@return B", "---@return A")).unwrap();
-    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()

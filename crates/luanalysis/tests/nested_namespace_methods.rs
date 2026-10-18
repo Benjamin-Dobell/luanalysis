@@ -123,7 +123,7 @@ impl Fixture {
     fn run(&self, source: &str, exit: i32) -> String {
         let path = self.0.join("main.lua");
         fs::write(&path, source).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--lua-version", "5.2", "--format", "json"])
             .arg(path)
             .output()

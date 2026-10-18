@@ -151,7 +151,7 @@ fn cli_overload_argument_error_disappears_after_original_call_correction() {
 local function echo(value) return value end\nlocal rejected=echo(true)";
     fs::write(&path, source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)
@@ -454,7 +454,7 @@ fn project_cli_routes_original_library_signature_keys_without_cross_file_scope_l
     fs::write(&library,"---@alias Identity fun<T>(value:T):T").unwrap();
     let source="---@param identity Identity\nlocal function use(identity)\n---@type number\nlocal number=identity(1)\n---@type string\nlocal string=identity(\"text\")\n---@type boolean\nlocal rejected=identity(2)\nend";
     fs::write(&main,source).unwrap();
-    let run=||Command::new(env!("CARGO_BIN_EXE_luanalysis")).arg("check").arg("--library").arg(&library).arg("--dump-types").arg(&main).output().unwrap();
+    let run=||Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).arg("check").arg("--library").arg(&library).arg("--dump-types").arg(&main).output().unwrap();
     let bad=run();
     assert_eq!(bad.status.code(),Some(1),"{}",String::from_utf8_lossy(&bad.stderr));
     let errors=String::from_utf8_lossy(&bad.stderr);

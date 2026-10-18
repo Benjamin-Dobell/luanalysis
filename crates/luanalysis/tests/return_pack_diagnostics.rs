@@ -166,7 +166,7 @@ impl Fixture {
         fs::write(self.0.join("input.lua"), source).unwrap();
     }
     fn run(&self, format: &str) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&self.0)
             .args(["check", "--no-stdlib", "--format", format, "input.lua"])
             .output()

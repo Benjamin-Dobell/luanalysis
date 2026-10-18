@@ -20,7 +20,7 @@ impl Fixture {
         Self(path)
     }
     fn check(&self) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&self.0)
             .args(["check", "--lua-version", "5.2", "--library", "library", "main.lua"])
             .output()

@@ -128,7 +128,7 @@ fn actual_cli_preserves_the_definition_runtime_domain_and_reports_original_sourc
     let source = format!("{FACTORY}---@type function\nlocal value=factory\n");
     let run = |source: &str| {
         fs::write(&path, source).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--dump-types"])
             .arg(&path)
             .output()

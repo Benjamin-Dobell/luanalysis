@@ -27,7 +27,7 @@ fn cli_class_definition_errors_hide_declaration_ids_at_original_spans() {
     let path = directory.join("main.lua");
     let run = |source: &str, version: &str, exit: i32| {
         fs::write(&path, source).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--format", "json", "--lua-version", version])
             .arg(&path)
             .output()

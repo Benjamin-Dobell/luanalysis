@@ -145,7 +145,7 @@ fn foreign_ambient_type_contract_cannot_grant_standard_predicate_effects_and_cli
         report.files
     );
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&fixture.0)
             .args(["check", "--library", "custom.def.lua", "main.lua"])
             .output()

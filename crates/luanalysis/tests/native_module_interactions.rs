@@ -86,7 +86,7 @@ fn exported_overload_heads_keep_their_public_view_and_cli_source_correction() {
     let bad = format!("{source}local rejected=echo(true)\n");
     let main = fixture.file("main.lua", &bad);
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&fixture.0)
             .args(["check", "--dump-types", "main.lua"])
             .output()
@@ -205,7 +205,7 @@ fn callable_table_exports_preserve_runtime_category_across_original_module_queri
     }
     let main = fixture.file("main.lua", &format!("{source}take_function(callable)\n"));
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&fixture.0)
             .args(["check", "--dump-types", "main.lua"])
             .output()

@@ -268,7 +268,7 @@ fn cli_rejects_zero_step_then_accepts_nonzero_correction() {
     let file = directory.join("numeric.ttslua");
     let source = "for i=1,2,0 do\n---@type number\nlocal copied=i\nend\n";
     fs::write(&file, source).unwrap();
-    let invalid = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let invalid = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&file)
         .output()
@@ -281,7 +281,7 @@ fn cli_rejects_zero_step_then_accepts_nonzero_correction() {
     );
     assert!(!stderr.contains("LUA2023"), "{stderr}");
     fs::write(&file, source.replace("1,2,0", "1,2,1")).unwrap();
-    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()

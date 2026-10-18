@@ -10,7 +10,7 @@ impl Fixture {
     }
     fn check(&self, source: &str, declarations: Option<&str>) -> Output {
         fs::write(self.0.join("main.lua"), source).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
         command.current_dir(&self.0).args(["check", "--lua-version", "5.4", "--format", "json"]);
         if let Some(declarations) = declarations {
             fs::write(self.0.join("api.def.lua"), declarations).unwrap();

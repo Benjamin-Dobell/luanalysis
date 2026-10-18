@@ -73,7 +73,7 @@ jobs:
         run: |
           out=luanalysis-linux-${{ matrix.arch }}
           mkdir -p $out/bin $out/lib $out/include
-          cp target/${{ matrix.arch }}-unknown-linux-musl/dist/luanalysis $out/bin/
+          cp target/${{ matrix.arch }}-unknown-linux-musl/dist/luanalysis-cli $out/bin/luanalysis
           cp target/dist/libluanalysis.so target/dist/libluanalysis.a $out/lib/
           cp crates/luanalysis-ffi/include/luanalysis.h $out/include/
           cp README.md LICENSE $out/
@@ -123,8 +123,8 @@ jobs:
       - name: Smoke test
         run: |
           printf 'local x = 1\n' > smoke.lua
-          target/dist/luanalysis --version
-          target/dist/luanalysis check --lua-version 5.4 smoke.lua
+          target/dist/luanalysis-cli --version
+          target/dist/luanalysis-cli check --lua-version 5.4 smoke.lua
           cc -Icrates/luanalysis-ffi/include crates/luanalysis-ffi/examples/smoke.c -Ltarget/dist -lluanalysis \
             -Wl,-rpath,@executable_path/target/dist -o smoke
           ./smoke smoke.lua
@@ -135,7 +135,7 @@ jobs:
         with:
           name: macos-${{ matrix.arch }}
           path: |
-            target/dist/luanalysis
+            target/dist/luanalysis-cli
             target/dist/libluanalysis.dylib
             target/dist/libluanalysis.a
             target/dist/native-static-libs.txt
@@ -161,7 +161,7 @@ jobs:
         run: |
           out=luanalysis-macos-universal
           mkdir -p $out/bin $out/lib $out/include
-          lipo -create -output $out/bin/luanalysis x86_64/luanalysis aarch64/luanalysis
+          lipo -create -output $out/bin/luanalysis x86_64/luanalysis-cli aarch64/luanalysis-cli
           lipo -create -output $out/lib/libluanalysis.dylib x86_64/libluanalysis.dylib aarch64/libluanalysis.dylib
           lipo -create -output $out/lib/libluanalysis.a x86_64/libluanalysis.a aarch64/libluanalysis.a
           chmod +x $out/bin/luanalysis
@@ -215,7 +215,8 @@ jobs:
         run: |
           out=luanalysis-windows-${{ matrix.arch }}
           mkdir -p $out/bin $out/lib $out/include
-          cp target/dist/luanalysis.exe target/dist/luanalysis.dll $out/bin/
+          cp target/dist/luanalysis-cli.exe $out/bin/luanalysis.exe
+          cp target/dist/luanalysis.dll $out/bin/
           cp target/dist/luanalysis.dll.lib target/dist/luanalysis.lib $out/lib/
           cp crates/luanalysis-ffi/include/luanalysis.h $out/include/
           cp README.md LICENSE $out/

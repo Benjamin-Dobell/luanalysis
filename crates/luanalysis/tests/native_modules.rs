@@ -443,7 +443,7 @@ fn cli_import_error_is_fixed_in_original_lua_and_explicit_module_roots_are_used(
         "-- café\r\nlocal value=require('count')\r\n---@type string\r\nlocal invalid=value\r\n",
     );
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&fixture.0)
             .args([
                 "check",
@@ -508,7 +508,7 @@ fn actual_cli_deep_import_chain_refuses_with_guard_diagnostics_without_stack_abo
     }
     fixture.file("chain512.lua", "return 42");
     fixture.file("entry.lua", "local value=require('chain0')");
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .current_dir(&fixture.0)
         .args(["check", "entry.lua"])
         .output()
@@ -547,7 +547,7 @@ fn unsupported_dynamic_module_resolution_still_checks_original_argument_expressi
 fn missing_static_import_reports_its_host_error_even_in_an_unreachable_branch() {
     let fixture = Fixture::new();
     fixture.file("entry.lua", "if false then require('absent') end");
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .current_dir(&fixture.0)
         .args(["check", "entry.lua"])
         .output()

@@ -22,7 +22,7 @@ impl Fixture {
         self.check_lua_version("5.4")
     }
     fn check_lua_version(&self, version: &str) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&self.0)
             .args(["check", "--lua-version", version, "--dump-types", "main.lua"])
             .output()

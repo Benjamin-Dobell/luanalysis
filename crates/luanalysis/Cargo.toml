@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 autotests = false
 
+# The tool is `luanalysis` in release archives. Its Cargo target has another name so that its
+# Windows PDB does not overwrite that of the C library, `luanalysis.dll`.
+[[bin]]
+name = "luanalysis-cli"
+path = "src/main.rs"
+
 [[test]]
 name = "harness"
 path = "test_harness.rs"

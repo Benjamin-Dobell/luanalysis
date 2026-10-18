@@ -316,7 +316,7 @@ fn cli_missing_argument_overload_keeps_original_body_error_and_correction() {
     let invalid = DEFAULT.replace("return value or 'default'", "return 42");
     std::fs::write(&path, invalid).unwrap();
     let run = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib"])
             .arg(&path)
             .output()
@@ -353,7 +353,7 @@ fn ambient_private_main_checks_nil_padding_without_executing_placeholder_bodies(
     let source = "---@overload fun():string\n---@overload fun(value:string):string\n---@param value string\n---@return string\nfunction example(value) unknown_placeholder_body() end\n";
     std::fs::write(&library, source).unwrap();
     let run = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib", "--format", "json", "--library"])
             .arg(&library)
             .arg(&main)
@@ -404,7 +404,7 @@ fn ambient_protected_call_main_keeps_the_zero_result_success_row() {
     let source = "---@overload fun(f:(fun:void)):true|(false,any)\n---@overload fun<T>(f:(fun:T)):(true,T)|(false,any)\n---@generic T\n---@param f (fun:T)|(fun:void)\n---@return (true,T)|(false,any)\nfunction protected(f) end\n";
     std::fs::write(&library, source).unwrap();
     let run = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib", "--format", "json", "--library"])
             .arg(&library)
             .arg(&main)

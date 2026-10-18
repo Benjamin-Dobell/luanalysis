@@ -23,7 +23,7 @@ impl Fixture {
         self.check_files(libraries, &["main.lua"])
     }
     fn check_files(&self, libraries: &[&str], files: &[&str]) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
         command.current_dir(&self.0).args(["check", "--dump-types"]);
         for library in libraries {
             command.args(["--library", library]);

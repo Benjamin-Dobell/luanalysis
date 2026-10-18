@@ -414,8 +414,8 @@ cargo build --release
 cargo test --workspace
 ```
 
-The tool is `target/release/luanalysis`, and the libraries are `target/release/libluanalysis.*`
-(`luanalysis.dll` on Windows). Release archives are built with `cargo build --profile dist`, which
+The tool is `target/release/luanalysis-cli`, named `luanalysis` in release archives, and the
+libraries are `target/release/libluanalysis.*` (`luanalysis.dll` on Windows). Release archives are built with `cargo build --profile dist`, which
 optimises the whole program and strips symbols, into `target/dist`.
 
 ## License

@@ -144,7 +144,7 @@ fn cli_reports_the_original_void_callback_overload_then_accepts_its_type_correct
     fs::create_dir_all(&directory).unwrap();
     let source = directory.join("resume.lua");
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&directory)
             .args(["check", "--no-stdlib", "resume.lua"])
             .output()

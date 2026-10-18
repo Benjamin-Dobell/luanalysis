@@ -10,7 +10,7 @@ impl Fixture {
     }
     fn check(&self, source: &str) -> String {
         fs::write(self.0.join("main.lua"), source).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .current_dir(&self.0)
             .args(["check", "--lua-version", "5.4", "--format", "json", "main.lua"])
             .output().unwrap();

@@ -15,7 +15,7 @@ fn indexed_function_unions_accept_gradual_any_and_reject_unknown_and_wrong_typed
     let path = directory.join("main.lua");
     let run = |source: &str, version: &str, expected: i32| {
         fs::write(&path, source).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--format", "json", "--lua-version", version])
             .arg(&path)
             .output()

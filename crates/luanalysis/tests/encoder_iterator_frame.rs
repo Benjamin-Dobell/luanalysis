@@ -44,7 +44,7 @@ impl Fixture {
     fn check(&self, source: &str) -> Output {
         let file = self.0.join("encoder.lua");
         fs::write(&file, source).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--lua-version", "5.2"])
             .arg(file)
             .output()

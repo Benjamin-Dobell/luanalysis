@@ -29,7 +29,7 @@ fn recursive_ambient_method_overrides_use_upstream_variance_without_schema_recur
                     "---@class Base\n{heads}Base={{}}\n---@class Derived:Base\nDerived={{}}\n---@class Sibling:Base\nSibling={{}}\n---@class Unrelated\nUnrelated={{}}\n---@param object Base\n---@return {returned}\nfunction Base.putObject(object) end\n---@param object {narrowed}\n---@return {returned}\nfunction Derived.putObject(object) end\n",
                 );
                 let run = || {
-                    Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+                    Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
                         .args(["check", "--no-stdlib", "--format", "json", "--library"])
                         .arg(&library)
                         .arg(&main)

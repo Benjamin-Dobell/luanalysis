@@ -17,7 +17,7 @@ fn original_coroutine_callback_checks_dead_stores_and_calls_against_written_type
     fs::write(&library, WAIT).unwrap();
     let check = |source: &str| {
         fs::write(&file, source).unwrap();
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--lua-version", "5.2", "--library"])
             .arg(&library)
             .arg(&file)

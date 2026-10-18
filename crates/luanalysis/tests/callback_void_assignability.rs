@@ -87,7 +87,7 @@ fn actual_cli_keeps_bad_callback_parameter_error_and_accepts_original_source_cor
     let source = "---@param callback fun(value:number):void\nlocal function consume(callback) callback(1) end\n---@param value string\nlocal function callback(value) return value end\nconsume(callback)\n";
     fs::write(&path, source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib"])
             .arg(&path)
             .output()

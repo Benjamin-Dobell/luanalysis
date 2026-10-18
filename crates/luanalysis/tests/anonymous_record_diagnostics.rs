@@ -92,7 +92,7 @@ fn text_and_json_publish_the_same_anonymous_fields_original_span_and_correction(
     let diagnostic = &report.diagnostics[0];
     let (line, column) = location(WRONG, diagnostic.span);
     for format in ["text", "json"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .args(["check", "--no-stdlib", "--format", format])
             .arg(&path)
             .output()
@@ -125,7 +125,7 @@ fn text_and_json_publish_the_same_anonymous_fields_original_span_and_correction(
         }
     }
     fs::write(&path, WRONG.replace("IGNORE=6", "IGNORE=0")).unwrap();
-    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let corrected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--no-stdlib"])
         .arg(&path)
         .output()

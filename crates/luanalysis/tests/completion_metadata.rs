@@ -124,7 +124,7 @@ fn cli_metadata_keeps_original_unicode_crlf_error_and_corrected_input() {
     let path = fixture.0.join("hint workflow.lua");
     let source = "-- é😀\r\n---@param value number|`Suggested.OK`\r\nlocal function take(value) return value end\r\nlocal result=take(\"wrong\")\r\n";
     fs::write(&path, source).unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let result = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()
@@ -136,7 +136,7 @@ fn cli_metadata_keeps_original_unicode_crlf_error_and_corrected_input() {
         "{errors}"
     );
     fs::write(&path, source.replace("\"wrong\"", "42")).unwrap();
-    let result = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let result = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--dump-types"])
         .arg(&path)
         .output()

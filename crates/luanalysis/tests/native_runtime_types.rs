@@ -90,7 +90,7 @@ fn runtime_type_cli_reports_original_error_then_accepts_a_correction() {
         .unwrap_or_else(|| panic!("{:#?}", report.diagnostics));
     assert_eq!(location(source, error.span), (4, 8));
     fs::write(&file, source).unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()
@@ -102,7 +102,7 @@ fn runtime_type_cli_reports_original_error_then_accepts_a_correction() {
             .contains("runtime.lua:4:8: error[TS2362]")
     );
     fs::write(&file, source.replace("value - 1", "\"value: \" .. value")).unwrap();
-    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()

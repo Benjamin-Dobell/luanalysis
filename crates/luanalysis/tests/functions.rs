@@ -236,7 +236,7 @@ fn annotated_call_cli_passes_fails_then_accepts_correction() {
     let file = directory.join("functions.lua");
     let prefix = "---@param value number\n---@return number\nlocal function identity(value) return value end\n";
     fs::write(&file, format!("{prefix}local result = identity(\"wrong\")")).unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let rejected = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()
@@ -246,7 +246,7 @@ fn annotated_call_cli_passes_fails_then_accepts_correction() {
         String::from_utf8_lossy(&rejected.stderr).contains("functions.lua:4:25: error[TS2345]")
     );
     fs::write(&file, format!("{prefix}local result = identity(42)")).unwrap();
-    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let accepted = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .arg("check")
         .arg(&file)
         .output()

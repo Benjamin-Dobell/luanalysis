@@ -129,7 +129,7 @@ fn cli_reports_real_incomplete_annotations_then_checks_the_original_source_corre
     let path = directory.join("original source.lua");
     let run = |source: &str| {
         std::fs::write(&path, source).unwrap();
-        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        std::process::Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg(&path)
             .output()

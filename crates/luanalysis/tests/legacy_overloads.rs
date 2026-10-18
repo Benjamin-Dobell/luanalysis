@@ -109,7 +109,7 @@ fn cli_flag_applies_to_both_implementation_and_ambient_declarations() {
             .unwrap();
         }
         for enabled in [false, true] {
-            let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"));
             command
                 .current_dir(&root)
                 .args(["check", "--no-stdlib", "--format", "json"]);

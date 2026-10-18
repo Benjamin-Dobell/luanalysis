@@ -17,7 +17,7 @@ impl Fixture {
         Self(root)
     }
     fn check(&self) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&self.0)
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&self.0)
             .args(["check", "--lua-version", "5.4", "--module-root", ".", "--dump-types", "main.lua"]).output().unwrap()
     }
 }
@@ -268,7 +268,7 @@ fn a_class_chain_declared_in_two_files_reads_inherited_fields_once_per_base() {
     }
     let main = format!("require 'copy'\n{chain}---@param c C24\nlocal function read(c) local x = c.x; local y = c.y end\n");
     let fixture = Fixture::new(&[("copy.lua", &format!("{chain}return {{}}\n")), ("main.lua", &main)]);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&fixture.0)
+    let mut child = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&fixture.0)
         .args(["check", "--lua-version", "5.4", "--module-root", ".", "--dump-types", "main.lua"])
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
     let started = std::time::Instant::now();

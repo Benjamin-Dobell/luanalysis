@@ -96,7 +96,7 @@ fn cli_documented_field_rejects_wrong_call_at_original_unicode_crlf_position() {
     let (line, column) = location(source, error.span);
     assert_eq!(line, 5);
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg("--dump-types")
             .arg(&path)

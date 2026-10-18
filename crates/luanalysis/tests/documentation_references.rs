@@ -23,7 +23,7 @@ fn cli_documentation_links_preserve_original_utf8_crlf_errors_and_corrections() 
     let source = "-- résumé\r\n---@see Unknown#method\r\n---@param value number\r\nlocal function checked(value) end\r\nchecked('wrong')\r\n";
     fs::write(&path, source).unwrap();
     let run = || {
-        Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+        Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
             .arg("check")
             .arg(&path)
             .output()

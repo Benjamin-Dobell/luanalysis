@@ -9,7 +9,7 @@ fn check(source: &str) -> (Output, String) {
     fs::create_dir_all(&root).unwrap();
     let path: PathBuf = root.join("main.lua");
     fs::write(&path, source).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis"))
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
         .args(["check", "--lua-version", "5.4", "--dump-types"]).arg(&path).output().unwrap();
     let _ = fs::remove_dir_all(&root);
     let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
