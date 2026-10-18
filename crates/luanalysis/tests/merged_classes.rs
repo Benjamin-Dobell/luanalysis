@@ -221,3 +221,13 @@ fn a_type_argument_of_a_base_prints_as_itself_not_as_the_derived_type() {
     assert!(report.contains("main.lua:11:11: abilities: nil | string[]"), "{report}");
     assert!(report.contains("main.lua:12:11: aliased: Names"), "{report}");
 }
+
+#[test]
+fn a_methods_self_is_its_table_with_every_stored_member() {
+    // A method runs after its table is built, so it sees methods and fields stored after it.
+    let fixture = Fixture::new(&[
+        ("main.lua", "local mt = {}\nmt.__index = mt\nfunction mt:a(x)\n    self.count = 1\n    return self:b(x)\nend\nfunction mt:b(x)\n    return x + self.count\nend\nreturn mt\n"),
+    ]);
+    let output = fixture.check();
+    assert!(output.status.success(), "{}", text(&output));
+}

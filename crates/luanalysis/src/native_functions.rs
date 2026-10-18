@@ -1453,6 +1453,10 @@ impl NativeRegistry {
                 })).flatten()
                 .or_else(|| self.body_parameter_type(self.key_for(function), 0, checker.captured_function, checker.contextual_function, checker.engine))
                 .unwrap_or_else(|| parameter.ty.clone());
+            // A method is called after the table is built, so its `self` is the table with every
+            // stored field, as a table another function's stores describe enters a function.
+            let parameter_type = if written_receiver { parameter_type }
+                else { checker.engine.runtime_table_schema(&parameter_type).unwrap_or(parameter_type) };
             let ty = if parameter.optional { Type::Union(vec![parameter_type, Type::Nil]) } else { parameter_type };
             checker.locals.insert(binding, Binding { constraint:ty.clone(), initial:ty.clone(), value:ty.clone(), evolves_from_nil:false });
             checker.record_semantic_binding(binding, &ty);
