@@ -641,6 +641,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Leave a union unnarrowed by a member predicate when no alternative has the member, as TypeScript does not narrow by a property no constituent has, through kernel e9ee7fd.",
 })
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-union-argument-distribution.patch",
+    "reason": "Combine the candidates one union-typed source's alternatives give a type parameter as their union, and distribute a Lua call's result over those alternatives, through kernel 740a6c3.",
+} for path in ["call.rs", "infer.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

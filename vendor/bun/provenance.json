@@ -2460,6 +2460,18 @@
       "patch": "vendor/patches/bun-sema-absent-member-narrowing.patch",
       "reason": "Leave a union unnarrowed by a member predicate when no alternative has the member, as TypeScript does not narrow by a property no constituent has, through kernel e9ee7fd.",
       "patch_sha256": "f84c515268182dcf97d64cb08bf0d4ce39ef0d6386a1072e48b3750d5f000301"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-union-argument-distribution.patch",
+      "reason": "Combine the candidates one union-typed source's alternatives give a type parameter as their union, and distribute a Lua call's result over those alternatives, through kernel 740a6c3.",
+      "patch_sha256": "dc0a0319b9b1a9b2d6d8ad4d4fc2a8452d5b94142a7d716ef3c1d1e1fd963810"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-union-argument-distribution.patch",
+      "reason": "Combine the candidates one union-typed source's alternatives give a type parameter as their union, and distribute a Lua call's result over those alternatives, through kernel 740a6c3.",
+      "patch_sha256": "dc0a0319b9b1a9b2d6d8ad4d4fc2a8452d5b94142a7d716ef3c1d1e1fd963810"
     }
   ],
   "source_additions": {
@@ -3226,7 +3238,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "065e2e022dbc9556dead4e741ea4c900690fd631ccdee61a3a3539931ab15397"
+      "extracted_sha256": "cef0008a813c20864a3e708a3f52ebe50cc870cdf937f54e7641f737930d6b86"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -3451,7 +3463,7 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "62e28df0fd7d40251dd73020982373d19789fd995588330553a4cae5b506d588"
+      "extracted_sha256": "52734f4023023ae60c695a68e3380b0bcaf0de06f700a6bb177312cd1b56367d"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
