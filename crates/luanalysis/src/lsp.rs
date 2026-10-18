@@ -289,6 +289,8 @@ struct Server {
     checking: bool,
     snapshot: Option<Snapshot>,
     published: HashSet<PathBuf>,
+    /// Each file's outline, by the text it was made from.
+    symbols: HashMap<PathBuf, (String, Vec<language_service::DocumentSymbol>)>,
 }
 
 impl Server {
@@ -311,6 +313,7 @@ impl Server {
             checking: false,
             snapshot: None,
             published: HashSet::new(),
+            symbols: HashMap::new(),
         }
     }
 
@@ -387,6 +390,14 @@ impl Server {
                 }
             }
             "textDocument/completion" => self.completion(id, params),
+            "textDocument/documentSymbol" => {
+                let result = self.document_symbols(params);
+                self.respond(id, result);
+            }
+            "workspace/symbol" => {
+                let result = self.workspace_symbols(params);
+                self.respond(id, result);
+            }
             "textDocument/signatureHelp" => self.signature_help(id, params),
             "textDocument/documentHighlight" => match self.highlights(params) {
                 Json::Null => self.navigate(id, params, Navigate::Highlight),
@@ -504,6 +515,8 @@ impl Server {
                 ("definitionProvider", Json::from(true)),
                 ("referencesProvider", Json::from(true)),
                 ("documentHighlightProvider", Json::from(true)),
+                ("documentSymbolProvider", Json::from(true)),
+                ("workspaceSymbolProvider", Json::from(true)),
                 ("renameProvider", Json::object([("prepareProvider", Json::from(true))])),
                 ("completionProvider", Json::object([
                     ("triggerCharacters", Json::Array(vec![Json::from("."), Json::from(":"), Json::from("@")])),
@@ -660,6 +673,86 @@ impl Server {
         let offset = lines.offset(line, character, self.encoding);
         let Some(site) = language_service::completion_site(&lines.text, offset) else { return self.respond(id, empty) };
         self.query(id, path, Site::Completion(site), lines);
+    }
+
+    /// The outline of a document's current text.
+    fn document_symbols(&mut self, params: &Json) -> Json {
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else { return Json::Null };
+        let Some(text) = self.file_text(&path) else { return Json::Null };
+        let lines = LineIndex::new(text.clone());
+        let encoding = self.encoding;
+        fn convert(symbol: &language_service::DocumentSymbol, lines: &LineIndex, encoding: Encoding) -> Json {
+            let mut fields = vec![
+                ("name".to_owned(), Json::from(symbol.name.as_str())),
+                ("kind".to_owned(), Json::from(symbol_kind(symbol.kind))),
+                ("range".to_owned(), lines.range(symbol.range.start, symbol.range.end, encoding)),
+                ("selectionRange".to_owned(), lines.range(symbol.selection.start, symbol.selection.end, encoding)),
+            ];
+            if let Some(detail) = &symbol.detail { fields.push(("detail".to_owned(), Json::from(detail.as_str()))); }
+            if !symbol.children.is_empty() {
+                fields.push(("children".to_owned(), Json::Array(symbol.children.iter().map(|child| convert(child, lines, encoding)).collect())));
+            }
+            Json::Object(fields)
+        }
+        Json::Array(self.outline(&path, text).iter().map(|symbol| convert(symbol, &lines, encoding)).collect())
+    }
+
+    /// The symbols of every checked or open file whose names contain the query's characters in
+    /// order, ignoring case, as editors match them.
+    fn workspace_symbols(&mut self, params: &Json) -> Json {
+        let query: Vec<char> = params.get("query").and_then(Json::as_str).unwrap_or_default().to_lowercase().chars().filter(|ch| !ch.is_whitespace()).collect();
+        let mut paths: Vec<PathBuf> = self.documents.keys().cloned().collect();
+        if let Some(snapshot) = &self.snapshot {
+            paths.extend(snapshot.files.keys().filter(|path| !self.documents.contains_key(*path)).cloned());
+        }
+        paths.sort();
+        let matches = |name: &str| {
+            let mut wanted = query.iter().peekable();
+            for ch in name.to_lowercase().chars() {
+                if wanted.peek() == Some(&&ch) { wanted.next(); }
+            }
+            wanted.peek().is_none()
+        };
+        let mut results = Vec::new();
+        for path in paths {
+            let Some(text) = self.file_text(&path) else { continue };
+            let lines = LineIndex::new(text.clone());
+            let mut pending: Vec<(&language_service::DocumentSymbol, Option<String>)> = Vec::new();
+            let outline = self.outline(&path, text).clone();
+            pending.extend(outline.iter().map(|symbol| (symbol, None)));
+            while let Some((symbol, container)) = pending.pop() {
+                pending.extend(symbol.children.iter().map(|child| (child, Some(symbol.name.clone()))));
+                if !matches(&symbol.name) { continue; }
+                let mut fields = vec![
+                    ("name".to_owned(), Json::from(symbol.name.as_str())),
+                    ("kind".to_owned(), Json::from(symbol_kind(symbol.kind))),
+                    ("location".to_owned(), Json::object([
+                        ("uri", Json::from(path_to_uri(&path))),
+                        ("range", lines.range(symbol.selection.start, symbol.selection.end, self.encoding)),
+                    ])),
+                ];
+                if let Some(container) = container { fields.push(("containerName".to_owned(), Json::from(container))); }
+                results.push(Json::Object(fields));
+                if results.len() >= 500 { return Json::Array(results); }
+            }
+        }
+        Json::Array(results)
+    }
+
+    /// A file's text: its open document's, or the last check's.
+    fn file_text(&self, path: &Path) -> Option<String> {
+        self.documents.get(path).map(|document| document.text.clone())
+            .or_else(|| self.snapshot.as_ref()?.files.get(path).map(|file| file.lines.text.clone()))
+    }
+
+    /// A file's outline, made again only when its text changes.
+    fn outline(&mut self, path: &Path, text: String) -> &Vec<language_service::DocumentSymbol> {
+        let stale = self.symbols.get(path).is_none_or(|(made, _)| *made != text);
+        if stale {
+            let symbols = language_service::document_symbols(&text);
+            self.symbols.insert(path.to_path_buf(), (text, symbols));
+        }
+        &self.symbols[path].1
     }
 
     /// Navigation from a member or type name, answered from the document's current text.
@@ -1027,6 +1120,22 @@ fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
             }
         });
     });
+}
+
+/// An outline symbol's LSP `SymbolKind`.
+fn symbol_kind(kind: language_service::SymbolKind) -> usize {
+    use language_service::SymbolKind;
+    match kind {
+        SymbolKind::Module => 2,
+        SymbolKind::Class => 5,
+        SymbolKind::Method => 6,
+        SymbolKind::Field => 8,
+        SymbolKind::Interface => 11,
+        SymbolKind::Function => 12,
+        SymbolKind::Variable => 13,
+        SymbolKind::Constant => 14,
+        SymbolKind::Alias => 26,
+    }
 }
 
 /// Markdown content, as LSP `MarkupContent`.

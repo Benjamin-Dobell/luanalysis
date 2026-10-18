@@ -378,7 +378,9 @@ alternative of a union), and type names in annotations, across files. Signature 
 parameter, and selects the overload that the arguments typed so far resolve to. Hover, completion
 and signature help show what doc comments say: a declaration's description, and its parameters',
 results' and fields'. Completion offers tag and type names in annotations, and inserts a
-function's call with its required parameters as placeholders.
+function's call with its required parameters as placeholders. The outline lists a document's
+classes, shapes and aliases with their fields, and its functions, methods and top-level
+variables, and workspace symbol search finds them in every file.
 
 ## Library
 

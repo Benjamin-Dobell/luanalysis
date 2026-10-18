@@ -1094,6 +1094,162 @@ fn member_occurrences(
     }
 }
 
+/// What a document symbol is, as the outline shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SymbolKind {
+    Class,
+    Interface,
+    Alias,
+    Module,
+    Field,
+    Function,
+    Method,
+    Variable,
+    Constant,
+}
+
+/// A declaration in a document's outline, with the declarations inside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentSymbol {
+    pub name: String,
+    pub detail: Option<String>,
+    pub kind: SymbolKind,
+    /// The whole declaration, and its name within it.
+    pub range: Span,
+    pub selection: Span,
+    pub children: Vec<DocumentSymbol>,
+}
+
+/// The outline of a Lua source: its classes, shapes and aliases with their fields, its functions
+/// and methods with the functions inside them, and its top-level locals and globals, with a
+/// table constructor's keys.
+pub fn document_symbols(text: &str) -> Vec<DocumentSymbol> {
+    let file = luanalysis_syntax::parse(text);
+    let slice = |span: Span| text.get(span.start..span.end).unwrap_or_default().to_owned();
+    let mut symbols = Vec::new();
+    for declaration in &file.type_declarations {
+        let (kind, fields) = match &declaration.kind {
+            luanalysis_syntax::NamedTypeDeclarationKind::Alias { target } => (SymbolKind::Alias, (Vec::new(), Some(slice(target.span)))),
+            luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor, fields, .. } => {
+                let kind = match flavor {
+                    luanalysis_syntax::NamedRecordKind::Class => SymbolKind::Class,
+                    luanalysis_syntax::NamedRecordKind::Shape => SymbolKind::Interface,
+                    luanalysis_syntax::NamedRecordKind::Module => SymbolKind::Module,
+                };
+                let children = fields.iter().filter_map(|field| match &field.key {
+                    luanalysis_syntax::TypeFieldKey::Named(name) => Some(DocumentSymbol {
+                        name: name.text.clone(), detail: Some(slice(field.ty.span)), kind: SymbolKind::Field,
+                        range: field.span, selection: name.span, children: Vec::new(),
+                    }),
+                    _ => None,
+                }).collect();
+                (kind, (children, None))
+            }
+        };
+        let range = declaration.span.join(declaration.name.span);
+        let range = fields.0.iter().fold(range, |range, field| range.join(field.range));
+        symbols.push(DocumentSymbol { name: declaration.name.text.clone(), detail: fields.1, kind, range, selection: declaration.name.span, children: fields.0 });
+    }
+    statement_symbols(&file.statements, text, true, &mut symbols);
+    symbols.sort_by_key(|symbol| (symbol.range.start, symbol.range.end));
+    symbols
+}
+
+fn statement_symbols(statements: &[luanalysis_syntax::Stmt], text: &str, top: bool, symbols: &mut Vec<DocumentSymbol>) {
+    use luanalysis_syntax::StmtKind;
+    let slice = |span: Span| text.get(span.start..span.end).unwrap_or_default().to_owned();
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::LocalFunction { name, function } => symbols.push(function_symbol(name.text.clone(), SymbolKind::Function, statement.span, name.span, function, text)),
+            StmtKind::FunctionDeclaration { target, function, method_span } => {
+                let (kind, selection) = match &target.kind {
+                    ExprKind::Field { name, .. } => (if method_span.is_some() { SymbolKind::Method } else { SymbolKind::Function }, name.span),
+                    _ => (SymbolKind::Function, target.span),
+                };
+                symbols.push(function_symbol(slice(target.span), kind, statement.span, selection, function, text));
+            }
+            StmtKind::Local { names, attributes, values, .. } if top => {
+                for (index, name) in names.iter().enumerate() {
+                    let constant = attributes.get(index).and_then(Option::as_ref).is_some_and(|attribute| attribute.text == "const");
+                    symbols.push(value_symbol(name.text.clone(), if constant { SymbolKind::Constant } else { SymbolKind::Variable }, statement.span, name.span, values.get(index), text));
+                }
+            }
+            StmtKind::Local { values, .. } => for value in values { nested_function_symbols(value, text, symbols); },
+            StmtKind::Assign { targets, values, .. } => {
+                for (index, target) in targets.iter().enumerate() {
+                    let selection = match &target.kind {
+                        ExprKind::Name(_) if top => target.span,
+                        ExprKind::Field { name, .. } if top => name.span,
+                        _ => {
+                            if let Some(value) = values.get(index) { nested_function_symbols(value, text, symbols); }
+                            continue;
+                        }
+                    };
+                    let kind = if matches!(target.kind, ExprKind::Field { .. }) { SymbolKind::Field } else { SymbolKind::Variable };
+                    symbols.push(value_symbol(slice(target.span), kind, statement.span, selection, values.get(index), text));
+                }
+            }
+            StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
+                | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => statement_symbols(body, text, false, symbols),
+            StmtKind::If { branches, else_branch } => {
+                for branch in branches { statement_symbols(&branch.body, text, false, symbols); }
+                if let Some(branch) = else_branch { statement_symbols(&branch.body, text, false, symbols); }
+            }
+            StmtKind::Call(call) => nested_function_symbols(call, text, symbols),
+            StmtKind::Return(values) => for value in values { nested_function_symbols(value, text, symbols); },
+            _ => {}
+        }
+    }
+}
+
+fn function_symbol(name: String, kind: SymbolKind, range: Span, selection: Span, function: &luanalysis_syntax::Function, text: &str) -> DocumentSymbol {
+    let parameters = text.get(function.span.start..function.body_span.start).and_then(|header| {
+        let open = header.find('(')?;
+        Some(header[open..].trim_end().to_owned())
+    });
+    let mut children = Vec::new();
+    statement_symbols(&function.body, text, false, &mut children);
+    DocumentSymbol { name, detail: parameters, kind, range, selection, children }
+}
+
+/// A local's, global's or field's symbol: a function's if it holds one, with a table constructor's
+/// keys as its children.
+fn value_symbol(name: String, kind: SymbolKind, range: Span, selection: Span, value: Option<&Expr>, text: &str) -> DocumentSymbol {
+    match value.map(|value| &value.kind) {
+        Some(ExprKind::Function(function)) => function_symbol(name, if kind == SymbolKind::Field { SymbolKind::Method } else { SymbolKind::Function }, range, selection, function, text),
+        Some(ExprKind::Table(fields)) => {
+            let children = fields.iter().filter_map(|field| match &field.kind {
+                luanalysis_syntax::TableFieldKind::Named(key) => Some(value_symbol(key.text.clone(), SymbolKind::Field, field.span, key.span, Some(&field.value), text)),
+                _ => None,
+            }).collect();
+            DocumentSymbol { name, detail: None, kind, range, selection, children }
+        }
+        _ => DocumentSymbol { name, detail: None, kind, range, selection, children: Vec::new() },
+    }
+}
+
+/// The named functions inside the anonymous functions an expression holds, such as a callback's.
+fn nested_function_symbols(expression: &Expr, text: &str, symbols: &mut Vec<DocumentSymbol>) {
+    match &expression.kind {
+        ExprKind::Function(function) => statement_symbols(&function.body, text, false, symbols),
+        ExprKind::Call { callee, args } => {
+            nested_function_symbols(callee, text, symbols);
+            for arg in args { nested_function_symbols(arg, text, symbols); }
+        }
+        ExprKind::MethodCall { receiver, args, .. } => {
+            nested_function_symbols(receiver, text, symbols);
+            for arg in args { nested_function_symbols(arg, text, symbols); }
+        }
+        ExprKind::Table(fields) => for field in fields { nested_function_symbols(&field.value, text, symbols); },
+        ExprKind::Parenthesized(inner) | ExprKind::Field { base: inner, .. } => nested_function_symbols(inner, text, symbols),
+        ExprKind::Binary { left, right, .. } => {
+            nested_function_symbols(left, text, symbols);
+            nested_function_symbols(right, text, symbols);
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1180,6 +1336,24 @@ mod tests {
         assert_eq!(context("---@param po|"), None);
         assert_eq!(context("---@class Po|"), None);
         assert_eq!(context("-- not documentation @param x Po|"), None);
+    }
+
+    #[test]
+    fn the_outline_nests_fields_and_functions_in_their_declarations() {
+        let text = "---@class Point\n---@field x number\nlocal Point = {}\n\nfunction Point:length() local function square(v) return v * v end return 0 end\n\nlocal config = { name = 'a', run = function() end }\nVERSION = 1\nlocal function helper() end\nfor i = 1, 2 do local function inner() end end\n";
+        let outline = |symbols: &[DocumentSymbol]| symbols.iter().map(|symbol| {
+            let children: Vec<_> = symbol.children.iter().map(|child| format!("{}:{:?}", child.name, child.kind)).collect();
+            format!("{}:{:?}[{}]", symbol.name, symbol.kind, children.join(","))
+        }).collect::<Vec<_>>();
+        assert_eq!(outline(&document_symbols(text)), vec![
+            "Point:Class[x:Field]",
+            "Point:Variable[]",
+            "Point:length:Method[square:Function]",
+            "config:Variable[name:Field,run:Method]",
+            "VERSION:Variable[]",
+            "helper:Function[]",
+            "inner:Function[]",
+        ]);
     }
 
     #[test]

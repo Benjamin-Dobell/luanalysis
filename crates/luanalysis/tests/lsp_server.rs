@@ -582,3 +582,25 @@ fn annotations_complete_type_names_and_calls_complete_their_parameters() {
     assert!(response.contains(r#""newText":"move""#), "{response}");
     server.finish();
 }
+
+#[test]
+fn documents_and_the_workspace_list_their_symbols() {
+    let root = fixture();
+    let shapes = root.join("shapes.lua");
+    fs::write(&shapes, "---@class Point\n---@field x number\nlocal Point = {}\n\nfunction Point:length() return 0 end\n\nreturn Point\n").unwrap();
+    let main = root.join("main.lua");
+    let source = "local function show() end\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    let response = server.request(3, "textDocument/documentSymbol", &main, 0, 0);
+    assert!(response.contains(r#""name":"show","kind":12"#), "{response}");
+    // The workspace's symbols, by a query whose characters a name contains in order.
+    server.send(r#"{"jsonrpc":"2.0","id":4,"method":"workspace/symbol","params":{"query":"plen"}}"#);
+    let response = server.wait(|message| message.contains(r#""id":4,"#));
+    assert!(response.contains(r#""name":"Point:length","kind":6"#) && response.contains(&uri(&shapes)), "{response}");
+    assert!(!response.contains(r#""name":"show""#), "{response}");
+    server.finish();
+}
