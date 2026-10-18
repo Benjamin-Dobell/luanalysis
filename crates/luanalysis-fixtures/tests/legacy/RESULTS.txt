@@ -1,0 +1,1194 @@
+Pinned IntelliJ-Luanalysis d796bb67d5135d152b9f627b69e57377c83d1a66
+PASS	ParsingTest/test_parse_chinese_non_java_characters	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/ParsingTest.kt:21#test parse chinese non-java characters
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestAlias/test_alias	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestAlias.kt:20#test alias
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+FAIL	TestArgHistory/test_arg_history_1	expected=0 missing=0 extra=0
+  No native completion site at 6:7 [75..75]
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestArgHistory.kt:21#test arg history 1
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestCompletion/testLocalCompletion	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:31#testLocalCompletion
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestCompletion/testGlobalCompletion0	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:40#testGlobalCompletion
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+FAIL	TestCompletion/testGlobalCompletion1	expected=0 missing=0 extra=0
+  missing completion "ccc"
+  Observed labels: {"aaa", "bbb"}
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:40#testGlobalCompletion
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+FAIL	TestCompletion/testSelfCompletion	expected=0 missing=0 extra=0
+  missing completion "self:aaa"
+  missing completion "self:abb"
+  Observed labels: {"_G", "_VERSION", "and", "assert", "bit32", "break", "collectgarbage", "coroutine", "debug", "do", "dofile", "else", "elseif", "end", "error", "false", "for", "function", "getmetatable", "goto", "if", "in", "io", "ipairs", "load", "loadfile", "local", "math", "next", "nil", "not", "or", "os", "package", "pairs", "pcall", "print", "rawequal", "rawget", "rawlen", "rawset", "repeat", "require", "return", "s", "select", "self", "setmetatable", "string", "table", "then", "tonumber", "tostring", "true", "type", "until", "utf8", "while", "xpcall"}
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:60#testSelfCompletion
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestCompletion/testParamCompletion	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:69#testParamCompletion
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestCompletion/testAnnotation0	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:78#testAnnotation
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestCompletion/testAnnotation1	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:78#testAnnotation
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestCompletion/testAnnotationArray	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:103#testAnnotationArray
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestCompletion/testAnnotationFun	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:112#testAnnotationFun
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+FAIL	TestCompletion/testAnnotationDict	expected=0 missing=0 extra=0
+  missing completion "name"
+  missing completion "age"
+  missing completion "sayHello"
+  Observed labels: {}
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:121#testAnnotationDict
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestCompletion/testAnonymous	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:130#testAnonymous
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestCompletion/test_doc_table_1	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:146#test doc table 1
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+FAIL	TestCompletion/test_attribute_completion	expected=0 missing=0 extra=0
+  No native completion site at 1:10 [9..9]
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:180#test attribute completion
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestCompletion/testFieldCompletion	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:196#testFieldCompletion
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+FAIL	TestModule/test_module_type	expected=0 missing=0 extra=0
+  missing completion "name"
+  Observed labels: {}
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestModule.kt:24#test module type
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestModule/test_module_field_completion	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestModule.kt:43#test module field completion
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+FAIL	TestModule/test_module_members_visibility	expected=0 missing=0 extra=0
+  expected at least one of ["myFieldName", "myFunction"] to be absent
+  Observed labels: {"_G", "_VERSION", "and", "assert", "bit32", "break", "collectgarbage", "coroutine", "debug", "do", "dofile", "else", "elseif", "end", "error", "false", "for", "function", "getmetatable", "goto", "if", "in", "io", "ipairs", "load", "loadfile", "local", "math", "myFieldName", "myFunction", "next", "nil", "not", "or", "os", "package", "pairs", "pcall", "print", "rawequal", "rawget", "rawlen", "rawset", "repeat", "require", "return", "select", "setmetatable", "string", "table", "then", "tonumber", "tostring", "true", "type", "until", "utf8", "while", "xpcall"}
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestModule.kt:60#test module members visibility
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestMultipleResults/test_multiple_results_1	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestMultipleResults.kt:21#test multiple results 1
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestPrimitiveLiteral/test_string_literals	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestPrimitiveLiteral.kt:20#test string literals
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestPrimitiveLiteral/test_number_literals	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestPrimitiveLiteral.kt:34#test number literals
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestPrimitiveLiteral/test_boolean_literals	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestPrimitiveLiteral.kt:48#test boolean literals
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	TestSelf/test_self	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestSelf.kt:20#test self
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+FAIL	TestSnippet/test_snippet	expected=0 missing=0 extra=0
+  missing completion "function(event) end"
+  Observed labels: {"_G", "_VERSION", "addListener", "and", "assert", "bit32", "break", "collectgarbage", "coroutine", "debug", "do", "dofile", "else", "elseif", "end", "error", "false", "for", "function", "function(...)", "function(...) end", "getmetatable", "goto", "if", "in", "io", "ipairs", "load", "loadfile", "local", "math", "next", "nil", "not", "or", "os", "package", "pairs", "pcall", "print", "rawequal", "rawget", "rawlen", "rawset", "repeat", "require", "return", "select", "setmetatable", "string", "table", "then", "tonumber", "tostring", "true", "type", "until", "utf8", "while", "xpcall"}
+
+  Origin: src/test/kotlin/com/tang/intellij/test/completion/TestSnippet.kt:20#test snippet
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	GenericTest/test_generic_1	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:23#test generic 1
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	GenericTest/test_generic_2	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:42#test generic 2
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	GenericTest/test_generic_3	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:61#test generic 3
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	GenericTest/test_custom_iterator	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:85#test custom iterator
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+FAIL	DuplicateTypeTest/testDuplicateTypes	expected=10 missing=2 extra=0
+  MISSING embedded/DuplicateTypeTest/testDuplicateTypes/main.lua:8:19 [119..133] Error "DuplicateClass": <bare marker>
+  MISSING embedded/DuplicateTypeTest/testDuplicateTypes/main.lua:10:19 [153..167] Error "DuplicateClass": <bare marker>
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/DuplicateTypeTest.kt:22#testDuplicateTypes
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only DuplicateTypeTest's inspections were enabled in the old harness.
+
+PASS	IllegalAliasTest/testIllegalAlias	expected=4 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/IllegalAliasTest.kt:22#testIllegalAlias
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only the named declaration inspection was enabled in the old harness.
+
+FAIL	IllegalInheritanceTest/testIllegalInheritance	expected=9 missing=2 extra=0
+  MISSING resources/inspections/illegal_inheritance.lua:5:5 [100..145] Error "class CyclicInheritance2 : CyclicInheritance1": Illegal cyclical inheritance from CyclicInheritance3
+  MISSING resources/inspections/illegal_inheritance.lua:7:5 [151..196] Error "class CyclicInheritance3 : CyclicInheritance2": Illegal cyclical inheritance from CyclicInheritance1
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/IllegalInheritanceTest.kt:22#testIllegalInheritance
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only the named declaration inspection was enabled in the old harness.
+
+FAIL	LanguageLevelTest/testDisallowLua53Features	expected=6 missing=6 extra=0
+  MISSING embedded/LanguageLevelTest/testDisallowLua53Features/main.lua:2:7 [18..19] Error "&": The binary operator '&' only available in Lua 5.3 and above
+  MISSING embedded/LanguageLevelTest/testDisallowLua53Features/main.lua:3:7 [28..29] Error "|": The binary operator '|' only available in Lua 5.3 and above
+  MISSING embedded/LanguageLevelTest/testDisallowLua53Features/main.lua:4:7 [38..39] Error "~": The binary operator '~' only available in Lua 5.3 and above
+  MISSING embedded/LanguageLevelTest/testDisallowLua53Features/main.lua:5:7 [48..50] Error ">>": The binary operator '>>' only available in Lua 5.3 and above
+  MISSING embedded/LanguageLevelTest/testDisallowLua53Features/main.lua:6:7 [59..61] Error "<<": The binary operator '<<' only available in Lua 5.3 and above
+  MISSING embedded/LanguageLevelTest/testDisallowLua53Features/main.lua:7:5 [68..69] Error "~": The unary operator '~' only available in Lua 5.3 and above
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/LanguageLevelTest.kt:26#testDisallowLua53Features
+  Configuration: Lua 5.2; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only LanguageLevelTest's inspections were enabled in the old harness.
+
+PASS	LanguageLevelTest/testAllowLua53Features	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/LanguageLevelTest.kt:47#testAllowLua53Features
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only LanguageLevelTest's inspections were enabled in the old harness.
+
+FAIL	LanguageLevelTest/testDisallowLua54Features	expected=2 missing=2 extra=0
+  MISSING embedded/LanguageLevelTest/testDisallowLua54Features/main.lua:1:16 [15..22] Error "<const>": <bare marker>
+  MISSING embedded/LanguageLevelTest/testDisallowLua54Features/main.lua:2:19 [45..52] Error "<close>": <bare marker>
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/LanguageLevelTest.kt:68#testDisallowLua54Features
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only LanguageLevelTest's inspections were enabled in the old harness.
+
+PASS	LanguageLevelTest/testAllowLua54Features	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/LanguageLevelTest.kt:84#testAllowLua54Features
+  Configuration: Lua 5.4; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only LanguageLevelTest's inspections were enabled in the old harness.
+
+FAIL	LocalNameShadowedTest/testLocalNameHidesPrevious	expected=1 missing=1 extra=0
+  MISSING embedded/LocalNameShadowedTest/testLocalNameHidesPrevious/main.lua:4:15 [58..62] Warning "var1": <bare marker>
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/LocalNameShadowedTest.kt:23#testLocalNameHidesPrevious
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only LocalNameShadowedTest's inspections were enabled in the old harness.
+
+PASS	ReturnTypeTest/test_return_type_mismatch	expected=1 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/ReturnTypeTest.kt:23#test return type mismatch
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only ReturnTypeTest's inspections were enabled in the old harness.
+
+PASS	ReturnTypeTest/test_matching_return_type	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/ReturnTypeTest.kt:30#test matching return type
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only ReturnTypeTest's inspections were enabled in the old harness.
+
+PASS	ReturnTypeTest/test_non_return	expected=1 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/ReturnTypeTest.kt:37#test non return
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only ReturnTypeTest's inspections were enabled in the old harness.
+
+PASS	ReturnTypeTest/test_implicit_return_void	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/ReturnTypeTest.kt:43#test implicit return void
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only ReturnTypeTest's inspections were enabled in the old harness.
+
+PASS	ReturnTypeTest/test_explicit_return_void	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/ReturnTypeTest.kt:49#test explicit return void
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+  Only ReturnTypeTest's inspections were enabled in the old harness.
+
+FAIL	TypeSafetyTest/testAlias	expected=18 missing=9 extra=2
+  MISSING resources/inspections/alias.lua:27:11 [400..410] Error "unionAlias": Type mismatch. Required: 'string' Found: 'UnionAlias'
+  MISSING resources/inspections/alias.lua:30:20 [461..471] Error "unionAlias": Type mismatch. Required: 'ClassToBeAliased' Found: 'UnionAlias'
+  MISSING resources/inspections/alias.lua:33:11 [504..514] Error "unionAlias": Type mismatch. Required: 'MyAlias' Found: 'UnionAlias'
+  MISSING resources/inspections/alias.lua:70:20 [1301..1307] Error "NUMBER": Type mismatch. Required: 'IdentifierString' Found: 'IdentifierNumber', on union candidate StringTupleAlias
+  MISSING resources/inspections/alias.lua:70:28 [1309..1319] Error "\"a string\"": Type mismatch. Required: 'number' Found: '"a string"', on union candidate NumberTupleAlias
+  MISSING resources/inspections/alias.lua:72:20 [1341..1347] Error "STRING": Type mismatch. Required: 'IdentifierNumber' Found: 'IdentifierString', on union candidate NumberTupleAlias
+  MISSING resources/inspections/alias.lua:72:28 [1349..1350] Error "1": Type mismatch. Required: 'string' Found: '1', on union candidate StringTupleAlias
+  MISSING resources/inspections/alias.lua:79:10 [1479..1497] Error "identifiedTuple[1]": Type mismatch. Required: 'IdentifierNumber' Found: 'IdentifierNumber | IdentifierString'
+  MISSING resources/inspections/alias.lua:82:22 [1548..1554] Error "NUMBER": Type mismatch. Required: 'IdentifierString' Found: 'IdentifierNumber', on union candidate { [1]: IdentifierString, [2]: string }
+  EXTRA resources/inspections/alias.lua:70:19 [1300..1320] TS2322 "{NUMBER, \"a string\"}": Type '{ [1]: 1, [2]: "a string" }' is not assignable to type 'NumberTupleAlias | StringTupleAlias'.
+  EXTRA resources/inspections/alias.lua:72:19 [1340..1351] TS2322 "{STRING, 1}": Type '{ [1]: 0, [2]: 1 }' is not assignable to type 'NumberTupleAlias | StringTupleAlias'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:54#testAlias
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testBoolean	expected=8 missing=2 extra=0
+  MISSING resources/inspections/boolean.lua:37:16 [742..756] Error "unknownBoolean": Type mismatch. Required: 'false' Found: 'boolean'
+  MISSING resources/inspections/boolean.lua:38:16 [772..793] Error "unknownLiteralBoolean": Type mismatch. Required: 'false' Found: 'boolean'
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:58#testBoolean
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testClass	expected=6 missing=0 extra=2
+  EXTRA resources/inspections/class.lua:78:24 [1419..1422] TS2339 "foo": Property 'foo' does not exist on type 'IndexerExtendedClass'.
+  EXTRA resources/inspections/class.lua:82:29 [1478..1481] TS2339 "bar": Property 'bar' does not exist on type 'IndexerExtendedClass'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:62#testClass
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testClassFromAnotherFile	expected=10 missing=3 extra=8
+  EXTRA resources/inspections/class.lua:78:24 [1419..1422] TS2339 "foo": Property 'foo' does not exist on type 'IndexerExtendedClass'.
+  EXTRA resources/inspections/class.lua:82:29 [1478..1481] TS2339 "bar": Property 'bar' does not exist on type 'IndexerExtendedClass'.
+  MISSING resources/inspections/class_from_another_file.lua:9:32 [171..180] Error "\"invalid\"": Type mismatch. Required: 'number' Found: '"invalid"'
+  MISSING resources/inspections/class_from_another_file.lua:15:24 [288..297] Error "\"invalid\"": Type mismatch. Required: 'number' Found: '"invalid"'
+  MISSING resources/inspections/class_from_another_file.lua:17:24 [348..357] Error "\"invalid\"": Type mismatch. Required: 'number' Found: '"invalid"'
+  EXTRA resources/inspections/class_from_another_file.lua:8:1 [106..136] TS2349 "socket.AnonymousThread.execute": Type 'nil' has no call signatures.
+  EXTRA resources/inspections/class_from_another_file.lua:9:1 [140..170] TS2349 "socket.AnonymousThread.execute": Type 'nil' has no call signatures.
+  EXTRA resources/inspections/class_from_another_file.lua:14:20 [258..261] TS2339 "foo": Property 'foo' does not exist on type 'IndexerExtendedClass'.
+  EXTRA resources/inspections/class_from_another_file.lua:15:20 [284..287] TS2339 "foo": Property 'foo' does not exist on type 'IndexerExtendedClass'.
+  EXTRA resources/inspections/class_from_another_file.lua:16:20 [318..321] TS2339 "bar": Property 'bar' does not exist on type 'IndexerExtendedClass'.
+  EXTRA resources/inspections/class_from_another_file.lua:17:20 [344..347] TS2339 "bar": Property 'bar' does not exist on type 'IndexerExtendedClass'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:66#testClassFromAnotherFile
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testDocTables	expected=33 missing=20 extra=19
+  MISSING resources/inspections/doc_tables.lua:19:18 [285..299] Error "\"not a number\"": Type mismatch. Required: 'number' Found: '"not a number"'
+  MISSING resources/inspections/doc_tables.lua:34:30 [576..583] Error "aString": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/doc_tables.lua:39:30 [677..684] Error "aNumber": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/doc_tables.lua:47:21 [863..870] Error "aNumber": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/doc_tables.lua:72:22 [1346..1353] Error "aString": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/doc_tables.lua:73:17 [1372..1385] Error "{a = aNumber}": Type mismatch. Missing member: 'b' of: '{ a: number, b: string }'
+  MISSING resources/inspections/doc_tables.lua:80:22 [1498..1505] Error "aString": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/doc_tables.lua:81:29 [1549..1550] Error "1": Type mismatch. Required: 'string' Found: '1'
+  MISSING resources/inspections/doc_tables.lua:87:26 [1657..1659] Error "{}": Type mismatch. Required: 'number' Found: '{}'
+  MISSING resources/inspections/doc_tables.lua:88:39 [1700..1707] Error "aNumber": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/doc_tables.lua:101:16 [1969..1976] Error "aString": Type mismatch. Required: 'nil | number' Found: 'string'
+  MISSING resources/inspections/doc_tables.lua:121:17 [2300..2313] Error "\"some string\"": Type mismatch. Required: 'number' Found: '"some string"'
+  MISSING resources/inspections/doc_tables.lua:133:21 [2537..2538] Error "1": Type mismatch. Required: 'boolean' Found: '1'
+  MISSING resources/inspections/doc_tables.lua:169:22 [3420..3421] Error "1": Type mismatch. Required: 'string' Found: '1'
+  MISSING resources/inspections/doc_tables.lua:180:15 [3673..3681] Error "\"Number\"": Type mismatch. Required: '"String"' Found: '"Number"', on union candidate DocTableUnionMemberA
+  MISSING resources/inspections/doc_tables.lua:181:17 [3699..3701] Error "{}": Type mismatch. Required: 'number' Found: '{}', on union candidate DocTableUnionMemberB
+  MISSING resources/inspections/doc_tables.lua:181:17 [3699..3701] Error "{}": Type mismatch. Required: 'string' Found: '{}', on union candidate DocTableUnionMemberA
+  MISSING resources/inspections/doc_tables.lua:193:29 [3926..3935] Error "\"invalid\"": Type mismatch. Required: 'DocTableNilOrArray[] | nil' Found: '"invalid"'
+  MISSING resources/inspections/doc_tables.lua:200:25 [4097..4107] Error "value = {}": Type mismatch. Required: 'DocTableNilOrArray[]' Found non-array field 'value'
+  MISSING resources/inspections/doc_tables.lua:274:20 [5737..5761] Error "genericResult123ABCUnion": Type mismatch. Required: '{ result: 1 | 2 | 3 }' Found: '{ result: "A" | "B" | "C" } | { result: 1 | 2 | 3 }'
+  EXTRA resources/inspections/doc_tables.lua:19:13 [280..300] TS2322 "{a = \"not a number\"}": Type '{ a: "not a number" }' is not assignable to type 'DocTable1'.
+  EXTRA resources/inspections/doc_tables.lua:34:25 [571..584] TS2322 "{a = aString}": Type '{ a: string }' is not assignable to type 'GenericDocTable<number>'.
+  EXTRA resources/inspections/doc_tables.lua:39:25 [672..685] TS2322 "{a = aNumber}": Type '{ a: number }' is not assignable to type 'GenericDocTable<string>'.
+  EXTRA resources/inspections/doc_tables.lua:47:16 [858..871] TS2345 "{a = aNumber}": Argument of type '{ a: number }' is not assignable to parameter of type 'GenericDocTable<string>'.
+  EXTRA resources/inspections/doc_tables.lua:71:18 [1323..1387] TS2322 "{\n    docTable1 = {a = aString},\n    docTable2 = {a = aNumber}\n}": Type '{ docTable1: { a: string }, docTable2: { a: number } }' is not assignable to type 'NestedDocTable'.
+  EXTRA resources/inspections/doc_tables.lua:79:25 [1475..1553] TS2322 "{\n    docTable1 = {a = aString, b = aString},\n    docTable2 = {a = 1, b = 1}\n}": Type '{ docTable1: { a: string, b: string }, docTable2: { a: 1, b: 1 } }' is not assignable to type 'NestedDocTable'.
+  EXTRA resources/inspections/doc_tables.lua:86:12 [1630..1714] TS2322 "{\n        docTable1 = {a = {}},\n        docTable2 = {a = aNumber, b = aNumber}\n    }": Lua result pack is not assignable to the declared result pack. Actual: { docTable1: { a: {  } }, docTable2: { a: number, b: number } }. Expected: NestedDocTable.
+  EXTRA resources/inspections/doc_tables.lua:99:29 [1929..1978] TS2322 "{\n    requiredField = 1,\n    optional = aString\n}": Type '{ optional: string, requiredField: 1 }' is not assignable to type 'DocTableWithOptionalField'.
+  EXTRA resources/inspections/doc_tables.lua:118:20 [2257..2331] TS2322 "{\n    values = {\n        {\n            a = \"some string\"\n        }\n    }\n}": Type '{ values: { [1]: { a: "some string" } } }' is not assignable to type 'DocTableWithArrayValues'.
+  EXTRA resources/inspections/doc_tables.lua:133:11 [2527..2539] TS2345 "{\"hi\", 1, 1}": Argument of type '{ [1]: "hi", [2]: 1, [3]: 1 }' is not assignable to parameter of type 'DocTableStringNumberBooleanTuple'.
+  EXTRA resources/inspections/doc_tables.lua:150:73 [2959..2960] LUA1001 "=": expected ":" in type annotation
+  EXTRA resources/inspections/doc_tables.lua:150:73 [2959..2960] LUA1001 "=": expected a named, union, or record type; this annotation form is unsupported
+  EXTRA resources/inspections/doc_tables.lua:150:75 [2961..2967] LUA1001 "number": expected ',' or '}' after record field
+  EXTRA resources/inspections/doc_tables.lua:168:21 [3397..3444] TS2322 "{\n    primitiveField = 1,\n    tableField = {}\n}": Type '{ primitiveField: 1, tableField: {  } }' is not assignable to type 'DocTablePrimitiveAndTable'.
+  EXTRA resources/inspections/doc_tables.lua:178:23 [3651..3709] TS2322 "{\n    {\n        tag = \"Number\",\n        value = {}\n    }\n}": Type '{ [1]: { tag: "Number", value: {  } } }' is not assignable to type '(DocTableUnionMemberA | DocTableUnionMemberB)[]'.
+  EXTRA resources/inspections/doc_tables.lua:188:28 [3832..4219] TS2322 "{\n    value = {\n        {\n            value = {\n                {\n                    value = \"invalid\",\n                },\n                {\n                    value = {},\n                },\n                {\n                    value = {\n                        value = {},\n                    },\n                },\n            },\n        },\n    },\n    {\n        value = nil,\n    },\n}": Type '{ value: { [1]: { value: { [1]: { value: "invalid" }, [2]: { value: {  } }, [3]: { value: { value: {  } } } } } }, [1]: {  } }' is not assignable to type 'DocTableNilOrArray'.
+  EXTRA resources/inspections/doc_tables.lua:251:41 [5117..5118] LUA1001 "}": unsupported or unexpected syntax after @type
+  EXTRA resources/inspections/doc_tables.lua:269:62 [5610..5626] TS2345 "genericResultABC": Argument of type '{ result: "A" | "B" | "C" }' is not assignable to parameter of type '{ result: 1 | 2 | 3 }'.
+  EXTRA resources/inspections/doc_tables.lua:272:28 [5700..5716] TS2322 "genericResultABC": Type '{ result: "A" | "B" | "C" }' is not assignable to type '{ result: 1 | 2 | 3 }'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:70#testDocTables
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testFunctionClosures	expected=17 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:74#testFunctionClosures
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testFunctionCovariance	expected=2 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:78#testFunctionCovariance
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testFunctionGenerics	expected=109 missing=26 extra=41
+  MISSING resources/inspections/function_generics.lua:149:13 [2082..2103] Error "fn6(number1, string1)": Type mismatch. Required: 'number' Found: '"string1" | 1'
+  MISSING resources/inspections/function_generics.lua:233:45 [4471..4482] Error "numberArray": Type mismatch. Required: 'table<number | string, number>' Found: 'number[]'
+  MISSING resources/inspections/function_generics.lua:251:21 [4904..4937] Error "fn9(anyString, stringNumberTable)": Type mismatch. Required: 'table<string, string>' Found: 'T : table<K : string, string>'
+  MISSING resources/inspections/function_generics.lua:259:22 [5173..5204] Error "fn9(string1, stringStringTable)": Type mismatch. Required: 'table<"string1", string>' Found: 'table<string, string>'
+  MISSING resources/inspections/function_generics.lua:260:21 [5225..5257] Error "fn9(string1, string1StringTable)": Type mismatch. Required: 'table<string, string>' Found: 'table<"string1", string>'
+  MISSING resources/inspections/function_generics.lua:264:17 [5321..5331] Error "T : string": Generic parameters cannot be shadowed, 'T' was previously defined on line 262
+  MISSING resources/inspections/function_generics.lua:350:21 [6990..7036] Error "merge(stringStringTable, strictAnonymousShape)": Type mismatch. Required: 'table<string, string>' Found: 'table<string, string> | { a: "specific string" }'
+  MISSING resources/inspections/function_generics.lua:386:1 [7721..7739] Error "mergedLiteralMap.e": No such member 'e' found on type 'table<"a" | "b" | "c" | "d", 1 | 2 | 3 | 4>'
+  MISSING resources/inspections/function_generics.lua:410:1 [8399..8421] Error "typeMergedLiteralMap.e": No such member 'e' found on type 'table<"a" | "b" | "c" | "d", 1 | 2 | 3 | 4>'
+  MISSING resources/inspections/function_generics.lua:435:1 [9172..9198] Error "overloadMergedLiteralMap.e": No such member 'e' found on type 'table<"a" | "b" | "c" | "d", 1 | 2 | 3 | 4>'
+  MISSING resources/inspections/function_generics.lua:452:21 [9676..9677] Error ")": Missing argument: optional: number. In: fun(value: (T : string), optional: number): void
+  MISSING resources/inspections/function_generics.lua:465:21 [9848..9888] Error "build(function()\n    return {a = 1}\nend)": Type mismatch. Required: 'table<string, number>' Found: '{ a: 1 }'
+  MISSING resources/inspections/function_generics.lua:509:24 [10710..10719] Error "anyString": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/function_generics.lua:514:24 [11153..11164] Error "nilOrString": Type mismatch. Required: 'nil | string' Found: 'boolean | nil'
+  MISSING resources/inspections/function_generics.lua:514:38 [11167..11228] Error "genericParameterMultipleResults(returnsNumberVariadicBoolean)": Result 3, type mismatch. Required: 'nil | string' Found: 'boolean | nil'
+  MISSING resources/inspections/function_generics.lua:516:50 [11467..11478] Error "nilOrString": Type mismatch. Required: 'nil | string' Found: 'boolean | nil'
+  MISSING resources/inspections/function_generics.lua:516:127 [11544..11605] Error "genericParameterMultipleResults(returnsNumberVariadicBoolean)": Result 4, type mismatch. Required: 'nil | string' Found: 'boolean | nil'
+  MISSING resources/inspections/function_generics.lua:519:35 [11743..11752] Error "anyString": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/function_generics.lua:530:26 [12290..12301] Error "nilOrNumber": Type mismatch. Required: 'nil | number' Found: 'nil | number | string'
+  MISSING resources/inspections/function_generics.lua:530:40 [12304..12364] Error "variadicGenericParameterMultipleResults(returnsStringNumber)": Result 3, type mismatch. Required: 'nil | number' Found: 'nil | number | string'
+  MISSING resources/inspections/function_generics.lua:632:26 [14808..14809] Error "1": Type mismatch. Required: 'A : B' Found: '1'
+  MISSING resources/inspections/function_generics.lua:632:29 [14811..14812] Error "1": Type mismatch. Required: 'B : A : B' Found: '1'
+  MISSING resources/inspections/function_generics.lua:659:21 [15399..15462] Error "mapToTable(stringArray, function(str, i)\n    return i, str\nend)": Type mismatch. Required: 'table<string, number>' Found: 'table<number, string>'
+  MISSING resources/inspections/function_generics.lua:667:42 [15585..15612] Error "function()\n    return 1\nend": Type mismatch. Required: 'fun(): 1, 1' Found: 'fun(): 1'
+  MISSING resources/inspections/function_generics.lua:793:1 [18565..18574] Error "anyString": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/function_generics.lua:793:12 [18576..18585] Error "anyNumber": Type mismatch. Required: 'number' Found: 'string'
+  EXTRA resources/inspections/function_generics.lua:83:14 [1125..1132] TS2345 "string1": Argument of type '"string1"' is not assignable to parameter of type '1'.
+  EXTRA resources/inspections/function_generics.lua:149:26 [2095..2102] TS2345 "string1": Argument of type '"string1"' is not assignable to parameter of type '1'.
+  EXTRA resources/inspections/function_generics.lua:150:26 [2129..2136] TS2345 "string1": Argument of type '"string1"' is not assignable to parameter of type '1'.
+  EXTRA resources/inspections/function_generics.lua:151:33 [2170..2177] TS2345 "string1": Argument of type '"string1"' is not assignable to parameter of type '1'.
+  EXTRA resources/inspections/function_generics.lua:233:25 [4451..4460] TS2345 "anyString": Argument of type 'string' is not assignable to parameter of type 'number'.
+  EXTRA resources/inspections/function_generics.lua:386:18 [7738..7739] TS2538 "e": Key type '"e"' is not assignable to index type '"a" | "b" | "c" | "d"'.
+  EXTRA resources/inspections/function_generics.lua:410:22 [8420..8421] TS2538 "e": Key type '"e"' is not assignable to index type '"a" | "b" | "c" | "d"'.
+  EXTRA resources/inspections/function_generics.lua:420:4 [8682..8746] TS2394 "@overload fun<K, V>(a: table<K, V>, b: table<K, V>): table<K, V>": Overload signature 'fun(a: table<K, V>, b: table<K, V>): table<K, V>' is not compatible with implementation signature 'fun(a?: any, b?: any): void'.
+  EXTRA resources/inspections/function_generics.lua:435:26 [9197..9198] TS2538 "e": Key type '"e"' is not assignable to index type '"a" | "b" | "c" | "d"'.
+  EXTRA resources/inspections/function_generics.lua:445:4 [9483..9524] TS2394 "@overload fun<T : number>(value: T): void": Overload signature 'fun(value: T): void' is not compatible with implementation signature 'fun(value: T, optional: number): void'.
+  EXTRA resources/inspections/function_generics.lua:508:36 [10634..10686] TS2322 "genericParameterMultipleResults(returnsStringNumber)": Type 'nil' is not assignable to type 'number'.
+  EXTRA resources/inspections/function_generics.lua:508:68 [10666..10685] TS2345 "returnsStringNumber": Argument of type 'fun(): (string, number)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:509:68 [10754..10773] TS2345 "returnsStringNumber": Argument of type 'fun(): (string, number)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:510:80 [10854..10873] TS2345 "returnsStringNumber": Argument of type 'fun(): (string, number)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:510:102 [10876..10928] TS2322 "genericParameterMultipleResults(returnsStringNumber)": Type 'nil' is not assignable to type 'number'.
+  EXTRA resources/inspections/function_generics.lua:510:134 [10908..10927] TS2345 "returnsStringNumber": Argument of type 'fun(): (string, number)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:512:57 [10986..11014] TS2345 "returnsNumberVariadicBoolean": Argument of type 'fun(): (number, boolean, boolean)' is not assignable to parameter of type 'fun(): number'.
+  EXTRA resources/inspections/function_generics.lua:513:85 [11100..11128] TS2345 "returnsNumberVariadicBoolean": Argument of type 'fun(): (number, boolean, boolean)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:514:70 [11199..11227] TS2345 "returnsNumberVariadicBoolean": Argument of type 'fun(): (number, boolean, boolean)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:515:97 [11325..11353] TS2345 "returnsNumberVariadicBoolean": Argument of type 'fun(): (number, boolean, boolean)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:515:160 [11388..11416] TS2345 "returnsNumberVariadicBoolean": Argument of type 'fun(): (number, boolean, boolean)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:516:96 [11513..11541] TS2345 "returnsNumberVariadicBoolean": Argument of type 'fun(): (number, boolean, boolean)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:516:159 [11576..11604] TS2345 "returnsNumberVariadicBoolean": Argument of type 'fun(): (number, boolean, boolean)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:518:47 [11653..11708] TS2322 "genericParameterMultipleResults(chainedMultipleResults)": Type 'nil' is not assignable to type 'number'.
+  EXTRA resources/inspections/function_generics.lua:518:47 [11653..11708] TS2322 "genericParameterMultipleResults(chainedMultipleResults)": Type 'nil' is not assignable to type 'string'.
+  EXTRA resources/inspections/function_generics.lua:518:79 [11685..11707] TS2345 "chainedMultipleResults": Argument of type 'fun(): (string, string, number)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:519:79 [11787..11809] TS2345 "chainedMultipleResults": Argument of type 'fun(): (string, string, number)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:520:91 [11901..11923] TS2345 "chainedMultipleResults": Argument of type 'fun(): (string, string, number)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:520:116 [11926..11981] TS2322 "genericParameterMultipleResults(chainedMultipleResults)": Type 'nil' is not assignable to type 'number'.
+  EXTRA resources/inspections/function_generics.lua:520:116 [11926..11981] TS2322 "genericParameterMultipleResults(chainedMultipleResults)": Type 'nil' is not assignable to type 'string'.
+  EXTRA resources/inspections/function_generics.lua:520:148 [11958..11980] TS2345 "chainedMultipleResults": Argument of type 'fun(): (string, string, number)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:529:69 [12204..12264] TS2322 "variadicGenericParameterMultipleResults(returnsStringNumber)": Type 'nil | string | number' is not assignable to type 'nil | string'.
+  EXTRA resources/inspections/function_generics.lua:529:109 [12244..12263] TS2345 "returnsStringNumber": Argument of type 'fun(): (string, number)' is not assignable to parameter of type 'fun(): nil | string | number'.
+  EXTRA resources/inspections/function_generics.lua:530:80 [12344..12363] TS2345 "returnsStringNumber": Argument of type 'fun(): (string, number)' is not assignable to parameter of type 'fun(): any'.
+  EXTRA resources/inspections/function_generics.lua:626:13 [14620..14621] TS2313 "A": Type parameter 'A' has a circular constraint.
+  EXTRA resources/inspections/function_generics.lua:626:19 [14626..14627] TS2313 "B": Type parameter 'B' has a circular constraint.
+  EXTRA resources/inspections/function_generics.lua:655:21 [15314..15377] TS2554 "mapToTable(stringArray, function(str, i)\n    return i, str\nend)": Expected 3 arguments, but got 2.
+  EXTRA resources/inspections/function_generics.lua:659:21 [15399..15462] TS2554 "mapToTable(stringArray, function(str, i)\n    return i, str\nend)": Expected 3 arguments, but got 2.
+  EXTRA resources/inspections/function_generics.lua:667:14 [15557..15613] TS2554 "returnMultipleGenericParams(function()\n    return 1\nend)": Expected 2 arguments, but got 1.
+  EXTRA resources/inspections/function_generics.lua:752:12 [17685..17693] TS2322 "arg.a[2]": Lua result pack is not assignable to the declared result pack. Actual: (S, any...). Expected: (S, T).
+  EXTRA resources/inspections/function_generics.lua:752:22 [17695..17700] TS2349 "arg.b": Type '(() => T)[]' has no call signatures.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:82#testFunctionGenerics
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testFunctionGenericsScope	expected=6 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:86#testFunctionGenericsScope
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testFunctionMultipleReturns	expected=34 missing=23 extra=6
+  MISSING resources/inspections/function_multiple_returns.lua:16:1 [319..334] Error "classWithAField": Type mismatch. Required: 'ClassWithAField' Found: 'number'
+  MISSING resources/inspections/function_multiple_returns.lua:16:18 [336..343] Error "aNumber": Type mismatch. Required: 'number' Found: 'ClassWithAField'
+  MISSING resources/inspections/function_multiple_returns.lua:17:27 [390..397] Error "aString": Too many assignees, will be assigned nil.
+  MISSING resources/inspections/function_multiple_returns.lua:18:11 [428..445] WeakWarning "multipleReturns()": Insufficient assignees, values will be discarded.
+  MISSING resources/inspections/function_multiple_returns.lua:20:35 [532..549] WeakWarning "multipleReturns()": Insufficient assignees, values will be discarded.
+  MISSING resources/inspections/function_multiple_returns.lua:28:13 [699..700] Error "c": Too many assignees, will be assigned nil.
+  MISSING resources/inspections/function_multiple_returns.lua:29:11 [731..748] WeakWarning "multipleReturns()": Insufficient assignees, values will be discarded.
+  MISSING resources/inspections/function_multiple_returns.lua:60:18 [1493..1499] Error "string": Incorrect number of values. Expected 3 but found 1.
+  MISSING resources/inspections/function_multiple_returns.lua:60:18 [1493..1499] Error "string": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/function_multiple_returns.lua:61:19 [1518..1528] Error "\"a string\"": Result 2, type mismatch. Required: 'void' Found: '"a string"'
+  MISSING resources/inspections/function_multiple_returns.lua:61:31 [1530..1534] Error "true": Result 3, type mismatch. Required: 'void' Found: 'true'
+  MISSING resources/inspections/function_multiple_returns.lua:63:16 [1559..1595] Error "returnsNumberStringVariadicBoolean()": Incorrect number of values. Expected 3 but found 2.
+  MISSING resources/inspections/function_multiple_returns.lua:73:44 [1973..1974] Error ")": Missing argument: arg2: string
+  MISSING resources/inspections/function_multiple_returns.lua:75:21 [2069..2097] WeakWarning "returnsNumberStringBoolean()": 1 result is an excess argument.
+  MISSING resources/inspections/function_multiple_returns.lua:120:32 [2993..3026] WeakWarning "returnStringOrGeneric(returns123)": Insufficient assignees, values will be discarded.
+  MISSING resources/inspections/function_multiple_returns.lua:134:12 [3389..3405] Error "aNumber, aNumber": Incorrect number of values. Expected 3 but found 2. for candidate return type (number, function, string)
+  MISSING resources/inspections/function_multiple_returns.lua:134:21 [3398..3405] Error "aNumber": Result 2, type mismatch. Required: 'function' Found: 'number' for candidate return type (number, function, string)
+  MISSING resources/inspections/function_multiple_returns.lua:146:5 [3710..3750] Error "return returnUnionOfMultipleResults(val)": Result 2, type mismatch. Required: 'function' Found: 'number' for candidate return type (number, function, string)
+  MISSING resources/inspections/function_multiple_returns.lua:146:5 [3710..3750] Error "return returnUnionOfMultipleResults(val)": Result 2, type mismatch. Required: 'string' Found: 'number' for candidate return type (number, string)
+  MISSING resources/inspections/function_multiple_returns.lua:146:12 [3717..3750] Error "returnUnionOfMultipleResults(val)": Result 1, type mismatch. Required: 'number' Found: 'string' for candidate return type (number, function, string)
+  MISSING resources/inspections/function_multiple_returns.lua:146:12 [3717..3750] Error "returnUnionOfMultipleResults(val)": Result 1, type mismatch. Required: 'number' Found: 'string' for candidate return type (number, string)
+  MISSING resources/inspections/function_multiple_returns.lua:157:1 [4079..4086] Error "aNumber": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/function_multiple_returns.lua:157:10 [4088..4095] Error "aString": Type mismatch. Required: 'string' Found: 'number'
+  EXTRA resources/inspections/function_multiple_returns.lua:17:37 [400..417] TS2322 "multipleReturns()": Type 'nil' is not assignable to type 'string'.
+  EXTRA resources/inspections/function_multiple_returns.lua:60:12 [1487..1499] TS2322 "@type string": Lua result pack is not assignable to the declared result pack. Actual: string. Expected: (number, string, boolean).
+  EXTRA resources/inspections/function_multiple_returns.lua:73:1 [1930..1974] TS2554 "acceptsNumberString((returnsNumberString()))": Expected 2 arguments, but got 1.
+  EXTRA resources/inspections/function_multiple_returns.lua:74:1 [1991..2048] TS2554 "acceptsNumberString(returnsNumberStringVariadicBoolean())": Expected 2 arguments, but got 3.
+  EXTRA resources/inspections/function_multiple_returns.lua:75:1 [2049..2098] TS2554 "acceptsNumberString(returnsNumberStringBoolean())": Expected 2 arguments, but got 3.
+  EXTRA resources/inspections/function_multiple_returns.lua:122:18 [3045..3067] TS2322 "inferredNumberOrString": Type 'nil | string' is not assignable to type 'number | string'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:90#testFunctionMultipleReturns
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=true
+
+FAIL	TypeSafetyTest/testFunctionOptionalParameters	expected=23 missing=9 extra=0
+  MISSING resources/inspections/function_optional_parameters.lua:21:26 [380..392] Error "nilOrAString": Type mismatch. Required: 'string' Found: 'nil | string'
+  MISSING resources/inspections/function_optional_parameters.lua:22:17 [410..422] Error "nilOrAString": Type mismatch. Required: 'string' Found: 'nil | string'
+  MISSING resources/inspections/function_optional_parameters.lua:23:26 [467..479] Error "nilOrAString": Type mismatch. Required: 'string' Found: 'nil | string'
+  MISSING resources/inspections/function_optional_parameters.lua:24:35 [524..536] Error "nilOrAString": Type mismatch. Required: 'string' Found: 'nil | string'
+  MISSING resources/inspections/function_optional_parameters.lua:35:27 [789..801] Error "nilOrAString": Type mismatch. Required: 'string' Found: 'nil | string'
+  MISSING resources/inspections/function_optional_parameters.lua:36:18 [820..832] Error "nilOrAString": Type mismatch. Required: 'string' Found: 'nil | string'
+  MISSING resources/inspections/function_optional_parameters.lua:37:27 [878..890] Error "nilOrAString": Type mismatch. Required: 'string' Found: 'nil | string'
+  MISSING resources/inspections/function_optional_parameters.lua:38:36 [936..948] Error "nilOrAString": Type mismatch. Required: 'string' Found: 'nil | string'
+  MISSING resources/inspections/function_optional_parameters.lua:113:49 [2603..2604] Error "a": Type mismatch. Required: 'string' Found: 'nil | string'
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:94#testFunctionOptionalParameters
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testFunctionPartiallyTyped	expected=5 missing=1 extra=0
+  MISSING resources/inspections/function_partially_typed.lua:60:49 [1259..1299] Error "function(arg1, arg2)\n    return true\nend": Type mismatch. Required: 'fun(arg1: number)' Found: 'fun(arg1: any, arg2: any): true'
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:98#testFunctionPartiallyTyped
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testGenericAlias	expected=17 missing=6 extra=2
+  MISSING resources/inspections/generic_alias.lua:32:25 [602..611] Error "'invalid'": Type mismatch. Required: 'AliasAsParam | number' Found: '"invalid"'
+  MISSING resources/inspections/generic_alias.lua:38:27 [722..731] Error "'invalid'": Type mismatch. Required: '"a" | "b" | "c"' Found: '"invalid"'
+  MISSING resources/inspections/generic_alias.lua:41:16 [751..786] Error "{\n    parameterOrNumber = 'owner'\n}": Type mismatch. Required: 'string' Found: '{ parameterOrNumber: "owner" }', on union candidate string
+  MISSING resources/inspections/generic_alias.lua:42:25 [777..784] Error "'owner'": Type mismatch. Required: 'AliasAsParam | number' Found: '"owner"', on union candidate OurGenericShape<AliasAsParam>
+  MISSING resources/inspections/generic_alias.lua:47:16 [846..848] Error "{}": Type mismatch. Missing member: 'parameterOrNumber' of: 'OurGenericShape<AliasAsParam>', on union candidate OurGenericShape<AliasAsParam>
+  MISSING resources/inspections/generic_alias.lua:47:16 [846..848] Error "{}": Type mismatch. Required: 'string' Found: '{}', on union candidate string
+  EXTRA resources/inspections/generic_alias.lua:31:16 [576..644] TS2322 "{\n    parameterOrNumber = 'invalid',\n    aKnownStringLiteral = 'a'\n}": Type '{ aKnownStringLiteral: "a", parameterOrNumber: "invalid" }' is not assignable to type 'string | OurGenericShape<"one" | "three" | "two">'.
+  EXTRA resources/inspections/generic_alias.lua:36:16 [661..734] TS2322 "{\n    parameterOrNumber = 'three',\n    aKnownStringLiteral = 'invalid',\n}": Type '{ aKnownStringLiteral: "invalid", parameterOrNumber: "three" }' is not assignable to type 'string | OurGenericShape<"one" | "three" | "two">'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:102#testGenericAlias
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testGenericClassConstraints	expected=4 missing=0 extra=4
+  EXTRA resources/inspections/generic_class_constraints.lua:1:11 [10..23] LUA2031 "Unconstrained": Class 'Unconstrained' definition is unsupported: generic runtime class templates are not implemented.
+  EXTRA resources/inspections/generic_class_constraints.lua:4:11 [63..80] LUA2031 "NumberConstrained": Class 'NumberConstrained' definition is unsupported: generic runtime class templates are not implemented.
+  EXTRA resources/inspections/generic_class_constraints.lua:7:11 [133..155] LUA2031 "ChildNumberConstrained": Class 'ChildNumberConstrained' definition is unsupported: generic runtime class templates are not implemented.
+  EXTRA resources/inspections/generic_class_constraints.lua:13:11 [338..363] LUA2031 "InvalidNumberConstrained2": Class 'InvalidNumberConstrained2' definition is unsupported: generic runtime class templates are not implemented.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:107#testGenericClassConstraints
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testGenericClassCovariance	expected=9 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:111#testGenericClassCovariance
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testGenericClassFields	expected=16 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:116#testGenericClassFields
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testGenericClassScope	expected=13 missing=3 extra=12
+  MISSING resources/inspections/generic_class_scope.lua:31:13 [490..491] Error "T": Generic parameters cannot be shadowed, 'T' was previously defined on line 1
+  MISSING resources/inspections/generic_class_scope.lua:36:13 [573..574] Error "T": Generic parameters cannot be shadowed, 'T' was previously defined on line 1
+  MISSING resources/inspections/generic_class_scope.lua:41:13 [654..655] Error "T": Generic parameters cannot be shadowed, 'T' was previously defined on line 1
+  EXTRA resources/inspections/generic_class_scope.lua:1:11 [10..25] LUA2031 "GenericInMethod": Class 'GenericInMethod' definition is unsupported: generic runtime class templates are not implemented.
+  EXTRA resources/inspections/generic_class_scope.lua:6:26 [112..123] TS2339 "colonMethod": Property 'colonMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_class_scope.lua:15:26 [248..257] TS2339 "dotMethod": Property 'dotMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_class_scope.lua:24:17 [383..395] TS2339 "lambdaMethod": Property 'lambdaMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_class_scope.lua:33:26 [533..550] TS2339 "colonMethodShadow": Property 'colonMethodShadow' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_class_scope.lua:38:26 [616..631] TS2339 "dotMethodShadow": Property 'dotMethodShadow' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_class_scope.lua:43:17 [688..706] TS2339 "lambdaMethodShadow": Property 'lambdaMethodShadow' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_class_scope.lua:48:26 [794..835] TS2339 "genericParamExtendingConcreteGenericParam": Property 'genericParamExtendingConcreteGenericParam' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_class_scope.lua:54:11 [906..918] LUA2031 "Concreteness": Class 'Concreteness' definition is unsupported: generic runtime class templates are not implemented.
+  EXTRA resources/inspections/generic_class_scope.lua:59:23 [998..1002] TS2339 "getT": Property 'getT' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_class_scope.lua:66:23 [1086..1090] TS2339 "setT": Property 'setT' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_class_scope.lua:69:23 [1121..1170] TS2339 "testConcreteClassGenericWithinImplementationScope": Property 'testConcreteClassGenericWithinImplementationScope' does not exist on type '{  }'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:120#testGenericClassScope
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testGenericSelf	expected=30 missing=15 extra=11
+  MISSING resources/inspections/generic_self.lua:19:24 [322..334] Error "selfTypedVar": Type mismatch. Required: 'GenericSelfA<string>' Found: 'self'
+  MISSING resources/inspections/generic_self.lua:39:24 [692..704] Error "selfTypedVar": Type mismatch. Required: 'GenericSelfA<string>' Found: 'self'
+  MISSING resources/inspections/generic_self.lua:57:24 [1046..1058] Error "selfTypedVar": Type mismatch. Required: 'GenericSelfA<string>' Found: 'self'
+  MISSING resources/inspections/generic_self.lua:80:15 [1481..1507] Error "GenericSelfB:colonMethod()": Type mismatch. Required: 'GenericSelfB<string>' Found: 'GenericSelfB<T : string>'
+  MISSING resources/inspections/generic_self.lua:81:15 [1522..1546] Error "GenericSelfB.dotMethod()": Type mismatch. Required: 'GenericSelfB<string>' Found: 'GenericSelfB<T : string>'
+  MISSING resources/inspections/generic_self.lua:82:15 [1561..1588] Error "GenericSelfB.lambdaMethod()": Type mismatch. Required: 'GenericSelfB<string>' Found: 'GenericSelfB<T : string>'
+  MISSING resources/inspections/generic_self.lua:84:15 [1604..1630] Error "GenericSelfA:colonMethod()": Type mismatch. Required: 'GenericSelfA<string>' Found: 'GenericSelfA<T : string>'
+  MISSING resources/inspections/generic_self.lua:85:15 [1645..1669] Error "GenericSelfA.dotMethod()": Type mismatch. Required: 'GenericSelfA<string>' Found: 'GenericSelfA<T : string>'
+  MISSING resources/inspections/generic_self.lua:86:15 [1684..1711] Error "GenericSelfA.lambdaMethod()": Type mismatch. Required: 'GenericSelfA<string>' Found: 'GenericSelfA<T : string>'
+  MISSING resources/inspections/generic_self.lua:104:15 [2249..2281] Error "selfBStringLiteral:colonMethod()": <bare marker>
+  MISSING resources/inspections/generic_self.lua:105:15 [2296..2326] Error "selfBStringLiteral.dotMethod()": <bare marker>
+  MISSING resources/inspections/generic_self.lua:106:15 [2341..2374] Error "selfBStringLiteral.lambdaMethod()": <bare marker>
+  MISSING resources/inspections/generic_self.lua:108:15 [2390..2422] Error "selfBStringLiteral:colonMethod()": <bare marker>
+  MISSING resources/inspections/generic_self.lua:109:15 [2437..2467] Error "selfBStringLiteral.dotMethod()": <bare marker>
+  MISSING resources/inspections/generic_self.lua:110:15 [2482..2515] Error "selfBStringLiteral.lambdaMethod()": <bare marker>
+  EXTRA resources/inspections/generic_self.lua:7:11 [72..84] LUA2031 "GenericSelfA": Class 'GenericSelfA' definition is unsupported: generic runtime class templates are not implemented.
+  EXTRA resources/inspections/generic_self.lua:12:23 [174..185] TS2339 "colonMethod": Property 'colonMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_self.lua:32:23 [546..555] TS2339 "dotMethod": Property 'dotMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_self.lua:50:14 [886..898] TS2339 "lambdaMethod": Property 'lambdaMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_self.lua:70:11 [1270..1282] LUA2031 "GenericSelfB": Class 'GenericSelfB' definition is unsupported: generic runtime class templates are not implemented.
+  EXTRA resources/inspections/generic_self.lua:80:28 [1494..1505] TS2339 "colonMethod": Property 'colonMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_self.lua:81:28 [1535..1544] TS2339 "dotMethod": Property 'dotMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_self.lua:82:28 [1574..1586] TS2339 "lambdaMethod": Property 'lambdaMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_self.lua:84:28 [1617..1628] TS2339 "colonMethod": Property 'colonMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_self.lua:85:28 [1658..1667] TS2339 "dotMethod": Property 'dotMethod' does not exist on type '{  }'.
+  EXTRA resources/inspections/generic_self.lua:86:28 [1697..1709] TS2339 "lambdaMethod": Property 'lambdaMethod' does not exist on type '{  }'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:124#testGenericSelf
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testGlobalDefinitions	expected=0 missing=0 extra=4
+  EXTRA resources/inspections/global_definitions.lua:13:22 [188..201] TS2339 "anotherNumber": Property 'anotherNumber' does not exist on type '{  }'.
+  EXTRA resources/inspections/global_definitions.lua:15:31 [237..252] TS2339 "doSomethingElse": Property 'doSomethingElse' does not exist on type '{  }'.
+  EXTRA resources/inspections/global_definitions.lua:18:22 [281..294] TS2339 "anotherNumber": Property 'anotherNumber' does not exist on type '{  }'.
+  EXTRA resources/inspections/global_definitions.lua:23:15 [402..411] TS2339 "extension": Property 'extension' does not exist on type 'std__Math'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:129#testGlobalDefinitions
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testGlobalUsage	expected=4 missing=2 extra=10
+  EXTRA resources/inspections/global_definitions.lua:13:22 [188..201] TS2339 "anotherNumber": Property 'anotherNumber' does not exist on type '{  }'.
+  EXTRA resources/inspections/global_definitions.lua:15:31 [237..252] TS2339 "doSomethingElse": Property 'doSomethingElse' does not exist on type '{  }'.
+  EXTRA resources/inspections/global_definitions.lua:18:22 [281..294] TS2339 "anotherNumber": Property 'anotherNumber' does not exist on type '{  }'.
+  EXTRA resources/inspections/global_definitions.lua:23:15 [402..411] TS2339 "extension": Property 'extension' does not exist on type 'std__Math'.
+  MISSING resources/inspections/global_usage.lua:17:11 [317..351] Error "GlobalAnonymousClass.anotherNumber": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/global_usage.lua:24:11 [467..490] Error "math.extension(aNumber)": Type mismatch. Required: 'string' Found: 'number'
+  EXTRA resources/inspections/global_usage.lua:4:22 [75..88] TS2339 "anotherNumber": Property 'anotherNumber' does not exist on type '{  }'.
+  EXTRA resources/inspections/global_usage.lua:5:22 [114..129] TS2339 "doSomethingElse": Property 'doSomethingElse' does not exist on type '{  }'.
+  EXTRA resources/inspections/global_usage.lua:14:32 [259..272] TS2339 "anotherNumber": Property 'anotherNumber' does not exist on type '{  }'.
+  EXTRA resources/inspections/global_usage.lua:17:32 [338..351] TS2339 "anotherNumber": Property 'anotherNumber' does not exist on type '{  }'.
+  EXTRA resources/inspections/global_usage.lua:23:16 [438..447] TS2339 "extension": Property 'extension' does not exist on type 'std__Math'.
+  EXTRA resources/inspections/global_usage.lua:24:16 [472..481] TS2339 "extension": Property 'extension' does not exist on type 'std__Math'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:133#testGlobalUsage
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testIndexedFields	expected=25 missing=3 extra=5
+  MISSING resources/inspections/indexed_fields.lua:38:11 [585..594] Error "vector[4]": Type mismatch. Required: 'number' Found: 'boolean'
+  MISSING resources/inspections/indexed_fields.lua:55:25 [885..897] Error "Undeclared()": Unknown function 'Undeclared'.
+  MISSING resources/inspections/indexed_fields.lua:78:11 [1274..1291] Error "vector[oneOrFour]": Type mismatch. Required: 'number' Found: 'boolean | number'
+  EXTRA resources/inspections/indexed_fields.lua:7:11 [74..80] LUA2032 "Vector": Type 'number' is not assignable to type 'boolean'.
+  EXTRA resources/inspections/indexed_fields.lua:38:18 [592..593] TS7053 "4": Type 'Vector' cannot be indexed as a Lua table.
+  EXTRA resources/inspections/indexed_fields.lua:43:19 [677..678] TS7053 "4": Type 'Vector' cannot be indexed as a Lua table.
+  EXTRA resources/inspections/indexed_fields.lua:77:18 [1254..1262] TS7053 "oneOrTwo": Type 'Vector' cannot be indexed as a Lua table.
+  EXTRA resources/inspections/indexed_fields.lua:78:18 [1281..1290] TS7053 "oneOrFour": Type 'Vector' cannot be indexed as a Lua table.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:137#testIndexedFields
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testLambdaClass	expected=15 missing=7 extra=1
+  MISSING resources/inspections/lambda_class.lua:19:32 [376..377] Error ")": Missing argument: a: number
+  MISSING resources/inspections/lambda_class.lua:72:1 [1563..1601] Error "lambdaClassWithStatic__static.method()": Unknown function 'method'.
+  MISSING resources/inspections/lambda_class.lua:73:1 [1602..1638] Error "parentLambdaClassWithStatic.method()": Unknown function 'method'.
+  MISSING resources/inspections/lambda_class.lua:74:1 [1639..1683] Error "parentLambdaClassWithStatic__static.method()": Unknown function 'method'.
+  MISSING resources/inspections/lambda_class.lua:76:1 [1685..1721] Error "lambdaClassWithStatic.staticMethod()": Unknown function 'staticMethod'.
+  MISSING resources/inspections/lambda_class.lua:78:1 [1767..1809] Error "parentLambdaClassWithStatic.staticMethod()": Unknown function 'staticMethod'.
+  MISSING resources/inspections/lambda_class.lua:79:1 [1810..1860] Error "parentLambdaClassWithStatic__static.staticMethod()": Unknown function 'staticMethod'.
+  EXTRA resources/inspections/lambda_class.lua:19:20 [364..377] TS2554 "LambdaClass()": Expected 1 arguments, but got 0.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:141#testLambdaClass
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testLambdaParams	expected=2 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:145#testLambdaParams
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testLocalDefAssignment	expected=1 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:149#testLocalDefAssignment
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testModules	expected=0 missing=0 extra=1
+  EXTRA resources/inspections/moduleA.lua:1:12 [11..18] LUA2031 "ModuleA": Module checking requires native nominal/module semantics.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:153#testModules
+  Configuration: Lua 5.1; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testModuleSupportUnavailableLua53	expected=2 missing=1 extra=0
+  MISSING resources/inspections/module_unavailable.lua:1:1 [0..18] Error "module(\"Whatever\")": Unknown function 'module'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:175#testModuleSupportUnavailableLua53
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testNonStrictNil	expected=0 missing=0 extra=5
+  EXTRA resources/inspections/non_strict_nil.lua:8:11 [102..105] TS2322 "nil": Type 'nil' is not assignable to type 'number'.
+  EXTRA resources/inspections/non_strict_nil.lua:9:11 [116..128] TS2322 "nilOrANumber": Type 'nil' is not assignable to type 'number'.
+  EXTRA resources/inspections/non_strict_nil.lua:14:11 [205..206] TS2322 "a": Type 'nil | 1 | 3' is not assignable to type 'number'.
+  EXTRA resources/inspections/non_strict_nil.lua:15:11 [217..218] TS2322 "b": Type 'nil | 1 | 3' is not assignable to type 'number'.
+  EXTRA resources/inspections/non_strict_nil.lua:16:11 [229..230] TS2322 "c": Type 'nil | 1 | 3' is not assignable to type 'number'.
+  UNSUPPORTED SETTING: non-strict nil assignability
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:196#testNonStrictNil
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testNumbers	expected=8 missing=3 extra=6
+  MISSING resources/inspections/numbers.lua:31:15 [648..653] Error "-\"-1\"": Type mismatch. Required: '-1' Found: '1'
+  MISSING resources/inspections/numbers.lua:32:15 [684..691] Error "-\"- -1\"": Type mismatch. Required: '-1' Found: 'string'
+  MISSING resources/inspections/numbers.lua:34:15 [743..750] Error "-\"-0x1\"": Type mismatch. Required: '-1' Found: '1'
+  EXTRA resources/inspections/numbers.lua:29:16 [610..613] TS2356 "\"1\"": Operator '-' requires a number operand; got '"1"'. A table type declares arithmetic with ---@operator.
+  EXTRA resources/inspections/numbers.lua:30:16 [629..633] TS2356 "\" 1\"": Operator '-' requires a number operand; got '" 1"'. A table type declares arithmetic with ---@operator.
+  EXTRA resources/inspections/numbers.lua:31:16 [649..653] TS2356 "\"-1\"": Operator '-' requires a number operand; got '"-1"'. A table type declares arithmetic with ---@operator.
+  EXTRA resources/inspections/numbers.lua:32:16 [685..691] TS2356 "\"- -1\"": Operator '-' requires a number operand; got '"- -1"'. A table type declares arithmetic with ---@operator.
+  EXTRA resources/inspections/numbers.lua:33:16 [723..728] TS2356 "\"0x1\"": Operator '-' requires a number operand; got '"0x1"'. A table type declares arithmetic with ---@operator.
+  EXTRA resources/inspections/numbers.lua:34:16 [744..750] TS2356 "\"-0x1\"": Operator '-' requires a number operand; got '"-0x1"'. A table type declares arithmetic with ---@operator.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:200#testNumbers
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testOps	expected=93 missing=74 extra=67
+  MISSING resources/inspections/ops.lua:66:11 [1238..1257] Error "aStringOrNumber + 1": Type mismatch. Required: 'number' Found: 'number | string'
+  MISSING resources/inspections/ops.lua:70:11 [1328..1347] Error "aStringOrNumber + 1": Type mismatch. Required: 'number' Found: 'number | string'
+  MISSING resources/inspections/ops.lua:91:15 [1788..1792] Error "true": Type mismatch. Required: 'number[]' Found: 'true'
+  MISSING resources/inspections/ops.lua:93:15 [1846..1854] Error "aBoolean": Type mismatch. Required: 'false | nil | number[]' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:96:15 [1913..1918] Error "false": Type mismatch. Required: 'number[]' Found: 'false'
+  MISSING resources/inspections/ops.lua:97:26 [1955..1960] Error "false": Type mismatch. Required: 'number[]' Found: 'false'
+  MISSING resources/inspections/ops.lua:99:26 [2016..2020] Error "true": Type mismatch. Required: 'number[]' Found: 'true'
+  MISSING resources/inspections/ops.lua:100:15 [2035..2043] Error "aBoolean": Type mismatch. Required: 'number[]' Found: 'false'
+  MISSING resources/inspections/ops.lua:101:26 [2080..2088] Error "aBoolean": Type mismatch. Required: 'number[]' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:105:10 [2151..2155] Error "true": Type mismatch. Required: '{ x: number }' Found: 'true'
+  MISSING resources/inspections/ops.lua:107:10 [2201..2209] Error "aBoolean": Type mismatch. Required: 'false | nil | { x: number }' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:110:10 [2260..2265] Error "false": Type mismatch. Required: '{ x: number }' Found: 'false'
+  MISSING resources/inspections/ops.lua:111:22 [2299..2304] Error "false": Type mismatch. Required: '{ x: number }' Found: 'false'
+  MISSING resources/inspections/ops.lua:113:22 [2352..2356] Error "true": Type mismatch. Required: '{ x: number }' Found: 'true'
+  MISSING resources/inspections/ops.lua:114:10 [2366..2374] Error "aBoolean": Type mismatch. Required: '{ x: number }' Found: 'false'
+  MISSING resources/inspections/ops.lua:115:22 [2408..2416] Error "aBoolean": Type mismatch. Required: '{ x: number }' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:117:19 [2436..2449] Error "{invalid = 1}": Type mismatch. Missing member: 'x' of: '{ x: number }'
+  MISSING resources/inspections/ops.lua:118:10 [2459..2472] Error "{invalid = 1}": Type mismatch. Missing member: 'x' of: '{ x: number }'
+  MISSING resources/inspections/ops.lua:119:10 [2491..2495] Error "true": Type mismatch. Required: '{ x: number }' Found: 'true'
+  MISSING resources/inspections/ops.lua:120:10 [2522..2535] Error "{invalid = 1}": Type mismatch. Missing member: 'x' of: '{ x: number }'
+  MISSING resources/inspections/ops.lua:121:10 [2553..2561] Error "aBoolean": Type mismatch. Required: 'false | nil | { x: number }' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:121:22 [2565..2578] Error "{invalid = 1}": Type mismatch. Missing member: 'x' of: '{ x: number }'
+  MISSING resources/inspections/ops.lua:122:10 [2588..2601] Error "{invalid = 1}": Type mismatch. Missing member: 'x' of: '{ x: number }'
+  MISSING resources/inspections/ops.lua:124:10 [2624..2629] Error "false": Type mismatch. Required: '{ x: number }' Found: 'false'
+  MISSING resources/inspections/ops.lua:125:28 [2675..2680] Error "false": Type mismatch. Required: '{ x: number }' Found: 'false'
+  MISSING resources/inspections/ops.lua:126:19 [2699..2712] Error "{invalid = 1}": Type mismatch. Missing member: 'x' of: '{ x: number }'
+  MISSING resources/inspections/ops.lua:127:28 [2740..2744] Error "true": Type mismatch. Required: '{ x: number }' Found: 'true'
+  MISSING resources/inspections/ops.lua:128:10 [2754..2762] Error "aBoolean": Type mismatch. Required: '{ x: number }' Found: 'false'
+  MISSING resources/inspections/ops.lua:128:23 [2767..2780] Error "{invalid = 1}": Type mismatch. Missing member: 'x' of: '{ x: number }'
+  MISSING resources/inspections/ops.lua:129:28 [2808..2816] Error "aBoolean": Type mismatch. Required: '{ x: number }' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:133:36 [2902..2913] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:134:36 [2950..2961] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:136:27 [3037..3048] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:139:25 [3132..3143] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:141:26 [3227..3231] Error "true": Type mismatch. Required: 'number[]' Found: 'true'
+  MISSING resources/inspections/ops.lua:142:33 [3281..3285] Error "true": Type mismatch. Required: 'number[]' Found: 'true'
+  MISSING resources/inspections/ops.lua:143:27 [3322..3333] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:147:34 [3470..3481] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:148:34 [3516..3527] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:150:27 [3601..3612] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:153:29 [3696..3707] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:154:39 [3757..3768] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:155:26 [3795..3803] Error "aBoolean": Type mismatch. Required: 'false | nil | number[]' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:155:39 [3808..3819] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:156:33 [3853..3861] Error "aBoolean": Type mismatch. Required: 'false | nil | number[]' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:157:27 [3898..3909] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:162:36 [4059..4070] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:164:16 [4135..4146] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:166:16 [4231..4242] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:168:15 [4279..4283] Error "true": Type mismatch. Required: 'number[]' Found: 'true'
+  MISSING resources/inspections/ops.lua:169:15 [4326..4330] Error "true": Type mismatch. Required: 'number[]' Found: 'true'
+  MISSING resources/inspections/ops.lua:171:16 [4421..4432] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:173:16 [4515..4526] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:176:34 [4627..4638] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:178:16 [4701..4712] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:180:16 [4793..4804] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:182:15 [4839..4847] Error "aBoolean": Type mismatch. Required: 'false | nil | number[]' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:183:15 [4890..4898] Error "aBoolean": Type mismatch. Required: 'false | nil | number[]' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:183:39 [4914..4925] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:185:16 [4993..5004] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:187:16 [5095..5106] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:190:15 [5147..5155] Error "aBoolean": Type mismatch. Required: 'number[]' Found: 'false'
+  MISSING resources/inspections/ops.lua:190:30 [5162..5173] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:191:15 [5200..5208] Error "aBoolean": Type mismatch. Required: 'number[]' Found: 'false'
+  MISSING resources/inspections/ops.lua:192:27 [5265..5273] Error "aBoolean": Type mismatch. Required: 'false | nil | number[]' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:192:40 [5278..5289] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:193:34 [5325..5333] Error "aBoolean": Type mismatch. Required: 'false | nil | number[]' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:194:28 [5372..5383] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:198:15 [5531..5539] Error "aBoolean": Type mismatch. Required: 'false | nil | number[]' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:199:15 [5584..5592] Error "aBoolean": Type mismatch. Required: 'false | nil | number[]' Found: 'boolean'
+  MISSING resources/inspections/ops.lua:199:40 [5609..5620] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:201:16 [5691..5702] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:203:16 [5797..5808] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  MISSING resources/inspections/ops.lua:210:36 [6015..6026] Error "invalid = 1": Type mismatch. Required: 'number[]' Found non-array field 'invalid'
+  EXTRA resources/inspections/ops.lua:66:11 [1238..1253] TS2362 "aStringOrNumber": Operator '+' requires a number operand; got 'string | number'. A table type declares arithmetic with ---@operator.
+  EXTRA resources/inspections/ops.lua:70:11 [1328..1343] TS2362 "aStringOrNumber": Operator '+' requires a number operand; got 'string | number'. A table type declares arithmetic with ---@operator.
+  EXTRA resources/inspections/ops.lua:91:15 [1788..1802] TS2322 "true or {1, 2}": Type 'true' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:93:15 [1846..1864] TS2322 "aBoolean or {1, 2}": Type 'true | { [1]: 1; [2]: 2 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:96:15 [1913..1929] TS2322 "false and {1, 2}": Type 'false' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:97:15 [1944..1960] TS2322 "{1, 2} and false": Type 'false' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:99:15 [2005..2020] TS2322 "{1, 2} and true": Type 'true' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:100:15 [2035..2054] TS2322 "aBoolean and {1, 2}": Type 'false | { [1]: 1; [2]: 2 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:101:15 [2069..2088] TS2322 "{1, 2} and aBoolean": Type 'boolean' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:105:10 [2151..2166] TS2322 "true or {x = 1}": Type 'true' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:107:10 [2201..2220] TS2322 "aBoolean or {x = 1}": Type 'true | { ["x"]: 1 }' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:110:10 [2260..2277] TS2322 "false and {x = 1}": Type 'false' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:111:10 [2287..2304] TS2322 "{x = 1} and false": Type 'false' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:113:10 [2340..2356] TS2322 "{x = 1} and true": Type 'true' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:114:10 [2366..2386] TS2322 "aBoolean and {x = 1}": Type 'false | { ["x"]: 1 }' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:115:10 [2396..2416] TS2322 "{x = 1} and aBoolean": Type 'boolean' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:117:10 [2427..2449] TS2322 "false or {invalid = 1}": Type '{ ["invalid"]: 1 }' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:118:10 [2459..2481] TS2322 "{invalid = 1} or false": Type '{ ["invalid"]: 1 }' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:119:10 [2491..2512] TS2322 "true or {invalid = 1}": Type 'true' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:120:10 [2522..2543] TS2322 "{invalid = 1} or true": Type '{ ["invalid"]: 1 }' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:121:10 [2553..2578] TS2322 "aBoolean or {invalid = 1}": Type 'true | { ["invalid"]: 1 }' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:122:10 [2588..2613] TS2322 "{invalid = 1} or aBoolean": Type '{ ["invalid"]: 1 }' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:124:10 [2624..2647] TS2322 "false and {invalid = 1}": Type 'false' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:125:10 [2657..2680] TS2322 "{invalid = 1} and false": Type 'false' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:126:10 [2690..2712] TS2322 "true and {invalid = 1}": Type '{ ["invalid"]: 1 }' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:127:10 [2722..2744] TS2322 "{invalid = 1} and true": Type 'true' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:128:10 [2754..2780] TS2322 "aBoolean and {invalid = 1}": Type 'false | { ["invalid"]: 1 }' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:129:10 [2790..2816] TS2322 "{invalid = 1} and aBoolean": Type 'boolean' is not assignable to type '{ x: number }'.
+  EXTRA resources/inspections/ops.lua:133:15 [2881..2914] TS2322 "false and {1, 2} or {invalid = 1}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:134:15 [2929..2962] TS2322 "{1, 2} and false or {invalid = 1}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:136:15 [3025..3058] TS2322 "{1, 2} and {invalid = 1} or false": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:139:15 [3122..3154] TS2322 "true and {invalid = 1} or {1, 2}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:141:15 [3216..3248] TS2322 "{1, 2} and true or {invalid = 1}": Type 'true' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:142:15 [3263..3295] TS2322 "{invalid = 1} and true or {1, 2}": Type 'true' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:143:15 [3310..3342] TS2322 "{1, 2} and {invalid = 1} or true": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:147:15 [3451..3482] TS2322 "nil and {1, 2} or {invalid = 1}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:148:15 [3497..3528] TS2322 "{1, 2} and nil or {invalid = 1}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:150:15 [3589..3620] TS2322 "{1, 2} and {invalid = 1} or nil": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:153:15 [3682..3718] TS2322 "aBoolean and {invalid = 1} or {1, 2}": Type '{ ["invalid"]: 1 } | { [1]: 1; [2]: 2 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:154:15 [3733..3769] TS2322 "aBoolean and {1, 2} or {invalid = 1}": Type '{ [1]: 1; [2]: 2 } | { ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:155:15 [3784..3820] TS2322 "{1, 2} and aBoolean or {invalid = 1}": Type 'true | { ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:156:15 [3835..3871] TS2322 "{invalid = 1} and aBoolean or {1, 2}": Type 'true | { [1]: 1; [2]: 2 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:157:15 [3886..3922] TS2322 "{1, 2} and {invalid = 1} or aBoolean": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:162:15 [4038..4071] TS2322 "false or {1, 2} and {invalid = 1}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:164:15 [4134..4167] TS2322 "{invalid = 1} or false and {1, 2}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:166:15 [4230..4263] TS2322 "{invalid = 1} or {1, 2} and false": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:168:15 [4279..4311] TS2322 "true or {invalid = 1} and {1, 2}": Type 'true' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:169:15 [4326..4358] TS2322 "true or {1, 2} and {invalid = 1}": Type 'true' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:171:15 [4420..4452] TS2322 "{invalid = 1} or true and {1, 2}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:173:15 [4514..4546] TS2322 "{invalid = 1} or {1, 2} and true": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:176:15 [4608..4639] TS2322 "nil or {1, 2} and {invalid = 1}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:178:15 [4700..4731] TS2322 "{invalid = 1} or nil and {1, 2}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:180:15 [4792..4823] TS2322 "{invalid = 1} or {1, 2} and nil": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:182:15 [4839..4875] TS2322 "aBoolean or {invalid = 1} and {1, 2}": Type 'true | { [1]: 1; [2]: 2 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:183:15 [4890..4926] TS2322 "aBoolean or {1, 2} and {invalid = 1}": Type 'true | { ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:185:15 [4992..5028] TS2322 "{invalid = 1} or aBoolean and {1, 2}": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:187:15 [5094..5130] TS2322 "{invalid = 1} or {1, 2} and aBoolean": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:190:15 [5147..5185] TS2322 "aBoolean and ({invalid = 1} or {1, 2})": Type 'false | { ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:191:15 [5200..5238] TS2322 "aBoolean and ({1, 2} or {invalid = 1})": Type 'false | { [1]: 1; [2]: 2 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:192:15 [5253..5291] TS2322 "{1, 2} and (aBoolean or {invalid = 1})": Type 'true | { ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:193:15 [5306..5344] TS2322 "{invalid = 1} and (aBoolean or {1, 2})": Type 'true | { [1]: 1; [2]: 2 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:194:15 [5359..5397] TS2322 "{1, 2} and ({invalid = 1} or aBoolean)": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:198:15 [5531..5569] TS2322 "aBoolean or ({invalid = 1} and {1, 2})": Type 'true | { [1]: 1; [2]: 2 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:199:15 [5584..5622] TS2322 "aBoolean or ({1, 2} and {invalid = 1})": Type 'true | { ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:201:15 [5690..5728] TS2322 "{invalid = 1} or (aBoolean and {1, 2})": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:203:15 [5796..5834] TS2322 "{invalid = 1} or ({1, 2} and aBoolean)": Type '{ ["invalid"]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/ops.lua:210:12 [5991..6027] TS2322 "aBoolean and {1, 2} or {invalid = 1}": Lua result pack is not assignable to the declared result pack. Actual: { [1]: 1; [2]: 2 } | { ["invalid"]: 1 }. Expected: number[].
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:204#testOps
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testOverloads	expected=24 missing=4 extra=10
+  MISSING resources/inspections/overloads.lua:159:11 [4491..4561] Error "overloadedWithDifferentReturnTypes(someStaticallyKnownReturnCounts(4))": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/overloads.lua:160:12 [4573..4643] Error "overloadedWithDifferentReturnTypes(someStaticallyKnownReturnCounts(4))": Type mismatch. Required: 'boolean' Found: 'string'
+  MISSING resources/inspections/overloads.lua:175:11 [5481..5552] Error "overloadedWithDifferentReturnTypes2(someStaticallyKnownReturnCounts(4))": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/overloads.lua:176:12 [5564..5635] Error "overloadedWithDifferentReturnTypes2(someStaticallyKnownReturnCounts(4))": Type mismatch. Required: 'boolean' Found: 'string'
+  EXTRA resources/inspections/overloads.lua:107:4 [2842..2875] TS2394 "@overload fun(a: number): boolean": Overload signature 'fun(a: number): boolean' is not compatible with implementation signature 'fun(a: number, b: number, c: number): string | number | false | true'.
+  EXTRA resources/inspections/overloads.lua:108:4 [2879..2922] TS2394 "@overload fun(a: number, b: number): number": Overload signature 'fun(a: number, b: number): number' is not compatible with implementation signature 'fun(a: number, b: number, c: number): string | number | false | true'.
+  EXTRA resources/inspections/overloads.lua:125:4 [3312..3355] TS2394 "@overload fun(a: number, b: number): number": Overload signature 'fun(a: number, b: number): number' is not compatible with implementation signature 'fun(a: number, b: number, c: number): string | number | false | true'.
+  EXTRA resources/inspections/overloads.lua:126:4 [3359..3392] TS2394 "@overload fun(a: number): boolean": Overload signature 'fun(a: number): boolean' is not compatible with implementation signature 'fun(a: number, b: number, c: number): string | number | false | true'.
+  EXTRA resources/inspections/overloads.lua:158:11 [4410..4480] TS2554 "overloadedWithDifferentReturnTypes(someStaticallyKnownReturnCounts(4))": Expected 1 arguments, but got 4.
+  EXTRA resources/inspections/overloads.lua:159:11 [4491..4561] TS2554 "overloadedWithDifferentReturnTypes(someStaticallyKnownReturnCounts(4))": Expected 1 arguments, but got 4.
+  EXTRA resources/inspections/overloads.lua:160:12 [4573..4643] TS2554 "overloadedWithDifferentReturnTypes(someStaticallyKnownReturnCounts(4))": Expected 1 arguments, but got 4.
+  EXTRA resources/inspections/overloads.lua:174:11 [5399..5470] TS2554 "overloadedWithDifferentReturnTypes2(someStaticallyKnownReturnCounts(4))": Expected 3 arguments, but got 4.
+  EXTRA resources/inspections/overloads.lua:175:11 [5481..5552] TS2554 "overloadedWithDifferentReturnTypes2(someStaticallyKnownReturnCounts(4))": Expected 3 arguments, but got 4.
+  EXTRA resources/inspections/overloads.lua:176:12 [5564..5635] TS2554 "overloadedWithDifferentReturnTypes2(someStaticallyKnownReturnCounts(4))": Expected 3 arguments, but got 4.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:208#testOverloads
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testOverrides	expected=62 missing=25 extra=12
+  MISSING resources/inspections/overrides.lua:212:44 [4708..4717] Error "anyNumber": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:217:7 [4856..4893] Error "tableImplicitFieldChildDocField.value": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:223:7 [5079..5119] Error "tableImplicitFieldChildDocField.method()": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:225:7 [5176..5219] Error "assignedImplicitFieldChildDocField.method()": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:227:7 [5277..5321] Error "declaredImplicitMethodChildDocField.method()": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:313:54 [7816..7825] Error "anyNumber": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:318:7 [7994..8041] Error "tableImplicitFieldChildTableExplicitField.value": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:326:7 [8384..8437] Error "assignedImplicitFieldChildTableExplicitField.method()": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:328:7 [8505..8559] Error "declaredImplicitMethodChildTableExplicitField.method()": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:414:54 [11054..11063] Error "anyNumber": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:415:54 [11117..11126] Error "anyNumber": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:515:57 [14424..14433] Error "anyNumber": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:520:7 [14611..14661] Error "tableImplicitFieldChildAssignedExplicitField.value": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:528:7 [15022..15078] Error "assignedImplicitFieldChildAssignedExplicitField.method()": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:530:7 [15149..15206] Error "declaredImplicitMethodChildAssignedExplicitField.method()": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:616:57 [17833..17842] Error "anyNumber": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:617:57 [17899..17908] Error "anyNumber": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:659:7 [19404..19462] Error "declaredImplicitMethodChildDeclaredExplicitMethod.method()": Type mismatch. Required: '1' Found: 'number'
+  MISSING resources/inspections/overrides.lua:693:18 [20406..20419] Error "fun(): string": Illegal override of "method". Type mismatch. Required: 'fun(): number' Found: 'fun(): string'
+  MISSING resources/inspections/overrides.lua:699:14 [20579..20592] Error "fun(): string": Illegal override of "method". Type mismatch. Required: 'fun(): number' Found: 'fun(): string'
+  MISSING resources/inspections/overrides.lua:708:14 [20799..20842] Error "function()\n        return anyString\n    end": Illegal override of "method". Type mismatch. Required: 'fun(): number' Found: 'fun(): string'
+  MISSING resources/inspections/overrides.lua:717:52 [21075..21110] Error "function()\n    return anyString\nend": Type mismatch. Required: 'fun(): number' Found: 'fun(): string'
+  MISSING resources/inspections/overrides.lua:724:1 [21231..21334] Error "---@return string\nfunction IllegalDeclaredExplicitMethodChildDocField.method()\n    return anyString\nend": Illegal override of "method". Type mismatch. Required: 'fun(): number' Found: 'fun(): string'
+  MISSING resources/inspections/overrides.lua:756:17 [22215..22234] Error "optionalStringParam": Type mismatch. Required: 'string' Found: 'nil | string'
+  MISSING resources/inspections/overrides.lua:764:17 [22477..22503] Error "overiddenOptionStringParam": Type mismatch. Required: 'string' Found: 'nil | string'
+  EXTRA resources/inspections/overrides.lua:211:41 [4655..4664] TS2322 "anyNumber": Type 'number' is not assignable to type '1'.
+  EXTRA resources/inspections/overrides.lua:312:51 [7753..7762] TS2322 "anyNumber": Type 'number' is not assignable to type '1'.
+  EXTRA resources/inspections/overrides.lua:421:7 [11343..11393] TS2322 "assignedImplicitFieldChildTableImplicitField.value": Type 'number' is not assignable to type '1'.
+  EXTRA resources/inspections/overrides.lua:425:7 [11505..11555] TS2322 "tableImplicitFieldChildTableImplicitField.method()": Type 'number' is not assignable to type '1'.
+  EXTRA resources/inspections/overrides.lua:514:54 [14358..14367] TS2322 "anyNumber": Type 'number' is not assignable to type '1'.
+  EXTRA resources/inspections/overrides.lua:623:7 [18137..18190] TS2322 "assignedImplicitFieldChildAssignedImplicitField.value": Type 'number' is not assignable to type '1'.
+  EXTRA resources/inspections/overrides.lua:627:7 [18308..18361] TS2322 "tableImplicitFieldChildAssignedImplicitField.method()": Type 'number' is not assignable to type '1'.
+  EXTRA resources/inspections/overrides.lua:628:7 [18368..18421] TS2322 "tableImplicitFieldChildAssignedImplicitField.method()": Type 'number' is not assignable to type '1'.
+  EXTRA resources/inspections/overrides.lua:706:48 [20761..20845] TS2322 "{\n    value = anyString,\n    method = function()\n        return anyString\n    end,\n}": Type '{ method: (fun(): string), value: string }' is not assignable to class definition field type '{ method?: (fun(): number), multipleResultsMethod?: (fun(): (number, boolean)), value?: number }'.
+  EXTRA resources/inspections/overrides.lua:717:52 [21075..21110] TS2416 "function()\n    return anyString\nend": Declared member type 'fun(): string' is not assignable to the inherited member type 'fun(): number'.
+  EXTRA resources/inspections/overrides.lua:725:1 [21249..21334] TS2416 "function IllegalDeclaredExplicitMethodChildDocField.method()\n    return anyString\nend": Declared member type 'fun(): string' is not assignable to the inherited member type 'fun(): number'.
+  EXTRA resources/inspections/overrides.lua:779:1 [22843..22878] TS2554 "childOfClassWithFunctionField.foo()": Expected 1 arguments, but got 0.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:212#testOverrides
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testPoorlyNamedParams	expected=1 missing=1 extra=3
+  MISSING resources/inspections/poorly_named_params.lua:35:10 [1023..1030] Error "aString": Too many assignees, will be assigned nil.
+  EXTRA resources/inspections/poorly_named_params.lua:22:11 [572..575] LUA2011 "fun": annotation refers to unknown parameter 'fun'
+  EXTRA resources/inspections/poorly_named_params.lua:27:11 [714..720] LUA2011 "vararg": annotation refers to unknown parameter 'vararg'
+  EXTRA resources/inspections/poorly_named_params.lua:35:20 [1033..1077] TS2322 "poorlyNamedParamFunction3(aString, aBoolean)": Type 'nil' is not assignable to type 'string'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:216#testPoorlyNamedParams
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testRecursiveAlias	expected=5 missing=2 extra=0
+  MISSING resources/inspections/recursive_alias.lua:72:9 [1405..1437] Error "coroutine.create(function() end)": Type mismatch. Required: 'JSONValue' Found: 'thread'
+  MISSING resources/inspections/recursive_alias.lua:74:5 [1452..1463] Error "[3] = \"bad\"": Type mismatch. Required array index: '1' Found non-contiguous index: '3'
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:220#testRecursiveAlias
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testRequire	expected=2 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:224#testRequire
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testSelf	expected=23 missing=5 extra=22
+  MISSING resources/inspections/self.lua:119:39 [2046..2047] Error ")": Missing self argument.
+
+Did you mean to call the method with a colon?
+  MISSING resources/inspections/self.lua:120:36 [2083..2088] Error "\"abc\"": Type mismatch. Required: 'ClassWithInstanceMethods' Found: '"abc"'.
+
+Did you mean to call the method with a colon?
+  MISSING resources/inspections/self.lua:120:41 [2088..2089] Error ")": Missing argument: a: string
+  MISSING resources/inspections/self.lua:146:11 [2776..2794] Error "SetmetatableSelf()": Type mismatch. Required: 'number' Found: 'SetmetatableSelf'
+  MISSING resources/inspections/self.lua:147:11 [2805..2835] Error "setmetatableSelf.returnsSelf()": Type mismatch. Required: 'number' Found: 'SetmetatableSelf'
+  EXTRA resources/inspections/self.lua:77:9 [1196..1213] TS2554 "SelfB:dotMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:78:9 [1222..1242] TS2554 "SelfB:lambdaMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:82:9 [1296..1313] TS2554 "SelfB:dotMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:83:9 [1322..1342] TS2554 "SelfB:lambdaMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:87:9 [1396..1413] TS2554 "SelfA:dotMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:88:9 [1422..1442] TS2554 "SelfA:lambdaMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:92:9 [1496..1513] TS2554 "selfB:dotMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:93:9 [1522..1542] TS2554 "selfB:lambdaMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:97:9 [1596..1613] TS2554 "selfB:dotMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:98:9 [1622..1642] TS2554 "selfB:lambdaMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:102:9 [1696..1713] TS2554 "selfA:dotMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:103:9 [1722..1742] TS2554 "selfA:lambdaMethod()": Expected 0 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:119:1 [2008..2047] TS2554 "classWithInstanceMethods.withoutParam()": Expected 1 arguments, but got 0.
+  EXTRA resources/inspections/self.lua:120:1 [2048..2089] TS2554 "classWithInstanceMethods.withParam(\"abc\")": Expected 2 arguments, but got 1.
+  EXTRA resources/inspections/self.lua:124:11 [2233..2249] LUA2031 "SetmetatableSelf": Class definition is unsupported: Named member ownership remains provisional.
+  EXTRA resources/inspections/self.lua:124:11 [2233..2249] LUA2031 "SetmetatableSelf": Class definition is unsupported: Type instantiation is excessively deep.
+  EXTRA resources/inspections/self.lua:126:26 [2300..2302] LUA2031 "{}": Class definition is unsupported: Named member ownership remains provisional.
+  EXTRA resources/inspections/self.lua:126:26 [2300..2302] LUA2031 "{}": Class definition is unsupported: Type instantiation is excessively deep.
+  EXTRA resources/inspections/self.lua:128:1 [2304..2626] LUA2040 "setmetatable(SetmetatableSelf,  {\n    __call = function(_)\n        ---@type self @In the presence of setmetatable, self's type is pulled from the return type of __call or setmetatable()'s first arg.\n        local self\n\n        function self.returnsSelf()\n            return self\n        end\n\n        return self\n    end\n})": Could not determine the class context for this call.
+  EXTRA resources/inspections/self.lua:129:14 [2351..2623] LUA2041 "function(_)\n        ---@type self @In the presence of setmetatable, self's type is pulled from the return type of __call or setmetatable()'s first arg.\n        local self\n\n        function self.returnsSelf()\n            return self\n        end\n\n        return self\n    end": Type checking could not finish for this function body.
+  EXTRA resources/inspections/self.lua:144:20 [2697..2713] TS2349 "SetmetatableSelf": Type '{  }' has no call signatures.
+  EXTRA resources/inspections/self.lua:146:11 [2776..2792] TS2349 "SetmetatableSelf": Type '{  }' has no call signatures.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:228#testSelf
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testShape	expected=32 missing=22 extra=15
+  MISSING resources/inspections/shape.lua:20:15 [250..264] Error "\"not a number\"": Type mismatch. Required: 'number' Found: '"not a number"'
+  MISSING resources/inspections/shape.lua:36:22 [533..534] Error "2": Type mismatch. Required: 'string' Found: '2'
+  MISSING resources/inspections/shape.lua:51:27 [757..764] Error "aString": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/shape.lua:56:27 [849..856] Error "aNumber": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/shape.lua:68:35 [1146..1153] Error "aString": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/shape.lua:76:18 [1330..1337] Error "aNumber": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/shape.lua:76:31 [1343..1350] Error "aNumber": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/shape.lua:103:19 [1771..1778] Error "aString": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/shape.lua:104:14 [1794..1807] Error "{a = aNumber}": Type mismatch. Missing member: 'b' of: 'Shape2'
+  MISSING resources/inspections/shape.lua:111:19 [1908..1915] Error "aString": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/shape.lua:112:26 [1956..1957] Error "1": Type mismatch. Required: 'string' Found: '1'
+  MISSING resources/inspections/shape.lua:118:23 [2055..2057] Error "{}": Type mismatch. Required: 'number' Found: '{}'
+  MISSING resources/inspections/shape.lua:119:36 [2095..2102] Error "aNumber": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/shape.lua:134:16 [2365..2372] Error "aString": Type mismatch. Required: 'nil | number' Found: 'string'
+  MISSING resources/inspections/shape.lua:156:17 [2670..2683] Error "\"some string\"": Type mismatch. Required: 'number' Found: '"some string"'
+  MISSING resources/inspections/shape.lua:171:21 [2929..2930] Error "1": Type mismatch. Required: 'boolean' Found: '1'
+  MISSING resources/inspections/shape.lua:213:22 [3789..3790] Error "1": Type mismatch. Required: 'string' Found: '1'
+  MISSING resources/inspections/shape.lua:228:15 [4040..4048] Error "\"Number\"": Type mismatch. Required: '"String"' Found: '"Number"', on union candidate UnionMemberA
+  MISSING resources/inspections/shape.lua:229:17 [4066..4068] Error "{}": Type mismatch. Required: 'number' Found: '{}', on union candidate UnionMemberB
+  MISSING resources/inspections/shape.lua:229:17 [4066..4068] Error "{}": Type mismatch. Required: 'string' Found: '{}', on union candidate UnionMemberA
+  MISSING resources/inspections/shape.lua:242:29 [4303..4312] Error "\"invalid\"": Type mismatch. Required: 'NilOrShapeArrayShape[] | nil' Found: '"invalid"'
+  MISSING resources/inspections/shape.lua:249:25 [4474..4484] Error "value = {}": Type mismatch. Required: 'NilOrShapeArrayShape[]' Found non-array field 'value'
+  EXTRA resources/inspections/shape.lua:20:10 [245..265] TS2322 "{a = \"not a number\"}": Type '{ a: "not a number" }' is not assignable to type 'Shape1'.
+  EXTRA resources/inspections/shape.lua:36:10 [521..535] TS2322 "{a = 2, b = 2}": Type '{ a: 2, b: 2 }' is not assignable to type 'Shape2'.
+  EXTRA resources/inspections/shape.lua:51:22 [752..765] TS2322 "{a = aString}": Type '{ a: string }' is not assignable to type 'GenericShape<number>'.
+  EXTRA resources/inspections/shape.lua:56:22 [844..857] TS2322 "{a = aNumber}": Type '{ a: number }' is not assignable to type 'GenericShape<string>'.
+  EXTRA resources/inspections/shape.lua:68:23 [1134..1154] TS2322 "{a = 1, b = aString}": Type '{ a: 1, b: string }' is not assignable to type 'DerivedGenericShape<number>'.
+  EXTRA resources/inspections/shape.lua:76:13 [1325..1351] TS2345 "{a = aNumber, b = aNumber}": Argument of type '{ a: number, b: number }' is not assignable to parameter of type 'DerivedGenericShape<string>'.
+  EXTRA resources/inspections/shape.lua:102:15 [1751..1809] TS2322 "{\n    shape1 = {a = aString},\n    shape2 = {a = aNumber}\n}": Type '{ shape1: { a: string }, shape2: { a: number } }' is not assignable to type 'NestedShape'.
+  EXTRA resources/inspections/shape.lua:110:22 [1888..1960] TS2322 "{\n    shape1 = {a = aString, b = aString},\n    shape2 = {a = 1, b = 1}\n}": Type '{ shape1: { a: string, b: string }, shape2: { a: 1, b: 1 } }' is not assignable to type 'NestedShape'.
+  EXTRA resources/inspections/shape.lua:117:12 [2031..2109] TS2322 "{\n        shape1 = {a = {}},\n        shape2 = {a = aNumber, b = aNumber}\n    }": Lua result pack is not assignable to the declared result pack. Actual: { shape1: { a: {  } }, shape2: { a: number, b: number } }. Expected: NestedShape.
+  EXTRA resources/inspections/shape.lua:132:26 [2325..2374] TS2322 "{\n    requiredField = 1,\n    optional = aString\n}": Type '{ optional: string, requiredField: 1 }' is not assignable to type 'ShapeWithOptionalField'.
+  EXTRA resources/inspections/shape.lua:153:20 [2627..2701] TS2322 "{\n    values = {\n        {\n            a = \"some string\"\n        }\n    }\n}": Type '{ values: { [1]: { a: "some string" } } }' is not assignable to type 'WithArrayValues'.
+  EXTRA resources/inspections/shape.lua:171:11 [2919..2931] TS2345 "{\"hi\", 1, 1}": Argument of type '{ [1]: "hi", [2]: 1, [3]: 1 }' is not assignable to parameter of type 'StringNumberBooleanTuple'.
+  EXTRA resources/inspections/shape.lua:212:21 [3766..3813] TS2322 "{\n    primitiveField = 1,\n    tableField = {}\n}": Type '{ primitiveField: 1, tableField: {  } }' is not assignable to type 'PrimitiveAndTable'.
+  EXTRA resources/inspections/shape.lua:226:23 [4018..4076] TS2322 "{\n    {\n        tag = \"Number\",\n        value = {}\n    }\n}": Type '{ [1]: { tag: "Number", value: {  } } }' is not assignable to type '(UnionMemberA | UnionMemberB)[]'.
+  EXTRA resources/inspections/shape.lua:237:25 [4209..4596] TS2322 "{\n    value = {\n        {\n            value = {\n                {\n                    value = \"invalid\",\n                },\n                {\n                    value = {},\n                },\n                {\n                    value = {\n                        value = {},\n                    },\n                },\n            },\n        },\n    },\n    {\n        value = nil,\n    },\n}": Type '{ value: { [1]: { value: { [1]: { value: "invalid" }, [2]: { value: {  } }, [3]: { value: { value: {  } } } } } }, [1]: {  } }' is not assignable to type 'NilOrShapeArrayShape'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:232#testShape
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testSnippet	expected=1 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:236#testSnippet
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testStrictNil	expected=5 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:240#testStrictNil
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testStringLiterals	expected=3 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:244#testStringLiterals
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testTables	expected=24 missing=9 extra=5
+  MISSING resources/inspections/tables.lua:38:18 [618..621] Error "nil": Type mismatch. Required: 'number' Found: 'nil'
+  MISSING resources/inspections/tables.lua:56:25 [986..993] Error "[3] = 3": Type mismatch. Required array index: '2' Found non-contiguous index: '3'
+  MISSING resources/inspections/tables.lua:59:16 [1050..1057] Error "one = 1": Type mismatch. Required: 'number[]' Found non-array field 'one'
+  MISSING resources/inspections/tables.lua:59:25 [1059..1066] Error "two = 2": Type mismatch. Required: 'number[]' Found non-array field 'two'
+  MISSING resources/inspections/tables.lua:59:34 [1068..1077] Error "three = 3": Type mismatch. Required: 'number[]' Found non-array field 'three'
+  MISSING resources/inspections/tables.lua:60:21 [1099..1128] Error "{one = 1, two = 2, three = 3}": Type mismatch. Required: 'table<number, number>' Found: '{ one: 1, two: 2, three: 3 }'
+  MISSING resources/inspections/tables.lua:66:29 [1265..1278] Error "[3] = \"three\"": Type mismatch. Required array index: '2' Found non-contiguous index: '3'
+  MISSING resources/inspections/tables.lua:128:16 [2828..2843] Error "anonymousTable3": Type mismatch. Required: 'table<"a", 1>' Found: '{ b: 1 }'
+  MISSING resources/inspections/tables.lua:151:23 [3173..3178] Error "[5]=1": Type mismatch. Required array index: '4' Found non-contiguous index: '5'
+  EXTRA resources/inspections/tables.lua:56:15 [976..994] TS2322 "{[1] = 1, [3] = 3}": Type '{ [1]: 1, [3]: 3 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/tables.lua:59:15 [1049..1078] TS2322 "{one = 1, two = 2, three = 3}": Type '{ one: 1, three: 3, two: 2 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/tables.lua:66:15 [1251..1279] TS2322 "{[1] = \"one\", [3] = \"three\"}": Type '{ [1]: "one", [3]: "three" }' is not assignable to type 'string[]'.
+  EXTRA resources/inspections/tables.lua:151:13 [3163..3179] TS2322 "{1, 2, 3, [5]=1}": Type '{ [1]: 1, [2]: 2, [3]: 3, [5]: 1 }' is not assignable to type 'number[]'.
+  EXTRA resources/inspections/tables.lua:158:11 [3278..3310] TS2322 "returnsImplicitNumberArray(1)[1]": Type 'nil | number' is not assignable to type 'number'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:248#testTables
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	TypeSafetyTest/testTrailingType	expected=1 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:252#testTrailingType
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testTypeCasts	expected=31 missing=9 extra=4
+  MISSING resources/inspections/type_casts.lua:14:13 [359..401] Error "--[[---@not number]] stringOrNumber(false)": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/type_casts.lua:21:13 [536..563] Error "--[[---@type fun(): any]] 1": Type mismatch. Required: 'number' Found: 'fun(): any'
+  MISSING resources/inspections/type_casts.lua:41:1 [915..922] Error "aString": Type mismatch. Required: 'string' Found: 'number'
+  MISSING resources/inspections/type_casts.lua:41:10 [924..931] Error "aNumber": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/type_casts.lua:43:10 [1020..1027] Error "aNumber": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/type_casts.lua:43:20 [1030..1073] Error "--[[---@type string, string]] multiReturn()": Result 2, type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/type_casts.lua:59:1 [1373..1380] Error "aNumber": Type mismatch. Required: 'number' Found: 'number | string'
+  MISSING resources/inspections/type_casts.lua:59:10 [1382..1389] Error "aNumber": Type mismatch. Required: 'number' Found: 'number | string'
+  MISSING resources/inspections/type_casts.lua:59:20 [1392..1410] Error "multiReturn2(true)": Result 2, type mismatch. Required: 'number' Found: 'number | string'
+  EXTRA resources/inspections/type_casts.lua:14:34 [380..401] TS2345 "stringOrNumber(false)": Argument of type '[string]' is not assignable to parameter of type '[number]'.
+  EXTRA resources/inspections/type_casts.lua:21:39 [562..563] TS2345 "1": Argument of type 'fun(): void | any' is not assignable to parameter of type 'number'.
+  EXTRA resources/inspections/type_casts.lua:43:50 [1060..1073] TS2322 "multiReturn()": Type 'string' is not assignable to type 'number'.
+  EXTRA resources/inspections/type_casts.lua:133:30 [2879..2904] TS2322 "table.unpack(anyArray, 1)": Lua result pack is not assignable to the declared result pack. Actual: (any, any...). Expected: void | any.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:256#testTypeCasts
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testUnions	expected=4 missing=1 extra=1
+  MISSING resources/inspections/unions.lua:50:16 [817..826] Error "\"invalid\"": Type mismatch. Required: 'Engine | Horse' Found: '"invalid"'
+  EXTRA resources/inspections/unions.lua:49:8 [800..828] TS2322 "{\n    occupant = \"invalid\"\n}": Type '{ occupant: "invalid" }' is not assignable to type 'Shed'.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:260#testUnions
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testUnknown	expected=5 missing=0 extra=6
+  EXTRA resources/inspections/unknown.lua:20:13 [391..406] TS2345 "implicitUnknown": Argument of type 'nil' is not assignable to parameter of type 'number'.
+  EXTRA resources/inspections/unknown.lua:27:11 [521..536] TS2322 "implicitUnknown": Type 'nil' is not assignable to type 'number'.
+  EXTRA resources/inspections/unknown.lua:33:11 [628..643] TS2322 "implicitUnknown": Type 'nil' is not assignable to type 'string'.
+  EXTRA resources/inspections/unknown.lua:49:17 [900..904] TS7053 "aVar": Type 'nil' cannot be indexed as a Lua table.
+  EXTRA resources/inspections/unknown.lua:50:17 [925..932] TS2339 "doThing": Property 'doThing' does not exist on type 'nil'.
+  EXTRA resources/inspections/unknown.lua:51:17 [951..958] TS2339 "doThing": Property 'doThing' does not exist on type 'nil'.
+  UNSUPPORTED SETTING: permissive unknown calls and indexing
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:265#testUnknown
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+FAIL	TypeSafetyTest/testUnknownStrict	expected=24 missing=17 extra=4
+  MISSING resources/inspections/unknown_strict.lua:41:1 [752..764] Error "unknown.aVar": No such member 'aVar' found on type 'any'
+  MISSING resources/inspections/unknown_strict.lua:42:1 [769..784] Error "unknown.doThing": No such member 'doThing' found on type 'any'
+  MISSING resources/inspections/unknown_strict.lua:43:1 [787..802] Error "unknown:doThing": No such member 'doThing' found on type 'any'
+  MISSING resources/inspections/unknown_strict.lua:45:1 [806..826] Error "assignedUnknown.aVar": No such member 'aVar' found on type 'any'
+  MISSING resources/inspections/unknown_strict.lua:46:1 [831..854] Error "assignedUnknown.doThing": No such member 'doThing' found on type 'any'
+  MISSING resources/inspections/unknown_strict.lua:47:1 [857..880] Error "assignedUnknown:doThing": No such member 'doThing' found on type 'any'
+  MISSING resources/inspections/unknown_strict.lua:49:1 [884..904] Error "implicitUnknown.aVar": No such member 'aVar' found on type '[local implicitUnknown]'
+  MISSING resources/inspections/unknown_strict.lua:50:1 [909..934] Error "implicitUnknown.doThing()": Unknown function 'doThing'.
+  MISSING resources/inspections/unknown_strict.lua:51:1 [935..960] Error "implicitUnknown:doThing()": Unknown function 'doThing'.
+  MISSING resources/inspections/unknown_strict.lua:58:5 [1059..1069] Error "param.aVar": No such member 'aVar' found on type '[local param]'
+  MISSING resources/inspections/unknown_strict.lua:59:5 [1078..1093] Error "param.doThing()": Unknown function 'doThing'.
+  MISSING resources/inspections/unknown_strict.lua:59:5 [1078..1091] Error "param.doThing": No such member 'doThing' found on type '[local param]'
+  MISSING resources/inspections/unknown_strict.lua:60:5 [1098..1113] Error "param:doThing()": Unknown function 'doThing'.
+  MISSING resources/inspections/unknown_strict.lua:60:5 [1098..1111] Error "param:doThing": No such member 'doThing' found on type '[local param]'
+  MISSING resources/inspections/unknown_strict.lua:69:5 [1236..1246] Error "param.aVar": No such member 'aVar' found on type 'any'
+  MISSING resources/inspections/unknown_strict.lua:70:5 [1255..1268] Error "param.doThing": No such member 'doThing' found on type 'any'
+  MISSING resources/inspections/unknown_strict.lua:71:5 [1275..1288] Error "param:doThing": No such member 'doThing' found on type 'any'
+  EXTRA resources/inspections/unknown_strict.lua:20:13 [391..406] TS2345 "implicitUnknown": Argument of type 'nil' is not assignable to parameter of type 'number'.
+  EXTRA resources/inspections/unknown_strict.lua:27:11 [521..536] TS2322 "implicitUnknown": Type 'nil' is not assignable to type 'number'.
+  EXTRA resources/inspections/unknown_strict.lua:33:11 [628..643] TS2322 "implicitUnknown": Type 'nil' is not assignable to type 'string'.
+  EXTRA resources/inspections/unknown_strict.lua:49:17 [900..904] TS7053 "aVar": Type 'nil' cannot be indexed as a Lua table.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:273#testUnknownStrict
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testVarargs	expected=46 missing=17 extra=14
+  MISSING resources/inspections/varargs.lua:72:5 [1548..1560] Error "nilOrBoolean": Type mismatch. Required: 'boolean | nil' Found: 'nil | number'
+  MISSING resources/inspections/varargs.lua:72:19 [1562..1574] Error "nilOrBoolean": Type mismatch. Required: 'boolean | nil' Found: 'nil | number'
+  MISSING resources/inspections/varargs.lua:72:34 [1577..1580] Error "...": Type mismatch. Required: 'boolean | nil' Found: 'nil | number'
+  MISSING resources/inspections/varargs.lua:73:5 [1585..1597] Error "nilOrBoolean": Type mismatch. Required: 'boolean | nil' Found: 'nil | number'
+  MISSING resources/inspections/varargs.lua:73:19 [1599..1611] Error "nilOrBoolean": Type mismatch. Required: 'boolean | nil' Found: 'nil | number'
+  MISSING resources/inspections/varargs.lua:73:34 [1614..1617] Error "...": Type mismatch. Required: 'boolean | nil' Found: 'nil | number'
+  MISSING resources/inspections/varargs.lua:77:47 [1768..1771] Error "...": Type mismatch. Required: 'boolean | nil' Found: 'number'. In: fun(value: nil | number, value: boolean | nil): void
+  MISSING resources/inspections/varargs.lua:77:50 [1771..1772] Error ")": Missing argument: value: boolean | nil. In: fun(value: nil | number, value: boolean | nil): void
+  MISSING resources/inspections/varargs.lua:77:50 [1771..1772] Error ")": Missing argument: value: nil | number. In: fun(value: nil | number): void
+  MISSING resources/inspections/varargs.lua:77:50 [1771..1772] Error ")": Missing argument: value: nil | number. In: fun(value: nil | number, value: boolean | nil): void
+  MISSING resources/inspections/varargs.lua:94:11 [2296..2340] Error "genericVarargFunction2(1, true, false, true)": Type mismatch. Required: 'number' Found: 'boolean'
+  MISSING resources/inspections/varargs.lua:95:12 [2352..2386] Error "genericVarargFunction2(1, 1, 2, 3)": Type mismatch. Required: 'boolean' Found: '1 | 2 | 3'
+  MISSING resources/inspections/varargs.lua:142:1 [3341..3359] Error "mergedLiteralMap.e": No such member 'e' found on type 'table<"a" | "b" | "c" | "d", 1 | 2 | 3 | 4>'
+  MISSING resources/inspections/varargs.lua:166:1 [3953..3975] Error "typeMergedLiteralMap.e": No such member 'e' found on type 'table<"a" | "b" | "c" | "d", 1 | 2 | 3 | 4>'
+  MISSING resources/inspections/varargs.lua:190:1 [4659..4685] Error "overloadMergedLiteralMap.e": No such member 'e' found on type 'table<"a" | "b" | "c" | "d", 1 | 2 | 3 | 4>'
+  MISSING resources/inspections/varargs.lua:232:48 [5662..5665] Error "...": Type mismatch. Required: 'number' Found: 'string'
+  MISSING resources/inspections/varargs.lua:240:22 [5858..5868] Error "\"a string\"": Type mismatch. Required: 'number' Found: '"a string"'
+  EXTRA resources/inspections/varargs.lua:77:5 [1726..1772] TS2554 "wantsNilOrNumberAndOptionallyNilOrBoolean(...)": Expected 1 arguments, but got at least 0.
+  EXTRA resources/inspections/varargs.lua:93:11 [2251..2273] TS2349 "genericVarargFunction2": Type 'nil' has no call signatures.
+  EXTRA resources/inspections/varargs.lua:94:11 [2296..2318] TS2349 "genericVarargFunction2": Type 'nil' has no call signatures.
+  EXTRA resources/inspections/varargs.lua:95:12 [2352..2374] TS2349 "genericVarargFunction2": Type 'nil' has no call signatures.
+  EXTRA resources/inspections/varargs.lua:96:12 [2398..2420] TS2349 "genericVarargFunction2": Type 'nil' has no call signatures.
+  EXTRA resources/inspections/varargs.lua:142:18 [3358..3359] TS2538 "e": Key type '"e"' is not assignable to index type '"a" | "b" | "c" | "d"'.
+  EXTRA resources/inspections/varargs.lua:166:22 [3974..3975] TS2538 "e": Key type '"e"' is not assignable to index type '"a" | "b" | "c" | "d"'.
+  EXTRA resources/inspections/varargs.lua:175:4 [4222..4272] TS2394 "@overload fun<K, V>(...: table<K, V>): table<K, V>": Overload signature 'fun(...: table<K, V>): table<K, V>' is not compatible with implementation signature 'fun(...: any): void'.
+  EXTRA resources/inspections/varargs.lua:190:26 [4684..4685] TS2538 "e": Key type '"e"' is not assignable to index type '"a" | "b" | "c" | "d"'.
+  EXTRA resources/inspections/varargs.lua:219:4 [5305..5329] TS2394 "@overload fun(): boolean": Overload signature 'fun(): boolean' is not compatible with implementation signature 'fun(a: string[]): void'.
+  EXTRA resources/inspections/varargs.lua:224:4 [5396..5420] TS2394 "@overload fun(): boolean": Overload signature 'fun(): boolean' is not compatible with implementation signature 'fun(a: number[]): void'.
+  EXTRA resources/inspections/varargs.lua:232:47 [5661..5666] TS2345 "{...}": Argument of type '{ [1...]: nil | string }' is not assignable to parameter of type 'number[]'.
+  EXTRA resources/inspections/varargs.lua:239:5 [5817..5821] TS2349 "a[1]": Type 'nil | (fun(a: string, b: number): number)' has no call signatures.
+  EXTRA resources/inspections/varargs.lua:240:5 [5841..5845] TS2349 "a[1]": Type 'nil | (fun(a: string, b: number): number)' has no call signatures.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:277#testVarargs
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+FAIL	TypeSafetyTest/testVarreturn	expected=21 missing=10 extra=4
+  MISSING resources/inspections/varreturn.lua:17:38 [303..314] Error "nilOrNumber": Type mismatch. Required: 'nil | number' Found: 'boolean | nil'
+  MISSING resources/inspections/varreturn.lua:26:19 [537..552] Error "\"not a boolean\"": Result 2, type mismatch. Required: 'boolean' Found: '"not a boolean"'
+  MISSING resources/inspections/varreturn.lua:37:38 [797..808] Error "nilOrNumber": Type mismatch. Required: 'nil | number' Found: 'boolean | nil'
+  MISSING resources/inspections/varreturn.lua:43:21 [951..971] Error "varreturnFunction2()": Result 2, type mismatch. Required: 'string' Found: 'boolean'
+  MISSING resources/inspections/varreturn.lua:43:41 [971..972] Error ")": Missing argument: b: string
+  MISSING resources/inspections/varreturn.lua:55:29 [1249..1260] Error "nilOrNumber": Type mismatch. Required: 'nil | number' Found: 'boolean | nil'
+  MISSING resources/inspections/varreturn.lua:71:29 [1653..1664] Error "nilOrNumber": Type mismatch. Required: 'nil | number' Found: 'boolean | nil'
+  MISSING resources/inspections/varreturn.lua:71:57 [1681..1701] Error "varreturnFunction4()": Result 3, type mismatch. Required: 'nil | number' Found: 'boolean | nil'
+  MISSING resources/inspections/varreturn.lua:81:14 [1890..1902] Error "nilOrBoolean": Type mismatch. Required: 'boolean | nil' Found: '1 | 2 | nil'
+  MISSING resources/inspections/varreturn.lua:96:41 [2309..2310] Error ")": Missing argument: a: boolean | nil
+  EXTRA resources/inspections/varreturn.lua:20:11 [363..374] LUA2011 "numberParam": annotation refers to unknown parameter 'numberParam'
+  EXTRA resources/inspections/varreturn.lua:26:16 [534..535] TS2322 "1": Lua result pack is not assignable to the declared result pack. Actual: (1, "not a boolean"). Expected: (number, boolean...).
+  EXTRA resources/inspections/varreturn.lua:43:1 [931..972] TS2554 "acceptsNumberString(varreturnFunction2())": Expected 2 arguments, but got at least 1.
+  EXTRA resources/inspections/varreturn.lua:96:1 [2269..2310] TS2554 "nilOrBooleanParameter(booleanVarreturn())": Expected 1 arguments, but got at least 0.
+
+  Origin: src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:281#testVarreturn
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+
+PASS	Issues/test81	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:78#test81
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+  Only Issues's inspections were enabled in the old harness.
+
+PASS	Issues/test82	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:92#test82
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+  Only Issues's inspections were enabled in the old harness.
+
+PASS	Issues/test84	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:106#test84
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+  Only Issues's inspections were enabled in the old harness.
+
+PASS	Issues/test85	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:132#test85
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+  Only Issues's inspections were enabled in the old harness.
+
+PASS	Issues/test87	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:146#test87
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+  Only Issues's inspections were enabled in the old harness.
+
+PASS	Issues/test148	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:157#test148
+  Configuration: Lua 5.3; strict_nil=true; unknown_callable/indexable=false; weak_warnings=false
+  Only Issues's inspections were enabled in the old harness.
+
+FAIL	StructureViewTest/testStructureViewBase	expected=0 missing=0 extra=0
+  Expected class "A" with child method "method"; observed outline: [DocumentSymbol { name: "A", detail: None, kind: Class, range: Span { start: 3, end: 11 }, selection: Span { start: 10, end: 11 }, children: [] }, DocumentSymbol { name: "m", detail: None, kind: Variable, range: Span { start: 12, end: 24 }, selection: Span { start: 18, end: 19 }, children: [] }, DocumentSymbol { name: "m:method", detail: Some("()"), kind: Method, range: Span { start: 26, end: 48 }, selection: Span { start: 37, end: 43 }, children: [] }]
+
+  Origin: src/test/kotlin/com/tang/intellij/test/structure/StructureViewTest.kt:26#testStructureViewBase
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	VarargTest/test_vararg_1	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/vararg/VarargTest.kt:22#test vararg 1
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+PASS	VarargTest/test_vararg_2	expected=0 missing=0 extra=0
+
+  Origin: src/test/kotlin/com/tang/intellij/test/vararg/VarargTest.kt:44#test vararg 2
+  Configuration: Lua 5.3; strict_nil=false; unknown_callable/indexable=true; weak_warnings=false
+
+99 cases: 50 passed, 49 mismatched, 0 crashed, 0 timed out.
+INVENTORY-ONLY	src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:161#test table member non-completion	ide-only: Asserts IntelliJ lookup element class and word-completion fallback; no LSP equivalent identity.
+INVENTORY-ONLY	src/test/kotlin/com/tang/intellij/test/format/CodeStyleTest.kt:54#test format multiple statements in one lines	ide-only: IntelliJ formatter settings/editor Enter action; no native formatter or editor action implementation.
+INVENTORY-ONLY	src/test/kotlin/com/tang/intellij/test/format/CodeStyleTest.kt:61#test keep multiple statements in one line	ide-only: IntelliJ formatter settings/editor Enter action; no native formatter or editor action implementation.
+INVENTORY-ONLY	src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:49#test54	ide-only: IntelliJ formatter settings/editor Enter action; no native formatter or editor action implementation.
+INVENTORY-ONLY	src/test/kotlin/com/tang/intellij/test/refactoring/MoveFileTest.kt:32#testMoveFile	unsupported: File rename/move with require edits needs workspace/willRenameFiles; native symbol Rename is a separate operation.
+INVENTORY-ONLY	src/test/kotlin/com/tang/intellij/test/refactoring/RenameTest.kt:22#test rename file	unsupported: File rename/move with require edits needs workspace/willRenameFiles; native symbol Rename is a separate operation.

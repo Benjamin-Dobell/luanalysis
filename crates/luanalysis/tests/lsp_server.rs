@@ -1286,3 +1286,28 @@ fn a_host_module_map_resolves_requires_for_queries() {
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn legacy_unicode_members_are_completed_at_utf16_positions_and_replace_typed_unicode() {
+    let root = fixture();
+    let main = root.join("unicode.lua");
+    let original = include_str!("../../luanalysis-fixtures/tests/legacy/embedded/ParsingTest/test_parse_chinese_non_java_characters/test_parse_chinese_characters.lua");
+    let text = original.replace("--[[caret]]", "");
+    fs::write(&main, &text).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.3"]);
+    server.initialize(&root);
+    server.open(&main, &text);
+    let needle = "天晓得我是什么.";
+    let (line, column) = position(&text, needle, 0);
+    let column = column + needle.encode_utf16().count() as u32;
+    let response = server.request(2, "textDocument/completion", &main, line, column);
+    assert!(response.contains(r#""label":"名字""#), "{response}");
+    let typed = text.replacen(needle, &format!("{needle}名字"), 1);
+    server.change(&main, 2, &typed);
+    let response = server.request(3, "textDocument/completion", &main, line, column + 1);
+    assert!(response.contains(r#""label":"名字""#), "{response}");
+    assert!(response.contains(&format!(r#""start":{{"line":{line},"character":{column}}}"#)), "{response}");
+    assert!(response.contains(&format!(r#""end":{{"line":{line},"character":{}}}"#, column + 2)), "{response}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}

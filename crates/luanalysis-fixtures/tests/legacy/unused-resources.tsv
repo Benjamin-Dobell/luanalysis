@@ -1,0 +1,10 @@
+# file	reason
+resources/completion/testAnonymous.lua	unreferenced by baseline automated harness; preserved without invented assertions
+resources/refactoring/moveFile/after/B.lua	before/after file move fixture; operation unavailable
+resources/refactoring/moveFile/after/to/A.lua	before/after file move fixture; operation unavailable
+resources/refactoring/moveFile/after/to/C.lua	before/after file move fixture; operation unavailable
+resources/refactoring/moveFile/before/A.lua	before/after file move fixture; operation unavailable
+resources/refactoring/moveFile/before/B.lua	before/after file move fixture; operation unavailable
+resources/refactoring/moveFile/before/to/C.lua	before/after file move fixture; operation unavailable
+resources/structure/testStructure.lua	unreferenced by baseline automated harness; preserved without invented assertions
+resources/typeSafety/typeSafety.lua	unreferenced by baseline automated harness; preserved without invented assertions

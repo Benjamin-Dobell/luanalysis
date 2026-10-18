@@ -133,6 +133,13 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
     while end < bytes.len() && is_word(bytes[end]) { end += 1; }
     if bytes.get(start).is_some_and(u8::is_ascii_digit) { return None; }
     let tokens = luanalysis_syntax::lex(text).tokens;
+    // Token spans keep a partially typed Unicode name intact, just as they do
+    // for an ASCII name. Byte scanning alone stops in the middle of that name.
+    if let Some(token) = tokens.iter().find(|token| token.span.start <= offset && offset <= token.span.end
+        && matches!(token.kind, TokenKind::Identifier(_) | TokenKind::Keyword(_))) {
+        start = token.span.start;
+        end = token.span.end;
+    }
     if let Some(context) = annotation_context(text, &tokens, start, offset) {
         return Some(CompletionSite { context, text: text.to_owned(), placeholder: Span { start, end: start }, word: start..end, statement: false, parameters_follow: false, value: false, details: Details::All });
     }
@@ -902,11 +909,14 @@ fn visible_bindings(bound: &bind::BoundFile, offset: usize) -> Vec<bind::Binding
 }
 
 fn is_identifier(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    bytes.next().is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
-        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        && !KEYWORDS.contains(&name)
-        && name != PLACEHOLDER
+    if name == PLACEHOLDER { return false; }
+    // Use the Lua lexer's identifier policy, including its Unicode names. A
+    // separate ASCII filter hid valid members and globals from completions.
+    let tokens = luanalysis_syntax::lex(name).tokens;
+    matches!(tokens.as_slice(), [token, eof]
+        if matches!(&token.kind, TokenKind::Identifier(identifier) if identifier == name)
+            && token.span == (Span { start: 0, end: name.len() })
+            && matches!(eof.kind, TokenKind::Eof))
 }
 
 /// Where signature help was requested: in the argument list of a call.
@@ -2908,6 +2918,17 @@ mod tests {
         let offset = text.find('|').expect("a cursor");
         let text = text.replacen('|', "", 1);
         completion_site(&text, offset)
+    }
+
+    #[test]
+    fn unicode_member_completion_replaces_the_entire_identifier() {
+        let site = site("local 对象 = {}\nlocal x = 对象.名|字\n").unwrap();
+        assert_eq!(site.context, CompletionContext::Member { method: false });
+        assert_eq!(&"local 对象 = {}\nlocal x = 对象.名字\n"[site.word.clone()], "名字");
+        assert_eq!(site.text, format!("local 对象 = {{}}\nlocal x = 对象.{PLACEHOLDER}\n"));
+        assert!(is_identifier("名字"));
+        assert!(!is_identifier("名字 with spaces"));
+        assert!(!is_identifier("end"));
     }
 
     #[test]

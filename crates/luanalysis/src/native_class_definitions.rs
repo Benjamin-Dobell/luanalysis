@@ -125,9 +125,6 @@ impl NativeRegistry {
                 "declaration placeholders require an external value contract, not checked runtime initialization",
             );
         }
-        if !source.syntax.generics.is_empty() {
-            return Err("generic runtime class templates are not implemented");
-        }
         let attachment = self
             .named
             .attachment(span)
@@ -145,6 +142,18 @@ impl NativeRegistry {
             || self.named.sole_owner(&source.syntax.name.text).is_none()
         {
             return Err("multiple named declaration owners");
+        }
+        // A bare local declares an annotated value, as `---@type C; local c`
+        // does. It does not initialize a runtime class table. In particular a
+        // generic class declaration here needs no runtime template machinery.
+        if matches!(&attachment.kind, RuntimeAttachmentKind::Local { bindings } if bindings.len() == 1)
+            && attachment.local_values.is_empty()
+            && !attachment.has_explicit_type_annotation
+        {
+            return Ok(None);
+        }
+        if !source.syntax.generics.is_empty() {
+            return Err("generic runtime class templates are not implemented");
         }
         if attachment.has_explicit_type_annotation {
             return Err(

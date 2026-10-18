@@ -1,0 +1,104 @@
+# origin	kind	cases	notes
+src/test/kotlin/com/tang/intellij/test/completion/ParsingTest.kt:21#test parse chinese non-java characters	completion	ParsingTest/test_parse_chinese_non_java_characters	
+src/test/kotlin/com/tang/intellij/test/completion/TestAlias.kt:20#test alias	completion	TestAlias/test_alias	
+src/test/kotlin/com/tang/intellij/test/completion/TestArgHistory.kt:21#test arg history 1	completion	TestArgHistory/test_arg_history_1	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:31#testLocalCompletion	completion	TestCompletion/testLocalCompletion	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:40#testGlobalCompletion	completion	TestCompletion/testGlobalCompletion0|TestCompletion/testGlobalCompletion1	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:60#testSelfCompletion	completion	TestCompletion/testSelfCompletion	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:69#testParamCompletion	completion	TestCompletion/testParamCompletion	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:78#testAnnotation	completion	TestCompletion/testAnnotation0|TestCompletion/testAnnotation1	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:103#testAnnotationArray	completion	TestCompletion/testAnnotationArray	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:112#testAnnotationFun	completion	TestCompletion/testAnnotationFun	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:121#testAnnotationDict	completion	TestCompletion/testAnnotationDict	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:130#testAnonymous	completion	TestCompletion/testAnonymous	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:146#test doc table 1	completion	TestCompletion/test_doc_table_1	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:161#test table member non-completion	ide-only		Asserts IntelliJ lookup element class and word-completion fallback; no LSP equivalent identity.
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:180#test attribute completion	completion	TestCompletion/test_attribute_completion	
+src/test/kotlin/com/tang/intellij/test/completion/TestCompletion.kt:196#testFieldCompletion	completion	TestCompletion/testFieldCompletion	
+src/test/kotlin/com/tang/intellij/test/completion/TestModule.kt:24#test module type	completion	TestModule/test_module_type	
+src/test/kotlin/com/tang/intellij/test/completion/TestModule.kt:43#test module field completion	completion	TestModule/test_module_field_completion	
+src/test/kotlin/com/tang/intellij/test/completion/TestModule.kt:60#test module members visibility	completion	TestModule/test_module_members_visibility	
+src/test/kotlin/com/tang/intellij/test/completion/TestMultipleResults.kt:21#test multiple results 1	completion	TestMultipleResults/test_multiple_results_1	
+src/test/kotlin/com/tang/intellij/test/completion/TestPrimitiveLiteral.kt:20#test string literals	completion	TestPrimitiveLiteral/test_string_literals	
+src/test/kotlin/com/tang/intellij/test/completion/TestPrimitiveLiteral.kt:34#test number literals	completion	TestPrimitiveLiteral/test_number_literals	
+src/test/kotlin/com/tang/intellij/test/completion/TestPrimitiveLiteral.kt:48#test boolean literals	completion	TestPrimitiveLiteral/test_boolean_literals	
+src/test/kotlin/com/tang/intellij/test/completion/TestSelf.kt:20#test self	completion	TestSelf/test_self	
+src/test/kotlin/com/tang/intellij/test/completion/TestSnippet.kt:20#test snippet	completion	TestSnippet/test_snippet	
+src/test/kotlin/com/tang/intellij/test/format/CodeStyleTest.kt:54#test format multiple statements in one lines	ide-only		IntelliJ formatter settings/editor Enter action; no native formatter or editor action implementation.
+src/test/kotlin/com/tang/intellij/test/format/CodeStyleTest.kt:61#test keep multiple statements in one line	ide-only		IntelliJ formatter settings/editor Enter action; no native formatter or editor action implementation.
+src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:23#test generic 1	completion	GenericTest/test_generic_1	
+src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:42#test generic 2	completion	GenericTest/test_generic_2	
+src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:61#test generic 3	completion	GenericTest/test_generic_3	
+src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:85#test custom iterator	completion	GenericTest/test_custom_iterator	
+src/test/kotlin/com/tang/intellij/test/inspections/DuplicateTypeTest.kt:22#testDuplicateTypes	diagnostics	DuplicateTypeTest/testDuplicateTypes	
+src/test/kotlin/com/tang/intellij/test/inspections/IllegalAliasTest.kt:22#testIllegalAlias	diagnostics	IllegalAliasTest/testIllegalAlias	
+src/test/kotlin/com/tang/intellij/test/inspections/IllegalInheritanceTest.kt:22#testIllegalInheritance	diagnostics	IllegalInheritanceTest/testIllegalInheritance	
+src/test/kotlin/com/tang/intellij/test/inspections/LanguageLevelTest.kt:26#testDisallowLua53Features	language-level	LanguageLevelTest/testDisallowLua53Features	
+src/test/kotlin/com/tang/intellij/test/inspections/LanguageLevelTest.kt:47#testAllowLua53Features	language-level	LanguageLevelTest/testAllowLua53Features	
+src/test/kotlin/com/tang/intellij/test/inspections/LanguageLevelTest.kt:68#testDisallowLua54Features	language-level	LanguageLevelTest/testDisallowLua54Features	
+src/test/kotlin/com/tang/intellij/test/inspections/LanguageLevelTest.kt:84#testAllowLua54Features	language-level	LanguageLevelTest/testAllowLua54Features	
+src/test/kotlin/com/tang/intellij/test/inspections/LocalNameShadowedTest.kt:23#testLocalNameHidesPrevious	diagnostics	LocalNameShadowedTest/testLocalNameHidesPrevious	
+src/test/kotlin/com/tang/intellij/test/inspections/ReturnTypeTest.kt:23#test return type mismatch	diagnostics	ReturnTypeTest/test_return_type_mismatch	
+src/test/kotlin/com/tang/intellij/test/inspections/ReturnTypeTest.kt:30#test matching return type	diagnostics	ReturnTypeTest/test_matching_return_type	
+src/test/kotlin/com/tang/intellij/test/inspections/ReturnTypeTest.kt:37#test non return	diagnostics	ReturnTypeTest/test_non_return	
+src/test/kotlin/com/tang/intellij/test/inspections/ReturnTypeTest.kt:43#test implicit return void	diagnostics	ReturnTypeTest/test_implicit_return_void	
+src/test/kotlin/com/tang/intellij/test/inspections/ReturnTypeTest.kt:49#test explicit return void	diagnostics	ReturnTypeTest/test_explicit_return_void	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:54#testAlias	diagnostics	TypeSafetyTest/testAlias	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:58#testBoolean	diagnostics	TypeSafetyTest/testBoolean	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:62#testClass	diagnostics	TypeSafetyTest/testClass	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:66#testClassFromAnotherFile	diagnostics	TypeSafetyTest/testClassFromAnotherFile	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:70#testDocTables	diagnostics	TypeSafetyTest/testDocTables	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:74#testFunctionClosures	diagnostics	TypeSafetyTest/testFunctionClosures	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:78#testFunctionCovariance	diagnostics	TypeSafetyTest/testFunctionCovariance	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:82#testFunctionGenerics	diagnostics	TypeSafetyTest/testFunctionGenerics	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:86#testFunctionGenericsScope	diagnostics	TypeSafetyTest/testFunctionGenericsScope	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:90#testFunctionMultipleReturns	diagnostics	TypeSafetyTest/testFunctionMultipleReturns	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:94#testFunctionOptionalParameters	diagnostics	TypeSafetyTest/testFunctionOptionalParameters	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:98#testFunctionPartiallyTyped	diagnostics	TypeSafetyTest/testFunctionPartiallyTyped	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:102#testGenericAlias	diagnostics	TypeSafetyTest/testGenericAlias	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:107#testGenericClassConstraints	diagnostics	TypeSafetyTest/testGenericClassConstraints	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:111#testGenericClassCovariance	diagnostics	TypeSafetyTest/testGenericClassCovariance	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:116#testGenericClassFields	diagnostics	TypeSafetyTest/testGenericClassFields	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:120#testGenericClassScope	diagnostics	TypeSafetyTest/testGenericClassScope	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:124#testGenericSelf	diagnostics	TypeSafetyTest/testGenericSelf	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:129#testGlobalDefinitions	diagnostics	TypeSafetyTest/testGlobalDefinitions	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:133#testGlobalUsage	diagnostics	TypeSafetyTest/testGlobalUsage	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:137#testIndexedFields	diagnostics	TypeSafetyTest/testIndexedFields	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:141#testLambdaClass	diagnostics	TypeSafetyTest/testLambdaClass	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:145#testLambdaParams	diagnostics	TypeSafetyTest/testLambdaParams	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:149#testLocalDefAssignment	diagnostics	TypeSafetyTest/testLocalDefAssignment	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:153#testModules	diagnostics	TypeSafetyTest/testModules	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:175#testModuleSupportUnavailableLua53	diagnostics	TypeSafetyTest/testModuleSupportUnavailableLua53	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:196#testNonStrictNil	diagnostics	TypeSafetyTest/testNonStrictNil	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:200#testNumbers	diagnostics	TypeSafetyTest/testNumbers	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:204#testOps	diagnostics	TypeSafetyTest/testOps	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:208#testOverloads	diagnostics	TypeSafetyTest/testOverloads	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:212#testOverrides	diagnostics	TypeSafetyTest/testOverrides	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:216#testPoorlyNamedParams	diagnostics	TypeSafetyTest/testPoorlyNamedParams	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:220#testRecursiveAlias	diagnostics	TypeSafetyTest/testRecursiveAlias	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:224#testRequire	diagnostics	TypeSafetyTest/testRequire	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:228#testSelf	diagnostics	TypeSafetyTest/testSelf	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:232#testShape	diagnostics	TypeSafetyTest/testShape	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:236#testSnippet	diagnostics	TypeSafetyTest/testSnippet	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:240#testStrictNil	diagnostics	TypeSafetyTest/testStrictNil	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:244#testStringLiterals	diagnostics	TypeSafetyTest/testStringLiterals	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:248#testTables	diagnostics	TypeSafetyTest/testTables	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:252#testTrailingType	diagnostics	TypeSafetyTest/testTrailingType	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:256#testTypeCasts	diagnostics	TypeSafetyTest/testTypeCasts	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:260#testUnions	diagnostics	TypeSafetyTest/testUnions	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:265#testUnknown	diagnostics	TypeSafetyTest/testUnknown	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:273#testUnknownStrict	diagnostics	TypeSafetyTest/testUnknownStrict	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:277#testVarargs	diagnostics	TypeSafetyTest/testVarargs	
+src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:281#testVarreturn	diagnostics	TypeSafetyTest/testVarreturn	
+src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:49#test54	ide-only		IntelliJ formatter settings/editor Enter action; no native formatter or editor action implementation.
+src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:78#test81	diagnostics	Issues/test81	
+src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:92#test82	diagnostics	Issues/test82	
+src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:106#test84	diagnostics	Issues/test84	
+src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:132#test85	diagnostics	Issues/test85	
+src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:146#test87	diagnostics	Issues/test87	
+src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:157#test148	diagnostics	Issues/test148	
+src/test/kotlin/com/tang/intellij/test/refactoring/MoveFileTest.kt:32#testMoveFile	unsupported		File rename/move with require edits needs workspace/willRenameFiles; native symbol Rename is a separate operation.
+src/test/kotlin/com/tang/intellij/test/refactoring/RenameTest.kt:22#test rename file	unsupported		File rename/move with require edits needs workspace/willRenameFiles; native symbol Rename is a separate operation.
+src/test/kotlin/com/tang/intellij/test/structure/StructureViewTest.kt:26#testStructureViewBase	document-symbols	StructureViewTest/testStructureViewBase	
+src/test/kotlin/com/tang/intellij/test/vararg/VarargTest.kt:22#test vararg 1	completion	VarargTest/test_vararg_1	
+src/test/kotlin/com/tang/intellij/test/vararg/VarargTest.kt:44#test vararg 2	completion	VarargTest/test_vararg_2	

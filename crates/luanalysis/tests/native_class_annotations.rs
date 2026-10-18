@@ -114,3 +114,18 @@ fn cli_rejects_unrelated_class_return_and_accepts_same_origin_correction() {
     );
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn uninitialized_class_locals_declare_types_without_constructing_runtime_templates() {
+    // The complete legacy generic_class_covariance.lua uses these uninitialized
+    // declaration owners. There is no runtime class initializer to reject.
+    let source = "---@class Parent<T>\n---@field value T\nlocal Parent\n---@class Child<T>:Parent<T>\nlocal Child\n---@type Parent<string>\nlocal parent\n---@type Child<string>\nlocal child\nparent=child\nchild=parent\n";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "parent");
+    clean(&source.replace("child=parent", "child=child"));
+    // Actual initialized generic class tables still require runtime templates.
+    let initialized = source.replace("local Parent\n", "local Parent={}\n");
+    assert!(check(&initialized).diagnostics.iter().any(|d| d.code == "LUA2031"));
+}

@@ -3,8 +3,9 @@
 These Lua files are owned fixtures for the standalone checker. Their source,
 markers and expected behavior are maintained together with the implementation.
 
-`local_def_assignment.lua`, `lambda_params.lua`, `trailing_type.lua` and
-`snippet.lua` are complete checking inputs. Marker removal preserves every
+The complete `local_def_assignment.lua`, `lambda_params.lua`, `trailing_type.lua`
+and `snippet.lua` inputs now live in `../legacy/resources/inspections/`, with
+upstream provenance documented in `../legacy/ORIGIN.md`. Marker removal preserves every
 non-marker byte, and expected ranges refer to the resulting clean Lua. Negative
 cases also run with temporary in-memory corrections; those corrections leave the
 stored marked input intact.

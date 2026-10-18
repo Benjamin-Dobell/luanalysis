@@ -3,3 +3,10 @@
 
 # Unified patches retain the required space prefix on blank context lines.
 vendor/patches/*.patch -whitespace
+
+# Pinned upstream test bytes and Kotlin raw strings retain their whitespace.
+crates/luanalysis-fixtures/tests/legacy/resources/** -whitespace
+crates/luanalysis-fixtures/tests/legacy/kotlin/** -whitespace
+crates/luanalysis-fixtures/tests/legacy/embedded/** -whitespace
+# A final empty TSV field is represented by its tab delimiter.
+crates/luanalysis-fixtures/tests/legacy/*.tsv -whitespace

@@ -65,7 +65,7 @@ fn native_diagnostics(source: &str) -> Vec<DiagnosticMatch> {
 fn original_legacy_fixture_matches_native_error_and_corrected_source() {
     let case = CASES[0];
     case.require_supported().unwrap();
-    let marked = include_str!("fixtures/local_def_assignment.lua");
+    let marked = include_str!("legacy/resources/inspections/local_def_assignment.lua");
     let fixture = import(marked)
         .unwrap()
         .with_origin(FixtureOrigin::legacy(case.origin_path));
@@ -108,7 +108,7 @@ fn full_legacy_lambda_params_matches_original_errors_and_corrected_bodies() {
         status: CaseStatus::SharedSemantics,
     };
     case.require_supported().unwrap();
-    let marked = include_str!("fixtures/lambda_params.lua");
+    let marked = include_str!("legacy/resources/inspections/lambda_params.lua");
     let fixture = import(marked)
         .unwrap()
         .with_origin(FixtureOrigin::legacy(case.origin_path));
@@ -202,7 +202,7 @@ fn full_legacy_trailing_type_reports_its_original_initializer_error_and_correcti
         status: CaseStatus::SharedSemantics,
     };
     case.require_supported().unwrap();
-    let fixture = import(include_str!("fixtures/trailing_type.lua"))
+    let fixture = import(include_str!("legacy/resources/inspections/trailing_type.lua"))
         .unwrap()
         .with_origin(FixtureOrigin::legacy(case.origin_path));
     assert_eq!(fixture.diagnostics.len(), 1);
@@ -254,7 +254,7 @@ fn full_legacy_completion_snippet_checks_the_companion_type_and_correction() {
         status: CaseStatus::SharedSemantics,
     };
     case.require_supported().unwrap();
-    let fixture = import(include_str!("fixtures/snippet.lua"))
+    let fixture = import(include_str!("legacy/resources/inspections/snippet.lua"))
         .unwrap()
         .with_origin(FixtureOrigin::legacy(case.origin_path));
     assert_eq!(fixture.diagnostics.len(), 1);
