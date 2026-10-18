@@ -604,3 +604,24 @@ fn documents_and_the_workspace_list_their_symbols() {
     assert!(!response.contains(r#""name":"show""#), "{response}");
     server.finish();
 }
+
+#[test]
+fn requires_link_and_documents_fold_and_select() {
+    let root = fixture();
+    fs::write(root.join("shapes.lua"), "return {}\n").unwrap();
+    let main = root.join("main.lua");
+    let source = "local shapes = require('shapes')\nlocal function f()\n    return shapes\nend\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4", "--module-root", root.to_str().unwrap()]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    let response = server.request(3, "textDocument/documentLink", &main, 0, 0);
+    assert!(response.contains(&uri(&root.join("shapes.lua"))), "{response}");
+    let response = server.request(4, "textDocument/foldingRange", &main, 0, 0);
+    assert!(response.contains(r#"{"startLine":1,"endLine":2}"#), "{response}");
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":5,"method":"textDocument/selectionRange","params":{{"textDocument":{{"uri":"{}"}},"positions":[{{"line":2,"character":12}}]}}}}"#, uri(&main)));
+    let response = server.wait(|message| message.contains(r#""id":5,"#));
+    assert!(response.contains(r#""range":{"start":{"line":2,"character":11},"end":{"line":2,"character":17}}"#) && response.contains(r#""parent""#), "{response}");
+    server.finish();
+}

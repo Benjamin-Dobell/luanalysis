@@ -1250,6 +1250,143 @@ fn nested_function_symbols(expression: &Expr, text: &str, symbols: &mut Vec<Docu
     }
 }
 
+/// A range of a document that an editor can fold: from `start` to `end` (byte offsets), with
+/// whether it is a comment or a `--region`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fold {
+    pub start: usize,
+    pub end: usize,
+    pub kind: Option<FoldKind>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FoldKind {
+    Comment,
+    Region,
+}
+
+/// The foldable ranges of a Lua source: functions, blocks, multi-line tables, runs of
+/// documentation comments, long comments, and `--region` to `--endregion` (or `--{{{` to
+/// `--}}}`), as v1 folds them.
+pub fn folding_ranges(text: &str) -> Vec<Fold> {
+    let file = luanalysis_syntax::parse(text);
+    let mut folds = Vec::new();
+    statement_folds(&file.statements, &mut folds);
+    crate::module_requests::visit_expressions(&file.statements, &mut |expression: &Expr| {
+        if matches!(expression.kind, ExprKind::Table(_) | ExprKind::Function(_)) {
+            folds.push(Fold { start: expression.span.start, end: expression.span.end, kind: None });
+        }
+    });
+    let mut regions = Vec::new();
+    let mut run: Option<Span> = None;
+    for comment in &file.comments {
+        let body = comment.text.trim_start_matches('-').trim_start_matches('#');
+        let line_comment = comment.text.starts_with("--") && !comment.text.starts_with("--[");
+        if line_comment && (body.starts_with("region") || comment.text.starts_with("--{{{")) {
+            regions.push(comment.span.start);
+            continue;
+        }
+        if line_comment && (body.starts_with("endregion") || comment.text.starts_with("--}}}")) {
+            if let Some(start) = regions.pop() { folds.push(Fold { start, end: comment.span.end, kind: Some(FoldKind::Region) }); }
+            continue;
+        }
+        if !line_comment {
+            folds.push(Fold { start: comment.span.start, end: comment.span.end, kind: Some(FoldKind::Comment) });
+            continue;
+        }
+        // Consecutive line comments fold together.
+        run = Some(match run {
+            Some(span) if text.get(span.end..comment.span.start).is_some_and(|gap| gap.trim().is_empty() && gap.matches('\n').count() <= 1) => span.join(comment.span),
+            Some(span) => {
+                folds.push(Fold { start: span.start, end: span.end, kind: Some(FoldKind::Comment) });
+                comment.span
+            }
+            None => comment.span,
+        });
+    }
+    if let Some(span) = run { folds.push(Fold { start: span.start, end: span.end, kind: Some(FoldKind::Comment) }); }
+    // Only what spans lines folds.
+    folds.retain(|fold| text.get(fold.start..fold.end).is_some_and(|folded| folded.trim_end().contains('\n')));
+    folds.sort_by_key(|fold| (fold.start, fold.end));
+    folds.dedup_by_key(|fold| (fold.start, fold.end));
+    folds
+}
+
+fn statement_folds(statements: &[luanalysis_syntax::Stmt], folds: &mut Vec<Fold>) {
+    use luanalysis_syntax::StmtKind;
+    for statement in statements {
+        match &statement.kind {
+            StmtKind::LocalFunction { .. } | StmtKind::FunctionDeclaration { .. } | StmtKind::Block { .. }
+                | StmtKind::While { .. } | StmtKind::Repeat { .. } | StmtKind::NumericFor { .. } | StmtKind::GenericFor { .. } => {
+                folds.push(Fold { start: statement.span.start, end: statement.span.end, kind: None });
+            }
+            StmtKind::If { branches, else_branch } => {
+                // Each branch folds to the next, so `else` stays visible.
+                for branch in branches { folds.push(Fold { start: branch.span.start, end: branch.body_span.end, kind: None }); }
+                if let Some(branch) = else_branch { folds.push(Fold { start: branch.span.start, end: branch.body_span.end, kind: None }); }
+            }
+            _ => {}
+        }
+        match &statement.kind {
+            StmtKind::LocalFunction { function, .. } | StmtKind::FunctionDeclaration { function, .. } => statement_folds(&function.body, folds),
+            StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
+                | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => statement_folds(body, folds),
+            StmtKind::If { branches, else_branch } => {
+                for branch in branches { statement_folds(&branch.body, folds); }
+                if let Some(branch) = else_branch { statement_folds(&branch.body, folds); }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// For each offset, the spans that an editor's selection grows through: the name or expression
+/// there, each expression and statement around it, and the whole source.
+pub fn selection_ranges(text: &str, offsets: &[usize]) -> Vec<Vec<Span>> {
+    let file = luanalysis_syntax::parse(text);
+    let mut spans = Vec::new();
+    statement_spans(&file.statements, &mut spans);
+    crate::module_requests::visit_expressions(&file.statements, &mut |expression: &Expr| {
+        spans.push(expression.span);
+        if let ExprKind::Field { name, .. } | ExprKind::MethodCall { name, .. } = &expression.kind { spans.push(name.span); }
+    });
+    spans.push(Span { start: 0, end: text.len() });
+    offsets.iter().map(|&offset| {
+        let mut around: Vec<Span> = spans.iter().copied().filter(|span| span.start <= offset && offset <= span.end && span.start < span.end).collect();
+        around.sort_by_key(|span| (span.end - span.start, std::cmp::Reverse(span.start)));
+        around.dedup();
+        // Each range must contain the one before it.
+        let mut chain: Vec<Span> = Vec::new();
+        for span in around {
+            if chain.last().is_none_or(|inner| span.start <= inner.start && inner.end <= span.end && span != *inner) { chain.push(span); }
+        }
+        chain
+    }).collect()
+}
+
+fn statement_spans(statements: &[luanalysis_syntax::Stmt], spans: &mut Vec<Span>) {
+    use luanalysis_syntax::StmtKind;
+    for statement in statements {
+        spans.push(statement.span);
+        match &statement.kind {
+            StmtKind::LocalFunction { function, .. } | StmtKind::FunctionDeclaration { function, .. } => {
+                spans.push(function.body_span);
+                statement_spans(&function.body, spans);
+            }
+            StmtKind::Block { body, body_span } | StmtKind::While { body, body_span, .. } | StmtKind::Repeat { body, body_span, .. }
+                | StmtKind::NumericFor { body, body_span, .. } | StmtKind::GenericFor { body, body_span, .. } => {
+                spans.push(*body_span);
+                statement_spans(body, spans);
+            }
+            StmtKind::If { branches, else_branch } => {
+                for branch in branches { spans.push(branch.span); spans.push(branch.body_span); statement_spans(&branch.body, spans); }
+                if let Some(branch) = else_branch { spans.push(branch.span); spans.push(branch.body_span); statement_spans(&branch.body, spans); }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1354,6 +1491,29 @@ mod tests {
             "helper:Function[]",
             "inner:Function[]",
         ]);
+    }
+
+    #[test]
+    fn functions_blocks_tables_comments_and_regions_fold() {
+        let text = "--region setup\n--- One.\n--- Two.\nlocal function f()\n    if x then\n        y()\n    else\n        z()\n    end\nend\nlocal t = {\n    a = 1,\n}\n--endregion\nlocal flat = { 1 }\n";
+        let folds: Vec<_> = folding_ranges(text).into_iter().map(|fold| (text[fold.start..fold.end].lines().next().unwrap().to_owned(), fold.kind)).collect();
+        assert_eq!(folds, vec![
+            ("--region setup".to_owned(), Some(FoldKind::Region)),
+            ("--- One.".to_owned(), Some(FoldKind::Comment)),
+            ("local function f()".to_owned(), None),
+            ("if x then".to_owned(), None),
+            ("else".to_owned(), None),
+            ("{".to_owned(), None),
+        ]);
+    }
+
+    #[test]
+    fn a_selection_grows_from_a_name_through_its_expressions_and_statements() {
+        let text = "local function f()\n    return point.x + 1\nend\n";
+        let offset = text.find(".x").unwrap() + 1;
+        let chain: Vec<_> = selection_ranges(text, &[offset])[0].iter().map(|span| &text[span.start..span.end]).collect();
+        assert_eq!(chain[..4], ["x", "point.x", "point.x + 1", "return point.x + 1"]);
+        assert_eq!(*chain.last().unwrap(), text);
     }
 
     #[test]

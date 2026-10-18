@@ -398,6 +398,18 @@ impl Server {
                 let result = self.workspace_symbols(params);
                 self.respond(id, result);
             }
+            "textDocument/foldingRange" => {
+                let result = self.folding_ranges(params);
+                self.respond(id, result);
+            }
+            "textDocument/selectionRange" => {
+                let result = self.selection_ranges(params);
+                self.respond(id, result);
+            }
+            "textDocument/documentLink" => {
+                let result = self.document_links(params);
+                self.respond(id, result);
+            }
             "textDocument/signatureHelp" => self.signature_help(id, params),
             "textDocument/documentHighlight" => match self.highlights(params) {
                 Json::Null => self.navigate(id, params, Navigate::Highlight),
@@ -517,6 +529,9 @@ impl Server {
                 ("documentHighlightProvider", Json::from(true)),
                 ("documentSymbolProvider", Json::from(true)),
                 ("workspaceSymbolProvider", Json::from(true)),
+                ("foldingRangeProvider", Json::from(true)),
+                ("selectionRangeProvider", Json::from(true)),
+                ("documentLinkProvider", Json::object([("resolveProvider", Json::from(false))])),
                 ("renameProvider", Json::object([("prepareProvider", Json::from(true))])),
                 ("completionProvider", Json::object([
                     ("triggerCharacters", Json::Array(vec![Json::from("."), Json::from(":"), Json::from("@")])),
@@ -737,6 +752,63 @@ impl Server {
             }
         }
         Json::Array(results)
+    }
+
+    /// The ranges a document folds: a fold hides the lines after its first, up to the line before
+    /// its last, so a block's `end` (or a branch's `else`) stays visible.
+    fn folding_ranges(&self, params: &Json) -> Json {
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else { return Json::Null };
+        let Some(text) = self.file_text(&path) else { return Json::Null };
+        let lines = LineIndex::new(text.clone());
+        Json::Array(language_service::folding_ranges(&text).into_iter().filter_map(|fold| {
+            let start = lines.line(fold.start);
+            let last = lines.line(fold.end.saturating_sub(1).max(fold.start));
+            // A comment or region folds whole; a block keeps its closing line.
+            let end = if fold.kind.is_some() { last } else { last.saturating_sub(1) };
+            (end > start).then(|| {
+                let mut fields = vec![("startLine".to_owned(), Json::from(start)), ("endLine".to_owned(), Json::from(end))];
+                match fold.kind {
+                    Some(language_service::FoldKind::Comment) => fields.push(("kind".to_owned(), Json::from("comment"))),
+                    Some(language_service::FoldKind::Region) => fields.push(("kind".to_owned(), Json::from("region"))),
+                    None => {}
+                }
+                Json::Object(fields)
+            })
+        }).collect())
+    }
+
+    /// For each position, the ranges a selection grows through, innermost first.
+    fn selection_ranges(&self, params: &Json) -> Json {
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else { return Json::Null };
+        let Some(text) = self.file_text(&path) else { return Json::Null };
+        let lines = LineIndex::new(text.clone());
+        let positions = params.get("positions").and_then(Json::as_array).unwrap_or(&[]);
+        let offsets: Vec<usize> = positions.iter().map(|position| {
+            let line = position.get("line").and_then(Json::as_u64).unwrap_or(0) as usize;
+            let character = position.get("character").and_then(Json::as_u64).unwrap_or(0) as usize;
+            lines.offset(line, character, self.encoding)
+        }).collect();
+        Json::Array(language_service::selection_ranges(&text, &offsets).into_iter().zip(&offsets).map(|(chain, &offset)| {
+            let mut range: Option<Json> = None;
+            for span in chain.iter().rev() {
+                let mut fields = vec![("range".to_owned(), lines.range(span.start, span.end, self.encoding))];
+                if let Some(parent) = range.take() { fields.push(("parent".to_owned(), parent)); }
+                range = Some(Json::Object(fields));
+            }
+            range.unwrap_or_else(|| Json::object([("range", lines.range(offset, offset, self.encoding))]))
+        }).collect())
+    }
+
+    /// Each resolved `require` of a document, as a link to the module's file, while the document
+    /// is as it was checked.
+    fn document_links(&self, params: &Json) -> Json {
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else { return Json::Null };
+        let Some(file) = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path)) else { return Json::Null };
+        if self.documents.get(&path).is_some_and(|document| document.text != file.lines.text) { return Json::Array(Vec::new()); }
+        Json::Array(file.requires.iter().map(|require| Json::object([
+            ("range", file.range(require.start, require.end, self.encoding)),
+            ("target", Json::from(path_to_uri(&require.target))),
+        ])).collect())
     }
 
     /// A file's text: its open document's, or the last check's.
@@ -1264,6 +1336,11 @@ impl LineIndex {
         offset = offset.min(self.text.len());
         while !self.text.is_char_boundary(offset) { offset -= 1; }
         offset
+    }
+
+    /// The zero-based line of an offset.
+    fn line(&self, offset: usize) -> usize {
+        self.line_starts.partition_point(|&start| start <= self.floor(offset)) - 1
     }
 
     fn position(&self, offset: usize, encoding: Encoding) -> Json {
