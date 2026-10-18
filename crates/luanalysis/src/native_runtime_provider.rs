@@ -45,6 +45,26 @@ impl NativeRegistry {
     /// `self` (owned like the declared receiver), or a static path to a nested
     /// table. Schemas belong to constructors, so a local rebound to a new
     /// constructor owns the new one from that point.
+    /// Whether `callee` is the standard `setmetatable`, which returns the table it is given: the
+    /// global, `debug.setmetatable`, or a local initialised to one of them and never assigned again
+    /// (`local setmetatable = setmetatable`).
+    pub(crate) fn names_standard_setmetatable(&self, callee: &Expr, depth: u32) -> bool {
+        match &callee.kind {
+            ExprKind::Parenthesized(inner) => self.names_standard_setmetatable(inner, depth),
+            ExprKind::Name(name) => match self.bound().binding_at(name.span.start) {
+                None => name.text == "setmetatable",
+                Some(binding) => depth < 8
+                    && !self.bound().references(binding).any(|occurrence| occurrence.kind == crate::bind::OccurrenceKind::Write)
+                    && self.iterator_sources().declaration_initializer(binding).is_some_and(|initializer| {
+                        let sources = self.iterator_sources();
+                        self.names_standard_setmetatable(&sources.program.expression(initializer.expression).expression, depth + 1)
+                    }),
+            },
+            ExprKind::Field { base, name } => name.text == "setmetatable"
+                && matches!(&base.kind, ExprKind::Name(library) if library.text == "debug" && self.bound().binding_at(library.span.start).is_none()),
+            _ => false,
+        }
+    }
     fn syntactic_table_owner(&self, expression: &Expr, region: Option<u32>, depth: u32, memo: &mut HashMap<(usize, usize), Option<NativeExpressionKey>>) -> Option<NativeExpressionKey> {
         if depth > 32 { return None; }
         if let Some(&known) = memo.get(&(expression.span.start, expression.span.end)) { return known; }
@@ -58,12 +78,10 @@ impl NativeRegistry {
                 let key = self.expressions().key_for_span(expression.span);
                 self.runtime_tables.constructor(key).map(|_| key)
             }
-            ExprKind::Call { callee, args } => match &callee.kind {
-                ExprKind::Name(name) if name.text == "setmetatable" && self.bound().binding_at(name.span.start).is_none() => {
-                    args.first().and_then(|table| self.syntactic_table_owner(table, region, depth + 1, memo))
-                }
-                _ => None,
-            },
+            ExprKind::Call { callee, args } if self.names_standard_setmetatable(callee, 0) => {
+                args.first().and_then(|table| self.syntactic_table_owner(table, region, depth + 1, memo))
+            }
+            ExprKind::Call { .. } => None,
             ExprKind::Name(name) => self.bound().binding_at(name.span.start).and_then(|binding| {
                 if self.bound().declaration(binding).kind == DeclarationKind::ImplicitReceiver {
                     return self.method_receiver_for(binding).and_then(|receiver| self.syntactic_table_owner(receiver, None, depth + 1, memo));

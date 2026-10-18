@@ -133,7 +133,8 @@ impl NativeRegistry {
 }
 
 impl Checker<'_> {
-    fn native_require_operation(&mut self, callee: &Expr) -> Option<luanalysis_engine::NativeStandardOperation> {
+    /// Which standard operation, if any, `callee` is at this point of its flow.
+    pub(crate) fn native_standard_operation(&mut self, callee: &Expr) -> Option<luanalysis_engine::NativeStandardOperation> {
         let at = self.flow_at?;
         let native = self.native?;
         let evaluation = native.flow.evaluation_for_expression(callee, at.graph)?;
@@ -157,7 +158,7 @@ impl Checker<'_> {
             return None;
         }
         if has_original_contract {
-            let operation = self.native_require_operation(callee);
+            let operation = self.native_standard_operation(callee);
             if matches!(operation, Some(luanalysis_engine::NativeStandardOperation::Pending)) {
                 self.incomplete_flow = true;
                 return Some(ValuePack::single(Type::Unknown));

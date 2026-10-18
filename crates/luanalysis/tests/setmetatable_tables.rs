@@ -52,3 +52,16 @@ fn a_table_given_a_class_as_its_metatable_is_an_instance_of_the_class() {
     assert!(output.status.success(), "{report}");
     assert!(report.contains("main.lua:8:7: md: Markdown"), "{report}");
 }
+
+#[test]
+fn a_local_alias_of_setmetatable_and_debug_setmetatable_are_setmetatable() {
+    for setmetatable in ["local setmt = setmetatable\nlocal call = setmt", "local call = debug.setmetatable"] {
+        // A class's table as the metatable makes an instance of the class.
+        let (output, report) = check(&format!("{setmetatable}\n---@class Timer\nlocal mt = {{}}\nmt.__index = mt\nfunction mt:onTimer() end\nlocal t = call({{ _timeout = 1 }}, mt)\nt:onTimer()\nlocal cache = call({{}}, {{ __mode = 'k' }})\ncache.count = 1\nlocal read = cache.count\n"));
+        assert!(output.status.success(), "{setmetatable}: {report}");
+        assert!(report.contains("t: Timer") && report.contains("read: number"), "{setmetatable}: {report}");
+    }
+    // A local that is assigned again is no longer known to be setmetatable.
+    let (_, report) = check("local call = setmetatable\ncall = function(table) return table end\n---@class Timer\nlocal mt = {}\nmt.__index = mt\nfunction mt:onTimer() end\nlocal t = call({ _timeout = 1 }, mt)\n");
+    assert!(!report.contains("t: Timer"), "{report}");
+}

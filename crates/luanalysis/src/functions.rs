@@ -179,7 +179,7 @@ impl Checker<'_> {
         let first = self.engine.pack_slot(&pack, 0);
         // A class definition's table is the class's, not a runtime table's.
         let defines_class = self.native.is_some_and(|native| native.is_class_definition_initializer(span));
-        let table = if defines_class { first.clone() } else { self.setmetatable_result(callee, args, first.clone()) };
+        let table = if defines_class { first.clone() } else { self.setmetatable_result(callee, &callee_type, args, first.clone()) };
         if table == first { pack } else { ValuePack::single(table) }
     }
 
@@ -654,7 +654,7 @@ impl Checker<'_> {
         let ty = self.call_result(result, &callee_type, &origins, callee.span, span);
         if checked && let Some(pack) = self.standard_pattern_call(callee, args) { return self.engine.pack_slot(&pack, 0) }
         if self.native.is_some_and(|native| native.is_class_definition_initializer(span)) { return ty }
-        self.setmetatable_result(callee, args, ty)
+        self.setmetatable_result(callee, &callee_type, args, ty)
     }
 
     /// The result of a standard pattern function, `match`, `gmatch` or `find`, called with a
@@ -697,12 +697,18 @@ impl Checker<'_> {
 
     /// Lua's `setmetatable` returns the table it is given. A table that a constructor names keeps
     /// that identity through the call, so stores after it extend the table as they would directly.
-    fn setmetatable_result(&mut self, callee: &Expr, args: &[Expr], ty: Type) -> Type {
+    fn setmetatable_result(&mut self, callee: &Expr, callee_type: &Type, args: &[Expr], ty: Type) -> Type {
         let Some(first) = args.first() else { return ty };
         if self.engine.runtime_table_declaration(&ty).is_some() { return ty }
-        // The same syntactic `setmetatable` that attributes the stores to that table's schema.
-        let ExprKind::Name(name) = &callee.kind else { return ty };
-        if name.text != "setmetatable" || self.bound.binding_at(name.span.start).is_some() { return ty }
+        // The same syntactic `setmetatable` that attributes the stores to that table's schema, or
+        // another alias the checker proves is the standard function.
+        let syntactic = self.native.is_some_and(|native| native.names_standard_setmetatable(callee, 0));
+        let standard = syntactic || matches!(&callee.kind, ExprKind::Name(name) if self.bound.binding_at(name.span.start).is_some()) && {
+            let operation = self.native_standard_operation(callee);
+            matches!(operation, Some(luanalysis_engine::NativeStandardOperation::Standard(site)) if site.kind == luanalysis_engine::NativeIntrinsicKind::SetMetatable)
+                || self.engine.function_intrinsic(callee_type).is_some_and(|site| site.kind == luanalysis_engine::NativeIntrinsicKind::SetMetatable)
+        };
+        if !standard { return ty }
         // A class's definition table as the metatable makes the table an instance of the class.
         if let Some(metatable) = args.get(1)
             && matches!(metatable.kind, ExprKind::Name(_))
