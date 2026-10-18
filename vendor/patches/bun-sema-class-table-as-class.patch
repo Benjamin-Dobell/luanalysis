@@ -1,0 +1,39 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index de7c39e..8a599bd 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -1172,7 +1172,16 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     pub(super) fn native_definition_member_read(&mut self, reference: NativeDefinitionRef, receiver: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
+-        let raw = self.native_table_read(reference.view, key)?;
++        // A member the definition table has not been given at this point, one its class
++        // declares, and one it inherits read as the class's member: as v1 types a class table,
++        // and as TypeScript types a property assigned anywhere, rather than as possibly nil.
++        let raw = match self.native_table_read(reference.view, key) {
++            Ok(raw) if !self.contains_undefined(raw) => raw,
++            other => match self.native_named_read(reference.class, key) {
++                Ok(value) => return Ok(value),
++                Err(_) => other?,
++            },
++        };
+         let receiver = reference.class.self_argument.unwrap_or(receiver);
+         let mapper = self.native_receiver_mapper(reference.class, receiver);
+         let value = self.instantiate(raw, mapper);
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+index 270dd77..6fa8bfe 100644
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -5340,6 +5340,12 @@ impl<'p, 's> Checker<'p, 's> {
+         state: u8,
+         shared: &mut WorkerState,
+     ) -> Ternary {
++        // A class's definition table is a value of its class, as v1 types the class table, even
++        // where it has not yet been given every member.
++        let source = match self.native_definition_ref(source) {
++            Some(reference) => self.intern(TypeData::NativeObject(reference.class)),
++            None => source,
++        };
+         let target = self.native_receiver_relation_target(source, target);
+         let source = match self.native_object_relation_view(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
+         let target = match self.native_object_relation_view(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };

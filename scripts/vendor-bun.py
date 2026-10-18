@@ -581,6 +581,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Merge an identical field redeclaration, let a written field outrank a definition table's value for it, and report only a conflicting redeclaration, once at its declaration, through kernel 5ad4ad0.",
 })
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-class-table-as-class.patch",
+    "reason": "Read a member a class definition table has not been given yet as the class member, and relate the table as its class, as v1 types a class table, through kernel b3bfd0b.",
+} for path in ["native_named.rs", "relate.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

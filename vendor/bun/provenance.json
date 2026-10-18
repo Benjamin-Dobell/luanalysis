@@ -2376,6 +2376,18 @@
       "patch": "vendor/patches/bun-sema-merged-field-declarations.patch",
       "reason": "Merge an identical field redeclaration, let a written field outrank a definition table's value for it, and report only a conflicting redeclaration, once at its declaration, through kernel 5ad4ad0.",
       "patch_sha256": "47397a61691c07a645c4d9c2a79c69880a38ab6b86e9f4020d78beef62ff9e7e"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-class-table-as-class.patch",
+      "reason": "Read a member a class definition table has not been given yet as the class member, and relate the table as its class, as v1 types a class table, through kernel b3bfd0b.",
+      "patch_sha256": "ed4794249f62f8b7decafd4b7e02a5cab55be5336d08b3b9ba12d06d5f05013c"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-class-table-as-class.patch",
+      "reason": "Read a member a class definition table has not been given yet as the class member, and relate the table as its class, as v1 types a class table, through kernel b3bfd0b.",
+      "patch_sha256": "ed4794249f62f8b7decafd4b7e02a5cab55be5336d08b3b9ba12d06d5f05013c"
     }
   ],
   "source_additions": {
@@ -2412,7 +2424,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "7056513cc8bb11cc2b6d125d9a7cc3356580bb5ac31cc42453251deebf1bfcae",
+      "extracted_sha256": "b420406e957c7d975428db4dc22dd1abed56645244746bbc78759e6719d6e7da",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -3427,7 +3439,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "dc936093832d0e89a06085c5b44e57fd6089ea12d428930a8a44306bd1c0e983"
+      "extracted_sha256": "990fb367d0f4fc736e979a265dfdb1aa382e6ef9a624a46f08a4bb1d00f31f6d"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
