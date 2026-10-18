@@ -1,4 +1,9 @@
-use luanalysis::{check, location};
+use luanalysis::{CheckOptions, check, check_with_options, location};
+
+/// TypeScript reports a return type inferred from itself only under noImplicitAny.
+fn check_strict(source: &str) -> luanalysis::CheckReport {
+    check_with_options(source, CheckOptions { no_implicit_any: true, ..CheckOptions::default() })
+}
 
 #[test]
 fn unannotated_scalar_returns_are_inferred_by_native_signatures() {
@@ -126,7 +131,8 @@ fn unused_function_bodies_are_checked_and_keep_original_error_ranges() {
 #[test]
 fn recursive_return_cycles_use_native_query_guards_and_source_diagnostics() {
     let source = "local function recursive() return recursive() end\nlocal result = recursive()";
-    let report = check(source);
+    assert!(check(source).diagnostics.is_empty());
+    let report = check_strict(source);
     assert!(
         report
             .diagnostics
@@ -153,7 +159,8 @@ fn recursive_return_cycles_use_native_query_guards_and_source_diagnostics() {
 #[test]
 fn mutually_dependent_nested_functions_report_native_return_cycles() {
     let source = "local function first()\nlocal function second() return first() end\nreturn second()\nend\nlocal result = first()";
-    let report = check(source);
+    assert!(check(source).diagnostics.is_empty());
+    let report = check_strict(source);
     assert!(
         report
             .diagnostics

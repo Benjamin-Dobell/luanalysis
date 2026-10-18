@@ -78,7 +78,8 @@ fn a_require_before_the_chunk_rebinds_its_environment_is_standard() {
     assert!(report.contains("main.lua:3:7: p: number"), "{report}");
     assert!(!report.contains("error["), "{report}");
     // After the rebinding, `require` is a field of nil.
-    assert!(text(&fixture.check(&["late.lua"])).contains("late.lua:2:11: error[LUA2036]"));
+    let late = text(&fixture.check(&["late.lua"]));
+    assert!(late.contains("late.lua:2:11: error[TS2339]: Property 'require' does not exist on type 'nil'."), "{late}");
 }
 
 #[test]

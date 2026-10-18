@@ -77,10 +77,12 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
     let lines: Vec<&str> = body.split_inclusive('\n').collect();
     for (index, line) in lines.iter().copied().enumerate() {
         let trimmed = line.trim_start_matches([' ', '\t', '\r']);
+        let dashes = trimmed.len() - trimmed.trim_start_matches('-').len();
         let stripped = trimmed
             .trim_start_matches('-')
             .trim_start_matches([' ', '\t']);
-        if let Some(tag) = stripped.strip_prefix('@') {
+        // More dashes than `---` comment an annotation out (`-----@type T`), as in LuaLS.
+        if let Some(tag) = stripped.strip_prefix('@').filter(|_| dashes <= 3) {
             let tag_offset = base + line_offset + line.len() - stripped.len();
             let tag_len = tag
                 .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')

@@ -371,15 +371,17 @@ fn explicit_entries_implementation_libraries_and_require_targets_are_checked() {
     }
 }
 #[test]
+fn a_dynamic_require_is_any() {
+    let fixture = Fixture::new();
+    let report = fixture.check("local name='absent'\nlocal value=require(name)\nvalue.anything()\n");
+    assert!(!report.has_errors(), "{:#?}", report.files);
+}
+
+#[test]
 fn missing_dynamic_and_invalid_require_requests_fail_at_original_call_arguments() {
     let fixture = Fixture::new();
     for (source, code, origin) in [
         ("local value=require('absent')", "TS2307", "'absent'"),
-        (
-            "local name='absent'\nlocal value=require(name)",
-            "LUA2036",
-            "name",
-        ),
         ("local value=require()", "TS2554", "require"),
     ] {
         let report = fixture.check(source);
@@ -531,7 +533,8 @@ fn unsupported_dynamic_module_resolution_still_checks_original_argument_expressi
     let source = "---@param value number\n---@return string\nlocal function name(value) return 'module' end\nlocal result=require(name('wrong'))";
     let report = fixture.check(source);
     let main = &report.file(report.project.entries[0]).unwrap().report;
-    assert!(main.diagnostics.iter().any(|error| error.code == "LUA2036"));
+    // As TypeScript types `require(expression)`, a module named at runtime is `any`.
+    assert!(!main.diagnostics.iter().any(|error| error.code == "LUA2036"));
     assert!(
         main.diagnostics.iter().any(|error| error.code == "TS2345"
             && &source[error.span.start..error.span.end] == "'wrong'"),

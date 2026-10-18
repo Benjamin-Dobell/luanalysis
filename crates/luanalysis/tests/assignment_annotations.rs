@@ -34,10 +34,13 @@ fn a_typed_assignment_to_a_local_is_checked_and_types_the_local() {
 
 #[test]
 fn only_a_written_key_type_may_include_nil() {
-    let report = check("---@type table<nil | string, true>\nlocal set = { a = true }\n---@type table<string, true>\nlocal strict = { a = true }\n---@param key nil | string\nlocal function f(key)\n    local found = set[key]\n    local missing = strict[key]\n    set[nil] = true\n    local constructed = { [key] = 1 }\nend\n");
+    // Lookups with a key that may be nil read nil; storing at a nil key raises "table index is
+    // nil", whatever the declared key type.
+    let report = check("---@type table<nil | string, true>\nlocal set = { a = true }\n---@type table<string, true>\nlocal strict = { a = true }\n---@param key nil | string\nlocal function f(key)\n    local found = set[key]\n    local missing = strict[key]\n    set[nil] = true\n    local constructed = { [key] = 1 }\n    set[key] = true\n    if key then set[key] = true end\nend\n");
     assert!(report.contains("main.lua:7:11: found: nil | true"), "{report}");
     assert!(report.contains("main.lua:8:28: error[TS2538]"), "{report}");
     assert!(report.contains("main.lua:9:9: error[TS2538]: nil cannot be used as a Lua table key."), "{report}");
     assert!(report.contains("main.lua:10:28: error[TS2538]"), "{report}");
-    assert_eq!(report.matches("error[").count(), 3, "{report}");
+    assert!(report.contains("main.lua:11:9: error[TS2538]: nil | string cannot be used as a Lua table key."), "{report}");
+    assert_eq!(report.matches("error[").count(), 4, "{report}");
 }

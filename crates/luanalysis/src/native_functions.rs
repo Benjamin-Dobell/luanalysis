@@ -2158,6 +2158,11 @@ impl NativeRegistry {
     }
 
     fn cycle_diagnostic(&self, key: NativeFunctionKey, too_deep: bool) {
+        // As in TypeScript, a return type inferred from itself is `any`, which only
+        // `--no-implicit-any` reports.
+        if !too_deep && !self.no_implicit_any {
+            return;
+        }
         let function = self.function(key);
         let name = self.function_names[key.index as usize].as_ref();
         let (code, message) = if too_deep {

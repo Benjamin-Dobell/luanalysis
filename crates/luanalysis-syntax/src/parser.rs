@@ -492,6 +492,13 @@ impl Parser<'_> {
                     if comment.kind != CommentKind::Documentation {
                         continue;
                     }
+                    // As in v1 and LuaLS, documentation describes the statement directly below
+                    // it: a group ended by a blank line or a plain comment describes nothing.
+                    if !self.documentation_group.as_ref().is_some_and(|group| {
+                        documentation_gap_is_contiguous(&self.source[group.span.end..comment.span.start])
+                    }) {
+                        self.pending_annotations = FunctionAnnotations::default();
+                    }
                     let (annotations, diagnostics) = types::annotations(&comment);
                     self.diagnostics.extend(diagnostics);
                     let annotations = self.record_documentation(&comment, annotations);
@@ -520,6 +527,11 @@ impl Parser<'_> {
                 }
                 _ => break,
             }
+        }
+        if let Some(group) = &self.documentation_group
+            && !documentation_gap_is_contiguous(&self.source[group.span.end..self.current().span.start])
+        {
+            self.pending_annotations = FunctionAnnotations::default();
         }
     }
     fn inner_trivia(&mut self) {

@@ -331,7 +331,8 @@ fn a_compatible_replacement_does_not_inherit_the_minimal_loader_capability() {
     let fixture = Fixture::new();
     let source = "---@param modname string\n---@return any\nlocal function ordinary(modname) return 42 end\nrequire=ordinary\nlocal value=require('absent')\n";
     let report = fixture.check(source, StandardEnvironmentProfile::LegacyMinimal);
-    assert!(code(&report, "LUA2036"), "{:#?}", report.files);
+    // The replacement is called as itself: no module is loaded, and none is missing.
+    assert!(!code(&report, "LUA2036"), "{:#?}", report.files);
     assert!(!code(&report, "TS2307"), "a rejected runtime callee must not publish its host candidate failure: {:#?}", report.files);
 }
 

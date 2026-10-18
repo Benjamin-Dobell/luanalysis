@@ -30,6 +30,9 @@ function utf8.codes(s) end
 --- between byte position `i` and `j` (both included). The default for `i` is
 --- 1  and for `j` is `i`. It raises an error if it meets any invalid byte
 --- sequence.
+---@overload fun(s: string): number
+---@overload fun(s: string, i: number): number
+---@overload fun(s: string, i: number, j: number): number...
 ---@param s string
 ---@param i? number
 ---@param j? number

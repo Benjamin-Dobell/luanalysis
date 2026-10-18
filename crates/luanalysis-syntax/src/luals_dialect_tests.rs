@@ -152,11 +152,13 @@ fn return_lines_continue_only_within_one_documentation_group() {
     let file = checked("---@return boolean ok\n---@return string message\nlocal function f() end\n");
     let StmtKind::LocalFunction { function, .. } = &file.statements[0].kind else { panic!("a function") };
     assert_eq!(function.annotations.returns.as_ref().unwrap().types.len(), 2);
-    // Commented-out documentation ends its group; its @return still conflicts, as in v1.
-    assert_eq!(
-        messages("-----@return void\n--function old() end\n-----@return void\n--\n---@return number\nlocal function g() return 1 end\n"),
-        ["multiple @return annotations for one function", "multiple @return annotations for one function"],
-    );
+    // Commented-out documentation (`-----@`) is a comment, as in LuaLS, and documentation
+    // separated from a function by a blank line or a plain comment does not describe it.
+    assert!(messages("-----@return void\n--function old() end\n-----@return void\n--\n---@return number\nlocal function g() return 1 end\n").is_empty());
+    let file = checked("---@return string\n-- plain comment\n\n---@param c string\nlocal function h(c) return 1 end\n");
+    let StmtKind::LocalFunction { function, .. } = &file.statements[0].kind else { panic!("a function") };
+    assert!(function.annotations.returns.is_none());
+    assert_eq!(function.annotations.params.len(), 1);
 }
 
 #[test]

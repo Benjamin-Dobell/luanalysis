@@ -37,18 +37,19 @@ fn a_callback_global_write_does_not_execute_during_declaration_or_poison_other_i
 
 #[test]
 fn a_direct_loader_write_invalidates_only_its_original_continuation() {
+    // After `require` is replaced, a call to it is an ordinary call to the replacement.
     let fixture = Fixture::new();
     let output = fixture.check("local before=require('module')\n_G.require=function(name) return {} end\nlocal after=require('module')\n");
-    assert!(!output.status.success(), "{}", text(&output));
-    assert!(text(&output).contains("main.lua:3:") && text(&output).contains("LUA2036"), "{}", text(&output));
-    assert!(!text(&output).contains("main.lua:1:7: error[LUA2036]"), "{}", text(&output));
+    clean(&output);
+    assert!(text(&output).contains("main.lua:1:7: before: { [\"value\"]: 42 }"), "{}", text(&output));
+    assert!(text(&output).contains("main.lua:3:7: after: {  }"), "{}", text(&output));
 }
 
 #[test]
 fn a_frozen_environment_alias_write_reaches_the_original_global() {
     let fixture = Fixture::new();
     let output = fixture.check("local g=_G\ng.require=function(name) return {} end\nlocal after=require('module')\n");
-    assert!(text(&output).contains("LUA2036"), "{}", text(&output));
+    assert!(text(&output).contains("main.lua:3:7: after: {  }"), "{}", text(&output));
 }
 
 #[test]
@@ -56,7 +57,7 @@ fn a_nominal_assertion_cannot_hide_environment_identity_while_fresh_allocations_
     let fixture = Fixture::new();
     let header = "---@class LoaderView\n---@field require fun(name: string): table\n\n";
     let invalid = fixture.check(&format!("{header}local alias=--[[---@type LoaderView]] _G\nalias.require=function(name) return {{}} end\nlocal after=require('module')\n"));
-    assert!(text(&invalid).contains("LUA2036"), "{}", text(&invalid));
+    assert!(text(&invalid).contains("main.lua:6:7: after: {  }"), "{}", text(&invalid));
     clean(&fixture.check(&format!("{header}local fresh=--[[---@type LoaderView]] {{require=function(name) return {{}} end}}\nlocal alias=fresh\nalias.require=function(name) return {{}} end\nlocal after=require('module')\n---@type number\nlocal checked=after.value\n")));
 }
 
@@ -69,7 +70,7 @@ fn later_alias_replacements_are_found_while_nested_environment_containers_are_no
     let nested = fixture.check("local wrapper={env=_G}\nwrapper.env.require=function(name) return {} end\nlocal after=require('module')\n");
     assert!(!text(&nested).contains("LUA2036"), "{}", text(&nested));
     let replaced = fixture.check("local fresh={}\nlocal alias=fresh\nalias=_G\nalias.require=function(name) return {} end\nlocal after=require('module')\n");
-    assert!(text(&replaced).contains("LUA2036"), "{}", text(&replaced));
+    assert!(text(&replaced).contains("main.lua:5:7: after: {  }"), "{}", text(&replaced));
 }
 
 #[test]

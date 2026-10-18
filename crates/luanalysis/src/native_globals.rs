@@ -483,6 +483,11 @@ impl NativeRegistry {
         let Some(source) = self.globals.declaration(key) else {
             return;
         };
+        // As in TypeScript, a global whose initializer reads it is `any`, which only
+        // `--no-implicit-any` reports.
+        if matches!(error, GlobalQueryError::CircularQuery(_)) && !self.no_implicit_any() {
+            return;
+        }
         let (code, message) = match error {
             GlobalQueryError::InvalidPrimitiveMemberNamespace { .. } => (
                 "LUA2035",

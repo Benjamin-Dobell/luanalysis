@@ -159,14 +159,10 @@ fn explicit_direct_and_alias_replacements_survive_later_unknown_calls() {
         "local env=_G\nenv.require=ordinaryLoader\nenv.type=ordinaryKind\n",
     ] {
         let source = format!("{ORDINARY}{replacement}{}", probe("hostEffect()", "require", "type"));
+        // The replaced `require` is called as the ordinary loader; the replaced `type`
+        // narrows nothing.
         let rejected = report(fixture.check(&source, true, None), 1);
-        error_on(
-            &rejected,
-            &source,
-            "LUA2036",
-            "local module=require('module')",
-            "require",
-        );
+        assert!(!rejected.contains("LUA2036"), "{rejected}");
         error_on(
             &rejected,
             &source,

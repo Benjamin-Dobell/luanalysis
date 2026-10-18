@@ -182,7 +182,9 @@ impl Checker<'_> {
                 }
             }
             if !trusted {
-                if !direct { return None; }
+                // A replaced `require` is an ordinary call to its replacement. Strict standard
+                // effects refuse to assume what an untraced effect left there.
+                if !direct || !self.engine.strict_runtime_effects() { return None; }
                 self.error("LUA2036", callee.span, "Standard require cannot be assumed for this runtime value after an environment write or custom loader replacement.");
                 return Some(ValuePack::single(Type::Unknown));
             }
@@ -228,7 +230,8 @@ impl Checker<'_> {
                 return Some(ValuePack::single(Type::Any));
             },
             ImportOutcome::InvalidSource=>"Required module has syntax errors or is not a valid source in this project.".into(),
-            ImportOutcome::Dynamic=>"Dynamic require needs an explicit external-module or loader contract.".into(),
+            // As TypeScript types `require(expression)`, a module named at runtime is `any`.
+            ImportOutcome::Dynamic=>return Some(ValuePack::single(Type::Any)),
             ImportOutcome::NonUtf8=>"This project host requires UTF-8 module names.".into(),
             ImportOutcome::Arity(actual)=>{
                 self.error("TS2554",recipe.argument_span,format!("Expected 1 argument, but got {actual}."));
