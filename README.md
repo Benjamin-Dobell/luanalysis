@@ -370,17 +370,23 @@ luanalysis lsp --lua-version 5.4
 ```
 
 runs a language server over stdio, for any editor with a language server client. It accepts the
-options of `check`, and without paths it checks the editor's workspace. It provides diagnostics
-as you type, hover types, go to definition, find references, rename, completion, signature help
-and inspections. Definitions, references, highlights and renames follow locals, globals
-(including `_G.name`), fields and methods (through the receiver's type, its bases and each
-alternative of a union), and type names in annotations, across files. Signature help shows each overload of the call being typed, highlights the argument's
-parameter, and selects the overload that the arguments typed so far resolve to. Hover, completion
-and signature help show what doc comments say: a declaration's description, and its parameters',
-results' and fields'. Completion offers tag and type names in annotations, and inserts a
-function's call with its required parameters as placeholders. The outline lists a document's
-classes, shapes and aliases with their fields, and its functions, methods and top-level
-variables, and workspace symbol search finds them in every file.
+options of `check`, and without paths it checks the editor's workspace. It provides:
+
+* Diagnostics as you type, and inspections: unreachable code, conditions that are always true or
+  false, comparisons that can never match, unused names.
+* Hover, with a name's type and what its doc comments say, for values and for type names in
+  annotations.
+* Completion of names, members, and in annotations, tags and types, with documentation. A function
+  inserts its call with its required parameters as placeholders.
+* Signature help, which highlights the parameter being typed and selects the overload that the
+  arguments typed so far resolve to.
+* Go to definition and type definition, find references, highlights and rename, for locals,
+  globals (including `_G.name`), fields and methods (through the receiver's type, its bases and
+  each alternative of a union), and type names in annotations, across files.
+* The document outline and workspace symbol search, call and type hierarchies, inlay hints for
+  inferred types and literal arguments' parameters, semantic highlighting, folding (including
+  `--region`), selection ranges, links for `require`d modules, and quick fixes for misspelled
+  names and members and for unused names.
 
 ## Library
 

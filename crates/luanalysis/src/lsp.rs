@@ -190,12 +190,27 @@ struct Query {
 }
 
 enum Site {
+    Hierarchy(HierarchySite),
     Actions(ActionSite),
     Completion(CompletionSite),
     Signature(SignatureSite),
     Hover(HoverSite),
     Navigate(NavigateSite),
     Hints(HintSite),
+}
+
+/// A call or type hierarchy request at a position of a document.
+struct HierarchySite {
+    text: String,
+    offset: usize,
+    request: Hierarchy,
+}
+
+#[derive(Clone, Copy)]
+enum Hierarchy {
+    Calls(language_service::CallDirection),
+    /// None prepares; true asks for supertypes, false for subtypes.
+    Types(Option<bool>),
 }
 
 /// Quick fixes for a document's diagnostics: those known without checking, and the
@@ -250,6 +265,7 @@ impl Query {
             Site::Navigate(site) => &site.text,
             Site::Hints(site) => &site.text,
             Site::Actions(site) => &site.text,
+            Site::Hierarchy(site) => &site.text,
         }
     }
 
@@ -260,6 +276,7 @@ impl Query {
             Site::Signature(_) | Site::Navigate(_) => Json::Null,
             Site::Hints(site) => Json::Array(site.types.clone()),
             Site::Actions(site) => Json::Array(site.actions.clone()),
+            Site::Hierarchy(_) => Json::Null,
             // Without documentation, a hover still has the last check's type.
             Site::Hover(site) => match &site.ty {
                 None => Json::Null,
@@ -424,6 +441,12 @@ impl Server {
             }
             "textDocument/inlayHint" => self.inlay_hints(id, params),
             "textDocument/codeAction" => self.code_actions(id, params),
+            "textDocument/prepareCallHierarchy" => self.hierarchy(id, params, Hierarchy::Calls(language_service::CallDirection::Prepare)),
+            "callHierarchy/incomingCalls" => self.hierarchy(id, params, Hierarchy::Calls(language_service::CallDirection::Incoming)),
+            "callHierarchy/outgoingCalls" => self.hierarchy(id, params, Hierarchy::Calls(language_service::CallDirection::Outgoing)),
+            "textDocument/prepareTypeHierarchy" => self.hierarchy(id, params, Hierarchy::Types(None)),
+            "typeHierarchy/supertypes" => self.hierarchy(id, params, Hierarchy::Types(Some(true))),
+            "typeHierarchy/subtypes" => self.hierarchy(id, params, Hierarchy::Types(Some(false))),
             "textDocument/semanticTokens/full" => {
                 let result = self.semantic_tokens(params);
                 self.respond(id, result);
@@ -563,6 +586,8 @@ impl Server {
                 ("foldingRangeProvider", Json::from(true)),
                 ("inlayHintProvider", Json::from(true)),
                 ("codeActionProvider", Json::object([("codeActionKinds", Json::Array(vec![Json::from("quickfix")]))])),
+                ("callHierarchyProvider", Json::from(true)),
+                ("typeHierarchyProvider", Json::from(true)),
                 ("semanticTokensProvider", Json::object([
                     ("legend", Json::object([
                         ("tokenTypes", Json::Array(["class", "interface", "type", "typeParameter", "parameter", "variable", "property", "function", "method"].into_iter().map(Json::from).collect())),
@@ -823,6 +848,22 @@ impl Server {
             }
         }
         self.query(id, path, Site::Hints(HintSite { text, range, types }), lines);
+    }
+
+    /// A call or type hierarchy: prepared at a document's position, or followed from an item that
+    /// a preparation returned, by its name's position.
+    fn hierarchy(&mut self, id: Json, params: &Json, request: Hierarchy) {
+        let (uri, position) = match params.get("item") {
+            Some(item) => (item.get("uri"), item.path(&["selectionRange", "start"])),
+            None => (params.path(&["textDocument", "uri"]), params.get("position")),
+        };
+        let Some(path) = uri.and_then(Json::as_str).and_then(uri_to_path) else { return self.respond(id, Json::Null) };
+        let Some(text) = self.file_text(&path) else { return self.respond(id, Json::Null) };
+        let lines = LineIndex::new(text.clone());
+        let line = position.and_then(|position| position.get("line")).and_then(Json::as_u64).unwrap_or(0) as usize;
+        let character = position.and_then(|position| position.get("character")).and_then(Json::as_u64).unwrap_or(0) as usize;
+        let offset = lines.offset(line, character, self.encoding);
+        self.query(id, path, Site::Hierarchy(HierarchySite { text, offset, request }), lines);
     }
 
     /// Quick fixes for the diagnostics the editor gives: an unused name (TS6133) is prefixed with
@@ -1162,6 +1203,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 Site::Navigate(site) => navigate(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Hints(site) => hints(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Actions(site) => actions(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
+                Site::Hierarchy(site) => hierarchy(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
             }));
             if completed.is_err() {
                 workspace = ProjectWorkspace::new();
@@ -1359,6 +1401,47 @@ fn hints(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut Pro
         ])));
         answer(Json::Array(hints));
     });
+}
+
+fn hierarchy(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &HierarchySite, answer: &mut (dyn FnMut(Json) + Send)) {
+    let Some(project) = load(inputs, workspace, loaded, query) else { return };
+    let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
+    let encoding = query.encoding;
+    let item = |name: &str, kind: language_service::SymbolKind, path: &PathBuf, span: luanalysis_syntax::Span, selection: luanalysis_syntax::Span, lines: &LineIndex| Json::object([
+        ("name", Json::from(name)),
+        ("kind", Json::from(symbol_kind(kind))),
+        ("uri", Json::from(path_to_uri(path))),
+        ("range", lines.range(span.start, span.end, encoding)),
+        ("selectionRange", lines.range(selection.start, selection.end, encoding)),
+    ]);
+    match site.request {
+        Hierarchy::Calls(direction) => language_service::call_hierarchy(project, options, workspace, file, site.offset, direction, |hierarchy| {
+            let Some(hierarchy) = hierarchy else { return answer(Json::Null) };
+            let lines: HashMap<&PathBuf, LineIndex> = hierarchy.texts.iter().map(|(path, text)| (path, LineIndex::new(text.clone()))).collect();
+            let call_item = |call: &language_service::CallItem| lines.get(&call.path).map(|lines| item(&call.name, call.kind, &call.path, call.span, call.selection, lines));
+            answer(match direction {
+                language_service::CallDirection::Prepare => Json::Array(hierarchy.item.iter().filter_map(call_item).collect()),
+                _ => {
+                    let target = hierarchy.item.as_ref().map(|item| item.path.clone());
+                    Json::Array(hierarchy.calls.iter().filter_map(|(other, spans)| {
+                        // Incoming calls are in the caller's file, outgoing ones in the target's.
+                        let calls_in = if direction == language_service::CallDirection::Incoming { Some(&other.path) } else { target.as_ref() };
+                        let lines = lines.get(calls_in?)?;
+                        let ranges = Json::Array(spans.iter().map(|span| lines.range(span.start, span.end, encoding)).collect());
+                        let key = if direction == language_service::CallDirection::Incoming { "from" } else { "to" };
+                        Some(Json::object([(key, call_item(other)?), ("fromRanges", ranges)]))
+                    }).collect())
+                }
+            });
+        }),
+        Hierarchy::Types(direction) => language_service::type_hierarchy(project, options, workspace, file, site.offset, direction, |related| {
+            let Some((items, texts)) = related else { return answer(Json::Null) };
+            let lines: HashMap<&PathBuf, LineIndex> = texts.iter().map(|(path, text)| (path, LineIndex::new(text.clone()))).collect();
+            answer(Json::Array(items.iter().filter_map(|related| {
+                Some(item(&related.name, related.kind, &related.path, related.span, related.selection, lines.get(&related.path)?))
+            }).collect()));
+        }),
+    }
 }
 
 /// A quick fix that replaces `range` of the document at `uri`, resolving `diagnostic`.

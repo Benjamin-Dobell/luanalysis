@@ -337,6 +337,13 @@ impl TypeHandles {
     }
 }
 
+/// The candidate TypeScript would suggest for a misspelled `name` (`getSpellingSuggestion`): the
+/// nearest by an edit distance in which a substitution costs two and a change of case almost
+/// nothing, within 40% of the name's length.
+pub fn spelling_suggestion<'a>(name: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    bun_sema::check::get_spelling_suggestion(name.as_bytes(), candidates, |candidate: &'a str| candidate.as_bytes(), |a, b| a.cmp(b))
+}
+
 /// Resolved type descriptions; every comparison creates real checker-owned IDs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {

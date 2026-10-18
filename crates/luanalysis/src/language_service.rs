@@ -1788,31 +1788,301 @@ fn spellings(
     fixes
 }
 
-/// The candidate nearest `word` by edit distance, ignoring case, when it is near enough to be a
-/// misspelling: within a third of its length. Swapping two adjacent letters is one edit.
+/// The candidate TypeScript would suggest for a misspelled `word`.
 fn nearest(word: &str, candidates: &[String]) -> Option<String> {
-    let distance = |a: &str, b: &str| {
-        let (a, b): (Vec<char>, Vec<char>) = (a.to_lowercase().chars().collect(), b.to_lowercase().chars().collect());
-        let mut table = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-        for (i, row) in table.iter_mut().enumerate() { row[0] = i; }
-        for j in 0..=b.len() { table[0][j] = j; }
-        for i in 1..=a.len() {
-            for j in 1..=b.len() {
-                let substitution = table[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]);
-                let mut best = substitution.min(table[i - 1][j] + 1).min(table[i][j - 1] + 1);
-                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] { best = best.min(table[i - 2][j - 2] + 1); }
-                table[i][j] = best;
+    luanalysis_engine::spelling_suggestion(word, candidates.iter().map(String::as_str).filter(|candidate| is_identifier(candidate)))
+        .map(str::to_owned)
+}
+
+/// A function in a call hierarchy, or a file's main chunk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallItem {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub chunk: bool,
+    pub path: std::path::PathBuf,
+    pub span: Span,
+    pub selection: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallDirection {
+    Prepare,
+    Incoming,
+    Outgoing,
+}
+
+/// A call hierarchy: the function at a position, and in a direction, the functions that call
+/// it or that it calls, each with the spans of the calls in the caller's file.
+#[derive(Clone, Debug, Default)]
+pub struct CallHierarchy {
+    pub item: Option<CallItem>,
+    pub calls: Vec<(CallItem, Vec<Span>)>,
+    pub texts: std::collections::HashMap<std::path::PathBuf, String>,
+}
+
+/// The call hierarchy of the function declared or called at `offset` in `file`. Functions are
+/// identified by their value, not their names, so a local, a global and a method alike are
+/// followed through their calls.
+pub fn call_hierarchy(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    offset: usize,
+    direction: CallDirection,
+    deliver: impl FnOnce(Option<CallHierarchy>) + Send,
+) {
+    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
+        deliver(calls(project, registry, file, offset, direction, queries));
+    });
+}
+
+/// Each function in a source with its key, and where it is declared: a statement's name (local,
+/// global, field or method), a local's or a table key's.
+fn source_functions(source: &crate::native_functions::NativeRegistry) -> Vec<(Span, luanalysis_engine::NativeFunctionKey, Option<(String, Span, Span, SymbolKind)>)> {
+    fn statements(statements: &[luanalysis_syntax::Stmt], source: &crate::native_functions::NativeRegistry, text: &mut Vec<(Span, luanalysis_engine::NativeFunctionKey, Option<(String, Span, Span, SymbolKind)>)>) {
+        use luanalysis_syntax::StmtKind;
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::LocalFunction { name, function } => {
+                    text.push((function.span, source.key_for(function), Some((name.text.clone(), statement.span, name.span, SymbolKind::Function))));
+                }
+                StmtKind::FunctionDeclaration { target, function, method_span } => {
+                    let (name, selection, kind) = match &target.kind {
+                        ExprKind::Field { name, .. } => (name.text.clone(), name.span, if method_span.is_some() { SymbolKind::Method } else { SymbolKind::Function }),
+                        ExprKind::Name(name) => (name.text.clone(), name.span, SymbolKind::Function),
+                        _ => continue,
+                    };
+                    text.push((function.span, source.key_for(function), Some((name, statement.span, selection, kind))));
+                }
+                StmtKind::Local { names, values, .. } => for (name, value) in names.iter().zip(values) {
+                    if let ExprKind::Function(function) = &value.kind {
+                        text.push((function.span, source.key_for(function), Some((name.text.clone(), statement.span, name.span, SymbolKind::Function))));
+                    }
+                },
+                _ => {}
             }
         }
-        table[a.len()][b.len()]
+    }
+    let mut functions = Vec::new();
+    let syntax = source.syntax();
+    statements(&syntax.statements, source, &mut functions);
+    crate::module_requests::visit_expressions(&syntax.statements, &mut |expression: &Expr| match &expression.kind {
+        ExprKind::Function(function) => {
+            let key = source.key_for(function);
+            if !functions.iter().any(|(_, other, _)| *other == key) { functions.push((function.span, key, None)); }
+        }
+        ExprKind::Table(fields) => for field in fields {
+            if let (luanalysis_syntax::TableFieldKind::Named(name), ExprKind::Function(function)) = (&field.kind, &field.value.kind) {
+                functions.push((function.span, source.key_for(function), Some((name.text.clone(), field.span, name.span, SymbolKind::Method))));
+            }
+        },
+        _ => {}
+    });
+    // Visiting statements also visits the functions they declare; each function once.
+    let mut seen = std::collections::HashSet::new();
+    functions.retain(|(_, key, _)| seen.insert(*key));
+    functions
+}
+
+fn call_item(project: &Project, registry: &crate::native_functions::project_provider::ProjectRegistry, key: luanalysis_engine::NativeFunctionKey, texts: &mut std::collections::HashMap<std::path::PathBuf, String>) -> Option<CallItem> {
+    let (file, span) = registry.function_site(key)?;
+    let source = project.file(file)?;
+    texts.entry(source.path.clone()).or_insert_with(|| source.source.clone());
+    let functions = source_functions(registry.source(file)?);
+    let (name, range, selection, kind) = functions.into_iter().find(|(function, _, _)| *function == span)
+        .and_then(|(_, _, declared)| declared)
+        .unwrap_or_else(|| ("function".to_owned(), span, Span { start: span.start, end: span.start + "function".len().min(span.end - span.start) }, SymbolKind::Function));
+    Some(CallItem { name, kind, chunk: false, path: source.path.clone(), span: range, selection })
+}
+
+fn calls(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    offset: usize,
+    direction: CallDirection,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<CallHierarchy> {
+    let source = registry.source(file)?;
+    let contains = |span: Span| span.start <= offset && offset <= span.end;
+    registry.prepare_documentation_members(queries);
+    // The function declared at the position, or failing that, called there.
+    let callee_key = |source: &crate::native_functions::NativeRegistry, callee: Span, method: Option<&str>, queries: &mut dyn luanalysis_engine::TypeQueries| {
+        let value = source.source_check_expression(source.expression_key_for_span(callee), None, NativeCheckMode::empty(), queries);
+        let value = match method {
+            None => value,
+            Some(name) => {
+                let receiver = queries.exclude_type(&value, &Type::Nil);
+                queries.type_members(&receiver).into_iter().find(|(member, _)| member == name)?.1
+            }
+        };
+        queries.native_function_key(&value)
     };
-    let limit = (word.chars().count() / 3).max(1);
-    candidates.iter()
-        .filter(|candidate| candidate.as_str() != word && is_identifier(candidate))
-        .map(|candidate| (distance(word, candidate), candidate))
-        .filter(|(distance, _)| *distance <= limit)
-        .min_by_key(|(distance, _)| *distance)
-        .map(|(_, candidate)| candidate.clone())
+    let declared = source_functions(source).into_iter()
+        .find(|(_, _, declared)| declared.as_ref().is_some_and(|(_, _, selection, _)| contains(*selection)))
+        .map(|(_, key, _)| key);
+    let key = match declared {
+        Some(key) => key,
+        None => {
+            let mut called = None;
+            crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| match &expression.kind {
+                ExprKind::Call { callee, .. } if contains(callee.span) => called = Some((callee.span, None)),
+                ExprKind::MethodCall { receiver, name, .. } if contains(name.span) => called = Some((receiver.span, Some(name.text.clone()))),
+                _ => {}
+            });
+            let (callee, method) = called?;
+            callee_key(source, callee, method.as_deref(), queries)?
+        }
+    };
+    let mut hierarchy = CallHierarchy::default();
+    let item = call_item(project, registry, key, &mut hierarchy.texts)?;
+    let target_name = item.name.clone();
+    hierarchy.item = Some(item);
+    match direction {
+        CallDirection::Prepare => {}
+        CallDirection::Incoming => {
+            for other in &project.files {
+                let Some(other_source) = registry.source(other.id) else { continue };
+                let functions = source_functions(other_source);
+                let mut candidates = Vec::new();
+                crate::module_requests::visit_expressions(&other_source.syntax().statements, &mut |expression: &Expr| match &expression.kind {
+                    ExprKind::Call { callee, .. } => {
+                        let name = match &callee.kind { ExprKind::Field { name, .. } => name.clone(), ExprKind::Name(name) => name.clone(), _ => return };
+                        if name.text == target_name { candidates.push((callee.span, None, name.span)); }
+                    }
+                    ExprKind::MethodCall { receiver, name, .. } if name.text == target_name => candidates.push((receiver.span, Some(name.text.clone()), name.span)),
+                    _ => {}
+                });
+                for (callee, method, span) in candidates {
+                    if callee_key(other_source, callee, method.as_deref(), queries) != Some(key) { continue; }
+                    // The innermost function around the call, or the file's main chunk.
+                    let caller = functions.iter().filter(|(function, _, _)| function.start <= span.start && span.end <= function.end)
+                        .min_by_key(|(function, _, _)| function.end - function.start);
+                    let item = match caller {
+                        Some((_, caller, _)) => call_item(project, registry, *caller, &mut hierarchy.texts),
+                        None => {
+                            hierarchy.texts.entry(other.path.clone()).or_insert_with(|| other.source.clone());
+                            let name = other.path.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+                            Some(CallItem { name, kind: SymbolKind::Module, chunk: true, path: other.path.clone(), span: Span { start: 0, end: other.source.len() }, selection: Span { start: 0, end: 0 } })
+                        }
+                    };
+                    let Some(item) = item else { continue };
+                    match hierarchy.calls.iter_mut().find(|(existing, _)| *existing == item) {
+                        Some((_, spans)) => spans.push(span),
+                        None => hierarchy.calls.push((item, vec![span])),
+                    }
+                }
+            }
+        }
+        CallDirection::Outgoing => {
+            let (target_file, body) = registry.function_site(key)?;
+            let Some(target_source) = registry.source(target_file) else { return Some(hierarchy) };
+            let functions = source_functions(target_source);
+            // Calls in the function's own body, not in the functions inside it.
+            let nested: Vec<Span> = functions.iter().map(|(span, _, _)| *span)
+                .filter(|span| body.start < span.start && span.end <= body.end).collect();
+            let mut candidates = Vec::new();
+            crate::module_requests::visit_expressions(&target_source.syntax().statements, &mut |expression: &Expr| {
+                let inside = body.start < expression.span.start && expression.span.end <= body.end
+                    && !nested.iter().any(|span| span.start <= expression.span.start && expression.span.end <= span.end);
+                if !inside { return; }
+                match &expression.kind {
+                    ExprKind::Call { callee, .. } => {
+                        let span = match &callee.kind { ExprKind::Field { name, .. } => name.span, _ => callee.span };
+                        candidates.push((callee.span, None, span));
+                    }
+                    ExprKind::MethodCall { receiver, name, .. } => candidates.push((receiver.span, Some(name.text.clone()), name.span)),
+                    _ => {}
+                }
+            });
+            for (callee, method, span) in candidates {
+                let Some(called) = callee_key(target_source, callee, method.as_deref(), queries) else { continue };
+                let Some(item) = call_item(project, registry, called, &mut hierarchy.texts) else { continue };
+                match hierarchy.calls.iter_mut().find(|(existing, _)| *existing == item) {
+                    Some((_, spans)) => spans.push(span),
+                    None => hierarchy.calls.push((item, vec![span])),
+                }
+            }
+        }
+    }
+    Some(hierarchy)
+}
+
+/// A named type in a type hierarchy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeItem {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub path: std::path::PathBuf,
+    pub span: Span,
+    pub selection: Span,
+}
+
+/// A type hierarchy: the class or shape named at `offset`, and in a direction, the types it
+/// extends (supertypes: `true`) or that extend it.
+pub fn type_hierarchy(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    offset: usize,
+    supertypes: Option<bool>,
+    deliver: impl FnOnce(Option<(Vec<TypeItem>, std::collections::HashMap<std::path::PathBuf, String>)>) + Send,
+) {
+    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |project, registry, _| {
+        deliver(types_related(project, registry, file, offset, supertypes));
+    });
+}
+
+fn types_related(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    offset: usize,
+    supertypes: Option<bool>,
+) -> Option<(Vec<TypeItem>, std::collections::HashMap<std::path::PathBuf, String>)> {
+    let source = project.file(file)?;
+    let names = luanalysis_syntax::type_names(registry.source(file)?.syntax(), &source.source);
+    let at = names.iter().find(|name| name.span.start <= offset && offset <= name.span.end)?;
+    let mut texts = std::collections::HashMap::new();
+    // Every record declaration in the project: its file, name, kind, span and base's names.
+    let mut declarations = Vec::new();
+    for other in &project.files {
+        let Some(syntax) = registry.source(other.id).map(|source| source.syntax()) else { continue };
+        for declaration in &syntax.type_declarations {
+            let luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor, base, .. } = &declaration.kind else { continue };
+            let kind = if *flavor == luanalysis_syntax::NamedRecordKind::Shape { SymbolKind::Interface } else { SymbolKind::Class };
+            let mut bases = Vec::new();
+            let mut pending: Vec<&luanalysis_syntax::TypeExpr> = base.iter().collect();
+            while let Some(ty) = pending.pop() {
+                match &ty.kind {
+                    luanalysis_syntax::TypeExprKind::Named(name) => bases.push(name.clone()),
+                    luanalysis_syntax::TypeExprKind::Generic { base, .. } => bases.push(base.text.clone()),
+                    luanalysis_syntax::TypeExprKind::Union(types) => pending.extend(types),
+                    luanalysis_syntax::TypeExprKind::Parenthesized(inner) => pending.push(inner),
+                    _ => {}
+                }
+            }
+            declarations.push((other, TypeItem { name: declaration.name.text.clone(), kind, path: other.path.clone(), span: declaration.span.join(declaration.name.span), selection: declaration.name.span }, bases));
+        }
+    }
+    let item = |(other, item, _): &(&luanalysis_project::SourceFile, TypeItem, Vec<String>), texts: &mut std::collections::HashMap<std::path::PathBuf, String>| {
+        texts.entry(other.path.clone()).or_insert_with(|| other.source.clone());
+        item.clone()
+    };
+    let items = match supertypes {
+        None => declarations.iter().filter(|(_, item, _)| item.name == at.name).map(|declaration| item(declaration, &mut texts)).collect(),
+        Some(true) => {
+            let bases: Vec<String> = declarations.iter().filter(|(_, item, _)| item.name == at.name).flat_map(|(_, _, bases)| bases.clone()).collect();
+            declarations.iter().filter(|(_, item, _)| bases.contains(&item.name)).map(|declaration| item(declaration, &mut texts)).collect()
+        }
+        Some(false) => declarations.iter().filter(|(_, _, bases)| bases.contains(&at.name)).map(|declaration| item(declaration, &mut texts)).collect(),
+    };
+    Some((items, texts))
 }
 
 #[cfg(test)]

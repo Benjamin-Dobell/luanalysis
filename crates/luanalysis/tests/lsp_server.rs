@@ -674,7 +674,7 @@ fn semantic_tokens_are_encoded_relative_to_one_another() {
 fn quick_fixes_correct_misspellings_and_mark_unused_names() {
     let root = fixture();
     let main = root.join("main.lua");
-    let source = "local config = { port = 8080 }\nlocal count = 1\nprint(config.prot, cuont)\n";
+    let source = "local config = { port = 8080 }\nlocal count = 1\nprint(config.portt, cuont)\n";
     fs::write(&main, source).unwrap();
     let mut server = Server::start(&["--lua-version", "5.4"]);
     server.initialize(&root);
@@ -688,11 +688,50 @@ fn quick_fixes_correct_misspellings_and_mark_unused_names() {
     let unused = r#"{"range":{"start":{"line":1,"character":6},"end":{"line":1,"character":11}},"code":"TS6133","message":""}"#;
     server.send(&format!(
         r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/codeAction","params":{{"textDocument":{{"uri":"{}"}},"range":{{"start":{{"line":2,"character":0}},"end":{{"line":2,"character":0}}}},"context":{{"diagnostics":[{},{},{unused}]}}}}}}"#,
-        uri(&main), diagnostic("TS2339", 13, 4), diagnostic("TS2304", 19, 5),
+        uri(&main), diagnostic("TS2339", 13, 5), diagnostic("TS2304", 20, 5),
     ));
     let response = server.wait(|message| message.contains(r#""id":3,"#));
     assert!(response.contains(r#""title":"Change to 'port'""#) && response.contains(r#""newText":"port""#), "{response}");
     assert!(response.contains(r#""title":"Change to 'count'""#), "{response}");
     assert!(response.contains(r#""title":"Prefix 'count' with '_' to mark it unused""#) && response.contains(r#""newText":"_""#), "{response}");
+    server.finish();
+}
+
+#[test]
+fn call_and_type_hierarchies_follow_calls_and_bases() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "---@class Animal\n---@class Dog : Animal\n\nlocal function helper() end\nlocal function run() helper() end\nrun()\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    let response = server.request(3, "textDocument/prepareCallHierarchy", &main, 3, 16);
+    assert!(response.contains(r#""name":"helper","kind":12"#), "{response}");
+    let item = |name: &str, line: u32, character: u32| format!(
+        r#"{{"name":"{name}","kind":12,"uri":"{}","range":{{"start":{{"line":{line},"character":0}},"end":{{"line":{line},"character":0}}}},"selectionRange":{{"start":{{"line":{line},"character":{character}}},"end":{{"line":{line},"character":{character}}}}}}}"#,
+        uri(&main),
+    );
+    // helper is called by run; run calls helper, and the main chunk calls run.
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":4,"method":"callHierarchy/incomingCalls","params":{{"item":{}}}}}"#, item("helper", 3, 16)));
+    let response = server.wait(|message| message.contains(r#""id":4,"#));
+    assert!(response.contains(r#""from":{"name":"run""#) && response.contains(r#""fromRanges":[{"start":{"line":4,"character":21}"#), "{response}");
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":5,"method":"callHierarchy/outgoingCalls","params":{{"item":{}}}}}"#, item("run", 4, 16)));
+    let response = server.wait(|message| message.contains(r#""id":5,"#));
+    assert!(response.contains(r#""to":{"name":"helper""#), "{response}");
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":6,"method":"callHierarchy/incomingCalls","params":{{"item":{}}}}}"#, item("run", 4, 16)));
+    let response = server.wait(|message| message.contains(r#""id":6,"#));
+    assert!(response.contains(r#""from":{"name":"main.lua","kind":2"#), "{response}");
+    // Dog extends Animal.
+    let response = server.request(7, "textDocument/prepareTypeHierarchy", &main, 1, 11);
+    assert!(response.contains(r#""name":"Dog","kind":5"#), "{response}");
+    let type_item = |name: &str, line: u32, character: u32| item(name, line, character).replace(r#""kind":12"#, r#""kind":5"#);
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":8,"method":"typeHierarchy/supertypes","params":{{"item":{}}}}}"#, type_item("Dog", 1, 11)));
+    let response = server.wait(|message| message.contains(r#""id":8,"#));
+    assert!(response.contains(r#""name":"Animal""#), "{response}");
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":9,"method":"typeHierarchy/subtypes","params":{{"item":{}}}}}"#, type_item("Animal", 0, 11)));
+    let response = server.wait(|message| message.contains(r#""id":9,"#));
+    assert!(response.contains(r#""name":"Dog""#), "{response}");
     server.finish();
 }
