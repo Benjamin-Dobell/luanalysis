@@ -575,6 +575,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Let a written key type include nil, as Luanalysis v1 does (table<nil | string, V>): lookups whose key may be nil check against it, while constructor keys and nil-only key types stay invalid, through kernel 20c113d.",
 })
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-merged-field-declarations.patch",
+    "reason": "Merge an identical field redeclaration, let a written field outrank a definition table's value for it, and report only a conflicting redeclaration, once at its declaration, through kernel 5ad4ad0.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

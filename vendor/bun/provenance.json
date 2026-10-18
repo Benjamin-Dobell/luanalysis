@@ -2370,6 +2370,12 @@
       "patch": "vendor/patches/bun-sema-nil-declared-keys.patch",
       "reason": "Let a written key type include nil, as Luanalysis v1 does (table<nil | string, V>): lookups whose key may be nil check against it, while constructor keys and nil-only key types stay invalid, through kernel 20c113d.",
       "patch_sha256": "6b6c8807534b82734972d3eab864acc60e7835a6e8e0a6f9de10552e2997046c"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-merged-field-declarations.patch",
+      "reason": "Merge an identical field redeclaration, let a written field outrank a definition table's value for it, and report only a conflicting redeclaration, once at its declaration, through kernel 5ad4ad0.",
+      "patch_sha256": "47397a61691c07a645c4d9c2a79c69880a38ab6b86e9f4020d78beef62ff9e7e"
     }
   ],
   "source_additions": {
@@ -2406,7 +2412,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "e43b6083c5dbe907ec3c5c864354573ac3fc34c2b9fdbe4a181fb0bbbe3bc3a0",
+      "extracted_sha256": "7056513cc8bb11cc2b6d125d9a7cc3356580bb5ac31cc42453251deebf1bfcae",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {

@@ -639,8 +639,8 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// As in Luanalysis v1, a written key type may include nil (`table<nil | string, V>`): the
-    /// table then accepts lookups whose key may be nil, which Lua answers with nil. Storing at
-    /// a nil key is still an error, and so is a table constructor's nil key (`{ [key] = v }`).
+    /// table then accepts lookups whose key may be nil, which Lua answers with nil. A table
+    /// constructor's keys (`{ [key] = value }`) are values, and a nil one is an error.
     fn native_table_valid_indexer_key(&self, indexer: &NativeTableIndexer, fresh: bool) -> bool {
         if self.native_table_valid_key_type(indexer.key) { return true }
         let nil = |part: &TypeId| part.is_undefined() || part.is_null();
@@ -653,7 +653,7 @@ impl<'p, 's> Checker<'p, 's> {
         self.parts(ty).iter().any(|part| part.is_undefined() || part.is_null())
     }
 
-    /// The key a lookup with a possibly nil key reads, when `table` declares nil keys.
+    /// The key a lookup with a possibly nil key reads or writes, when `table` declares nil keys.
     fn native_table_nil_key_access(&mut self, table: TypeId, key: NativeTableAccessKey) -> Option<TypeId> {
         let NativeTableAccessKey::Type(ty) = key else { return None };
         if !self.native_table_key_has_nil(ty) { return None }
@@ -963,8 +963,10 @@ impl<'p, 's> Checker<'p, 's> {
         if let Some(reference) = self.native_definition_ref(table) { return self.native_definition_write(reference, key, value) }
         let table = self.native_object_resolved(table).map_err(|error| error.table_error(table))?;
         if let Some(error) = self.native_table_description_error(table) { return Err(error) }
-        // A nil key in the declared key type permits lookups only: storing at a nil key is a
-        // runtime error ("table index is nil").
+        if let Some(present) = self.native_table_nil_key_access(table, key) {
+            if present.is_never() { return Ok(()) }
+            return self.native_table_write(table, NativeTableAccessKey::Type(present), value);
+        }
         let key = self.native_table_access(key)?;
         if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
             for &part in self.parts(ty) { self.native_table_write(table, NativeTableAccessKey::Type(part), value)?; }
