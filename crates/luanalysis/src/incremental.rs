@@ -125,11 +125,56 @@ pub struct ProjectWorkspace {
     /// recipes were seeded with. A session over the same names reuses them; they hold no type.
     recipes: HashMap<u64, crate::native_functions::SourceRecipes>,
     recipe_names: Vec<Vec<u8>>,
+    /// Shared with other workspaces over the same sources, as a language server's checking and
+    /// query threads are: they then parse, bind and build each revision's recipes once between
+    /// them, rather than each keeping its own copy.
+    shared: Option<Arc<SharedSources>>,
+}
+
+/// The source revisions and recipes that several workspaces share. A revision is kept while a
+/// workspace holds its snapshot.
+#[derive(Default)]
+pub struct SharedSources(std::sync::Mutex<SharedState>);
+
+#[derive(Default)]
+struct SharedState {
+    next_revision: u64,
+    snapshots: HashMap<SourceIdentity, Vec<std::sync::Weak<SourceSnapshot>>>,
+    /// Each revision's snapshot, to tell whether a workspace still holds it.
+    revisions: HashMap<u64, std::sync::Weak<SourceSnapshot>>,
+    identities: HashMap<u64, crate::native_functions::project_provider::SourceRecipeIdentity>,
+    recipes: HashMap<u64, crate::native_functions::SourceRecipes>,
+    recipe_names: Vec<Vec<u8>>,
+}
+
+impl SharedSources {
+    fn state(&self) -> std::sync::MutexGuard<'_, SharedState> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl SharedState {
+    /// Forgets the revisions no workspace holds.
+    fn evict(&mut self) {
+        self.revisions.retain(|_, snapshot| snapshot.strong_count() > 0);
+        let revisions = &self.revisions;
+        self.identities.retain(|revision, _| revisions.contains_key(revision));
+        self.recipes.retain(|revision, _| revisions.contains_key(revision));
+        self.snapshots.retain(|_, snapshots| {
+            snapshots.retain(|snapshot| snapshot.strong_count() > 0);
+            !snapshots.is_empty()
+        });
+    }
 }
 
 impl ProjectWorkspace {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A workspace that shares its sources' revisions and recipes with the others given `shared`.
+    pub fn shared(shared: Arc<SharedSources>) -> Self {
+        Self { shared: Some(shared), ..Self::default() }
     }
 
     pub fn retained_source_count(&self) -> usize {
@@ -143,6 +188,17 @@ impl ProjectWorkspace {
     /// The recipe identity of each revision, kept across sessions, and the source recipes the last
     /// session built for them.
     pub(crate) fn source_inputs(&mut self, revisions: &[u64]) -> (Vec<crate::native_functions::project_provider::SourceRecipeIdentity>, crate::native_functions::project_provider::PreparedSources) {
+        if let Some(shared) = &self.shared {
+            let mut state = shared.state();
+            let identities = revisions.iter()
+                .map(|revision| *state.identities.entry(*revision).or_insert_with(crate::native_functions::project_provider::SourceRecipeIdentity::new))
+                .collect();
+            let prepared = crate::native_functions::project_provider::PreparedSources {
+                recipes: revisions.iter().map(|revision| state.recipes.get(revision).cloned()).collect(),
+                names: state.recipe_names.clone(),
+            };
+            return (identities, prepared);
+        }
         let identities = revisions.iter()
             .map(|revision| *self.identities.entry(*revision).or_insert_with(crate::native_functions::project_provider::SourceRecipeIdentity::new))
             .collect();
@@ -155,6 +211,16 @@ impl ProjectWorkspace {
 
     /// Keeps the source recipes a session built for `revisions` (in order) for the next session.
     pub(crate) fn retain_sources(&mut self, revisions: &[u64], prepared: crate::native_functions::project_provider::PreparedSources) {
+        if let Some(shared) = &self.shared {
+            let mut state = shared.state();
+            if prepared.names != state.recipe_names { state.recipes.clear(); }
+            for (revision, recipes) in revisions.iter().zip(prepared.recipes) {
+                if let Some(recipes) = recipes { state.recipes.insert(*revision, recipes); }
+            }
+            state.recipe_names = prepared.names;
+            state.evict();
+            return;
+        }
         if prepared.names != self.recipe_names { self.recipes.clear(); }
         for (revision, recipes) in revisions.iter().zip(prepared.recipes) {
             if let Some(recipes) = recipes { self.recipes.insert(*revision, recipes); }
@@ -219,21 +285,42 @@ impl ProjectWorkspace {
         {
             return (Arc::clone(known), false);
         }
+        // Another workspace's revision of the same text.
+        if let Some(shared) = &self.shared
+            && let Some(known) = shared.state().snapshots.get(&identity)
+                .and_then(|snapshots| snapshots.iter().filter_map(std::sync::Weak::upgrade).find(|known| known.source.as_ref() == source.source.as_str()))
+        {
+            self.sources.insert(identity, Arc::clone(&known));
+            return (known, false);
+        }
         // As TypeScript binds the tree its parser recovers, a source with syntax errors is bound
         // too, so the language service answers in it while it is being typed.
         let syntax = luanalysis_syntax::parse_with_checkpoint(&source.source, crate::project_check::unwind_if_cancelled);
         let bound = Some(Arc::new(bind::bind(&syntax)));
-        self.next_revision = self
-            .next_revision
-            .checked_add(1)
-            .expect("workspace source revisions exhausted");
+        // Revisions are numbered across the workspaces that share them.
+        let revision = match &self.shared {
+            Some(shared) => {
+                let mut state = shared.state();
+                state.next_revision = state.next_revision.checked_add(1).expect("workspace source revisions exhausted");
+                state.next_revision
+            }
+            None => {
+                self.next_revision = self.next_revision.checked_add(1).expect("workspace source revisions exhausted");
+                self.next_revision
+            }
+        };
         let snapshot = Arc::new(SourceSnapshot {
-            revision: self.next_revision,
+            revision,
             source: Arc::from(source.source.as_str()),
             syntax: Arc::new(syntax),
             bound,
             checking_cost: std::sync::OnceLock::new(),
         });
+        if let Some(shared) = &self.shared {
+            let mut state = shared.state();
+            state.revisions.insert(revision, Arc::downgrade(&snapshot));
+            state.snapshots.entry(identity.clone()).or_default().push(Arc::downgrade(&snapshot));
+        }
         self.sources.insert(identity, Arc::clone(&snapshot));
         (snapshot, true)
     }
@@ -272,6 +359,7 @@ impl ProjectWorkspace {
         let revisions: HashSet<u64> = sources.iter().map(|source: &PreparedProjectSource| source.snapshot.revision).collect();
         self.identities.retain(|revision, _| revisions.contains(revision));
         self.recipes.retain(|revision, _| revisions.contains(revision));
+        if let Some(shared) = &self.shared { shared.state().evict(); }
         stats.evicted = before - self.sources.len();
         self.last_preparation = stats;
         PreparedSources { sources, stats }
@@ -369,6 +457,30 @@ mod tests {
         assert_eq!((next.stats.parsed, next.stats.bound), (0, 0));
         assert_eq!((next.stats.parse_reused, next.stats.bind_reused), (1, 1));
         matches_cold(&next_project, &next);
+    }
+
+    #[test]
+    fn workspaces_sharing_sources_parse_and_bind_each_text_once_between_them() {
+        let fixture = Fixture::new();
+        let path = fixture.file("main.lua", "local value=42\nlocal copy=value\n");
+        let shared = Arc::new(SharedSources::default());
+        let mut checking = ProjectWorkspace::shared(Arc::clone(&shared));
+        let mut querying = ProjectWorkspace::shared(Arc::clone(&shared));
+        let first = checking.prepare_registered_sources(&fixture.load(std::slice::from_ref(&path), &[]));
+        let second = querying.prepare_registered_sources(&fixture.load(std::slice::from_ref(&path), &[]));
+        assert_eq!((second.stats.parsed, second.stats.bound), (0, 0));
+        assert!(Arc::ptr_eq(&first.sources[0].snapshot, &second.sources[0].snapshot));
+        // One revision's recipe identity, whichever workspace asks.
+        let revision = [first.sources[0].snapshot.revision];
+        assert_eq!(checking.source_inputs(&revision).0, querying.source_inputs(&revision).0);
+        // Another text is another revision, which the other workspace no longer shares once
+        // neither holds the first.
+        fs::write(&path, "local value=43\n").unwrap();
+        let changed = checking.prepare_registered_sources(&fixture.load(std::slice::from_ref(&path), &[]));
+        assert_ne!(changed.sources[0].snapshot.revision, revision[0]);
+        drop((first, second));
+        querying.prepare_registered_sources(&fixture.load(std::slice::from_ref(&path), &[]));
+        assert!(!shared.state().revisions.contains_key(&revision[0]));
     }
 
     #[test]

@@ -717,9 +717,12 @@ impl Server {
         let query_inputs = inputs.clone();
         let cancelled = Arc::clone(&self.cancelled);
         let running = Running::start(&self.running);
+        // The two threads parse, bind and build each source's recipes once between them.
+        let sources = Arc::new(crate::incremental::SharedSources::default());
+        let query_sources = Arc::clone(&sources);
         self.workers.push(std::thread::Builder::new()
             .name("luanalysis-lsp-query".into())
-            .spawn(move || { let _running = running; answer_queries(query_inputs, query_options, received, events, cancelled) })
+            .spawn(move || { let _running = running; answer_queries(query_inputs, query_options, received, events, cancelled, query_sources) })
             .expect("start the language server's query thread"));
         self.queries = Some(queries);
         let (jobs, received) = mpsc::channel();
@@ -727,7 +730,7 @@ impl Server {
         let running = Running::start(&self.running);
         self.workers.push(std::thread::Builder::new()
             .name("luanalysis-lsp-check".into())
-            .spawn(move || { let _running = running; check_jobs(inputs, options, received, events) })
+            .spawn(move || { let _running = running; check_jobs(inputs, options, received, events, sources) })
             .expect("start the language server's checking thread"));
         self.jobs = Some(jobs);
         // A new checker checks everything again, and a new query thread loads the project again.
@@ -1416,10 +1419,10 @@ impl Server {
 }
 
 
-fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Receiver<Job>, events: mpsc::Sender<Event>) {
+fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Receiver<Job>, events: mpsc::Sender<Event>, sources: Arc<crate::incremental::SharedSources>) {
     // Its work, and its sessions', unwinds when the server cancels it.
     options.cancellation.enter();
-    let mut workspace = ProjectWorkspace::new();
+    let mut workspace = ProjectWorkspace::shared(Arc::clone(&sources));
     while let Ok(mut job) = jobs.recv() {
         // Only the latest revision is worth checking.
         while let Ok(newer) = jobs.try_recv() { job = newer; }
@@ -1431,7 +1434,7 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
             Ok(Ok(report)) => Snapshot::of(&report),
             Ok(Err(error)) => Snapshot::failed(error),
             Err(_) => {
-                workspace = ProjectWorkspace::new();
+                workspace = ProjectWorkspace::shared(Arc::clone(&sources));
                 Snapshot::failed("checking failed internally; see the server's standard error".into())
             }
         };
@@ -1439,9 +1442,9 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
     }
 }
 
-fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>, cancelled: Arc<std::sync::Mutex<HashSet<String>>>) {
+fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>, cancelled: Arc<std::sync::Mutex<HashSet<String>>>, sources: Arc<crate::incremental::SharedSources>) {
     options.cancellation.enter();
-    let mut workspace = ProjectWorkspace::new();
+    let mut workspace = ProjectWorkspace::shared(Arc::clone(&sources));
     let mut loaded = None;
     while let Ok(first) = queries.recv() {
         let mut pending = vec![first];
@@ -1503,7 +1506,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 Site::Hierarchy(site) => hierarchy(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
             }));
             if completed.is_err() {
-                workspace = ProjectWorkspace::new();
+                workspace = ProjectWorkspace::shared(Arc::clone(&sources));
                 loaded = None;
             }
             // A warm-up has no answer.
