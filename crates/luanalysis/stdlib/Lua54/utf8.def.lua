@@ -22,34 +22,33 @@ utf8.charpattern = ""
 --- (in bytes) and `c` the code point of each character. It raises an error if
 --- it meets any invalid byte sequence.
 ---@param s string
----@return string
-function utf8.codes(s) end
+---@param lax? boolean
+---@return (fun(s: string, i: number): number, number), string, number
+function utf8.codes(s, lax) end
 
 ---
 --- Returns the codepoints (as integers) from all characters in `s` that start
 --- between byte position `i` and `j` (both included). The default for `i` is
 --- 1  and for `j` is `i`. It raises an error if it meets any invalid byte
 --- sequence.
----@overload fun(s:string):number
----@overload fun(s:string,i:number,j:number):number
 ---@param s string
 ---@param i? number
 ---@param j? number
----@return number
-function utf8.codepoint (s, i, j) end
+---@param lax? boolean
+---@return number...
+function utf8.codepoint(s, i, j, lax) end
 
 ---
 --- Returns the number of UTF-8 characters in string `s` that start between
 --- positions `i` and `j` (both inclusive). The default for `i` is 1 and for
 --- `j` is -1. If it finds any invalid byte sequence, returns a false value
 --- plus the position of the first invalid byte.
----@overload fun(s:string):number
----@overload fun(s:string,i:number,j:number):number
 ---@param s string
 ---@param i? number
 ---@param j? number
----@return number
-function utf8.len(s, i, j) end
+---@param lax? boolean
+---@return (number) | (nil, number)
+function utf8.len(s, i, j, lax) end
 
 ---
 --- Returns the position (in bytes) where the encoding of the `n`-th character

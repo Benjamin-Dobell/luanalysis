@@ -9,12 +9,23 @@ coroutine = {}
 function coroutine.create(f) end
 
 ---
+--- Closes coroutine `co`, that is, closes all its pending to-be-closed
+--- variables and puts the coroutine in a dead state. The given coroutine must
+--- be dead or suspended. In case of error (either the original error that
+--- stopped the coroutine or errors in closing methods), returns **false** plus
+--- the error object; otherwise returns **true**.
+---@param co thread
+---@return (true) | (false, any)
+function coroutine.close(co) end
+
+---
 --- Returns true when the running coroutine can yield.
 ---
 --- A running coroutine is yieldable if it is not the main thread and it is not
 --- inside a non-yieldable C function.
+---@param co? thread
 ---@return boolean
-function coroutine.isyieldable() end
+function coroutine.isyieldable(co) end
 
 ---
 --- Starts or continues the execution of coroutine `co`. The first time you

@@ -61,12 +61,10 @@ function io.lines(filename) end
 ---
 --- The `mode` string can also have a '`b`' at the end, which is needed in
 --- some systems to open the file in binary mode.
----@overload fun(filename:string):file
----@overload fun(filename:string,mode:"r" | "w" | "a" | "r+" | "w+" | "a+" | "rb" | "wb" | "ab" | "rb+" | "wb+" | "ab+"):file
 ---@param filename string
----@param mode? "r" | "w" | "a" | "r+" | "w+" | "a+" | "rb" | "wb" | "ab" | "rb+" | "wb+" | "ab+"
----@return file
-function io.open(filename, mode) return file end
+---@param mode? "r" | "w" | "a" | "r+" | "w+" | "a+" | "rb" | "wb" | "ab" | "r+b" | "w+b" | "a+b" | "rb+" | "wb+" | "ab+"
+---@return (file) | (nil, string, number)
+function io.open(filename, mode) end
 
 ---
 --- Similar to `io.input`, but operates over the default output file.
@@ -200,10 +198,9 @@ function file:read(...) end
 --- it; the call `file:seek("set")` sets the position to the beginning of the
 --- file (and returns 0); and the call `file:seek("end")` sets the position
 --- to the end of the file, and returns its size.
----@overload fun()
----@overload fun(whence:"set" | "cur" | "end",offset:number):void
 ---@param whence? "set" | "cur" | "end"
 ---@param offset? number
+---@return (number) | (nil, string)
 function file:seek(whence, offset) end
 
 ---

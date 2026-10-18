@@ -16,10 +16,10 @@ function debug.debug() end
 --- Returns the current hook settings of the thread, as three values: the
 --- current hook function, the current hook mask, and the current hook count
 --- (as set by the `debug.sethook` function).
----@overload fun():thread
----@overload fun(thread:thread):thread
+---@overload fun(): (fun(...): any) | nil, string, number
+---@overload fun(thread: thread): (fun(...): any) | nil, string, number
 ---@param thread? thread
----@return thread
+---@return (fun(...): any) | nil, string, number
 function debug.gethook(thread) end
 
 ---@shape std__DebugInfo
@@ -86,19 +86,19 @@ function debug.getinfo(thread, f, what) end
 ---
 --- The parameter `f` may also be a function. In that case, `getlocal` returns
 --- only the name of function parameters.
----@overload fun(f:table, var:string):table
----@overload fun(thread:thread,f:table,var:string):table
----@param thread thread | table
----@param f table | string
----@param var? string
----@return table
-function debug.getlocal(thread, f, var) end
+---@overload fun(f: number | function, index: number): nil | (string, any)
+---@overload fun(thread: thread, f: number | function, index: number): nil | (string, any)
+---@param thread thread | number | function
+---@param f number | function
+---@param index? number
+---@return nil | (string, any)
+function debug.getlocal(thread, f, index) end
 
 ---
 --- Returns the metatable of the given `value` or **nil** if it does not have
 --- a metatable.
----@param value table
----@return table
+---@param value any
+---@return table | nil
 function debug.getmetatable(value) end
 
 ---
@@ -113,9 +113,9 @@ function debug.getregistry() end
 ---
 --- Variable names starting with '(' (open parenthesis) represent variables with
 --- no known names (variables from chunks saved without debug information).
----@param f number
+---@param f function
 ---@param up number
----@return table
+---@return nil | (string, any)
 function debug.getupvalue(f, up) end
 
 ---
@@ -162,31 +162,32 @@ function debug.sethook(thread, hook, mask, count) end
 --- raises an error when called with a `level` out of range. (You can call
 --- `getinfo` to check whether the level is valid.) Otherwise, it returns the
 --- name of the local variable.
----@overload fun(level:number, var:string, value:any):string
----@overload fun(thread:thread,level:number,var:string,value:any):string
+---@overload fun(level: number, index: number, value: any): string | nil
+---@overload fun(thread: thread, level: number, index: number, value: any): string | nil
 ---@param thread thread | number
----@param level number | string
----@param var string | any
----@param value any
----@return string
-function debug.setlocal(thread, level, var, value) end
+---@param level number
+---@param index number | any
+---@param value? any
+---@return string | nil
+function debug.setlocal(thread, level, index, value) end
 
 ---
 --- Sets the metatable for the given `object` to the given `table` (which
 --- can be **nil**). Returns value.
----@param value any
----@param table table
----@return boolean
+---@generic T
+---@param value T
+---@param table table | nil
+---@return T
 function debug.setmetatable(value, table) end
 
 ---
 --- This function assigns the value `value` to the upvalue with index `up`
 --- of the function `f`. The function returns **nil** if there is no upvalue
 --- with the given index. Otherwise, it returns the name of the upvalue.
----@param f fun():any
+---@param f function
 ---@param up number
 ---@param value any
----@return string
+---@return string | nil
 function debug.setupvalue(f, up, value) end
 
 --- Sets the given `value` as the `n`-th associated to the given `udata`.
@@ -205,16 +206,13 @@ function debug.setuservalue(udata, value, n) end
 --- appended at the beginning of the traceback. An optional `level` number
 --- tells at which level to start the traceback (default is 1, the function
 --- calling `traceback`).
----@overload fun(thread: thread, message: string): string
----@overload fun(message: string, level: number): string
----@overload fun(thread: thread): string
----@overload fun(message: string): string
----@overload fun(): string
----@overload fun(thread:thread,message:string,level:number):string
----@param thread? thread | string
----@param message? string | number
+---@overload fun(message?: string | nil, level?: number): string
+---@overload fun(thread: thread, message?: string | nil, level?: number): string
+---@overload fun(message: any, level?: number): any
+---@param thread? thread | any
+---@param message? any
 ---@param level? number
----@return string
+---@return any
 function debug.traceback(thread, message, level) end
 
 --- Returns a unique identifier (as a light userdata) for the upvalue numbered
@@ -224,16 +222,16 @@ function debug.traceback(thread, message, level) end
 --- closures share upvalues. Lua closures that share an upvalue (that is, that
 --- access a same external local variable) will return identical ids for those
 --- upvalue indices.
----@param f fun():number
+---@param f function
 ---@param n number
----@return number
+---@return userdata
 function debug.upvalueid(f, n) end
 
 ---
 --- Make the `n1`-th upvalue of the Lua closure f1 refer to the `n2`-th upvalue
 --- of the Lua closure f2.
----@param f1 fun():any
+---@param f1 function
 ---@param n1 number
----@param f2 fun():any
+---@param f2 function
 ---@param n2 number
 function debug.upvaluejoin(f1, n1, f2, n2) end

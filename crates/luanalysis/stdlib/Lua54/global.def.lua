@@ -37,14 +37,15 @@ function assert(v, message) end
 --- the major multiplier.
 --- **"isrunning"**: returns a boolean that tells whether the collector is
 --- running (i.e., not stopped).
----@overload fun(): number
----@overload fun(opt: "count"): number, number
----@overload fun(opt: "step", size: number): boolean
+---@overload fun(opt?: "collect" | "stop" | "restart"): number
+---@overload fun(opt: "count"): number
+---@overload fun(opt: "step", size?: number): boolean
 ---@overload fun(opt: "isrunning"): boolean
----@overload fun(opt: "generational"): "generational" | "incremental"
----@overload fun(opt: "incremental"): "generational" | "incremental"
----@param opt "collect" | "stop" | "restart"
----@return number
+---@overload fun(opt: "incremental", pause?: number, stepmul?: number, stepsize?: number): "generational" | "incremental"
+---@overload fun(opt: "generational", minormul?: number, majormul?: number): "generational" | "incremental"
+---@param opt? "collect" | "stop" | "restart" | "count" | "step" | "isrunning" | "incremental" | "generational"
+---@param arg? number
+---@return number | boolean | string
 function collectgarbage(opt, arg) end
 
 ---
@@ -69,9 +70,7 @@ function dofile(filename) end
 --- that called `error` was called; and so on. Passing a level 0 avoids the
 --- addition of error position information to the message.
 ---
----@overload fun(message: any): never
----@overload fun(message:string,level:number):never
----@param message string | any
+---@param message any
 ---@param level? number
 ---@return never
 function error(message, level) end
@@ -236,6 +235,13 @@ function rawequal(v1, v2) end
 function rawget(table, index) end
 
 ---
+--- Returns the length of the object `v`, which must be a table or a string,
+--- without invoking the `__len` metamethod. Returns an integer.
+---@param v string | table
+---@return number
+function rawlen(v) end
+
+---
 --- Sets the real value of `table[index]` to `value`, without invoking the
 --- `__newindex` metamethod. `table` must be a table, `index` any value
 --- different from **nil** and NaN, and `value` any Lua value.
@@ -328,3 +334,16 @@ _VERSION = "Lua 5.4"
 ---@vararg any
 ---@return true | (true, T) | (false, any)
 function xpcall(f, msgh, ...) end
+
+---
+--- Emits a warning with a message composed by the concatenation of all its
+--- arguments (which should be strings).
+---
+--- By convention, a one-piece message starting with '`@`' is intended to be a
+--- *control message*, which is a message to the warning system itself. In
+--- particular, the standard warning function in Lua recognizes the control
+--- messages "`@off`", to stop the emission of warnings, and "`@on`", to
+--- (re)start the emission; it ignores unknown control messages.
+---@param message string
+---@vararg string
+function warn(message, ...) end

@@ -99,8 +99,8 @@ function debug.getlocal(thread, level, index) end
 ---
 --- Returns the metatable of the given `value` or **nil** if it does not have
 --- a metatable.
----@param value table
----@return table
+---@param value any
+---@return table | nil
 function debug.getmetatable(value) end
 
 ---
@@ -199,14 +199,11 @@ function debug.setupvalue(f, up, value) end
 --- appended at the beginning of the traceback. An optional `level` number
 --- tells at which level to start the traceback (default is 1, the function
 --- calling `traceback`).
----@overload fun(thread: thread, message: string): string
----@overload fun(message: string, level: number): string
----@overload fun(thread: thread): string
----@overload fun(message: string): string
----@overload fun(): string
----@overload fun(thread:thread,message:string,level:number):string
----@param thread? thread | string
----@param message? string | number
+---@overload fun(message?: string | nil, level?: number): string
+---@overload fun(thread: thread, message?: string | nil, level?: number): string
+---@overload fun(message: any, level?: number): any
+---@param thread? thread | any
+---@param message? any
 ---@param level? number
----@return string
+---@return any
 function debug.traceback(thread, message, level) end

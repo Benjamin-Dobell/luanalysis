@@ -172,7 +172,7 @@ fn active_io_library_exposes_local_file_methods() {
     );
     let fixture = Fixture::new(
         &declarations,
-        "local handle=io.open('example.txt')\nlocal lines=handle:lines()\nhandle:close()\n---@type fun():any\nlocal iterator=lines\n",
+        "local handle=io.open('example.txt')\nif not handle then return end\nlocal lines=handle:lines()\nhandle:close()\n---@type fun():any\nlocal iterator=lines\n",
     );
     pass(&fixture.check());
 }

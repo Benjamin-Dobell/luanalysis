@@ -81,7 +81,7 @@ fn corrected_original_xpcall_names_its_real_handler_and_checks_the_original_argu
 fn corrected_original_error_contract_terminates_both_public_arities_without_body_inference() {
     let original = excerpt(
         GLOBAL,
-        "---@overload fun(message: any): never",
+        "---@param message any\n---@param level? number",
         "function error(message, level) end",
     );
     for call in ["error({message='missing'})", "error('missing',0)"] {
@@ -116,7 +116,7 @@ fn the_fundamental_assert_forwards_its_real_extra_arguments() {
 }
 #[test]
 fn minimally_corrected_original_math_and_table_resources_keep_actual_result_contracts() {
-    let declarations = excerpt(GLOBAL, "---@overload fun(message: any): never", "function error(message, level) end");
+    let declarations = excerpt(GLOBAL, "---@param message any\n---@param level? number", "function error(message, level) end");
     let fixture = Fixture::new(
         declarations,
         "local a,b=math.modf(1.5)\n---@type number\nlocal fraction=b\nlocal x,y=math.randomseed()\n---@type number\nlocal seed=y\n---@type number|nil\nlocal integer=math.tointeger({})\n---@type 'integer'|'float'|nil\nlocal category=math.type({})\nlocal values={1,2}\ntable.insert(values,1,3)\nlocal removed=table.remove(values)\nif removed==nil then error('empty') end\n---@type number\nlocal checked=removed\ntable.sort(values)\n",

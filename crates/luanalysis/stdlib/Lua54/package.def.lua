@@ -179,7 +179,7 @@ function package.searchpath(name, path, sep, rep) end
 --- If there is any error loading or running the module, or if it cannot find
 --- any loader for the module, then `require` raises an error.
 ---@param modname string
----@return any
+---@return any...
 function require(modname) end
 
 return package
