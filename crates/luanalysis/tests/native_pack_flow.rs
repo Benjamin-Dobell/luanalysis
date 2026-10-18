@@ -100,3 +100,9 @@ fn correlated_rows_keep_the_explicit_member_constraint_after_narrowing() {
         "hidden"
     );
 }
+
+#[test]
+fn a_type_parameter_slot_narrows_without_the_other_rows_nil() {
+    let source = "---@generic T\n---@param result fun(): false | (true, T)\n---@return nil | T\nlocal function unwrap(result)\nlocal ok,value=result()\nif ok then\n---@type T\nlocal present=value\nreturn present\nend\nreturn nil\nend";
+    clean(source);
+}

@@ -1397,7 +1397,13 @@ impl<'s, 'p> Checker<'s, 'p> {
             // Keep the binding's declared view. Correlation removes impossible
             // union constituents; it must not expose constructor-only fields.
             self.map_type(ordinary, |checker, part| {
-                if checker.are_comparable(part, projected) { part } else { TypeId::NEVER }
+                // A part is possible if the slot can hold it. A type parameter's slot holds only
+                // what relates to it: nil is not a possible `R`, as TypeScript does not compare
+                // undefined with an unconstrained type parameter.
+                let possible = if checker.could_contain_type_variables(part) || checker.could_contain_type_variables(projected) {
+                    checker.is_assignable(part, projected) || checker.is_assignable(projected, part)
+                } else { checker.are_comparable(part, projected) };
+                if possible { part } else { TypeId::NEVER }
             })
         };
         NativeFlowResult { ty, incomplete: result.incomplete, unresolved_auto: false }
