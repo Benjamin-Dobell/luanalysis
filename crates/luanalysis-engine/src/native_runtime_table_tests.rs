@@ -275,7 +275,8 @@ impl NativeTypeProvider for Provider {
     ) -> Option<Type> {
         assert!(!self.forbid_seed, "written constructor bounds do not re-evaluate the original seed");
         self.seed_calls.set(self.seed_calls.get() + 1);
-        let mut seed = self.seed.clone();
+        // The seed is the original table constructor, whose literals are fresh.
+        let mut seed = TableType { fresh: true, ..self.seed.clone() };
         if self.faceted {
             seed.fields
                 .push(TableField::new(key("seed"), self.facet_value(queries)));

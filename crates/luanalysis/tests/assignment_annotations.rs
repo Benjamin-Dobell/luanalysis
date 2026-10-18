@@ -50,3 +50,13 @@ fn a_void_key_type_indexes_nothing_as_in_v1() {
     let report = check("---@generic T\n---@param name T\n---@param resolved table<T, number>\nlocal function use(name, resolved) end\n---@type void\nlocal nothing\nuse(nothing, {})\n---@type table<void, number>\nlocal declared = {}\n");
     assert_eq!(report.matches("error[").count(), 0, "{report}");
 }
+
+#[test]
+fn written_literal_types_are_not_widened_by_inference() {
+    // As TypeScript keeps written literal types: iterating a written `table<"a" | "b", V>` or
+    // `("a" | "b")[]` yields the literal union, as an alias of it does.
+    let report = check("---@alias Name 'a' | 'b'\n---@param m table<Name, number>\n---@param names Name[]\nlocal function f(m, names)\n    for key in pairs(m) do local k = key end\n    for _, name in ipairs(names) do local n = name end\nend\n");
+    assert!(report.contains("main.lua:5:34: k: \"a\" | \"b\""), "{report}");
+    assert!(report.contains("main.lua:6:43: n: \"a\" | \"b\""), "{report}");
+    assert_eq!(report.matches("error[").count(), 0, "{report}");
+}

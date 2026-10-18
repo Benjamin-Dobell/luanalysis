@@ -208,12 +208,19 @@ fn import_descriptors(
     handles: &TypeHandles,
     table: &TableType,
 ) -> (Vec<NativeTableField>, Vec<NativeTableIndexer>) {
+    // A written table type's literal types are regular, as TypeScript's written literal types
+    // are: inference keeps `table<"a" | "b", V>`'s keys rather than widening them to string. A
+    // table constructor's are fresh.
+    let mut written = |checker: &mut Checker<'_, '_>, ty: &Type| {
+        let ty = import_type(checker, handles, ty);
+        if table.fresh { ty } else { checker.regular(ty) }
+    };
     let fields = table
         .fields
         .iter()
         .map(|field| NativeTableField {
             key: import_literal_key(checker, &field.key),
-            value: import_type(checker, handles, &field.value),
+            value: written(checker, &field.value),
             optional: field.optional,
             readonly: field.readonly,
             origin: import_origin(&field.origin),
@@ -223,8 +230,8 @@ fn import_descriptors(
         .indexers
         .iter()
         .map(|indexer| NativeTableIndexer {
-            key: import_type(checker, handles, &indexer.key),
-            value: import_type(checker, handles, &indexer.value),
+            key: written(checker, &indexer.key),
+            value: written(checker, &indexer.value),
             readonly: indexer.readonly,
             sparse: indexer.sparse,
             origin: import_origin(&indexer.origin),
@@ -312,7 +319,9 @@ pub(super) fn export_table(
 
 impl SessionQueries<'_, '_, '_> {
     pub(super) fn array_type_native(&mut self, element: &Type) -> Type {
+        // A written array's element literals are regular, as a written table's are.
         let element = import_type(self.checker, self.handles, element);
+        let element = self.checker.regular(element);
         let ty = self.checker.native_array_table(element, false)
             .unwrap_or_else(|error| std::panic::panic_any(error));
         export_type(self.checker, self.handles, ty)
