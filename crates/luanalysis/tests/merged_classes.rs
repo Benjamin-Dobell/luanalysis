@@ -231,3 +231,16 @@ fn a_methods_self_is_its_table_with_every_stored_member() {
     let output = fixture.check();
     assert!(output.status.success(), "{}", text(&output));
 }
+
+#[test]
+fn an_optional_array_table_or_record_field_may_be_nil() {
+    let fixture = Fixture::new(&[
+        ("main.lua", "---@class Node\n---@field children? Node[]\n---@field index? table<number, string>\n---@field range? { start: number }\n\n---@param node Node | nil\nlocal function f(node)\n    if not node then return end\n    local children = node.children\n    local index = node.index\n    local range = node.range\n    if node.children == nil then\n        node.children = {}\n    end\n    local after = node\nend\n"),
+    ]);
+    let output = fixture.check();
+    let report = text(&output);
+    assert!(output.status.success(), "{report}");
+    for expected in ["children: nil | Node[]", "index: nil | table<number, string>", "range: nil | { [\"start\"]: number }", "after: Node"] {
+        assert!(report.contains(expected), "{expected}\n{report}");
+    }
+}

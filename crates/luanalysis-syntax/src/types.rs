@@ -740,7 +740,8 @@ impl TypeParser {
         let optional = self.take("?");
         let mut ty = self.union();
         if let Some(question) = optional {
-            let span = ty.span;
+            // Its own span: the type's is the key of an array, table or record head it may be.
+            let span = question.join(ty.span);
             ty = TypeExpr {
                 kind: TypeExprKind::Union(vec![ty, TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span: question }]),
                 span,
