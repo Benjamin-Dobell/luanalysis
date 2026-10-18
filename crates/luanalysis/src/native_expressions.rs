@@ -557,6 +557,7 @@ impl NativeRegistry {
         mode: NativeCheckMode,
         queries: &mut dyn TypeQueries,
     ) -> (Type, bool) {
+        let mode = mode | queries.native_type_query_mode();
         let record = self.expressions().get(key);
         if let Some(function) = self.expressions().function_for(key) {
             if let Some(expected) = expected {

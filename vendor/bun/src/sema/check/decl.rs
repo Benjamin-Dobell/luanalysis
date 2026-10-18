@@ -4616,7 +4616,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
     }
 
-    fn native_provider_for(&self, declaration: NativeFunctionId) -> &'p dyn NativeFunctionProvider {
+    pub(super) fn native_provider_for(&self, declaration: NativeFunctionId) -> &'p dyn NativeFunctionProvider {
         let provider = self.native_function_provider.expect("native function without a provider");
         assert!(provider.contains_function(declaration), "foreign native function identity");
         provider
@@ -5471,6 +5471,9 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub fn sig_predicate(&mut self, sig: SigId) -> Option<Predicate> {
+        if matches!(self.types().sig(sig), SigData::NativeDeclarationSignature { .. } | SigData::Native { .. } | SigData::NativeCaptured { .. } | SigData::NativeContextual { .. }) {
+            return self.native_sig_predicate(sig);
+        }
         let (file, func, mapper) = match *self.types().sig(sig) {
             SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => return self.sig_predicate(inner),
             SigData::Synth {
@@ -5527,6 +5530,45 @@ impl<'p, 's> Checker<'p, 's> {
             ty,
             asserts,
         })
+    }
+
+    /// Native declaration metadata follows the exact signature mapper/facet.
+    /// Cache completed demands only; recursive or provisional checks cannot
+    /// publish an absent predicate as an enduring declaration contract.
+    fn native_sig_predicate(&mut self, sig: SigId) -> Option<Predicate> {
+        if !self.native_signature_may_have_type_predicate(sig) { return None; }
+        if let Some(&predicate) = self.flow_memo.native_state.signature_type_predicates.get(&sig) { return predicate; }
+        let query = Query::NativeSignatureTypePredicate(sig);
+        if !self.enter(query) { return None; }
+        let begun = self.begin_memoizable();
+        let native = match *self.types().sig(sig) {
+            SigData::NativeDeclarationSignature { declaration, mapper, .. } => {
+                let provider = self.native_signature_provider_for(declaration);
+                provider.signature_type_predicate(self, declaration).map(|predicate| (predicate, mapper))
+            }
+            SigData::Native { declaration, mapper } => {
+                let provider = self.native_provider_for(declaration);
+                self.with_native_declaration_frame(declaration, |c| provider.function_type_predicate(c, declaration)).map(|predicate| (predicate, mapper))
+            }
+            SigData::NativeCaptured { declaration, mapper, .. } => {
+                let provider = self.native_provider_for(declaration);
+                self.with_native_function_frame(None, Some(NativeCapturedFunctionContext { signature: sig }), |c| provider.function_type_predicate(c, declaration)).map(|predicate| (predicate, mapper))
+            }
+            SigData::NativeContextual { declaration, mapper, context, .. } => {
+                let provider = self.native_provider_for(declaration);
+                self.with_native_function_frame(Some(context), Some(NativeCapturedFunctionContext { signature: sig }), |c| provider.function_type_predicate(c, declaration)).map(|predicate| (predicate, mapper))
+            }
+            _ => None,
+        };
+        let predicate = native.map(|(predicate, mapper)| {
+            let name = self.sig_params(sig).get(predicate.parameter).map_or(Atom::NONE, |parameter| parameter.name);
+            Predicate { param: Some(predicate.parameter), name, ty: Some(self.instantiate(predicate.ty, mapper)), asserts: false }
+        });
+        let stored = self.end_memoizable(begun);
+        if self.leave(query).is_ok() && stored.is_some() && !self.is_stack_low() {
+            self.flow_memo.native_state.signature_type_predicates.insert(sig, predicate);
+        }
+        predicate
     }
 
     /// `getUnionOrIntersectionTypePredicate`

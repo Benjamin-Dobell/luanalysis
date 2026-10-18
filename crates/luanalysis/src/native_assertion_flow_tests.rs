@@ -98,3 +98,13 @@ fn colon_assertion_uses_the_original_receiver_as_its_physical_first_argument() {
     let original = sources.source_reference(reference).unwrap();
     assert_eq!(original, &sources.program.references[&receiver.expression]);
 }
+
+#[test]
+fn a_later_unary_call_cannot_preserve_a_guard_assertions_earlier_subject() {
+    let (sources, call) = fixture("probe(isGuard(subject),unknown(1))");
+    let call = sources.program.evaluation(call);
+    assert_eq!(
+        sources.assertion_call_effect_with_guard(call, sources.flow_key(call.input, 0), true),
+        NativeCallEffects::None,
+    );
+}

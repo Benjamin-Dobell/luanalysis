@@ -576,6 +576,11 @@ pub enum TypeExprKind {
     Record(Vec<TypeField>),
     Parenthesized(Box<TypeExpr>),
     Function(FunctionType),
+    /// A sole boolean result that narrows a named parameter when it is true.
+    TypePredicate {
+        parameter: Name,
+        ty: Box<TypeExpr>,
+    },
     Array {
         element: Box<TypeExpr>,
         suffix_span: Span,

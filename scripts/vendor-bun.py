@@ -665,6 +665,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Type a global by its first declaration in program order when that is the standard library's or a declaration file's, reporting each later conflicting declaration where it is, as TypeScript does, through kernel 8cae069.",
 })
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-type-predicates.patch",
+    "reason": "Resolve written native type predicates through signature caches and mappers, retain boolean call results, and narrow their original arguments through the shared TypeScript predicate worker.",
+} for path in ["call.rs", "decl.rs", "mod.rs", "native_flow.rs", "native_packs.rs", "native_signatures.rs", "sink.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

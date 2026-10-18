@@ -115,6 +115,15 @@ pub enum NativePredicate {
         value: NativeValueKey,
         input: NativeFlowKey,
     },
+    /// An original call and its arguments, frozen at their evaluation input.
+    /// The applicable signature decides which argument the predicate targets.
+    Call {
+        value: NativeValueKey,
+        input: NativeFlowKey,
+        arguments: Vec<Option<NativeReferenceKey>>,
+        /// Whether a true condition means the selected guard returned false.
+        negated: bool,
+    },
     Equal {
         subject: NativeReferenceKey,
         other: NativeValueKey,
@@ -353,6 +362,7 @@ pub trait NativeFlowProvider {
     fn reference_proper_prefixes(&self, _: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> { None }
     /// Original immutable predicate recipe for a verified assertion argument.
     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
+    fn call_type_predicate(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<super::native_signatures::NativeTypePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
     fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
@@ -428,6 +438,8 @@ pub(super) struct NativeFlowState {
     value_types: FxHashMap<ValueContext, TypeId>,
     pack_types: FxHashMap<ValueContext, NativeResultPack>,
     call_effects: FxHashMap<(ValueContext, u64), NativeCallEffects>,
+    call_type_predicates: FxHashMap<(ValueContext, u64), Option<super::native_signatures::NativeTypePredicate>>,
+    pub(super) signature_type_predicates: FxHashMap<SigId, Option<super::decl::Predicate>>,
     pub(super) contextual_owners: FxHashMap<(NativeFunctionId, NativeFlowKey, u64), Option<TypeId>>,
     // Provisional query handles name actual effect records, never TypeIds.
     effect_records: Vec<NativeCallEffects>,
@@ -477,9 +489,13 @@ enum NumericEntry {
     Unknown,
 }
 
-fn predicate_subject(predicate: &NativePredicate) -> Option<NativeReferenceKey> {
+fn predicate_subject(provider: &dyn NativeFlowProvider, predicate: &NativePredicate, checker: &mut Checker<'_, '_>) -> Option<NativeReferenceKey> {
     match predicate {
         NativePredicate::Truthy { subject, .. } => *subject,
+        NativePredicate::Call { value, input, arguments, .. } => {
+            let predicate = checker.native_flow_call_type_predicate(provider, *value, *input)?;
+            arguments.get(predicate.parameter).copied().flatten()
+        }
         NativePredicate::Equal { subject, .. } | NativePredicate::RuntimeType { subject, .. } => Some(*subject),
         _ => None,
     }
@@ -489,7 +505,12 @@ fn predicate_mentions(provider: &dyn NativeFlowProvider, predicate: &NativePredi
     match predicate {
         NativePredicate::And(left, right) | NativePredicate::Or(left, right) => predicate_mentions(provider, left, reference, pack, checker) || predicate_mentions(provider, right, reference, pack, checker),
         NativePredicate::Not(inner) => predicate_mentions(provider, inner, reference, pack, checker),
-        _ => predicate_subject(predicate).is_some_and(|subject| if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) || provider.iterator_projection(subject).is_some_and(|projection| projection.frame == reference) } else { subject == reference || provider.reference_member_key(reference, subject, checker).is_some() }),
+        NativePredicate::Call { arguments, .. } if !arguments.iter().flatten().any(|&subject| {
+            if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) || provider.iterator_projection(subject).is_some_and(|projection| projection.frame == reference) }
+            else { subject == reference || provider.reference_member_key(reference, subject, checker).is_some() }
+        }) => false,
+
+        _ => predicate_subject(provider, predicate, checker).is_some_and(|subject| if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) || provider.iterator_projection(subject).is_some_and(|projection| projection.frame == reference) } else { subject == reference || provider.reference_member_key(reference, subject, checker).is_some() }),
     }
 }
 
@@ -633,6 +654,20 @@ impl NativeDomain<'_> {
             NativePredicate::Truthy { subject, input, .. } => (*subject, *input),
             NativePredicate::Equal { subject, input, .. } => (Some(*subject), *input),
             NativePredicate::RuntimeType { subject, input, .. } => (Some(*subject), *input),
+            NativePredicate::Call { value, input, arguments, .. } => {
+                if !self.edge(at, *input) { return false; }
+                if value.snapshot != input.graph.snapshot {
+                    self.provider.flow_error(at, NativeFlowError::InvalidValue(*value));
+                    return false;
+                }
+                for subject in arguments.iter().flatten() {
+                    if subject.graph != self.graph || !self.provider.contains_reference(*subject) {
+                        self.provider.flow_error(at, NativeFlowError::InvalidReference(*subject));
+                        return false;
+                    }
+                }
+                return true;
+            }
             NativePredicate::GenericIteration { frame, input } => (Some(*frame), *input),
             NativePredicate::NumericIteration { start, limit, step, .. } => {
                 return [Some(*start), Some(*limit), *step].into_iter().flatten().all(|header| {
@@ -723,7 +758,7 @@ impl NativeDomain<'_> {
             NativePredicate::Or(left, right) => if sense { self.literal_predicate_possible(left, true) || self.literal_predicate_possible(right, true) }
                 else { self.literal_predicate_possible(left, false) && self.literal_predicate_possible(right, false) },
             NativePredicate::Not(inner) => self.literal_predicate_possible(inner, !sense),
-            NativePredicate::Truthy { value, .. } => self.provider.value_literal_truthiness(*value).is_none_or(|truthy| truthy == sense),
+            NativePredicate::Truthy { value, .. } | NativePredicate::Call { value, .. } => self.provider.value_literal_truthiness(*value).is_none_or(|truthy| truthy == sense),
             _ => true,
         }
     }
@@ -1277,7 +1312,7 @@ impl<'s, 'p> Checker<'s, 'p> {
             NativePredicate::And(left, right) => if sense { self.native_predicate_possible(provider, left, true) && self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) || self.native_predicate_possible(provider, right, false) },
             NativePredicate::Or(left, right) => if sense { self.native_predicate_possible(provider, left, true) || self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) && self.native_predicate_possible(provider, right, false) },
             NativePredicate::Not(inner) => self.native_predicate_possible(provider, inner, !sense),
-            NativePredicate::Truthy { value, input, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.lua_truthiness_type(value, sense).is_never() },
+            NativePredicate::Truthy { value, input, .. } | NativePredicate::Call { value, input, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.lua_truthiness_type(value, sense).is_never() },
             NativePredicate::RuntimeType { value, input, kind, equals, .. } => { if !provider.runtime_type_operation(*value, *input, self) { return true; } let value = self.native_flow_value(provider, *value, *input); !self.native_runtime_type(value, kind, *equals == sense).is_never() },
             _ => true,
         }
@@ -1298,8 +1333,8 @@ impl<'s, 'p> Checker<'s, 'p> {
                     self.union_reduced(&[bypass, evaluated])
                 }
             }
-            _ if predicate_subject(predicate) != Some(reference) => {
-                if let Some(subject) = predicate_subject(predicate)
+            _ if predicate_subject(provider, predicate, self) != Some(reference) => {
+                if let Some(subject) = predicate_subject(provider, predicate, self)
                     && let Some(key) = provider.reference_member_key(reference, subject, self) {
                     // Like getDiscriminantPropertyAccess, a member predicate
                     // filters parent alternatives only for an original/current
@@ -1329,6 +1364,12 @@ impl<'s, 'p> Checker<'s, 'p> {
                 // compound condition (for example, object.flag && false).
                 ty
             }
+            NativePredicate::Call { value, input, negated, .. } => {
+                match self.native_flow_call_type_predicate(provider, *value, *input) {
+                    Some(predicate) => self.narrowed_to(ty, predicate.ty, sense != *negated, super::flow::CheckDerived::No),
+                    None => ty,
+                }
+            }
             NativePredicate::Truthy { .. } => self.lua_truthiness_type(ty, sense),
             NativePredicate::Equal { other, input, equals, .. } => { let other = self.native_flow_value(provider, *other, *input); self.native_equal_flow_type(ty, other, *equals == sense) },
             NativePredicate::RuntimeType { value, input, kind, equals, .. } => if provider.runtime_type_operation(*value, *input, self) { self.native_runtime_type(ty, kind, *equals == sense) } else { ty },
@@ -1352,7 +1393,7 @@ impl<'s, 'p> Checker<'s, 'p> {
             }
             _ => {}
         }
-        let index = predicate_subject(predicate).and_then(|reference| {
+        let index = predicate_subject(provider, predicate, self).and_then(|reference| {
             provider.pack_projection(reference).filter(|projection| projection.group == group).map(|projection| projection.index)
                 .or_else(|| provider.iterator_projection(reference).filter(|projection| projection.frame == group).map(|projection| projection.index))
         });
@@ -1363,6 +1404,12 @@ impl<'s, 'p> Checker<'s, 'p> {
             let row = self.native_result_pack(std::slice::from_ref(&alternative));
             let value = self.native_pack_slot(row, index);
             let value = match predicate {
+                NativePredicate::Call { value: call, input, negated, .. } => {
+                    match self.native_flow_call_type_predicate(provider, *call, *input) {
+                        Some(predicate) => self.narrowed_to(value, predicate.ty, sense != *negated, super::flow::CheckDerived::No),
+                        None => value,
+                    }
+                }
                 NativePredicate::Truthy { .. } => self.lua_truthiness_type(value, sense),
                 NativePredicate::Equal { other, input, equals, .. } => {
                     let other = self.native_flow_value(provider, *other, *input);
@@ -1685,6 +1732,30 @@ impl<'s, 'p> Checker<'s, 'p> {
             _ => {}
         }
         ty
+    }
+
+    fn native_flow_call_type_predicate(
+        &mut self,
+        provider: &dyn NativeFlowProvider,
+        value: NativeValueKey,
+        input: NativeFlowKey,
+    ) -> Option<super::native_signatures::NativeTypePredicate> {
+        let epoch = self.flow_memo.native_state.effect_epoch;
+        let key = ((value, input), epoch);
+        if value.snapshot != input.graph.snapshot || !provider.contains_graph(input.graph) || provider.node(input).is_none() {
+            provider.flow_error(input, NativeFlowError::InvalidValue(value));
+            return None;
+        }
+        if let Some(&cached) = self.flow_memo.native_state.call_type_predicates.get(&key) { return cached; }
+        let query = super::Query::NativeFlowCallTypePredicate(value, input, epoch);
+        if !self.enter(query) { return None; }
+        let begun = self.begin_memoizable();
+        let predicate = provider.call_type_predicate(value, input, self);
+        let stored = self.end_memoizable(begun);
+        if self.leave(query).is_ok() && stored.is_some() && !self.is_stack_low() {
+            self.flow_memo.native_state.call_type_predicates.insert(key, predicate);
+            predicate
+        } else { None }
     }
 
     fn native_flow_call_effects(

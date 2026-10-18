@@ -183,7 +183,8 @@ impl NativeRegistry {
                     pending.extend(args.iter().map(|ty| (context, ty)));
                 }
                 TypeExprKind::Union(types) | TypeExprKind::Intersection(types) => pending.extend(types.iter().map(|ty| (context, ty))),
-                TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element) => {
+                TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element)
+                | TypeExprKind::TypePredicate { ty: element, .. } => {
                     pending.push((context, element))
                 }
                 TypeExprKind::Record(fields) => {

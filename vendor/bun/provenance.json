@@ -2496,6 +2496,48 @@
       "patch": "vendor/patches/bun-sema-standard-global-precedence.patch",
       "reason": "Type a global by its first declaration in program order when that is the standard library's or a declaration file's, reporting each later conflicting declaration where it is, as TypeScript does, through kernel 8cae069.",
       "patch_sha256": "e65880e1de75c7148aadd20d805a66097a02aec7b1feb7dc3153349e727ed3b2"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-type-predicates.patch",
+      "reason": "Resolve written native type predicates through signature caches and mappers, retain boolean call results, and narrow their original arguments through the shared TypeScript predicate worker.",
+      "patch_sha256": "07ee0038f1489df9c2b1655ff6cb6dfb5cad047e7684e8f017dec475eb6b44c2"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-type-predicates.patch",
+      "reason": "Resolve written native type predicates through signature caches and mappers, retain boolean call results, and narrow their original arguments through the shared TypeScript predicate worker.",
+      "patch_sha256": "07ee0038f1489df9c2b1655ff6cb6dfb5cad047e7684e8f017dec475eb6b44c2"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-type-predicates.patch",
+      "reason": "Resolve written native type predicates through signature caches and mappers, retain boolean call results, and narrow their original arguments through the shared TypeScript predicate worker.",
+      "patch_sha256": "07ee0038f1489df9c2b1655ff6cb6dfb5cad047e7684e8f017dec475eb6b44c2"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-type-predicates.patch",
+      "reason": "Resolve written native type predicates through signature caches and mappers, retain boolean call results, and narrow their original arguments through the shared TypeScript predicate worker.",
+      "patch_sha256": "07ee0038f1489df9c2b1655ff6cb6dfb5cad047e7684e8f017dec475eb6b44c2"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-native-type-predicates.patch",
+      "reason": "Resolve written native type predicates through signature caches and mappers, retain boolean call results, and narrow their original arguments through the shared TypeScript predicate worker.",
+      "patch_sha256": "07ee0038f1489df9c2b1655ff6cb6dfb5cad047e7684e8f017dec475eb6b44c2"
+    },
+    {
+      "path": "src/sema/check/native_signatures.rs",
+      "patch": "vendor/patches/bun-sema-native-type-predicates.patch",
+      "reason": "Resolve written native type predicates through signature caches and mappers, retain boolean call results, and narrow their original arguments through the shared TypeScript predicate worker.",
+      "patch_sha256": "07ee0038f1489df9c2b1655ff6cb6dfb5cad047e7684e8f017dec475eb6b44c2"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-type-predicates.patch",
+      "reason": "Resolve written native type predicates through signature caches and mappers, retain boolean call results, and narrow their original arguments through the shared TypeScript predicate worker.",
+      "patch_sha256": "07ee0038f1489df9c2b1655ff6cb6dfb5cad047e7684e8f017dec475eb6b44c2"
     }
   ],
   "source_additions": {
@@ -2516,7 +2558,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "80efff997d5ba9a61448a8348bccc9ad972fff59b888fa9c041131d35ea50f4d",
+      "extracted_sha256": "7d115714dc4e70a5b34f8ad5dc33fc54e33d8bd8f98e6566a9d55b0d28bbf301",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
@@ -2536,7 +2578,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "2908815bfe71868ab18d68c51bf64efa606eed837acfbab2bcd9ac683ad114f7",
+      "extracted_sha256": "b6ea332729c90b195c2e57d1605c98c85d6ee0060e3dabc5376a1042f7349d30",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
@@ -2556,7 +2598,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
-      "extracted_sha256": "e727166a988596ed6abb0916db79c21653b12c0994c504cd90abe2b2a43840d7",
+      "extracted_sha256": "174fea2eb1dd146d6203ad00b6c227ea7350413b91c56ba6e4396407d0df9bf2",
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_standard_assumptions.rs": {
@@ -3262,7 +3304,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "cef0008a813c20864a3e708a3f52ebe50cc870cdf937f54e7641f737930d6b86"
+      "extracted_sha256": "bb1e7bead23d965597ff463dc3549b0436baa4905232b6ca8729d970a337ca12"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -3277,7 +3319,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "0e54dbe327a4b95657abab5517d7dd506a2ec56ef6ecee05d0329940c6d7c4c5"
+      "extracted_sha256": "773e48bbf7308a01a0fac1640ca725dd8f34b939914a710f4659268819bc97b6"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -3522,7 +3564,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "30c85d53388c2fbf481ebe8fb15b8e5c40248e4d4db42e7aae345c559f935650"
+      "extracted_sha256": "c7b0d030e6b62dc1b1ed120e8ccf1a5476c3cf4a3562e0c6deeca78e3967602d"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -3607,7 +3649,7 @@
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "bf4fbc4c64207b18d9405443950a457f049a2e2eb798706ba89219ea11d336ee"
+      "extracted_sha256": "da3414c92edbd7a0730e205fef9a8aef58901e1a45247212de453528ee366d93"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",

@@ -86,12 +86,15 @@ mod tests {
         literal: bool,
         generic: Option<u32>,
         constraint: Option<Type>,
+        predicate: Option<Type>,
     }
     #[derive(Clone)]
     struct Provider {
         heads: Vec<Head>,
         parameter_reads: Cell<usize>,
         return_reads: Cell<usize>,
+        predicate_reads: Cell<usize>,
+        function_predicate_reads: Cell<usize>,
         implementation_reads: Cell<usize>,
         factory: bool,
         named: bool,
@@ -135,6 +138,8 @@ mod tests {
                 heads,
                 parameter_reads: Cell::new(0),
                 return_reads: Cell::new(0),
+                predicate_reads: Cell::new(0),
+                function_predicate_reads: Cell::new(0),
                 implementation_reads: Cell::new(0),
                 factory: false,
                 named: false,
@@ -156,6 +161,14 @@ mod tests {
         }
         fn contains_signature(&self, key: NativeSignatureKey) -> bool {
             key.snapshot == 1219 && (key.index as usize) < self.heads.len()
+        }
+        fn signature_may_have_type_predicate(&self, key: NativeSignatureKey) -> bool {
+            self.heads[key.index as usize].predicate.is_some()
+        }
+        fn function_may_have_type_predicate(&self, _: NativeFunctionKey) -> bool { false }
+        fn function_type_predicate(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<crate::TypePredicate> {
+            self.function_predicate_reads.set(self.function_predicate_reads.get() + 1);
+            None
         }
         fn signature_header(&self, key: NativeSignatureKey) -> SignatureHeader {
             let head = &self.heads[key.index as usize];
@@ -199,6 +212,10 @@ mod tests {
                 ty: self.heads[key.index as usize].parameter.clone(),
                 optional: false,
             }]
+        }
+        fn signature_type_predicate(&self, key: NativeSignatureKey, _: &mut dyn TypeQueries) -> Option<crate::TypePredicate> {
+            self.predicate_reads.set(self.predicate_reads.get() + 1);
+            self.heads[key.index as usize].predicate.clone().map(|ty| crate::TypePredicate { parameter: 0, ty })
         }
         fn signature_declared_return_pack(
             &self,
@@ -441,6 +458,7 @@ mod tests {
             literal: false,
             generic: None,
             constraint: None,
+            predicate: None,
         }
     }
 
@@ -449,6 +467,194 @@ mod tests {
         work: impl FnOnce(&Provider, &mut dyn TypeQueries) -> R + Send,
     ) -> R {
         Engine::new().with_native_provider(move || provider, work)
+    }
+
+    #[test]
+    fn native_type_queries_scope_scalar_and_pack_callbacks_without_poisoning_normal_checks() {
+        #[derive(Default)]
+        struct Modes(std::cell::RefCell<Vec<(u32, crate::NativeCheckMode)>>);
+        impl NativeTypeProvider for Modes {
+            fn contains_function(&self, _: NativeFunctionKey) -> bool { false }
+            fn function_parameters(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Vec<Parameter> { unreachable!() }
+            fn function_declared_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<Type> { unreachable!() }
+            fn function_inferred_return(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Type { unreachable!() }
+            fn return_cycle(&self, _: NativeFunctionKey) { unreachable!() }
+            fn return_type_too_deep(&self, _: NativeFunctionKey) { unreachable!() }
+            fn contains_expression(&self, key: crate::NativeExpressionKey) -> bool {
+                key.snapshot == 7715 && key.node < 3
+            }
+            fn check_reusable_expression(&self, key: crate::NativeExpressionKey, _: Option<&Type>, mode: crate::NativeCheckMode, _: &mut dyn TypeQueries) -> (Type, bool) {
+                self.0.borrow_mut().push((key.node, mode));
+                (Type::String, true)
+            }
+            fn check_expression_pack(&self, key: crate::NativeExpressionKey, _: Option<&ValuePack>, mode: crate::NativeCheckMode, _: &mut dyn TypeQueries) -> ValuePack {
+                self.0.borrow_mut().push((key.node, mode));
+                ValuePack::single(Type::String)
+            }
+        }
+        Engine::new().with_native_provider(Modes::default, |provider, queries| {
+            let callable = Type::Function(crate::FunctionType {
+                params: vec![Parameter { name: "value".into(), ty: Type::String, optional: false }],
+                returns: Box::new(Type::String),
+            });
+            let expression = |node| crate::NativeExpressionKey { snapshot: 7715, node };
+            let calls = |queries: &mut dyn TypeQueries| {
+                let scalar = queries.call_native_arguments_scalar(&callable, None, &[crate::PackArgument::Expression(expression(0))], &[], None);
+                assert!(scalar.errors.is_empty(), "{scalar:?}");
+                let pack = queries.call_native_arguments(&callable, None, &[crate::PackArgument::ExpandExpression(expression(1))], &[], None);
+                assert!(pack.errors.is_empty(), "{pack:?}");
+            };
+            queries.with_native_type_query(&mut |queries| {
+                assert!(queries.native_type_query_mode().contains(crate::NativeCheckMode::TYPE_ONLY));
+                queries.with_native_type_query(&mut |queries| calls(queries));
+                calls(queries);
+            });
+            assert!(!provider.0.borrow().is_empty());
+            assert!(provider.0.borrow().iter().all(|(_, mode)| mode.contains(crate::NativeCheckMode::TYPE_ONLY)));
+            provider.0.borrow_mut().clear();
+            assert!(queries.native_type_query_mode().is_empty());
+            calls(queries);
+            assert!(provider.0.borrow().iter().any(|(node, _)| *node == 0), "normal scalar check must not reuse the type-only argument cache");
+            assert!(provider.0.borrow().iter().all(|(_, mode)| !mode.contains(crate::NativeCheckMode::TYPE_ONLY)));
+
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                queries.with_native_type_query(&mut |_| panic!("native type-query unwind fixture"));
+            }));
+            assert!(unwound.is_err());
+            assert!(queries.native_type_query_mode().is_empty());
+            provider.0.borrow_mut().clear();
+            queries.call_native_arguments_scalar(&callable, None, &[crate::PackArgument::Expression(expression(2))], &[], None);
+            assert!(!provider.0.borrow().is_empty());
+            assert!(provider.0.borrow().iter().all(|(_, mode)| !mode.contains(crate::NativeCheckMode::TYPE_ONLY)));
+        });
+    }
+
+    #[test]
+    fn native_type_predicates_follow_the_selected_generic_overload_and_boolean_contract() {
+        let mut number = head(Type::NativeTypeParameter(Provider::parameter(0)), Type::Boolean);
+        number.generic = Some(0);
+        number.constraint = Some(Type::Number);
+        number.predicate = Some(Type::NativeTypeParameter(Provider::parameter(0)));
+        let mut string = head(Type::String, Type::Boolean);
+        string.predicate = Some(Type::String);
+        with_provider(Provider::new(vec![number, string]), |provider, queries| {
+            let callable = Type::NativeFunction(Provider::function(0));
+            assert!(queries.may_have_type_predicate(&callable));
+            assert_eq!(provider.predicate_reads.get(), 0);
+            assert_eq!(provider.parameter_reads.get(), 0);
+            assert_eq!(provider.return_reads.get(), 0);
+            for ty in [Type::Number, Type::String] {
+                let called = queries.call(&callable, &[ty.clone()]);
+                assert!(called.errors.is_empty(), "{:?}", called.errors);
+                assert_eq!(called.return_type, Type::Boolean);
+                let predicate = called.predicate.expect("selected predicate");
+                assert_eq!(predicate.parameter, 0);
+                assert!(queries.is_assignable(&predicate.ty, &ty));
+                assert!(queries.is_assignable(&ty, &predicate.ty));
+                let packed = queries.call_native_arguments(&callable, None, &[crate::PackArgument::Resolved(ty.clone())], &[], None);
+                assert!(packed.errors.is_empty());
+                assert_eq!(packed.return_type, Type::Boolean);
+                assert!(packed.predicate.is_some());
+            }
+            let failed = queries.call(&callable, &[Type::Boolean]);
+            assert!(!failed.errors.is_empty());
+            assert!(failed.predicate.is_none());
+            assert_eq!(provider.implementation_reads.get(), 0);
+        });
+    }
+
+    #[test]
+    fn native_predicate_presence_skips_absent_metadata_without_resolving_contracts() {
+        with_provider(Provider::new(vec![head(Type::Unknown, Type::Boolean)]), |provider, queries| {
+            let signature = queries.signature_type(Provider::key(0));
+            assert!(!queries.may_have_type_predicate(&signature));
+            assert_eq!(provider.parameter_reads.get(), 0);
+            assert_eq!(provider.return_reads.get(), 0);
+            for _ in 0..3 {
+                let result = queries.call(&signature, &[Type::String]);
+                assert!(result.errors.is_empty());
+                assert!(result.predicate.is_none());
+            }
+            assert_eq!(provider.predicate_reads.get(), 0);
+        });
+        with_provider(Provider::new(Vec::new()), |provider, queries| {
+            let function = Type::NativeFunction(Provider::function(0));
+            assert!(!queries.may_have_type_predicate(&function));
+            assert!(queries.call(&function, &[Type::String]).predicate.is_none());
+            assert_eq!(provider.function_predicate_reads.get(), 0);
+        });
+    }
+
+    #[test]
+    fn native_predicate_presence_preserves_union_and_intersection_candidates() {
+        let mut predicate = head(Type::Unknown, Type::Boolean);
+        predicate.predicate = Some(Type::String);
+        let boolean = head(Type::Unknown, Type::Boolean);
+        with_provider(Provider::new(vec![predicate, boolean]), |provider, queries| {
+            let guard = queries.signature_type(Provider::key(0));
+            let boolean = queries.signature_type(Provider::key(1));
+            let union = Type::Union(vec![boolean.clone(), guard.clone()]);
+            let intersection = Type::Intersection(vec![boolean, guard]);
+            assert!(queries.may_have_type_predicate(&union));
+            assert!(queries.may_have_type_predicate(&intersection));
+            assert_eq!(provider.predicate_reads.get(), 0);
+            assert_eq!(provider.parameter_reads.get(), 0);
+            assert_eq!(provider.return_reads.get(), 0);
+        });
+    }
+
+    #[test]
+    fn native_written_type_predicate_metadata_is_cached_per_signature() {
+        let mut predicate = head(Type::Unknown, Type::Boolean);
+        predicate.predicate = Some(Type::String);
+        with_provider(Provider::new(vec![predicate]), |provider, queries| {
+            let signature = queries.signature_type(Provider::key(0));
+            let first = queries.call(&signature, &[Type::String]);
+            assert!(first.predicate.is_some());
+            let initial_reads = provider.predicate_reads.get();
+            assert!(initial_reads > 0);
+            for _ in 0..3 {
+                assert!(queries.call(&signature, &[Type::String]).predicate.is_some());
+            }
+            assert_eq!(provider.predicate_reads.get(), initial_reads);
+        });
+    }
+
+    #[test]
+    fn native_type_predicate_callable_relations_preserve_the_written_guard() {
+        let mut predicate = head(Type::Unknown, Type::Boolean);
+        predicate.predicate = Some(Type::String);
+        let boolean = head(Type::Unknown, Type::Boolean);
+        let mut number = head(Type::Unknown, Type::Boolean);
+        number.predicate = Some(Type::Number);
+        with_provider(Provider::new(vec![predicate, boolean, number]), |_, queries| {
+            let guard = queries.signature_type(Provider::key(0));
+            let boolean = queries.signature_type(Provider::key(1));
+            let other = queries.signature_type(Provider::key(2));
+            assert!(queries.is_assignable(&guard, &boolean));
+            assert!(!queries.is_assignable(&boolean, &guard));
+            assert!(!queries.is_assignable(&other, &guard));
+        });
+    }
+
+    #[test]
+    fn native_type_predicate_targets_preserve_captured_outer_instantiation() {
+        let mut declaration = head(Type::Any, Type::Boolean);
+        declaration.predicate = Some(Type::NativeTypeParameter(Provider::parameter(0)));
+        let mut provider = Provider::new(vec![declaration]);
+        provider.factory = true;
+        with_provider(provider, |_, queries| {
+            for outer in [Type::Number, Type::String] {
+                let closure = queries.call(&Type::NativeFunction(Provider::function(1)), &[outer.clone()]).return_type;
+                assert!(queries.may_have_type_predicate(&closure));
+                let called = queries.call(&closure, &[outer.clone()]);
+                assert!(called.errors.is_empty(), "{:?}", called.errors);
+                assert_eq!(called.return_type, Type::Boolean);
+                let predicate = called.predicate.expect("captured declaration predicate");
+                assert!(queries.is_assignable(&predicate.ty, &outer));
+                assert!(queries.is_assignable(&outer, &predicate.ty));
+            }
+        });
     }
 
     #[test]

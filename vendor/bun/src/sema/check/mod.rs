@@ -154,6 +154,12 @@ pub trait NativeFunctionProvider {
     fn function_is_method(&self, _: NativeFunctionId) -> bool { false }
     fn signature_is_method(&self, _: NativeSignatureId) -> bool { false }
     fn contains_signature(&self, _: NativeSignatureId) -> bool { false }
+    /// False attests immutable absence of written predicate syntax, independent
+    /// of the selected instantiation/capture frame. Unknown providers use true.
+    fn signature_may_have_type_predicate(&self, _: NativeSignatureId) -> bool { true }
+    fn function_may_have_type_predicate(&self, _: NativeFunctionId) -> bool { true }
+    fn signature_type_predicate(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Option<native_signatures::NativeTypePredicate> { None }
+    fn function_type_predicate(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Option<native_signatures::NativeTypePredicate> { None }
     fn signature_intrinsic(&self, _: NativeSignatureId) -> Option<native_intrinsics::NativeIntrinsicSite> { None }
     fn signature_header(&self, _: NativeSignatureId) -> native_signatures::NativeSignatureHeader { panic!("native signature provider is not installed") }
     /// Original omitted result annotation, independent of its gradual call pack.
@@ -810,6 +816,7 @@ impl<'s> Program<'s> {
             native_arrays: false,
             native_function_contexts: Vec::new(),
             native_capture_contexts: Vec::new(),
+            native_type_query_depth: 0,
             native_contextual_scopes: FxHashMap::default(),
             native_argument_types: FxHashMap::default(),
             native_argument_log: Vec::new(),
@@ -1106,6 +1113,8 @@ enum Query {
     NativeAliasNewIndexAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
     NativeAliasMetatableCall(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
+    NativeFlowCallTypePredicate(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
+    NativeSignatureTypePredicate(SigId),
     /// The type of an original recipe at its frozen input (`native_flow_value`).
     NativeFlowValue(native_flow::NativeValueKey, native_flow::NativeFlowKey),
     NativeGlobals(NativeGlobalsQuery),
@@ -1202,7 +1211,7 @@ impl Query {
             Query::BaseConstructor(sym) => (sym.file, 13),
             Query::ReturnOfSignature(_)
             | Query::NativeContextualTypeOwner(..)
-            | Query::NativeFlowCallEffects(..) | Query::NativeFlowValue(..)
+            | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallTypePredicate(..) | Query::NativeSignatureTypePredicate(..) | Query::NativeFlowValue(..)
             | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
             | Query::NativeAliasLoaderState(..)
             | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
@@ -1362,6 +1371,9 @@ pub struct Checker<'p, 's> {
     native_arrays: bool,
     native_function_contexts: Vec<NativeFunctionContext>,
     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
+    /// Nested metadata demands propagate TYPE_ONLY to every native argument
+    /// callback; ordinary source checks retain their own mode/cache entries.
+    native_type_query_depth: usize,
     /// Native counterpart of `context_checked_under`. Scope indices/serials
     /// stay task-local; only the immutable provisional bit follows a signature.
     native_contextual_scopes: FxHashMap<u64, (usize, u64)>,

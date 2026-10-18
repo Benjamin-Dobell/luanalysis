@@ -2,7 +2,7 @@
 
 use super::{Checker, NativeFunctionProvider};
 use super::native_named::NativeTypeDeclarationId;
-use crate::types::{MapperId, NativeFunctionId, NativeSignatureId, Shape, SigData, SigId, TypeId};
+use crate::types::{MapperId, NativeFunctionId, NativeSignatureId, Shape, SigData, SigId, TypeData, TypeId};
 
 /// Physical runtime implementation arity is separate from written public
 /// callable contracts. Lua fills omitted fixed arguments with nil.
@@ -31,7 +31,45 @@ pub struct NativeSignatureHeader {
     pub has_direct_literal_parameter: bool,
 }
 
+/// Written declaration-space target; the signature mapper is applied by the checker.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct NativeTypePredicate {
+    pub parameter: usize,
+    pub ty: TypeId,
+}
+
 impl<'p, 's> Checker<'p, 's> {
+    /// Inspect existing callable metadata without synthesizing union signatures:
+    /// their relation checks can resolve returns and predicate target types.
+    /// Deferred/non-native object forms conservatively retain the full call.
+    pub fn native_callable_may_have_type_predicate(&self, callable: TypeId) -> bool {
+        match self.data(callable) {
+            TypeData::Union(parts) | TypeData::Intersection(parts) => parts.iter()
+                .any(|&part| self.native_callable_may_have_type_predicate(part)),
+            TypeData::Synth(shape) => shape.call.iter()
+                .any(|&signature| self.native_signature_may_have_type_predicate(signature)),
+            _ => true,
+        }
+    }
+
+    pub(super) fn native_signature_may_have_type_predicate(&self, signature: SigId) -> bool {
+        match self.types().sig(signature) {
+            SigData::NativeDeclarationSignature { declaration, .. } => self.native_signature_provider_for(*declaration)
+                .signature_may_have_type_predicate(*declaration),
+            SigData::Native { declaration, .. }
+            | SigData::NativeCaptured { declaration, .. }
+            | SigData::NativeContextual { declaration, .. } => self.native_provider_for(*declaration)
+                .function_may_have_type_predicate(*declaration),
+            SigData::WithReturn { sig, .. } | SigData::WithNativeResultPack { sig, .. } =>
+                self.native_signature_may_have_type_predicate(*sig),
+            SigData::Synth { of, .. } => of.iter()
+                .any(|&signature| self.native_signature_may_have_type_predicate(signature)),
+            // TypeScript declaration signatures can also infer predicates from
+            // bodies. Presence-only native metadata cannot rule those out.
+            _ => true,
+        }
+    }
+
     /// A pure written scalar contract, sufficient for nonreturning call flow.
     /// Multiple public heads establish that effect only when every one is never.
     pub fn native_callable_declared_scalar_return(&mut self, callable: TypeId) -> Option<TypeId> {

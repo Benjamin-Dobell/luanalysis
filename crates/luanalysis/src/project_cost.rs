@@ -94,7 +94,8 @@ impl OriginalTypes {
                     self.ty(&field.ty);
                 }
             }
-            TypeExprKind::Parenthesized(inner) | TypeExprKind::Array { element: inner, .. } => {
+            TypeExprKind::Parenthesized(inner) | TypeExprKind::Array { element: inner, .. }
+            | TypeExprKind::TypePredicate { ty: inner, .. } => {
                 self.ty(inner);
             }
             TypeExprKind::Generic { args, .. } => {

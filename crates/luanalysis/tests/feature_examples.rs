@@ -6,6 +6,7 @@ use std::{
 
 const OVERLOADS: &str = include_str!("../../../examples/features/overloads.lua");
 const CLOSURES: &str = include_str!("../../../examples/features/generic-closures.lua");
+const PREDICATES: &str = include_str!("../../../examples/features/type-predicates.lua");
 const DECLARATIONS: &str = include_str!("../../../examples/features/counter.def.lua");
 const CONSUMER: &str = include_str!("../../../examples/features/use-counter.lua");
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -64,6 +65,16 @@ fn documented_generic_closures_keep_independent_result_types() {
     let wrong = CLOSURES.replace("---@type string", "---@type number");
     rejected(cli(&wrong, None, false), &["TS2322"]);
     clean(cli(CLOSURES, None, false));
+}
+
+#[test]
+fn documented_predicates_check_boolean_returns_and_nominal_narrowing() {
+    clean(cli(PREDICATES, None, false));
+    let bad_body = PREDICATES.replace("return type(value) == 'string'", "return 42");
+    rejected(cli(&bad_body, None, false), &["TS2322"]);
+    let missing_guard = PREDICATES.replace("if isBag(obj) then", "if obj.type == 'Bag' then");
+    rejected(cli(&missing_guard, None, false), &["TS2339", "TS2345"]);
+    clean(cli(PREDICATES, None, false));
 }
 
 #[test]

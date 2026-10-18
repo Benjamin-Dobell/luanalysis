@@ -862,7 +862,11 @@ impl Checker<'_> {
             }
             return Some(initial);
         }
-        Some(self.native_named_property_read(&environment, name, name.span))
+        // A free name under a lexical `_ENV` is an ordinary member access.
+        // Apply the same reference flow as `_ENV.name` after its lookup.
+        let declared = self.native_named_property_read(&environment, name, name.span);
+        let expression = luanalysis_syntax::Expr { span: name.span, kind: ExprKind::Name(name.clone()) };
+        Some(self.native_member_flow_type(&expression, declared, None))
     }
 
     pub(super) fn environment_value(&mut self, offset: usize) -> Type {

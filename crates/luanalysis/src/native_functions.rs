@@ -21,6 +21,34 @@ use std::cell::{Cell, RefCell};
 use crate::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
 
+#[cfg(test)]
+mod immutable_function_predicate_tests {
+    use super::*;
+
+    #[test]
+    fn immutable_function_proof_rejects_a_captured_reassignment() {
+        let file = luanalysis_syntax::parse(r#"---@param value unknown
+---@return boolean
+local function stable(value) return false end
+---@param value unknown
+---@return boolean
+local function replaced(value) return false end
+local function mutate() replaced = stable end
+"#);
+        assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+        let bound = bind::bind(&file);
+        let registry = NativeRegistry::new(file, bound);
+        for (name, immutable) in [("stable", true), ("replaced", false)] {
+            let binding = registry.bound.declarations.iter().find(|declaration| declaration.name == name).unwrap().id;
+            let proven = registry.flow.immutable_function_initializer(binding);
+            assert_eq!(proven.is_some(), immutable, "{name}");
+            if let Some(function) = proven {
+                assert_eq!(Some(function), registry.binding_function_key(binding));
+            }
+        }
+    }
+}
+
 #[path = "native_named_provider.rs"]
 mod named_provider;
 #[path = "native_shape_attachment.rs"]
@@ -625,6 +653,7 @@ impl NativeRegistry {
         mode: luanalysis_engine::NativeCheckMode,
         queries: &mut dyn luanalysis_engine::TypeQueries,
     ) -> ValuePack {
+        let mode = mode | queries.native_type_query_mode();
         let expression = &self.expressions().get(key).expression;
         let mut checker = self.checker_for_expression(key, mode, queries);
         checker.check_mode = mode;
@@ -781,6 +810,7 @@ impl NativeRegistry {
         queries: &'a mut dyn TypeQueries,
         inherit_signature_context: bool,
     ) -> Checker<'a> {
+        let mode = mode | queries.native_type_query_mode();
         let record = self.expressions.get(key);
         let contextual = queries
             .current_contextual_function()
@@ -866,6 +896,7 @@ impl NativeRegistry {
             captured_function: None,
             check_mode: luanalysis_engine::NativeCheckMode::empty(),
             flow_at: None,
+            call_predicate: None,
             incomplete_flow: false,
             runtime_value: false,
             annotation_depth: 0,
@@ -974,6 +1005,7 @@ impl NativeRegistry {
         if let Some(context) = contextual {
             checker.check_mode = context.mode;
         }
+        checker.check_mode |= checker.engine.native_type_query_mode();
         if let Some(owner) = owner {
             let (parameters, _) = if let Some(context) = contextual {
                 self.metadata_in_context(owner, &context, checker.engine)
@@ -1024,6 +1056,19 @@ impl NativeRegistry {
             captured: self.flow.captured(at.graph),
         }, &mut |queries| { result = Some(work(queries)); });
         result.expect("the native flow capability scope executes its callback")
+    }
+
+    fn with_flow_type_query<R>(
+        &self,
+        at: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+        work: &mut dyn FnMut(&mut dyn TypeQueries) -> R,
+    ) -> R {
+        self.with_flow_context(at, queries, &mut |queries| {
+            let mut result = None;
+            queries.with_native_type_query(&mut |queries| { result = Some(work(queries)); });
+            result.expect("the native type query executes its callback")
+        })
     }
 
     fn flow_declaration_binding(
@@ -1899,6 +1944,7 @@ impl NativeRegistry {
             checker.type_context = Some(key);
             checker.check_parameter_annotations(self.function(key));
             self.report.borrow_mut().append(checker.report);
+            self.source_function_type_predicate(key, queries);
         }
     }
 
@@ -2301,6 +2347,7 @@ impl NativeRegistry {
         queries: &mut dyn TypeQueries,
         mode: NativeCheckMode,
     ) -> Type {
+        let mode = mode | queries.native_type_query_mode();
         match value {
             ValueRecipe::Nil => Type::Nil,
             ValueRecipe::DeclarationNil(binding) => self.automatic_declaration_value(*binding, queries),
@@ -2382,7 +2429,15 @@ impl NativeRegistry {
                 sources.flow_key(callee.input, input.graph.context),
             ) {
                 luanalysis_engine::NativeStandardOperation::Standard(site) => return match site.kind {
-                    luanalysis_engine::NativeIntrinsicKind::Assert => sources.assertion_call_effect(evaluation, input),
+                    luanalysis_engine::NativeIntrinsicKind::Assert => {
+                        let effect = sources.assertion_call_effect(evaluation, input);
+                        if effect != NativeCallEffects::None { return effect; }
+                        let Some(guard) = sources.assertion_guard_call(evaluation) else { return effect };
+                        let guard_input = sources.flow_key(guard.input, input.graph.context);
+                        if self.flow_call_type_predicate(sources, &ValueRecipe::Evaluation(guard.id), guard_input, queries).is_some() {
+                            sources.assertion_call_effect_with_guard(evaluation, input, true)
+                        } else { effect }
+                    }
                     _ => NativeCallEffects::None,
                 },
                 // The native alias query taints its dependent memo scopes;
@@ -2407,6 +2462,25 @@ impl NativeRegistry {
         } else {
             NativeCallEffects::None
         }
+    }
+}
+
+impl NativeRegistry {
+    /// An immutable local declaration cannot acquire predicate syntax from a
+    /// different runtime value. Prove absence from all its written public heads
+    /// before creating a checker or walking the callee's frozen reference flow.
+    fn immutable_call_has_no_type_predicate(&self, expression: &Expr) -> bool {
+        let ExprKind::Call { callee, .. } = &expression.kind else { return false; };
+        let ExprKind::Name(name) = &callee.kind else { return false; };
+        if !self.expression_assertions(callee.span).is_empty() { return false; }
+        let Some(binding) = self.bound.binding_at(name.span.start) else { return false; };
+        let Some(function) = self.flow.immutable_function_initializer(binding) else { return false; };
+        if self.binding_function_key(binding) != Some(function)
+            || self.function(function).annotations.type_annotation.is_some()
+            || self.source_function_may_have_type_predicate(function)
+        { return false; }
+        self.function_overload_signatures(function).into_iter()
+            .all(|signature| !self.source_signature_may_have_type_predicate(signature))
     }
 }
 
@@ -2502,7 +2576,7 @@ impl FlowValueQueries for NativeRegistry {
         let feedback = stage == luanalysis_engine::NativeIteratorStage::Next && matches!(&error, luanalysis_engine::CallError::Argument { index: 1, .. });
         let mut checker = self.checker_at_flow(at, queries);
         let first_diagnostic = checker.report.diagnostics.len();
-        checker.call_result(luanalysis_engine::CallResult { return_type: Type::Any, errors: vec![error] }, callee, &arguments, callee_origin, callee_origin);
+        checker.call_result(luanalysis_engine::CallResult { return_type: Type::Any, errors: vec![error], predicate: None }, callee, &arguments, callee_origin, callee_origin);
         if feedback {
             for index in first_diagnostic..checker.report.diagnostics.len() {
                 checker.report.append_diagnostic_note(index, " The previous first iterator result supplies the next control argument.");
@@ -2540,6 +2614,46 @@ impl FlowValueQueries for NativeRegistry {
             self.flow_value_type_in_context(sources, value, input, queries, NativeCheckMode::empty())
         })
     }
+    fn flow_call_type_predicate(
+        &self,
+        sources: &NativeFlowSources,
+        value: &ValueRecipe,
+        input: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<luanalysis_engine::TypePredicate> {
+        let ValueRecipe::Evaluation(evaluation) = value else { return None };
+        let evaluation = sources.predicate_call(sources.program.evaluation(*evaluation))?;
+        let input = sources.flow_key(evaluation.input, input.graph.context);
+        let expression = &sources.program.expression(evaluation.expression).expression;
+        if self.immutable_call_has_no_type_predicate(expression) { return None; }
+        self.with_flow_type_query(input, queries, &mut |queries| {
+            let mut checker = self.checker_at_flow(input, queries);
+            // Metadata lookup can visit a short-circuited sibling. Its original
+            // source demand owns diagnostics, including argument validation.
+            checker.check_mode |= NativeCheckMode::TYPE_ONLY;
+            let callee = match &expression.kind {
+                ExprKind::Call { callee, .. } => checker.expression(callee),
+                ExprKind::MethodCall { receiver, name, args } => checker.method_call_arguments(receiver, name, args).0,
+                _ => return None,
+            };
+            if !checker.engine.may_have_type_predicate(&callee) {
+                if !checker.incomplete_flow {
+                    self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
+                }
+                return None;
+            }
+            checker.expression_pack(expression, None);
+            let predicate = checker.call_predicate.take()
+                .filter(|(span, _)| *span == expression.span).map(|(_, predicate)| predicate);
+            if !checker.incomplete_flow {
+                self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
+                predicate
+            } else {
+                None
+            }
+        })
+    }
+
     fn flow_call_effects(
         &self,
         sources: &NativeFlowSources,
@@ -2656,6 +2770,18 @@ impl NativeTypeProvider for NativeRegistry {
     fn signature_parameters(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->Vec<Parameter>{self.source_signature_parameters(key,queries)}
     fn signature_rest_pack(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->Option<ValuePack>{self.source_signature_rest(key,queries)}
     fn signature_declared_return_pack(&self,key:luanalysis_engine::NativeSignatureKey,queries:&mut dyn TypeQueries)->ValuePack{self.source_signature_return(key,queries)}
+    fn signature_type_predicate(&self, key: luanalysis_engine::NativeSignatureKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypePredicate> {
+        self.source_signature_type_predicate(key, queries)
+    }
+    fn signature_may_have_type_predicate(&self, key: luanalysis_engine::NativeSignatureKey) -> bool {
+        self.source_signature_may_have_type_predicate(key)
+    }
+    fn function_may_have_type_predicate(&self, key: NativeFunctionKey) -> bool {
+        self.source_function_may_have_type_predicate(key)
+    }
+    fn function_type_predicate(&self, key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypePredicate> {
+        self.source_function_type_predicate(key, queries)
+    }
     fn signature_return_cycle(&self,key:luanalysis_engine::NativeSignatureKey) {
         self.merge_report(CheckReport { diagnostics:vec![Diagnostic {code:"TS2577",span:self.signatures.get(key).span,message:"Return type annotation circularly references itself.".into()}],..Default::default() });
     }

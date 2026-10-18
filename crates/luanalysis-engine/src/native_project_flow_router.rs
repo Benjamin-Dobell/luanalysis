@@ -149,6 +149,10 @@ impl<P: NativeTypeProvider> core::NativeFlowProvider for ProviderAdapter<'_, P> 
     fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
         self.project_flow_adapter().assertion_predicate(condition, input)
     }
+    fn call_type_predicate(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::check::native_signatures::NativeTypePredicate> {
+        self.project_flow_adapter().call_type_predicate(value, input, checker)
+    }
+
 
     fn reference_declaration(&self, reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> {
         self.project_flow_adapter().reference_declaration(reference)

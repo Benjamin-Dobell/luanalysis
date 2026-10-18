@@ -1,0 +1,451 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+index fd1961a..b444346 100644
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -243,6 +243,25 @@ pub enum NativeFunctionCheckState {
+ }
+ 
+ impl<'p, 's> Checker<'p, 's> {
++    /// A metadata demand may replay nested calls for their selected signature,
++    /// but must not publish diagnostics from an unreached argument. Restore the
++    /// dynamic mode on unwinding as well as ordinary/nested completion.
++    pub fn with_native_type_query<R>(&mut self, work: impl FnOnce(&mut Self) -> R) -> R {
++        let outside = self.native_type_query_depth;
++        self.native_type_query_depth = outside.checked_add(1).expect("native type-query depth overflow");
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
++        self.native_type_query_depth = outside;
++        result.unwrap_or_else(|error| std::panic::resume_unwind(error))
++    }
++
++    pub fn native_type_query_mode(&self) -> CheckMode {
++        if self.native_type_query_depth == 0 { CheckMode::empty() } else { CheckMode::TYPE_ONLY }
++    }
++
++    fn native_query_check_mode(&self, mode: CheckMode) -> CheckMode {
++        mode | self.native_type_query_mode()
++    }
++
+     pub(super) fn native_argument_expression(&self, expression: NativeExpressionId) -> NativeArgumentExpression {
+         NativeArgumentExpression {
+             expression,
+@@ -492,6 +511,7 @@ impl<'p, 's> Checker<'p, 's> {
+         expected: TypeId,
+         mode: CheckMode,
+     ) -> Option<TypeId> {
++        let mode = self.native_query_check_mode(mode);
+         let signature = self.native_implementation_signature(function)?;
+         let (declaration, mapper) = self.sig_native_decl(signature)?;
+         let environment = match self.types().sig(signature) {
+@@ -3758,6 +3778,7 @@ impl<'p, 's> Checker<'p, 's> {
+         mut inference_context: Option<&mut Inference>,
+         mode: CheckMode,
+     ) -> TypeId {
++        let mode = self.native_query_check_mode(mode);
+         let provider = self.native_function_provider.expect("native expression without a provider");
+         assert!(provider.contains_expression(expression), "foreign native expression identity");
+         if mode.contains(CheckMode::SKIP_CONTEXT_SENSITIVE)
+@@ -3828,6 +3849,7 @@ impl<'p, 's> Checker<'p, 's> {
+         mut inference_context: Option<&mut Inference>,
+         mode: CheckMode,
+     ) -> NativeResultPack {
++        let mode = self.native_query_check_mode(mode);
+         let provider = self.native_function_provider.expect("native expression without a provider");
+         assert!(provider.contains_expression(expression), "foreign native expression identity");
+         let (mode, outside) = self.push_inference_context_for_origin(
+diff --git a/src/sema/check/decl.rs b/src/sema/check/decl.rs
+index 38457b1..6342615 100644
+--- a/src/sema/check/decl.rs
++++ b/src/sema/check/decl.rs
+@@ -4616,7 +4616,7 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+     }
+ 
+-    fn native_provider_for(&self, declaration: NativeFunctionId) -> &'p dyn NativeFunctionProvider {
++    pub(super) fn native_provider_for(&self, declaration: NativeFunctionId) -> &'p dyn NativeFunctionProvider {
+         let provider = self.native_function_provider.expect("native function without a provider");
+         assert!(provider.contains_function(declaration), "foreign native function identity");
+         provider
+@@ -5471,6 +5471,9 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     pub fn sig_predicate(&mut self, sig: SigId) -> Option<Predicate> {
++        if matches!(self.types().sig(sig), SigData::NativeDeclarationSignature { .. } | SigData::Native { .. } | SigData::NativeCaptured { .. } | SigData::NativeContextual { .. }) {
++            return self.native_sig_predicate(sig);
++        }
+         let (file, func, mapper) = match *self.types().sig(sig) {
+             SigData::WithReturn { sig: inner, .. } | SigData::WithNativeResultPack { sig: inner, .. } => return self.sig_predicate(inner),
+             SigData::Synth {
+@@ -5529,6 +5532,45 @@ impl<'p, 's> Checker<'p, 's> {
+         })
+     }
+ 
++    /// Native declaration metadata follows the exact signature mapper/facet.
++    /// Cache completed demands only; recursive or provisional checks cannot
++    /// publish an absent predicate as an enduring declaration contract.
++    fn native_sig_predicate(&mut self, sig: SigId) -> Option<Predicate> {
++        if !self.native_signature_may_have_type_predicate(sig) { return None; }
++        if let Some(&predicate) = self.flow_memo.native_state.signature_type_predicates.get(&sig) { return predicate; }
++        let query = Query::NativeSignatureTypePredicate(sig);
++        if !self.enter(query) { return None; }
++        let begun = self.begin_memoizable();
++        let native = match *self.types().sig(sig) {
++            SigData::NativeDeclarationSignature { declaration, mapper, .. } => {
++                let provider = self.native_signature_provider_for(declaration);
++                provider.signature_type_predicate(self, declaration).map(|predicate| (predicate, mapper))
++            }
++            SigData::Native { declaration, mapper } => {
++                let provider = self.native_provider_for(declaration);
++                self.with_native_declaration_frame(declaration, |c| provider.function_type_predicate(c, declaration)).map(|predicate| (predicate, mapper))
++            }
++            SigData::NativeCaptured { declaration, mapper, .. } => {
++                let provider = self.native_provider_for(declaration);
++                self.with_native_function_frame(None, Some(NativeCapturedFunctionContext { signature: sig }), |c| provider.function_type_predicate(c, declaration)).map(|predicate| (predicate, mapper))
++            }
++            SigData::NativeContextual { declaration, mapper, context, .. } => {
++                let provider = self.native_provider_for(declaration);
++                self.with_native_function_frame(Some(context), Some(NativeCapturedFunctionContext { signature: sig }), |c| provider.function_type_predicate(c, declaration)).map(|predicate| (predicate, mapper))
++            }
++            _ => None,
++        };
++        let predicate = native.map(|(predicate, mapper)| {
++            let name = self.sig_params(sig).get(predicate.parameter).map_or(Atom::NONE, |parameter| parameter.name);
++            Predicate { param: Some(predicate.parameter), name, ty: Some(self.instantiate(predicate.ty, mapper)), asserts: false }
++        });
++        let stored = self.end_memoizable(begun);
++        if self.leave(query).is_ok() && stored.is_some() && !self.is_stack_low() {
++            self.flow_memo.native_state.signature_type_predicates.insert(sig, predicate);
++        }
++        predicate
++    }
++
+     /// `getUnionOrIntersectionTypePredicate`
+     fn union_or_intersection_type_predicate(
+         &mut self,
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index 27422b3..7be5bef 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -154,6 +154,12 @@ pub trait NativeFunctionProvider {
+     fn function_is_method(&self, _: NativeFunctionId) -> bool { false }
+     fn signature_is_method(&self, _: NativeSignatureId) -> bool { false }
+     fn contains_signature(&self, _: NativeSignatureId) -> bool { false }
++    /// False attests immutable absence of written predicate syntax, independent
++    /// of the selected instantiation/capture frame. Unknown providers use true.
++    fn signature_may_have_type_predicate(&self, _: NativeSignatureId) -> bool { true }
++    fn function_may_have_type_predicate(&self, _: NativeFunctionId) -> bool { true }
++    fn signature_type_predicate(&self, _: &mut Checker<'_, '_>, _: NativeSignatureId) -> Option<native_signatures::NativeTypePredicate> { None }
++    fn function_type_predicate(&self, _: &mut Checker<'_, '_>, _: NativeFunctionId) -> Option<native_signatures::NativeTypePredicate> { None }
+     fn signature_intrinsic(&self, _: NativeSignatureId) -> Option<native_intrinsics::NativeIntrinsicSite> { None }
+     fn signature_header(&self, _: NativeSignatureId) -> native_signatures::NativeSignatureHeader { panic!("native signature provider is not installed") }
+     /// Original omitted result annotation, independent of its gradual call pack.
+@@ -810,6 +816,7 @@ impl<'s> Program<'s> {
+             native_arrays: false,
+             native_function_contexts: Vec::new(),
+             native_capture_contexts: Vec::new(),
++            native_type_query_depth: 0,
+             native_contextual_scopes: FxHashMap::default(),
+             native_argument_types: FxHashMap::default(),
+             native_argument_log: Vec::new(),
+@@ -1106,6 +1113,8 @@ enum Query {
+     NativeAliasNewIndexAbsence(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeFlowKey, u64, u64),
+     NativeAliasMetatableCall(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
+     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
++    NativeFlowCallTypePredicate(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
++    NativeSignatureTypePredicate(SigId),
+     /// The type of an original recipe at its frozen input (`native_flow_value`).
+     NativeFlowValue(native_flow::NativeValueKey, native_flow::NativeFlowKey),
+     NativeGlobals(NativeGlobalsQuery),
+@@ -1202,7 +1211,7 @@ impl Query {
+             Query::BaseConstructor(sym) => (sym.file, 13),
+             Query::ReturnOfSignature(_)
+             | Query::NativeContextualTypeOwner(..)
+-            | Query::NativeFlowCallEffects(..) | Query::NativeFlowValue(..)
++            | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallTypePredicate(..) | Query::NativeSignatureTypePredicate(..) | Query::NativeFlowValue(..)
+             | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
+             | Query::NativeAliasLoaderState(..)
+             | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
+@@ -1362,6 +1371,9 @@ pub struct Checker<'p, 's> {
+     native_arrays: bool,
+     native_function_contexts: Vec<NativeFunctionContext>,
+     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
++    /// Nested metadata demands propagate TYPE_ONLY to every native argument
++    /// callback; ordinary source checks retain their own mode/cache entries.
++    native_type_query_depth: usize,
+     /// Native counterpart of `context_checked_under`. Scope indices/serials
+     /// stay task-local; only the immutable provisional bit follows a signature.
+     native_contextual_scopes: FxHashMap<u64, (usize, u64)>,
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index b71a323..791c681 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -115,6 +115,15 @@ pub enum NativePredicate {
+         value: NativeValueKey,
+         input: NativeFlowKey,
+     },
++    /// An original call and its arguments, frozen at their evaluation input.
++    /// The applicable signature decides which argument the predicate targets.
++    Call {
++        value: NativeValueKey,
++        input: NativeFlowKey,
++        arguments: Vec<Option<NativeReferenceKey>>,
++        /// Whether a true condition means the selected guard returned false.
++        negated: bool,
++    },
+     Equal {
+         subject: NativeReferenceKey,
+         other: NativeValueKey,
+@@ -353,6 +362,7 @@ pub trait NativeFlowProvider {
+     fn reference_proper_prefixes(&self, _: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> { None }
+     /// Original immutable predicate recipe for a verified assertion argument.
+     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
++    fn call_type_predicate(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<super::native_signatures::NativeTypePredicate> { None }
+     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
+     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
+     fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
+@@ -428,6 +438,8 @@ pub(super) struct NativeFlowState {
+     value_types: FxHashMap<ValueContext, TypeId>,
+     pack_types: FxHashMap<ValueContext, NativeResultPack>,
+     call_effects: FxHashMap<(ValueContext, u64), NativeCallEffects>,
++    call_type_predicates: FxHashMap<(ValueContext, u64), Option<super::native_signatures::NativeTypePredicate>>,
++    pub(super) signature_type_predicates: FxHashMap<SigId, Option<super::decl::Predicate>>,
+     pub(super) contextual_owners: FxHashMap<(NativeFunctionId, NativeFlowKey, u64), Option<TypeId>>,
+     // Provisional query handles name actual effect records, never TypeIds.
+     effect_records: Vec<NativeCallEffects>,
+@@ -477,9 +489,13 @@ enum NumericEntry {
+     Unknown,
+ }
+ 
+-fn predicate_subject(predicate: &NativePredicate) -> Option<NativeReferenceKey> {
++fn predicate_subject(provider: &dyn NativeFlowProvider, predicate: &NativePredicate, checker: &mut Checker<'_, '_>) -> Option<NativeReferenceKey> {
+     match predicate {
+         NativePredicate::Truthy { subject, .. } => *subject,
++        NativePredicate::Call { value, input, arguments, .. } => {
++            let predicate = checker.native_flow_call_type_predicate(provider, *value, *input)?;
++            arguments.get(predicate.parameter).copied().flatten()
++        }
+         NativePredicate::Equal { subject, .. } | NativePredicate::RuntimeType { subject, .. } => Some(*subject),
+         _ => None,
+     }
+@@ -489,7 +505,12 @@ fn predicate_mentions(provider: &dyn NativeFlowProvider, predicate: &NativePredi
+     match predicate {
+         NativePredicate::And(left, right) | NativePredicate::Or(left, right) => predicate_mentions(provider, left, reference, pack, checker) || predicate_mentions(provider, right, reference, pack, checker),
+         NativePredicate::Not(inner) => predicate_mentions(provider, inner, reference, pack, checker),
+-        _ => predicate_subject(predicate).is_some_and(|subject| if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) || provider.iterator_projection(subject).is_some_and(|projection| projection.frame == reference) } else { subject == reference || provider.reference_member_key(reference, subject, checker).is_some() }),
++        NativePredicate::Call { arguments, .. } if !arguments.iter().flatten().any(|&subject| {
++            if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) || provider.iterator_projection(subject).is_some_and(|projection| projection.frame == reference) }
++            else { subject == reference || provider.reference_member_key(reference, subject, checker).is_some() }
++        }) => false,
++
++        _ => predicate_subject(provider, predicate, checker).is_some_and(|subject| if pack { provider.pack_projection(subject).is_some_and(|projection| projection.group == reference) || provider.iterator_projection(subject).is_some_and(|projection| projection.frame == reference) } else { subject == reference || provider.reference_member_key(reference, subject, checker).is_some() }),
+     }
+ }
+ 
+@@ -633,6 +654,20 @@ impl NativeDomain<'_> {
+             NativePredicate::Truthy { subject, input, .. } => (*subject, *input),
+             NativePredicate::Equal { subject, input, .. } => (Some(*subject), *input),
+             NativePredicate::RuntimeType { subject, input, .. } => (Some(*subject), *input),
++            NativePredicate::Call { value, input, arguments, .. } => {
++                if !self.edge(at, *input) { return false; }
++                if value.snapshot != input.graph.snapshot {
++                    self.provider.flow_error(at, NativeFlowError::InvalidValue(*value));
++                    return false;
++                }
++                for subject in arguments.iter().flatten() {
++                    if subject.graph != self.graph || !self.provider.contains_reference(*subject) {
++                        self.provider.flow_error(at, NativeFlowError::InvalidReference(*subject));
++                        return false;
++                    }
++                }
++                return true;
++            }
+             NativePredicate::GenericIteration { frame, input } => (Some(*frame), *input),
+             NativePredicate::NumericIteration { start, limit, step, .. } => {
+                 return [Some(*start), Some(*limit), *step].into_iter().flatten().all(|header| {
+@@ -723,7 +758,7 @@ impl NativeDomain<'_> {
+             NativePredicate::Or(left, right) => if sense { self.literal_predicate_possible(left, true) || self.literal_predicate_possible(right, true) }
+                 else { self.literal_predicate_possible(left, false) && self.literal_predicate_possible(right, false) },
+             NativePredicate::Not(inner) => self.literal_predicate_possible(inner, !sense),
+-            NativePredicate::Truthy { value, .. } => self.provider.value_literal_truthiness(*value).is_none_or(|truthy| truthy == sense),
++            NativePredicate::Truthy { value, .. } | NativePredicate::Call { value, .. } => self.provider.value_literal_truthiness(*value).is_none_or(|truthy| truthy == sense),
+             _ => true,
+         }
+     }
+@@ -1277,7 +1312,7 @@ impl<'s, 'p> Checker<'s, 'p> {
+             NativePredicate::And(left, right) => if sense { self.native_predicate_possible(provider, left, true) && self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) || self.native_predicate_possible(provider, right, false) },
+             NativePredicate::Or(left, right) => if sense { self.native_predicate_possible(provider, left, true) || self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) && self.native_predicate_possible(provider, right, false) },
+             NativePredicate::Not(inner) => self.native_predicate_possible(provider, inner, !sense),
+-            NativePredicate::Truthy { value, input, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.lua_truthiness_type(value, sense).is_never() },
++            NativePredicate::Truthy { value, input, .. } | NativePredicate::Call { value, input, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.lua_truthiness_type(value, sense).is_never() },
+             NativePredicate::RuntimeType { value, input, kind, equals, .. } => { if !provider.runtime_type_operation(*value, *input, self) { return true; } let value = self.native_flow_value(provider, *value, *input); !self.native_runtime_type(value, kind, *equals == sense).is_never() },
+             _ => true,
+         }
+@@ -1298,8 +1333,8 @@ impl<'s, 'p> Checker<'s, 'p> {
+                     self.union_reduced(&[bypass, evaluated])
+                 }
+             }
+-            _ if predicate_subject(predicate) != Some(reference) => {
+-                if let Some(subject) = predicate_subject(predicate)
++            _ if predicate_subject(provider, predicate, self) != Some(reference) => {
++                if let Some(subject) = predicate_subject(provider, predicate, self)
+                     && let Some(key) = provider.reference_member_key(reference, subject, self) {
+                     // Like getDiscriminantPropertyAccess, a member predicate
+                     // filters parent alternatives only for an original/current
+@@ -1329,6 +1364,12 @@ impl<'s, 'p> Checker<'s, 'p> {
+                 // compound condition (for example, object.flag && false).
+                 ty
+             }
++            NativePredicate::Call { value, input, negated, .. } => {
++                match self.native_flow_call_type_predicate(provider, *value, *input) {
++                    Some(predicate) => self.narrowed_to(ty, predicate.ty, sense != *negated, super::flow::CheckDerived::No),
++                    None => ty,
++                }
++            }
+             NativePredicate::Truthy { .. } => self.lua_truthiness_type(ty, sense),
+             NativePredicate::Equal { other, input, equals, .. } => { let other = self.native_flow_value(provider, *other, *input); self.native_equal_flow_type(ty, other, *equals == sense) },
+             NativePredicate::RuntimeType { value, input, kind, equals, .. } => if provider.runtime_type_operation(*value, *input, self) { self.native_runtime_type(ty, kind, *equals == sense) } else { ty },
+@@ -1352,7 +1393,7 @@ impl<'s, 'p> Checker<'s, 'p> {
+             }
+             _ => {}
+         }
+-        let index = predicate_subject(predicate).and_then(|reference| {
++        let index = predicate_subject(provider, predicate, self).and_then(|reference| {
+             provider.pack_projection(reference).filter(|projection| projection.group == group).map(|projection| projection.index)
+                 .or_else(|| provider.iterator_projection(reference).filter(|projection| projection.frame == group).map(|projection| projection.index))
+         });
+@@ -1363,6 +1404,12 @@ impl<'s, 'p> Checker<'s, 'p> {
+             let row = self.native_result_pack(std::slice::from_ref(&alternative));
+             let value = self.native_pack_slot(row, index);
+             let value = match predicate {
++                NativePredicate::Call { value: call, input, negated, .. } => {
++                    match self.native_flow_call_type_predicate(provider, *call, *input) {
++                        Some(predicate) => self.narrowed_to(value, predicate.ty, sense != *negated, super::flow::CheckDerived::No),
++                        None => value,
++                    }
++                }
+                 NativePredicate::Truthy { .. } => self.lua_truthiness_type(value, sense),
+                 NativePredicate::Equal { other, input, equals, .. } => {
+                     let other = self.native_flow_value(provider, *other, *input);
+@@ -1687,6 +1734,30 @@ impl<'s, 'p> Checker<'s, 'p> {
+         ty
+     }
+ 
++    fn native_flow_call_type_predicate(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        value: NativeValueKey,
++        input: NativeFlowKey,
++    ) -> Option<super::native_signatures::NativeTypePredicate> {
++        let epoch = self.flow_memo.native_state.effect_epoch;
++        let key = ((value, input), epoch);
++        if value.snapshot != input.graph.snapshot || !provider.contains_graph(input.graph) || provider.node(input).is_none() {
++            provider.flow_error(input, NativeFlowError::InvalidValue(value));
++            return None;
++        }
++        if let Some(&cached) = self.flow_memo.native_state.call_type_predicates.get(&key) { return cached; }
++        let query = super::Query::NativeFlowCallTypePredicate(value, input, epoch);
++        if !self.enter(query) { return None; }
++        let begun = self.begin_memoizable();
++        let predicate = provider.call_type_predicate(value, input, self);
++        let stored = self.end_memoizable(begun);
++        if self.leave(query).is_ok() && stored.is_some() && !self.is_stack_low() {
++            self.flow_memo.native_state.call_type_predicates.insert(key, predicate);
++            predicate
++        } else { None }
++    }
++
+     fn native_flow_call_effects(
+         &mut self,
+         provider: &dyn NativeFlowProvider,
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+index cc67cf4..01e5643 100644
+--- a/src/sema/check/native_packs.rs
++++ b/src/sema/check/native_packs.rs
+@@ -30,6 +30,7 @@ pub enum NativePackResult {
+ #[derive(Clone, Debug)]
+ pub struct NativeResultPackCall {
+     pub pack: NativeResultPack,
++    pub sig: Option<SigId>,
+     pub errors: Vec<ResolvedTypeCallError>,
+ }
+ 
+@@ -126,7 +127,7 @@ impl<'p, 's> Checker<'p, 's> {
+             None if self.is_any(resolved.ret) => NativeResultPack { ty: resolved.ret },
+             None => self.native_scalar_pack(resolved.ret),
+         };
+-        NativeResultPackCall { pack, errors: resolved.errors }
++        NativeResultPackCall { pack, sig: resolved.sig, errors: resolved.errors }
+     }
+ 
+     pub fn sig_has_native_result_pack(&self, sig: SigId) -> bool {
+diff --git a/src/sema/check/native_signatures.rs b/src/sema/check/native_signatures.rs
+index c9b240d..5d6a0a3 100644
+--- a/src/sema/check/native_signatures.rs
++++ b/src/sema/check/native_signatures.rs
+@@ -2,7 +2,7 @@
+ 
+ use super::{Checker, NativeFunctionProvider};
+ use super::native_named::NativeTypeDeclarationId;
+-use crate::types::{MapperId, NativeFunctionId, NativeSignatureId, Shape, SigData, SigId, TypeId};
++use crate::types::{MapperId, NativeFunctionId, NativeSignatureId, Shape, SigData, SigId, TypeData, TypeId};
+ 
+ /// Physical runtime implementation arity is separate from written public
+ /// callable contracts. Lua fills omitted fixed arguments with nil.
+@@ -31,7 +31,45 @@ pub struct NativeSignatureHeader {
+     pub has_direct_literal_parameter: bool,
+ }
+ 
++/// Written declaration-space target; the signature mapper is applied by the checker.
++#[derive(Copy, Clone, PartialEq, Eq, Debug)]
++pub struct NativeTypePredicate {
++    pub parameter: usize,
++    pub ty: TypeId,
++}
++
+ impl<'p, 's> Checker<'p, 's> {
++    /// Inspect existing callable metadata without synthesizing union signatures:
++    /// their relation checks can resolve returns and predicate target types.
++    /// Deferred/non-native object forms conservatively retain the full call.
++    pub fn native_callable_may_have_type_predicate(&self, callable: TypeId) -> bool {
++        match self.data(callable) {
++            TypeData::Union(parts) | TypeData::Intersection(parts) => parts.iter()
++                .any(|&part| self.native_callable_may_have_type_predicate(part)),
++            TypeData::Synth(shape) => shape.call.iter()
++                .any(|&signature| self.native_signature_may_have_type_predicate(signature)),
++            _ => true,
++        }
++    }
++
++    pub(super) fn native_signature_may_have_type_predicate(&self, signature: SigId) -> bool {
++        match self.types().sig(signature) {
++            SigData::NativeDeclarationSignature { declaration, .. } => self.native_signature_provider_for(*declaration)
++                .signature_may_have_type_predicate(*declaration),
++            SigData::Native { declaration, .. }
++            | SigData::NativeCaptured { declaration, .. }
++            | SigData::NativeContextual { declaration, .. } => self.native_provider_for(*declaration)
++                .function_may_have_type_predicate(*declaration),
++            SigData::WithReturn { sig, .. } | SigData::WithNativeResultPack { sig, .. } =>
++                self.native_signature_may_have_type_predicate(*sig),
++            SigData::Synth { of, .. } => of.iter()
++                .any(|&signature| self.native_signature_may_have_type_predicate(signature)),
++            // TypeScript declaration signatures can also infer predicates from
++            // bodies. Presence-only native metadata cannot rule those out.
++            _ => true,
++        }
++    }
++
+     /// A pure written scalar contract, sufficient for nonreturning call flow.
+     /// Multiple public heads establish that effect only when every one is never.
+     pub fn native_callable_declared_scalar_return(&mut self, callable: TypeId) -> Option<TypeId> {
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+index 9bc9e09..7bdea92 100644
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -271,7 +271,7 @@ fn is_task_independent(q: Query) -> bool {
+         | Query::Comparison(_) => true,
+         Query::NativeGlobals(_)
+         | Query::NativeContextualTypeOwner(..)
+-        | Query::NativeFlowCallEffects(..) | Query::NativeFlowValue(..)
++        | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallTypePredicate(..) | Query::NativeSignatureTypePredicate(..) | Query::NativeFlowValue(..)
+         | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
+         | Query::NativeAliasLoaderState(..)
+         | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)

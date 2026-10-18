@@ -30,6 +30,7 @@ pub enum NativePackResult {
 #[derive(Clone, Debug)]
 pub struct NativeResultPackCall {
     pub pack: NativeResultPack,
+    pub sig: Option<SigId>,
     pub errors: Vec<ResolvedTypeCallError>,
 }
 
@@ -126,7 +127,7 @@ impl<'p, 's> Checker<'p, 's> {
             None if self.is_any(resolved.ret) => NativeResultPack { ty: resolved.ret },
             None => self.native_scalar_pack(resolved.ret),
         };
-        NativeResultPackCall { pack, errors: resolved.errors }
+        NativeResultPackCall { pack, sig: resolved.sig, errors: resolved.errors }
     }
 
     pub fn sig_has_native_result_pack(&self, sig: SigId) -> bool {

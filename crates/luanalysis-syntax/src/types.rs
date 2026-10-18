@@ -460,6 +460,11 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     }
                     _ => unreachable!(),
                 }
+                if parser.word_at(parser.pos, "is") {
+                    parser.error("a type predicate is only allowed as the sole function return type".to_owned());
+                    parser.pos += 1;
+                    parser.union();
+                }
                 // Text after a complete type is its description, as LuaLS and EmmyLua read it:
                 // `---@param path string # the file`, `---@return integer count`.
                 // In v1 a `)` after a complete type also ends it, as its lexer leaves the type
@@ -548,7 +553,7 @@ fn type_depth(root: &TypeExpr) -> usize {
     while let Some((ty, current)) = pending.pop() {
         depth = depth.max(current);
         match &ty.kind {
-            TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. } => {
+            TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. } | TypeExprKind::TypePredicate { ty: element, .. } => {
                 pending.push((element, current + 1))
             }
             TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. } => {
@@ -649,7 +654,15 @@ pub(crate) fn merge_annotations(
     }
     if let Some(returns) = incoming.returns {
         // LuaLS writes one @return line per value: they list the function's results in order.
-        if contiguous
+        if let Some(existing) = &target.returns
+            && existing.types.iter().chain(&returns.types).any(|ty| matches!(ty.kind, TypeExprKind::TypePredicate { .. }))
+        {
+            diagnostics.push(Diagnostic {
+                origin: crate::DiagnosticOrigin::Annotation,
+                span: returns.span,
+                message: "a type predicate must be the sole function return type".to_owned(),
+            });
+        } else if contiguous
             && let Some(existing) = target.returns.as_mut()
             && existing.packs.is_none()
             && returns.packs.as_ref().is_none_or(|packs| packs.alternatives.len() == 1)
@@ -968,7 +981,7 @@ impl TypeParser {
     fn documentation_tail(&mut self) -> Option<usize> {
         // doc.bnf permits comment_string after named declarations/fields.
         // Punctuation that would continue a malformed type remains an error.
-        if matches!(
+        if !self.word_at(self.pos, "is") && matches!(
             self.current().kind,
             TokenKind::Identifier(_) | TokenKind::Keyword(_) | TokenKind::String(_)
         ) {
@@ -993,6 +1006,11 @@ impl TypeParser {
     fn symbol_at(&self, pos: usize, value: &str) -> bool {
         self.tokens.get(pos).is_some_and(
             |token| matches!(&token.kind, TokenKind::Symbol(symbol) if symbol == value),
+        )
+    }
+    fn word_at(&self, pos: usize, value: &str) -> bool {
+        self.tokens.get(pos).is_some_and(
+            |token| matches!(&token.kind, TokenKind::Identifier(word) | TokenKind::Keyword(word) if word == value),
         )
     }
     fn take(&mut self, value: &str) -> Option<Span> {
@@ -1105,6 +1123,14 @@ impl TypeParser {
         parameters
     }
     fn return_packs(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
+        if matches!(self.current().kind, TokenKind::Identifier(_))
+            && self.word_at(self.pos + 1, "is")
+        {
+            return self.predicate_return();
+        }
+        if self.word_at(self.pos, "is") {
+            return self.missing_predicate_parameter();
+        }
         let mut types = Vec::new();
         let mut alternatives = Vec::new();
         let mut pending = None;
@@ -1146,6 +1172,43 @@ impl TypeParser {
             .span
             .join(alternatives.last().unwrap().span);
         (types, Some(Box::new(TypePacks { alternatives, span })))
+    }
+    #[cold]
+    #[inline(never)]
+    fn missing_predicate_parameter(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
+        let start = self.current().span;
+        self.error("expected a parameter name before 'is' in type predicate".to_owned());
+        self.pos += 1;
+        self.depth += 1;
+        let target = self.union();
+        self.depth -= 1;
+        (vec![TypeExpr { kind: TypeExprKind::Error, span: start.join(target.span) }], None)
+    }
+    #[inline(never)]
+    fn predicate_return(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
+        let parameter = self.name().expect("predicate parameter");
+        self.pos += 1; // Contextual `is`.
+        self.depth += 1;
+        // The asserted type owns unions and intersections, while an enclosing
+        // callback parameter or generic argument still owns its comma.
+        let ty = self.union();
+        let mut span = parameter.span.join(ty.span);
+        let kind = if self.symbol("...") || (self.comma_ends_type == 0 && self.symbol(",")) {
+            self.error("a type predicate must be the sole function return type".to_owned());
+            if self.take("...").is_some() {
+                span = span.join(self.tokens[self.pos - 1].span);
+            }
+            if self.take(",").is_some() {
+                let (pack, next) = self.return_pack();
+                span = span.join(pack.span);
+                if let Some(next) = next { span = span.join(next.span); }
+            }
+            TypeExprKind::Error
+        } else {
+            TypeExprKind::TypePredicate { parameter, ty: Box::new(ty) }
+        };
+        self.depth -= 1;
+        (vec![TypeExpr { kind, span }], None)
     }
     fn return_pack(&mut self) -> (ParsedReturnPack, Option<ParsedReturnPack>) {
         let first = match self.return_unit() {
@@ -1501,6 +1564,17 @@ impl TypeParser {
         ty
     }
 
+    #[cold]
+    #[inline(never)]
+    fn invalid_predicate_suffix(&mut self, ty: TypeExpr) -> TypeExpr {
+        self.error("a type predicate is only allowed as the sole function return type".to_owned());
+        self.pos += 1;
+        self.depth += 1;
+        let target = self.union();
+        self.depth -= 1;
+        TypeExpr { kind: TypeExprKind::Error, span: ty.span.join(target.span) }
+    }
+
     /// Array suffixes, then LuaLS's `T?`: T or nil. Out of line, as one call, to keep
     /// the recursive type parsers' frames small.
     #[inline(never)]
@@ -1513,6 +1587,9 @@ impl TypeParser {
                 span,
             };
             ty = self.array_suffix(ty);
+        }
+        if self.word_at(self.pos, "is") {
+            return self.invalid_predicate_suffix(ty);
         }
         ty
     }

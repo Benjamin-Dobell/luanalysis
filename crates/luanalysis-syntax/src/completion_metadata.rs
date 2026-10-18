@@ -114,7 +114,7 @@ pub(crate) fn validate(documentation: &ParsedDocumentation, diagnostics: &mut Ve
                 match &ty.kind {
                     TypeExprKind::Record(members) => fields(members, &mut children),
                     TypeExprKind::Function(signature) => function(signature, &mut children),
-                    TypeExprKind::Array { element, .. } => children.push(element.as_ref()),
+                    TypeExprKind::Array { element, .. } | TypeExprKind::TypePredicate { ty: element, .. } => children.push(element.as_ref()),
                     TypeExprKind::Generic { args, .. } | TypeExprKind::Intersection(args) => children.extend(args),
                     _ => {}
                 }

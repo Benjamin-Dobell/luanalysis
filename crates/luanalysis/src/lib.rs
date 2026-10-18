@@ -313,6 +313,8 @@ struct Checker<'a> {
     active_assertions: HashSet<(usize,usize)>,
     check_mode: NativeCheckMode,
     flow_at: Option<NativeFlowKey>,
+    /// Selected predicate from this checker's most recent original call.
+    call_predicate: Option<(Span, luanalysis_engine::TypePredicate)>,
     locals: HashMap<BindingId, Binding>,
     assigned_fields: HashMap<Reference, Type>,
     report: CheckReport,
@@ -385,6 +387,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
                     annotation_depth: 0,
                     check_mode: NativeCheckMode::empty(),
                     flow_at: Some(registry.flow_entry(None, None)),
+                    call_predicate: None,
                     locals: HashMap::default(),
                     assigned_fields: HashMap::default(),
                     report: CheckReport::default(),
@@ -789,6 +792,7 @@ impl Checker<'_> {
             }
             TypeExprKind::Intersection(types) => Type::Intersection(types.iter().map(|ty| self.annotation(ty)).collect()),
             TypeExprKind::CompletionHint(_) => Type::Never,
+            TypeExprKind::TypePredicate { .. } => Type::Boolean,
             TypeExprKind::Literal(literal) => {
                 let value = match literal {
                     TypeLiteral::Boolean(value) => Type::BooleanLiteral(*value),

@@ -299,6 +299,31 @@ local function describe(value)
 end
 ```
 
+Declare a type predicate when a boolean helper tests a parameter's type. The predicate narrows
+that argument in both branches, including negation and early returns:
+
+```lua
+---@param value string | number
+---@return value is string
+local function isString(value)
+    return type(value) == "string"
+end
+
+---@param value string | number
+local function describe(value)
+    if isString(value) then
+        return value:upper() -- string
+    end
+    return value + 1         -- number
+end
+```
+
+Predicate functions return booleans. Their target must be assignable to the named parameter's
+type. Function types and overloads support the same syntax: `fun(value: unknown): value is string`.
+Assertions such as `assert(isString(value))` and comparisons such as `isString(value) == false`
+also narrow the argument. See [type predicates](docs/TYPE-PREDICATES.md) for nominal subclasses,
+generic guards and validation rules, or try the [checked example](examples/features/type-predicates.lua).
+
 ### Correlated results
 
 Lua functions commonly return a success flag and then either a result or an error. Declare each

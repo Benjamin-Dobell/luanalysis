@@ -650,7 +650,8 @@ impl NativeNamed {
                             }
                         }
                     }
-                    TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element) => {
+                    TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element)
+                    | TypeExprKind::TypePredicate { ty: element, .. } => {
                         pending.push(element)
                     }
                     TypeExprKind::Function(function) => {

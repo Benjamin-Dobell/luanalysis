@@ -5,7 +5,7 @@
 //! while a local function's name is available to its recursive body.
 
 use luanalysis_syntax::{
-    Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TableFieldKind,
+    Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TableFieldKind, TypeExprKind,
 };
 use crate::collections::HashMap;
 
@@ -69,7 +69,7 @@ pub enum OccurrenceKind {
     Declaration,
     Read,
     Write,
-    /// A named @param tag referring to a function parameter.
+    /// A named @param tag or return predicate referring to a function parameter.
     Annotation,
 }
 
@@ -78,7 +78,7 @@ pub struct NameOccurrence {
     pub name: String,
     pub span: Span,
     pub scope: ScopeId,
-    /// None preserves an unresolved global or an unmatched @param name.
+    /// None preserves an unresolved global or an unmatched parameter annotation.
     pub binding: Option<BindingId>,
     pub kind: OccurrenceKind,
 }
@@ -740,15 +740,19 @@ impl Binder {
                 function.body_span.start,
             );
         }
-        for annotation in &function.annotations.params {
+        let annotation_names = function.annotations.params.iter().map(|annotation| &annotation.name)
+            .chain(function.annotations.returns.iter().flat_map(|annotation| &annotation.types).filter_map(|ty| {
+                if let TypeExprKind::TypePredicate { parameter, .. } = &ty.kind { Some(parameter) } else { None }
+            }));
+        for name in annotation_names {
             let binding = self
                 .active
                 .last()
                 .unwrap()
                 .names
-                .get(&annotation.name.text)
+                .get(&name.text)
                 .copied();
-            self.occurrence(&annotation.name, OccurrenceKind::Annotation, binding);
+            self.occurrence(name, OccurrenceKind::Annotation, binding);
         }
         self.statements(&function.body);
         self.leave_scope();

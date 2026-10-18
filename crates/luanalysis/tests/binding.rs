@@ -173,6 +173,53 @@ fn parameter_annotations_are_source_references_to_parameter_declarations() {
 }
 
 #[test]
+fn return_predicate_parameter_occurrence_is_bound_for_references_and_rename() {
+    let source = "local value = 1\n---@param value unknown\n---@return value is string\nlocal function isString(value)\nreturn type(value) == 'string'\nend";
+    let graph = bound(source);
+    let id = binding(source, &graph, "isString(value)", 9);
+    let offset = source.find("@return value").unwrap() + 8;
+    let occurrence = graph.occurrence_at(offset).unwrap();
+    assert_eq!(occurrence.span, luanalysis_syntax::Span::new(offset, offset + "value".len()));
+    assert_eq!(occurrence.binding, Some(id));
+    assert_eq!(occurrence.kind, OccurrenceKind::Annotation);
+    assert_eq!(occurrence.scope, graph.declaration(id).scope);
+    assert_eq!(graph.references(id).map(|reference| reference.kind).collect::<Vec<_>>(), [OccurrenceKind::Annotation, OccurrenceKind::Annotation, OccurrenceKind::Read]);
+    assert_ne!(id, binding(source, &graph, "local value", 6));
+    assert_eq!(graph.binding_at(source.find("is string").unwrap() + 3), None);
+}
+
+#[test]
+fn unknown_return_predicate_parameter_does_not_bind_an_outer_variable() {
+    let source = "local value = 1\n---@return value is string\nlocal function invalid(other)\nreturn true\nend";
+    let graph = bound(source);
+    let outer = binding(source, &graph, "local value", 6);
+    let occurrence = graph.occurrence_at(source.find("@return value").unwrap() + 8).unwrap();
+    assert_eq!(occurrence.kind, OccurrenceKind::Annotation);
+    assert_eq!(occurrence.binding, None);
+    assert_eq!(graph.scope(occurrence.scope).kind, ScopeKind::Function);
+    assert!(graph.scope(occurrence.scope).captures.is_empty());
+    assert_eq!(graph.references(outer).count(), 0);
+}
+
+#[test]
+fn return_predicate_self_binds_the_current_method_receiver_or_explicit_parameter() {
+    for parameters in ["value", "self"] {
+        let source = format!("local self = 1\nlocal guards = {{}}\n---@return self is string\nfunction guards:valid({parameters})\nreturn true\nend");
+        let graph = bound(&source);
+        let id = binding(&source, &graph, "@return self", 8);
+        let declaration = graph.declaration(id);
+        assert_ne!(id, binding(&source, &graph, "local self", 6));
+        if parameters == "self" {
+            assert_eq!(declaration.kind, DeclarationKind::Parameter);
+            assert_eq!(&source[declaration.span.start..declaration.span.end], "self");
+        } else {
+            assert_eq!(declaration.kind, DeclarationKind::ImplicitReceiver);
+            assert_eq!(&source[declaration.span.start..declaration.span.end], ":");
+        }
+    }
+}
+
+#[test]
 fn operators_indices_and_method_calls_preserve_variable_occurrences() {
     let source = "local item = {x = 1}\nlocal index = \"x\"\nlocal argument = 2\nitem[index] = -argument + #index\nlocal result = item:method(argument and not index)";
     let graph = bound(source);

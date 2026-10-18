@@ -212,10 +212,12 @@ impl Checker<'_> {
         callee_span: Span,
         span: Span,
     ) -> ValuePack {
+        self.call_predicate = result.predicate.clone().map(|predicate| (span, predicate));
         self.call_result(
             CallResult {
                 return_type: result.return_type,
                 errors: result.errors,
+                predicate: result.predicate,
             },
             callee,
             origins,

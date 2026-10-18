@@ -81,6 +81,8 @@ mod native_intrinsic_assert_tests;
 #[cfg(test)]
 mod native_assertion_flow_tests;
 #[cfg(test)]
+mod native_type_predicate_flow_tests;
+#[cfg(test)]
 mod native_pack_spread_inference_tests;
 mod native_iterators;
 mod native_packs;
@@ -442,6 +444,12 @@ pub trait NativeTypeProvider {
         self.function_declared_scalar_contract(key, queries)
     }
     fn contains_signature(&self, _: NativeSignatureKey) -> bool { false }
+    /// Immutable declaration syntax only. False proves there is no written predicate;
+    /// providers without that proof preserve the full metadata query.
+    fn signature_may_have_type_predicate(&self, _: NativeSignatureKey) -> bool { true }
+    fn function_may_have_type_predicate(&self, _: NativeFunctionKey) -> bool { true }
+    fn signature_type_predicate(&self, _: NativeSignatureKey, _: &mut dyn TypeQueries) -> Option<TypePredicate> { None }
+    fn function_type_predicate(&self, _: NativeFunctionKey, _: &mut dyn TypeQueries) -> Option<TypePredicate> { None }
     fn signature_intrinsic(&self, _: NativeSignatureKey) -> Option<NativeIntrinsicSite> { None }
     fn signature_header(&self, _: NativeSignatureKey) -> SignatureHeader { panic!("native signature provider is not installed") }
     /// Original omitted doc-function result; calls still return a gradual pack.
@@ -777,9 +785,18 @@ pub struct Relation {
     pub target: String,
 }
 
+/// An original parameter contract, mapped through its selected call signature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypePredicate {
+    pub parameter: usize,
+    pub ty: Type,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CallResult {
     pub return_type: Type,
+    /// Predicate of the applicable, instantiated signature of a successful call.
+    pub predicate: Option<TypePredicate>,
     pub errors: Vec<CallError>,
 }
 
@@ -825,6 +842,11 @@ pub enum CallError {
 /// Queries available during one native checker session. All inputs and outputs
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
+    /// Nested call metadata keeps argument callbacks type-only without changing
+    /// subsequent normal source checks or their argument-cache entries.
+    fn with_native_type_query(&mut self, work: &mut dyn FnMut(&mut dyn TypeQueries));
+    /// Dynamic metadata mode for source/flow callbacks creating fresh checkers.
+    fn native_type_query_mode(&self) -> NativeCheckMode;
     /// Whether this exact contextual instance is final source-body work, usable
     /// only by its current native query, or from an expired query scope.
     fn contextual_function_check_state(&mut self, context: &ContextualFunctionContext) -> NativeFunctionCheckState;
@@ -861,6 +883,9 @@ pub trait TypeQueries {
     fn signature_type(&mut self, declaration: NativeSignatureKey) -> Type;
     /// Pure original-callee metadata; never infers a callable's return or body.
     fn function_intrinsic(&mut self, function: &Type) -> Option<NativeIntrinsicSite>;
+    /// Conservative declaration-presence probe. Never resolves a predicate's
+    /// target, selects an overload, checks arguments or infers a return/body.
+    fn may_have_type_predicate(&mut self, _: &Type) -> bool { true }
     fn signature_group_type(&mut self, declarations: &[NativeSignatureKey]) -> Type;
     fn call_signature_types(&mut self, function: &Type) -> Vec<Type>;
     fn function_implementation_type(&mut self, function: &Type) -> Option<Type>;
@@ -1334,6 +1359,15 @@ struct SessionQueries<'a, 'p, 's> {
 }
 
 impl TypeQueries for SessionQueries<'_, '_, '_> {
+    fn with_native_type_query(&mut self, work: &mut dyn FnMut(&mut dyn TypeQueries)) {
+        let handles = self.handles;
+        self.checker.with_native_type_query(|checker| {
+            work(&mut SessionQueries { checker, handles });
+        });
+    }
+    fn native_type_query_mode(&self) -> NativeCheckMode {
+        self.checker.native_type_query_mode()
+    }
     fn flow_value(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> Type {
         let adapter = native_flow::FlowProviderAdapter { provider, handles: self.handles };
         let ty = self.checker.native_flow_value_cached(&adapter, value, input);
@@ -1390,6 +1424,10 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn function_intrinsic(&mut self, function: &Type) -> Option<NativeIntrinsicSite> {
         let function = import_type(self.checker, self.handles, function);
         self.checker.native_function_intrinsic(function).map(native_signatures::source_intrinsic_site)
+    }
+    fn may_have_type_predicate(&mut self, function: &Type) -> bool {
+        let function = import_type(self.checker, self.handles, function);
+        self.checker.native_callable_may_have_type_predicate(function)
     }
     fn signature_group_type(&mut self, declarations: &[NativeSignatureKey]) -> Type { self.signature_group_type_native(declarations) }
     fn call_signature_types(&mut self, function: &Type) -> Vec<Type> {
@@ -2294,6 +2332,12 @@ impl SessionQueries<'_, '_, '_> {
         }
     }
     fn export_call_result(&mut self, result: bun_sema::check::ResolvedTypeCall) -> CallResult {
+        let predicate = if result.errors.is_empty() {
+            result.sig.and_then(|sig| self.checker.sig_predicate(sig)).and_then(|predicate| {
+                if predicate.asserts { return None; }
+                Some(TypePredicate { parameter: predicate.param?, ty: export_type(self.checker, self.handles, predicate.ty?) })
+            })
+        } else { None };
         let return_type = export_type(self.checker, self.handles, result.ret);
         let errors = result
             .errors
@@ -2348,6 +2392,7 @@ impl SessionQueries<'_, '_, '_> {
             .collect();
         CallResult {
             return_type,
+            predicate,
             errors,
         }
     }
@@ -2557,6 +2602,12 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
         Some(NativeTypeResult::Declaration(checker.native_pack_slot(pack, 0)))
     }
     fn contains_signature(&self, key: bun_sema::types::NativeSignatureId) -> bool { self.provider.contains_signature(source_signature_key(key)) }
+    fn signature_may_have_type_predicate(&self, key: bun_sema::types::NativeSignatureId) -> bool {
+        self.provider.signature_may_have_type_predicate(source_signature_key(key))
+    }
+    fn function_may_have_type_predicate(&self, key: NativeFunctionId) -> bool {
+        self.provider.function_may_have_type_predicate(source_key(key))
+    }
     fn signature_intrinsic(&self, key: bun_sema::types::NativeSignatureId) -> Option<bun_sema::check::native_intrinsics::NativeIntrinsicSite> {
         let site = self.provider.signature_intrinsic(source_signature_key(key))?;
         Some(bun_sema::check::native_intrinsics::NativeIntrinsicSite {
@@ -2572,6 +2623,14 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
                 NativeIntrinsicKind::SetMetatable => bun_sema::check::native_intrinsics::NativeIntrinsicKind::SetMetatable,
             },
         })
+    }
+    fn signature_type_predicate(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Option<bun_sema::check::native_signatures::NativeTypePredicate> {
+        let predicate = self.provider.signature_type_predicate(source_signature_key(key), &mut SessionQueries { checker, handles: self.handles })?;
+        Some(bun_sema::check::native_signatures::NativeTypePredicate { parameter: predicate.parameter, ty: import_type(checker, self.handles, &predicate.ty) })
+    }
+    fn function_type_predicate(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Option<bun_sema::check::native_signatures::NativeTypePredicate> {
+        let predicate = self.provider.function_type_predicate(source_key(key), &mut SessionQueries { checker, handles: self.handles })?;
+        Some(bun_sema::check::native_signatures::NativeTypePredicate { parameter: predicate.parameter, ty: import_type(checker, self.handles, &predicate.ty) })
     }
     fn signature_header(&self, key: bun_sema::types::NativeSignatureId) -> bun_sema::check::native_signatures::NativeSignatureHeader { self.signature_header_core(key) }
     fn signature_has_unconstrained_return(&self, key: bun_sema::types::NativeSignatureId) -> bool { self.provider.signature_has_unconstrained_return(source_signature_key(key)) }

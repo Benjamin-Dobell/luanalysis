@@ -243,6 +243,25 @@ pub enum NativeFunctionCheckState {
 }
 
 impl<'p, 's> Checker<'p, 's> {
+    /// A metadata demand may replay nested calls for their selected signature,
+    /// but must not publish diagnostics from an unreached argument. Restore the
+    /// dynamic mode on unwinding as well as ordinary/nested completion.
+    pub fn with_native_type_query<R>(&mut self, work: impl FnOnce(&mut Self) -> R) -> R {
+        let outside = self.native_type_query_depth;
+        self.native_type_query_depth = outside.checked_add(1).expect("native type-query depth overflow");
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
+        self.native_type_query_depth = outside;
+        result.unwrap_or_else(|error| std::panic::resume_unwind(error))
+    }
+
+    pub fn native_type_query_mode(&self) -> CheckMode {
+        if self.native_type_query_depth == 0 { CheckMode::empty() } else { CheckMode::TYPE_ONLY }
+    }
+
+    fn native_query_check_mode(&self, mode: CheckMode) -> CheckMode {
+        mode | self.native_type_query_mode()
+    }
+
     pub(super) fn native_argument_expression(&self, expression: NativeExpressionId) -> NativeArgumentExpression {
         NativeArgumentExpression {
             expression,
@@ -492,6 +511,7 @@ impl<'p, 's> Checker<'p, 's> {
         expected: TypeId,
         mode: CheckMode,
     ) -> Option<TypeId> {
+        let mode = self.native_query_check_mode(mode);
         let signature = self.native_implementation_signature(function)?;
         let (declaration, mapper) = self.sig_native_decl(signature)?;
         let environment = match self.types().sig(signature) {
@@ -3758,6 +3778,7 @@ impl<'p, 's> Checker<'p, 's> {
         mut inference_context: Option<&mut Inference>,
         mode: CheckMode,
     ) -> TypeId {
+        let mode = self.native_query_check_mode(mode);
         let provider = self.native_function_provider.expect("native expression without a provider");
         assert!(provider.contains_expression(expression), "foreign native expression identity");
         if mode.contains(CheckMode::SKIP_CONTEXT_SENSITIVE)
@@ -3828,6 +3849,7 @@ impl<'p, 's> Checker<'p, 's> {
         mut inference_context: Option<&mut Inference>,
         mode: CheckMode,
     ) -> NativeResultPack {
+        let mode = self.native_query_check_mode(mode);
         let provider = self.native_function_provider.expect("native expression without a provider");
         assert!(provider.contains_expression(expression), "foreign native expression identity");
         let (mode, outside) = self.push_inference_context_for_origin(

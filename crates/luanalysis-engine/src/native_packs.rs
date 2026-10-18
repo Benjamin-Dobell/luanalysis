@@ -117,6 +117,7 @@ pub enum PackAdjustmentError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackCallResult {
     pub return_pack: ValuePack,
+    pub predicate: Option<super::TypePredicate>,
     pub return_type: Type,
     pub errors: Vec<CallError>,
 }
@@ -352,12 +353,13 @@ impl SessionQueries<'_, '_, '_> {
         let ret = self.checker.native_pack_slot(result.pack, 0);
         let return_pack = self.handles.retain_pack(self.checker, result.pack);
         let scalar = self.export_call_result(bun_sema::check::ResolvedTypeCall {
-            sig: None,
+            sig: result.sig,
             ret,
             errors: result.errors,
         });
         PackCallResult {
             return_pack,
+            predicate: scalar.predicate,
             return_type: scalar.return_type,
             errors: scalar.errors,
         }

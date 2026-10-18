@@ -686,6 +686,16 @@ impl NativeFlowSources {
         Some(self.program.evaluation(*initializer))
     }
 
+    /// A local function declaration has a function demand rather than an
+    /// evaluation initializer. Reuse the same all-original-writes proof: a
+    /// later, conditional or captured reassignment makes this unavailable.
+    pub(super) fn immutable_function_initializer(&self, binding: BindingId) -> Option<NativeFunctionKey> {
+        let reference = flow::Reference { root: flow::ReferenceRoot::Binding(binding), path: Vec::new() };
+        let [write] = self.write_metadata.exact.get(&reference)?.as_slice() else { return None; };
+        let flow::NodeKind::Write { value: flow::ValueDemand::Function(graph), declaration: true, .. } = &self.program.node(*write).kind else { return None; };
+        self.graph_functions.get(*graph as usize).copied().flatten()
+    }
+
     /// What original stores in this source may replace through the environment
     /// or a local alias of it (`environment_candidate_paths`): `bind::STANDARD_NAMES`
     /// bits, and whether the module loader (`require`, `package` loader fields)
@@ -1060,10 +1070,86 @@ impl NativeFlowSources {
         true
     }
 
+    /// A guard call is itself the asserted boolean, while its argument addresses
+    /// must remain stable. Other calls nested in an assertion still invalidate it.
+    fn assertion_condition_is_frozen(&self, mut evaluation: flow::EvaluationId) -> bool {
+        loop {
+            let source = self.program.evaluation(evaluation);
+            match self.program.expression(source.expression).expression.kind {
+                ExprKind::Parenthesized(_) | ExprKind::Unary { op: luanalysis_syntax::UnaryOperator::Not, .. } => {
+                    let Some(&inner) = source.operands.first() else { return false };
+                    evaluation = inner;
+                }
+                ExprKind::Call { .. } => return source.operands[1..].iter().all(|&operand| self.guard_argument_is_frozen(operand)),
+                ExprKind::MethodCall { .. } => return source.operands.iter().all(|&operand| self.guard_argument_is_frozen(operand)),
+                _ => return self.assertion_operand_is_frozen(evaluation),
+            }
+        }
+    }
+
+    /// Runtime-type candidates include arbitrary one-argument calls until the
+    /// native intrinsic query proves their identity. They cannot attest that a
+    /// later guard argument leaves an earlier argument's address unchanged.
+    fn guard_argument_is_frozen(&self, evaluation: flow::EvaluationId) -> bool {
+        let mut pending = vec![evaluation];
+        while let Some(evaluation) = pending.pop() {
+            let evaluation = self.program.evaluation(evaluation);
+            match self.program.expression(evaluation.expression).expression.kind {
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Vararg => return false,
+                _ => pending.extend(evaluation.operands.iter().copied()),
+            }
+        }
+        true
+    }
+
     /// Select the original physical first argument, including a colon receiver.
     /// Unknown argument calls may mutate a reference after its asserted value
     /// was frozen; they cannot establish a later reference predicate here.
     pub(super) fn assertion_call_effect(&self, evaluation: &flow::Evaluation, input: NativeFlowKey) -> NativeCallEffects {
+        self.assertion_call_effect_with_guard(evaluation, input, false)
+    }
+
+    /// Only the native signature query may establish that this nested call is a guard.
+    pub(super) fn assertion_guard_call(&self, evaluation: &flow::Evaluation) -> Option<&flow::Evaluation> {
+        let first = match self.program.expression(evaluation.expression).expression.kind {
+            ExprKind::Call { .. } => 1,
+            ExprKind::MethodCall { .. } => 0,
+            _ => return None,
+        };
+        let mut argument = self.program.evaluation(*evaluation.operands.get(first)?);
+        loop {
+            match self.program.expression(argument.expression).expression.kind {
+                ExprKind::Parenthesized(_) | ExprKind::Unary { op: luanalysis_syntax::UnaryOperator::Not, .. } => {
+                    argument = self.program.evaluation(*argument.operands.first()?);
+                }
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. } => return Some(argument),
+                _ => return None,
+            }
+        }
+    }
+
+    /// Recover the guard's actual frozen call from a boolean-comparison recipe.
+    pub(super) fn predicate_call(&self, evaluation: &flow::Evaluation) -> Option<&flow::Evaluation> {
+        let mut evaluation = self.program.evaluation(evaluation.id);
+        loop {
+            match self.program.expression(evaluation.expression).expression.kind {
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. } => return Some(evaluation),
+                ExprKind::Parenthesized(_) | ExprKind::Unary { op: luanalysis_syntax::UnaryOperator::Not, .. } => {
+                    evaluation = self.program.evaluation(*evaluation.operands.first()?);
+                }
+                ExprKind::Binary { op: BinaryOperator::Equal | BinaryOperator::NotEqual, .. } if evaluation.operands.len() == 2 => {
+                    let left = self.program.evaluation(evaluation.operands[0]);
+                    let right = self.program.evaluation(evaluation.operands[1]);
+                    evaluation = if matches!(self.program.expression(left.expression).expression.kind, ExprKind::Boolean(_)) { right }
+                        else if matches!(self.program.expression(right.expression).expression.kind, ExprKind::Boolean(_)) { left }
+                        else { return None };
+                }
+                _ => return None,
+            }
+        }
+    }
+
+    pub(super) fn assertion_call_effect_with_guard(&self, evaluation: &flow::Evaluation, input: NativeFlowKey, guard: bool) -> NativeCallEffects {
         let expression = &self.program.expression(evaluation.expression).expression;
         let first = match &expression.kind {
             ExprKind::Call { args, .. } if args.is_empty() => return NativeCallEffects::Never,
@@ -1073,10 +1159,10 @@ impl NativeFlowSources {
         };
         let arguments = &evaluation.operands[first..];
         let Some(&first) = arguments.first() else { return NativeCallEffects::None };
-        if !self.assertion_operand_is_frozen(first) { return NativeCallEffects::None }
+        if !(if guard { self.assertion_condition_is_frozen(first) } else { self.assertion_operand_is_frozen(first) }) { return NativeCallEffects::None }
         let first = self.program.evaluation(first);
         let input = self.flow_key(first.input, input.graph.context);
-        if arguments.iter().skip(1).any(|&argument| !self.assertion_operand_is_frozen(argument)) {
+        if arguments.iter().skip(1).any(|&argument| !(if guard { self.guard_argument_is_frozen(argument) } else { self.assertion_operand_is_frozen(argument) })) {
             let predicate = self.predicate_evaluation(input, first);
             let mut pending = vec![&predicate];
             while let Some(predicate) = pending.pop() {
@@ -1094,7 +1180,7 @@ impl NativeFlowSources {
     fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
         let ValueRecipe::Evaluation(evaluation) = self.value(condition)? else { return None };
         let evaluation = self.program.evaluation(*evaluation);
-        if self.flow_key(evaluation.input, input.graph.context) != input || !self.assertion_operand_is_frozen(evaluation.id) { return None }
+        if self.flow_key(evaluation.input, input.graph.context) != input || !self.assertion_condition_is_frozen(evaluation.id) { return None }
         Some(self.predicate_evaluation(input, evaluation))
     }
 
@@ -1145,6 +1231,29 @@ impl NativeFlowSources {
     ) -> NativePredicate {
         let expression = evaluation.expression;
         let source = &self.program.expression(expression).expression;
+        let argument_start = match &source.kind {
+            ExprKind::Call { .. } => Some(1),
+            ExprKind::MethodCall { .. } => Some(0),
+            _ => None,
+        };
+        if let Some(start) = argument_start {
+            let mut frozen = true;
+            let mut arguments: Vec<_> = evaluation.operands[start..].iter().rev().map(|&argument| {
+                // A later argument can replace a previously evaluated cell or address.
+                // Keep only references whose value remains frozen up to the call.
+                frozen &= self.guard_argument_is_frozen(argument);
+                if !frozen { return None; }
+                let argument = self.program.evaluation(argument);
+                self.predicate_reference(argument, key.graph)
+            }).collect();
+            arguments.reverse();
+            return NativePredicate::Call {
+                value: self.evaluation_value(evaluation.id),
+                input: self.flow_key(evaluation.input, key.graph.context),
+                arguments,
+                negated: false,
+            };
+        }
         match &source.kind {
             ExprKind::Parenthesized(_) => {
                 if let Some(inner) = evaluation.operands.first() {
@@ -1200,49 +1309,82 @@ impl NativeFlowSources {
                         ..
                     }
                 );
+                for (literal, call) in [(left, right), (right, left)] {
+                    let ExprKind::Boolean(value) = self.program.expression(literal.expression).expression.kind else { continue };
+                    let mut operand = call;
+                    loop {
+                        match self.program.expression(operand.expression).expression.kind {
+                            ExprKind::Parenthesized(_) | ExprKind::Unary { op: luanalysis_syntax::UnaryOperator::Not, .. } => {
+                                let Some(&inner) = operand.operands.first() else { break };
+                                operand = self.program.evaluation(inner);
+                            }
+                            ExprKind::Call { .. } | ExprKind::MethodCall { .. } => {
+                                let mut predicate = self.predicate_evaluation(key, call);
+                                let mut negated = value != equals;
+                                while let NativePredicate::Not(operand) = predicate {
+                                    predicate = *operand;
+                                    negated = !negated;
+                                }
+                                if let NativePredicate::Call { value, input, negated: guard_negated, .. } = &mut predicate {
+                                    // Reachability still concerns the complete comparison,
+                                    // including when this ordinary call has no predicate.
+                                    *value = self.evaluation_value(evaluation.id);
+                                    *input = self.flow_key(evaluation.input, key.graph.context);
+                                    *guard_negated ^= negated;
+                                }
+                                return predicate;
+                            }
+                            _ => break,
+                        }
+                    }
+                }
                 if let Some(predicate) = self
                     .runtime_type_predicate(key, left, right, equals)
                     .or_else(|| self.runtime_type_predicate(key, right, left, equals))
                 {
                     return predicate;
                 }
-                let pair = self
-                    .program
-                    .references
-                    .get(&left.expression)
+                let pair = self.predicate_reference(left, key.graph)
                     .map(|reference| (reference, right))
-                    .or_else(|| {
-                        self.program
-                            .references
-                            .get(&right.expression)
-                            .map(|reference| (reference, left))
-                    });
-                if let Some((reference, other)) = pair {
-                    if let Some(subject) = self.reference_key(key.graph, reference) {
-                        return NativePredicate::Equal {
-                            subject,
-                            other: self.evaluation_value(other.id),
-                            input: self.flow_key(other.input, key.graph.context),
-                            equals: matches!(
-                                source.kind,
-                                ExprKind::Binary {
-                                    op: BinaryOperator::Equal,
-                                    ..
-                                }
-                            ),
-                        };
-                    }
+                    .or_else(|| self.predicate_reference(right, key.graph)
+                        .map(|reference| (reference, left)));
+                if let Some((subject, other)) = pair {
+                    return NativePredicate::Equal {
+                        subject,
+                        other: self.evaluation_value(other.id),
+                        input: self.flow_key(other.input, key.graph.context),
+                        equals: matches!(
+                            source.kind,
+                            ExprKind::Binary {
+                                op: BinaryOperator::Equal,
+                                ..
+                            }
+                        ),
+                    };
                 }
             }
         }
         NativePredicate::Truthy {
-            subject: self
-                .program
-                .references
-                .get(&expression)
-                .and_then(|reference| self.reference_key(key.graph, reference)),
+            subject: self.predicate_reference(evaluation, key.graph),
             value: self.evaluation_value(evaluation.id),
             input: self.flow_key(evaluation.input, key.graph.context),
+        }
+    }
+
+    /// A free name reads a member of the selected original environment, the
+    /// same canonical address used by `global_read`. Keep other source paths
+    /// intact: their ordinary member reads use the lexical reference itself.
+    fn predicate_reference(&self, evaluation: &flow::Evaluation, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
+        let reference = self.program.references.get(&evaluation.expression)?;
+        if reference.root == flow::ReferenceRoot::EnvironmentCell && reference.path.len() == 1
+            && self.reads_original_environment(graph, self.program.expression(evaluation.expression).expression.span.start)
+        {
+            self.reference_key(graph, &flow::Reference {
+                root: flow::ReferenceRoot::EnvironmentObject,
+                path: reference.path.clone(),
+            })
+        } else {
+            self.reference_key(graph, reference)
         }
     }
 
@@ -1288,9 +1430,8 @@ impl NativeFlowSources {
             _ => return None,
         };
         let argument = self.program.evaluation(*call.operands.get(1)?);
-        let reference = self.program.references.get(&argument.expression)?;
         Some(NativePredicate::RuntimeType {
-            subject: self.reference_key(key.graph, reference)?,
+            subject: self.predicate_reference(argument, key.graph)?,
             value: self.evaluation_value(argument.id),
             input: self.flow_key(argument.input, key.graph.context),
             kind,
@@ -1506,6 +1647,7 @@ fn intern_reference(
 }
 
 pub(super) trait FlowValueQueries {
+    fn flow_call_type_predicate(&self, _: &NativeFlowSources, _: &ValueRecipe, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypePredicate> { None }
     fn runtime_table_store_in_scope(&self, _: luanalysis_engine::NativeTypeDeclarationKey, _: NativeFlowKey) -> bool { false }
     fn alias_value_type(&self, sources:&NativeFlowSources, value:&ValueRecipe, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {self.flow_value_type(sources,value,input,queries)}
     fn binding_has_written_contract(&self, _: BindingId) -> bool { false }
@@ -2140,6 +2282,14 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             .expect("native query uses an original source value");
         self.values
             .flow_value_type(self.sources, recipe, input, queries)
+    }
+    fn call_type_predicate(
+        &self,
+        value: NativeValueKey,
+        input: NativeFlowKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<luanalysis_engine::TypePredicate> {
+        self.values.flow_call_type_predicate(self.sources, self.sources.value(value)?, input, queries)
     }
     fn call_effects(
         &self,

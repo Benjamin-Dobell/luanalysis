@@ -360,7 +360,7 @@ impl Checker<'_> {
         self.pattern_function_result(&name.text, args.first(), args.get(2))
     }
 
-    fn method_call_arguments(
+    pub(super) fn method_call_arguments(
         &mut self,
         receiver: &Expr,
         name: &Name,

@@ -81,6 +81,7 @@ pub trait NativeFlowProvider {
     /// No source in the project may mutate the module loader.
     fn loader_never_mutated(&self, _: NativeGraphKey) -> bool { false }
     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
+    fn call_type_predicate(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Option<super::TypePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
     fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> {
@@ -224,6 +225,11 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
         self.provider.assertion_predicate(condition, input)
     }
+    fn call_type_predicate(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::check::native_signatures::NativeTypePredicate> {
+        let predicate = self.provider.call_type_predicate(value, input, &mut SessionQueries { checker, handles: self.handles })?;
+        Some(bun_sema::check::native_signatures::NativeTypePredicate { parameter: predicate.parameter, ty: import_type(checker, self.handles, &predicate.ty) })
+    }
+
     fn reference_declaration(&self, reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> { self.provider.reference_declaration(reference) }
     fn graph_creation(&self, graph: NativeGraphKey) -> Option<NativeFunctionCreation> { self.provider.graph_creation(graph) }
     fn reference_in_graph(&self, reference: NativeReferenceKey, graph: NativeGraphKey) -> Option<NativeReferenceKey> { self.provider.reference_in_graph(reference, graph) }

@@ -1111,6 +1111,10 @@ impl NativeTypeProvider for ProjectRegistry {
         fn signature_parameters(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> Vec<Parameter>;
         fn signature_rest_pack(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> Option<ValuePack>;
         fn signature_declared_return_pack(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> ValuePack;
+        fn signature_type_predicate(key: NativeSignatureKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypePredicate>;
+        fn signature_may_have_type_predicate(key: NativeSignatureKey) -> bool;
+        fn function_may_have_type_predicate(key: NativeFunctionKey) -> bool;
+        fn function_type_predicate(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypePredicate>;
         fn signature_return_cycle(key: NativeSignatureKey) -> ();
         fn signature_return_type_too_deep(key: NativeSignatureKey) -> ();
 

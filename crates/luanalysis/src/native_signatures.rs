@@ -17,7 +17,104 @@ use luanalysis_syntax::{
 };
 use crate::collections::HashMap;
 
+impl super::Checker<'_> {
+    fn declared_type_predicate(
+        &mut self,
+        source: &TypeExpr,
+        parameters: &[Parameter],
+    ) -> Option<luanalysis_engine::TypePredicate> {
+        let TypeExprKind::TypePredicate { parameter, ty } = &source.kind else { return None };
+        let target = self.annotation(ty);
+        let Some(index) = parameters.iter().rposition(|candidate| candidate.name == parameter.text) else {
+            self.error("TS1225", parameter.span, format!("Cannot find parameter '{}'.", parameter.text));
+            return None;
+        };
+        let parameter_type = if parameters[index].optional {
+            Type::Union(vec![parameters[index].ty.clone(), Type::Nil])
+        } else {
+            parameters[index].ty.clone()
+        };
+        if !self.engine.is_assignable(&target, &parameter_type) {
+            self.error_types(
+                "TS2677", ty.span,
+                "A type predicate's type '{}' must be assignable to its parameter's type '{}'.",
+                &[&target, &parameter_type],
+            );
+            return None;
+        }
+        Some(luanalysis_engine::TypePredicate { parameter: index, ty: target })
+    }
+}
+
 impl NativeRegistry {
+    pub(super) fn source_function_may_have_type_predicate(&self, key: NativeFunctionKey) -> bool {
+        let function = self.function(key);
+        if let Some(annotation) = &function.annotations.returns {
+            return matches!(annotation.types.as_slice(), [TypeExpr { kind: TypeExprKind::TypePredicate { .. }, .. }]);
+        }
+        let Some(annotation) = &function.annotations.type_annotation else { return false };
+        let [ty] = annotation.types.as_slice() else { return false };
+        let mut ty = ty.value_syntax();
+        while let TypeExprKind::Parenthesized(inner) = &ty.kind { ty = inner.value_syntax(); }
+        let TypeExprKind::Function(signature) = &ty.kind else { return false };
+        self.signature_key_for(signature.span).is_some()
+            && matches!(signature.returns.as_slice(), [TypeExpr { kind: TypeExprKind::TypePredicate { .. }, .. }])
+    }
+
+    pub(super) fn source_signature_may_have_type_predicate(&self, key: NativeSignatureKey) -> bool {
+        let recipe = self.signatures.get(key);
+        if let Some(function) = recipe.ambient_function { return self.source_function_may_have_type_predicate(function); }
+        let Some(signature) = &recipe.signature else { return false };
+        let returns = if signature.returns_span.is_none() {
+            self.documentation_signature(key).and_then(|doc| doc.annotations.returns.as_ref()).map(|annotation| annotation.types.as_slice())
+        } else { Some(signature.returns.as_slice()) };
+        matches!(returns, Some([TypeExpr { kind: TypeExprKind::TypePredicate { .. }, .. }]))
+    }
+
+    pub(super) fn source_function_type_predicate(
+        &self,
+        key: NativeFunctionKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<luanalysis_engine::TypePredicate> {
+        let function = self.function(key);
+        let Some(annotation) = &function.annotations.returns else {
+            return self.implementation_annotation_signature(key)
+                .and_then(|signature| self.source_signature_type_predicate(signature, queries));
+        };
+        let [source] = annotation.types.as_slice() else { return None };
+        if !matches!(source.kind, TypeExprKind::TypePredicate { .. }) { return None; }
+        let parameters = self.metadata(key, queries).0;
+        let mut checker = self.checker(queries);
+        checker.type_context = Some(key);
+        let predicate = checker.declared_type_predicate(source, &parameters);
+        self.merge_report(checker.report);
+        predicate
+    }
+
+    pub(super) fn source_signature_type_predicate(
+        &self,
+        key: NativeSignatureKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<luanalysis_engine::TypePredicate> {
+        let recipe = self.signatures.get(key);
+        if let Some(function) = recipe.ambient_function {
+            return self.source_function_type_predicate(function, queries);
+        }
+        let signature = recipe.signature.as_ref()?;
+        let returns = if signature.returns_span.is_none() {
+            &self.documentation_signature(key)?.annotations.returns.as_ref()?.types
+        } else {
+            &signature.returns
+        };
+        let [source] = returns.as_slice() else { return None };
+        if !matches!(source.kind, TypeExprKind::TypePredicate { .. }) { return None; }
+        let parameters = self.source_signature_parameters(key, queries);
+        let mut checker = self.signature_checker(key, queries);
+        let predicate = checker.declared_type_predicate(source, &parameters);
+        self.merge_report(checker.report);
+        predicate
+    }
+
     /// A missing doc-function result is distinct from an explicit any/void row.
     /// Runtime implementation signatures keep their actual inferred result.
     pub(super) fn signature_has_omitted_result(&self, key: NativeSignatureKey) -> bool {
@@ -336,6 +433,7 @@ impl NativeRegistry {
             // including declarations that were never used by a call.
             let ty = queries.signature_type(recipe.key);
             queries.format(&ty);
+            self.source_signature_type_predicate(recipe.key, queries);
             if let Some(source) = self.documentation_signature(recipe.key) {
                 let mut checker=self.signature_checker(recipe.key,queries);
                 let mut names=crate::collections::HashSet::default();
@@ -1042,7 +1140,8 @@ impl NativeSignatures {
                     self.visit_type(owner, context, parent, &field.ty)
                 }
             }
-            TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element) => {
+            TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element)
+            | TypeExprKind::TypePredicate { ty: element, .. } => {
                 self.visit_type(owner, context, parent, element)
             }
             _ => {}
