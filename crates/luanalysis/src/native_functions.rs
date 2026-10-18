@@ -8,7 +8,7 @@ use super::native_expressions::NativeExpressions;
 use super::native_flow::{FlowAdapter, FlowValueQueries, NativeFlowSources, ValueRecipe};
 use super::native_named::{NativeNamed, NativeTypeContext};
 use super::native_packs::{AnnotationPack, InitializerContext, NativePacks};
-use super::native_types::{NativeTypes, TypeNameResolution, TypeParameterRecipe, TypeScopeRecipe};
+use super::native_types::{NativeTypes, TypeParameterRecipe, TypeScopeRecipe};
 use super::{Binding, CheckReport, Checker, Diagnostic, bind};
 use bind::{BindingId, BoundFile};
 use luanalysis_engine::{
@@ -1180,28 +1180,6 @@ impl NativeRegistry {
         }).expect("a lexical capture has an original function reference");
         let at = self.flow.flow_key(self.flow.program.graphs[graph.region as usize].entry, graph.context);
         queries.flow_capture_type(&FlowAdapter { sources: &self.flow, values: self }, at, reference, declared, &Type::Nil).ty
-    }
-
-    pub(super) fn resolve_type_name(
-        &self,
-        context: Option<NativeFunctionKey>,
-        name: &str,
-    ) -> Option<Type> {
-        self.types.resolve_name(context, name)
-    }
-
-    pub(super) fn resolve_named_type_parameter(
-        &self,
-        context: super::native_named::NativeNamedKey,
-        name: &str,
-    ) -> Option<Type> {
-        match self
-            .types
-            .resolve_name_in_context(Some(NativeTypeContext::NamedType(context)), name)
-        {
-            TypeNameResolution::Parameter(key) => Some(Type::NativeTypeParameter(key)),
-            TypeNameResolution::Missing | TypeNameResolution::Ambiguous(_) => None,
-        }
     }
 
     pub(super) fn metadata(

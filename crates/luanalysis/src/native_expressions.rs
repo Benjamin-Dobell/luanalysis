@@ -36,7 +36,6 @@ pub(super) struct NativeExpressions {
     // never promotes it: deferred body replay checks its native state again.
     final_facets: RefCell<HashMap<NativeFunctionKey, Vec<Type>>>,
     final_contexts: RefCell<HashMap<NativeFunctionKey, Vec<ContextualFunctionContext>>>,
-    final_captures: RefCell<HashMap<NativeFunctionKey, Vec<CapturedFunctionContext>>>,
     context_captures:
         RefCell<HashMap<(NativeFunctionKey, ContextualFunctionContext), Vec<CapturedFunctionContext>>>,
 }
@@ -53,7 +52,6 @@ impl NativeExpressions {
             recipes,
             final_facets: RefCell::new(HashMap::default()),
             final_contexts: RefCell::new(HashMap::default()),
-            final_captures: RefCell::new(HashMap::default()),
             context_captures: RefCell::new(HashMap::default()),
         }
     }
@@ -182,13 +180,6 @@ impl NativeExpressions {
             .cloned()
             .unwrap_or_default()
     }
-    pub(super) fn final_captures(&self, key: NativeFunctionKey) -> Vec<CapturedFunctionContext> {
-        self.final_captures
-            .borrow()
-            .get(&key)
-            .cloned()
-            .unwrap_or_default()
-    }
     pub(super) fn captures_for_context(
         &self,
         key: NativeFunctionKey,
@@ -198,17 +189,6 @@ impl NativeExpressions {
             .borrow()
             .get(&(key, *context))
             .cloned().unwrap_or_default()
-    }
-    pub(super) fn contextual_captures(
-        &self,
-        key: NativeFunctionKey,
-    ) -> HashSet<CapturedFunctionContext> {
-        self.context_captures
-            .borrow()
-            .iter()
-            .filter(|((function, _), _)| *function == key)
-            .flat_map(|(_, captures)| captures.iter().copied())
-            .collect()
     }
     fn retain_context_capture(
         &self,
@@ -223,20 +203,6 @@ impl NativeExpressions {
             // must retain their own source-flow and body-validation identity.
             let captures = contexts.entry((key, *context)).or_default();
             if !captures.contains(captured) { captures.push(*captured); }
-        }
-    }
-    fn retain_capture(
-        &self,
-        key: NativeFunctionKey,
-        context: &CapturedFunctionContext,
-        mode: NativeCheckMode,
-    ) {
-        if publishes(mode) {
-            let mut captures = self.final_captures.borrow_mut();
-            let captures = captures.entry(key).or_default();
-            if !captures.contains(context) {
-                captures.push(*context);
-            }
         }
     }
     fn retain_context(&self, key: NativeFunctionKey, context: &ContextualFunctionContext) {
@@ -473,8 +439,6 @@ impl NativeRegistry {
         assert_eq!(queries.native_function_key(value), Some(key), "selected body frame retains its original implementation");
         self.retain_capture_ancestry(&captured, queries);
         let contextual = queries.captured_function_context(&captured);
-        let mode = contextual.map_or_else(NativeCheckMode::empty, |context| context.mode);
-        self.expressions().retain_capture(key, &captured, mode);
         if let Some(contextual) = contextual {
             self.expressions().retain_context(key, &contextual);
             self.expressions().retain_context_capture(key, &contextual, &captured);
@@ -721,7 +685,6 @@ impl NativeRegistry {
             .current_contextual_function()
             .map_or_else(NativeCheckMode::empty, |context| context.mode);
         let final_frame = self.body_frame_check_state(None, Some(context), queries) == NativeFunctionCheckState::Final;
-        self.expressions().retain_capture(key, context, mode);
         let mut checker = self.checker(queries);
         checker.type_context = Some(key);
         // Signature metadata is declaration-relative. The native signature
@@ -771,8 +734,6 @@ impl NativeRegistry {
             if checker.engine.native_function_key(&value) == Some(key) {
                 captured_frame = Some(captured);
                 self.retain_capture_ancestry(&captured, checker.engine);
-                self.expressions()
-                    .retain_capture(key, &captured, context.mode);
                 self.expressions()
                     .retain_context_capture(key, context, &captured);
             }

@@ -5,8 +5,8 @@
 
 use super::Diagnostic;
 use super::native_named::{NamedGenericScopeRecipe, NativeNamedKey, NativeTypeContext};
-use luanalysis_engine::{NativeFunctionKey, NativeTypeParameterKey, Type};
-use luanalysis_syntax::{Name, Span, TypeExpr, TypeExprKind};
+use luanalysis_engine::{NativeFunctionKey, NativeTypeParameterKey};
+use luanalysis_syntax::{Name, Span, TypeExpr};
 use luanalysis_engine::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -137,10 +137,6 @@ impl NativeTypes {
     }
     #[cfg(test)]
     pub(super) fn own_metadata_revision(&self) -> u64 { self.metadata_epochs[0].get() }
-    pub(super) fn new(snapshot: u64, recipes: Vec<TypeScopeRecipe>) -> Self {
-        Self::new_with_named(snapshot, recipes, Vec::new())
-    }
-
     /// One allocator owns every function and named parameter identity. Keeping
     /// function recipes first preserves their existing source parameter indices.
     pub(super) fn new_with_named(
@@ -334,17 +330,6 @@ impl NativeTypes {
         self.own_parameters_in_context(self.parameter(key).owner)
     }
 
-    pub(super) fn resolve_name(
-        &self,
-        context: Option<NativeFunctionKey>,
-        name: &str,
-    ) -> Option<Type> {
-        match self.resolve_name_in_context(context.map(NativeTypeContext::Function), name) {
-            TypeNameResolution::Parameter(key) => Some(Type::NativeTypeParameter(key)),
-            TypeNameResolution::Missing | TypeNameResolution::Ambiguous(_) => None,
-        }
-    }
-
     pub(super) fn resolve_name_in_context(
         &self,
         context: Option<NativeTypeContext>,
@@ -384,75 +369,6 @@ impl NativeTypes {
             if let Some(owner) = scope.method_owner.get() { pending.push(owner); }
         }
         TypeNameResolution::Missing
-    }
-
-    pub(super) fn annotation_dependencies(
-        &self,
-        context: Option<NativeFunctionKey>,
-        ty: &TypeExpr,
-        used: &mut HashSet<NativeTypeParameterKey>,
-    ) {
-        self.annotation_dependencies_in_context(context.map(NativeTypeContext::Function), ty, used)
-    }
-
-    pub(super) fn annotation_dependencies_in_context(
-        &self,
-        context: Option<NativeTypeContext>,
-        ty: &TypeExpr,
-        used: &mut HashSet<NativeTypeParameterKey>,
-    ) {
-        match &ty.kind {
-            TypeExprKind::Named(name) => {
-                if let TypeNameResolution::Parameter(key) =
-                    self.resolve_name_in_context(context, name)
-                {
-                    used.insert(key);
-                }
-            }
-            TypeExprKind::Union(types) => {
-                for ty in types {
-                    self.annotation_dependencies_in_context(context, ty, used);
-                }
-            }
-            TypeExprKind::Record(fields) => {
-                for field in fields {
-                    if let luanalysis_syntax::TypeFieldKey::Indexed(key) = &field.key {
-                        self.annotation_dependencies_in_context(context, key, used);
-                    }
-                    self.annotation_dependencies_in_context(context, &field.ty, used);
-                }
-            }
-            TypeExprKind::Array { element, .. } => {
-                self.annotation_dependencies_in_context(context, element, used)
-            }
-            TypeExprKind::Generic { base, args, .. } => {
-                if let TypeNameResolution::Parameter(key) =
-                    self.resolve_name_in_context(context, &base.text)
-                {
-                    used.insert(key);
-                }
-                for argument in args {
-                    self.annotation_dependencies_in_context(context, argument, used);
-                }
-            }
-            TypeExprKind::Parenthesized(ty) => {
-                self.annotation_dependencies_in_context(context, ty, used)
-            }
-            TypeExprKind::Function(function) => {
-                for param in &function.params {
-                    if let Some(ty) = &param.ty {
-                        self.annotation_dependencies_in_context(context, ty, used);
-                    }
-                }
-                if let Some(vararg) = &function.vararg {
-                    self.annotation_dependencies_in_context(context, &vararg.ty, used);
-                }
-                for returned in &function.returns {
-                    self.annotation_dependencies_in_context(context, returned, used);
-                }
-            }
-            TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {}
-        }
     }
 
     /// Keep only source parameters actually used by this signature/captures.

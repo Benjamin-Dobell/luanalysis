@@ -22,8 +22,6 @@ pub(super) struct DocMemberSource {
     pub name: String,
     /// Unknown/ambiguous owner errors point to the original owner spelling.
     pub owner_span: Span,
-    /// Duplicate-member errors point to the original declared member name.
-    pub name_span: Span,
     /// Override/signature errors retain the complete original header span.
     pub signature_span: Span,
     pub scope: Cell<DocOwnerScope>,
@@ -89,7 +87,6 @@ impl NativeDocMembers {
                 owner,
                 name: source.name.text.clone(),
                 owner_span,
-                name_span: source.name.span,
                 signature_span: source.span,
                 scope: Cell::new(DocOwnerScope::Unprepared),
             });
@@ -218,10 +215,7 @@ mod tests {
         assert_ne!(first.key, second.key);
         assert_ne!(first.declaration, second.declaration);
         assert_eq!(first.owner, second.owner);
-        assert_eq!(
-            &source[first.name_span.start..first.name_span.end],
-            "convert"
-        );
+        assert_eq!(first.name, "convert");
         assert_eq!(first.signature_span, file.function_declarations[0].span);
         assert_eq!(members.namespace_end(), base + 2);
         assert!(
@@ -250,10 +244,7 @@ mod tests {
             &source[member.owner_span.start..member.owner_span.end],
             "Missing"
         );
-        assert_eq!(
-            &source[member.name_span.start..member.name_span.end],
-            "convert"
-        );
+        assert_eq!(member.name, "convert");
         assert_eq!(
             members.header(member.key).unwrap().key,
             TypeMemberKeyRecipe::Fixed(LuaKey::String(b"convert".to_vec()))

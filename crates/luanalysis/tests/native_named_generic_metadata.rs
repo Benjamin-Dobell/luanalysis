@@ -1,7 +1,7 @@
 //! A test-only source ownership gate. Named semantic heads remain gated until
 //! the native declaration provider is wired; these tests do not expand aliases.
 use luanalysis::{Diagnostic, bind};
-use luanalysis_engine::{NativeFunctionKey, Type};
+use luanalysis_engine::NativeFunctionKey;
 use luanalysis_syntax::{ExprKind, StmtKind, TypeExprKind};
 use luanalysis_engine::{FxHashMap as HashMap, FxHashSet as HashSet};
 
@@ -66,8 +66,8 @@ fn one_allocator_separates_same_index_function_and_named_generic_owners() {
         NativeTypeContext::NamedType(alias)
     );
     assert_eq!(
-        types.resolve_name(Some(function), "T"),
-        Some(Type::NativeTypeParameter(function_parameters[0]))
+        types.resolve_name_in_context(Some(NativeTypeContext::Function(function)), "T"),
+        TypeNameResolution::Parameter(function_parameters[0])
     );
     assert_eq!(
         types.resolve_name_in_context(Some(NativeTypeContext::NamedType(alias)), "T"),
@@ -163,14 +163,11 @@ fn named_annotation_dependencies_capture_only_used_original_parent_parameters() 
         scopes(&named),
     );
     let inside = named.declaration(named.candidates("Inside")[0]).unwrap();
-    let luanalysis_syntax::NamedTypeDeclarationKind::Alias { target } = &inside.syntax.kind else {
-        panic!("alias")
-    };
-    let mut used = HashSet::default();
     let owner = NativeTypeContext::NamedType(inside.key);
-    types.annotation_dependencies_in_context(Some(owner), target, &mut used);
     let function_parameters = types.own_parameters(function_key);
-    assert_eq!(used, HashSet::from_iter([function_parameters[0]]));
+    // The alias names `T` of the enclosing function; `U` is visible but unused.
+    assert_eq!(types.resolve_name_in_context(Some(owner), "T"), TypeNameResolution::Parameter(function_parameters[0]));
+    let used = HashSet::from_iter([function_parameters[0]]);
     assert_eq!(
         types.outer_parameters_in_context(owner, &used),
         vec![function_parameters[0]]

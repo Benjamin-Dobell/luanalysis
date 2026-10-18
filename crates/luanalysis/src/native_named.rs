@@ -1,7 +1,7 @@
 //! Immutable source recipes for named declarations. This module indexes Lua
 //! origins/owners only; the native core resolves alias heads, cycles, members,
 //! inheritance, instantiation and relations. It does not manufacture TS nodes.
-use super::bind::{BindingId, BoundFile, ScopeId};
+use super::bind::{BindingId, BoundFile};
 use luanalysis_engine::NativeFunctionKey;
 use luanalysis_syntax::{
     Expr, ExprKind, FieldDeclaration, Function, GenericParameter, Name, NamedTypeDeclaration,
@@ -49,6 +49,16 @@ pub(super) enum AnonymousHeadKind {
     Table,
 }
 
+/// The kind of anonymous type head `ty` is, when it is one: a record, an array or a `table<K, V>`.
+pub(super) fn anonymous_head_kind(ty: &TypeExpr) -> Option<AnonymousHeadKind> {
+    match &ty.kind {
+        TypeExprKind::Record(_) => Some(AnonymousHeadKind::Record),
+        TypeExprKind::Array { .. } => Some(AnonymousHeadKind::Array),
+        TypeExprKind::Generic { base, .. } if base.text == "table" => Some(AnonymousHeadKind::Table),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum AnonymousHeadOrigin {
     Named(NativeNamedKey),
@@ -67,7 +77,6 @@ pub(super) struct AnonymousHeadUse {
 #[derive(Clone, Debug)]
 pub(super) struct AnonymousHeadSource {
     pub key: NativeAnonymousHeadKey,
-    pub kind: AnonymousHeadKind,
     /// The exact unexpanded node, including array element or table arguments.
     pub syntax: TypeExpr,
     pub lexical_context: Option<NativeTypeContext>,
@@ -89,7 +98,6 @@ pub(super) enum AnonymousMemberKeyRecipe {
 
 #[derive(Clone, Debug)]
 pub(super) struct AnonymousMemberSource {
-    pub key: NativeAnonymousMemberKey,
     pub owner: NativeAnonymousHeadKey,
     pub key_recipe: AnonymousMemberKeyRecipe,
     pub ty: TypeExpr,
@@ -105,8 +113,6 @@ pub(super) enum NativeTypeContext {
 
 #[derive(Clone, Debug)]
 pub(super) struct NamedGenericParameterRecipe {
-    pub owner: NativeTypeContext,
-    pub order: u32,
     pub name: Name,
     pub constraint: Option<TypeExpr>,
 }
@@ -125,7 +131,6 @@ pub(super) struct NamedGenericScopeRecipe {
 pub(super) struct NamedDeclarationSource {
     pub key: NativeNamedKey,
     pub syntax: NamedTypeDeclaration,
-    pub scope: Option<ScopeId>,
     pub generic_scope: NamedGenericScopeRecipe,
     pub members: Vec<NativeNamedMemberKey>,
     pub documentation_contexts: Vec<NativeNamedKey>,
@@ -139,7 +144,6 @@ pub(super) enum NamedMemberOwner {
     Reference {
         name: Name,
         candidates: Vec<NativeNamedKey>,
-        augmentation: NativeAugmentationKey,
     },
 }
 
@@ -164,7 +168,6 @@ pub(super) struct RuntimeFieldAnnotationSource {
 pub(super) struct AugmentationSource {
     pub key: NativeAugmentationKey,
     pub syntax: TypeExtension,
-    pub scope: Option<ScopeId>,
     pub lexical_context: Option<NativeTypeContext>,
     pub candidates: Vec<NativeNamedKey>,
     pub members: Vec<NativeNamedMemberKey>,
@@ -175,14 +178,13 @@ pub(super) struct AugmentationSource {
 pub(super) enum RuntimeAttachmentKind {
     Local { bindings: Vec<BindingId> },
     Assignment { targets: Vec<Expr> },
-    LocalFunction { binding: BindingId },
-    NamedFunction { target: Expr },
+    LocalFunction,
+    NamedFunction,
     Other,
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct RuntimeAttachment {
-    pub span: Span,
     pub kind: RuntimeAttachmentKind,
     pub declarations: Vec<NativeNamedKey>,
     pub augmentations: Vec<NativeAugmentationKey>,
@@ -266,7 +268,6 @@ impl NativeNamed {
             result.declarations.push(NamedDeclarationSource {
                 key,
                 syntax: declaration.clone(),
-                scope: bound.scope_at(declaration.name.span.start),
                 generic_scope: named_scope(key, parent, &declaration.generics),
                 members: Vec::new(),
                 documentation_contexts: Vec::new(),
@@ -320,7 +321,6 @@ impl NativeNamed {
                     NamedMemberOwner::Reference {
                         name: extension.owner.clone(),
                         candidates: candidates.clone(),
-                        augmentation: key,
                     },
                     field.clone(),
                     lexical_context,
@@ -330,7 +330,6 @@ impl NativeNamed {
             result.augmentations.push(AugmentationSource {
                 key,
                 syntax: extension.clone(),
-                scope: bound.scope_at(extension.span.start),
                 lexical_context,
                 candidates,
                 members,
@@ -566,15 +565,7 @@ impl NativeNamed {
         for root in roots {
             let mut pending = vec![&root.ty];
             while let Some(ty) = pending.pop() {
-                let kind = match &ty.kind {
-                    TypeExprKind::Record(_) => Some(AnonymousHeadKind::Record),
-                    TypeExprKind::Array { .. } => Some(AnonymousHeadKind::Array),
-                    TypeExprKind::Generic { base, .. } if base.text == "table" => {
-                        Some(AnonymousHeadKind::Table)
-                    }
-                    _ => None,
-                };
-                if let Some(kind) = kind {
+                if anonymous_head_kind(ty).is_some() {
                     if let Some(key) = self.anonymous_key_at(ty.span) {
                         let head = &mut self.anonymous_heads
                             [(key.index as usize) - self.declarations.len()];
@@ -602,7 +593,6 @@ impl NativeNamed {
                         // are annotations, never resolved member/alias types.
                         self.anonymous_heads.push(AnonymousHeadSource {
                             key,
-                            kind,
                             syntax: ty.clone(),
                             lexical_context: root.context,
                             documentation_contexts: root.documentation_contexts.clone(),
@@ -697,7 +687,6 @@ impl NativeNamed {
                 .expect("anonymous member index fits u32"),
         };
         self.anonymous_members.push(AnonymousMemberSource {
-            key,
             owner,
             key_recipe,
             ty,
@@ -785,22 +774,8 @@ impl NativeNamed {
             .then(|| self.members.get(key.index as usize))
             .flatten()
     }
-    pub(super) fn augmentation(&self, key: NativeAugmentationKey) -> Option<&AugmentationSource> {
-        (key.snapshot == self.snapshot)
-            .then(|| self.augmentations.get(key.index as usize))
-            .flatten()
-    }
     pub(super) fn attachment(&self, span: Span) -> Option<&RuntimeAttachment> {
         self.attachments.get(&(span.start, span.end))
-    }
-    pub(super) fn generic_scope(
-        &self,
-        owner: NativeTypeContext,
-    ) -> Option<&NamedGenericScopeRecipe> {
-        let NativeTypeContext::NamedType(key) = owner else {
-            return None;
-        };
-        self.declaration(key).map(|source| &source.generic_scope)
     }
 }
 
@@ -815,10 +790,7 @@ fn named_scope(
         parent,
         parameters: parameters
             .iter()
-            .enumerate()
-            .map(|(order, parameter)| NamedGenericParameterRecipe {
-                owner,
-                order: order.try_into().expect("parameter order fits u32"),
+            .map(|parameter| NamedGenericParameterRecipe {
                 name: parameter.name.clone(),
                 constraint: parameter.constraint.clone(),
             })
@@ -856,18 +828,14 @@ fn runtime_attachment(
         StmtKind::Assign { targets, .. } => RuntimeAttachmentKind::Assignment {
             targets: targets.clone(),
         },
-        StmtKind::LocalFunction { name, .. } => RuntimeAttachmentKind::LocalFunction {
-            binding: bound
-                .binding_at(name.span.start)
-                .ok_or(NamedRegistryError::MissingAttachmentBinding(name.span))?,
-        },
-        StmtKind::FunctionDeclaration { target, .. } => RuntimeAttachmentKind::NamedFunction {
-            target: *target.clone(),
-        },
+        StmtKind::LocalFunction { name, .. } => {
+            bound.binding_at(name.span.start).ok_or(NamedRegistryError::MissingAttachmentBinding(name.span))?;
+            RuntimeAttachmentKind::LocalFunction
+        }
+        StmtKind::FunctionDeclaration { .. } => RuntimeAttachmentKind::NamedFunction,
         _ => RuntimeAttachmentKind::Other,
     };
     Ok(RuntimeAttachment {
-        span: statement.span,
         kind,
         declarations: Vec::new(),
         augmentations: Vec::new(),

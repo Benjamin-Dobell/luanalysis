@@ -211,7 +211,7 @@ fn import_descriptors(
     // A written table type's literal types are regular, as TypeScript's written literal types
     // are: inference keeps `table<"a" | "b", V>`'s keys rather than widening them to string. A
     // table constructor's are fresh.
-    let mut written = |checker: &mut Checker<'_, '_>, ty: &Type| {
+    let written = |checker: &mut Checker<'_, '_>, ty: &Type| {
         let ty = import_type(checker, handles, ty);
         if table.fresh { ty } else { checker.regular(ty) }
     };

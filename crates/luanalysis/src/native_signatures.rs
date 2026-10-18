@@ -1087,10 +1087,7 @@ impl NativeSignatures {
                     .generics
                     .iter()
                     .chain(recipe.documentation.and_then(|id|file.function_declarations.iter().find(|doc|doc.id==id)).into_iter().flat_map(|doc|doc.annotations.generics.iter()))
-                    .enumerate()
-                    .map(|(index, generic)| NamedGenericParameterRecipe {
-                        owner: NativeTypeContext::Signature(recipe.key),
-                        order: index as u32,
+                    .map(|generic| NamedGenericParameterRecipe {
                         name: generic.name.clone(),
                         constraint: generic.constraint.clone(),
                     })

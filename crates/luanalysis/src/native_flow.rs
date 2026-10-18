@@ -283,6 +283,7 @@ impl NativeFlowSources {
         self.loader_address_invalidates_with_capability(address, self.original_require_capability)
     }
 
+    #[cfg(test)]
     pub(super) fn new(
         file: &File,
         bound: &super::bind::BoundFile,
@@ -681,15 +682,6 @@ impl NativeFlowSources {
         let flow::NodeKind::Write { value: flow::ValueDemand::Evaluation(initializer), declaration: true, .. } = &self.program.node(*write).kind else { return None; };
         Some(self.program.evaluation(*initializer))
     }
-
-    /// A binding owned by `region` that no original store writes, such as an
-    /// unassigned parameter: it holds its entry value throughout that body.
-    pub(super) fn unwritten_binding_of(&self, binding: BindingId, region: u32) -> bool {
-        self.binding_owners.get(&binding) == Some(&region)
-            && self.write_metadata.exact.get(&flow::Reference { root: flow::ReferenceRoot::Binding(binding), path: Vec::new() }).is_none_or(Vec::is_empty)
-    }
-
-    pub(super) fn graph_entry(&self, region: u32) -> flow::FlowId { self.program.graphs[region as usize].entry }
 
     /// What original stores in this source may replace through the environment
     /// or a local alias of it (`environment_candidate_paths`): `bind::STANDARD_NAMES`

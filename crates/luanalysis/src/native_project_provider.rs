@@ -515,6 +515,7 @@ impl ProjectRegistry {
 
     /// Explicit scheduled sources have their own tasks. This task follows only
     /// proven dependencies outside that plan, including transitive discoveries.
+    #[cfg(test)]
     pub(crate) fn check_scheduled_roots(
         &self,
         queries: &mut dyn TypeQueries,

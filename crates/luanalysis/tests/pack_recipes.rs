@@ -1,3 +1,5 @@
+// The module is compiled alone to test its pack recipes; the checker uses the rest of it.
+#[allow(dead_code)]
 #[path = "../src/native_packs.rs"]
 mod native_packs;
 

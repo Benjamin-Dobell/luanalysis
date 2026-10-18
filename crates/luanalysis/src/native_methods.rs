@@ -15,7 +15,6 @@ pub(super) struct MethodSource {
     pub target: Expr,
     pub receiver: Expr,
     pub member: LuaKey,
-    pub colon: Option<Span>,
     /// Named member declaration syntax, distinct from assigning a function value.
     pub declaration: bool,
     pub implicit_receiver: Option<BindingId>,
@@ -241,14 +240,14 @@ impl NativeMethods {
                 StmtKind::FunctionDeclaration {
                     target,
                     function,
-                    method_span,
-                } => self.record(target, function, *method_span, true, spans, bound, owners, declaration_owners, contextual_owners),
+                    ..
+                } => self.record(target, function, true, spans, bound, owners, declaration_owners, contextual_owners),
                 StmtKind::Assign {
                     targets, values, annotation,
                 } if targets.len() == values.len() => {
                     for (index, (target, value)) in targets.iter().zip(values).enumerate() {
                         if let Some(function) = function_literal(value) {
-                            self.record(target, function, None, false, spans, bound, owners, declaration_owners, contextual_owners);
+                            self.record(target, function, false, spans, bound, owners, declaration_owners, contextual_owners);
                         } else if let Some((receiver, key)) = fixed_member_target(target)
                             && let Some(owner) = self.class_owner(receiver, bound, owners)
                         {
@@ -287,7 +286,6 @@ impl NativeMethods {
         &mut self,
         target: &Expr,
         function: &Function,
-        colon: Option<Span>,
         declaration: bool,
         spans: &HashMap<(usize, usize), u32>,
         bound: &BoundFile,
@@ -316,7 +314,6 @@ impl NativeMethods {
             target: target.clone(),
             receiver: receiver.clone(),
             member,
-            colon,
             declaration,
             implicit_receiver: bound.implicit_receiver(function.span),
             class_owner,
@@ -504,7 +501,6 @@ mod tests {
             "---@class DifferentName\nlocal object={}\nfunction object:method(value) return self end",
         );
         let method = native.methods.sources().next().unwrap();
-        assert!(method.colon.is_some());
         assert!(method.implicit_receiver.is_some());
         assert!(method.class_owner.is_some());
         assert_eq!(native.function(method.function).params.len(), 1);

@@ -32,9 +32,7 @@ pub(super) enum WrittenTableContext {
 pub(super) struct RuntimeTableConstructor {
     pub key: NativeExpressionKey,
     pub owner: Option<NativeFunctionKey>,
-    pub evaluation: flow::EvaluationId,
     pub input: NativeFlowKey,
-    pub completed: NativeFlowKey,
     pub span: Span,
     pub fields: Vec<TableField>,
     /// Only syntactically attached contracts are indexed here. A constructor
@@ -57,22 +55,10 @@ pub(super) enum RuntimeTableStoreKey {
 #[derive(Clone, Debug)]
 pub(super) struct RuntimeTableStore {
     pub key: NativeFlowKey,
-    pub predecessors: Vec<NativeFlowKey>,
-    pub target: NativeExpressionKey,
     pub receiver: NativeExpressionKey,
-    pub receiver_evaluation: flow::EvaluationId,
-    pub receiver_value: NativeValueKey,
-    pub receiver_input: NativeFlowKey,
     pub member: RuntimeTableStoreKey,
-    /// Retained even for a literal bracket key, because its evaluation remains
-    /// part of the original assignment's frozen address and evaluation order.
-    pub key_evaluation: Option<flow::EvaluationId>,
-    pub key_value: Option<NativeValueKey>,
     pub value: NativeValueKey,
-    pub transaction: flow::AssignmentId,
     pub epoch: NativeFlowKey,
-    pub store_order: u32,
-    pub declaration: bool,
     pub span: Span,
     pub statement_end: usize,
     pub annotation: Option<(TypeAnnotation, usize)>,
@@ -203,9 +189,7 @@ impl NativeRuntimeTables {
             constructors.push(RuntimeTableConstructor {
                 key,
                 owner: source.owner,
-                evaluation: evaluation.id,
                 input: sources.flow_key(evaluation.input, 0),
-                completed: sources.flow_key(evaluation.completed, 0),
                 span,
                 fields: fields.clone(),
                 written_contexts: contexts.remove(&(span.start, span.end)).unwrap_or_default(),
@@ -219,8 +203,7 @@ impl NativeRuntimeTables {
                 let flow::NodeKind::Write {
                     address,
                     value: _,
-                    store_order,
-                    declaration,
+                    ..
                 } = &node.kind
                 else {
                     continue;
@@ -258,26 +241,12 @@ impl NativeRuntimeTables {
                 target_stores.insert((address.span.start, address.span.end), stores.len());
                 stores.push(RuntimeTableStore {
                     key,
-                    predecessors: node
-                        .antecedents
-                        .iter()
-                        .map(|&node| sources.flow_key(node, 0))
-                        .collect(),
-                    target: expressions.key_for_span(address.span),
                     receiver: expressions.key_for_span(receiver_expression.span),
-                    receiver_evaluation: receiver_id,
-                    receiver_value: sources.evaluation_value(receiver_id),
-                    receiver_input: sources.flow_key(receiver.input, 0),
                     member,
-                    key_evaluation: address.key,
-                    key_value: address.key.map(|key| sources.evaluation_value(key)),
                     value: sources
                         .write_value(node)
                         .expect("every original write has a value recipe"),
-                    transaction: address.transaction,
                     epoch: sources.flow_key(address.epoch, 0),
-                    store_order: *store_order,
-                    declaration: *declaration,
                     span: address.span,
                     statement_end: address.statement_end,
                     annotation: annotations
@@ -298,6 +267,7 @@ impl NativeRuntimeTables {
             bases: None,
         }
     }
+    #[cfg(test)]
     pub(super) fn constructors(&self) -> &[RuntimeTableConstructor] {
         &self.constructors
     }
@@ -339,14 +309,15 @@ impl NativeRuntimeTables {
         let (candidate, constructor) = self.schema_keys.get(key.index.checked_sub(base)? as usize)?;
         (*candidate == key).then(|| self.constructor(*constructor)).flatten()
     }
+    #[cfg(test)]
+    pub(super) fn schemas(&self) -> impl Iterator<Item = NativeTypeDeclarationKey> + '_ {
+        self.schema_keys.iter().map(|(key, _)| *key)
+    }
     pub(super) fn schema_key(
         &self,
         constructor: NativeExpressionKey,
     ) -> Option<NativeTypeDeclarationKey> {
         self.schema_indices.get(&constructor).map(|&index| self.schema_keys[index].0)
-    }
-    pub(super) fn schemas(&self) -> impl Iterator<Item = NativeTypeDeclarationKey> + '_ {
-        self.schema_keys.iter().map(|(key, _)| *key)
     }
     pub(super) fn member(&self, key: NativeTypeMemberKey) -> Option<&RuntimeTableStore> {
         self.member_store_index(key).map(|index| &self.stores[index])
@@ -360,9 +331,6 @@ impl NativeRuntimeTables {
     /// Each member key with the index of its original store.
     pub(super) fn members_with_stores(&self) -> impl Iterator<Item = (NativeTypeMemberKey, usize)> + '_ {
         self.member_keys.iter().copied().enumerate().map(|(index, key)| (key, index))
-    }
-    pub(super) fn members(&self) -> impl Iterator<Item = NativeTypeMemberKey> + '_ {
-        self.member_keys.iter().copied()
     }
     pub(super) fn constructor(&self, key: NativeExpressionKey) -> Option<&RuntimeTableConstructor> {
         self.constructor_indices
@@ -511,7 +479,6 @@ mod tests {
             ),
             "object"
         );
-        assert_ne!(old.receiver_value, new.receiver_value);
         let tag = &tables.stores()[3];
         let Some(crate::native_flow::ValueRecipe::Evaluation(evaluation)) =
             registry.iterator_sources().value(tag.value)
@@ -533,22 +500,22 @@ mod tests {
         let (registry, tables) = indexed(source);
         assert_eq!(tables.stores().len(), 1);
         let store = &tables.stores()[0];
-        // Lua's right-to-left commit order is retained from the original graph.
-        assert_eq!(store.store_order, 0);
         let flow = registry.iterator_sources();
         let node = flow.source_node(store.key).unwrap();
-        let flow::NodeKind::Write { address, .. } = &node.kind else {
+        let flow::NodeKind::Write { address, store_order, .. } = &node.kind else {
             panic!("write")
         };
-        assert_eq!(store.receiver_evaluation, address.receiver.unwrap());
+        // Lua's right-to-left commit order is retained from the original graph.
+        assert_eq!(*store_order, 0);
+        let receiver_input = flow.program.evaluation(address.receiver.unwrap()).input.index;
         let transaction_nodes: Vec<_> = flow.program.graphs[store.key.graph.region as usize].nodes.iter().filter(|node| {
-            matches!(&node.kind, flow::NodeKind::Write { address, .. } if address.transaction == store.transaction)
+            matches!(&node.kind, flow::NodeKind::Write { address: other, .. } if other.transaction == address.transaction)
         }).collect();
         assert_eq!(transaction_nodes.len(), 2);
-        assert!(store.receiver_input.node < transaction_nodes[0].id.index);
-        assert!(store.epoch.node <= store.receiver_input.node);
+        assert!(receiver_input < transaction_nodes[0].id.index);
+        assert!(store.epoch.node <= receiver_input);
         assert_eq!(tables.constructors().len(), 2);
-        assert!(tables.constructors()[1].input.node >= store.receiver_input.node);
+        assert!(tables.constructors()[1].input.node >= receiver_input);
     }
 
     #[test]
@@ -565,11 +532,9 @@ mod tests {
             text(source, registry.expressions().get(key).expression.span),
             "key"
         );
-        assert!(
-            stores
-                .iter()
-                .all(|store| store.key_evaluation.is_some() && store.key_value.is_some())
-        );
+        let flow = registry.iterator_sources();
+        assert!(stores.iter().all(|store| matches!(&flow.source_node(store.key).unwrap().kind,
+            flow::NodeKind::Write { address, .. } if address.key.is_some())));
         assert_eq!(
             stores[1].member,
             RuntimeTableStoreKey::Fixed(LuaKey::Integer(1))

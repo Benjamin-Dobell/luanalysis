@@ -74,20 +74,11 @@ fn named_generic_owners_are_not_manufactured_function_identities() {
     let named =
         registry("---@alias Alias<T:string,T:number> T\n---@shape Record<T>\n---@field value T");
     let alias = named.candidates("Alias")[0];
-    let scope = named
-        .generic_scope(NativeTypeContext::NamedType(alias))
-        .unwrap();
+    let scope = &named.declaration(alias).unwrap().generic_scope;
     assert_eq!(scope.owner, NativeTypeContext::NamedType(alias));
     assert_eq!(scope.parent, None);
     assert_eq!(scope.parameters.len(), 2);
-    assert_eq!(scope.parameters[0].order, 0);
-    assert_eq!(scope.parameters[1].order, 1);
-    assert!(
-        scope
-            .parameters
-            .iter()
-            .all(|parameter| parameter.name.text == "T" && parameter.owner == scope.owner)
-    );
+    assert!(scope.parameters.iter().all(|parameter| parameter.name.text == "T"));
     assert!(
         matches!(&scope.parameters[0].constraint.as_ref().unwrap().kind,TypeExprKind::Named(name) if name=="string")
     );
@@ -96,7 +87,6 @@ fn named_generic_owners_are_not_manufactured_function_identities() {
         index: alias.index,
     });
     assert_ne!(scope.owner, function);
-    assert!(named.generic_scope(function).is_none());
 }
 
 #[test]
@@ -146,7 +136,7 @@ fn augmentations_retain_all_forward_owner_candidates_without_declaring_them() {
     assert_eq!(owner.candidates.len(), 2);
     let member = named.member(owner.members[0]).unwrap();
     assert!(
-        matches!(&member.owner,NamedMemberOwner::Reference {name,candidates,augmentation} if name.text=="Owner"&&candidates.len()==2&&*augmentation==owner.key)
+        matches!(&member.owner,NamedMemberOwner::Reference {name,candidates} if name.text=="Owner"&&candidates.len()==2)
     );
     let alias = &named.augmentations()[1];
     assert_eq!(alias.candidates, named.candidates("Alias"));
@@ -154,7 +144,7 @@ fn augmentations_retain_all_forward_owner_candidates_without_declaring_them() {
     assert_eq!(alias.candidates.len(), 1);
     assert!(named.augmentations()[2].candidates.is_empty());
     assert!(named.candidates("Missing").is_empty());
-    assert_eq!(named.augmentation(owner.key).unwrap().key, owner.key);
+    assert_eq!(named.augmentations().iter().filter(|augmentation| augmentation.key == owner.key).count(), 1);
 }
 
 #[test]
@@ -214,7 +204,6 @@ fn enclosing_function_context_uses_original_spans_not_following_attachment() {
         inner.generic_scope.owner,
         NativeTypeContext::NamedType(inner.key)
     );
-    assert!(inner.scope.is_some());
 }
 
 #[test]
@@ -330,7 +319,7 @@ fn anonymous_recursive_heads_follow_named_keys_without_expanding_references() {
         assert_eq!(head.members.len(), 1);
     }
     let record = &named.anonymous_heads()[0];
-    assert_eq!(record.kind, AnonymousHeadKind::Record);
+    assert_eq!(anonymous_head_kind(&record.syntax), Some(AnonymousHeadKind::Record));
     let field = named.anonymous_member(record.members[0]).unwrap();
     assert_eq!(field.owner, record.key);
     assert!(
@@ -341,7 +330,7 @@ fn anonymous_recursive_heads_follow_named_keys_without_expanding_references() {
     );
     assert_eq!(&source[field.ty.span.start..field.ty.span.end], "Node|nil");
     let array = &named.anonymous_heads()[1];
-    assert_eq!(array.kind, AnonymousHeadKind::Array);
+    assert_eq!(anonymous_head_kind(&array.syntax), Some(AnonymousHeadKind::Array));
     let element = named.anonymous_member(array.members[0]).unwrap();
     assert!(matches!(
         element.key_recipe,
@@ -349,7 +338,7 @@ fn anonymous_recursive_heads_follow_named_keys_without_expanding_references() {
     ));
     assert!(matches!(&element.ty.kind,TypeExprKind::Named(name) if name=="Node"));
     let table = &named.anonymous_heads()[2];
-    assert_eq!(table.kind, AnonymousHeadKind::Table);
+    assert_eq!(anonymous_head_kind(&table.syntax), Some(AnonymousHeadKind::Table));
     let entry = named.anonymous_member(table.members[0]).unwrap();
     assert!(
         matches!(&entry.key_recipe,AnonymousMemberKeyRecipe::Table(ty) if matches!(&ty.kind,TypeExprKind::Named(name) if name=="string"))
@@ -382,8 +371,8 @@ fn nested_head_and_member_namespaces_preserve_generic_declaration_space() {
     let original_field = named.anonymous_member(record.members[0]).unwrap();
     let nested = named.anonymous_key_at(original_field.ty.span).unwrap();
     assert_eq!(
-        named.anonymous_head(nested).unwrap().kind,
-        AnonymousHeadKind::Array
+        anonymous_head_kind(&named.anonymous_head(nested).unwrap().syntax),
+        Some(AnonymousHeadKind::Array)
     );
     assert!(
         named
@@ -444,7 +433,7 @@ fn ambiguous_documentation_contexts_and_malformed_containers_remain_raw() {
     assert_eq!(named.augmentations()[0].documentation_contexts, contexts);
     assert!(named.augmentations()[0].candidates.is_empty());
     let head = &named.anonymous_heads()[0];
-    assert_eq!(head.kind, AnonymousHeadKind::Table);
+    assert_eq!(anonymous_head_kind(&head.syntax), Some(AnonymousHeadKind::Table));
     assert!(matches!(&head.syntax.kind,TypeExprKind::Generic{args,..} if args.len()==1));
     assert!(head.members.is_empty()); // No missing value recipe is fabricated.
     assert_eq!(head.documentation_contexts, contexts);

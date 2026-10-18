@@ -113,6 +113,7 @@ impl NativeMembers {
     pub(super) fn applied_members(&self) -> impl Iterator<Item = NativeTypeMemberKey> + '_ {
         self.sources.iter().filter(|source|source.candidates[0].owner_application.is_some()).map(|source|source.key)
     }
+    #[cfg(test)]
     pub(super) fn sources(&self) -> &[OriginalMemberSource] { &self.sources }
     pub(super) fn namespace_end(&self) -> u32 { self.base.checked_add(self.sources.len().try_into().expect("original member count fits u32")).expect("original member namespace fits u32") }
     pub(super) fn inputs(&self) -> &[OriginalMemberInput] { &self.inputs }
