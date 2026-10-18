@@ -55,6 +55,29 @@ pub struct CompletionSite {
     /// Whether the word is a value that may have an expected type: an argument, an assigned
     /// value, a table constructor's field, a returned value, or an operand of `and` or `or`.
     pub value: bool,
+    /// Which completions' types and documentation to describe.
+    pub details: Details,
+}
+
+/// Which completions' `detail` (their type) and documentation to compute: every one's; none, as
+/// an editor resolves them for the item it shows, which spares typing every name in scope; or
+/// one's, by its label, when the editor resolves it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Details {
+    #[default]
+    All,
+    Lazy,
+    Only(String),
+}
+
+impl Details {
+    fn shown(&self, label: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Lazy => false,
+            Self::Only(only) => only == label,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,7 +134,7 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
     if bytes.get(start).is_some_and(u8::is_ascii_digit) { return None; }
     let tokens = luanalysis_syntax::lex(text).tokens;
     if let Some(context) = annotation_context(text, &tokens, start, offset) {
-        return Some(CompletionSite { context, text: text.to_owned(), placeholder: Span { start, end: start }, word: start..end, statement: false, parameters_follow: false, value: false });
+        return Some(CompletionSite { context, text: text.to_owned(), placeholder: Span { start, end: start }, word: start..end, statement: false, parameters_follow: false, value: false, details: Details::All });
     }
     for token in &tokens {
         let inside = match &token.kind {
@@ -173,6 +196,7 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
         statement,
         parameters_follow,
         value,
+        details: Details::All,
     })
 }
 
@@ -314,12 +338,14 @@ fn completions(
                     (true, true) => CompletionKind::Method,
                     (true, false) => CompletionKind::Function,
                 };
+                let shown = site.details.shown(&name);
                 let documentation = receiver_type.as_ref()
                     .and_then(|receiver| member_documentation(project, registry, receiver, &name, &value, queries));
                 let deprecated = documentation.as_ref().is_some_and(|documentation| documentation.deprecated.is_some());
-                let documentation = documentation.map(|documentation| documentation_markdown(&documentation, true));
+                let documentation = documentation.filter(|_| shown).map(|documentation| documentation_markdown(&documentation, true));
                 let parameters = callable.then(|| required_parameters(&value, usize::from(method), queries)).flatten();
-                items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters, implementation: None, deprecated });
+                let detail = shown.then(|| describe_native(&value, queries, &mut Vec::new()));
+                items.push(CompletionItem { label: name, kind, detail, documentation, parameters, implementation: None, deprecated });
             }
         }
         CompletionContext::FunctionName => items.extend(callback_implementations(project, registry, file, site, false, queries)),
@@ -357,19 +383,21 @@ fn completions(
             let bound = source.bound();
             for binding in visible_bindings(bound, site.placeholder.start) {
                 let declaration = bound.declaration(binding);
-                let detail = source.resolve_binding(binding, queries)
-                    .map(|binding| describe_native(&binding.constraint, queries, &mut Vec::new()));
+                let shown = site.details.shown(&declaration.name);
                 let kind = match declaration.kind {
                     bind::DeclarationKind::LocalFunction => CompletionKind::Function,
                     _ => CompletionKind::Variable,
                 };
+                // A local's type is computed only to describe it, or for a function's call.
+                let value = (shown || kind == CompletionKind::Function)
+                    .then(|| source.resolve_binding(binding, queries)).flatten()
+                    .map(|binding| binding.constraint);
+                let detail = value.as_ref().filter(|_| shown).map(|value| describe_native(value, queries, &mut Vec::new()));
                 let documentation = binding_documentation(project, registry, file, binding);
                 let deprecated = documentation.as_ref().is_some_and(|documentation| documentation.deprecated.is_some());
-                let documentation = documentation.map(|documentation| documentation_markdown(&documentation, true));
-                let parameters = (kind == CompletionKind::Function).then(|| {
-                    let value = source.resolve_binding(binding, queries)?.constraint;
-                    required_parameters(&value, 0, queries)
-                }).flatten();
+                let documentation = documentation.filter(|_| shown).map(|documentation| documentation_markdown(&documentation, true));
+                let parameters = value.filter(|_| kind == CompletionKind::Function)
+                    .and_then(|value| required_parameters(&value, 0, queries));
                 items.push(CompletionItem { label: declaration.name.clone(), kind, detail, documentation, parameters, implementation: None, deprecated });
             }
             if let Some(environment) = source.global_environment()
@@ -377,15 +405,19 @@ fn completions(
             {
                 for (name, value) in queries.type_members(&environment) {
                     if !is_identifier(&name) || items.iter().any(|item| item.label == name) { continue; }
+                    let shown = site.details.shown(&name);
                     let kind = if queries.call_signature_types(&value).is_empty() { CompletionKind::Variable } else { CompletionKind::Function };
                     let documentation = global_documentation(project, registry, &name)
-                        .or_else(|| value_documentation(project, registry, &value, queries));
+                        .or_else(|| shown.then(|| value_documentation(project, registry, &value, queries)).flatten());
                     let deprecated = documentation.as_ref().is_some_and(|documentation| documentation.deprecated.is_some());
-                    let documentation = documentation.map(|documentation| documentation_markdown(&documentation, true));
+                    let documentation = documentation.filter(|_| shown).map(|documentation| documentation_markdown(&documentation, true));
                     let parameters = (kind == CompletionKind::Function).then(|| required_parameters(&value, 0, queries)).flatten();
-                    items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters, implementation: None, deprecated });
+                    let detail = shown.then(|| describe_native(&value, queries, &mut Vec::new()));
+                    items.push(CompletionItem { label: name, kind, detail, documentation, parameters, implementation: None, deprecated });
                 }
             }
+            // Resolving one name's details needs none of what follows.
+            if let Details::Only(_) = site.details { return items; }
             // A statement of its own may begin a callback's implementation.
             if site.statement { items.extend(callback_implementations(project, registry, file, site, true, queries)); }
             // A value may be expected to be a function or one of some literals.

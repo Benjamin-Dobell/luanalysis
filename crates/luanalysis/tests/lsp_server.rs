@@ -1106,3 +1106,39 @@ fn opening_documents_warms_queries_without_answering_anything() {
     assert!(server.child.wait().unwrap().success());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn completion_details_are_resolved_for_the_item_shown() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let text = "--- How many there are.\n---@deprecated Use total.\nlocal count = 1\n---@param by number\nlocal function grow(by) return by end\n\n";
+    fs::write(&main, text).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    // A client that resolves an item's detail and documentation gets a list without them.
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":"{}","capabilities":{{"textDocument":{{"completion":{{"completionItem":{{"snippetSupport":true,"tagSupport":{{"valueSet":[1]}},"resolveSupport":{{"properties":["documentation","detail"]}}}}}}}}}}}}}}"#, uri(&root)));
+    let initialized = server.wait(|message| message.contains(r#""id":1"#));
+    assert!(initialized.contains(r#""resolveProvider":true"#), "{initialized}");
+    server.send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
+    server.open(&main, text);
+    server.diagnostics(&main, |_| true);
+    let list = server.request(2, "textDocument/completion", &main, 5, 0);
+    let item = |label: &str| {
+        let start = list.find(&format!(r#"{{"label":"{label}""#)).unwrap_or_else(|| panic!("{label}: {list}"));
+        let mut depth = 0;
+        let end = start + list[start..].char_indices().find(|&(_, c)| { depth += match c { '{' => 1, '}' => -1, _ => 0 }; depth == 0 }).unwrap().0 + 1;
+        list[start..end].to_owned()
+    };
+    let count = item("count");
+    assert!(!count.contains(r#""detail""#) && !count.contains(r#""documentation""#), "{count}");
+    // What the list needs stays: the deprecation tag, and a function's call.
+    assert!(count.contains(r#""tags":[1]"#) && count.contains(r#""data":{"uri""#), "{count}");
+    assert!(item("grow").contains(r#""newText":"grow(${1:by})$0""#), "{list}");
+    // Resolving the item fills its details in.
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":3,"method":"completionItem/resolve","params":{count}}}"#));
+    let resolved = server.wait(|message| message.contains(r#""id":3,"#));
+    assert!(resolved.contains(r#""label":"count""#) && resolved.contains(r#""detail":"number""#), "{resolved}");
+    assert!(resolved.contains("**Deprecated:** Use total.") && resolved.contains("How many there are."), "{resolved}");
+    assert!(resolved.contains(r#""tags":[1]"#) && !resolved.contains(r#""data""#), "{resolved}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}

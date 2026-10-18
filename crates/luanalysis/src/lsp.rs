@@ -208,6 +208,8 @@ enum Deprecation {
 }
 
 enum Site {
+    /// The details of a completion item the editor shows, which the list left out.
+    Resolve(CompletionSite, Json),
     /// Loads the project and prepares its sources for the queries that follow, with a newly
     /// opened document's text, so the first of them does not wait for that. It has no answer.
     Warm(String),
@@ -281,6 +283,7 @@ impl Query {
     fn text(&self) -> &str {
         match &self.site {
             Site::Warm(text) => text,
+            Site::Resolve(site, _) => &site.text,
             Site::Completion(site) => &site.text,
             Site::Signature(site) => &site.text,
             Site::Hover(site) => &site.text,
@@ -299,6 +302,7 @@ impl Query {
             Site::Hints(site) => Json::Array(site.types.clone()),
             Site::Actions(site) => Json::Array(site.actions.clone()),
             Site::Hierarchy(_) | Site::Warm(_) => Json::Null,
+            Site::Resolve(_, item) => item.clone(),
             // Without documentation, a hover still has the last check's type.
             Site::Hover(site) => match &site.ty {
                 None => Json::Null,
@@ -338,6 +342,9 @@ struct Server {
     encoding: Encoding,
     /// Whether the client inserts completion snippets.
     snippets: bool,
+    /// Whether the client resolves completion items' details for the item it shows, so a list
+    /// can leave them out.
+    resolves_details: bool,
     deprecation: Deprecation,
     initialized: bool,
     shutdown: bool,
@@ -379,6 +386,7 @@ impl Server {
             queries: None,
             encoding: Encoding::Utf16,
             snippets: false,
+            resolves_details: false,
             deprecation: Deprecation::None,
             initialized: false,
             shutdown: false,
@@ -491,6 +499,7 @@ impl Server {
                 }
             }
             "textDocument/completion" => self.completion(id, params),
+            "completionItem/resolve" => self.resolve_completion(id, params),
             "textDocument/documentSymbol" => {
                 let result = self.document_symbols(params);
                 self.respond(id, result);
@@ -704,6 +713,8 @@ impl Server {
         self.encoding = if encodings.iter().any(|encoding| encoding.as_str() == Some("utf-8")) { Encoding::Utf8 } else { Encoding::Utf16 };
         self.snippets = params.path(&["capabilities", "textDocument", "completion", "completionItem", "snippetSupport"]) == Some(&Json::Bool(true));
         let item = params.path(&["capabilities", "textDocument", "completion", "completionItem"]);
+        let resolvable = item.and_then(|item| item.path(&["resolveSupport", "properties"])).and_then(Json::as_array).unwrap_or(&[]);
+        self.resolves_details = ["detail", "documentation"].iter().all(|property| resolvable.iter().any(|resolvable| resolvable.as_str() == Some(property)));
         self.deprecation = if item.and_then(|item| item.path(&["tagSupport", "valueSet"])).and_then(Json::as_array)
             .is_some_and(|tags| tags.iter().any(|tag| tag.as_u64() == Some(1)))
         {
@@ -769,6 +780,7 @@ impl Server {
                 ("renameProvider", Json::object([("prepareProvider", Json::from(true))])),
                 ("completionProvider", Json::object([
                     ("triggerCharacters", Json::Array(vec![Json::from("."), Json::from(":"), Json::from("@")])),
+                    ("resolveProvider", Json::from(true)),
                 ])),
                 ("signatureHelpProvider", Json::object([
                     ("triggerCharacters", Json::Array(vec![Json::from("("), Json::from(",")])),
@@ -921,8 +933,24 @@ impl Server {
         let line = params.path(&["position", "line"]).and_then(Json::as_u64).unwrap_or(0) as usize;
         let character = params.path(&["position", "character"]).and_then(Json::as_u64).unwrap_or(0) as usize;
         let offset = lines.offset(line, character, self.encoding);
-        let Some(site) = language_service::completion_site(&lines.text, offset) else { return self.respond(id, empty) };
+        let Some(mut site) = language_service::completion_site(&lines.text, offset) else { return self.respond(id, empty) };
+        if self.resolves_details { site.details = language_service::Details::Lazy; }
         self.query(id, path, Site::Completion(site), lines);
+    }
+
+    /// The details of a completion item the list left out: its type and documentation, from
+    /// the document's current text where its word begins.
+    fn resolve_completion(&mut self, id: Json, item: &Json) {
+        let data = item.get("data");
+        let path = data.and_then(|data| data.get("uri")).and_then(Json::as_str).and_then(uri_to_path);
+        let offset = data.and_then(|data| data.get("offset")).and_then(Json::as_u64);
+        let label = item.get("label").and_then(Json::as_str);
+        let (Some(path), Some(offset), Some(label)) = (path, offset, label) else { return self.respond(id, item.clone()) };
+        let Some(document) = self.documents.get(&path) else { return self.respond(id, item.clone()) };
+        let lines = LineIndex::new(document.text.clone());
+        let Some(mut site) = language_service::completion_site(&lines.text, offset as usize) else { return self.respond(id, item.clone()) };
+        site.details = language_service::Details::Only(label.to_owned());
+        self.query(id, path, Site::Resolve(site, item.clone()), lines);
     }
 
     /// The outline of a document's current text.
@@ -1392,6 +1420,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 });
             };
             let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &query.site {
+                Site::Resolve(site, item) => resolve(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, item, &mut |result| answer(Ok(result))),
                 Site::Warm(_) => {
                     if let Some(project) = load(&inputs, &mut workspace, &mut loaded, &query) {
                         language_service::prepare(project, options.clone(), &mut workspace);
@@ -1503,6 +1532,13 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
         if matches!(item.kind, CompletionKind::Snippet | CompletionKind::Value) {
             fields.push(("sortText".to_owned(), Json::from(format!("0{index:04}"))));
         }
+        // Details left out for the editor to resolve, from where the word begins.
+        if item.detail.is_none() && item.documentation.is_none() && site.details == language_service::Details::Lazy {
+            fields.push(("data".to_owned(), Json::object([
+                ("uri", Json::from(path_to_uri(&query.path))),
+                ("offset", Json::from(site.word.start)),
+            ])));
+        }
         if let Some(detail) = item.detail { fields.push(("detail".to_owned(), Json::from(detail))); }
         if item.deprecated {
             match query.deprecation {
@@ -1516,6 +1552,22 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
         }
         Json::Object(fields)
     }).collect()))])));
+}
+
+/// A completion `item` with its details, of the completion of its label at `site`.
+fn resolve(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &CompletionSite, item: &Json, answer: &mut (dyn FnMut(Json) + Send)) {
+    let Some(project) = load(inputs, workspace, loaded, query) else { return };
+    let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
+    let label = item.get("label").and_then(Json::as_str).unwrap_or_default().to_owned();
+    language_service::complete(project, options, workspace, file, site, |items| {
+        let Json::Object(mut fields) = item.clone() else { return answer(item.clone()) };
+        if let Some(found) = items.into_iter().find(|found| found.label == label) {
+            fields.retain(|(name, _)| name != "detail" && name != "documentation" && name != "data");
+            if let Some(detail) = found.detail { fields.push(("detail".to_owned(), Json::from(detail))); }
+            if let Some(documentation) = found.documentation { fields.push(("documentation".to_owned(), markdown(documentation))); }
+        }
+        answer(Json::Object(fields));
+    });
 }
 
 fn signatures(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &SignatureSite, answer: &mut (dyn FnMut(Json) + Send)) {
