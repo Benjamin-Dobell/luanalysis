@@ -237,6 +237,31 @@ impl NativeFlowSources {
         Arc::make_mut(&mut self.recipes).original_require_capability = enabled;
     }
     pub(super) fn has_original_require_capability(&self) -> bool { self.original_require_capability }
+    fn declaration_value(&self, binding: BindingId) -> Option<&luanalysis_syntax::Expr> {
+        let write = self.declaration_write(binding)?;
+        let flow::NodeKind::Write { value, .. } = &write.kind else { return None };
+        let evaluation = match value {
+            flow::ValueDemand::Evaluation(evaluation) | flow::ValueDemand::PackElement { evaluation, index: 0 } => *evaluation,
+            _ => return None,
+        };
+        let mut expression = &self.program.expression(self.program.evaluation(evaluation).expression).expression;
+        while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
+        Some(expression)
+    }
+    /// Whether `binding` is declared with a table constructor (`local t = {}`).
+    pub(super) fn initialized_by_table(&self, binding: BindingId) -> bool {
+        self.declaration_value(binding).is_some_and(|value| matches!(value.kind, ExprKind::Table(_)))
+    }
+    /// Whether `binding` saves a standard operation (`local saved = require`), whose capability
+    /// the native standard-value queries follow.
+    pub(super) fn initialized_by_standard_name(&self, binding: BindingId) -> bool {
+        self.declaration_value(binding).is_some_and(|value| match &value.kind {
+            ExprKind::Name(name) => crate::bind::STANDARD_NAMES.contains(&name.text.as_str()),
+            // A module (`local m = require 'm'`) is never narrowed; its import has no flow to follow.
+            ExprKind::Call { callee, .. } => matches!(&callee.kind, ExprKind::Name(name) if name.text == "require"),
+            _ => false,
+        })
+    }
     pub(super) fn set_require_needs_declaration(&mut self, needed: bool) {
         if self.require_needs_declaration == needed { return; }
         Arc::make_mut(&mut self.recipes).require_needs_declaration = needed;
@@ -1881,8 +1906,12 @@ impl NativeFlowProvider for FlowAdapter<'_> {
             // A captured written contract may request the native creation
             // bridge; its owner/write/last-position guards remain authoritative.
             // Inferred runtime objects keep their existing continuation path.
-            flow::ReferenceRoot::Binding(binding) if source.path.is_empty() => self.values.binding_has_written_contract(binding)
-                && self.sources.binding_owners.get(&binding).is_some_and(|&owner| owner != reference.graph.region),
+            // As TypeScript 5.4 keeps narrowing in closures created after a variable's last
+            // assignment, an inferred local does too. A table built by assignments enters a
+            // closure with every stored field instead.
+            flow::ReferenceRoot::Binding(binding) if source.path.is_empty() => self.sources.binding_owners.get(&binding).is_some_and(|&owner| owner != reference.graph.region)
+                && (self.values.binding_has_written_contract(binding)
+                    || !self.sources.initialized_by_table(binding) && !self.sources.initialized_by_standard_name(binding)),
             _ => false,
         }
     }

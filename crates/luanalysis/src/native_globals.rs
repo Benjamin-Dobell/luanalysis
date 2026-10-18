@@ -935,7 +935,7 @@ mod standard_callable_pending_tests {
 /// The statements nested in `statement`: the bodies of its blocks, loops, branches and named
 /// functions, at any depth. Function expressions are visited from their own sources.
 fn nested_statements<'a>(statement: &'a Stmt, result: &mut Vec<&'a Stmt>) {
-    let mut visit = |body: &'a [Stmt], result: &mut Vec<&'a Stmt>| {
+    let visit = |body: &'a [Stmt], result: &mut Vec<&'a Stmt>| {
         for statement in body {
             result.push(statement);
             nested_statements(statement, result);
