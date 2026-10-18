@@ -353,8 +353,10 @@ luanalysis lsp --lua-version 5.4
 
 runs a language server over stdio, for any editor with a language server client. It accepts the
 options of `check`, and without paths it checks the editor's workspace. It provides diagnostics
-as you type, hover types, go to definition, find references, rename, completion and inspections.
-Definitions, references and renames follow globals across files, including `_G.name`.
+as you type, hover types, go to definition, find references, rename, completion, signature help
+and inspections. Definitions, references and renames follow globals across files, including
+`_G.name`. Signature help shows each overload of the call being typed, highlights the argument's
+parameter, and selects the overload that the arguments typed so far resolve to.
 
 ## Library
 

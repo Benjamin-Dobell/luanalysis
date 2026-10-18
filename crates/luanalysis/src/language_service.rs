@@ -296,6 +296,226 @@ fn is_identifier(name: &str) -> bool {
         && name != PLACEHOLDER
 }
 
+/// Where signature help was requested: in the argument list of a call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignatureSite {
+    /// The editor's text, repaired to parse if it does not.
+    pub text: String,
+    /// The call's `(`, at the same offset in the editor's text and in `text`.
+    pub open: usize,
+    /// The argument the cursor is in, counted from 0.
+    pub argument: usize,
+}
+
+/// A signature of the callee, with each parameter's place in its label.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignatureInformation {
+    /// `name(a: number, b?: string): boolean`.
+    pub label: String,
+    /// Each parameter's byte range in `label`.
+    pub parameters: Vec<Range<usize>>,
+    /// The parameter the cursor's argument is for; a rest parameter takes every argument after
+    /// the others.
+    pub active_parameter: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignatureHelp {
+    pub signatures: Vec<SignatureInformation>,
+    /// The overload that the arguments before the cursor select.
+    pub active_signature: usize,
+    /// The parameter of the active signature that the cursor's argument is for.
+    pub active_parameter: usize,
+}
+
+/// The call whose arguments surround a byte offset of `text`, or `None` outside one, in a
+/// comment or a string, or in a function's parameter list.
+pub fn signature_site(text: &str, offset: usize) -> Option<SignatureSite> {
+    let offset = floor_char_boundary(text, offset);
+    let head = &text[..offset];
+    let tokens = luanalysis_syntax::lex(head).tokens;
+    // A comment or a string still open at the cursor is a token that ends there, unclosed.
+    let inside = tokens.iter().any(|token| token.span.end == offset && match &token.kind {
+        TokenKind::Comment(comment) => comment.kind != CommentKind::Long || !head[token.span.start..].ends_with(']'),
+        TokenKind::String(_) => !closed_string(&head[token.span.start..]),
+        _ => false,
+    });
+    if inside { return None; }
+    let significant: Vec<_> = tokens.iter()
+        .filter(|token| !matches!(token.kind, TokenKind::Newline | TokenKind::Comment(_) | TokenKind::Eof))
+        .collect();
+    // Open brackets, each with the commas directly inside it.
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    for (index, token) in significant.iter().enumerate() {
+        let TokenKind::Symbol(symbol) = &token.kind else { continue };
+        match symbol.as_str() {
+            "(" | "{" | "[" => open.push((index, 0)),
+            ")" | "}" | "]" => { open.pop(); }
+            "," => if let Some((_, commas)) = open.last_mut() { *commas += 1; },
+            _ => {}
+        }
+    }
+    let &(index, argument) = open.iter().rev().find(|&&(index, _)| {
+        matches!(&significant[index].kind, TokenKind::Symbol(symbol) if symbol == "(") && is_call_paren(&significant, index)
+    })?;
+    let paren = significant[index].span.start;
+    let tail = &text[offset..];
+    let mut candidates = vec![text.to_owned(), format!("{head}{PLACEHOLDER}{tail}")];
+    for argument in ["", PLACEHOLDER] {
+        let prefix = format!("{head}{argument}");
+        let closers = closers(&prefix);
+        candidates.push(prefix + &closers);
+    }
+    let text = candidates.into_iter().find(|candidate| !luanalysis_syntax::parse(candidate).has_lua_syntax_errors())?;
+    Some(SignatureSite { text, open: paren, argument })
+}
+
+/// Whether a string token is closed, as `"text"` is and `"text` is not.
+fn closed_string(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    match bytes.first() {
+        Some(&quote @ (b'"' | b'\'')) => {
+            bytes.len() >= 2 && bytes[bytes.len() - 1] == quote
+                && bytes[1..bytes.len() - 1].iter().rev().take_while(|&&byte| byte == b'\\').count() % 2 == 0
+        }
+        _ => token.ends_with(']'),
+    }
+}
+
+/// Whether the `(` at `index` opens a call's arguments, not a parenthesized expression or a
+/// function's parameters.
+fn is_call_paren(tokens: &[&luanalysis_syntax::Token], index: usize) -> bool {
+    let Some(previous) = index.checked_sub(1).map(|index| &tokens[index].kind) else { return false };
+    let callee = match previous {
+        TokenKind::Identifier(_) | TokenKind::String(_) => true,
+        TokenKind::Symbol(symbol) => symbol == ")" || symbol == "]" || symbol == "}",
+        _ => false,
+    };
+    if !callee { return false; }
+    // `function name.path:method(` and `function(` declare parameters.
+    let mut cursor = index;
+    while cursor > 0 && matches!(&tokens[cursor - 1].kind, TokenKind::Identifier(_))
+        || cursor > 1 && matches!(&tokens[cursor - 1].kind, TokenKind::Symbol(symbol) if symbol == "." || symbol == ":")
+            && matches!(&tokens[cursor - 2].kind, TokenKind::Identifier(_))
+    {
+        cursor -= 1;
+    }
+    !(cursor > 0 && matches!(&tokens[cursor - 1].kind, TokenKind::Keyword(keyword) if keyword == "function"))
+}
+
+/// Signature help for the call at `site` in `file`, whose text in `project` is `site.text`.
+pub fn signature_help(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    site: &SignatureSite,
+    deliver: impl FnOnce(Option<SignatureHelp>) + Send,
+) {
+    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
+        deliver(signatures(registry, file, site, queries));
+    });
+}
+
+fn signatures(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    site: &SignatureSite,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<SignatureHelp> {
+    let source = registry.source(file)?;
+    registry.prepare_documentation_members(queries);
+    let text = &site.text;
+    let opens_at = |end: usize| text.get(end..site.open).is_some_and(|between| between.trim().is_empty());
+    // The innermost call whose arguments open at the site's `(`.
+    let mut call: Option<(Span, Expr)> = None;
+    crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| {
+        let found = match &expression.kind {
+            ExprKind::Call { callee, .. } => opens_at(callee.span.end),
+            ExprKind::MethodCall { name, .. } => opens_at(name.span.end),
+            _ => false,
+        };
+        if found && call.as_ref().is_none_or(|(span, _)| expression.span.end - expression.span.start < span.end - span.start) {
+            call = Some((expression.span, expression.clone()));
+        }
+    });
+    let (_, call) = call?;
+    let (callee, name, receiver, arguments) = match &call.kind {
+        ExprKind::Call { callee, args } => (expression_type(registry, file, callee.span, queries)?, &text[callee.span.start..callee.span.end], None, args),
+        ExprKind::MethodCall { receiver, name, args } => {
+            let receiver_type = expression_type(registry, file, receiver.span, queries)?;
+            let receiver_type = queries.exclude_type(&receiver_type, &Type::Nil);
+            let member = queries.type_members(&receiver_type).into_iter().find(|(member, _)| *member == name.text)?.1;
+            (member, &text[receiver.span.start..name.span.end], Some(receiver_type), args)
+        }
+        _ => return None,
+    };
+    let heads = queries.call_signature_types(&callee);
+    if heads.is_empty() { return None; }
+    // A method call passes its receiver as the first argument, which the signatures leave out.
+    let hidden = usize::from(receiver.is_some());
+    let name = if name.len() > 80 { "function" } else { name };
+    let mut signatures = Vec::new();
+    let mut shapes = Vec::new();
+    for head in &heads {
+        let Some((parameters, returns)) = crate::describe_signature(head, queries) else { continue };
+        let shown = parameters.get(hidden..).unwrap_or_default();
+        let mut label = format!("{name}(");
+        let mut ranges = Vec::new();
+        for (index, parameter) in shown.iter().enumerate() {
+            if index > 0 { label.push_str(", "); }
+            ranges.push(label.len()..label.len() + parameter.len());
+            label.push_str(parameter);
+        }
+        label.push_str("): ");
+        label.push_str(&returns);
+        let rest = shown.last().is_some_and(|parameter| parameter.starts_with("..."));
+        let active_parameter = if rest { site.argument.min(shown.len() - 1) } else { site.argument };
+        shapes.push((head.clone(), shown.len(), rest));
+        signatures.push(SignatureInformation { label, parameters: ranges, active_parameter });
+    }
+    if signatures.is_empty() { return None; }
+    // The overload that the complete arguments before the cursor's select: the first whose
+    // call with them fails only for want of more arguments, as TypeScript resolves a call
+    // while it is being typed. Failing that, the first that takes the cursor's argument.
+    let mut given: Vec<Type> = receiver.into_iter().collect();
+    for argument in arguments.iter().take(site.argument) {
+        given.push(expression_type(registry, file, argument.span, queries).unwrap_or(Type::Any));
+    }
+    let takes = |&(_, count, rest): &(Type, usize, bool)| rest || site.argument < count;
+    let applicable = |queries: &mut dyn luanalysis_engine::TypeQueries, head: &Type| {
+        queries.call(head, &given).errors.iter().all(|error| match error {
+            luanalysis_engine::CallError::Arity { actual, minimum, .. } => actual < minimum,
+            luanalysis_engine::CallError::Argument { .. } | luanalysis_engine::CallError::NotCallable => false,
+            luanalysis_engine::CallError::PackArity { .. } | luanalysis_engine::CallError::TypeArgument { .. }
+                | luanalysis_engine::CallError::TypeArgumentArity { .. } => false,
+            _ => true,
+        })
+    };
+    let active_signature = (0..shapes.len()).find(|&index| takes(&shapes[index]) && applicable(queries, &shapes[index].0))
+        .or_else(|| shapes.iter().position(takes))
+        .unwrap_or(0);
+    let active_parameter = signatures[active_signature].active_parameter;
+    Some(SignatureHelp { signatures, active_signature, active_parameter })
+}
+
+/// The type of the expression at `span`, at its flow position, or as it is checked in the frames
+/// that check it when it has no type alone (a callback's parameter).
+fn expression_type(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    span: Span,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<Type> {
+    let source = registry.source(file)?;
+    let alone = source.source_check_expression(source.expression_key_for_span(span), None, NativeCheckMode::empty(), queries);
+    if !matches!(alone, Type::Any | Type::Unknown) { return Some(alone); }
+    source.probe_expression(span);
+    registry.check_owned_roots(queries, &[file]);
+    source.probed_types().into_iter().next().or(Some(alone))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +555,39 @@ mod tests {
         for text in ["-- player.|", "local text = 'pla|'", "local n = 1.|5", "local pla|", "local function na|", "for i|"] {
             assert!(site(text).is_none(), "{text}");
         }
+    }
+
+    fn call(text: &str) -> Option<(usize, usize, String)> {
+        let offset = text.find('|').expect("a cursor");
+        let text = text.replacen('|', "", 1);
+        signature_site(&text, offset).map(|site| (site.open, site.argument, site.text))
+    }
+
+    #[test]
+    fn the_argument_is_counted_by_the_commas_of_the_innermost_call() {
+        assert_eq!(call("print(|)").map(|(open, argument, _)| (open, argument)), Some((5, 0)));
+        assert_eq!(call("print(a, |b)").map(|(open, argument, _)| (open, argument)), Some((5, 1)));
+        // Commas inside a table constructor or a nested call belong to them.
+        assert_eq!(call("f(a, { x = 1, y = 2 }, |").map(|(open, argument, _)| (open, argument)), Some((1, 2)));
+        assert_eq!(call("f(g(1, 2), |").map(|(open, argument, _)| (open, argument)), Some((1, 1)));
+        assert_eq!(call("f(1, g(|").map(|(open, argument, _)| (open, argument)), Some((6, 0)));
+        assert_eq!(call("object:method(1, |").map(|(open, argument, _)| (open, argument)), Some((13, 1)));
+        assert_eq!(call("f({ a = |").map(|(open, argument, _)| (open, argument)), Some((1, 0)));
+    }
+
+    #[test]
+    fn an_incomplete_argument_list_is_repaired_to_parse() {
+        assert_eq!(call("local x = f(1, |").unwrap().2, format!("local x = f(1, {PLACEHOLDER})"));
+        assert_eq!(call("f(1, |)\nlocal y = 2\n").unwrap().2, format!("f(1, {PLACEHOLDER})\nlocal y = 2\n"));
+        assert_eq!(call("if f(|").unwrap().2, "if f() then end");
+    }
+
+    #[test]
+    fn parameter_lists_parentheses_strings_and_comments_are_not_calls() {
+        for text in ["local function f(|", "function M.f(a, |", "function M:f(|", "local g = function(|", "local x = (|", "f('a, |", "f(1) -- f(|", "f(1) --[[ g(| ]]"] {
+            assert!(call(text).is_none(), "{text}");
+        }
+        assert!(call("f('a', |").is_some());
     }
 
     #[test]

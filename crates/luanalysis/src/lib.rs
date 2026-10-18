@@ -1550,6 +1550,45 @@ fn describe_native_function(
     stack: &mut Vec<Type>,
     diagnostic: bool,
 ) -> String {
+    let (parameters, returns) = describe_native_function_parts(function, original, engine, stack, diagnostic);
+    format!("fun({}): {}", parameters.join(", "), returns)
+}
+
+/// A signature's parameters (`name: type`, `name?: type`, `...: type`) and its results, as a
+/// `fun(...)` type prints them, for signature help.
+pub(crate) fn describe_signature(head: &Type, engine: &mut dyn TypeQueries) -> Option<(Vec<String>, String)> {
+    let mut stack = Vec::new();
+    let mut ty = head.clone();
+    // As `describe_native_at_precedence` prints a callable: a native handle through its one
+    // call signature, a session type through its inspected function.
+    for _ in 0..8 {
+        match &ty {
+            Type::Function(function) => return Some(describe_native_function_parts(function, None, engine, &mut stack, false)),
+            Type::SessionType(_) => {
+                let inspected = engine.inspect_type(&ty);
+                if let Type::Function(function) = &inspected {
+                    return Some(describe_native_function_parts(function, Some(&ty), engine, &mut stack, false));
+                }
+                if inspected == ty { return None; }
+                ty = inspected;
+            }
+            Type::NativeFunction(_) | Type::NativeSignature(_) => match engine.call_signature_types(&ty).as_slice() {
+                [single] if *single != ty => ty = single.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn describe_native_function_parts(
+    function: &luanalysis_engine::FunctionType,
+    original: Option<&Type>,
+    engine: &mut dyn TypeQueries,
+    stack: &mut Vec<Type>,
+    diagnostic: bool,
+) -> (Vec<String>, String) {
     let rest = original.and_then(|ty| engine.signature_rest_pack(ty));
     let fixed = function
         .params
@@ -1591,7 +1630,7 @@ fn describe_native_function(
         .and_then(|ty| engine.function_result_pack(ty))
         .map(|pack| describe_native_pack(&pack, engine, stack, diagnostic))
         .unwrap_or_else(|| describe_native_mode(&function.returns, engine, stack, diagnostic));
-    format!("fun({}): {}", parameters.join(", "), returns)
+    (parameters, returns)
 }
 
 fn describe_native_pack(

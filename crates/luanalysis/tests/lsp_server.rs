@@ -396,3 +396,45 @@ fn completions_include_declared_fields_and_functions_of_a_library_class() {
     assert!(response.contains(r#""label":"getName""#), "{response}");
     server.finish();
 }
+
+#[test]
+fn signature_help_selects_the_overload_the_arguments_typed_so_far_resolve() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "---@overload fun(name: string): string\n---@overload fun(count: number, label: string): number\n---@param value string | number\n---@param label? string\n---@return string | number\nlocal function describe(value, label) return value end\n\n---@class Counter\nlocal Counter = {}\n\n---@param step number\n---@return number\nfunction Counter:add(step) return step end\n\nlocal total = 0\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    let mut version = 1;
+    let mut help = |server: &mut Server, line: &str, id: u32| {
+        version += 1;
+        let text = format!("{source}{}\n", line.replace('|', ""));
+        server.change(&main, version, &text);
+        // The cursor is on the line after the source.
+        let row = source.matches('\n').count() as u32;
+        server.request(id, "textDocument/signatureHelp", &main, row, line.find('|').unwrap() as u32)
+    };
+    // With nothing typed, the first overload applies; a number selects the second.
+    let response = help(&mut server, "describe(|", 3);
+    assert!(response.contains(r#""label":"describe(name: string): string""#), "{response}");
+    assert!(response.contains(r#""label":"describe(count: number, label: string): number""#), "{response}");
+    assert!(response.contains(r#""activeSignature":0,"activeParameter":0"#), "{response}");
+    let response = help(&mut server, "describe(1, |", 4);
+    assert!(response.contains(r#""activeSignature":1,"activeParameter":1"#), "{response}");
+    assert!(response.contains(r#""parameters":[{"label":[9,22]},{"label":[24,37]}],"activeParameter":1"#), "{response}");
+    let response = help(&mut server, "describe(\"x\"|", 5);
+    assert!(response.contains(r#""activeSignature":0,"activeParameter":0"#), "{response}");
+    // A method call passes its receiver; the signature shows the arguments after it.
+    let response = help(&mut server, "Counter:add(|", 6);
+    assert!(response.contains(r#""label":"Counter:add(step: number): number""#), "{response}");
+    // A rest parameter takes every argument after the others.
+    let response = help(&mut server, "print(1, 2, |", 7);
+    assert!(response.contains(r#""label":"print(...: any): nil""#) || response.contains(r#""label":"print(...:"#), "{response}");
+    assert!(response.contains(r#""activeParameter":0"#), "{response}");
+    // Outside a call there is no signature.
+    let response = help(&mut server, "total = total + 1|", 8);
+    assert!(response.contains(r#""result":null"#), "{response}");
+    server.finish();
+}

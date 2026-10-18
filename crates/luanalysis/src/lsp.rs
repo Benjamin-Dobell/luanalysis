@@ -9,7 +9,7 @@ use crate::DiagnosticCategory;
 use crate::cli::CheckInputs;
 use crate::incremental::ProjectWorkspace;
 use crate::json::Json;
-use crate::language_service::{self, CompletionKind, CompletionSite};
+use crate::language_service::{self, CompletionKind, CompletionSite, SignatureSite};
 use crate::project_check::{ProjectCheckOptions, ProjectCheckReport};
 use crate::symbols::{SymbolIndex, SymbolOccurrence};
 use luanalysis_project::{DependencyOutcome, Project, ProjectLoadPlan, SourceOrigin};
@@ -173,17 +173,45 @@ struct Job {
     overlays: HashMap<PathBuf, String>,
 }
 
-/// A completion request, with the editor's buffers and the site in its document.
+/// A completion or signature help request, with the editor's buffers and the site in its
+/// document.
 struct Query {
     id: Json,
     path: PathBuf,
     overlays: HashMap<PathBuf, String>,
     /// The server's `disk_generation` when the query was made.
     disk: u64,
-    site: CompletionSite,
-    /// The document's text, which the site's word indexes.
+    site: Site,
+    /// The document's text, which the site indexes.
     lines: LineIndex,
     encoding: Encoding,
+}
+
+enum Site {
+    Completion(CompletionSite),
+    Signature(SignatureSite),
+}
+
+impl Query {
+    /// The text checked in place of the document's.
+    fn text(&self) -> &str {
+        match &self.site {
+            Site::Completion(site) => &site.text,
+            Site::Signature(site) => &site.text,
+        }
+    }
+
+    /// The answer when none is computed, such as for a query a newer one superseded.
+    fn unanswered(&self) -> Json {
+        match self.site {
+            Site::Completion(_) => Json::object([("isIncomplete", Json::from(true)), ("items", Json::Array(Vec::new()))]),
+            Site::Signature(_) => Json::Null,
+        }
+    }
+
+    fn same_kind(&self, other: &Query) -> bool {
+        matches!((&self.site, &other.site), (Site::Completion(_), Site::Completion(_)) | (Site::Signature(_), Site::Signature(_)))
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -317,6 +345,7 @@ impl Server {
                 self.respond(id, result);
             }
             "textDocument/completion" => self.completion(id, params),
+            "textDocument/signatureHelp" => self.signature_help(id, params),
             "textDocument/documentHighlight" => {
                 let result = self.highlights(params);
                 self.respond(id, result);
@@ -425,6 +454,10 @@ impl Server {
                 ("renameProvider", Json::object([("prepareProvider", Json::from(true))])),
                 ("completionProvider", Json::object([
                     ("triggerCharacters", Json::Array(vec![Json::from("."), Json::from(":")])),
+                ])),
+                ("signatureHelpProvider", Json::object([
+                    ("triggerCharacters", Json::Array(vec![Json::from("("), Json::from(",")])),
+                    ("retriggerCharacters", Json::Array(vec![Json::from(")")])),
                 ])),
             ])),
             ("serverInfo", Json::object([
@@ -546,12 +579,34 @@ impl Server {
         let character = params.path(&["position", "character"]).and_then(Json::as_u64).unwrap_or(0) as usize;
         let offset = lines.offset(line, character, self.encoding);
         let Some(site) = language_service::completion_site(&lines.text, offset) else { return self.respond(id, empty) };
+        self.query(id, path, Site::Completion(site), lines);
+    }
+
+    /// The signatures of the call the cursor is in, from the document's current text.
+    fn signature_help(&mut self, id: Json, params: &Json) {
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else {
+            return self.respond(id, Json::Null);
+        };
+        let Some(document) = self.documents.get(&path) else { return self.respond(id, Json::Null) };
+        let lines = LineIndex::new(document.text.clone());
+        let line = params.path(&["position", "line"]).and_then(Json::as_u64).unwrap_or(0) as usize;
+        let character = params.path(&["position", "character"]).and_then(Json::as_u64).unwrap_or(0) as usize;
+        let offset = lines.offset(line, character, self.encoding);
+        let Some(site) = language_service::signature_site(&lines.text, offset) else { return self.respond(id, Json::Null) };
+        self.query(id, path, Site::Signature(site), lines);
+    }
+
+    /// Answers a query on the query thread, with the editor's buffers and `site`'s text in place
+    /// of its document's.
+    fn query(&mut self, id: Json, path: PathBuf, site: Site, lines: LineIndex) {
         let mut overlays: HashMap<PathBuf, String> = self.documents.iter()
             .map(|(path, document)| (path.clone(), document.text.clone())).collect();
-        overlays.insert(path.clone(), site.text.clone());
-        let query = Query { id: id.clone(), path, overlays, disk: self.disk_generation, site, lines, encoding: self.encoding };
+        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), disk: self.disk_generation, site, lines, encoding: self.encoding };
+        overlays.insert(path, query.text().to_owned());
+        let query = Query { overlays, ..query };
+        let unanswered = query.unanswered();
         if self.queries.as_ref().is_none_or(|queries| queries.send(query).is_err()) {
-            self.respond(id, empty);
+            self.respond(id, unanswered);
         }
     }
 
@@ -682,29 +737,40 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
 fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>) {
     let mut workspace = ProjectWorkspace::new();
     let mut loaded = None;
-    let incomplete = |id: Json| Event::Answered(id, Json::object([("isIncomplete", Json::from(true)), ("items", Json::Array(Vec::new()))]));
-    while let Ok(mut query) = queries.recv() {
-        // A completion superseded by a newer one is answered as incomplete, unchecked.
-        while let Ok(newer) = queries.try_recv() {
-            if events.send(incomplete(std::mem::replace(&mut query, newer).id)).is_err() { return; }
-        }
-        let started = std::time::Instant::now();
-        let mut answered = false;
-        // The answer is sent as soon as it is known, before the session's state is dropped.
-        let mut answer = |items: Vec<Json>| {
-            answered = true;
-            if std::env::var_os("LUANALYSIS_PROFILE").is_some() {
-                eprintln!("luanalysis profile: completion={:.6}s", started.elapsed().as_secs_f64());
+    while let Ok(first) = queries.recv() {
+        let mut pending = vec![first];
+        while let Ok(newer) = queries.try_recv() { pending.push(newer); }
+        // Only the latest query of each kind is worth answering; one superseded by a newer one
+        // of its kind is answered unchecked.
+        let mut latest: Vec<Query> = Vec::new();
+        for query in pending.into_iter().rev() {
+            if latest.iter().any(|newer| newer.same_kind(&query)) {
+                if events.send(Event::Answered(query.id.clone(), query.unanswered())).is_err() { return; }
+            } else {
+                latest.push(query);
             }
-            let result = Json::object([("isIncomplete", Json::from(false)), ("items", Json::Array(items))]);
-            let _ = events.send(Event::Answered(query.id.clone(), result));
-        };
-        let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| complete(&inputs, options.clone(), &mut workspace, &mut loaded, &query, &mut answer)));
-        if completed.is_err() {
-            workspace = ProjectWorkspace::new();
-            loaded = None;
         }
-        if !answered && events.send(incomplete(query.id)).is_err() { return; }
+        for query in latest.into_iter().rev() {
+            let started = std::time::Instant::now();
+            let mut answered = false;
+            // The answer is sent as soon as it is known, before the session's state is dropped.
+            let mut answer = |result: Json| {
+                answered = true;
+                if std::env::var_os("LUANALYSIS_PROFILE").is_some() {
+                    eprintln!("luanalysis profile: query={:.6}s", started.elapsed().as_secs_f64());
+                }
+                let _ = events.send(Event::Answered(query.id.clone(), result));
+            };
+            let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &query.site {
+                Site::Completion(site) => complete(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
+                Site::Signature(site) => signatures(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
+            }));
+            if completed.is_err() {
+                workspace = ProjectWorkspace::new();
+                loaded = None;
+            }
+            if !answered && events.send(Event::Answered(query.id.clone(), query.unanswered())).is_err() { return; }
+        }
     }
 }
 
@@ -730,7 +796,7 @@ fn load(inputs: &CheckInputs, workspace: &mut ProjectWorkspace, loaded: &mut Opt
         && last.disk == query.disk && last.path == query.path && last.others == others
         && let Some(file) = last.project.file_by_path(&query.path).cloned()
     {
-        let edited = luanalysis_project::SourceFile { source: query.site.text.clone(), ..file };
+        let edited = luanalysis_project::SourceFile { source: query.text().to_owned(), ..file };
         let requests = workspace.static_require_requests(&edited);
         if last.project.replace_source(edited.id, edited.source, requests) {
             return Some(last.project.clone());
@@ -745,11 +811,11 @@ fn load(inputs: &CheckInputs, workspace: &mut ProjectWorkspace, loaded: &mut Opt
     Some(project)
 }
 
-fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, answer: &mut (dyn FnMut(Vec<Json>) + Send)) {
+fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &CompletionSite, answer: &mut (dyn FnMut(Json) + Send)) {
     let Some(project) = load(inputs, workspace, loaded, query) else { return };
     let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
-    let range = query.lines.range(query.site.word.start, query.site.word.end, query.encoding);
-    language_service::complete(project, options, workspace, file, &query.site, |items| answer(items.into_iter().map(|item| {
+    let range = query.lines.range(site.word.start, site.word.end, query.encoding);
+    language_service::complete(project, options, workspace, file, site, |items| answer(Json::object([("isIncomplete", Json::from(false)), ("items", Json::Array(items.into_iter().map(|item| {
         let mut fields = vec![
             ("label".to_owned(), Json::from(item.label.as_str())),
             ("kind".to_owned(), Json::from(match item.kind {
@@ -763,7 +829,31 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
         ];
         if let Some(detail) = item.detail { fields.push(("detail".to_owned(), Json::from(detail))); }
         Json::Object(fields)
-    }).collect()));
+    }).collect()))])));
+}
+
+fn signatures(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &SignatureSite, answer: &mut (dyn FnMut(Json) + Send)) {
+    let Some(project) = load(inputs, workspace, loaded, query) else { return };
+    let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
+    // Parameter ranges are offsets in their label, in the position encoding.
+    let offset = |label: &str, byte: usize| match query.encoding {
+        Encoding::Utf8 => byte,
+        Encoding::Utf16 => label[..byte].encode_utf16().count(),
+    };
+    language_service::signature_help(project, options, workspace, file, site, |help| answer(match help {
+        None => Json::Null,
+        Some(help) => Json::object([
+            ("signatures", Json::Array(help.signatures.iter().map(|signature| Json::object([
+                ("label", Json::from(signature.label.as_str())),
+                ("parameters", Json::Array(signature.parameters.iter().map(|range| Json::object([
+                    ("label", Json::Array(vec![Json::from(offset(&signature.label, range.start)), Json::from(offset(&signature.label, range.end))])),
+                ])).collect())),
+                ("activeParameter", Json::from(signature.active_parameter)),
+            ])).collect())),
+            ("activeSignature", Json::from(help.active_signature)),
+            ("activeParameter", Json::from(help.active_parameter)),
+        ]),
+    }));
 }
 
 fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, job: &Job) -> Result<ProjectCheckReport, String> {
