@@ -1,5 +1,5 @@
 //! CLI transport over owned original-source reports. No checker IDs escape.
-use crate::{location, project_check::ProjectCheckReport};
+use crate::project_check::ProjectCheckReport;
 use luanalysis_syntax::Span;
 use std::{collections::HashMap, ffi::OsString, fmt::Write, path::PathBuf};
 
@@ -136,10 +136,11 @@ impl CliReport {
                 .source(file.file)
                 .expect("report source belongs to this project");
             let path = paths.get(&source.path).unwrap_or(&source.path);
+            let lines = crate::LineIndex::new(&source.source);
             diagnostics.extend(file.report.diagnostics.iter().map(|error| Diagnostic {
                 host: HostDiagnostic::new(path, error.code, &error.message),
                 span: Some(error.span),
-                position: Some(location(&source.source, error.span)),
+                position: Some(lines.location(&source.source, error.span)),
             }));
             if dump {
                 bindings.extend(file.report.bindings.iter().map(|binding| Binding {
@@ -147,7 +148,7 @@ impl CliReport {
                     name: binding.name.clone(),
                     ty: binding.ty.clone(),
                     span: binding.span,
-                    position: location(&source.source, binding.span),
+                    position: lines.location(&source.source, binding.span),
                 }));
             }
         }

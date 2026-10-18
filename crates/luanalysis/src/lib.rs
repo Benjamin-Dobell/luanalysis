@@ -1657,6 +1657,53 @@ fn describe_native_pack(
         .join(" | ")
 }
 
+/// The starts of a source's lines, to place many spans in it without rescanning it for each.
+pub(crate) struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    pub(crate) fn new(source: &str) -> Self {
+        let bytes = source.as_bytes();
+        let mut starts = vec![0];
+        for (index, &byte) in bytes.iter().enumerate() {
+            match byte {
+                b'\r' if bytes.get(index + 1) != Some(&b'\n') => starts.push(index + 1),
+                b'\n' => starts.push(index + 1),
+                _ => {}
+            }
+        }
+        Self { starts }
+    }
+
+    /// `location`, by a binary search of the line starts.
+    pub(crate) fn location(&self, source: &str, span: Span) -> (usize, usize) {
+        let mut offset = span.start.min(source.len());
+        while !source.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let bytes = source.as_bytes();
+        let line = self.starts.partition_point(|&start| start <= offset);
+        // Between the halves of a CRLF, the CR has ended the line.
+        if offset > 0 && bytes[offset - 1] == b'\r' && bytes.get(offset) == Some(&b'\n') {
+            return (line + 1, 1);
+        }
+        let start = self.starts[line - 1];
+        (line, source[start..offset].chars().count() + 1)
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn a_line_index_places_every_offset_as_location_does() {
+    let source = "a\r\nbé\rc\n\nd\r\n\r\nλx";
+    let lines = LineIndex::new(source);
+    for start in 0..=source.len() + 2 {
+        let span = Span { start, end: start };
+        assert_eq!(lines.location(source, span), location(source, span), "offset {start}");
+    }
+}
+
 /// One-based original-source line and Unicode scalar column for CLI output.
 pub fn location(source: &str, span: Span) -> (usize, usize) {
     let mut offset = span.start.min(source.len());
