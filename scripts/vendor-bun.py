@@ -623,6 +623,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Report an incompatible override or base once and keep the class's declared shape for its uses, while its validation still fails, as TypeScript keeps such a class, through kernel 3bf26e1.",
 })
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_flow.rs",
+    "patch": "vendor/patches/bun-sema-generic-correlated-slots.patch",
+    "reason": "Keep a part of a correlated binding's view only if it relates to a type-variable slot by assignability, not comparability, as TypeScript does not compare undefined with an unconstrained parameter, through kernel ffe75c9.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

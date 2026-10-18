@@ -2442,6 +2442,12 @@
       "patch": "vendor/patches/bun-sema-usable-invalid-overrides.patch",
       "reason": "Report an incompatible override or base once and keep the class's declared shape for its uses, while its validation still fails, as TypeScript keeps such a class, through kernel 3bf26e1.",
       "patch_sha256": "f23683c9e1a8fddf4e8921ea9b0c6730a38ea60e4e06ccf1177d8bd08c7e5894"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-generic-correlated-slots.patch",
+      "reason": "Keep a part of a correlated binding's view only if it relates to a type-variable slot by assignability, not comparability, as TypeScript does not compare undefined with an unconstrained parameter, through kernel ffe75c9.",
+      "patch_sha256": "773d368d694b7b6036ef83f7712e11a77529c0b25c5876242a8af2279294efc7"
     }
   ],
   "source_additions": {
@@ -2462,7 +2468,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "1e6496d4aaf628229a622ee3bb59897b60a892e973cb9b511ea902b97c6e75b2",
+      "extracted_sha256": "39e6640261680834b3f29488506f6b82f71321a59faba3db1842b5ac2ab5c492",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
