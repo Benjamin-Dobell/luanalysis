@@ -6,14 +6,16 @@ use luanalysis_engine::{
     NativeExpressionKey, NativeFunctionCheckState, NativeFunctionKey, Parameter, Type, TypeQueries,
 };
 use luanalysis_syntax::{
-    BinaryOperator, Expr, ExprKind, File, Function, Span, Stmt, StmtKind, TableFieldKind,
+    BinaryOperator, Expr, ExprKind, File, Function, SharedExpr, Span, Stmt, StmtKind,
+    TableFieldKind,
 };
 use std::cell::RefCell;
 use crate::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
 pub(super) struct SourceExpression {
-    pub expression: Expr,
+    /// The expression in its file's shared tree, not a copy of its subtree.
+    pub expression: SharedExpr,
     pub owner: Option<NativeFunctionKey>,
     pub parent: Option<NativeExpressionKey>,
 }
@@ -22,6 +24,8 @@ pub(super) struct SourceExpression {
 /// source revision and shared by every session over it (`NativeExpressions` adds a session's state).
 pub(super) struct ExpressionRecipes {
     snapshot: u64,
+    /// The tree the expressions are in.
+    tree: std::sync::Arc<File>,
     expressions: Vec<SourceExpression>,
     spans: HashMap<(usize, usize), NativeExpressionKey>,
     functions: HashMap<(usize, usize), NativeFunctionKey>,
@@ -112,7 +116,7 @@ impl NativeExpressions {
             .collect()
     }
     pub(super) fn has_context_sensitive_parameters(&self, key: NativeExpressionKey) -> bool {
-        let mut expression = &self.get(key).expression;
+        let mut expression: &luanalysis_syntax::Expr = &self.get(key).expression;
         while let ExprKind::Parenthesized(inner) = &expression.kind {
             expression = inner;
         }
@@ -237,7 +241,7 @@ impl ExpressionRecipes {
         &self.expressions[key.node as usize]
     }
     pub(super) fn function_for(&self, key: NativeExpressionKey) -> Option<NativeFunctionKey> {
-        let mut expression = &self.get(key).expression;
+        let mut expression: &luanalysis_syntax::Expr = &self.get(key).expression;
         while let ExprKind::Parenthesized(inner) = &expression.kind {
             expression = inner;
         }
@@ -252,9 +256,10 @@ impl ExpressionRecipes {
     pub(super) fn contextual_function_for(&self, key: NativeExpressionKey) -> Option<NativeFunctionKey> {
         self.function_for(key).or_else(|| self.statement_functions.get(&key).copied())
     }
-    pub(super) fn new(snapshot: u64, file: &File, functions: &HashMap<(usize, usize), u32>) -> Self {
+    pub(super) fn new(snapshot: u64, file: &std::sync::Arc<File>, functions: &HashMap<(usize, usize), u32>) -> Self {
         let mut recipes = Self {
             snapshot,
+            tree: std::sync::Arc::clone(file),
             expressions: Vec::new(),
             spans: HashMap::default(),
             functions: functions.iter().map(|(span, index)| (*span, NativeFunctionKey { snapshot, index: *index })).collect(),
@@ -362,7 +367,8 @@ impl ExpressionRecipes {
         };
         self.spans.insert(span, key);
         self.expressions.push(SourceExpression {
-            expression: expression.clone(),
+            // SAFETY: the recipes index only the statements and expressions of `self.tree`.
+            expression: unsafe { SharedExpr::new(&self.tree, expression) },
             owner,
             parent,
         });

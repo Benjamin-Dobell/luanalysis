@@ -252,7 +252,7 @@ impl NativeFlowSources {
             flow::ValueDemand::Evaluation(evaluation) | flow::ValueDemand::PackElement { evaluation, index: 0 } => *evaluation,
             _ => return None,
         };
-        let mut expression = &self.program.expression(self.program.evaluation(evaluation).expression).expression;
+        let mut expression: &luanalysis_syntax::Expr = &self.program.expression(self.program.evaluation(evaluation).expression).expression;
         while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
         Some(expression)
     }
@@ -292,11 +292,11 @@ impl NativeFlowSources {
         native_snapshot: u64,
         functions: &HashMap<(usize, usize), u32>,
     ) -> Self {
-        Self::new_with_snapshot(file, bound, native_snapshot, functions, flow::allocate_snapshot())
+        Self::new_with_snapshot(&std::sync::Arc::new(file.clone()), bound, native_snapshot, functions, flow::allocate_snapshot())
     }
 
     pub(super) fn new_with_snapshot(
-        file: &File,
+        file: &std::sync::Arc<File>,
         bound: &super::bind::BoundFile,
         native_snapshot: u64,
         functions: &HashMap<(usize, usize), u32>,
@@ -736,7 +736,7 @@ impl NativeFlowSources {
         use luanalysis_engine::NativeLexicalStandard as Lexical;
         use super::bind::STANDARD_NAMES;
         let standard = |name: &[u8]| STANDARD_NAMES.iter().position(|standard| standard.as_bytes() == name);
-        let mut expression = &self.program.expression(self.program.evaluation(evaluation).expression).expression;
+        let mut expression: &luanalysis_syntax::Expr = &self.program.expression(self.program.evaluation(evaluation).expression).expression;
         loop {
             match &expression.kind {
                 ExprKind::Parenthesized(inner) => expression = inner,
@@ -1264,7 +1264,7 @@ impl NativeFlowSources {
         if !self.runtime_type_calls.contains(&call.expression) {
             return None;
         }
-        let mut literal = &self.program.expression(literal.expression).expression;
+        let mut literal: &luanalysis_syntax::Expr = &self.program.expression(literal.expression).expression;
         while let ExprKind::Parenthesized(inner) = &literal.kind {
             literal = inner;
         }
@@ -1943,7 +1943,7 @@ impl NativeFlowProvider for FlowAdapter<'_> {
     }
     fn value_literal_truthiness(&self, value: NativeValueKey) -> Option<bool> {
         let Some(ValueRecipe::Evaluation(evaluation)) = self.sources.value(value) else { return None; };
-        let mut expression = &self.sources.program.expression(self.sources.program.evaluation(*evaluation).expression).expression;
+        let mut expression: &luanalysis_syntax::Expr = &self.sources.program.expression(self.sources.program.evaluation(*evaluation).expression).expression;
         while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
         match &expression.kind {
             ExprKind::Nil => Some(false),

@@ -175,7 +175,7 @@ impl NativeRegistry {
         for source in self.named_metadata().declarations() {
             let Some(directive) = self.class_definition_directive(source).ok().flatten() else { continue };
             let root = self.expressions().get(self.expressions().key_for_span(directive.initializer));
-            let mut constructor = &root.expression;
+            let mut constructor: &luanalysis_syntax::Expr = &root.expression;
             while let ExprKind::Parenthesized(inner) = &constructor.kind { constructor = inner; }
             let ExprKind::Table(fields) = &constructor.kind else { continue };
             for field in fields {

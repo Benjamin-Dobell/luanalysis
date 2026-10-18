@@ -38,7 +38,7 @@ impl NativeRegistry {
         } else {
             let references: Vec<_> = recipe.values.iter().map(|value| {
                 let evaluation = sources.program.evaluation(*value);
-                let mut expression = &sources.program.expression(evaluation.expression).expression;
+                let mut expression: &luanalysis_syntax::Expr = &sources.program.expression(evaluation.expression).expression;
                 loop {
                     if !self.expression_assertions(expression.span).is_empty() { return None; }
                     match &expression.kind {

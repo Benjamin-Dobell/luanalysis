@@ -176,7 +176,7 @@ struct DerivedRecipes {
 }
 
 impl SourceRecipes {
-    fn new(file: &File, bound: &BoundFile, identity: project_provider::SourceRecipeIdentity) -> Self {
+    fn new(file: &std::sync::Arc<File>, bound: &BoundFile, identity: project_provider::SourceRecipeIdentity) -> Self {
         let snapshot = identity.source;
         let mut index = RegistryIndex {
             bound,
@@ -2443,7 +2443,7 @@ impl FlowValueQueries for NativeRegistry {
         if self.legacy_builtin_policy == super::builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility {
             let ValueRecipe::Evaluation(value) = value else { return false; };
             let expression = &self.flow.program.expression(self.flow.program.evaluation(*value).expression).expression;
-            let mut expression = expression;
+            let mut expression: &Expr = expression;
             while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
             return matches!(expression.kind, ExprKind::Name(_)) && self.bound.standard_candidate_at(expression.span.start) == Some(super::bind::BuiltinIntrinsic::LuaType);
         }

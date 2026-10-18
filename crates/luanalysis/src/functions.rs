@@ -49,16 +49,19 @@ impl Checker<'_> {
         pack
     }
 
-    pub(super) fn expression_list_pack(
+    /// `expressions` are the tree's own or shared ones (`SharedExpr`).
+    pub(super) fn expression_list_pack<E: std::borrow::Borrow<Expr>>(
         &mut self,
-        expressions: &[Expr],
+        expressions: &[E],
         expected: Option<&ValuePack>,
     ) -> ValuePack {
         let Some((last, prefix_expressions)) = expressions.split_last() else {
             return ValuePack::empty();
         };
+        let last = last.borrow();
         let mut prefix = Vec::with_capacity(prefix_expressions.len() + 1);
         for (index, expression) in prefix_expressions.iter().enumerate() {
+            let expression = expression.borrow();
             let context = expected.and_then(|pack| self.engine.pack_contextual_slot(pack, index));
             prefix.push(self.expression_with_expected(expression, context.as_ref()));
         }
@@ -590,7 +593,7 @@ impl Checker<'_> {
         self.return_type = outer_return;
     }
 
-    pub(super) fn return_statement(&mut self, values: &[Expr], span: Span) {
+    pub(super) fn return_statement<E: std::borrow::Borrow<Expr>>(&mut self, values: &[E], span: Span) {
         let expected_pack = self.return_pack.clone();
         let context = expected_pack.clone().or_else(|| self.contextual_function
             .map(|context| self.engine.contextual_return_pack(&context)));
@@ -599,7 +602,7 @@ impl Checker<'_> {
             if !self.engine.pack_assignable(&pack, &expected) {
                 self.error_packs(
                     "TS2322",
-                    self.return_contract_origin(span).unwrap_or_else(|| values.first().map_or(span, |value| value.span)),
+                    self.return_contract_origin(span).unwrap_or_else(|| values.first().map_or(span, |value| value.borrow().span)),
                     "Lua result pack is not assignable to the declared result pack. Actual: {}. Expected: {}.",
                     &[&pack, &expected],
                 );
@@ -609,7 +612,7 @@ impl Checker<'_> {
             self.compatible(
                 &value,
                 &expected,
-                self.return_contract_origin(span).unwrap_or_else(|| values.first().map_or(span, |value| value.span)),
+                self.return_contract_origin(span).unwrap_or_else(|| values.first().map_or(span, |value| value.borrow().span)),
             );
         }
         self.return_values.push(self.engine.pack_slot(&pack, 0));

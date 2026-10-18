@@ -3,8 +3,8 @@
 
 use crate::bind::{BindingId, BoundFile, ScopeId};
 use luanalysis_syntax::{
-    BinaryOperator, Expr, ExprKind, File, Function, Name, Span, Stmt, StmtKind, TableFieldKind,
-    UnaryOperator,
+    BinaryOperator, Expr, ExprKind, File, Function, Name, SharedExpr, Span, Stmt, StmtKind,
+    TableFieldKind, UnaryOperator,
 };
 use crate::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -71,7 +71,8 @@ pub struct Reference {
 #[derive(Clone, Debug)]
 pub struct SourceExpression {
     pub id: SourceExpressionId,
-    pub expression: Expr,
+    /// The expression in its file's shared tree, not a copy of its subtree.
+    pub expression: SharedExpr,
     pub scope: Option<ScopeId>,
 }
 #[derive(Clone, Debug)]
@@ -308,6 +309,11 @@ impl ProgramFlow {
 /// Builds original-source recipes. Lua syntax failures retain explicit invalid
 /// source metadata. Annotation failures preserve real Lua graphs and error types.
 pub fn build(file: &File, bound: &BoundFile) -> ProgramFlow {
+    build_shared(&std::sync::Arc::new(file.clone()), bound)
+}
+
+/// `build` for a file already shared, whose expressions the recipes share rather than copy.
+pub fn build_shared(file: &std::sync::Arc<File>, bound: &BoundFile) -> ProgramFlow {
     build_with_snapshot(file, bound, allocate_snapshot())
 }
 
@@ -317,8 +323,10 @@ pub(crate) fn allocate_snapshot() -> u64 {
     snapshot
 }
 
-pub(crate) fn build_with_snapshot(file: &File, bound: &BoundFile, snapshot: u64) -> ProgramFlow {
+pub(crate) fn build_with_snapshot(tree: &std::sync::Arc<File>, bound: &BoundFile, snapshot: u64) -> ProgramFlow {
+    let file: &File = tree;
     let mut builder = Builder {
+        tree,
         program: ProgramFlow {
             snapshot,
             graphs: Vec::new(),
@@ -380,6 +388,8 @@ struct LabelScope {
     pending: Vec<(String, FlowId)>,
 }
 struct Builder<'a> {
+    /// The tree every expression the builder visits is in.
+    tree: &'a std::sync::Arc<File>,
     program: ProgramFlow,
     bound: &'a BoundFile,
     expression_ids: HashMap<(usize, usize), SourceExpressionId>,
@@ -457,7 +467,8 @@ impl Builder<'_> {
         };
         self.program.expressions.push(SourceExpression {
             id,
-            expression: expr.clone(),
+            // SAFETY: the builder visits only `self.tree`'s statements and expressions.
+            expression: unsafe { SharedExpr::new(self.tree, expr) },
             scope: self.scope(expr.span),
         });
         self.expression_ids.insert(key, id);

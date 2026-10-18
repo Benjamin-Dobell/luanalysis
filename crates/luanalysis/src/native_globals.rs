@@ -669,7 +669,7 @@ impl NativeRegistry {
                 | crate::flow::ValueDemand::PackElement { evaluation, index: 0 } => *evaluation,
                 _ => return false,
             };
-            let mut expression = &self.flow.program.expression(self.flow.program.evaluation(evaluation).expression).expression;
+            let mut expression: &luanalysis_syntax::Expr = &self.flow.program.expression(self.flow.program.evaluation(evaluation).expression).expression;
             while let ExprKind::Parenthesized(inner) = &expression.kind { expression = inner; }
             let ExprKind::Name(name) = &expression.kind else { return false };
             if let Some(next) = self.bound.binding_at(name.span.start) { binding = next; }

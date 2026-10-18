@@ -350,6 +350,60 @@ pub struct Expr {
     pub span: Span,
 }
 
+/// An expression of a parsed file that is shared, not copied: the handle keeps the file's
+/// immutable tree alive and reads the expression in place. A copy of an expression copies its
+/// whole subtree, and a function expression's body with it.
+#[derive(Clone)]
+pub struct SharedExpr {
+    tree: std::sync::Arc<File>,
+    expression: std::ptr::NonNull<Expr>,
+}
+
+// SAFETY: a `SharedExpr` only reads its expression, in a tree that is never mutated while an
+// `Arc` shares it, and the tree is `Send` and `Sync`.
+unsafe impl Send for SharedExpr where File: Send + Sync {}
+// SAFETY: as for `Send`: shared access only reads.
+unsafe impl Sync for SharedExpr where File: Send + Sync {}
+
+impl SharedExpr {
+    /// The expression `expression` of `tree`.
+    ///
+    /// # Safety
+    ///
+    /// `expression` must be an expression of `tree`'s own syntax, reached from `&**tree`, not a
+    /// copy of one or an expression of another tree.
+    pub unsafe fn new(tree: &std::sync::Arc<File>, expression: &Expr) -> Self {
+        Self { tree: std::sync::Arc::clone(tree), expression: std::ptr::NonNull::from(expression) }
+    }
+
+    /// The file the expression is in.
+    pub fn tree(&self) -> &std::sync::Arc<File> {
+        &self.tree
+    }
+}
+
+impl std::ops::Deref for SharedExpr {
+    type Target = Expr;
+
+    fn deref(&self) -> &Expr {
+        // SAFETY: `new`'s contract: the expression is in `tree`, which this handle keeps alive
+        // and which nothing mutates while shared.
+        unsafe { self.expression.as_ref() }
+    }
+}
+
+impl std::borrow::Borrow<Expr> for SharedExpr {
+    fn borrow(&self) -> &Expr {
+        self
+    }
+}
+
+impl std::fmt::Debug for SharedExpr {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (**self).fmt(formatter)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExprKind {
     Nil,

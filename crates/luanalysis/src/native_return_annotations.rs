@@ -33,9 +33,9 @@ impl Checker<'_> {
             .return_annotation(statement)
             .map(|annotation| annotation.span)
     }
-    pub(super) fn return_expression_pack(
+    pub(super) fn return_expression_pack<E: std::borrow::Borrow<Expr>>(
         &mut self,
-        values: &[Expr],
+        values: &[E],
         statement: Span,
         expected: Option<&ValuePack>,
     ) -> ValuePack {
@@ -49,7 +49,7 @@ impl Checker<'_> {
         if !self.engine.pack_assignable(&actual, &allowed) {
             self.error(
                 "TS2322",
-                values.first().map_or(statement, |value| value.span),
+                values.first().map_or(statement, |value| value.borrow().span),
                 "Lua result pack is not assignable to the written return-list type.",
             );
         }
