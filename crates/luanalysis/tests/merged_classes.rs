@@ -294,6 +294,7 @@ fn a_class_declared_again_in_one_file_is_one_class_with_its_setmetatable_tables_
     let output = fixture.check();
     let report = text(&output);
     assert!(!report.contains("LUA2031"), "{report}");
-    assert!(report.contains("Property 'missing' does not exist on type 'Builder'"), "{report}");
+    // `b` is the class's second definition.
+    assert!(report.contains("main.lua:11:31: error[TS2339]: Property 'missing' does not exist on type 'def Builder'"), "{report}");
     assert_eq!(report.matches("error[").count(), 1, "{report}");
 }
