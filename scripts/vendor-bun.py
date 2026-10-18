@@ -617,6 +617,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Let an assignment member whose type is written declare the member despite an existing contract, so it overrides an inherited member as v1 indexes it, through kernel 20942e3.",
 })
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-usable-invalid-overrides.patch",
+    "reason": "Report an incompatible override or base once and keep the class's declared shape for its uses, while its validation still fails, as TypeScript keeps such a class, through kernel 3bf26e1.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

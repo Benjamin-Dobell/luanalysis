@@ -2436,6 +2436,12 @@
       "patch": "vendor/patches/bun-sema-written-assignment-overrides.patch",
       "reason": "Let an assignment member whose type is written declare the member despite an existing contract, so it overrides an inherited member as v1 indexes it, through kernel 20942e3.",
       "patch_sha256": "100a244cb4f0b6ae31472a8497f6bf577729c6f65af3f845b98a6a4bf510346a"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-usable-invalid-overrides.patch",
+      "reason": "Report an incompatible override or base once and keep the class's declared shape for its uses, while its validation still fails, as TypeScript keeps such a class, through kernel 3bf26e1.",
+      "patch_sha256": "f23683c9e1a8fddf4e8921ea9b0c6730a38ea60e4e06ccf1177d8bd08c7e5894"
     }
   ],
   "source_additions": {
@@ -2472,7 +2478,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "077747a458b048c009ed2f1adbe6bbb375bab19813b9aa1b7f4cf1d896fd7250",
+      "extracted_sha256": "6d29a47848b379e0d9f4dce1b402e559fde571679ae7388d6201e9b4da188b09",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
