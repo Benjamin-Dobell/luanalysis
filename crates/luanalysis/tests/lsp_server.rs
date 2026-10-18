@@ -1081,3 +1081,28 @@ fn expected_values_complete_function_implementations_and_literals() {
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn opening_documents_warms_queries_without_answering_anything() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let other = root.join("other.lua");
+    fs::write(&main, "local value = 1\n").unwrap();
+    fs::write(&other, "return 2\n").unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    // Each open warms the query thread; only requests are answered.
+    server.open(&main, "local value = 1\n");
+    server.open(&other, "return 2\n");
+    let response = server.request(2, "textDocument/completion", &main, 1, 0);
+    assert!(response.contains(r#""label":"value""#), "{response}");
+    server.send(r#"{"jsonrpc":"2.0","id":99,"method":"shutdown"}"#);
+    loop {
+        let message = server.messages.recv_timeout(Duration::from_secs(60)).expect("a language server message");
+        assert!(!message.contains(r#""id":null"#) && !message.contains(r#""id":2,"#), "{message}");
+        if message.contains(r#""id":99"#) { break; }
+    }
+    server.send(r#"{"jsonrpc":"2.0","method":"exit"}"#);
+    assert!(server.child.wait().unwrap().success());
+    fs::remove_dir_all(root).unwrap();
+}

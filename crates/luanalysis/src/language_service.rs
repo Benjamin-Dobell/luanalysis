@@ -53,7 +53,7 @@ pub struct CompletionSite {
     /// Whether a parameter list already follows the word.
     pub parameters_follow: bool,
     /// Whether the word is a value that may have an expected type: an argument, an assigned
-    /// value, a table constructor's field or a returned value.
+    /// value, a table constructor's field, a returned value, or an operand of `and` or `or`.
     pub value: bool,
 }
 
@@ -144,7 +144,7 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
     };
     let value = context == CompletionContext::Name && match previous.map(|token| &token.kind) {
         Some(TokenKind::Symbol(symbol)) => matches!(symbol.as_str(), "=" | "(" | "," | "{" | ";"),
-        Some(TokenKind::Keyword(keyword)) => keyword == "return",
+        Some(TokenKind::Keyword(keyword)) => matches!(keyword.as_str(), "return" | "and" | "or"),
         _ => false,
     };
     let head = &text[..start];
@@ -257,6 +257,15 @@ fn closers(prefix: &str) -> String {
         Open::Condition => " then end",
         Open::LoopHead => " do end",
     }).collect()
+}
+
+/// Prepares `project`'s sources for the queries that follow, as a query would, so the first of
+/// them need not.
+pub fn prepare(project: Project, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace) {
+    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
+        registry.prepare_documentation_members(queries);
+    });
 }
 
 /// The completions at `site` in `file`, whose text in `project` is `site.text`. `deliver`
@@ -442,13 +451,7 @@ fn expected_values(
     site: &CompletionSite,
     queries: &mut dyn luanalysis_engine::TypeQueries,
 ) -> Vec<CompletionItem> {
-    let Some(source) = registry.source(file) else { return Vec::new() };
-    source.probe_expected(site.placeholder);
-    registry.check_owned_roots(queries, &[file]);
-    let mut pending = source.probed_expected(site.placeholder);
-    // An argument's parameter and an assigned field's type are expected too, though checking
-    // types an argument the call cannot take yet, or a store to a table it infers, without them.
-    pending.extend(written_expected(registry, file, site, queries));
+    let mut pending = contextual_types(registry, file, site.placeholder, queries, 0);
     pending.reverse();
     let mut seen = Vec::new();
     let mut items: Vec<CompletionItem> = Vec::new();
@@ -482,61 +485,228 @@ fn expected_values(
     items
 }
 
-/// The types the value at `site` is expected to have as what it is written as: an argument, the
-/// type of the parameter it is passed to in each signature of the call; a value assigned to a
-/// field, the field's type.
-fn written_expected(
+/// What a value is written as, which says what it is expected to be.
+enum Context {
+    /// The operand of parentheses, `or` or `and`, expected to be what the whole is.
+    Through(Span),
+    /// A table constructor's `name = value` or `["name"] = value`.
+    Field { table: Span, key: luanalysis_engine::LuaKey },
+    /// A table constructor's positional value, by its one-based index.
+    Sequence { table: Span, index: usize },
+    /// A call's argument, by its index among the written arguments.
+    Argument { callee: Callee, index: usize },
+    /// A local's initial value.
+    Local { name: Span },
+    /// A value assigned to a target.
+    Assign(Target),
+    /// A returned value, by its index, and the function it is returned from (none for a chunk).
+    Return { owner: Option<Owner>, index: usize },
+}
+
+enum Callee {
+    Function(Span),
+    Method { receiver: Span, name: String },
+}
+
+#[derive(Clone)]
+enum Target {
+    Field { base: Span, name: String },
+    Name(Name),
+}
+
+/// A function a value is returned from: its span, whether its results are declared, and what
+/// else says what it returns: the expected type of a function value, or a function statement's
+/// target's type.
+#[derive(Clone)]
+struct Owner {
+    span: Span,
+    declared: bool,
+    expression: bool,
+    target: Option<Target>,
+}
+
+/// The types the value at `span` in `file` is expected to have, as TypeScript's contextual type:
+/// from what the value is written as, its parent's expected type when that decides it, without
+/// checking the file. `callback_function = ` in a table passed to `spawnObjectData` expects the
+/// shape's field's type; an argument, its parameter's in each signature of the call, even one
+/// the call cannot take yet.
+fn contextual_types(
     registry: &crate::native_functions::project_provider::ProjectRegistry,
     file: FileId,
-    site: &CompletionSite,
+    span: Span,
     queries: &mut dyn luanalysis_engine::TypeQueries,
+    depth: usize,
 ) -> Vec<Type> {
     let Some(source) = registry.source(file) else { return Vec::new() };
-    let mut call = None;
-    crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| match &expression.kind {
-        ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
-            if let Some(index) = args.iter().position(|argument| argument.span == site.placeholder) { call = Some((expression.clone(), index)); }
-        }
-        _ => {}
-    });
-    if let Some((call, index)) = call {
-        // A method call passes its receiver as the first argument.
-        let (callee, position) = match &call.kind {
-            ExprKind::Call { callee, .. } => (expression_type(registry, file, callee.span, queries), index),
-            ExprKind::MethodCall { receiver, name, .. } => {
-                let member = expression_type(registry, file, receiver.span, queries).and_then(|receiver| {
-                    let receiver = queries.exclude_type(&receiver, &Type::Nil);
-                    queries.type_members(&receiver).into_iter().find(|(member, _)| *member == name.text).map(|(_, value)| value)
-                });
-                (member, index + 1)
+    if depth > 16 { return Vec::new(); }
+    let Some(context) = value_context(source.syntax(), span) else { return Vec::new() };
+    let parent = |span: Span, queries: &mut dyn luanalysis_engine::TypeQueries| contextual_types(registry, file, span, queries, depth + 1);
+    let types = match context {
+        Context::Through(whole) => parent(whole, queries),
+        Context::Field { table, key } => parent(table, queries).into_iter()
+            .filter_map(|table| queries.table_value_context(&table, &luanalysis_engine::TableKey::Literal(key.clone())))
+            .collect(),
+        Context::Sequence { table, index } => {
+            let mut elements = Vec::new();
+            for table in parent(table, queries) {
+                if let Some(pack) = queries.table_sequence_context(&table, i64::try_from(index).unwrap_or(i64::MAX)) {
+                    elements.push(queries.pack_slot(&pack, 0));
+                }
             }
-            _ => return Vec::new(),
-        };
-        let Some(callee) = callee else { return Vec::new() };
-        let mut expected = Vec::new();
-        for head in queries.call_signature_types(&callee) {
-            let Some(signature) = queries.function_signature(&head) else { continue };
-            match signature.params.get(position) {
-                Some(parameter) => expected.push(parameter.ty.clone()),
-                None => if let Some(rest) = queries.signature_rest_pack(&head) {
-                    expected.push(queries.pack_slot(&rest, position - signature.params.len()));
-                },
+            elements
+        }
+        Context::Argument { callee, index } => {
+            // A method call passes its receiver as the first argument.
+            let (callee, position) = match callee {
+                Callee::Function(callee) => (expression_type(registry, file, callee, queries), index),
+                Callee::Method { receiver, name } => (member_type(registry, file, receiver, &name, queries), index + 1),
+            };
+            let mut expected = Vec::new();
+            for head in callee.map(|callee| queries.call_signature_types(&callee)).unwrap_or_default() {
+                let Some(signature) = queries.function_signature(&head) else { continue };
+                match signature.params.get(position) {
+                    Some(parameter) => expected.push(parameter.ty.clone()),
+                    None => if let Some(rest) = queries.signature_rest_pack(&head) {
+                        expected.push(queries.pack_slot(&rest, position - signature.params.len()));
+                    },
+                }
             }
+            expected
         }
-        return expected;
-    }
-    // `receiver.name = |`: the field just before the `=`.
-    let assigned = |end: usize| site.text.get(end..site.placeholder.start).is_some_and(|between| between.trim() == "=");
-    let mut field = None;
-    crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| {
-        if let ExprKind::Field { base, name } = &expression.kind && assigned(expression.span.end) {
-            field = Some((base.span, name.text.clone()));
+        Context::Local { name } => source.bound().binding_at(name.start)
+            .and_then(|binding| source.resolve_binding(binding, queries))
+            .map(|binding| binding.constraint)
+            .into_iter()
+            .collect(),
+        Context::Assign(target) => target_type(registry, file, &target, queries).into_iter().collect(),
+        Context::Return { owner: None, .. } => Vec::new(),
+        Context::Return { owner: Some(owner), index } => {
+            let functions: Vec<Type> = if owner.declared {
+                source.function_key_at(owner.span).map(Type::NativeFunction).into_iter().collect()
+            } else if owner.expression {
+                parent(owner.span, queries)
+            } else {
+                owner.target.and_then(|target| target_type(registry, file, &target, queries)).into_iter().collect()
+            };
+            let mut results = Vec::new();
+            for function in functions {
+                let function = queries.exclude_type(&function, &Type::Nil);
+                for head in queries.call_signature_types(&function) {
+                    if let Some(pack) = queries.function_result_pack(&head) { results.push(queries.pack_slot(&pack, index)); }
+                }
+            }
+            results
         }
-    });
-    let Some((base, name)) = field else { return Vec::new() };
-    let Some(receiver) = expression_type(registry, file, base, queries) else { return Vec::new() };
+    };
+    types.into_iter().filter(|ty| !untyped(ty, queries)).collect()
+}
+
+/// The type of member `name` of the value at `receiver`.
+fn member_type(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    receiver: Span,
+    name: &str,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<Type> {
+    let receiver = expression_type(registry, file, receiver, queries)?;
     let receiver = queries.exclude_type(&receiver, &Type::Nil);
-    queries.type_members(&receiver).into_iter().filter(|(member, _)| *member == name).map(|(_, value)| value).collect()
+    queries.type_members(&receiver).into_iter().find(|(member, _)| member == name).map(|(_, value)| value)
+}
+
+/// The type of an assignment's target: a field's, a local's declared type, or a global's.
+fn target_type(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    target: &Target,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<Type> {
+    let source = registry.source(file)?;
+    match target {
+        Target::Field { base, name } => member_type(registry, file, *base, name, queries),
+        Target::Name(name) => match source.bound().binding_at(name.span.start) {
+            Some(binding) => source.resolve_binding(binding, queries).map(|binding| binding.constraint),
+            None => {
+                let environment = queries.global_environment_type(source.global_environment()?).ok()?;
+                queries.type_members(&environment).into_iter().find(|(member, _)| *member == name.text).map(|(_, value)| value)
+            }
+        },
+    }
+}
+
+/// What the value at `span` is written as, in `syntax`.
+fn value_context(syntax: &luanalysis_syntax::File, span: Span) -> Option<Context> {
+    use luanalysis_syntax::{BinaryOperator, TableFieldKind};
+    let mut found = None;
+    crate::module_requests::visit_expressions(&syntax.statements, &mut |expression: &Expr| {
+        if found.is_some() { return; }
+        found = match &expression.kind {
+            ExprKind::Table(fields) => fields.iter().find(|field| field.value.span == span).and_then(|field| match &field.kind {
+                TableFieldKind::Named(name) => Some(Context::Field { table: expression.span, key: luanalysis_engine::LuaKey::String(name.text.as_bytes().to_vec()) }),
+                TableFieldKind::Keyed(key) => match &key.kind {
+                    ExprKind::String(bytes) => Some(Context::Field { table: expression.span, key: luanalysis_engine::LuaKey::String(bytes.clone()) }),
+                    _ => None,
+                },
+                TableFieldKind::Sequence { index } => Some(Context::Sequence { table: expression.span, index: *index }),
+            }),
+            ExprKind::Call { callee, args } => args.iter().position(|argument| argument.span == span)
+                .map(|index| Context::Argument { callee: Callee::Function(callee.span), index }),
+            ExprKind::MethodCall { receiver, name, args } => args.iter().position(|argument| argument.span == span)
+                .map(|index| Context::Argument { callee: Callee::Method { receiver: receiver.span, name: name.text.clone() }, index }),
+            ExprKind::Parenthesized(inner) if inner.span == span => Some(Context::Through(expression.span)),
+            ExprKind::Binary { op: BinaryOperator::Or, left, right, .. } if left.span == span || right.span == span => Some(Context::Through(expression.span)),
+            ExprKind::Binary { op: BinaryOperator::And, right, .. } if right.span == span => Some(Context::Through(expression.span)),
+            ExprKind::Function(function) => {
+                let owner = Owner { span: function.span, declared: declares_results(function), expression: true, target: None };
+                statement_context(&function.body, Some(&owner), span)
+            }
+            _ => None,
+        };
+    });
+    found.or_else(|| statement_context(&syntax.statements, None, span))
+}
+
+/// What the value at `span` is written as in `body`'s statements, and those of the blocks and
+/// function statements in them (a function value's are another body's), returned from `owner`.
+fn statement_context(body: &[luanalysis_syntax::Stmt], owner: Option<&Owner>, span: Span) -> Option<Context> {
+    use luanalysis_syntax::StmtKind;
+    let position = |values: &[Expr]| values.iter().position(|value| value.span == span);
+    for statement in body {
+        let found = match &statement.kind {
+            StmtKind::Local { names, values, .. } => position(values).and_then(|index| names.get(index)).map(|name| Context::Local { name: name.span }),
+            StmtKind::Assign { targets, values, .. } => position(values).and_then(|index| targets.get(index)).and_then(target).map(Context::Assign),
+            StmtKind::Return(values) => position(values).map(|index| Context::Return { owner: owner.cloned(), index }),
+            StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
+            | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => statement_context(body, owner, span),
+            StmtKind::If { branches, else_branch } => branches.iter().find_map(|branch| statement_context(&branch.body, owner, span))
+                .or_else(|| else_branch.as_ref().and_then(|branch| statement_context(&branch.body, owner, span))),
+            StmtKind::LocalFunction { function, .. } => {
+                let owner = Owner { span: function.span, declared: declares_results(function), expression: false, target: None };
+                statement_context(&function.body, Some(&owner), span)
+            }
+            StmtKind::FunctionDeclaration { target: written, function, .. } => {
+                let owner = Owner { span: function.span, declared: declares_results(function), expression: false, target: target(written) };
+                statement_context(&function.body, Some(&owner), span)
+            }
+            _ => None,
+        };
+        if found.is_some() { return found; }
+    }
+    None
+}
+
+/// An assignment's target that has a type of its own: a name or a field.
+fn target(expression: &Expr) -> Option<Target> {
+    match &expression.kind {
+        ExprKind::Name(name) => Some(Target::Name(name.clone())),
+        ExprKind::Field { base, name } => Some(Target::Field { base: base.span, name: name.text.clone() }),
+        _ => None,
+    }
+}
+
+/// Whether a function's documentation declares its results (`---@return`, or a `---@type`).
+fn declares_results(function: &luanalysis_syntax::Function) -> bool {
+    function.annotations.returns.is_some() || function.annotations.type_annotation.is_some()
 }
 
 /// `bytes` as a Lua string literal: UTF-8 text as it is, other bytes and control characters

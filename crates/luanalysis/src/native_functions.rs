@@ -127,9 +127,6 @@ pub(super) struct NativeRegistry {
     canonical_frames: RefCell<HashMap<NativeFunctionKey, (Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
     /// The expressions the language service asked the types of, and the types checking gave them.
     completion_probe: RefCell<HashMap<(usize, usize), Vec<Type>>>,
-    /// The expressions the language service asked the expected types of, and the types checking
-    /// expected them to have: a parameter's for an argument, a field's for its value.
-    expected_probe: RefCell<HashMap<(usize, usize), Vec<Type>>>,
     pending_contextual_owners: RefCell<HashSet<(NativeFunctionKey, NativeFlowKey)>>,
     pending_owner_observations: Cell<u64>,
     pending_owner_bodies: RefCell<HashSet<(NativeFunctionKey, Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
@@ -358,7 +355,6 @@ impl NativeRegistry {
             bodies_checked: RefCell::new(HashSet::default()),
             canonical_frames: RefCell::new(HashMap::default()),
             completion_probe: RefCell::new(HashMap::default()),
-            expected_probe: RefCell::new(HashMap::default()),
             pending_contextual_owners: RefCell::new(HashSet::default()),
             pending_owner_observations: Cell::new(0),
             pending_owner_bodies: RefCell::new(HashSet::default()),
@@ -1083,25 +1079,9 @@ impl NativeRegistry {
         self.completion_probe.borrow_mut().remove(&(span.start, span.end)).unwrap_or_default()
     }
 
-    /// Collects the types checking expects the expression at `span` to have.
-    pub(crate) fn probe_expected(&self, span: Span) {
-        self.expected_probe.borrow_mut().insert((span.start, span.end), Vec::new());
-    }
-
-    /// The types checking expected the probed expression at `span` to have, which is probed no
-    /// longer.
-    pub(crate) fn probed_expected(&self, span: Span) -> Vec<Type> {
-        self.expected_probe.borrow_mut().remove(&(span.start, span.end)).unwrap_or_default()
-    }
-
-    pub(super) fn record_expected_type(&self, span: Span, ty: &Type) {
-        let mut probes = self.expected_probe.borrow_mut();
-        if !probes.is_empty()
-            && let Some(types) = probes.get_mut(&(span.start, span.end))
-            && !types.contains(ty)
-        {
-            types.push(ty.clone());
-        }
+    /// The function whose source spans `span`.
+    pub(crate) fn function_key_at(&self, span: Span) -> Option<NativeFunctionKey> {
+        self.function_spans.get(&(span.start, span.end)).map(|&index| self.key(index))
     }
 
     pub(super) fn record_probed_type(&self, span: Span, ty: &Type) {

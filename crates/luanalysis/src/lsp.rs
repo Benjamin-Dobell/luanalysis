@@ -208,6 +208,9 @@ enum Deprecation {
 }
 
 enum Site {
+    /// Loads the project and prepares its sources for the queries that follow, with a newly
+    /// opened document's text, so the first of them does not wait for that. It has no answer.
+    Warm(String),
     Hierarchy(HierarchySite),
     Actions(ActionSite),
     Completion(CompletionSite),
@@ -277,6 +280,7 @@ impl Query {
     /// The text checked in place of the document's.
     fn text(&self) -> &str {
         match &self.site {
+            Site::Warm(text) => text,
             Site::Completion(site) => &site.text,
             Site::Signature(site) => &site.text,
             Site::Hover(site) => &site.text,
@@ -294,7 +298,7 @@ impl Query {
             Site::Signature(_) | Site::Navigate(_) => Json::Null,
             Site::Hints(site) => Json::Array(site.types.clone()),
             Site::Actions(site) => Json::Array(site.actions.clone()),
-            Site::Hierarchy(_) => Json::Null,
+            Site::Hierarchy(_) | Site::Warm(_) => Json::Null,
             // Without documentation, a hover still has the last check's type.
             Site::Hover(site) => match &site.ty {
                 None => Json::Null,
@@ -556,9 +560,10 @@ impl Server {
                 let text = document.and_then(|document| document.get("text")).and_then(Json::as_str);
                 if let (Some(uri), Some(text)) = (uri, text) && let Some(path) = uri_to_path(uri) {
                     let version = document.and_then(|document| document.get("version")).and_then(Json::as_u64).unwrap_or(0) as i64;
-                    self.documents.insert(path, Document { uri: uri.to_owned(), text: text.to_owned(), version });
+                    self.documents.insert(path.clone(), Document { uri: uri.to_owned(), text: text.to_owned(), version });
                     self.revision += 1;
                     self.disk_generation += 1;
+                    self.warm(path);
                 }
             }
             "textDocument/didChange" => {
@@ -1197,6 +1202,18 @@ impl Server {
         self.query(id, path, Site::Signature(site), lines);
     }
 
+    /// Has the query thread load the project with the editor's buffers and prepare its sources
+    /// for `path`'s queries, which then need not wait for that.
+    fn warm(&mut self, path: PathBuf) {
+        let Some(document) = self.documents.get(&path) else { return };
+        let text = document.text.clone();
+        let overlays: HashMap<PathBuf, String> = self.documents.iter()
+            .map(|(path, document)| (path.clone(), document.text.clone())).collect();
+        let lines = LineIndex::new(text.clone());
+        let query = Query { id: Json::Null, path, overlays, disk: self.disk_generation, site: Site::Warm(text), lines, encoding: self.encoding, snippets: false, call_snippets: false, deprecation: self.deprecation };
+        if let Some(queries) = &self.queries { let _ = queries.send(query); }
+    }
+
     /// Answers a query on the query thread, with the editor's buffers and `site`'s text in place
     /// of its document's.
     fn query(&mut self, id: Json, path: PathBuf, site: Site, lines: LineIndex) {
@@ -1343,9 +1360,13 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
         while let Ok(newer) = queries.try_recv() { pending.push(newer); }
         // Only the latest query of each kind is worth answering; one superseded by a newer one
         // of its kind is answered unchecked.
+        // Any other query warms the project as well as a warm-up would.
+        let warm = pending.iter().all(|query| matches!(query.site, Site::Warm(_)));
         let mut latest: Vec<Query> = Vec::new();
         for query in pending.into_iter().rev() {
-            if latest.iter().any(|newer| newer.same_kind(&query)) {
+            if let Site::Warm(_) = query.site {
+                if warm && latest.is_empty() { latest.push(query); }
+            } else if latest.iter().any(|newer| newer.same_kind(&query)) {
                 if events.send(Event::Answered(query.id.clone(), query.unanswered())).is_err() { return; }
             } else {
                 latest.push(query);
@@ -1371,6 +1392,11 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 });
             };
             let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &query.site {
+                Site::Warm(_) => {
+                    if let Some(project) = load(&inputs, &mut workspace, &mut loaded, &query) {
+                        language_service::prepare(project, options.clone(), &mut workspace);
+                    }
+                }
                 Site::Completion(site) => complete(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
                 Site::Signature(site) => signatures(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
                 Site::Hover(site) => hover(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
@@ -1383,7 +1409,8 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 workspace = ProjectWorkspace::new();
                 loaded = None;
             }
-            if !answered && events.send(Event::Answered(query.id.clone(), query.unanswered())).is_err() { return; }
+            // A warm-up has no answer.
+            if !answered && !matches!(query.site, Site::Warm(_)) && events.send(Event::Answered(query.id.clone(), query.unanswered())).is_err() { return; }
         }
     }
 }

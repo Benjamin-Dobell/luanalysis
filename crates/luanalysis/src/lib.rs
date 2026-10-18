@@ -833,9 +833,6 @@ impl Checker<'_> {
     }
 
     fn expression_value_at_current_flow(&mut self, expr: &Expr, expected: Option<&Type>, capture_origin: bool) -> EvaluatedExpression {
-        if let (Some(native), Some(expected)) = (self.native, expected) {
-            native.record_expected_type(expr.span, expected);
-        }
         let mut environment = None;
         let ty = match &expr.kind {
             ExprKind::Nil => Type::Nil,
