@@ -20,7 +20,7 @@ mod documentation_reference_tests;
 mod diagnostic_origin_tests;
 
 pub use lexer::{Lexed, Token, TokenKind, lex};
-pub use parser::parse;
+pub use parser::{parse, parse_with_checkpoint};
 pub use documentation::{Documentation, documentation_above, documentation_at};
 pub use navigation::{TypeName, TypeNameKind, type_names};
 

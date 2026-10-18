@@ -929,3 +929,24 @@ fn goto_labels_and_local_attributes_parse_and_validate() {
     assert_eq!(messages("local function f() ::inner:: end\ngoto inner\n"), ["no visible label 'inner' for goto"]);
     assert_eq!(messages("local value <static> = 1\n"), ["unknown attribute 'static'"]);
 }
+
+#[test]
+fn checkpoints_preserve_syntax_spans_and_label_diagnostics() {
+    let source = "-- café\r\n---@type number\r\nlocal 日本語 = 'é'\r\ndo ::twice:: ::twice:: end\r\ngoto missing\r\n";
+    let checkpoints = std::cell::Cell::new(0);
+    let file = parse_with_checkpoint(source, || checkpoints.set(checkpoints.get() + 1));
+    assert!(checkpoints.get() > 0);
+    assert_eq!(file, parse(source));
+    let (names, values, annotation) = locals(&file, 0);
+    assert_eq!(&source[names[0].span.start..names[0].span.end], "日本語");
+    assert_eq!(&source[values[0].span.start..values[0].span.end], "'é'");
+    let ty = &annotation.unwrap().types[0];
+    assert_eq!(&source[ty.span.start..ty.span.end], "number");
+    let diagnostics: Vec<_> = file.diagnostics.iter().map(|diagnostic| {
+        (diagnostic.message.as_str(), &source[diagnostic.span.start..diagnostic.span.end])
+    }).collect();
+    assert_eq!(diagnostics, [
+        ("label 'twice' already defined", "twice"),
+        ("no visible label 'missing' for goto", "missing"),
+    ]);
+}

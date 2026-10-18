@@ -184,7 +184,7 @@ impl Parser<'_> {
 /// Lua's rules for one function's labels: a `goto` jumps to a label visible from it (in its
 /// block or an enclosing one), and a label may not repeat a visible label's name (Lua 5.4).
 /// Nested functions are validated with their own bodies.
-pub(crate) fn validate_labels(body: &[Stmt], diagnostics: &mut Vec<Diagnostic>) {
+pub(crate) fn validate_labels(body: &[Stmt], diagnostics: &mut Vec<Diagnostic>, checkpoint: &dyn Fn()) {
     // A goto sees every label of its open blocks, while a label repeats only
     // one declared before it in an open block (Lua 5.4's findlabel).
     fn block(
@@ -192,13 +192,18 @@ pub(crate) fn validate_labels(body: &[Stmt], diagnostics: &mut Vec<Diagnostic>) 
         visible: &mut Vec<Vec<String>>,
         declared: &mut Vec<String>,
         diagnostics: &mut Vec<Diagnostic>,
+        checkpoint: &dyn Fn(),
     ) {
-        visible.push(statements.iter().filter_map(|statement| match &statement.kind {
-            StmtKind::Label(name) => Some(name.text.clone()),
-            _ => None,
+        visible.push(statements.iter().filter_map(|statement| {
+            checkpoint();
+            match &statement.kind {
+                StmtKind::Label(name) => Some(name.text.clone()),
+                _ => None,
+            }
         }).collect());
         let outer = declared.len();
         for statement in statements {
+            checkpoint();
             match &statement.kind {
                 StmtKind::Label(name) => {
                     if declared.contains(&name.text) {
@@ -218,10 +223,10 @@ pub(crate) fn validate_labels(body: &[Stmt], diagnostics: &mut Vec<Diagnostic>) 
                     });
                 }
                 StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
-                | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => block(body, visible, declared, diagnostics),
+                | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => block(body, visible, declared, diagnostics, checkpoint),
                 StmtKind::If { branches, else_branch } => {
-                    for branch in branches { block(&branch.body, visible, declared, diagnostics); }
-                    if let Some(branch) = else_branch { block(&branch.body, visible, declared, diagnostics); }
+                    for branch in branches { block(&branch.body, visible, declared, diagnostics, checkpoint); }
+                    if let Some(branch) = else_branch { block(&branch.body, visible, declared, diagnostics, checkpoint); }
                 }
                 _ => {}
             }
@@ -229,5 +234,31 @@ pub(crate) fn validate_labels(body: &[Stmt], diagnostics: &mut Vec<Diagnostic>) 
         declared.truncate(outer);
         visible.pop();
     }
-    block(body, &mut Vec::new(), &mut Vec::new(), diagnostics);
+    block(body, &mut Vec::new(), &mut Vec::new(), diagnostics, checkpoint);
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_checkpoint_can_cancel_label_collection_and_validation() {
+        struct Cancelled;
+        let body = crate::parse(&"goto missing\n".repeat(512)).statements;
+        for (cancel_after, expected_diagnostics) in [(32, 0), (body.len() + 32, 31)] {
+            let calls = Cell::new(0);
+            let mut diagnostics = Vec::new();
+            let checkpoint = || {
+                calls.set(calls.get() + 1);
+                if calls.get() == cancel_after { std::panic::resume_unwind(Box::new(Cancelled)); }
+            };
+            let cancelled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                validate_labels(&body, &mut diagnostics, &checkpoint);
+            }));
+            assert!(cancelled.unwrap_err().is::<Cancelled>());
+            assert_eq!(calls.get(), cancel_after);
+            assert_eq!(diagnostics.len(), expected_diagnostics);
+        }
+    }
 }

@@ -2,7 +2,7 @@ use crate::{
     BinaryOperator, Comment, CommentKind, Diagnostic, Expr, ExprKind, File, Function,
     FunctionAnnotations, Name, NamedTypeDeclaration, NamedTypeDeclarationId,
     NamedTypeDeclarationKind, Span, Stmt, StmtKind, TableField, TableFieldKind, Token, TokenKind,
-    TypeAnnotation, TypeExpr, TypeExprKind, TypeExtension, UnaryOperator, lex, types,
+    TypeAnnotation, TypeExpr, TypeExprKind, TypeExtension, UnaryOperator, types,
     OverloadAnnotation, OverloadDeclarationId, OverloadReference,
 };
 
@@ -10,7 +10,13 @@ use crate::{
 mod control;
 
 pub fn parse(source: &str) -> File {
-    let lexed = lex(source);
+    parse_with_checkpoint(source, || {})
+}
+
+/// Parses with checkpoints while lexing and traversing statements. A host may unwind from
+/// `checkpoint` to cancel the parse; no partial syntax tree is returned or retained.
+pub fn parse_with_checkpoint(source: &str, checkpoint: impl Fn()) -> File {
+    let lexed = crate::lexer::lex_with_checkpoint(source, &checkpoint);
     let comments = lexed
         .tokens
         .iter()
@@ -22,29 +28,9 @@ pub fn parse(source: &str) -> File {
             }
         })
         .collect();
-    let mut parser = Parser {
-        source,
-        tokens: lexed.tokens,
-        pos: 0,
-        diagnostics: lexed.diagnostics,
-        pending_annotations: FunctionAnnotations::default(),
-        pending_casts: Vec::new(),
-        type_declarations: Vec::new(),
-        function_declarations: Vec::new(),
-        type_extensions: Vec::new(),
-        expression_assertions: Vec::new(),
-        overload_annotations: Vec::new(),
-        operator_annotations: Vec::new(),
-        documentation_references: Vec::new(),
-        return_annotations: Vec::new(),
-        documentation_group: None,
-        depth: 0,
-        block_depth: 0,
-        loop_depth: 0,
-        vararg_allowed: true,
-    };
+    let mut parser = Parser::new(source, lexed, &checkpoint);
     let statements = parser.statements(&[]);
-    control::validate_labels(&statements, &mut parser.diagnostics);
+    control::validate_labels(&statements, &mut parser.diagnostics, &checkpoint);
     File {
         statements,
         expression_assertions: parser.expression_assertions,
@@ -63,6 +49,7 @@ pub fn parse(source: &str) -> File {
 
 struct Parser<'a> {
     source: &'a str,
+    checkpoint: &'a dyn Fn(),
     tokens: Vec<Token>,
     pos: usize,
     diagnostics: Vec<Diagnostic>,
@@ -118,7 +105,32 @@ fn expression_assertion_comment(comment: &Comment) -> bool {
     documentation.functions.type_annotation.is_some() || !documentation.exclusions.is_empty()
 }
 
-impl Parser<'_> {
+impl<'a> Parser<'a> {
+    fn new(source: &'a str, lexed: crate::Lexed, checkpoint: &'a dyn Fn()) -> Self {
+        Self {
+            source,
+            checkpoint,
+            tokens: lexed.tokens,
+            pos: 0,
+            diagnostics: lexed.diagnostics,
+            pending_annotations: FunctionAnnotations::default(),
+            pending_casts: Vec::new(),
+            type_declarations: Vec::new(),
+            function_declarations: Vec::new(),
+            type_extensions: Vec::new(),
+            expression_assertions: Vec::new(),
+            overload_annotations: Vec::new(),
+            operator_annotations: Vec::new(),
+            documentation_references: Vec::new(),
+            return_annotations: Vec::new(),
+            documentation_group: None,
+            depth: 0,
+            block_depth: 0,
+            loop_depth: 0,
+            vararg_allowed: true,
+        }
+    }
+
     fn current(&self) -> &Token {
         &self.tokens[self.pos]
     }
@@ -179,6 +191,7 @@ impl Parser<'_> {
         let mut returned = false;
         let mut return_semicolon_used = false;
         loop {
+            (self.checkpoint)();
             self.leading_trivia();
             if !self.pending_casts.is_empty() && !returned {
                 self.cast_statements(&mut statements);
@@ -1040,7 +1053,7 @@ impl Parser<'_> {
         self.loop_depth = 0;
         self.vararg_allowed = vararg.is_some();
         let mut body = self.statements(&["end"]);
-        control::validate_labels(&body, &mut self.diagnostics);
+        control::validate_labels(&body, &mut self.diagnostics, self.checkpoint);
         self.loop_depth = enclosing_loop_depth;
         self.vararg_allowed = enclosing_vararg;
         self.block_depth -= 1;
@@ -2156,4 +2169,27 @@ fn statements_depth(body: &[Stmt]) -> usize {
         }
     }
     max_depth
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_checkpoint_can_cancel_parsing_after_lexing() {
+        struct Cancelled;
+        let source = "local value = 1\n".repeat(512);
+        let lexed = crate::lex(&source);
+        let calls = Cell::new(0);
+        let checkpoint = || {
+            calls.set(calls.get() + 1);
+            if calls.get() == 32 { std::panic::resume_unwind(Box::new(Cancelled)); }
+        };
+        let mut parser = Parser::new(&source, lexed, &checkpoint);
+        let cancelled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parser.statements(&[])));
+        assert!(cancelled.unwrap_err().is::<Cancelled>());
+        assert_eq!(calls.get(), 32);
+        assert!(parser.pos > 0 && !parser.eof(), "parsing must stop before consuming every statement");
+    }
 }

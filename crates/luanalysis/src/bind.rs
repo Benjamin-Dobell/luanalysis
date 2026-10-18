@@ -425,6 +425,7 @@ impl Binder {
 
     fn statements(&mut self, statements: &[Stmt]) {
         for statement in statements {
+            crate::project_check::unwind_if_cancelled();
             match &statement.kind {
                 StmtKind::Local { names, attributes, values, .. } => {
                     for value in values {

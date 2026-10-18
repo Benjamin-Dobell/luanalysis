@@ -27,16 +27,21 @@ pub struct Lexed {
 }
 
 pub fn lex(source: &str) -> Lexed {
-    lex_with_mode(source, false)
+    lex_with_checkpoint(source, &|| {})
+}
+
+pub(crate) fn lex_with_checkpoint(source: &str, checkpoint: &dyn Fn()) -> Lexed {
+    lex_with_mode(source, false, checkpoint)
 }
 
 pub(crate) fn lex_annotation(source: &str) -> Lexed {
-    lex_with_mode(source, true)
+    lex_with_mode(source, true, &|| {})
 }
 
-fn lex_with_mode(source: &str, annotations: bool) -> Lexed {
+fn lex_with_mode(source: &str, annotations: bool, checkpoint: &dyn Fn()) -> Lexed {
     let mut lexer = Lexer {
         source,
+        checkpoint,
         annotations,
         pos: 0,
         tokens: Vec::new(),
@@ -51,6 +56,7 @@ fn lex_with_mode(source: &str, annotations: bool) -> Lexed {
 
 struct Lexer<'a> {
     source: &'a str,
+    checkpoint: &'a dyn Fn(),
     annotations: bool,
     pos: usize,
     tokens: Vec<Token>,
@@ -60,6 +66,7 @@ struct Lexer<'a> {
 impl Lexer<'_> {
     fn run(&mut self) {
         while self.pos < self.source.len() {
+            (self.checkpoint)();
             let start = self.pos;
             let ch = self.char();
             if ch == '\r' || ch == '\n' {
@@ -505,4 +512,34 @@ fn keyword(value: &str) -> bool {
             | "until"
             | "while"
     )
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn a_checkpoint_can_cancel_lexing_before_the_source_is_consumed() {
+        struct Cancelled;
+        let source = "local value = 1\n".repeat(512);
+        let calls = Cell::new(0);
+        let checkpoint = || {
+            calls.set(calls.get() + 1);
+            if calls.get() == 32 { std::panic::resume_unwind(Box::new(Cancelled)); }
+        };
+        let mut lexer = Lexer {
+            source: &source,
+            checkpoint: &checkpoint,
+            annotations: false,
+            pos: 0,
+            tokens: Vec::new(),
+            diagnostics: Vec::new(),
+        };
+        let cancelled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| lexer.run()));
+        assert!(cancelled.unwrap_err().is::<Cancelled>());
+        assert_eq!(calls.get(), 32);
+        assert!(lexer.pos > 0 && lexer.pos < source.len(), "lexing must stop within the source");
+        assert!(!lexer.tokens.iter().any(|token| matches!(token.kind, TokenKind::Eof)));
+    }
 }

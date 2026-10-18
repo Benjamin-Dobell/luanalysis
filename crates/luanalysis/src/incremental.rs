@@ -221,7 +221,7 @@ impl ProjectWorkspace {
         }
         // As TypeScript binds the tree its parser recovers, a source with syntax errors is bound
         // too, so the language service answers in it while it is being typed.
-        let syntax = luanalysis_syntax::parse(&source.source);
+        let syntax = luanalysis_syntax::parse_with_checkpoint(&source.source, crate::project_check::unwind_if_cancelled);
         let bound = Some(Arc::new(bind::bind(&syntax)));
         self.next_revision = self
             .next_revision
