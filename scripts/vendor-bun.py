@@ -647,6 +647,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Combine the candidates one union-typed source's alternatives give a type parameter as their union, and distribute a Lua call's result over those alternatives, through kernel 740a6c3.",
 } for path in ["call.rs", "infer.rs"])
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-member-origins.patch",
+    "reason": "Expose the members member lookup applies to a named object by name, own then inherited with overloads, for the language service's origins and documentation, through kernel c0224e3.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

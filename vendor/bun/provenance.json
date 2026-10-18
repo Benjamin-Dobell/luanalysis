@@ -2472,6 +2472,12 @@
       "patch": "vendor/patches/bun-sema-union-argument-distribution.patch",
       "reason": "Combine the candidates one union-typed source's alternatives give a type parameter as their union, and distribute a Lua call's result over those alternatives, through kernel 740a6c3.",
       "patch_sha256": "dc0a0319b9b1a9b2d6d8ad4d4fc2a8452d5b94142a7d716ef3c1d1e1fd963810"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-member-origins.patch",
+      "reason": "Expose the members member lookup applies to a named object by name, own then inherited with overloads, for the language service's origins and documentation, through kernel c0224e3.",
+      "patch_sha256": "bca5422f631861819dad7af5ee0283c10c843b64efd65ab6ae813ef2334204af"
     }
   ],
   "source_additions": {
@@ -2508,7 +2514,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "6d29a47848b379e0d9f4dce1b402e559fde571679ae7388d6201e9b4da188b09",
+      "extracted_sha256": "c9fc3a081399a6460b343048d91d2652c48a6f856e9d1e4e3a6e61feb74aa575",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
