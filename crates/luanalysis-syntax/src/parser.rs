@@ -1417,7 +1417,7 @@ impl Parser<'_> {
             }
             _ => {
                 self.error(
-                "expected an expression; this Lua expression form is unsupported in this slice",
+                "expected an expression",
             );
                 if !self.expression_boundary() {
                     self.pos += 1;

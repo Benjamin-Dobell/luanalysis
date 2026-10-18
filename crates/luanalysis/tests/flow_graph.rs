@@ -419,7 +419,7 @@ fn canonical_read_references_preserve_bound_roots_and_typed_paths() {
 }
 
 #[test]
-fn recovered_invalid_source_never_produces_execution_recipes() {
+fn recovered_invalid_source_flows_from_its_recovered_tree() {
     let syntax = luanalysis_syntax::parse("local x=\nlocal later=1");
     assert!(!syntax.diagnostics.is_empty());
     let bound = bind::bind(&syntax);
@@ -430,6 +430,7 @@ fn recovered_invalid_source_never_produces_execution_recipes() {
             .iter()
             .any(|f| f.kind == PendingFeature::InvalidSource)
     );
-    assert!(program.evaluations.is_empty());
-    assert_eq!(program.graphs[0].nodes.len(), 1);
+    // The statement after the error is executed as written.
+    assert!(!program.evaluations.is_empty());
+    assert!(program.graphs[0].nodes.len() > 1);
 }

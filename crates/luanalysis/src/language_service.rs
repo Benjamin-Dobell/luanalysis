@@ -187,7 +187,7 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
         let closers = closers(&prefix);
         candidates.push(prefix + &closers);
     }
-    let text = candidates.into_iter().find(|candidate| !luanalysis_syntax::parse(candidate).has_lua_syntax_errors())?;
+    let text = repaired(candidates, |parsed| placeholder_parsed(parsed, start))?;
     Some(CompletionSite {
         context,
         text,
@@ -198,6 +198,33 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
         value,
         details: Details::All,
     })
+}
+
+/// The first of `candidates` that parses. In a file with syntax errors elsewhere, such as another
+/// line being typed, none does: then the one with the fewest that `accept` accepts, as the tree
+/// the parser recovers is checked too.
+fn repaired(candidates: Vec<String>, accept: impl Fn(&luanalysis_syntax::File) -> bool) -> Option<String> {
+    let mut fallback: Option<(usize, String)> = None;
+    for candidate in candidates {
+        let parsed = luanalysis_syntax::parse(&candidate);
+        let errors = parsed.diagnostics.iter().filter(|diagnostic| diagnostic.origin == luanalysis_syntax::DiagnosticOrigin::LuaSyntax).count();
+        if errors == 0 { return Some(candidate); }
+        if fallback.as_ref().is_none_or(|(fewest, _)| errors < *fewest) && accept(&parsed) {
+            fallback = Some((errors, candidate));
+        }
+    }
+    fallback.map(|(_, candidate)| candidate)
+}
+
+/// Whether `file` parsed the completion placeholder at `start` as a name: of a value, a member or
+/// a function being defined.
+fn placeholder_parsed(file: &luanalysis_syntax::File, start: usize) -> bool {
+    let mut found = false;
+    crate::module_requests::visit_expressions(&file.statements, &mut |expression: &Expr| match &expression.kind {
+        ExprKind::Name(name) | ExprKind::Field { name, .. } | ExprKind::MethodCall { name, .. } => found |= name.span.start == start && name.text == PLACEHOLDER,
+        _ => {}
+    });
+    found
 }
 
 /// The completion an annotation takes at `offset`, when it is in a documentation comment: a tag
@@ -940,7 +967,7 @@ pub fn signature_site(text: &str, offset: usize) -> Option<SignatureSite> {
         let closers = closers(&prefix);
         candidates.push(prefix + &closers);
     }
-    let text = candidates.into_iter().find(|candidate| !luanalysis_syntax::parse(candidate).has_lua_syntax_errors())?;
+    let text = repaired(candidates, |_| true)?;
     Some(SignatureSite { text, open: paren, argument })
 }
 

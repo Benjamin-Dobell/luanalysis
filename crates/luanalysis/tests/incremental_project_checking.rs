@@ -548,14 +548,14 @@ fn loader_policy_changes_recompute_result_packs_from_reused_module_sources() {
 }
 
 #[test]
-fn syntax_error_correction_replaces_the_failed_parse_and_only_then_binds_it() {
+fn syntax_error_correction_replaces_the_failed_parse_and_its_recovered_binding() {
     let fixture = Fixture::new();
     fixture.file("main.lua", "local = ?\n");
     let mut workspace = ProjectWorkspace::new();
     let plan = || fixture.plan(&["main.lua"], &[]);
     let invalid = fixture.compare(&mut workspace, plan(), options());
     assert!(invalid.has_errors());
-    assert!(invalid.files[0].report.bound.is_none());
+    assert!(invalid.files[0].report.bound.is_some());
     assert!(
         invalid.files[0]
             .report
@@ -563,11 +563,11 @@ fn syntax_error_correction_replaces_the_failed_parse_and_only_then_binds_it() {
             .iter()
             .all(|error| error.code == "LUA1001")
     );
-    preparation(&workspace, 1, 0, 0);
+    preparation(&workspace, 1, 0, 1);
     let repeated = fixture.compare(&mut workspace, plan(), options());
     assert_eq!(normalized(&invalid), normalized(&repeated));
     preparation(&workspace, 0, 1, 0);
-    assert_eq!(workspace.last_preparation_stats().bind_reused, 0);
+    assert_eq!(workspace.last_preparation_stats().bind_reused, 1);
     fixture.file("main.lua", "local checked=42\n");
     clean(&fixture.compare(&mut workspace, plan(), options()));
     preparation(&workspace, 1, 0, 1);

@@ -336,11 +336,13 @@ fn invalid_target_syntax_is_published_for_every_program_file() {
     assert!(rejected.file(rejected.project.entries[0]).unwrap().report.diagnostics.is_empty());
     assert_eq!(rejected.checked_file_count(), 2);
 
+    // A required module with syntax errors is the module its recovered tree is: this one returns
+    // nothing, so require gives true. Only its own syntax error is reported.
     let proven = run("local value=require('broken')\n");
     assert!(proven.has_errors());
     let original = proven.project.file_by_path(&broken).unwrap();
     assert!(proven.file(original.id).unwrap().report.diagnostics.iter().any(|error| error.code == "LUA1001"));
-    assert!(proven.file(proven.project.entries[0]).unwrap().report.diagnostics.iter().any(|error| error.code == "LUA2036"));
+    assert!(proven.file(proven.project.entries[0]).unwrap().report.diagnostics.is_empty());
     assert_eq!(proven.checked_file_count(), 2);
 }
 

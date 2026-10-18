@@ -135,7 +135,9 @@ fn annotation_error_keeps_independent_lua_checks_and_never_hides_other_type_erro
     );
 }
 #[test]
-fn genuinely_invalid_lua_still_refuses_the_entire_source_registry_and_flow_graph() {
+fn invalid_lua_reports_its_syntax_errors_and_declares_what_its_recovered_tree_does() {
+    // As a TypeScript declaration file with a syntax error still declares what its parser
+    // recovers, the library's shape is declared; only the syntax error is reported.
     let source = "---@shape Visible\n---@field value number\nfunction damaged(\n";
     let fixture = Fixture::new();
     fixture.file("api.def.lua", source);
@@ -143,7 +145,7 @@ fn genuinely_invalid_lua_still_refuses_the_entire_source_registry_and_flow_graph
     let output = fixture.check(true);
     assert_eq!(output.status.code(), Some(1), "{}", text(&output));
     assert!(text(&output).contains("LUA1001"), "{}", text(&output));
-    assert!(text(&output).contains("TS2304"), "{}", text(&output));
+    assert!(!text(&output).contains("TS2304"), "{}", text(&output));
     let report = luanalysis::check(source);
     assert!(report.bound.is_none());
     assert!(report.bindings.is_empty());

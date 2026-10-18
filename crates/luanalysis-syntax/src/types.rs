@@ -1636,7 +1636,7 @@ impl TypeParser {
                 }
                 let Some(name) = self.name() else {
                     self.error(
-                        "unnamed function parameters are unsupported in this slice".to_owned(),
+                        "unnamed function parameters are not supported".to_owned(),
                     );
                     while !self.eof() && !self.symbol(",") && !self.symbol(")") {
                         self.pos += 1;

@@ -62,9 +62,6 @@ pub fn static_require_requests(source: &SourceFile) -> FileRequests {
         return FileRequests::default();
     }
     let file = luanalysis_syntax::parse(&source.source);
-    if file.has_lua_syntax_errors() {
-        return FileRequests::default();
-    }
     let bound = crate::bind::bind(&file);
     let requires = crate::module_requests::require_calls(&file, &bound)
         .into_iter()
@@ -154,6 +151,8 @@ struct PreparedProgram {
     source_costs: HashMap<FileId, usize>,
     standard_library_files: Vec<FileId>,
     environment_errors: Vec<DeclarationSourceError>,
+    /// The sources with syntax errors, which report only those.
+    unparsed: HashSet<FileId>,
 }
 
 fn prepare_program(
@@ -175,8 +174,12 @@ fn prepare_program(
     let mut files = Vec::new();
     let plan_options = NativePlanOptions::default();
     let mut source_costs = HashMap::default();
+    // A source with syntax errors is checked from the tree its parser recovers, for what depends
+    // on it, but reports only its syntax errors, as tsc reports no semantic errors with them.
+    let mut unparsed = HashSet::default();
     for source in workspace.prepare_registered_sources(project).sources {
         let parsed = source.snapshot.syntax();
+        if parsed.has_lua_syntax_errors() { unparsed.insert(source.id); }
         if let Some(bound) = source.snapshot.bound() {
             source_costs.insert(
                 source.id,
@@ -220,7 +223,7 @@ fn prepare_program(
         selection.profile,
         options.overload_mode,
     ).with_no_implicit_any(options.no_implicit_any).with_prepared_sources(prepared);
-    PreparedProgram { snapshot, revisions, files, source_costs, standard_library_files, environment_errors }
+    PreparedProgram { snapshot, revisions, files, source_costs, standard_library_files, environment_errors, unparsed }
 }
 
 /// Runs `query` in one native session over the project, as one checking task runs, for the
@@ -258,7 +261,7 @@ pub(crate) fn check_project_with_workspace(
 ) -> ProjectCheckReport {
     let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
     let started = Instant::now();
-    let PreparedProgram { mut snapshot, revisions, mut files, source_costs, standard_library_files, environment_errors } =
+    let PreparedProgram { mut snapshot, revisions, mut files, source_costs, standard_library_files, environment_errors, unparsed } =
         prepare_program(&mut project, &options, workspace);
     // As in Bun, the program is every file the load reached: explicit inputs and
     // the targets of their syntactic require calls. Each is checked once, by one
@@ -353,6 +356,9 @@ pub(crate) fn check_project_with_workspace(
             factory_nanos.load(Ordering::Relaxed) as f64 / 1_000_000_000.0, factories.load(Ordering::Relaxed));
     }
     files.extend(checked);
+    for file in files.iter_mut().filter(|file| unparsed.contains(&file.file)) {
+        file.report.diagnostics.retain(|diagnostic| diagnostic.code == "LUA1001");
+    }
     files.sort_by_key(|file| file.file.index);
     ProjectCheckReport {
         project,

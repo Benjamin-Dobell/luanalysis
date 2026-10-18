@@ -207,8 +207,10 @@ impl ProjectWorkspace {
         {
             return (Arc::clone(known), false);
         }
+        // As TypeScript binds the tree its parser recovers, a source with syntax errors is bound
+        // too, so the language service answers in it while it is being typed.
         let syntax = luanalysis_syntax::parse(&source.source);
-        let bound = (!syntax.has_lua_syntax_errors()).then(|| Arc::new(bind::bind(&syntax)));
+        let bound = Some(Arc::new(bind::bind(&syntax)));
         self.next_revision = self
             .next_revision
             .checked_add(1)
@@ -331,8 +333,7 @@ mod tests {
             assert_eq!(cached.role, source.role);
             assert_eq!(cached.snapshot.source(), source.source.as_str());
             assert_eq!(cached.snapshot.syntax(), &parsed);
-            let bound = (!parsed.has_lua_syntax_errors()).then(|| bind::bind(&parsed));
-            assert_eq!(cached.snapshot.bound(), bound.as_ref());
+            assert_eq!(cached.snapshot.bound(), Some(&bind::bind(&parsed)));
         }
         assert_eq!(prepared.stats.semantic_reused, 0);
     }
@@ -443,19 +444,19 @@ mod tests {
     }
 
     #[test]
-    fn syntax_failures_are_reused_until_a_corrected_buffer_can_bind() {
+    fn syntax_failures_are_bound_from_their_recovered_tree_and_reused() {
         let fixture = Fixture::new();
         let path = fixture.file("main.lua", "local =\n");
         let mut workspace = ProjectWorkspace::new();
         let first =
             workspace.prepare_registered_sources(&fixture.load(std::slice::from_ref(&path), &[]));
         assert!(first.sources[0].snapshot.syntax().has_lua_syntax_errors());
-        assert_eq!((first.stats.parsed, first.stats.bound), (1, 0));
+        assert_eq!((first.stats.parsed, first.stats.bound), (1, 1));
         let project = fixture.load(std::slice::from_ref(&path), &[]);
         let repeated = workspace.prepare_registered_sources(&project);
         assert_eq!(
             (repeated.stats.parse_reused, repeated.stats.bind_reused),
-            (1, 0)
+            (1, 1)
         );
         matches_cold(&project, &repeated);
         fixture.file("main.lua", "local fixed=1\n");

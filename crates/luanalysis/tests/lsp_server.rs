@@ -1142,3 +1142,28 @@ fn completion_details_are_resolved_for_the_item_shown() {
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn completion_and_hover_answer_in_a_file_with_syntax_errors_elsewhere() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    // Another line is being typed (`string.`), and the chunk has a statement after its return.
+    let text = "local count = 1\nlocal half = string.\nlocal value = \nreturn count\nlocal after = 2\n";
+    fs::write(&main, text).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, text);
+    // The syntax errors are reported, and nothing else.
+    let diagnostics = server.diagnostics(&main, |_| true);
+    assert!(diagnostics.contains("LUA1001") && !diagnostics.contains("TS"), "{diagnostics}");
+    let (line, character) = position(text, "value = ", 0);
+    let completion = server.request(2, "textDocument/completion", &main, line, character + 8);
+    assert!(completion.contains(r#""label":"count""#) && completion.contains(r#""label":"half""#), "{completion}");
+    let (line, character) = position(text, "count", 1);
+    let hover = server.request(3, "textDocument/hover", &main, line, character + 1);
+    assert!(hover.contains("number"), "{hover}");
+    let members = server.request(4, "textDocument/completion", &main, 1, 20);
+    assert!(members.contains(r#""label":"format""#), "{members}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}

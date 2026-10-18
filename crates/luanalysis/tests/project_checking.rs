@@ -204,7 +204,7 @@ fn syntax_invalid_sources_remain_owned_and_do_not_poison_other_files() {
     let valid = fixture.file("valid.lua", "local value=42");
     let report = check_project(fixture.load(vec![invalid, valid], vec![]));
     assert_eq!(report.checked_file_count(), 2);
-    assert!(report.files[0].report.bound.is_none());
+    assert!(report.files[0].report.bound.is_some());
     assert!(
         report.files[0]
             .report

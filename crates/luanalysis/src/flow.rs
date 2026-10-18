@@ -337,10 +337,6 @@ pub(crate) fn build_with_snapshot(file: &File, bound: &BoundFile, snapshot: u64)
         builder.feature(PendingFeature::InvalidSource, file.span);
     }
     let graph = builder.new_graph(None, file.span);
-    if file.has_lua_syntax_errors() {
-        builder.program.graphs[graph as usize].shared = vec![false];
-        return builder.program;
-    }
     let mut context = Context {
         graph,
         current: builder.program.graphs[graph as usize].entry,
