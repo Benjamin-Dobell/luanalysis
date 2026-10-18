@@ -1638,10 +1638,18 @@ impl<'p, 's> Checker<'p, 's> {
             if let NativeTableAccessKey::Literal(literal) = key {
                 let members = self.native_object_members(reference).map_err(|error| error.table_error(object))?;
                 let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
-                let selected: Vec<_> = members.into_iter().filter(|origin| match provider.type_member_header(self, origin.member).key {
-                    NativeTypeMemberKey::Fixed(member_key) => member_key.normalize() == Ok(literal),
-                    NativeTypeMemberKey::Indexer { .. } => provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared,
-                }).collect();
+                let mut selected = Vec::new();
+                for origin in members {
+                    let keep = match provider.type_member_header(self, origin.member).key {
+                        NativeTypeMemberKey::Fixed(member_key) => member_key.normalize() == Ok(literal),
+                        NativeTypeMemberKey::Indexer { .. } if provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared => true,
+                        // A store at a computed key of this one literal type stores this field.
+                        NativeTypeMemberKey::Indexer { .. } => self.native_runtime_member_demand(reference, origin.member, true).ok()
+                            .map(|raw| self.native_member_type(raw, origin.owner))
+                            .is_some_and(|key| matches!(self.native_table_access(NativeTableAccessKey::Type(key)), Ok(NativeTableAccessKey::Literal(other @ NativeTableKey::String(_))) if other == literal)),
+                    };
+                    if keep { selected.push(origin); }
+                }
                 let table = self.native_runtime_schema_resolved(reference, &selected).map_err(|error| error.table_error(object))?;
                 return self.native_table_read(table, key);
             }

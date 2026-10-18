@@ -532,6 +532,18 @@ fn numeric_first_entry(
 }
 
 impl NativeDomain<'_> {
+    /// A store at a computed key whose type is one literal (`t[K.NAME] = v` with `K.NAME` the
+    /// string 'name') stores that field, as TypeScript reads a late-bound assignment.
+    fn literal_store_key(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey, target: NativeReferenceKey) -> Option<NativeTableKey> {
+        let (key, input) = self.provider.write_index_value(walk.reference, target, at)?;
+        let (ty, completed) = checker.run_memoizable(|checker| checker.native_flow_value(self.provider, key, input));
+        completed?;
+        // Numeric keys keep the sparse numeric inference that builds sequences.
+        match checker.native_table_access(super::native_tables::NativeTableAccessKey::Type(ty)) {
+            Ok(super::native_tables::NativeTableAccessKey::Literal(key @ NativeTableKey::String(_))) => Some(key),
+            _ => None,
+        }
+    }
     fn numeric_store_transfer(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> Option<FlowType> {
         if !checker.native_has_runtime_table(previous.ty) { return None; }
         let (key, key_input) = self.provider.write_index_value(walk.reference, target, at)?;
@@ -931,6 +943,11 @@ impl FlowDomain for NativeDomain<'_> {
                             && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
                             let value = checker.native_flow_value(self.provider, value, input);
                             checker.native_definition_flow_write(previous.ty, key, value)
+                        } else if checker.native_definition_flow_target(previous.ty)
+                            && let Some(key) = self.literal_store_key(checker, walk, at, target) {
+                            // The literal key is this field: the store is exact.
+                            let value = checker.native_flow_value(self.provider, value, input);
+                            return FlowType::new(checker.native_definition_flow_write(previous.ty, key, value), previous.incomplete);
                         } else if let Some(result) = self.numeric_store_transfer(checker, walk, at, target, value, input, previous) {
                             // Every numeric slot remains sparse, which already
                             // includes the unaffected continuation of this
@@ -946,7 +963,8 @@ impl FlowDomain for NativeDomain<'_> {
             NativeTransfer::IncompleteCall => unreachable!(),
             NativeTransfer::DefinitionWrite { at, target, value, input } => {
                 if checker.native_definition_flow_target(previous.ty)
-                    && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
+                    && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker)
+                        .or_else(|| self.literal_store_key(checker, walk, at, target)) {
                     let value = checker.native_flow_value(self.provider, value, input);
                     checker.native_definition_flow_write(previous.ty, key, value)
                 } else if let Some(result) = self.numeric_store_transfer(checker, walk, at, target, value, input, previous) {

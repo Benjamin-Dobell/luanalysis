@@ -97,3 +97,13 @@ fn a_store_in_a_function_leaves_the_tables_other_fields() {
     assert_eq!(report.type_at(source.find("before=").unwrap()), Some("number"));
     assert_eq!(report.type_at(source.find("after=").unwrap()), Some("number"));
 }
+
+#[test]
+fn a_store_at_a_literal_typed_key_stores_that_field() {
+    // As TypeScript reads a late-bound assignment: `t[K.NAME] = v` with `K.NAME` the string
+    // 'name' stores the field `name`.
+    let source = "local Props={}\nProps.TYPES={MERC='mercenary'}\nProps.Abilities={}\nProps.Abilities[Props.TYPES.MERC]={CLOAKED='cloaked'}\nlocal function f()\n local inner=Props.Abilities.mercenary.CLOAKED\n return inner\nend\nlocal outer=Props.Abilities[Props.TYPES.MERC].CLOAKED\nreturn Props\n";
+    let report = check(source);
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+    assert_eq!(report.type_at(source.find("inner=").unwrap()), Some("string"));
+}

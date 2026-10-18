@@ -71,7 +71,7 @@ impl<'p, 's> Checker<'p, 's> {
         result
     }
 
-    fn native_runtime_member_demand(&mut self, reference: NativeObjectReference, member: NativeTypeMemberId, indexer: bool) -> Result<TypeId, NativeNamedTypeError> {
+    pub(super) fn native_runtime_member_demand(&mut self, reference: NativeObjectReference, member: NativeTypeMemberId, indexer: bool) -> Result<TypeId, NativeNamedTypeError> {
         let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
         let object = self.intern(TypeData::NativeObject(reference));
         let native_query = NativeTypeDeclarationQuery::RuntimeTableMember(object, member, indexer);
@@ -137,8 +137,16 @@ impl<'p, 's> Checker<'p, 's> {
             let metadata = provider.type_member_header(self, origin.member);
             let declared = provider.type_member_origin(origin.member) == NativeTableFieldOrigin::Declared;
             // A computed store does not declare an open index signature. As
-            // with TS checking JS expandos, that key domain must be written.
-            if !declared && matches!(metadata.key, NativeTypeMemberKey::Indexer { .. }) { continue }
+            // with TS checking JS expandos, that key domain must be written. A
+            // key of one literal type stores that field, as TypeScript reads a
+            // late-bound assignment.
+            let mut metadata = metadata;
+            if !declared && matches!(metadata.key, NativeTypeMemberKey::Indexer { .. }) {
+                let raw = self.native_runtime_member_demand(reference, origin.member, true)?;
+                let key = self.native_member_type(raw, origin.owner);
+                let Ok(NativeTableAccessKey::Literal(key @ NativeTableKey::String(_))) = self.native_table_access(NativeTableAccessKey::Type(key)) else { continue };
+                metadata.key = NativeTypeMemberKey::Fixed(key);
+            }
             if let NativeTypeMemberKey::Fixed(key) = metadata.key {
                 let key = key.normalize().map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
                 if let Some(previous) = fields.iter_mut().find(|field| field.key == key)
