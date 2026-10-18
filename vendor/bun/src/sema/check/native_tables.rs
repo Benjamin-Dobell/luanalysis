@@ -426,7 +426,7 @@ impl<'p, 's> Checker<'p, 's> {
             }
         }
         for indexer in indexers {
-            if !self.native_table_valid_key_type(indexer.key) {
+            if !self.native_table_valid_indexer_key(indexer, fresh) {
                 return Err(NativeTableError::InvalidKey { key: NativeTableAccessKey::Type(indexer.key) });
             }
         }
@@ -527,7 +527,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let mut domains: Vec<NativeTableIndexer> = Vec::with_capacity(indexers.len());
         for &indexer in indexers {
-            if !self.native_table_valid_key_type(indexer.key) {
+            if !self.native_table_valid_indexer_key(&indexer, fresh) {
                 return Err(NativeTableError::InvalidKey { key: NativeTableAccessKey::Type(indexer.key) });
             }
             let mut indexer = indexer;
@@ -638,6 +638,33 @@ impl<'p, 's> Checker<'p, 's> {
         })
     }
 
+    /// As in Luanalysis v1, a written key type may include nil (`table<nil | string, V>`): the
+    /// table then accepts lookups whose key may be nil, which Lua answers with nil. A table
+    /// constructor's keys (`{ [key] = value }`) are values, and a nil one is an error.
+    fn native_table_valid_indexer_key(&self, indexer: &NativeTableIndexer, fresh: bool) -> bool {
+        if self.native_table_valid_key_type(indexer.key) { return true }
+        let nil = |part: &TypeId| part.is_undefined() || part.is_null();
+        !fresh && self.native_table_key_has_nil(indexer.key)
+            && self.parts(indexer.key).iter().any(|part| !nil(part))
+            && self.parts(indexer.key).iter().all(|part| nil(part) || self.native_table_valid_key_type(*part))
+    }
+
+    fn native_table_key_has_nil(&self, ty: TypeId) -> bool {
+        self.parts(ty).iter().any(|part| part.is_undefined() || part.is_null())
+    }
+
+    /// The key a lookup with a possibly nil key reads or writes, when `table` declares nil keys.
+    fn native_table_nil_key_access(&mut self, table: TypeId, key: NativeTableAccessKey) -> Option<TypeId> {
+        let NativeTableAccessKey::Type(ty) = key else { return None };
+        if !self.native_table_key_has_nil(ty) { return None }
+        let TypeData::NativeTable(data) = self.data(table) else { return None };
+        if !data.indexers.iter().any(|indexer| self.native_table_key_has_nil(indexer.key)) {
+            return None;
+        }
+        let present: Vec<TypeId> = self.parts(ty).iter().copied().filter(|part| !part.is_undefined() && !part.is_null()).collect();
+        Some(self.union(&present))
+    }
+
     /// Instantiation keeps exact types even when a generic key becomes invalid. Inspection and
     /// operations report the invalid schema instead of weakening it or rebuilding a recipe.
     pub fn native_table_description_error(&self, ty: TypeId) -> Option<NativeTableError> {
@@ -646,7 +673,7 @@ impl<'p, 's> Checker<'p, 's> {
             return Some(NativeTableError::InvalidSequenceStart { start: tail.start });
         }
         table.indexers.iter().find_map(|indexer| {
-            (!self.native_table_valid_key_type(indexer.key)).then_some(NativeTableError::InvalidKey {
+            (!self.native_table_valid_indexer_key(indexer, table.fresh)).then_some(NativeTableError::InvalidKey {
                 key: NativeTableAccessKey::Type(indexer.key),
             })
         })
@@ -794,6 +821,11 @@ impl<'p, 's> Checker<'p, 's> {
             return self.native_named_read(reference, key);
         }
         if let Some(error) = self.native_table_description_error(table) { return Err(error) }
+        if let Some(present) = self.native_table_nil_key_access(table, key) {
+            if present.is_never() { return Ok(TypeId::UNDEFINED) }
+            let value = self.native_table_read(table, NativeTableAccessKey::Type(present))?;
+            return Ok(self.optional(value));
+        }
         let key = self.native_table_access(key)?;
         if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
             let mut values = Vec::new();
@@ -931,6 +963,10 @@ impl<'p, 's> Checker<'p, 's> {
         if let Some(reference) = self.native_definition_ref(table) { return self.native_definition_write(reference, key, value) }
         let table = self.native_object_resolved(table).map_err(|error| error.table_error(table))?;
         if let Some(error) = self.native_table_description_error(table) { return Err(error) }
+        if let Some(present) = self.native_table_nil_key_access(table, key) {
+            if present.is_never() { return Ok(()) }
+            return self.native_table_write(table, NativeTableAccessKey::Type(present), value);
+        }
         let key = self.native_table_access(key)?;
         if let NativeTableAccessKey::Type(ty) = key && self.is_union(ty) {
             for &part in self.parts(ty) { self.native_table_write(table, NativeTableAccessKey::Type(part), value)?; }
@@ -1050,7 +1086,9 @@ impl<'p, 's> Checker<'p, 's> {
                 return Ternary::FALSE;
             }
         } else if identity && source.nominal_origin.is_some() { return Ternary::FALSE }
-        if source.indexers.iter().chain(target.indexers.iter()).any(|indexer| !self.native_table_valid_key_type(indexer.key)) {
+        if source.indexers.iter().any(|indexer| !self.native_table_valid_indexer_key(indexer, source.fresh))
+            || target.indexers.iter().any(|indexer| !self.native_table_valid_indexer_key(indexer, target.fresh))
+        {
             return Ternary::FALSE;
         }
         if identity && (source.fields.len() != target.fields.len() || source.indexers.len() != target.indexers.len()

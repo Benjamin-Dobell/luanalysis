@@ -1068,7 +1068,8 @@ impl Checker<'_> {
         }
         if let Some(annotation) = annotation
             && !targets.iter().all(|target| self.is_global_annotation_target(target)
-                || self.native.is_some_and(|native| native.is_original_assignment_field(target.span)))
+                || self.native.is_some_and(|native| native.is_original_assignment_field(target.span)
+                    || native.accepts_assignment_annotation(target)))
         {
             self.error(
                 "LUA2004",

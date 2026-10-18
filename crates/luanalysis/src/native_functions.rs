@@ -93,6 +93,9 @@ pub(super) struct NativeRegistry {
     /// The runtime-table constructor each original store's receiver names, as a
     /// binder sees it (`runtime_store_owner`). Computed once per registry.
     pub(super) runtime_store_owners: std::cell::OnceCell<Vec<Option<NativeExpressionKey>>>,
+    /// The `---@type` of each value assigned to a local by an annotated assignment statement,
+    /// by the value's span. Computed once per registry.
+    assignment_annotations: std::cell::OnceCell<HashMap<(usize, usize), luanalysis_syntax::TypeAnnotation>>,
     class_definitions: class_definitions::NativeClassDefinitions,
     methods: methods::NativeMethods,
     metatables: metatables::NativeMetatables,
@@ -327,6 +330,7 @@ impl NativeRegistry {
             doc_members,
             runtime_tables,
             runtime_store_owners: Default::default(),
+            assignment_annotations: Default::default(),
             class_definitions,
             methods,
             metatables,
@@ -504,6 +508,42 @@ impl NativeRegistry {
 
     pub(super) fn expressions(&self) -> &NativeExpressions {
         &self.expressions
+    }
+
+    /// The `---@type` a value assigned to a local has: `---@type T` above `x = value`, as LuaLS
+    /// reads it. Unlike an inline cast, the value is checked against it.
+    pub(super) fn assignment_annotation(&self, expression: Span) -> Option<&luanalysis_syntax::TypeAnnotation> {
+        self.assignment_annotations.get_or_init(|| {
+            let mut statements = Vec::new();
+            super::native_runtime_tables::collect_statements(&self.file.statements, &mut statements);
+            for (_, source) in self.expressions().sources() {
+                if let ExprKind::Function(function) = &source.expression.kind {
+                    super::native_runtime_tables::collect_statements(&function.body, &mut statements);
+                }
+            }
+            let mut annotations = HashMap::default();
+            for statement in statements {
+                let StmtKind::Assign { targets, values, annotation: Some(annotation) } = &statement.kind else { continue };
+                for (slot, (target, value)) in targets.iter().zip(values).enumerate() {
+                    let (ExprKind::Name(name), Some(ty)) = (&target.kind, annotation.types.get(slot)) else { continue };
+                    if self.bound.binding_at(name.span.start).is_none() { continue; }
+                    annotations.insert((value.span.start, value.span.end), luanalysis_syntax::TypeAnnotation {
+                        types: vec![ty.clone()],
+                        packs: None,
+                        span: annotation.span,
+                    });
+                }
+            }
+            annotations
+        }).get(&(expression.start, expression.end))
+    }
+
+    /// Whether an annotated assignment's `---@type` applies to the store or local it assigns.
+    pub(crate) fn accepts_assignment_annotation(&self, target: &Expr) -> bool {
+        match &target.kind {
+            ExprKind::Name(name) => self.bound.binding_at(name.span.start).is_some(),
+            _ => self.runtime_tables.store_for_target(target.span).is_some_and(|store| store.annotation.is_some()),
+        }
     }
 
     pub(super) fn expression_assertions(&self, expression: Span) -> Vec<luanalysis_syntax::ExpressionAssertion> {

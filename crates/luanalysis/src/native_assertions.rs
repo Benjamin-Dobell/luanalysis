@@ -13,7 +13,16 @@ impl Checker<'_> {
             return Vec::new();
         }
         self.native.map_or_else(Vec::new, |native| {
-            native.expression_assertions(expression.span)
+            let mut assertions = native.expression_assertions(expression.span);
+            if let Some(annotation) = native.assignment_annotation(expression.span) {
+                assertions.push(ExpressionAssertion {
+                    kind: ExpressionAssertionKind::Type,
+                    annotation: annotation.clone(),
+                    expression: expression.span,
+                    span: annotation.span,
+                });
+            }
+            assertions
         })
     }
     fn assertion_pack(&mut self, assertion: &ExpressionAssertion) -> ValuePack {
@@ -47,6 +56,12 @@ impl Checker<'_> {
         let mut value = self.expression_value_at_current_flow(expression, context, capture_origin);
         // Keep this evaluation's physical origin even when its static view changes.
         if let Some(target) = target {
+            // An assignment's `---@type` is checked, unlike an inline cast.
+            if self.native.is_some_and(|native| native.assignment_annotation(expression.span).is_some())
+                && self.native.is_none_or(|native| native.expression_assertions(expression.span).is_empty())
+            {
+                self.compatible(&value.ty, &target, expression.span);
+            }
             // V1 @type is an authoritative static view, including unrelated
             // conversions. The operand above still checks calls and bodies.
             value.ty = target;

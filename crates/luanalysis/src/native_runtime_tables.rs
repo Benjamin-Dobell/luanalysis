@@ -412,7 +412,7 @@ fn attach_annotation(
             });
     }
 }
-fn collect_statements<'a>(statements: &'a [Stmt], result: &mut Vec<&'a Stmt>) {
+pub(super) fn collect_statements<'a>(statements: &'a [Stmt], result: &mut Vec<&'a Stmt>) {
     for statement in statements {
         result.push(statement);
         match &statement.kind {
