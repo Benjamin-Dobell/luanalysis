@@ -64,17 +64,12 @@ fn predicate_callbacks_preserve_the_enclosing_parameter_comma() {
 fn malformed_and_combined_predicates_report_annotation_errors() {
     for returns in [
         "value is",
-        "is string",
-        "value.field is string",
-        "(value) is string",
-        "... is string",
         "value is string, number",
-        "number, value is string",
+        "value is string, ...",
         "value is string...",
         "(value is string, number)",
-        "false | value is string",
+        "value is (string, number)",
         "value is string | (true, number)",
-        "value is string is number",
     ] {
         let source = format!("---@return {returns}\nlocal function valid(value) end\nlocal recovered=42");
         let file = parse(&source);
@@ -87,16 +82,17 @@ fn malformed_and_combined_predicates_report_annotation_errors() {
 #[test]
 fn predicate_syntax_is_rejected_outside_function_results() {
     for tag in [
-        "type value is string",
-        "param guard value is string",
-        "alias Guard value is string",
-        "field guard value is string",
         "type fun(value: value is string):boolean",
         "type {guard:value is string}",
+        "type table<value is string>",
+        "param guard fun(value:value is string):boolean",
+        "alias Guard (value is string)",
+        "field guard {value:value is string}",
     ] {
         let source = format!("---@{tag}\nlocal value");
         let file = parse(&source);
-        assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("type predicate")), "{tag}: {:#?}", file.diagnostics);
+        assert!(!file.diagnostics.is_empty(), "{tag}");
+        assert!(file.diagnostics.iter().all(|diagnostic| diagnostic.origin == luanalysis_syntax::DiagnosticOrigin::Annotation), "{tag}: {:#?}", file.diagnostics);
     }
 }
 
@@ -124,8 +120,23 @@ fn predicate_parameter_is_not_a_type_reference() {
 }
 
 #[test]
+fn contextual_is_remains_a_named_type_in_return_annotations() {
+    for returns in ["is", "is | nil", "is[]", "fun():is"] {
+        let source = format!("---@alias is string\n---@return {returns}\nlocal function valid() end");
+        let file = parse(&source);
+        assert!(file.diagnostics.is_empty(), "{returns}: {:#?}", file.diagnostics);
+        assert_eq!(type_names(&file, &source).iter().filter(|name| name.name == "is").count(), 2);
+    }
+    let file = parse("---@type fun(is:unknown):is is string\nlocal guard");
+    assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
+    let StmtKind::Local { annotation: Some(annotation), .. } = &file.statements[0].kind else { panic!("annotated local") };
+    let TypeExprKind::Function(signature) = &annotation.types[0].kind else { panic!("function type") };
+    assert_eq!(predicate(&signature.returns[0]).0.text, "is");
+}
+
+#[test]
 fn deeply_nested_predicate_targets_obey_the_existing_type_depth_bound() {
-    for prefix in ["value is fun(value:any): ", "is fun(value:any): ", "string is "] {
+    for prefix in ["value is fun(value:any): ", "is is fun(is:any): "] {
         let target = format!("{}string", prefix.repeat(1024));
         let source = format!("---@return {target}\nlocal function valid(value) end\nlocal recovered=42");
         let file = parse(&source);

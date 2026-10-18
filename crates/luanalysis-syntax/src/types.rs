@@ -460,11 +460,6 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     }
                     _ => unreachable!(),
                 }
-                if parser.word_at(parser.pos, "is") {
-                    parser.error("a type predicate is only allowed as the sole function return type".to_owned());
-                    parser.pos += 1;
-                    parser.union();
-                }
                 // Text after a complete type is its description, as LuaLS and EmmyLua read it:
                 // `---@param path string # the file`, `---@return integer count`.
                 // In v1 a `)` after a complete type also ends it, as its lexer leaves the type
@@ -981,7 +976,7 @@ impl TypeParser {
     fn documentation_tail(&mut self) -> Option<usize> {
         // doc.bnf permits comment_string after named declarations/fields.
         // Punctuation that would continue a malformed type remains an error.
-        if !self.word_at(self.pos, "is") && matches!(
+        if matches!(
             self.current().kind,
             TokenKind::Identifier(_) | TokenKind::Keyword(_) | TokenKind::String(_)
         ) {
@@ -1123,13 +1118,12 @@ impl TypeParser {
         parameters
     }
     fn return_packs(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
+        // `is` is contextual: preserve it as a named type, and preserve prose
+        // after completed types in annotation grammars without predicates.
         if matches!(self.current().kind, TokenKind::Identifier(_))
             && self.word_at(self.pos + 1, "is")
         {
             return self.predicate_return();
-        }
-        if self.word_at(self.pos, "is") {
-            return self.missing_predicate_parameter();
         }
         let mut types = Vec::new();
         let mut alternatives = Vec::new();
@@ -1172,17 +1166,6 @@ impl TypeParser {
             .span
             .join(alternatives.last().unwrap().span);
         (types, Some(Box::new(TypePacks { alternatives, span })))
-    }
-    #[cold]
-    #[inline(never)]
-    fn missing_predicate_parameter(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
-        let start = self.current().span;
-        self.error("expected a parameter name before 'is' in type predicate".to_owned());
-        self.pos += 1;
-        self.depth += 1;
-        let target = self.union();
-        self.depth -= 1;
-        (vec![TypeExpr { kind: TypeExprKind::Error, span: start.join(target.span) }], None)
     }
     #[inline(never)]
     fn predicate_return(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
@@ -1564,17 +1547,6 @@ impl TypeParser {
         ty
     }
 
-    #[cold]
-    #[inline(never)]
-    fn invalid_predicate_suffix(&mut self, ty: TypeExpr) -> TypeExpr {
-        self.error("a type predicate is only allowed as the sole function return type".to_owned());
-        self.pos += 1;
-        self.depth += 1;
-        let target = self.union();
-        self.depth -= 1;
-        TypeExpr { kind: TypeExprKind::Error, span: ty.span.join(target.span) }
-    }
-
     /// Array suffixes, then LuaLS's `T?`: T or nil. Out of line, as one call, to keep
     /// the recursive type parsers' frames small.
     #[inline(never)]
@@ -1587,9 +1559,6 @@ impl TypeParser {
                 span,
             };
             ty = self.array_suffix(ty);
-        }
-        if self.word_at(self.pos, "is") {
-            return self.invalid_predicate_suffix(ty);
         }
         ty
     }
@@ -1946,6 +1915,51 @@ fn alias_continuation(lines: &[&str], mut offset: usize, alias: Span, diagnostic
         _ => {
             let span = members[0].span.join(members.last().expect("members").span);
             TypeExpr { kind: TypeExprKind::Union(members), span }
+        }
+    }
+}
+
+#[cfg(test)]
+mod predicate_documentation_tests {
+    use super::{TagDescription, annotations};
+
+    #[test]
+    fn named_declaration_descriptions_preserve_initial_contextual_is() {
+        for tag in ["class", "enum", "shape", "module"] {
+            let source = format!("---@{tag} Widget is documented here\nlocal Widget = {{}}");
+            let file = crate::parse(&source);
+            assert!(file.diagnostics.is_empty(), "{tag}: {:#?}", file.diagnostics);
+            let (parsed, diagnostics) = annotations(&file.comments[0]);
+            assert!(diagnostics.is_empty(), "{tag}: {diagnostics:#?}");
+            assert_eq!(parsed.descriptions, vec![TagDescription {
+                tag: tag.to_owned(),
+                subject: Some("Widget".to_owned()),
+                text: "is documented here".to_owned(),
+            }]);
+        }
+    }
+
+    #[test]
+    fn type_descriptions_preserve_initial_contextual_is() {
+        for (tag, subject, header) in [
+            ("param", Some("value"), "value string"),
+            ("type", None, "string[]"),
+            ("field", Some("value"), "value {count:number}"),
+            ("alias", Some("Values"), "Values string[]"),
+        ] {
+            let text = format!("---@{tag} {header} is documented here");
+            let comment = crate::Comment {
+                span: crate::Span::new(0, text.len()),
+                text,
+                kind: crate::CommentKind::Documentation,
+            };
+            let (parsed, diagnostics) = annotations(&comment);
+            assert!(diagnostics.is_empty(), "{tag}: {diagnostics:#?}");
+            assert_eq!(parsed.descriptions, vec![TagDescription {
+                tag: tag.to_owned(),
+                subject: subject.map(str::to_owned),
+                text: "is documented here".to_owned(),
+            }]);
         }
     }
 }

@@ -99,6 +99,22 @@ end
 }
 
 #[test]
+fn contextual_is_remains_a_type_alias_in_return_contracts() {
+    let source = r#"---@alias is string
+---@return is
+local function text() return 'text' end
+---@param callback fun():is
+---@return is
+local function apply(callback) return callback() end
+local callbackResult = apply(text)
+---@type is
+local checked = callbackResult
+"#;
+    clean(source);
+    one_error(&source.replace("---@type is\nlocal checked", "---@type number\nlocal checked"), "TS2322");
+}
+
+#[test]
 fn negated_predicates_and_early_returns_use_the_opposite_flow_fact() {
     let source = format!(
         r#"{IS_STRING}
