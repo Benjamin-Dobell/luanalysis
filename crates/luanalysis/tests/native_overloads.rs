@@ -404,6 +404,31 @@ local first=callbacks.choose(1)"#;
 }
 
 #[test]
+fn call_metamethod_overloads_describe_calling_the_table() {
+    // Lua passes the called table first, so the implementation names it but the overloads do not.
+    let source=r#"---@class Foo
+
+---@class static_Foo
+---@overload fun(n: number): Foo
+local Foo = {}
+
+local mt = {
+    ---@overload fun(n: number): Foo
+    ---@param class static_Foo
+    ---@param n number | string
+    ---@return Foo
+    __call = function(class, n) return --[[---@type Foo]] {} end,
+}
+
+---@type Foo
+local made = mt.__call(Foo, 1)"#;
+    accepted(source);
+    let bad=source.replace("fun(n: number): Foo\n    ---@param class","fun(n: boolean): Foo\n    ---@param class");
+    let report=check(&bad);
+    assert!(report.diagnostics.iter().any(|error| error.code=="TS2394"),"{:#?}",report.diagnostics);
+}
+
+#[test]
 fn inline_assertion_generic_heads_keep_the_original_creation_site_scope() {
     accepted(r#"---@generic T
 ---@param input T

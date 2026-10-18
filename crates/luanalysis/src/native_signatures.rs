@@ -38,6 +38,19 @@ impl NativeRegistry {
                 || self.signatures.function_heads(function).contains(&key)
                 || self.implementation_annotation_signature(function) == Some(key))
     }
+    /// Whether `function` is the `__call` field of a table constructor, as a metatable's is.
+    fn is_call_metamethod(&self, function: luanalysis_engine::NativeFunctionKey) -> bool {
+        let span = self.function(function).span;
+        self.expressions().sources().any(|(_, source)| {
+            let luanalysis_syntax::ExprKind::Table(fields) = &source.expression.kind else { return false };
+            fields.iter().any(|field| {
+                let luanalysis_syntax::TableFieldKind::Named(name) = &field.kind else { return false };
+                let mut value = &field.value;
+                while let luanalysis_syntax::ExprKind::Parenthesized(inner) = &value.kind { value = inner; }
+                name.text == "__call" && matches!(&value.kind, luanalysis_syntax::ExprKind::Function(f) if f.span == span)
+            })
+        })
+    }
     pub(super) fn signature_available(&self, key: NativeSignatureKey) -> bool {
         if !self.signatures.contains(key) { return false; }
         self.signatures.get(key).documentation.and_then(|id| self.doc_members.for_declaration(id))
@@ -252,6 +265,14 @@ impl NativeRegistry {
                 .or_else(|| self.default_receiver_type(original, checker.engine))
                 .unwrap_or_else(|| checker.engine.error_type());
             parameters.insert(0, Parameter { name: "self".into(), ty: receiver, optional: false });
+        } else if let SignatureOwner::Function(function) = self.signatures.get(key).header.owner
+            && self.signatures.function_heads(function).contains(&key)
+            && self.is_call_metamethod(function)
+        {
+            // A `__call` metamethod's overloads describe calling its table, which Lua passes
+            // first; its implementation names that receiver itself.
+            let name = self.function(function).params.first().map_or("self", |parameter| &parameter.text).into();
+            parameters.insert(0, Parameter { name, ty: Type::Any, optional: false });
         }
         self.merge_report(checker.report);
         parameters
