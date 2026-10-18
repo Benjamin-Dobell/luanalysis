@@ -768,7 +768,8 @@ fn module_visibility_and_duplicate_definitions_remain_explicit_errors() {
                 members: vec![
                     private,
                     Member::field(5, LuaKey::Integer(1), Type::Number),
-                    Member::field(5, LuaKey::Number(1.0), Type::Number),
+                    // An identical redeclaration would merge, as in TypeScript.
+                    Member::field(5, LuaKey::Number(1.0), Type::String),
                 ],
                 ..Provider::default()
             }

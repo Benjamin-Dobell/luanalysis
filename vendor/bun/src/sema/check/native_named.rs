@@ -1516,7 +1516,22 @@ impl<'p, 's> Checker<'p, 's> {
                         if origin.via.is_some() && origin.via == previous_origin.via { continue }
                         let expected = if field.optional { self.optional(field.value) } else { field.value };
                         let actual = if previous.optional { self.optional(previous.value) } else { previous.value };
-                        if origin.via.is_none() { return Err(NativeNamedTypeError::Table { declaration, error: NativeTableError::DuplicateDeclaredField { key: field.key } }) }
+                        if origin.via.is_none() {
+                            // A written field types the member that a definition table's value for
+                            // it is checked against, in whichever partial declaration each is.
+                            let declared = |field: &NativeTableField| field.origin == crate::types::NativeTableFieldOrigin::Declared;
+                            if declared(&field) != declared(&previous) {
+                                if declared(&field) { fields[position] = field; field_origins[position] = origin; }
+                                continue;
+                            }
+                            // As TypeScript merges declarations, an identical redeclaration is the
+                            // same member; a different one is reported once, at its declaration,
+                            // and the first is used.
+                            let identical = previous.optional == field.optional && previous.readonly == field.readonly
+                                && self.related(previous.value, field.value, Relation::Identity);
+                            if identical || !validate { continue }
+                            return Err(NativeNamedTypeError::Table { declaration, error: NativeTableError::DuplicateDeclaredField { key: field.key } })
+                        }
                         let (index, base) = origin.via.unwrap();
                         if !validate { continue; }
                         if previous_origin.via.is_none() {
@@ -1629,6 +1644,7 @@ impl<'p, 's> Checker<'p, 's> {
             let members = self.native_object_members(reference).map_err(|error| error.table_error(TypeId::ERROR))?;
             let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(TypeId::ERROR))?;
             let mut found: Option<(NativeObjectMember, NativeTypeMemberHeader, TypeId)> = None;
+            let mut found_declared = false;
             for origin in members {
                 let metadata = provider.type_member_header(self, origin.member);
                 if let NativeTypeMemberKey::Fixed(member_key) = metadata.key && member_key.normalize()? == key {
@@ -1636,7 +1652,8 @@ impl<'p, 's> Checker<'p, 's> {
                         && origin.via.is_some() && origin.via == previous.via { continue }
                     let Some(raw) = self.native_object_member_demand(&origin).map_err(|error| error.table_error(TypeId::ERROR))? else { continue };
                     let value = self.native_member_read(raw, origin.owner)?;
-                    let value = if self.native_object_member_effective_origin(&origin).map_err(|error| error.table_error(TypeId::ERROR))? == Some(crate::types::NativeTableFieldOrigin::Declared) { self.regular(value) } else { value };
+                    let declared_here = self.native_object_member_effective_origin(&origin).map_err(|error| error.table_error(TypeId::ERROR))? == Some(crate::types::NativeTableFieldOrigin::Declared);
+                    let value = if declared_here { self.regular(value) } else { value };
                     let value = if let Some((_, base)) = origin.via {
                         let TypeData::NativeObject(owner) = *self.data(base) else { unreachable!() };
                         self.native_named_read(owner, NativeTableAccessKey::Literal(key))?
@@ -1648,9 +1665,18 @@ impl<'p, 's> Checker<'p, 's> {
                             } else {
                                 (previous_metadata.optional != metadata.optional || previous_metadata.readonly != metadata.readonly || !self.related(*actual, value, Relation::Identity)).then_some(NativeNamedTypeError::IncompatibleBase { declaration: reference.declaration, index, base, expected: value, actual: *actual })
                             }
-                        } else { return Err(NativeTableError::DuplicateDeclaredField { key }) };
+                        } else {
+                            // A written field outranks a definition table's value for it; otherwise a
+                            // redeclared member reads as its first declaration, and a conflicting one
+                            // is reported once, at its declaration.
+                            if declared_here && !found_declared {
+                                found = Some((origin, metadata, value));
+                                found_declared = true;
+                            }
+                            None
+                        };
                         if let Some(error) = error { self.report_native_named(error); return Err(NativeTableError::NotTable { ty: TypeId::ERROR }); }
-                    } else { found = Some((origin, metadata, value)); }
+                    } else { found = Some((origin, metadata, value)); found_declared = declared_here; }
                 }
             }
             if let Some((_, _, value)) = found { return Ok(value) }

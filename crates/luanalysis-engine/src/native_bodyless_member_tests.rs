@@ -367,8 +367,9 @@ fn mixed_pure_and_ordinary_callable_fields_remain_duplicate_declarations() {
                 provider
             },
             |_, queries| {
+                // The conflict is reported at the declaration; uses read the first member.
                 let class = queries.named_declared_type(declaration(0)).unwrap();
-                assert!(queries.property_type(&class, "choose").is_none());
+                assert!(queries.property_type(&class, "choose").is_some());
                 duplicate(queries.validate_named_declaration(declaration(0)));
             },
         );

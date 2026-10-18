@@ -140,3 +140,28 @@ fn a_methods_self_stores_assign_fields_of_its_class() {
     let output = fixture.check();
     assert!(output.status.success(), "{}", text(&output));
 }
+
+#[test]
+fn a_field_declared_twice_alike_is_one_field() {
+    // As TypeScript merges declarations: an identical redeclaration is the same member, and a
+    // different one is reported once, at the declaration, while uses read the first.
+    let fixture = Fixture::new(&[
+        ("main.lua", "---@shape Controller\n---@field reinterpret fun(color: string): void\n---@field reinterpret fun(color: string): void\n\n---@shape Card\n---@field color string\n---@field color number\n\n---@class Impl\n---@field reinterpret fun(color: string): void\n\n---@param controller Controller\nlocal function use(controller) controller.reinterpret('Red') end\n---@param impl Impl\n---@param card Card\nlocal function f(impl, card)\n    use(impl)\n    local color = card.color\nend\n"),
+    ]);
+    let report = text(&fixture.check());
+    assert!(report.contains("main.lua:5:11: error[LUA2032]: Duplicate declared property \"color\"."), "{report}");
+    assert!(report.contains("main.lua:18:11: color: string"), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+}
+
+#[test]
+fn a_written_field_types_another_partial_declarations_value() {
+    let fixture = Fixture::new(&[
+        ("comp.lua", "local m = {}\nfunction m.compile(src)\n    ---@class Pst\n    ---@field uri string\n    local state = { lua = src, ast = {} }\n    return state\nend\nreturn m\n"),
+        ("main.lua", "local comp = require 'comp'\n---@class Pst\n---@field lua? string\n\n---@param s Pst\nlocal function f(s)\n    s.uri = 'x'\n    s.ast = {}\n    local text = s.lua\nend\n"),
+    ]);
+    let output = fixture.check();
+    let report = text(&output);
+    assert!(output.status.success(), "{report}");
+    assert!(report.contains("main.lua:9:11: text: nil | string"), "{report}");
+}
