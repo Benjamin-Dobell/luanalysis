@@ -8,7 +8,9 @@ fn missing_table_keys_retain_the_original_read_or_write_receiver_type() {
     let report = check(SOURCE);
     assert_eq!(report.diagnostics.len(), 3, "{:#?}", report.diagnostics);
     for diagnostic in &report.diagnostics {
-        assert_eq!(diagnostic.code, "TS2339");
+        // A computed key no index accepts is TypeScript's element access error.
+        let computed = &SOURCE[diagnostic.span.start..diagnostic.span.end] == "key";
+        assert_eq!(diagnostic.code, if computed { "TS7053" } else { "TS2339" });
         assert!(
             diagnostic.message.contains("type 'Record'"),
             "{diagnostic:?}"
@@ -26,7 +28,7 @@ fn missing_table_keys_retain_the_original_read_or_write_receiver_type() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.message.contains("Property number"))
+            .any(|diagnostic| diagnostic.message.contains("expression of type 'number'"))
     );
     assert_eq!(
         report

@@ -289,7 +289,7 @@ fn dynamic_indexed_writes_check_the_declared_key_domain_and_original_origins() {
     assert!(check(source).diagnostics.is_empty());
     let report = check_strict(source);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
-    assert_eq!(report.diagnostics[0].code, "TS2339");
+    assert_eq!(report.diagnostics[0].code, "TS7053");
     assert_eq!(
         &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
         "key"

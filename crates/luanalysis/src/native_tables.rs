@@ -229,7 +229,7 @@ impl Checker<'_> {
     /// lacks; any other implicitly indexed read is `any`.
     fn implicit_index_read(&mut self, receiver: &Type, key: &TableKey) -> Type {
         let TableKey::Type(key) = key else { return Type::Any };
-        if !self.engine.is_assignable(key, &Type::String) { return Type::Any }
+        if matches!(key, Type::Any) || !self.engine.is_assignable(key, &Type::String) { return Type::Any }
         let mut values: Vec<Type> = self.engine.type_members(receiver).into_iter().map(|(_, ty)| ty).collect();
         if values.is_empty() { return Type::Any }
         values.push(Type::Nil);
@@ -241,6 +241,8 @@ impl Checker<'_> {
     /// computed key, with an `any` result, unless `--no-implicit-any`. Declared types,
     /// classes included, remain closed.
     fn implicitly_indexed(&mut self, receiver: &Type, key: &TableKey) -> bool {
+        // As TypeScript reads any object at an `any` key.
+        if matches!(key, TableKey::Type(Type::Any)) { return true }
         matches!(key, TableKey::Type(_))
             && self.native.is_some_and(|native| !native.no_implicit_any())
             && self.engine.runtime_tables_only(receiver)
@@ -360,6 +362,8 @@ impl Checker<'_> {
             TableError::PendingContext => unreachable!("pending member context handled above"),
             TableError::InvalidKey { .. } | TableError::KeyType { .. } => ("TS2538", key_span),
             TableError::NotTable { .. } => ("TS7053", key_span),
+            // As TypeScript reports an element access whose key type no index accepts.
+            TableError::MissingKey { key: TableKey::Type(_) } => ("TS7053", key_span),
             TableError::MissingKey { .. } => ("TS2339", key_span),
             TableError::ValueType { .. } | TableError::RequiredDeletion { .. } => ("TS2322", value_span),
             TableError::ReadOnly { .. } => ("TS2540", key_span),
@@ -400,13 +404,25 @@ fn table_error_description_with_owner(error: &TableError, owner: Option<&Type>) 
             types.push(ty.clone());
             "Type '{}' cannot be indexed as a Lua table.".into()
         }
+        TableError::MissingKey { key: TableKey::Type(ty) } if !matches!(ty, Type::Nil | Type::Undefined) => {
+            types.push(ty.clone());
+            if let Some(owner) = owner {
+                types.push(owner.clone());
+                "Element implicitly has an 'any' type because expression of type '{}' can't be used to index type '{}'.".into()
+            } else {
+                "Element implicitly has an 'any' type because expression of type '{}' can't be used to index this table type.".into()
+            }
+        }
         TableError::MissingKey { key: value } => {
-            // As TypeScript names a missing property, `Property 'name'`. Other keys stay operands,
-            // so their text cannot be read as part of the template.
+            // As TypeScript names a missing property, `Property 'name'` or `Property '1'`. Other
+            // keys stay operands, so their text cannot be read as part of the template.
             let key = match value {
                 TableKey::Literal(LuaKey::String(bytes)) if bytes.first().is_some_and(|byte| !byte.is_ascii_digit())
                     && bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') =>
                     format!("'{}'", String::from_utf8_lossy(bytes)),
+                TableKey::Literal(LuaKey::Integer(value)) => format!("'{value}'"),
+                TableKey::Literal(LuaKey::Number(value)) => format!("'{value}'"),
+                TableKey::Literal(LuaKey::Boolean(value)) => format!("'{value}'"),
                 _ => key(value, &mut types),
             };
             if let Some(owner) = owner {

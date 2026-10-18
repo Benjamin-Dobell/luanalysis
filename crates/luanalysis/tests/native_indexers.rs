@@ -145,7 +145,8 @@ local item={{x=1,y=2}}\nreturn item[key]\nend"
         let report = check_strict(&source);
         assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
         let error = &report.diagnostics[0];
-        assert_eq!(error.code, "TS2339");
+        // A literal key no field has is a missing property; a broader key, an element access.
+        assert_eq!(error.code, if parameter == "string" { "TS7053" } else { "TS2339" });
         assert_eq!(&source[error.span.start..error.span.end], "key");
     }
     accepted(

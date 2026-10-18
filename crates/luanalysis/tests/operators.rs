@@ -250,7 +250,7 @@ fn literal_string_indexing_uses_original_member_facts_without_key_coercion() {
             "{source}: {:#?}",
             report.diagnostics
         );
-        assert_eq!(report.diagnostics[0].code, "TS2339");
+        assert_eq!(report.diagnostics[0].code, if original == "key" { "TS7053" } else { "TS2339" });
         assert_eq!(
             &source[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
             original
@@ -268,7 +268,7 @@ local item = {x = 1}\nreturn item[key]\nend";
     assert!(check(broad).diagnostics.is_empty());
     let report = check_strict(broad);
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
-    assert_eq!(report.diagnostics[0].code, "TS2339");
+    assert_eq!(report.diagnostics[0].code, "TS7053");
     assert_eq!(
         &broad[report.diagnostics[0].span.start..report.diagnostics[0].span.end],
         "key"

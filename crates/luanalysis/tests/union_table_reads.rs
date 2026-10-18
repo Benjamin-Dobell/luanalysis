@@ -196,5 +196,5 @@ fn a_broad_key_does_not_erase_possible_values_from_a_closed_union_constituent() 
         "---@param v {x:number}|{[string]:string}\n---@param key string\nlocal function read(v,key)\nreturn v[key]\nend",
     );
     assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
-    assert_eq!(report.diagnostics[0].code, "TS2339");
+    assert_eq!(report.diagnostics[0].code, "TS7053");
 }

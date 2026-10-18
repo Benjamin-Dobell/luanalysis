@@ -88,7 +88,7 @@ fn numeric_reads_use_reached_stores_without_future_value_pollution() {
     has_parts(&report, source, "later=", &["nil", "string", "boolean"]);
 
     let before = "---@param index number\nlocal function fill(index)\n local ary={}\n local before=ary[index]\n ary[index]='word'\nend\n";
-    error_at(&check_strict(before), before, "TS2339", "local before=ary[index]", "index");
+    error_at(&check_strict(before), before, "TS7053", "local before=ary[index]", "index");
     assert!(check(before).diagnostics.is_empty());
     let corrected = before.replace(
         "local before=ary[index]\n ary[index]='word'",
@@ -123,7 +123,7 @@ fn string_unknown_any_and_unconstrained_generic_keys_do_not_infer_numeric_storag
         let report = check(&source);
         error_at(&report, &source, "TS2339", "local absent=ary[1]", "1");
         if key_type == "string" {
-            error_at(&check_strict(&source), &source, "TS2339", "ary[key]='word'", "key");
+            error_at(&check_strict(&source), &source, "TS7053", "ary[key]='word'", "key");
         }
         let corrected = source.replace(&format!("---@param key {key_type}"), "---@param key number");
         clean(&corrected);
