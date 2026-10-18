@@ -887,6 +887,29 @@ fn a_members_origins_and_documentation_are_its_owners() {
 }
 
 #[test]
+fn signature_help_documents_bodyless_global_and_member_functions() {
+    let root = fixture();
+    let library = root.join("api.def.lua");
+    fs::write(&library, "---@class Methods\n\n--- Moves a member.\n---@function Methods.move(distance: number): boolean\n---@param distance number The spaces to move.\n\n--- Moves a global.\n---@param distance number The spaces it moves.\n---@function compact(distance: number): boolean\n\n---@type Methods\nMethods = nil\n").unwrap();
+    let main = root.join("main.lua");
+    let text = "Methods.move(1)\ncompact(1)\n";
+    fs::write(&main, text).unwrap();
+    let library_argument = library.to_str().unwrap().to_owned();
+    let mut server = Server::start(&["--lua-version", "5.2", "--library", &library_argument]);
+    server.initialize(&root);
+    server.open(&main, text);
+    server.diagnostics(&main, |_| true);
+    // A bodyless function's value has no declaration to read its documentation from; its name
+    // has, as a hover on it shows.
+    let member = server.request(2, "textDocument/signatureHelp", &main, 0, 13);
+    assert!(member.contains("Moves a member.") && member.contains("The spaces to move."), "{member}");
+    let global = server.request(3, "textDocument/signatureHelp", &main, 1, 8);
+    assert!(global.contains("Moves a global.") && global.contains("The spaces it moves."), "{global}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn host_callbacks_complete_as_implementations() {
     let root = fixture();
     let library = root.join("api.def.lua");
