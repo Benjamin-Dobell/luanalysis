@@ -659,6 +659,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Read an intersection's member from the parts that declare it, and other names from the parts' index signatures, as TypeScript does, and list an intersection's parts' members for completion, through kernel 5006205.",
 } for path in ["native_named.rs", "native_tables.rs"])
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_globals.rs",
+    "patch": "vendor/patches/bun-sema-standard-global-precedence.patch",
+    "reason": "Type a global by its first declaration in program order when that is the standard library's or a declaration file's, reporting each later conflicting declaration where it is, as TypeScript does, through kernel 8cae069.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

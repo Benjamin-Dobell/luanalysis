@@ -2490,6 +2490,12 @@
       "patch": "vendor/patches/bun-sema-intersection-reads.patch",
       "reason": "Read an intersection's member from the parts that declare it, and other names from the parts' index signatures, as TypeScript does, and list an intersection's parts' members for completion, through kernel 5006205.",
       "patch_sha256": "faa411093e78410e29553899f4fe6958f81dd06b249cb6bd43f8fb108cbb7eb3"
+    },
+    {
+      "path": "src/sema/check/native_globals.rs",
+      "patch": "vendor/patches/bun-sema-standard-global-precedence.patch",
+      "reason": "Type a global by its first declaration in program order when that is the standard library's or a declaration file's, reporting each later conflicting declaration where it is, as TypeScript does, through kernel 8cae069.",
+      "patch_sha256": "e65880e1de75c7148aadd20d805a66097a02aec7b1feb7dc3153349e727ed3b2"
     }
   ],
   "source_additions": {
@@ -2514,7 +2520,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
-      "extracted_sha256": "8551da6229ee83cc5930f129e3a968b54af0c12e7cecdbfc30b247b7994d5b94",
+      "extracted_sha256": "c5011ebfefd110ca321d24d64c89d7ba21ed136edaffa615d4e7b5a5c79c430e",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
     },
     "src/sema/check/native_intrinsics.rs": {
