@@ -527,6 +527,7 @@ impl Checker<'_> {
     fn statements(&mut self, statements: &[Stmt]) -> bool {
         let mut unreachable_reported = false;
         for (index, statement) in statements.iter().enumerate() {
+            crate::project_check::unwind_if_cancelled();
             let rest = &statements[index + 1..];
             match &statement.kind {
                 StmtKind::Local {

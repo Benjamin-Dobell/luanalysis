@@ -54,6 +54,27 @@ impl Cancellation {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// Makes this the cancellation that work on this thread stops for (`unwind_if_cancelled`).
+    pub(crate) fn enter(&self) {
+        CURRENT_CANCELLATION.with(|current| *current.borrow_mut() = Some(self.clone()));
+    }
+}
+
+/// What cancelled work unwinds with, to the job that began it, which discards what it did.
+pub(crate) struct Cancelled;
+
+thread_local! {
+    static CURRENT_CANCELLATION: std::cell::RefCell<Option<Cancellation>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Stops this thread's work when its cancellation has been asked for, unwinding with
+/// `Cancelled` (without a panic's report), so that work within one file, such as building
+/// a large file's recipes, ends at once rather than when it is done.
+pub(crate) fn unwind_if_cancelled() {
+    if CURRENT_CANCELLATION.with(|current| current.borrow().as_ref().is_some_and(Cancellation::is_cancelled)) {
+        std::panic::resume_unwind(Box::new(Cancelled));
+    }
 }
 impl Default for ProjectCheckOptions {
     fn default() -> Self {
@@ -252,11 +273,13 @@ pub(crate) fn with_project_session<R: Send>(
     workspace: &mut crate::incremental::ProjectWorkspace,
     query: impl FnOnce(&Project, &crate::native_functions::project_provider::ProjectRegistry, &mut dyn luanalysis_engine::TypeQueries) -> R + Send,
 ) -> R {
+    options.cancellation.enter();
     let prepared = prepare_program(&mut project, &options, workspace);
     let snapshot = &prepared.snapshot;
     let project = &project;
     let (result, flows) = Engine::new().with_native_provider(
         || {
+            options.cancellation.enter();
             let mut registry = snapshot.worker_registry();
             registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
             registry.set_describe_types(options.describe_types);
@@ -280,6 +303,7 @@ pub(crate) fn check_project_with_workspace(
 ) -> ProjectCheckReport {
     let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
     let started = Instant::now();
+    options.cancellation.enter();
     let PreparedProgram { mut snapshot, revisions, mut files, source_costs, standard_library_files, environment_errors, unparsed } =
         prepare_program(&mut project, &options, workspace);
     // As in Bun, the program is every file the load reached: explicit inputs and
@@ -315,6 +339,7 @@ pub(crate) fn check_project_with_workspace(
     let factories = AtomicU64::new(0);
     let make_registry = |_| {
         let started = profile.then(Instant::now);
+        options.cancellation.enter();
         let mut registry = snapshot.worker_registry();
         registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
         registry.set_describe_types(options.describe_types);

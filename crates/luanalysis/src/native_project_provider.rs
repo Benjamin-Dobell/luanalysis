@@ -287,6 +287,7 @@ impl ProjectRegistry {
             .into_iter()
             .enumerate()
             .map(|(index, input)| {
+                crate::project_check::unwind_if_cancelled();
                 let mut source = NativeRegistry::new_with_identity_and_flow(input.syntax, input.bound, identities[index], prepared(index));
                 source.set_overload_mode(overload_mode);
                 source.set_no_implicit_any(no_implicit_any);

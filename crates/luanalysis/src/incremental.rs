@@ -184,6 +184,7 @@ impl ProjectWorkspace {
     /// syntax/bind inputs used by checking. Resolution still runs on every load;
     /// candidate discovery never grants the runtime callee require provenance.
     pub fn static_require_requests(&mut self, source: &SourceFile) -> FileRequests {
+        crate::project_check::unwind_if_cancelled();
         if source.role == SourceRole::Declaration {
             return FileRequests::default();
         }

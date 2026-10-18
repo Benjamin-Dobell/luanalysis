@@ -475,6 +475,7 @@ impl Builder<'_> {
         id
     }
     fn function(&mut self, function: &Function, input: FlowId) -> u32 {
+        crate::project_check::unwind_if_cancelled();
         let key = (function.span.start, function.span.end);
         if let Some(graph) = self.program.functions.get(&key) {
             return *graph;

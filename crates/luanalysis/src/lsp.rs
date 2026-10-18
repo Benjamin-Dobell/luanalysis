@@ -1417,6 +1417,8 @@ impl Server {
 
 
 fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Receiver<Job>, events: mpsc::Sender<Event>) {
+    // Its work, and its sessions', unwinds when the server cancels it.
+    options.cancellation.enter();
     let mut workspace = ProjectWorkspace::new();
     while let Ok(mut job) = jobs.recv() {
         // Only the latest revision is worth checking.
@@ -1438,6 +1440,7 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
 }
 
 fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>, cancelled: Arc<std::sync::Mutex<HashSet<String>>>) {
+    options.cancellation.enter();
     let mut workspace = ProjectWorkspace::new();
     let mut loaded = None;
     while let Ok(first) = queries.recv() {
