@@ -15,6 +15,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # actions/checkout runs `git init`; naming the initial branch leaves git nothing to advise.
+  GIT_CONFIG_COUNT: 1
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
 
 jobs:
   test:
@@ -121,16 +125,19 @@ jobs:
     name: macOS universal
     needs: macos
     runs-on: macos-15
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          name: macos-x86_64
-          path: x86_64
-      - uses: actions/download-artifact@v8
-        with:
-          name: macos-aarch64
-          path: aarch64
+      # gh rather than actions/download-artifact, which prints a Node deprecation on every
+      # download (actions/download-artifact#484).
+      - name: Download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download ${{ github.run_id }} --name macos-x86_64 --dir x86_64
+          gh run download ${{ github.run_id }} --name macos-aarch64 --dir aarch64
       - name: Package
         run: |
           out=luanalysis-macos-universal
@@ -209,13 +216,14 @@ jobs:
     needs: [test, linux, macos-universal, windows]
     runs-on: ubuntu-24.04
     permissions:
+      actions: read
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: luanalysis-*
-          path: artifacts
-          merge-multiple: true
+      - name: Download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh run download ${{ github.run_id }} --pattern 'luanalysis-*' --dir artifacts
       - uses: softprops/action-gh-release@v3
         with:
-          files: artifacts/*
+          files: artifacts/*/*
