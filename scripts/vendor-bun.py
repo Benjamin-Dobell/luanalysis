@@ -635,6 +635,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Keep a runtime table a sequence through numeric and literal-index stores, as TypeScript evolves an array by an element store, through kernel 8f44124.",
 })
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_flow.rs",
+    "patch": "vendor/patches/bun-sema-absent-member-narrowing.patch",
+    "reason": "Leave a union unnarrowed by a member predicate when no alternative has the member, as TypeScript does not narrow by a property no constituent has, through kernel e9ee7fd.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

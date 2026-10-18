@@ -2454,6 +2454,12 @@
       "patch": "vendor/patches/bun-sema-evolving-sequences.patch",
       "reason": "Keep a runtime table a sequence through numeric and literal-index stores, as TypeScript evolves an array by an element store, through kernel 8f44124.",
       "patch_sha256": "3514b71f10f239713015325b31236a610cbc6164435b9a7eaa57a557f79ced6f"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-absent-member-narrowing.patch",
+      "reason": "Leave a union unnarrowed by a member predicate when no alternative has the member, as TypeScript does not narrow by a property no constituent has, through kernel e9ee7fd.",
+      "patch_sha256": "f84c515268182dcf97d64cb08bf0d4ce39ef0d6386a1072e48b3750d5f000301"
     }
   ],
   "source_additions": {
@@ -2474,7 +2480,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "39e6640261680834b3f29488506f6b82f71321a59faba3db1842b5ac2ab5c492",
+      "extracted_sha256": "80efff997d5ba9a61448a8348bccc9ad972fff59b888fa9c041131d35ea50f4d",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
