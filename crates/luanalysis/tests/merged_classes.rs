@@ -210,3 +210,13 @@ fn a_cast_store_through_a_subclass_constructors_self_overrides_an_inherited_memb
     // As in TypeScript, the class keeps the member it declares; its uses are not errors too.
     assert!(!report.contains("TS7053") && !report.contains("TS2339"), "{report}");
 }
+
+#[test]
+fn a_type_argument_of_a_base_prints_as_itself_not_as_the_derived_type() {
+    let fixture = Fixture::new(&[
+        ("main.lua", "---@alias Names string[]\n\n---@shape BaseCard<A>\n---@field abilities nil | A\n\n---@shape BuildingCard : BaseCard<string[]>\n\n---@param card BuildingCard\n---@param names Names\nlocal function f(card, names)\n    local abilities = card.abilities\n    local aliased = names\nend\n"),
+    ]);
+    let report = text(&fixture.check());
+    assert!(report.contains("main.lua:11:11: abilities: nil | string[]"), "{report}");
+    assert!(report.contains("main.lua:12:11: aliased: Names"), "{report}");
+}

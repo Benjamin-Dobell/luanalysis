@@ -428,6 +428,8 @@ impl NativeRegistry {
             .named
             .anonymous_head(anonymous_key(key))
             .expect("original anonymous head");
+        // An alias names the head it is, `---@alias Names string[]`, not the heads nested in it
+        // or in a base's type arguments.
         let name = source
             .origins
             .iter()
@@ -435,6 +437,14 @@ impl NativeRegistry {
                 AnonymousHeadOrigin::Named(key) => self
                     .named
                     .declaration(*key)
+                    .filter(|named| match &named.syntax.kind {
+                        NamedTypeDeclarationKind::Alias { target } => {
+                            let mut target = target;
+                            while let TypeExprKind::Parenthesized(inner) = &target.kind { target = inner; }
+                            target.span == source.syntax.span
+                        }
+                        NamedTypeDeclarationKind::Record { .. } => false,
+                    })
                     .map(|named| named.syntax.name.text.clone()),
                 _ => None,
             })
