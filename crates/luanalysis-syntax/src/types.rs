@@ -416,7 +416,11 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 }
                 // Text after a complete type is its description, as LuaLS and EmmyLua read it:
                 // `---@param path string # the file`, `---@return integer count`.
-                let description = (!parser.eof()).then(|| parser.description_start()).flatten();
+                // In v1 a `)` after a complete type also ends it, as its lexer leaves the type
+                // there (`---@param options A | B): Result`).
+                let description = (!parser.eof()).then(|| parser.description_start().or_else(|| {
+                    matches!(&parser.current().kind, TokenKind::Symbol(symbol) if symbol == ")").then(|| parser.current().span.start)
+                })).flatten();
                 if !parser.eof() && description.is_none() {
                     parser.error(format!(
                         "unsupported or unexpected syntax after @{tag_name}"

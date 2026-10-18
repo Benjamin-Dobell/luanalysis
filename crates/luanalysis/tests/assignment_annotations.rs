@@ -44,3 +44,9 @@ fn only_a_written_key_type_may_include_nil() {
     assert!(report.contains("main.lua:11:9: error[TS2538]: nil | string cannot be used as a Lua table key."), "{report}");
     assert_eq!(report.matches("error[").count(), 4, "{report}");
 }
+
+#[test]
+fn a_void_key_type_indexes_nothing_as_in_v1() {
+    let report = check("---@generic T\n---@param name T\n---@param resolved table<T, number>\nlocal function use(name, resolved) end\n---@type void\nlocal nothing\nuse(nothing, {})\n---@type table<void, number>\nlocal declared = {}\n");
+    assert_eq!(report.matches("error[").count(), 0, "{report}");
+}

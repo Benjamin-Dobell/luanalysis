@@ -643,6 +643,9 @@ impl<'p, 's> Checker<'p, 's> {
     /// constructor's keys (`{ [key] = value }`) are values, and a nil one is an error.
     fn native_table_valid_indexer_key(&self, indexer: &NativeTableIndexer, fresh: bool) -> bool {
         if self.native_table_valid_key_type(indexer.key) { return true }
+        // A written `void` key type (a generic table instantiated with void) indexes nothing,
+        // as v1 accepts it.
+        if !fresh && indexer.key == TypeId::VOID { return true }
         let nil = |part: &TypeId| part.is_undefined() || part.is_null();
         !fresh && self.native_table_key_has_nil(indexer.key)
             && self.parts(indexer.key).iter().any(|part| !nil(part))

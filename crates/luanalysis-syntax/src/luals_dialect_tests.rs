@@ -196,3 +196,10 @@ fn package_fields_name_their_visibility() {
     assert_eq!(visibilities, [Some(FieldVisibility::Package), Some(FieldVisibility::Private)]);
     assert!(matches!(&fields[0].key, TypeFieldKey::Named(name) if name.text == "_list"));
 }
+
+#[test]
+fn a_closing_parenthesis_after_a_type_starts_its_description_as_in_v1() {
+    let file = checked("---@param options number | string): Result\nlocal function create(options) end\n");
+    let StmtKind::LocalFunction { function, .. } = &file.statements[0].kind else { panic!("a function") };
+    assert_eq!(function.annotations.params.len(), 1);
+}
