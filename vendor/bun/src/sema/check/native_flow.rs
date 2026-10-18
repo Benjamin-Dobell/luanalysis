@@ -1307,6 +1307,11 @@ impl<'s, 'p> Checker<'s, 'p> {
                     // its members has an impossible branch. Keep the original
                     // union after an earlier predicate selected one constituent.
                     if !self.is_union(declared) && !self.is_union(ty) { return ty; }
+                    // A member no alternative has may be stored through another reference to
+                    // the table: its absence everywhere is no discriminant, and proves nothing.
+                    let parts = self.parts(ty).to_vec();
+                    if parts.iter().all(|&part| matches!(self.native_table_read(part, NativeTableAccessKey::Literal(key)),
+                        Err(error) if self.native_table_absent_read(part, NativeTableAccessKey::Literal(key), error))) { return ty; }
                     return self.filter(ty, |checker, part| {
                         let member = match checker.native_table_read(part, NativeTableAccessKey::Literal(key)) {
                             Ok(member) => member,

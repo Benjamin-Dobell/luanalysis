@@ -244,3 +244,16 @@ fn an_optional_array_table_or_record_field_may_be_nil() {
         assert!(report.contains(expected), "{expected}\n{report}");
     }
 }
+
+#[test]
+fn a_member_no_alternative_has_does_not_narrow_its_table_to_never() {
+    // It may be stored through another reference to the table: its absence proves nothing.
+    let fixture = Fixture::new(&[
+        ("main.lua", "local function push(chunk) chunk.locals = {} end\n---@param cond boolean\nlocal function f(cond)\n    local block = cond and { type = 'if' } or { type = 'else' }\n    push(block)\n    if block.locals then\n        local inside = block\n    end\n    local u = cond and { kind = 'a', x = 1 } or { kind = 'b' }\n    if u.x then local onlyA = u end\nend\n"),
+    ]);
+    let report = text(&fixture.check());
+    assert!(!report.contains("'never'"), "{report}");
+    assert!(report.contains("main.lua:7:15: inside: { [\"type\"]: \"if\" } | { [\"type\"]: \"else\" }"), "{report}");
+    // A member one alternative has still selects it.
+    assert!(report.contains("main.lua:10:23: onlyA: { [\"kind\"]: \"a\"; [\"x\"]: 1 }"), "{report}");
+}
