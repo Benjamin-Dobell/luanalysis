@@ -212,6 +212,24 @@ Aliases are resolved lazily, so recursive data structures can be typed.
 local document = { name = "ada", tags = { "x", "y" }, nested = { ok = true } }
 ```
 
+### Multi-line annotations
+
+An annotation continues on the `---` lines after it until the next tag, so a long union, a
+record or a function type can be split over lines, in line comments or a `--[[--- ]]` block.
+
+```lua
+---@type {
+---    name: string,
+---    score: number,
+---}
+local entry = { name = "ada", score = 3 }
+
+---@param mode
+---| "r" # read
+---| "w" # write
+local function open(mode) end
+```
+
 ### Casts
 
 When you know more than the checker, say so in a block comment. `@type` replaces an

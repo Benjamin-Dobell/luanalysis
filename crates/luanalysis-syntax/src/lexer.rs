@@ -210,8 +210,9 @@ impl Lexer<'_> {
         }
     }
 
-    // LuaLS lists an annotation's members on the `---|` lines after it; they belong
-    // to the documentation comment they continue.
+    // A `---` line continues the documentation before it unless it begins another tag
+    // (`---@`), so an annotation can span lines, as LuaLS's `---|` member lines do. More
+    // dashes (`-----@type T`, `----------`) comment out or separate, and end it.
     fn documentation_continuation(&mut self) {
         loop {
             let rest = &self.source[self.pos..];
@@ -224,7 +225,9 @@ impl Lexer<'_> {
             };
             let next = &rest[newline..];
             let indent = next.len() - next.trim_start_matches([' ', '\t']).len();
-            if !next[indent..].starts_with("---|") {
+            let line = &next[indent..];
+            let dashes = line.len() - line.trim_start_matches('-').len();
+            if dashes != 3 || line[3..].trim_start_matches([' ', '\t']).starts_with('@') {
                 return;
             }
             self.pos += newline + indent;

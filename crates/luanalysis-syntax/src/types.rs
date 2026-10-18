@@ -139,8 +139,13 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 });
             } else {
                 let raw_types = &tag[tag_len..];
-                let types = raw_types.trim_start_matches([' ', '\t']);
-                let types = types.trim_end_matches(['\r', '\n']);
+                // The `---` lines up to the next tag continue this one: its text spans them,
+                // with their comment prefixes blanked so that every offset is the source's.
+                let mut joined = raw_types.trim_start_matches([' ', '\t']).to_owned();
+                for continuation in lines[index + 1..].iter().take_while(|line| !is_tag_line(line)) {
+                    joined.push_str(&continuation_text(continuation));
+                }
+                let types = joined.trim_end_matches(['\r', '\n']);
                 // `@` begins trailing documentation in doc.flex's type state,
                 // but an @ inside a quoted literal belongs to that literal.
                 let types = annotation_type_text(types);
@@ -150,6 +155,8 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 let tokens = lexed
                     .tokens
                     .into_iter()
+                    // Lines are whitespace within a tag's text.
+                    .filter(|token| !matches!(token.kind, TokenKind::Newline))
                     .flat_map(|mut token| {
                         token.span.start += types_offset;
                         token.span.end += types_offset;
@@ -418,9 +425,15 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 // `---@param path string # the file`, `---@return integer count`.
                 // In v1 a `)` after a complete type also ends it, as its lexer leaves the type
                 // there (`---@param options A | B): Result`). A Lua comment, `-- text`, does too.
+                // Text on a later line than a complete type is its description too.
+                let on_later_line = |parser: &TypeParser| parser.pos > 0 && {
+                    let previous = parser.tokens[parser.pos - 1].span.end - types_offset;
+                    let current = parser.current().span.start - types_offset;
+                    types.get(previous..current).is_some_and(|between| between.contains('\n'))
+                };
                 let description = (!parser.eof()).then(|| parser.description_start().or_else(|| {
                     let lua_comment = matches!(parser.current().kind, TokenKind::Comment(_));
-                    (parser.symbol(")") || lua_comment).then_some(parser.current().span.start)
+                    (parser.symbol(")") || lua_comment || on_later_line(&parser)).then_some(parser.current().span.start)
                 })).flatten();
                 if !parser.eof() && description.is_none() {
                     parser.error(format!(
@@ -442,6 +455,39 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
     }
     crate::completion_metadata::validate(&result, &mut diagnostics);
     (result, diagnostics)
+}
+
+/// Whether a line of documentation begins a tag (`---@name`, or `@name` in a block). A line with
+/// more dashes than `---` comments one out.
+fn is_tag_line(line: &str) -> bool {
+    let trimmed = line.trim_start_matches([' ', '\t', '\r']);
+    let dashes = trimmed.len() - trimmed.trim_start_matches('-').len();
+    dashes > 3 || trimmed.trim_start_matches('-').trim_start_matches([' ', '\t']).starts_with('@')
+}
+
+/// A continuation line as part of a tag's text: its comment prefix blanked, and the description
+/// of a `---| member # description` line too, so that its offsets are the source's.
+fn continuation_text(line: &str) -> String {
+    let trimmed = line.trim_start_matches([' ', '\t', '\r']);
+    let content = trimmed.trim_start_matches('-');
+    let prefix = line.len() - content.len();
+    let mut text = " ".repeat(prefix);
+    let body = content.trim_end_matches(['\r', '\n']);
+    let end = if body.trim_start().starts_with('|') {
+        // `#` outside a quoted literal begins the member's description.
+        let mut quote = None;
+        body.char_indices().find(|&(_, ch)| match quote {
+            Some(open) => { if ch == open { quote = None; } false }
+            None if ch == '"' || ch == '\'' => { quote = Some(ch); false }
+            None => ch == '#',
+        }).map_or(body.len(), |(index, _)| index)
+    } else {
+        body.len()
+    };
+    text.push_str(&body[..end]);
+    text.push_str(&" ".repeat(body.len() - end));
+    text.push_str(&content[body.len()..]);
+    text
 }
 
 fn type_depth(root: &TypeExpr) -> usize {
@@ -1196,6 +1242,8 @@ impl TypeParser {
         }
     }
     fn union(&mut self) -> TypeExpr {
+        // A leading `|`, as a union split over lines begins (`---| "a"`).
+        self.take("|");
         let first = self.primary();
         if self.take("|").is_none() {
             return first;
