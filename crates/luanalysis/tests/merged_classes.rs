@@ -207,4 +207,6 @@ fn a_cast_store_through_a_subclass_constructors_self_overrides_an_inherited_memb
     let fixture = Fixture::new(&[("main.lua", &wrong)]);
     let report = text(&fixture.check());
     assert!(report.contains("error[TS2416]: Declared member type 'fun(): number' is not assignable to the inherited member type 'fun(): Target'."), "{report}");
+    // As in TypeScript, the class keeps the member it declares; its uses are not errors too.
+    assert!(!report.contains("TS7053") && !report.contains("TS2339"), "{report}");
 }

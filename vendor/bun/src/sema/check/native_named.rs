@@ -364,6 +364,8 @@ pub(super) struct NativeNamedCache {
     mapped_bases: FxHashMap<TypeId, Vec<TypeId>>,
     members: FxHashMap<TypeId, Vec<NativeObjectMember>>,
     owner_applications: FxHashMap<NativeTypeMemberId, Option<NativeMemberOwnerApplication>>,
+    /// The override a resolved object's validation found incompatible; the object is its schema.
+    override_errors: FxHashMap<TypeId, NativeNamedTypeError>,
 }
 
 #[derive(Clone)]
@@ -649,6 +651,7 @@ impl<'p, 's> Checker<'p, 's> {
             self.default_of_type_param(parameter);
         }
         self.native_object_resolved(head)?;
+        if let Some(&error) = self.native_named_cache.override_errors.get(&head) { return Err(error) }
         Ok(head)
     }
 
@@ -1370,6 +1373,16 @@ impl<'p, 's> Checker<'p, 's> {
             return Err(error);
         }
         let result = self.native_object_resolved_uncached(reference, &members, true);
+        // As TypeScript keeps a class whose member fails to override its base's, the class is
+        // still its declared shape; the incompatibility is reported once, at the member.
+        let result = match result {
+            Err(error @ (NativeNamedTypeError::IncompatibleOverride { .. } | NativeNamedTypeError::IncompatibleBase { .. })) => {
+                self.report_native_named(error);
+                self.native_named_cache.override_errors.insert(ty, error);
+                Ok(schema)
+            }
+            result => result,
+        };
         match self.leave(query) {
             Ok(stored) => self.native_named_cache.object(ty, result, stored),
             Err(_) => {},
@@ -1497,7 +1510,11 @@ impl<'p, 's> Checker<'p, 's> {
         let header = provider.type_declaration_header(self, declaration);
         if header.kind == NativeTypeDeclarationKind::RuntimeTable { return self.native_runtime_schema_resolved(reference, members) }
         for base in self.native_object_bases(reference)? {
-            if validate { self.native_object_resolved(base)?; }
+            if validate {
+                self.native_object_resolved(base)?;
+                // An invalid base is not an already validated one.
+                if let Some(&error) = self.native_named_cache.override_errors.get(&base) { return Err(error) }
+            }
             else { self.native_object_schema_resolved(base)?; }
         }
         if let Some(NativeObjectDeclarationForm::Table { type_argument_count }) = header.object_form
@@ -1696,7 +1713,9 @@ impl<'p, 's> Checker<'p, 's> {
                             }
                             None
                         };
-                        if let Some(error) = error { self.report_native_named(error); return Err(NativeTableError::NotTable { ty: TypeId::ERROR }); }
+                        // An incompatible override is reported at its declaration; the member
+                        // still reads as this class declares it, as in TypeScript.
+                        if let Some(error) = error { self.report_native_named(error); }
                     } else { found = Some((origin, metadata, value)); found_declared = declared_here; }
                 }
             }
