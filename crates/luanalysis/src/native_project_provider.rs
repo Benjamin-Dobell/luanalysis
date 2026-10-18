@@ -684,6 +684,7 @@ impl ProjectRegistry {
                     || !pending.pending_bindings.is_empty()
                     || !pending.pending_types.is_empty();
                 published |= has_pending;
+                let undescribed = report.report.pending_bindings.len() + report.report.pending_types.len();
                 if owned_only && (has_pending || checked.contains(&index)
                     || self.modules.required_files.borrow().contains(&file.id))
                     && emitted.insert(index)
@@ -693,15 +694,25 @@ impl ProjectRegistry {
                 }
                 if owned_only && !emitted.contains(&index) { continue; }
                 report.report.append(pending);
-                published |= !report.report.pending_bindings.is_empty()
-                    || !report.report.pending_types.is_empty();
-                report.report.render(queries);
+                // Types are described once, when the check settles (below); one recorded since
+                // is new information.
+                published |= report.report.pending_bindings.len() + report.report.pending_types.len() > undescribed;
+                report.report.render_diagnostics(queries);
             }
             // A cancelled check has nothing left to check: it only settles what it began.
             let unchecked = !self.cancellation.is_cancelled() && self.files.iter().enumerate().any(|(index, file)| {
                 !checked.contains(&index) && selected(file.id)
             });
             if !published && !unchecked {
+                // Describing a type can complete a deferred signature in any owner file, so the
+                // queues are drained again after it.
+                let mut described = false;
+                for report in &mut reports {
+                    if report.report.pending_bindings.is_empty() && report.report.pending_types.is_empty() { continue; }
+                    report.report.render_until(queries, &|| self.cancellation.is_cancelled());
+                    described = true;
+                }
+                if described { continue; }
                 if owned_only && !unresolved_reported {
                     for (index, file) in self.files.iter().enumerate() {
                         if checked.contains(&index) { file.source.report_unresolved_contextual_owners(); }
@@ -720,7 +731,7 @@ impl ProjectRegistry {
                 let mut pending = file.source.take_report();
                 // As in the drain loop: types are described only when printed.
                 if self.describe_types {
-                    pending.render(queries);
+                    pending.render_until(queries, &|| self.cancellation.is_cancelled());
                 } else {
                     pending.discard_types();
                 }

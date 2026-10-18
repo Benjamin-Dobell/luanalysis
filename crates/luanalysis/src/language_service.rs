@@ -313,7 +313,7 @@ fn closers(prefix: &str) -> String {
 /// Prepares `project`'s sources for the queries that follow, as a query would, so the first of
 /// them need not.
 pub fn prepare(project: Project, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
         registry.prepare_documentation_members(queries);
     });
@@ -329,7 +329,7 @@ pub fn complete(
     site: &CompletionSite,
     deliver: impl FnOnce(Vec<CompletionItem>) + Send,
 ) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
         deliver(completions(project, registry, file, site, queries));
     });
@@ -1029,7 +1029,7 @@ pub fn signature_help(
     site: &SignatureSite,
     deliver: impl FnOnce(Option<SignatureHelp>) + Send,
 ) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
         deliver(signatures(project, registry, file, site, queries));
     });
@@ -1313,7 +1313,7 @@ pub fn hover_documentation(
     offset: usize,
     deliver: impl FnOnce(Option<String>) + Send,
 ) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
         let markdown = type_name_hover(project, registry, file, offset).or_else(|| {
             documentation_at_offset(project, registry, file, offset, queries)
@@ -1412,7 +1412,7 @@ pub fn navigate(
     references: bool,
     deliver: impl FnOnce(Option<Navigation>) + Send,
 ) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
         deliver(navigation(project, registry, file, offset, references, queries));
     });
@@ -1557,7 +1557,7 @@ pub fn type_definition(
     offset: usize,
     deliver: impl FnOnce(Option<Navigation>) + Send,
 ) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
         deliver(type_definitions(project, registry, file, offset, queries));
     });
@@ -1739,7 +1739,7 @@ pub fn rename(
     name: Option<String>,
     deliver: impl FnOnce(Result<Option<Navigation>, String>) + Send,
 ) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
         deliver(renaming(project, registry, file, offset, name.as_deref(), queries));
     });
@@ -2219,7 +2219,7 @@ pub fn parameter_hints(
     range: Range<usize>,
     deliver: impl FnOnce(Vec<(usize, String)>) + Send,
 ) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
         deliver(literal_parameter_names(registry, file, range, queries));
     });
@@ -2455,7 +2455,7 @@ pub fn spelling_fixes(
     diagnostics: Vec<(String, Span)>,
     deliver: impl FnOnce(Vec<Fix>) + Send,
 ) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
         deliver(spellings(registry, file, &diagnostics, queries));
     });
@@ -2552,7 +2552,7 @@ pub fn call_hierarchy(
     direction: CallDirection,
     deliver: impl FnOnce(Option<CallHierarchy>) + Send,
 ) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
         deliver(calls(project, registry, file, offset, direction, queries));
     });
@@ -2751,7 +2751,7 @@ pub fn type_hierarchy(
     supertypes: Option<bool>,
     deliver: impl FnOnce(Option<(Vec<TypeItem>, std::collections::HashMap<std::path::PathBuf, String>)>) + Send,
 ) {
-    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, _| {
         deliver(types_related(project, registry, file, offset, supertypes));
     });

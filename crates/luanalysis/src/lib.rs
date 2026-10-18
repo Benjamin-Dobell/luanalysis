@@ -106,6 +106,14 @@ impl Diagnostic {
     }
 }
 
+/// Each key's last entry, in the order of those last entries.
+fn last_of_each<K: Copy + Eq + std::hash::Hash, V>(entries: Vec<(K, V)>) -> Vec<(K, V)> {
+    let mut seen = HashSet::with_capacity_and_hasher(entries.len(), Default::default());
+    let mut kept: Vec<_> = entries.into_iter().rev().filter(|(key, _)| seen.insert(*key)).collect();
+    kept.reverse();
+    kept
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BindingInfo {
     pub binding: BindingId,
@@ -159,27 +167,39 @@ impl CheckReport {
     }
 
     fn render(&mut self, engine: &mut dyn TypeQueries) {
+        self.render_until(engine, &|| false);
+    }
+
+    /// Describes each recorded binding and expression once, with the type it was recorded with
+    /// last (a body checked again on a later pass records it again), until `cancelled`: a
+    /// cancelled check's report is discarded, so what is left undescribed is dropped.
+    fn render_until(&mut self, engine: &mut dyn TypeQueries, cancelled: &dyn Fn() -> bool) {
         let mut bindings = HashMap::with_capacity_and_hasher(self.pending_bindings.len(), Default::default());
-        for (binding, ty) in std::mem::take(&mut self.pending_bindings) {
-            let displayed = describe_native(&ty, engine, &mut Vec::new());
-            bindings.insert(binding, displayed);
+        for (binding, ty) in last_of_each(std::mem::take(&mut self.pending_bindings)) {
+            if cancelled() { break; }
+            bindings.insert(binding, describe_native(&ty, engine, &mut Vec::new()));
         }
         for info in &mut self.bindings {
             if let Some(displayed) = bindings.get(&info.binding) {
-                info.ty.clone_from(&displayed);
+                info.ty.clone_from(displayed);
             }
         }
         let mut types = HashMap::with_capacity_and_hasher(self.pending_types.len(), Default::default());
-        for (span, ty) in std::mem::take(&mut self.pending_types) {
-            let displayed = describe_native(&ty, engine, &mut Vec::new());
-            types.insert((span.start, span.end), displayed);
+        let pending = std::mem::take(&mut self.pending_types).into_iter().map(|(span, ty)| ((span.start, span.end), ty)).collect();
+        for (span, ty) in last_of_each(pending) {
+            if cancelled() { break; }
+            types.insert(span, describe_native(&ty, engine, &mut Vec::new()));
         }
         for info in &mut self.types {
             if let Some(displayed) = types.get(&(info.span.start, info.span.end)) {
-                info.ty.clone_from(&displayed);
+                info.ty.clone_from(displayed);
             }
         }
-        self.render_diagnostics(engine);
+        if cancelled() {
+            self.pending_diagnostics.clear();
+        } else {
+            self.render_diagnostics(engine);
+        }
     }
 
     /// Returns an owned report's displayed type at an original UTF-8 byte offset.
