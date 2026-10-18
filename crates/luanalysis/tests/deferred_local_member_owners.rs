@@ -158,3 +158,24 @@ end
     rejects_on_line(&fixture, parameter, "TS2339", "local checked=");
     clean(&fixture, SOURCE);
 }
+
+#[test]
+fn a_local_written_as_an_alias_of_a_union_has_no_owner_for_its_stores() {
+    let fixture = Fixture::new();
+    let source = r#"---@shape A
+---@field n number
+
+---@shape B
+---@field n number
+
+---@alias AB A | B
+
+---@param state any
+local function f(state)
+    local s = --[[---@type AB]] state
+    s.n = 1
+end
+"#;
+    clean(&fixture, source);
+    rejects_on_line(&fixture, &source.replace("s.n = 1", "s.n = 'x'"), "TS2322", "s.n = 'x'");
+}

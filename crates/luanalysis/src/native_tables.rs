@@ -395,7 +395,14 @@ fn table_error_description_with_owner(error: &TableError, owner: Option<&Type>) 
             "Type '{}' cannot be indexed as a Lua table.".into()
         }
         TableError::MissingKey { key: value } => {
-            let key = key(value, &mut types);
+            // As TypeScript names a missing property, `Property 'name'`. Other keys stay operands,
+            // so their text cannot be read as part of the template.
+            let key = match value {
+                TableKey::Literal(LuaKey::String(bytes)) if bytes.first().is_some_and(|byte| !byte.is_ascii_digit())
+                    && bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') =>
+                    format!("'{}'", String::from_utf8_lossy(bytes)),
+                _ => key(value, &mut types),
+            };
             if let Some(owner) = owner {
                 types.push(owner.clone());
                 format!("Property {key} does not exist on type '{{}}'.")

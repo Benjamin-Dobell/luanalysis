@@ -32,7 +32,7 @@ fn missing_table_keys_retain_the_original_read_or_write_receiver_type() {
         report
             .diagnostics
             .iter()
-            .filter(|diagnostic| diagnostic.message.contains("\"missing\""))
+            .filter(|diagnostic| diagnostic.message.contains("Property 'missing'"))
             .count(),
         2
     );

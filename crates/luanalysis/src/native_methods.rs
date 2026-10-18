@@ -368,6 +368,15 @@ fn collect_written_local_owners(
                     let [owner] = named.candidates(type_name) else { continue };
                     let Some(declaration) = named.declaration(*owner) else { continue };
                     let alias = matches!(declaration.syntax.kind, NamedTypeDeclarationKind::Alias { .. });
+                    // An alias of a union or another composite names no single owner, so
+                    // stores through it are ordinary checked writes.
+                    if let NamedTypeDeclarationKind::Alias { target } = &declaration.syntax.kind {
+                        let mut target = target;
+                        while let luanalysis_syntax::TypeExprKind::Parenthesized(inner) = &target.kind { target = inner; }
+                        if named.anonymous_key_at(target.span).is_none() && !matches!(target.kind,
+                            luanalysis_syntax::TypeExprKind::Named(_) | luanalysis_syntax::TypeExprKind::Generic { .. }
+                        ) { continue; }
+                    }
                     if !alias && !matches!(declaration.syntax.kind,
                         NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. }
                     ) { continue; }
