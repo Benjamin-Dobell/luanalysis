@@ -605,6 +605,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Treat a store through a computed key as a possible write of exactly the sibling field it may name, nothing for a field whose key it cannot be, and exactly that field for a single literal key, through kernel d1d2c39.",
 })
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-nested-member-writes.patch",
+    "reason": "Apply a store through a fixed path below a member to the table that member holds in a runtime table's or definition's flow view, through kernel 2146387.",
+} for path in ["native_flow.rs", "native_named.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
