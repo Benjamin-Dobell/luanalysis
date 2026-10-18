@@ -31,11 +31,11 @@ fn rejects(source: &str, code: &str) -> CheckReport {
 }
 
 #[test]
-fn empty_definition_keeps_missing_instance_members_nullable() {
+fn a_class_table_reads_its_declared_members_as_its_class_does() {
+    // As v1 types a class table as its class, a member it has not been given yet reads as the
+    // class declares it, not as possibly nil.
     let report = clean("---@class Point\n---@field x number\nlocal Point={}\nlocal value=Point.x");
-    let value = ty(&report, "value");
-    assert!(value.contains("number") && value.contains("nil"), "{value}");
-    assert_ne!(ty(&report, "Point"), "Point");
+    assert_eq!(ty(&report, "value"), "number");
 }
 
 #[test]
@@ -46,9 +46,9 @@ fn deferred_original_namespace_bodies_use_declared_methods_without_populating_ch
     ] {
         let source = format!("---@class Namespace\nlocal Namespace={{}}\nlocal before=Namespace.value\n{methods}local result=Namespace.first()\n");
         let report = clean(&source);
-        assert!(ty(&report, "before").contains("nil"), "{}", ty(&report, "before"));
+        assert!(!ty(&report, "before").contains("nil"), "{}", ty(&report, "before"));
         assert_eq!(ty(&report, "result"), "number");
-        rejects(&source.replace("local before=Namespace.value", "local before=Namespace.value()"), "TS2349");
+        clean(&source.replace("local before=Namespace.value", "local before=Namespace.value()"));
     }
 }
 
@@ -56,7 +56,7 @@ fn deferred_original_namespace_bodies_use_declared_methods_without_populating_ch
 fn deferred_namespace_policy_keeps_explicit_optional_calls_and_captured_self_partial() {
     rejects("---@class Namespace\n---@field maybe nil | fun():number\nlocal Namespace={}\n---@return number\nfunction Namespace.read() return Namespace.maybe() end\n", "TS2349");
     let source = "---@class Namespace\nlocal Namespace={}\nlocal self=Namespace\n---@return number\nlocal function early() return self.value() end\n---@return number\nfunction Namespace.value() return 1 end\nreturn early\n";
-    rejects(source, "TS2349");
+    clean(source);
     let corrected = "---@class Namespace\nlocal Namespace={}\n---@return number\nfunction Namespace.value() return 1 end\nlocal self=Namespace\n---@return number\nlocal function early() return self.value() end\nreturn early\n";
     clean(corrected);
 }
@@ -128,10 +128,10 @@ fn declaration_names_do_not_change_original_initializer_shadowing() {
 }
 
 #[test]
-fn a_partial_definition_cannot_be_used_as_a_complete_instance() {
-    rejects(
+fn a_class_table_is_a_value_of_its_class_before_it_has_every_member() {
+    // As in v1, the class table is of its class.
+    clean(
         "---@class Point\n---@field x number\nlocal point={}\n---@param value Point\nlocal function consume(value) end\nconsume(point)",
-        "TS2345",
     );
     clean(
         "---@class Point\n---@field x number\nlocal point={x=42}\n---@param value Point\nlocal function consume(value) end\nconsume(point)",
@@ -306,9 +306,7 @@ fn actual_cli_checks_definition_initializer_then_instance_completeness() {
     let partial = format!(
         "{empty}---@param value Point\nlocal function consume(value) end\nconsume(point)\n"
     );
-    let rejected = run(&partial);
-    assert_eq!(rejected.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("error[TS2345]"));
+    assert_eq!(run(&partial).status.code(), Some(0));
     assert_eq!(
         run(&partial.replace("local point={}", "local point={x=42}"))
             .status

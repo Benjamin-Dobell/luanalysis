@@ -59,14 +59,15 @@ fn a_reopened_class_defines_members_for_every_importer() {
 }
 
 #[test]
-fn a_class_declared_once_still_exports_its_partial_definition() {
-    // Declared but never assigned, `x` is not yet a member of the module's table.
+fn an_imported_class_table_is_of_its_class() {
+    // As in v1: its declared members, assigned or not, read as the class declares them.
     let fixture = Fixture::new(&[
         ("point.lua", "---@class Point\n---@field x number\nlocal point = {}\nreturn point\n"),
-        ("main.lua", "local point = require 'point'\n---@param value Point\nlocal function use(value) end\nuse(point)\n"),
+        ("main.lua", "local point = require 'point'\n---@param value Point\nlocal function use(value) end\nuse(point)\nlocal x = point.x\n"),
     ]);
     let output = fixture.check();
-    assert!(text(&output).contains("TS2345"), "{}", text(&output));
+    assert!(output.status.success(), "{}", text(&output));
+    assert!(text(&output).contains("main.lua:5:7: x: number"), "{}", text(&output));
 }
 
 #[test]

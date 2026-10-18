@@ -174,7 +174,7 @@ fn deferred_namespace_contract_requires_its_original_definition_and_keeps_actual
         let contract = q.class_definition_member_contract(owner(2), &definition).unwrap();
         assert_eq!(q.property_type(&contract, "value"), Some(Type::Number));
         let actual = q.property_type(&definition, "value").unwrap();
-        assert!(q.is_assignable(&Type::Nil, &actual), "selecting a deferred contract does not populate the actual definition");
+        assert!(!q.is_assignable(&Type::Nil, &actual), "a member not yet given reads as the class declares it");
         assert!(q.class_definition_member_contract(owner(0), &definition).is_none(), "a reassigned namespace cannot borrow its previous owner's schema");
         assert!(q.class_definition_member_contract(owner(2), &class).is_none());
         assert!(q.class_definition_member_contract(owner(2), &empty()).is_none());
@@ -215,7 +215,7 @@ fn missing_reads_include_nil_but_known_writes_always_require_original_t() {
             .class_definition_value(owner(2), &class, &empty())
             .unwrap();
         let read = q.property_type(&definition, "value").unwrap();
-        assert!(q.is_assignable(&Type::Nil, &read));
+        assert!(!q.is_assignable(&Type::Nil, &read), "a member not yet given reads as the class declares it");
         assert!(q.is_assignable(&Type::Number, &read));
         assert!(!q.is_assignable(&Type::String, &read));
         let context = q.table_value_context(&definition, &value_key()).unwrap();
@@ -292,16 +292,16 @@ fn partial_definition_origin_does_not_erase_missing_required_fields_in_nested_re
         let partial = q
             .class_definition_value(owner(2), &class, &empty())
             .unwrap();
-        assert!(!q.is_assignable(&partial, &class));
-        assert!(!q.is_assignable(&table(partial.clone()), &table(class.clone())));
+        assert!(q.is_assignable(&partial, &class), "a class table is of its class before it has every member");
+        assert!(q.is_assignable(&table(partial.clone()), &table(class.clone())));
         let a = q.array_type(&partial);
         let b = q.array_type(&class);
-        assert!(!q.is_assignable(&a, &b));
-        assert!(!q.is_assignable(
+        assert!(q.is_assignable(&a, &b));
+        assert!(q.is_assignable(
             &function(vec![], partial.clone()),
             &function(vec![], class.clone())
         ));
-        assert!(!q.pack_assignable(&pack(vec![partial]), &pack(vec![class])));
+        assert!(q.pack_assignable(&pack(vec![partial]), &pack(vec![class])));
         let empty_class = q.named_type_reference(key(0), &[]).unwrap();
         let empty_definition = q
             .class_definition_value(owner(0), &empty_class, &empty())
@@ -395,8 +395,8 @@ fn mapped_and_materialized_definitions_preserve_partial_role_and_origin() {
         let mapped = checker.instantiate(definition, mapper);
         let materialized = checker.native_object_resolved(mapped).unwrap();
         let class = checker.instantiate(class, mapper);
-        assert!(!checker.is_assignable(mapped, class));
-        assert!(!checker.is_assignable(materialized, class));
+        assert!(checker.is_assignable(mapped, class));
+        assert!(checker.is_assignable(materialized, class));
         let owned = export_type(&mut checker, handles, materialized);
         assert!(matches!(owned, Type::SessionType(_)));
         let mut q = SessionQueries {
@@ -407,7 +407,7 @@ fn mapped_and_materialized_definitions_preserve_partial_role_and_origin() {
         assert!(q.table_write(&owned, &value_key(), &Type::Nil).is_err());
         assert!(q.table_write(&owned, &value_key(), &Type::Number).is_ok());
         let read = q.property_type(&owned, "value").unwrap();
-        assert!(q.is_assignable(&Type::Nil, &read));
+        assert!(!q.is_assignable(&Type::Nil, &read));
         assert!(q.is_assignable(&Type::Number, &read));
         assert!(!q.is_assignable(&Type::String, &read));
         let widened = q.widen(&owned);
@@ -470,7 +470,7 @@ fn generic_dynamic_constructor_collision_preserves_present_and_deleted_candidate
         assert!(!q.is_assignable(&Type::String,&ordinary));
         let definition=q.class_definition_value(owner(2),&class,&deleted).unwrap();
         let value=q.property_type(&definition,"value").unwrap();
-        assert!(q.is_assignable(&Type::Number,&value));assert!(q.is_assignable(&Type::Nil,&value));
+        assert!(q.is_assignable(&Type::Number,&value));assert!(!q.is_assignable(&Type::Nil,&value));
     });
 }
 
@@ -520,8 +520,8 @@ fn callable_definition_keeps_partial_members_and_returned_overloads_in_actual_vi
         assert!(!q.call(&definition,&[Type::Boolean]).errors.is_empty());
         assert!(q.is_assignable(&definition,&function(vec![Type::Number],Type::String)));
         assert!(!q.is_assignable(&definition,&function(vec![Type::Boolean],Type::String)));
-        assert!(!q.is_assignable(&definition,&class));
-        let read=q.property_type(&definition,"value").unwrap();assert!(q.is_assignable(&Type::Nil,&read));
+        assert!(q.is_assignable(&definition,&class));
+        let read=q.property_type(&definition,"value").unwrap();assert!(!q.is_assignable(&Type::Nil,&read));
         assert!(q.table_write(&definition,&value_key(),&Type::Nil).is_err());
         let plain=q.named_type_reference(key(0),&[]).unwrap();let plain=q.class_definition_value(owner(0),&plain,&empty()).unwrap();
         assert!(!q.call(&plain,&[Type::Number]).errors.is_empty(),"another class's overloads cannot make this definition callable");
@@ -548,9 +548,9 @@ fn mapped_and_materialized_definition_calls_keep_class_mapper_and_partial_view()
             assert_eq!(q.call_signature_types(&carrier).len(),1);
             let call=q.call(&carrier,&[Type::Number]);assert!(call.errors.is_empty(),"{:?}",call.errors);assert_eq!(call.return_type,Type::Number);
             assert!(!q.call(&carrier,&[Type::String]).errors.is_empty());
-            let read=q.property_type(&carrier,"value").unwrap();assert!(q.is_assignable(&Type::Nil,&read));assert!(q.is_assignable(&Type::Number,&read));assert!(!q.is_assignable(&Type::String,&read));
+            let read=q.property_type(&carrier,"value").unwrap();assert!(!q.is_assignable(&Type::Nil,&read));assert!(q.is_assignable(&Type::Number,&read));assert!(!q.is_assignable(&Type::String,&read));
             assert!(q.table_write(&carrier,&value_key(),&Type::Nil).is_err());
-            let class=q.named_type_reference(key(0),&[Type::Number]).unwrap();assert!(!q.is_assignable(&carrier,&class));
+            let class=q.named_type_reference(key(0),&[Type::Number]).unwrap();assert!(q.is_assignable(&carrier,&class));
             let widened=q.widen(&carrier);let call=q.call(&widened,&[Type::Number]);assert!(call.errors.is_empty());assert_eq!(call.return_type,Type::Number);
         }
     });
@@ -592,7 +592,7 @@ fn runtime_table_relations_and_generic_inference_keep_definition_carrier() {
         assert!(!q.is_assignable(&Type::RuntimeTable,&class),"the runtime category grants no class origin");
         let identity=q.pack_function(&PackFunctionType{params:vec![Parameter{name:"value".into(),ty:Type::NativeTypeParameter(parameter()),optional:false}],rest:None,type_parameters:vec![parameter()],returns:ValuePack::single(Type::NativeTypeParameter(parameter()))});
         let called=q.call(&identity,&[definition.clone()]);assert!(called.errors.is_empty(),"{:?}",called.errors);assert_eq!(called.return_type,definition,"T:table retains the argument's exact nominal partial carrier");
-        assert!(q.table_write(&called.return_type,&value_key(),&Type::Nil).is_err());assert!(!q.is_assignable(&called.return_type,&class));
+        assert!(q.table_write(&called.return_type,&value_key(),&Type::Nil).is_err());assert!(q.is_assignable(&called.return_type,&class));
         assert!(!q.call(&identity,&[function(vec![],Type::Number)]).errors.is_empty());
         let complete=q.class_definition_value(owner(2),&class,&table(Type::Number)).unwrap();assert!(q.is_assignable(&complete,&class));
         let call=q.call(&complete,&[Type::Number]);assert!(call.errors.is_empty());assert_eq!(call.return_type,Type::String);
@@ -633,8 +633,8 @@ fn runtime_predicates_preserve_callable_definition_identity_and_partial_write_co
             let graph=DefinitionRuntimeGraph{context,value:value.clone(),kind};
             let narrowed=q.flow_type(&graph,graph.at(table_branch),graph.reference(),&value,&value);assert!(!narrowed.incomplete);assert_eq!(narrowed.ty,definition);
             let other=q.flow_type(&graph,graph.at(3-table_branch),graph.reference(),&value,&value);assert_eq!(other.ty,Type::RuntimeFunction);
-            assert!(q.table_write(&narrowed.ty,&value_key(),&Type::Nil).is_err());assert!(!q.is_assignable(&narrowed.ty,&class));
-            let read=q.property_type(&narrowed.ty,"value").unwrap();assert!(q.is_assignable(&Type::Number,&read));assert!(q.is_assignable(&Type::Nil,&read));
+            assert!(q.table_write(&narrowed.ty,&value_key(),&Type::Nil).is_err());assert!(q.is_assignable(&narrowed.ty,&class));
+            let read=q.property_type(&narrowed.ty,"value").unwrap();assert!(q.is_assignable(&Type::Number,&read));assert!(!q.is_assignable(&Type::Nil,&read));
             let called=q.call(&narrowed.ty,&[Type::Number]);assert!(called.errors.is_empty());assert_eq!(called.return_type,Type::String);
         }
     });

@@ -353,7 +353,7 @@ fn definition_context_keeps_complete_overload_schema_without_initializing_the_me
         let empty = queries
             .class_definition_value(definition(), &class, &Type::Table(TableType::default()))
             .unwrap();
-        assert!(!queries.is_assignable(&empty, &class));
+        assert!(queries.is_assignable(&empty, &class));
     });
 }
 

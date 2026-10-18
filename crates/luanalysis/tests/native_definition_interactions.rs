@@ -108,7 +108,8 @@ fn module_definitions_require_actual_members_and_original_nominal_origin_for_ins
     let definition = "---@class Point\n---@field x number\nlocal value={}\nreturn value\n";
     fixture.file("factory.lua", definition);
     fixture.file("main.lua", "local value=require('factory')\n---@param point Point\n---@return number\nlocal function read(point) return point.x end\nlocal result=read(value)\n");
-    fail(&fixture.check(&[]), "TS2345", "main.lua:5:");
+    // As in v1, the class table is of its class before it has every member.
+    pass(&fixture.check(&[]));
     fixture.file(
         "factory.lua",
         &definition.replace("value={}", "value={x=42}"),
@@ -245,7 +246,7 @@ fn inherited_partial_module_members_keep_write_constraints_and_actual_instance_r
     );
     fail(&fixture.check(&["base.def.lua"]), "TS2322", "main.lua:2:");
     fixture.file("main.lua", "local prototype=require('derived')\n---@param value Base\n---@return number\nlocal function read(value) return value.value end\nlocal result=read(prototype)\n");
-    fail(&fixture.check(&["base.def.lua"]), "TS2345", "main.lua:5:");
+    pass(&fixture.check(&["base.def.lua"]));
     fixture.file(
         "derived.lua",
         &derived.replace("prototype={}", "prototype={value=42}"),

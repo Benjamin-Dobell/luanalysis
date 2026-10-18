@@ -69,20 +69,13 @@ fn semantic_self_mapping_does_not_initialize_missing_members_of_a_generic_factor
             "---@class Object\n ---@field missing boolean"
         )
     );
+    // The class table is of its class before it has every member, as in v1.
     let report = check(&source);
     assert!(
         report
             .diagnostics
             .iter()
-            .any(|error| error.code == "TS2345"),
-        "{:#?}",
-        report.diagnostics
-    );
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .all(|error| error.code != "TS2589"),
+            .all(|error| error.code != "TS2589" && error.code != "TS2345"),
         "{:#?}",
         report.diagnostics
     );

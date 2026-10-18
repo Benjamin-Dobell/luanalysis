@@ -377,8 +377,9 @@ fn named_base_arguments_still_check_native_constraints_and_arity_at_the_applicat
 #[test]
 fn partial_class_definitions_do_not_fabricate_initialized_inherited_members() {
     let source = "---@class Base\n---@field inherited number\n\n---@class Derived:Base\n---@field own string\nlocal definition={own=\"text\"}\nlocal before=definition.inherited\ndefinition.inherited=42\nlocal after=definition.inherited";
+    // An inherited member not yet given reads as the class declares it.
     let report = clean(source);
-    assert!(ty(&report, "before").contains("number") && ty(&report, "before").contains("nil"));
+    assert_eq!(ty(&report, "before"), "number");
     assert_eq!(ty(&report, "after"), "number");
     rejects_at(
         &source.replace("definition.inherited=42", "definition.inherited=\"wrong\""),
@@ -416,7 +417,8 @@ local string=make("text").value
 #[test]
 fn complete_definition_values_satisfy_ancestors_while_partial_and_unrelated_values_do_not() {
     let source = "---@class Base\n---@field value number\n\n---@class Child:Base\nlocal child={}\n---@param value Base\nlocal function consume(value) end\nconsume(child)";
-    rejects_at(source, "TS2345", "child");
+    // A class table is of its class, and so of its ancestors, before it has every member.
+    clean(source);
     clean(&source.replace("local child={}", "local child={value=42}"));
     let unrelated = source
         .replace(

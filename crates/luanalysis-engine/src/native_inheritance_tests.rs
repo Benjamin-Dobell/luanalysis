@@ -154,8 +154,8 @@ fn inherited_overloads_and_definition_partial_views_keep_mappers_and_origins() {
         let child=q.named_type_reference(key(1),&[Type::Number]).unwrap();let base=q.named_type_reference(key(0),&[Type::Number]).unwrap();
         let definition=q.class_definition_value(owner(1),&child,&Type::Table(TableType::default())).unwrap();assert_eq!(q.call_signature_types(&definition).len(),2);
         for value in [Type::Number,Type::Boolean] {let call=q.call(&definition,&[value.clone()]);assert!(call.errors.is_empty(),"{:?}",call.errors);assert_eq!(call.return_type,value);}
-        let read=q.property_type(&definition,"value").unwrap();assert!(q.is_assignable(&Type::Nil,&read));assert!(q.is_assignable(&Type::Number,&read));
-        let access=TableKey::Literal(LuaKey::String(b"value".to_vec()));assert!(q.table_write(&definition,&access,&Type::Nil).is_err());assert!(q.table_write(&definition,&access,&Type::String).is_err());assert!(!q.is_assignable(&definition,&base));
+        let read=q.property_type(&definition,"value").unwrap();assert!(!q.is_assignable(&Type::Nil,&read));assert!(q.is_assignable(&Type::Number,&read));
+        let access=TableKey::Literal(LuaKey::String(b"value".to_vec()));assert!(q.table_write(&definition,&access,&Type::Nil).is_err());assert!(q.table_write(&definition,&access,&Type::String).is_err());assert!(q.is_assignable(&definition,&base));
         let actual=Type::Table(TableType{fields:vec![TableField::new(LuaKey::String(b"value".to_vec()),Type::Number)],..Default::default()});let complete=q.class_definition_value(owner(1),&child,&actual).unwrap();assert!(q.is_assignable(&complete,&base));
     });
 }
@@ -166,10 +166,10 @@ fn materialized_class_and_definition_tables_keep_inherited_call_heads_and_member
         let mut base=Head::class(vec![Type::NativeTypeParameter(param(0))]);base.generic=true;let mut child=Head::class(vec![]);child.bases=vec![reference(0,vec![Type::Number])];let mut p=Provider::new(vec![base,child]);p.calls=true;
         let adapter=ProviderAdapter{provider:&p,handles};let mut checker=program.checker_with_native_provider(&adapter);checker.set_native_type_declaration_provider(&adapter);checker.enable_native_arrays();
         let class=checker.native_type_reference(native_named::core_declaration(key(1)),&[]).unwrap();let base=checker.native_type_reference(native_named::core_declaration(key(0)),&[TypeId::NUMBER]).unwrap();let table=checker.native_object_resolved(class).unwrap();assert!(checker.is_assignable(table,base));
-        let actual=import_type(&mut checker,handles,&Type::Table(TableType::default()));let definition=checker.native_definition_value(bun_sema::types::NativeDefinitionId{snapshot:92001,index:1},class,actual).unwrap();let partial=checker.native_object_resolved(definition).unwrap();assert!(!checker.is_assignable(partial,base));
+        let actual=import_type(&mut checker,handles,&Type::Table(TableType::default()));let definition=checker.native_definition_value(bun_sema::types::NativeDefinitionId{snapshot:92001,index:1},class,actual).unwrap();let partial=checker.native_object_resolved(definition).unwrap();assert!(checker.is_assignable(partial,base));
         let class=export_type(&mut checker,handles,class);let table=export_type(&mut checker,handles,table);let partial=export_type(&mut checker,handles,partial);let mut q=SessionQueries{checker:&mut checker,handles};
         for carrier in [class,table,partial.clone()] {assert_eq!(q.call_signature_types(&carrier).len(),2);for value in [Type::Number,Type::Boolean] {let call=q.call(&carrier,&[value.clone()]);assert!(call.errors.is_empty(),"{:?}",call.errors);assert_eq!(call.return_type,value);}}
-        let read=q.property_type(&partial,"value").unwrap();assert!(q.is_assignable(&Type::Nil,&read));assert!(q.table_write(&partial,&TableKey::Literal(LuaKey::String(b"value".to_vec())),&Type::Nil).is_err());
+        let read=q.property_type(&partial,"value").unwrap();assert!(!q.is_assignable(&Type::Nil,&read));assert!(q.table_write(&partial,&TableKey::Literal(LuaKey::String(b"value".to_vec())),&Type::Nil).is_err());
     });
 }
 

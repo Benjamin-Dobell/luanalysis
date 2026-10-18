@@ -5340,6 +5340,12 @@ impl<'p, 's> Checker<'p, 's> {
         state: u8,
         shared: &mut WorkerState,
     ) -> Ternary {
+        // A class's definition table is a value of its class, as v1 types the class table, even
+        // where it has not yet been given every member.
+        let source = match self.native_definition_ref(source) {
+            Some(reference) => self.intern(TypeData::NativeObject(reference.class)),
+            None => source,
+        };
         let target = self.native_receiver_relation_target(source, target);
         let source = match self.native_object_relation_view(source) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };
         let target = match self.native_object_relation_view(target) { Ok(ty) => ty, Err(_) => return Ternary::FALSE };

@@ -1172,7 +1172,16 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub(super) fn native_definition_member_read(&mut self, reference: NativeDefinitionRef, receiver: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
-        let raw = self.native_table_read(reference.view, key)?;
+        // A member the definition table has not been given at this point, one its class
+        // declares, and one it inherits read as the class's member: as v1 types a class table,
+        // and as TypeScript types a property assigned anywhere, rather than as possibly nil.
+        let raw = match self.native_table_read(reference.view, key) {
+            Ok(raw) if !self.contains_undefined(raw) => raw,
+            other => match self.native_named_read(reference.class, key) {
+                Ok(value) => return Ok(value),
+                Err(_) => other?,
+            },
+        };
         let receiver = reference.class.self_argument.unwrap_or(receiver);
         let mapper = self.native_receiver_mapper(reference.class, receiver);
         let value = self.instantiate(raw, mapper);
