@@ -386,6 +386,11 @@ Release archives include the shared library (`libluanalysis.so`, `libluanalysis.
 `luanalysis.dll`), a static library and the header, for Linux, macOS and Windows on x86-64 and
 ARM64.
 
+To link the static library, also link the system libraries it uses: on Linux
+`-lgcc_s -lutil -lrt -lpthread -lm -ldl -lc`, on macOS `-liconv`, and on Windows `kernel32.lib
+ntdll.lib ws2_32.lib advapi32.lib userenv.lib dbghelp.lib synchronization.lib
+legacy_stdio_definitions.lib`, compiling with `/MT` and defining `LUANALYSIS_STATIC`.
+
 ## Performance
 
 Luanalysis's checker is built on Bun's Rust port of the TypeScript compiler's checker, and it

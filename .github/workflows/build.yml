@@ -65,7 +65,7 @@ jobs:
         run: cargo build --locked --profile dist -p luanalysis --target ${{ matrix.arch }}-unknown-linux-musl
       - name: Libraries
         run: |
-          cargo rustc --locked --profile dist -p luanalysis-ffi --lib -- --print native-static-libs 2> libraries.log \
+          cargo rustc --locked --color never --profile dist -p luanalysis-ffi --lib -- --print native-static-libs 2> libraries.log \
             || { cat libraries.log; exit 1; }
           cat libraries.log
           sed -n 's/^note: native-static-libs: //p' libraries.log > target/dist/native-static-libs.txt
@@ -115,7 +115,7 @@ jobs:
       - name: Build
         run: |
           cargo build --locked --profile dist -p luanalysis
-          cargo rustc --locked --profile dist -p luanalysis-ffi --lib -- --print native-static-libs 2> libraries.log \
+          cargo rustc --locked --color never --profile dist -p luanalysis-ffi --lib -- --print native-static-libs 2> libraries.log \
             || { cat libraries.log; exit 1; }
           cat libraries.log
           # clang links libSystem itself; naming it again makes ld warn about a duplicate.
@@ -207,7 +207,7 @@ jobs:
       - name: Build
         run: |
           cargo build --locked --profile dist -p luanalysis
-          cargo rustc --locked --profile dist -p luanalysis-ffi --lib -- --print native-static-libs 2> libraries.log \
+          cargo rustc --locked --color never --profile dist -p luanalysis-ffi --lib -- --print native-static-libs 2> libraries.log \
             || { cat libraries.log; exit 1; }
           cat libraries.log
           sed -n 's/^note: native-static-libs: //p' libraries.log > target/dist/native-static-libs.txt
@@ -234,7 +234,7 @@ jobs:
           copy %out%\bin\luanalysis.dll . || exit /b 1
           smoke.exe smoke.lua || exit /b 1
           set /p nativelibs=<target\dist\native-static-libs.txt
-          cl /nologo /MT /I%out%\include /Fosmoke-static.obj crates\luanalysis-ffi\examples\smoke.c /link %out%\lib\luanalysis.lib %nativelibs% /OUT:smoke-static.exe || exit /b 1
+          cl /nologo /MT /DLUANALYSIS_STATIC /I%out%\include /Fosmoke-static.obj crates\luanalysis-ffi\examples\smoke.c /link %out%\lib\luanalysis.lib %nativelibs% /OUT:smoke-static.exe || exit /b 1
           smoke-static.exe smoke.lua || exit /b 1
       - uses: actions/upload-artifact@v7
         with:
