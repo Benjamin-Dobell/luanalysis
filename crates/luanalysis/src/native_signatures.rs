@@ -549,6 +549,48 @@ pub(super) struct NativeSignatures {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Which function's body each function, and each span, is innermost in. Bodies nest as the
+/// syntax does, so one sweep in source order finds every function's, where comparing every
+/// pair of functions was quadratic in a file's functions.
+struct FunctionNesting {
+    /// Function indices by their bodies' starts.
+    by_body: Vec<usize>,
+    /// The innermost function whose body contains each function.
+    parents: Vec<Option<usize>>,
+}
+
+impl FunctionNesting {
+    fn new(functions: &[Function]) -> Self {
+        let mut order: Vec<usize> = (0..functions.len()).collect();
+        order.sort_by_key(|&index| (functions[index].span.start, std::cmp::Reverse(functions[index].span.end)));
+        let mut parents = vec![None; functions.len()];
+        let mut open: Vec<usize> = Vec::new();
+        for index in order {
+            let span = functions[index].span;
+            while open.last().is_some_and(|&outer| functions[outer].body_span.end < span.end) { open.pop(); }
+            parents[index] = open.last().copied().filter(|&outer| {
+                functions[outer].span != span && functions[outer].body_span.start <= span.start
+            });
+            open.push(index);
+        }
+        let mut by_body: Vec<usize> = (0..functions.len()).collect();
+        by_body.sort_by_key(|&index| (functions[index].body_span.start, std::cmp::Reverse(functions[index].body_span.end)));
+        Self { by_body, parents }
+    }
+
+    /// The innermost function whose body contains `span`.
+    fn innermost(&self, functions: &[Function], span: Span) -> Option<usize> {
+        let before = self.by_body.partition_point(|&index| functions[index].body_span.start <= span.start);
+        let mut candidate = before.checked_sub(1).map(|position| self.by_body[position]);
+        while let Some(index) = candidate {
+            let body = functions[index].body_span;
+            if body.start <= span.start && span.end <= body.end { return Some(index); }
+            candidate = self.parents[index];
+        }
+        None
+    }
+}
+
 impl NativeSignatures {
     pub(super) fn new(
         snapshot: u64,
@@ -569,6 +611,7 @@ impl NativeSignatures {
             sites: HashMap::default(),
             diagnostics: Vec::new(),
         };
+        let nesting = FunctionNesting::new(functions);
         for declaration in &file.function_declarations {
             if declaration.invalid_owner { continue; }
             let context = match declaration.owner.as_ref() {
@@ -767,15 +810,8 @@ impl NativeSignatures {
             // Assertions describe the expression at its creation/use site. A
             // function literal's own body scope must not become the parent of
             // the annotation applied to that literal.
-            let enclosing = functions
-                .iter()
-                .enumerate()
-                .filter(|(_, function)| {
-                    function.body_span.start <= span.start
-                        && span.end <= function.body_span.end
-                })
-                .min_by_key(|(_, function)| function.body_span.end - function.body_span.start)
-                .map(|(index, _)| NativeFunctionKey {
+            let enclosing = nesting.innermost(functions, span)
+                .map(|index| NativeFunctionKey {
                     snapshot,
                     index: index as u32,
                 });
@@ -822,10 +858,7 @@ impl NativeSignatures {
         for (index, function) in functions.iter().enumerate() {
             // Declaration-library bodies are opaque placeholders. An inner
             // function's tags cannot become additional public declarations.
-            if functions.iter().any(|outer| outer.span != function.span
-                && outer.body_span.start <= function.span.start
-                && function.span.end <= outer.body_span.end)
-            {
+            if nesting.parents[index].is_some() {
                 continue;
             }
             let owner = NativeFunctionKey { snapshot, index: index as u32 };
