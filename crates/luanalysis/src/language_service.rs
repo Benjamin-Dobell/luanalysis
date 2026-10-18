@@ -13,7 +13,7 @@ use crate::project_check::ProjectCheckOptions;
 use crate::{bind, describe_native};
 use luanalysis_engine::{NativeCheckMode, Type};
 use luanalysis_project::{FileId, Project};
-use luanalysis_syntax::{CommentKind, Expr, ExprKind, Span, TokenKind};
+use luanalysis_syntax::{CommentKind, Documentation, Expr, ExprKind, Span, TokenKind};
 use std::ops::Range;
 
 /// The name that stands for the word being completed.
@@ -59,6 +59,8 @@ pub struct CompletionItem {
     pub kind: CompletionKind,
     /// The item's type, when known.
     pub detail: Option<String>,
+    /// What the item's declaration documents, as Markdown.
+    pub documentation: Option<String>,
 }
 
 /// The completion site at a byte offset of `text`, or `None` where nothing is completed: inside
@@ -178,12 +180,13 @@ pub fn complete(
     deliver: impl FnOnce(Vec<CompletionItem>) + Send,
 ) {
     let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
-    crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
-        deliver(completions(registry, file, site, queries));
+    crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
+        deliver(completions(project, registry, file, site, queries));
     });
 }
 
 fn completions(
+    project: &Project,
     registry: &crate::native_functions::project_provider::ProjectRegistry,
     file: FileId,
     site: &CompletionSite,
@@ -202,7 +205,8 @@ fn completions(
                 _ => {}
             });
             let Some(receiver) = receiver else { return items };
-            for (name, value) in receiver_members(registry, file, receiver, queries) {
+            let (receiver_type, members) = receiver_members(registry, file, receiver, queries);
+            for (name, value) in members {
                 if !is_identifier(&name) || items.iter().any(|item: &CompletionItem| item.label == name) { continue; }
                 let callable = matches!(value, Type::Any) || !queries.call_signature_types(&value).is_empty();
                 if method && !callable { continue; }
@@ -211,7 +215,10 @@ fn completions(
                     (true, true) => CompletionKind::Method,
                     (true, false) => CompletionKind::Function,
                 };
-                items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())) });
+                let documentation = receiver_type.as_ref()
+                    .and_then(|receiver| member_documentation(project, registry, receiver, &name, &value, queries))
+                    .map(|documentation| documentation_markdown(&documentation, true));
+                items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation });
             }
         }
         CompletionContext::Name => {
@@ -225,7 +232,9 @@ fn completions(
                     bind::DeclarationKind::LocalFunction => CompletionKind::Function,
                     _ => CompletionKind::Variable,
                 };
-                items.push(CompletionItem { label: declaration.name.clone(), kind, detail });
+                let documentation = binding_documentation(project, registry, file, binding)
+                    .map(|documentation| documentation_markdown(&documentation, true));
+                items.push(CompletionItem { label: declaration.name.clone(), kind, detail, documentation });
             }
             if let Some(environment) = source.global_environment()
                 && let Ok(environment) = queries.global_environment_type(environment)
@@ -233,10 +242,12 @@ fn completions(
                 for (name, value) in queries.type_members(&environment) {
                     if !is_identifier(&name) || items.iter().any(|item| item.label == name) { continue; }
                     let kind = if queries.call_signature_types(&value).is_empty() { CompletionKind::Variable } else { CompletionKind::Function };
-                    items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())) });
+                    let documentation = value_documentation(project, registry, &value, queries)
+                        .map(|documentation| documentation_markdown(&documentation, true));
+                    items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation });
                 }
             }
-            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None }));
+            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None }));
         }
     }
     items
@@ -251,24 +262,24 @@ fn receiver_members(
     file: FileId,
     span: Span,
     queries: &mut dyn luanalysis_engine::TypeQueries,
-) -> Vec<(String, Type)> {
-    let Some(source) = registry.source(file) else { return Vec::new() };
-    let members = |ty: &Type, queries: &mut dyn luanalysis_engine::TypeQueries| {
-        let ty = queries.exclude_type(ty, &Type::Nil);
-        queries.type_members(&ty)
-    };
+) -> (Option<Type>, Vec<(String, Type)>) {
+    let Some(source) = registry.source(file) else { return (None, Vec::new()) };
     let alone = source.source_check_expression(source.expression_key_for_span(span), None, NativeCheckMode::empty(), queries);
-    let found = members(&alone, queries);
-    if !found.is_empty() { return found; }
+    let alone = queries.exclude_type(&alone, &Type::Nil);
+    let found = queries.type_members(&alone);
+    if !found.is_empty() { return (Some(alone), found); }
     source.probe_expression(span);
     registry.check_owned_roots(queries, &[file]);
+    let mut receiver = None;
     let mut found: Vec<(String, Type)> = Vec::new();
     for ty in source.probed_types() {
-        for (name, value) in members(&ty, queries) {
+        let ty = queries.exclude_type(&ty, &Type::Nil);
+        for (name, value) in queries.type_members(&ty) {
             if !found.iter().any(|(other, _)| *other == name) { found.push((name, value)); }
         }
+        receiver.get_or_insert(ty);
     }
-    found
+    (receiver, found)
 }
 
 /// The locals in scope at `offset`, innermost first; a shadowed name appears once.
@@ -317,6 +328,10 @@ pub struct SignatureInformation {
     /// The parameter the cursor's argument is for; a rest parameter takes every argument after
     /// the others.
     pub active_parameter: usize,
+    /// The function's description and results, as Markdown.
+    pub documentation: Option<String>,
+    /// Each parameter's description.
+    pub parameter_documentation: Vec<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -413,12 +428,13 @@ pub fn signature_help(
     deliver: impl FnOnce(Option<SignatureHelp>) + Send,
 ) {
     let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
-    crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
-        deliver(signatures(registry, file, site, queries));
+    crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
+        deliver(signatures(project, registry, file, site, queries));
     });
 }
 
 fn signatures(
+    project: &Project,
     registry: &crate::native_functions::project_provider::ProjectRegistry,
     file: FileId,
     site: &SignatureSite,
@@ -453,6 +469,15 @@ fn signatures(
     };
     let heads = queries.call_signature_types(&callee);
     if heads.is_empty() { return None; }
+    let documentation = match (&call.kind, &receiver) {
+        (ExprKind::MethodCall { name, .. }, Some(receiver)) => member_documentation(project, registry, receiver, &name.text, &callee, queries),
+        _ => value_documentation(project, registry, &callee, queries),
+    }.unwrap_or_default();
+    let described = {
+        let mut summary = documentation.clone();
+        summary.params.clear();
+        Some(documentation_markdown(&summary, true)).filter(|markdown| !markdown.is_empty())
+    };
     // A method call passes its receiver as the first argument, which the signatures leave out.
     let hidden = usize::from(receiver.is_some());
     let name = if name.len() > 80 { "function" } else { name };
@@ -472,8 +497,12 @@ fn signatures(
         label.push_str(&returns);
         let rest = shown.last().is_some_and(|parameter| parameter.starts_with("..."));
         let active_parameter = if rest { site.argument.min(shown.len() - 1) } else { site.argument };
+        let parameter_documentation = shown.iter().map(|parameter| {
+            let name = parameter.split(':').next().unwrap_or_default().trim_end_matches('?');
+            documentation.param(name).map(str::to_owned)
+        }).collect();
         shapes.push((head.clone(), shown.len(), rest));
-        signatures.push(SignatureInformation { label, parameters: ranges, active_parameter });
+        signatures.push(SignatureInformation { label, parameters: ranges, active_parameter, documentation: described.clone(), parameter_documentation });
     }
     if signatures.is_empty() { return None; }
     // The overload that the complete arguments before the cursor's select: the first whose
@@ -514,6 +543,175 @@ fn expression_type(
     source.probe_expression(span);
     registry.check_owned_roots(queries, &[file]);
     source.probed_types().into_iter().next().or(Some(alone))
+}
+
+/// Documentation as Markdown: the description, then each parameter's and result's.
+pub fn documentation_markdown(documentation: &Documentation, parameters: bool) -> String {
+    let mut sections = Vec::new();
+    if !documentation.description.is_empty() { sections.push(documentation.description.clone()); }
+    if parameters {
+        let lines: Vec<String> = documentation.params.iter()
+            .map(|(name, text)| format!("*@param* `{name}` — {}", text.replace('\n', " ")))
+            .chain(documentation.returns.iter().map(|text| format!("*@return* — {}", text.replace('\n', " "))))
+            .collect();
+        if !lines.is_empty() { sections.push(lines.join("  \n")); }
+    }
+    sections.join("\n\n")
+}
+
+/// The documentation of a value's declaration: a native function's doc comments, or those of a
+/// written signature (`---@function`, `---@overload`).
+fn value_documentation(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    value: &Type,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<Documentation> {
+    let (file, span, inside) = if let Some(key) = queries.native_function_key(value) {
+        let (file, span) = registry.function_site(key)?;
+        (file, span, false)
+    } else if let Type::NativeSignature(key) = value {
+        let (file, span) = registry.signature_site(*key)?;
+        (file, span, true)
+    } else {
+        return None;
+    };
+    let syntax = registry.source(file)?.syntax();
+    let text = &project.file(file)?.source;
+    let documentation = if inside {
+        luanalysis_syntax::documentation_at(syntax, text, span.start)
+    } else {
+        luanalysis_syntax::documentation_above(syntax, text, span.start)
+    };
+    (!documentation.is_empty()).then_some(documentation)
+}
+
+/// Where member `name` of `receiver` is declared: in the receiver's class (or runtime table)
+/// or one it extends, nearest first. Each site is a file, a span, and whether the span is a
+/// documentation tag (`---@field`, `---@function`) rather than a statement.
+pub(crate) fn member_sites(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    receiver: &Type,
+    name: &str,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Vec<(FileId, Span, bool)> {
+    use luanalysis_engine::{LuaKey, NativeTypeProvider, TypeMemberKeyRecipe};
+    let mut sites = Vec::new();
+    let mut pending: Vec<Type> = vec![receiver.clone()];
+    let mut seen = Vec::new();
+    while let Some(ty) = pending.pop() {
+        let Some(key) = queries.named_object_declaration(&ty).or_else(|| queries.runtime_table_declaration(&ty)) else {
+            // Each alternative of a union, or part of an intersection, declares its own.
+            if let Type::Union(parts) | Type::Intersection(parts) = queries.inspect_type(&ty) { pending.extend(parts); }
+            continue;
+        };
+        if seen.contains(&key) || seen.len() > 32 { continue; }
+        seen.push(key);
+        for member in registry.type_declaration_members(key) {
+            let named = matches!(registry.type_member_header(member).key, TypeMemberKeyRecipe::Fixed(LuaKey::String(bytes)) if bytes == name.as_bytes());
+            if named && let Some(site) = registry.member_site(member) && !sites.contains(&site) { sites.push(site); }
+        }
+        if sites.is_empty() { pending.extend(registry.type_declaration_bases(key, queries)); }
+    }
+    sites
+}
+
+/// The documentation of member `name` of `receiver`: what its declaration's documentation says
+/// (a `---@field`'s description, a `---@function`'s or a function statement's doc comments), or
+/// failing that, its value's.
+fn member_documentation(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    receiver: &Type,
+    name: &str,
+    value: &Type,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<Documentation> {
+    for (file, span, tag) in member_sites(registry, receiver, name, queries) {
+        let (Some(source), Some(text)) = (registry.source(file), project.file(file)) else { continue };
+        let documentation = if tag {
+            let block = luanalysis_syntax::documentation_at(source.syntax(), &text.source, span.start);
+            match block.field(name) {
+                Some(field) => Documentation { description: field.to_owned(), ..Documentation::default() },
+                None if block.fields.is_empty() => block,
+                None => continue,
+            }
+        } else {
+            luanalysis_syntax::documentation_above(source.syntax(), &text.source, span.start)
+        };
+        if !documentation.is_empty() { return Some(documentation); }
+    }
+    value_documentation(project, registry, value, queries)
+}
+
+/// The documentation of a local or parameter: the doc comments above its declaration, or for a
+/// parameter, its function's `---@param`.
+fn binding_documentation(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    binding: bind::BindingId,
+) -> Option<Documentation> {
+    let source = registry.source(file)?;
+    let declaration = source.bound().declaration(binding);
+    let documentation = luanalysis_syntax::documentation_above(source.syntax(), &project.file(file)?.source, declaration.span.start);
+    match declaration.kind {
+        bind::DeclarationKind::Parameter => documentation.param(&declaration.name)
+            .map(|text| Documentation { description: text.to_owned(), ..Documentation::default() }),
+        bind::DeclarationKind::Local | bind::DeclarationKind::LocalFunction => (!documentation.is_empty()).then_some(documentation),
+        _ => None,
+    }
+}
+
+/// The documentation for the name at `offset` in `file`, as Markdown: a member's, a local's or a
+/// parameter's, or the declaration of the value a name holds.
+pub fn hover_documentation(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    offset: usize,
+    deliver: impl FnOnce(Option<String>) + Send,
+) {
+    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
+        deliver(documentation_at_offset(project, registry, file, offset, queries)
+            .map(|documentation| documentation_markdown(&documentation, true))
+            .filter(|markdown| !markdown.is_empty()));
+    });
+}
+
+fn documentation_at_offset(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    offset: usize,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<Documentation> {
+    let source = registry.source(file)?;
+    registry.prepare_documentation_members(queries);
+    let contains = |span: Span| span.start <= offset && offset <= span.end;
+    let mut member = None;
+    let mut name = None;
+    crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| match &expression.kind {
+        ExprKind::Field { base, name: field } | ExprKind::MethodCall { receiver: base, name: field, .. } if contains(field.span) => {
+            member = Some((base.span, field.text.clone()));
+        }
+        ExprKind::Name(_) if contains(expression.span) => name = Some(expression.span),
+        _ => {}
+    });
+    if let Some((receiver, field)) = member {
+        let receiver = expression_type(registry, file, receiver, queries)?;
+        let receiver = queries.exclude_type(&receiver, &Type::Nil);
+        let value = queries.type_members(&receiver).into_iter().find(|(member, _)| *member == field)?.1;
+        return member_documentation(project, registry, &receiver, &field, &value, queries);
+    }
+    if let Some(binding) = source.bound().binding_at(offset) {
+        if let Some(documentation) = binding_documentation(project, registry, file, binding) { return Some(documentation); }
+        if source.bound().declaration(binding).kind == bind::DeclarationKind::Parameter { return None; }
+    }
+    let value = expression_type(registry, file, name?, queries)?;
+    value_documentation(project, registry, &value, queries)
 }
 
 #[cfg(test)]

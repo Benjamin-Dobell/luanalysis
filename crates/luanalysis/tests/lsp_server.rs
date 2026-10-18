@@ -438,3 +438,49 @@ fn signature_help_selects_the_overload_the_arguments_typed_so_far_resolve() {
     assert!(response.contains(r#""result":null"#), "{response}");
     server.finish();
 }
+
+#[test]
+fn hover_completion_and_signature_help_show_documentation() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "--- A point in the plane.\n---@class Point\n---@field x number the distance across\n---@field y number\n--- the distance up\nlocal Point = {}\n\n--- Scales a point.\n--- Both coordinates.\n---@param point Point the point to scale\n---@param factor number how much,\n--- as a ratio\n---@return Point scaled\nlocal function scale(point, factor) return point end\n\n--- How many points there are.\n---@type number\nlocal count = 0\n\n---@param point Point\nlocal function show(point)\n    return point.x + count\nend\nlocal scaled = scale(Point, 2)\n\n---@class Other\n---@field y string\n\n---@param either Point | Other\nlocal function pick(either) return either.y end\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    // A field's description, from its class's documentation.
+    let (line, column) = position(source, "point.x", 0);
+    let response = server.request(3, "textDocument/hover", &main, line, column + 7);
+    assert!(response.contains("the distance across"), "{response}");
+    // A local's, at a use of it.
+    let (line, column) = position(source, "count\nend", 0);
+    let response = server.request(4, "textDocument/hover", &main, line, column + 1);
+    assert!(response.contains("How many points there are."), "{response}");
+    assert!(response.contains("number"), "{response}");
+    // A function's, with its parameters' and result's, at a call.
+    let (line, column) = position(source, "scale(Point", 0);
+    let response = server.request(5, "textDocument/hover", &main, line, column + 1);
+    assert!(response.contains("Scales a point.") && response.contains("how much, as a ratio") && response.contains("scaled"), "{response}");
+    // A member of a union, from the alternative that documents it.
+    let (line, column) = position(source, "either.y", 0);
+    let response = server.request(9, "textDocument/hover", &main, line, column + 7);
+    assert!(response.contains("the distance up"), "{response}");
+    // A parameter's, from its function's @param.
+    let (line, column) = position(source, "point, factor)", 0);
+    let response = server.request(6, "textDocument/hover", &main, line, column + 1);
+    assert!(response.contains("the point to scale"), "{response}");
+    // Completion items carry their declarations' documentation.
+    let typed = source.replace("    return point.x + count\n", "    point.\n    return point.x + count\n");
+    server.change(&main, 2, &typed);
+    let (line, column) = position(&typed, "    point.\n", 0);
+    let response = server.request(7, "textDocument/completion", &main, line, column + 10);
+    assert!(response.contains("the distance across") && response.contains("the distance up"), "{response}");
+    // Signature help describes the function and the parameter being typed.
+    let typed = format!("{source}scale(Point, \n");
+    server.change(&main, 3, &typed);
+    let line = typed.matches('\n').count() as u32 - 1;
+    let response = server.request(8, "textDocument/signatureHelp", &main, line, 13);
+    assert!(response.contains("Scales a point.") && response.contains("how much,\\nas a ratio"), "{response}");
+    server.finish();
+}

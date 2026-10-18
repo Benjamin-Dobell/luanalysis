@@ -493,6 +493,22 @@ impl ProjectRegistry {
     pub(crate) fn prepare_documentation_members(&self, queries: &mut dyn TypeQueries) {
         for file in &self.files { file.source.prepare_documentation_scopes(queries); }
     }
+    /// Where a native function's syntax is, whose documentation describes it.
+    pub(crate) fn function_site(&self, key: luanalysis_engine::NativeFunctionKey) -> Option<(FileId, luanalysis_syntax::Span)> {
+        let file = &self.files[*self.snapshots.get(&key.snapshot)?];
+        Some((file.id, file.source.function(key).span))
+    }
+    /// Where a signature (`---@function`, `---@overload`) is written.
+    pub(crate) fn signature_site(&self, key: luanalysis_engine::NativeSignatureKey) -> Option<(FileId, luanalysis_syntax::Span)> {
+        let file = &self.files[*self.snapshots.get(&key.snapshot)?];
+        Some((file.id, file.source.signatures.get(key).span))
+    }
+    /// Where a member is declared: its file, its span, and whether that is a documentation tag.
+    pub(crate) fn member_site(&self, key: NativeTypeMemberKey) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
+        let file = &self.files[*self.snapshots.get(&key.snapshot)?];
+        let (span, tag) = file.source.member_site(key)?;
+        Some((file.id, span, tag))
+    }
     /// The checker registry of one source, for the language service.
     pub(crate) fn source(&self, file: FileId) -> Option<&NativeRegistry> {
         self.files.iter().find(|registry| registry.id == file).map(|registry| &registry.source)

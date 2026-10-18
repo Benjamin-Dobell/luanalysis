@@ -15,6 +15,19 @@ pub(crate) struct ParsedDocumentation {
     pub as_casts: Vec<TypeAnnotation>,
     /// LuaLS `---@cast name T`, `---@cast name -?` and `---@cast name -T`.
     pub casts: Vec<CastAnnotation>,
+    /// The prose lines before the first tag.
+    pub prose: Vec<String>,
+    /// Each tag's description: the text after its complete type.
+    pub descriptions: Vec<TagDescription>,
+}
+
+/// What a tag says beside its type: `---@param path string the file` describes `path`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TagDescription {
+    pub tag: String,
+    /// The parameter, field or type the tag names.
+    pub subject: Option<String>,
+    pub text: String,
 }
 
 /// LuaLS `---@cast name T` (`kind` Type) or `---@cast name -T` (`kind` Not, `-?` removing
@@ -87,8 +100,13 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
     };
     let mut line_offset = 0;
     let mut active_function = None;
+    let mut seen_tag = false;
     let lines: Vec<&str> = body.split_inclusive('\n').collect();
     for (index, line) in lines.iter().copied().enumerate() {
+        if !seen_tag && !is_tag_line(line) {
+            let prose = line.trim_start_matches([' ', '\t', '\r']).trim_start_matches('-').trim();
+            if !prose.is_empty() || !result.prose.is_empty() { result.prose.push(prose.to_owned()); }
+        }
         let trimmed = line.trim_start_matches([' ', '\t', '\r']);
         let dashes = trimmed.len() - trimmed.trim_start_matches('-').len();
         let stripped = trimmed
@@ -96,6 +114,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
             .trim_start_matches([' ', '\t']);
         // More dashes than `---` comment an annotation out (`-----@type T`), as in LuaLS.
         if let Some(tag) = stripped.strip_prefix('@').filter(|_| dashes <= 3) {
+            seen_tag = true;
             let tag_offset = base + line_offset + line.len() - stripped.len();
             let tag_len = tag
                 .find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
@@ -193,6 +212,10 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 };
                 let annotation_span = Span::new(tag_offset, types_offset + types.len());
                 let mut group = FunctionAnnotations::default();
+                // The parameter, field or type the tag names, and where the text that
+                // `documentation_tail` consumes as a description starts.
+                let mut subject: Option<String> = None;
+                let mut tail_start: Option<usize> = None;
                 match tag_name {
                     "see" => {
                         if let Some(target) = parser.declaration_name("@see target") {
@@ -257,13 +280,14 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                                     fields: Vec::new(),
                                 }
                             };
+                            subject = Some(name.text.clone());
                             result.declarations.push(DeclarationItem::Named {
                                 name,
                                 generics,
                                 kind,
                                 span: annotation_span,
                             });
-                            parser.documentation_tail();
+                            tail_start = parser.documentation_tail();
                         }
                     }
                     "enum" => {
@@ -278,13 +302,14 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         }
                         if let Some(name) = parser.declaration_name("@enum") {
                             let target = TypeExpr { kind: TypeExprKind::Named(if keys { "string" } else { "any" }.to_owned()), span: name.span };
+                            subject = Some(name.text.clone());
                             result.declarations.push(DeclarationItem::Named {
                                 name,
                                 generics: Vec::new(),
                                 kind: NamedTypeDeclarationKind::Alias { target },
                                 span: annotation_span,
                             });
-                            parser.documentation_tail();
+                            tail_start = parser.documentation_tail();
                         }
                     }
                     "operator" => {
@@ -297,6 +322,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     "field" => {
                         active_function = None;
                         if let Some(field) = parser.field_declaration(annotation_span) {
+                            if let TypeFieldKey::Named(name) = &field.key { subject = Some(name.text.clone()); }
                             result.declarations.push(DeclarationItem::Field(field));
                         }
                     }
@@ -304,6 +330,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         if let Some((name, explicit_owner, method_colon, signature)) =
                             parser.function_declaration()
                         {
+                            subject = Some(name.text.clone());
                             active_function = Some(result.declarations.len());
                             result.declarations.push(DeclarationItem::Function {
                                 name,
@@ -322,6 +349,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     "param" => {
                         // `---@param ... T` (LuaLS) types the variadic parameters, as @vararg does.
                         if let Some(ellipsis_span) = parser.take("...") {
+                            subject = Some("...".to_owned());
                             let ty = if parser.eof() || parser.description_start().is_some() {
                                 TypeExpr { kind: TypeExprKind::Named("any".to_owned()), span: ellipsis_span }
                             } else {
@@ -333,6 +361,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                                 ellipsis_span: None,
                             }));
                         } else if let Some(name) = parser.name() {
+                            subject = Some(name.text.clone());
                             let optional = parser.take("?").is_some();
                             let ty = parser.union();
                             group.params.push(ParamAnnotation {
@@ -440,6 +469,11 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         "unsupported or unexpected syntax after @{tag_name}"
                     ));
                 }
+                if let Some(start) = tail_start.or(description)
+                    && let Some(text) = types.get(start - types_offset..).map(description_text).filter(|text| !text.is_empty())
+                {
+                    result.descriptions.push(TagDescription { tag: tag_name.to_owned(), subject, text });
+                }
                 diagnostics.extend(lexer_diagnostics.into_iter().filter(|diagnostic| description.is_none_or(|start| diagnostic.span.start < start)));
                 diagnostics.extend(parser.diagnostics);
                 if let Some(DeclarationItem::Function { annotations, .. }) =
@@ -455,6 +489,14 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
     }
     crate::completion_metadata::validate(&result, &mut diagnostics);
     (result, diagnostics)
+}
+
+/// A description as written over one or more lines: each line trimmed, without the `#` that
+/// may introduce it (`---@param path string # the file`).
+fn description_text(text: &str) -> String {
+    let text = text.trim_start();
+    let text = text.strip_prefix('#').unwrap_or(text);
+    text.lines().map(str::trim).collect::<Vec<_>>().join("\n").trim().to_owned()
 }
 
 /// Whether a line of documentation begins a tag (`---@name`, or `@name` in a block). A line with
@@ -912,17 +954,21 @@ impl TypeParser {
         starts.then_some(self.current().span.start)
     }
 
-    fn documentation_tail(&mut self) {
+    /// Consumes a description after a named declaration, returning where it starts.
+    fn documentation_tail(&mut self) -> Option<usize> {
         // doc.bnf permits comment_string after named declarations/fields.
         // Punctuation that would continue a malformed type remains an error.
         if matches!(
             self.current().kind,
             TokenKind::Identifier(_) | TokenKind::Keyword(_) | TokenKind::String(_)
         ) {
+            let start = self.current().span.start;
             while !self.eof() {
                 self.pos += 1;
             }
+            return Some(start);
         }
+        None
     }
 
     fn current(&self) -> &Token {

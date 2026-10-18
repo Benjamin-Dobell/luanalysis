@@ -190,6 +190,15 @@ struct Query {
 enum Site {
     Completion(CompletionSite),
     Signature(SignatureSite),
+    Hover(HoverSite),
+}
+
+/// A hover in a document's current text, with what the last check knows of the type there.
+struct HoverSite {
+    text: String,
+    offset: usize,
+    ty: Option<String>,
+    range: Option<Json>,
 }
 
 impl Query {
@@ -198,19 +207,29 @@ impl Query {
         match &self.site {
             Site::Completion(site) => &site.text,
             Site::Signature(site) => &site.text,
+            Site::Hover(site) => &site.text,
         }
     }
 
     /// The answer when none is computed, such as for a query a newer one superseded.
     fn unanswered(&self) -> Json {
-        match self.site {
+        match &self.site {
             Site::Completion(_) => Json::object([("isIncomplete", Json::from(true)), ("items", Json::Array(Vec::new()))]),
             Site::Signature(_) => Json::Null,
+            // Without documentation, a hover still has the last check's type.
+            Site::Hover(site) => match &site.ty {
+                None => Json::Null,
+                Some(ty) => {
+                    let mut fields = vec![("contents".to_owned(), markdown(format!("```lua\n{ty}\n```")))];
+                    if let Some(range) = &site.range { fields.push(("range".to_owned(), range.clone())); }
+                    Json::Object(fields)
+                }
+            },
         }
     }
 
     fn same_kind(&self, other: &Query) -> bool {
-        matches!((&self.site, &other.site), (Site::Completion(_), Site::Completion(_)) | (Site::Signature(_), Site::Signature(_)))
+        std::mem::discriminant(&self.site) == std::mem::discriminant(&other.site)
     }
 }
 
@@ -331,10 +350,7 @@ impl Server {
                 self.shutdown = true;
                 self.respond(id, Json::Null);
             }
-            "textDocument/hover" => {
-                let result = self.hover(params);
-                self.respond(id, result);
-            }
+            "textDocument/hover" => self.hover_request(id, params),
             "textDocument/definition" => {
                 let result = self.definition(params);
                 self.respond(id, result);
@@ -523,6 +539,33 @@ impl Server {
         let line = params.path(&["position", "line"]).and_then(Json::as_u64)? as usize;
         let character = params.path(&["position", "character"]).and_then(Json::as_u64)? as usize;
         Some((path, file, file.offset(line, character, self.encoding)))
+    }
+
+    /// A hover shows the last check's type at the position and, from the document's current
+    /// text, what the documentation of the name there says.
+    fn hover_request(&mut self, id: Json, params: &Json) {
+        let checked = self.hover(params);
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else {
+            return self.respond(id, checked);
+        };
+        let Some(document) = self.documents.get(&path) else { return self.respond(id, checked) };
+        let lines = LineIndex::new(document.text.clone());
+        let line = params.path(&["position", "line"]).and_then(Json::as_u64).unwrap_or(0) as usize;
+        let character = params.path(&["position", "character"]).and_then(Json::as_u64).unwrap_or(0) as usize;
+        let offset = lines.offset(line, character, self.encoding);
+        // The checked type applies only while the document is as it was checked.
+        let current = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path))
+            .is_some_and(|file| file.lines.text == document.text);
+        let (ty, range) = match (&checked, current) {
+            (Json::Object(_), true) => (
+                checked.path(&["contents", "value"]).and_then(Json::as_str)
+                    .map(|value| value.trim_start_matches("```lua\n").trim_end_matches("\n```").to_owned()),
+                checked.get("range").cloned(),
+            ),
+            _ => (None, None),
+        };
+        let site = HoverSite { text: document.text.clone(), offset, ty, range };
+        self.query(id, path, Site::Hover(site), lines);
     }
 
     fn hover(&self, params: &Json) -> Json {
@@ -764,6 +807,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
             let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &query.site {
                 Site::Completion(site) => complete(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Signature(site) => signatures(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
+                Site::Hover(site) => hover(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
             }));
             if completed.is_err() {
                 workspace = ProjectWorkspace::new();
@@ -828,6 +872,9 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
             ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(item.label.as_str()))])),
         ];
         if let Some(detail) = item.detail { fields.push(("detail".to_owned(), Json::from(detail))); }
+        if let Some(documentation) = item.documentation {
+            fields.push(("documentation".to_owned(), markdown(documentation)));
+        }
         Json::Object(fields)
     }).collect()))])));
 }
@@ -843,17 +890,42 @@ fn signatures(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mu
     language_service::signature_help(project, options, workspace, file, site, |help| answer(match help {
         None => Json::Null,
         Some(help) => Json::object([
-            ("signatures", Json::Array(help.signatures.iter().map(|signature| Json::object([
-                ("label", Json::from(signature.label.as_str())),
-                ("parameters", Json::Array(signature.parameters.iter().map(|range| Json::object([
-                    ("label", Json::Array(vec![Json::from(offset(&signature.label, range.start)), Json::from(offset(&signature.label, range.end))])),
-                ])).collect())),
-                ("activeParameter", Json::from(signature.active_parameter)),
-            ])).collect())),
+            ("signatures", Json::Array(help.signatures.iter().map(|signature| {
+                let mut fields = vec![
+                    ("label".to_owned(), Json::from(signature.label.as_str())),
+                    ("parameters".to_owned(), Json::Array(signature.parameters.iter().zip(&signature.parameter_documentation).map(|(range, documentation)| {
+                        let mut fields = vec![("label".to_owned(), Json::Array(vec![Json::from(offset(&signature.label, range.start)), Json::from(offset(&signature.label, range.end))]))];
+                        if let Some(documentation) = documentation { fields.push(("documentation".to_owned(), markdown(documentation.clone()))); }
+                        Json::Object(fields)
+                    }).collect())),
+                    ("activeParameter".to_owned(), Json::from(signature.active_parameter)),
+                ];
+                if let Some(documentation) = &signature.documentation { fields.push(("documentation".to_owned(), markdown(documentation.clone()))); }
+                Json::Object(fields)
+            }).collect())),
             ("activeSignature", Json::from(help.active_signature)),
             ("activeParameter", Json::from(help.active_parameter)),
         ]),
     }));
+}
+
+/// Markdown content, as LSP `MarkupContent`.
+fn markdown(value: String) -> Json {
+    Json::object([("kind", Json::from("markdown")), ("value", Json::from(value))])
+}
+
+fn hover(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &HoverSite, answer: &mut (dyn FnMut(Json) + Send)) {
+    let Some(project) = load(inputs, workspace, loaded, query) else { return };
+    let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
+    language_service::hover_documentation(project, options, workspace, file, site.offset, |documentation| {
+        let mut sections: Vec<String> = site.ty.iter().map(|ty| format!("```lua\n{ty}\n```")).collect();
+        sections.extend(documentation);
+        answer(if sections.is_empty() { Json::Null } else {
+            let mut fields = vec![("contents".to_owned(), markdown(sections.join("\n\n---\n\n")))];
+            if let Some(range) = &site.range { fields.push(("range".to_owned(), range.clone())); }
+            Json::Object(fields)
+        });
+    });
 }
 
 fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, job: &Job) -> Result<ProjectCheckReport, String> {

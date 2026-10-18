@@ -467,6 +467,15 @@ impl NativeRegistry {
             outer_parameters: self.named_outer_parameters(self.signature_aware_head_context(source), &source.syntax),
         }
     }
+    /// Where a member is declared, for the language service: its span, and whether that is a
+    /// documentation tag (`---@field`, `---@function`) rather than a statement.
+    pub(crate) fn member_site(&self, key: NativeTypeMemberKey) -> Option<(Span, bool)> {
+        if let Some(store) = self.runtime_tables.member(key) { return Some((store.span, false)); }
+        if let Some(source) = self.doc_members.get(key) { return Some((source.signature_span, true)); }
+        if let Some(source) = self.members.get(key) { return Some((source.candidates.first()?.span, false)); }
+        if key.snapshot != self.snapshot { return None; }
+        self.named.member(member_key(key)).map(|source| (source.field.span, true))
+    }
     pub(super) fn named_member_header(&self, key: NativeTypeMemberKey) -> TypeMemberHeader {
         if let Some(header)=self.runtime_member_header(key) {return header;}
         if let Some(header)=self.doc_members.header(key) {return header;}

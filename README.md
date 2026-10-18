@@ -374,7 +374,9 @@ options of `check`, and without paths it checks the editor's workspace. It provi
 as you type, hover types, go to definition, find references, rename, completion, signature help
 and inspections. Definitions, references and renames follow globals across files, including
 `_G.name`. Signature help shows each overload of the call being typed, highlights the argument's
-parameter, and selects the overload that the arguments typed so far resolve to.
+parameter, and selects the overload that the arguments typed so far resolve to. Hover, completion
+and signature help show what doc comments say: a declaration's description, and its parameters',
+results' and fields'.
 
 ## Library
 
