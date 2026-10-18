@@ -425,14 +425,12 @@ impl Server {
                 {
                     *begun = true;
                     let token = token.clone();
-                    if self.checking {
-                        self.notify("$/progress", Json::object([("token", Json::from(token)), ("value", Json::object([
-                            ("kind", Json::from("begin")),
-                            ("title", Json::from("Checking Lua")),
-                        ]))]));
-                    } else {
-                        self.progress_token = None;
-                    }
+                    self.notify("$/progress", Json::object([("token", Json::from(token)), ("value", Json::object([
+                        ("kind", Json::from("begin")),
+                        ("title", Json::from("Checking Lua")),
+                    ]))]));
+                    // A check that ended before the token was created ends its progress at once.
+                    if !self.checking { self.end_progress(); }
                 }
             }
             (None, None) => {}

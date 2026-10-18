@@ -801,10 +801,15 @@ fn checks_show_progress_and_every_workspace_folder_is_checked() {
     let create = server.wait(|message| message.contains("window/workDoneProgress/create"));
     let token = create.split(r#""token":""#).nth(1).unwrap().split('"').next().unwrap().to_owned();
     server.send(&format!(r#"{{"jsonrpc":"2.0","id":"{token}","result":null}}"#));
-    let begin = server.wait(|message| message.contains("$/progress") && message.contains("begin"));
-    assert!(begin.contains(&token), "{begin}");
-    server.wait(|message| message.contains("$/progress") && message.contains("end"));
-    server.diagnostics(&first.join("a.lua"), |message| message.contains("undefinedFirst"));
-    server.diagnostics(&second.join("b.lua"), |message| message.contains("undefinedSecond"));
+    // Progress begins and ends, and both folders' files are reported, in whatever order.
+    let mut seen: Vec<String> = Vec::new();
+    let found = |seen: &[String], wanted: &dyn Fn(&str) -> bool| seen.iter().any(|message| wanted(message));
+    let begun = |message: &str| message.contains("$/progress") && message.contains("begin") && message.contains(&token);
+    let ended = |message: &str| message.contains("$/progress") && message.contains("\"end\"");
+    let first_reported = |message: &str| message.contains("publishDiagnostics") && message.contains("undefinedFirst");
+    let second_reported = |message: &str| message.contains("publishDiagnostics") && message.contains("undefinedSecond");
+    while !(found(&seen, &begun) && found(&seen, &ended) && found(&seen, &first_reported) && found(&seen, &second_reported)) {
+        seen.push(server.messages.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| panic!("{seen:#?}")));
+    }
     server.finish();
 }
