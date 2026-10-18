@@ -131,12 +131,16 @@ fn string_unknown_any_and_unconstrained_generic_keys_do_not_infer_numeric_storag
 }
 
 #[test]
-fn fixed_numeric_fields_remain_exact_and_sparse_numeric_domains_do_not_become_arrays() {
+fn fixed_numeric_fields_remain_exact_and_numeric_stores_keep_a_sequence_one() {
     let fixed = "local ary={}\nary[1]='word'\nlocal exact=ary[1]\n";
     assert_eq!(clean(fixed).type_at(fixed.find("exact=").unwrap()), Some("string"));
+    // As TypeScript evolves an array by an element store.
     let source = "---@param index number\nlocal function fill(index)\n local ary={}\n ary[index]='word'\n ---@type string[]\n local sequence=ary\nend\n";
-    error_at(&check(source), source, "TS2322", "local sequence=ary", "ary");
+    clean(source);
     clean(&source.replace("---@type string[]", "---@type {[number]:nil|string}"));
+    // A table with a named key is a numeric dictionary.
+    let named = source.replace("local ary={}", "local ary={n=0}");
+    error_at(&check(&named), &named, "TS2322", "local sequence=ary", "ary");
 }
 
 #[test]

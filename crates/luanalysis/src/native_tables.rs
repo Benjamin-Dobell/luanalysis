@@ -243,7 +243,7 @@ impl Checker<'_> {
     fn implicitly_indexed(&mut self, receiver: &Type, key: &TableKey) -> bool {
         matches!(key, TableKey::Type(_))
             && self.native.is_some_and(|native| !native.no_implicit_any())
-            && self.engine.runtime_table_declaration(receiver).is_some()
+            && self.engine.runtime_tables_only(receiver)
     }
 
     pub(super) fn native_named_property_read(

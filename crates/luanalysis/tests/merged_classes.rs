@@ -73,13 +73,14 @@ fn an_imported_class_table_is_of_its_class() {
 #[test]
 fn appending_with_the_length_operator_builds_a_sequence() {
     let fixture = Fixture::new(&[
-        ("main.lua", "local list = {}\nfor i = 1, 3 do list[#list + 1] = { start = i } end\nfor _, item in ipairs(list) do\n    local start = item.start\nend\nlocal sparse = {}\nfor i = 1, 3 do sparse[i * 2] = i end\n---@type number[]\nlocal wrong = sparse\n"),
+        ("main.lua", "local list = {}\nfor i = 1, 3 do list[#list + 1] = { start = i } end\nfor _, item in ipairs(list) do\n    local start = item.start\nend\nlocal sparse = {}\nfor i = 1, 3 do sparse[i * 2] = i end\n---@type number[]\nlocal evolved = sparse\nlocal named = { n = 0 }\nfor i = 1, 3 do named[i] = i end\n---@type number[]\nlocal wrong = named\n"),
     ]);
     let output = fixture.check();
     let report = text(&output);
     assert!(report.contains("main.lua:4:11: start: number"), "{report}");
-    // A store at any other computed key still makes a numeric dictionary.
-    assert!(report.contains("main.lua:9:15: error[TS2322]"), "{report}");
+    // As TypeScript evolves an array, a store at another numeric key keeps a sequence one; a
+    // table with a named key becomes a numeric dictionary.
+    assert!(report.contains("main.lua:13:15: error[TS2322]"), "{report}");
     assert_eq!(report.matches("error[").count(), 1, "{report}");
 }
 

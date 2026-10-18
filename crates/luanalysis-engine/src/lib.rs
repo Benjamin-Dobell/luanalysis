@@ -1179,6 +1179,9 @@ pub trait TypeQueries {
     fn named_object_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey>;
     fn runtime_table_value(&mut self, declaration: NativeTypeDeclarationKey, actual: &Type) -> Result<Type, NamedTypeError>;
     fn runtime_table_declaration(&mut self, ty: &Type) -> Option<NativeTypeDeclarationKey>;
+    /// Whether every constituent of `ty` is a runtime table: a table its constructor and stores
+    /// describe, at whichever point of its flow.
+    fn runtime_tables_only(&mut self, ty: &Type) -> bool;
     fn runtime_table_schema(&mut self, ty: &Type) -> Option<Type>;
     fn named_declared_type(&mut self, declaration: NativeTypeDeclarationKey) -> Result<Type, NamedTypeError>;
     fn named_receiver_type(&mut self, class: &Type, receiver: &Type) -> Result<Type, NamedTypeError>;
@@ -2232,6 +2235,11 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let schema = self.checker.native_runtime_table_schema(ty)?;
         let TypeData::NativeObject(reference) = *self.checker.data(schema) else { unreachable!("runtime schema reference") };
         Some(native_named::source_declaration(reference.declaration))
+    }
+    fn runtime_tables_only(&mut self, ty: &Type) -> bool {
+        let ty = import_type(self.checker, self.handles, ty);
+        let parts = if self.checker.is_union(ty) { self.checker.parts(ty).to_vec() } else { vec![ty] };
+        parts.iter().all(|&part| self.checker.native_runtime_table_schema(part).is_some())
     }
     fn runtime_table_schema(&mut self, ty: &Type) -> Option<Type> {
         let ty = import_type(self.checker, self.handles, ty);

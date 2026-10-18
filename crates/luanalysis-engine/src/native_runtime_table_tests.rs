@@ -1097,7 +1097,8 @@ fn numeric_store_evolution_is_reached_sparse_and_does_not_demand_future_rhs() {
             assert_eq!(provider.seed_calls.get(), 0);
             assert!(queries.table_lookup(&first.ty, &access("unwritten")).is_err());
             let array = queries.array_type(&Type::String);
-            assert!(!queries.is_assignable(&first.ty, &array), "numeric stores cannot create array form");
+            // As TypeScript evolves an array by an element store.
+            assert!(queries.is_assignable(&first.ty, &array), "numeric stores keep a sequence one");
         },
     );
 }
@@ -1158,7 +1159,7 @@ fn numeric_store_evolution_excludes_written_bounds_foreign_scopes_and_symbolic_k
 }
 
 #[test]
-fn nil_only_numeric_stores_add_no_positive_slot_or_sequence_evidence() {
+fn nil_only_numeric_stores_add_no_positive_slot() {
     Engine::new().with_native_provider(
         || { let mut provider = Provider::new(); provider.members.clear(); provider },
         |provider, queries| {
@@ -1169,11 +1170,13 @@ fn nil_only_numeric_stores_add_no_positive_slot_or_sequence_evidence() {
             };
             let reached = queries.flow_type(&flow, at(1), reference(0), &table, &table);
             assert!(!reached.incomplete);
-            let read = queries.table_lookup(&reached.ty, &TableKey::Literal(LuaKey::Integer(1))).unwrap();
-            assert!(queries.is_assignable(&read, &Type::Nil));
-            assert!(!queries.is_assignable(&Type::String, &read));
+            // No slot: the table is still empty, as a sequence of anything is.
+            if let Ok(read) = queries.table_lookup(&reached.ty, &TableKey::Literal(LuaKey::Integer(1))) {
+                assert!(queries.is_assignable(&read, &Type::Nil));
+                assert!(!queries.is_assignable(&Type::String, &read));
+            }
             let array = queries.array_type(&Type::String);
-            assert!(!queries.is_assignable(&reached.ty, &array));
+            assert!(queries.is_assignable(&reached.ty, &array));
             assert_eq!(provider.member_calls.get(), 0);
             assert_eq!(provider.seed_calls.get(), 0);
         },
