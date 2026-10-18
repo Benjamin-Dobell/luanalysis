@@ -164,7 +164,15 @@ it are checked like calls to a function.
 ---@class Counter
 ---@overload fun(step: number): number
 ---@field total number
-local Counter = { total = 0 }
+local Counter = setmetatable({ total = 0 }, {
+    ---@param self Counter
+    ---@param step number
+    ---@return number
+    __call = function(self, step)
+        self.total = self.total + step
+        return self.total
+    end,
+})
 
 local next = Counter(1)   -- number
 Counter("one")            -- error: '"one"' is not assignable to 'number'
