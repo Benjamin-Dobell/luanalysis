@@ -11,6 +11,19 @@ pub(crate) struct ParsedDocumentation {
     pub functions: FunctionAnnotations,
     pub declarations: Vec<DeclarationItem>,
     pub exclusions: Vec<TypeAnnotation>,
+    /// LuaLS `--[[@as T]]`: the type of the expression just before the comment.
+    pub as_casts: Vec<TypeAnnotation>,
+    /// LuaLS `---@cast name T`, `---@cast name -?` and `---@cast name -T`.
+    pub casts: Vec<CastAnnotation>,
+}
+
+/// LuaLS `---@cast name T` (`kind` Type) or `---@cast name -T` (`kind` Not, `-?` removing
+/// nil): from here on, the variable's value is so typed.
+pub(crate) struct CastAnnotation {
+    pub name: Name,
+    pub kind: crate::ExpressionAssertionKind,
+    pub annotation: TypeAnnotation,
+    pub tag_span: Span,
 }
 
 pub(crate) enum DeclarationItem {
@@ -94,7 +107,6 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 tag_name,
                 "async" | "nodiscard" | "deprecated" | "package" | "private" | "protected"
                     | "public" | "meta" | "diagnostic" | "format" | "version" | "source"
-                    | "cast" | "as"
             ) {
                 line_offset += line.len();
                 continue;
@@ -117,6 +129,8 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     | "operator"
                     | "see"
                     | "enum"
+                    | "as"
+                    | "cast"
             ) {
                 diagnostics.push(Diagnostic {
                     origin: crate::DiagnosticOrigin::Annotation,
@@ -352,6 +366,51 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                             types,
                             packs,
                         });
+                    }
+                    "as" => {
+                        let (types, packs) = parser.annotation_type_list();
+                        result.as_casts.push(TypeAnnotation { span: annotation_span, types, packs });
+                    }
+                    "cast" => {
+                        // `---@cast x -A, -B, +C`: the removed types are excluded together; `+T`
+                        // and `+?` widen, which needs the variable's type, so they cast nothing.
+                        let tag_span = Span::new(tag_offset, tag_offset + 1 + tag_len);
+                        if let Some(name) = parser.name() {
+                            let mut removed = Vec::new();
+                            let mut replaced = Vec::new();
+                            loop {
+                                if parser.take("-").is_some() {
+                                    removed.push(match parser.take("?") {
+                                        Some(span) => TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span },
+                                        None => parser.union(),
+                                    });
+                                } else if parser.take("+").is_some() {
+                                    if parser.take("?").is_none() { parser.union(); }
+                                } else if parser.eof() || matches!(&parser.current().kind, TokenKind::Symbol(symbol) if symbol == "#") {
+                                    break;
+                                } else {
+                                    replaced.push(parser.union());
+                                }
+                                if parser.take(",").is_none() { break; }
+                            }
+                            let union = |mut types: Vec<TypeExpr>| if types.len() == 1 { types.remove(0) } else {
+                                let span = types.iter().map(|ty| ty.span).reduce(Span::join).unwrap_or(name.span);
+                                TypeExpr { kind: TypeExprKind::Union(types), span }
+                            };
+                            let cast = if !replaced.is_empty() {
+                                Some((crate::ExpressionAssertionKind::Type, union(replaced)))
+                            } else if !removed.is_empty() {
+                                Some((crate::ExpressionAssertionKind::Not, union(removed)))
+                            } else { None };
+                            if let Some((kind, ty)) = cast {
+                                result.casts.push(CastAnnotation {
+                                    name,
+                                    kind,
+                                    annotation: TypeAnnotation { span: annotation_span, types: vec![ty], packs: None },
+                                    tag_span,
+                                });
+                            }
+                        }
                     }
                     _ => unreachable!(),
                 }

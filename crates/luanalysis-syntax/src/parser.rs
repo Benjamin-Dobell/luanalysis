@@ -28,6 +28,7 @@ pub fn parse(source: &str) -> File {
         pos: 0,
         diagnostics: lexed.diagnostics,
         pending_annotations: FunctionAnnotations::default(),
+        pending_casts: Vec::new(),
         type_declarations: Vec::new(),
         function_declarations: Vec::new(),
         type_extensions: Vec::new(),
@@ -66,6 +67,8 @@ struct Parser<'a> {
     pos: usize,
     diagnostics: Vec<Diagnostic>,
     pending_annotations: FunctionAnnotations,
+    /// `---@cast` annotations read before the next statement, which casts at its position.
+    pending_casts: Vec<types::CastAnnotation>,
     type_declarations: Vec<NamedTypeDeclaration>,
     function_declarations: Vec<crate::DocFunctionDeclaration>,
     type_extensions: Vec<TypeExtension>,
@@ -177,6 +180,10 @@ impl Parser<'_> {
         let mut return_semicolon_used = false;
         loop {
             self.leading_trivia();
+            if !self.pending_casts.is_empty() && !returned {
+                self.cast_statements(&mut statements);
+            }
+            self.pending_casts.clear();
             if self.eof() || terminators.iter().any(|word| self.keyword(word)) {
                 break;
             }
@@ -499,8 +506,9 @@ impl Parser<'_> {
                     }) {
                         self.pending_annotations = FunctionAnnotations::default();
                     }
-                    let (annotations, diagnostics) = types::annotations(&comment);
+                    let (mut annotations, diagnostics) = types::annotations(&comment);
                     self.diagnostics.extend(diagnostics);
+                    self.pending_casts.append(&mut annotations.casts);
                     let annotations = self.record_documentation(&comment, annotations);
                     // Earlier @return lines continue only within this documentation group.
                     let contiguous = self.documentation_group.as_ref().is_some_and(|group| {
@@ -1246,6 +1254,47 @@ impl Parser<'_> {
         }
         (expr, built_depth)
     }
+    /// LuaLS `---@cast x T` types `x` from here on, as `x = x` cast to `T` would. The value's
+    /// name spans the `@cast` tag, so the two names are distinct expressions. Kept out of the
+    /// recursive statement parser's frame.
+    #[inline(never)]
+    fn cast_statements(&mut self, statements: &mut Vec<Stmt>) {
+        for cast in std::mem::take(&mut self.pending_casts) {
+            let target = Expr { kind: ExprKind::Name(cast.name.clone()), span: cast.name.span };
+            let value = Expr { kind: ExprKind::Name(Name { text: cast.name.text.clone(), span: cast.tag_span }), span: cast.tag_span };
+            self.expression_assertions.push(crate::ExpressionAssertion {
+                kind: cast.kind,
+                annotation: cast.annotation.clone(),
+                expression: cast.tag_span,
+                span: cast.tag_span,
+            });
+            statements.push(Stmt {
+                kind: StmtKind::Assign { targets: vec![target], values: vec![value], annotation: None },
+                span: cast.tag_span.join(cast.annotation.span),
+            });
+        }
+    }
+    /// LuaLS `expression --[[@as T]]` types the expression just before the comment. Kept out of
+    /// the recursive expression parser's frame.
+    #[inline(never)]
+    fn postfix_as_cast(&mut self, expr: &Expr) {
+        let TokenKind::Comment(comment) = &self.current().kind else { return };
+        if comment.kind != CommentKind::Long || !comment.text.trim_start_matches(['-', '[', '=']).trim_start().starts_with("@as") {
+            return;
+        }
+        let comment = comment.clone();
+        self.pos += 1;
+        let (documentation, diagnostics) = types::annotations(&comment);
+        self.diagnostics.extend(diagnostics);
+        for annotation in documentation.as_casts {
+            self.expression_assertions.push(crate::ExpressionAssertion {
+                kind: crate::ExpressionAssertionKind::Type,
+                annotation,
+                expression: expr.span,
+                span: expr.span.join(comment.span),
+            });
+        }
+    }
     fn prefix_with_suffix(&mut self) -> (Expr, usize) {
         let start = self.current().span;
         let mut built_depth = 1;
@@ -1514,6 +1563,7 @@ impl Parser<'_> {
             };
             built_depth += 1;
         }
+        self.postfix_as_cast(&expr);
         (expr, built_depth)
     }
     fn expression_boundary(&self) -> bool {

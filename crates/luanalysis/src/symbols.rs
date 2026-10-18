@@ -130,6 +130,11 @@ impl SymbolIndex {
     fn file_entries(&mut self, text: &str, bound: &BoundFile) -> Vec<Entry> {
         let mut entries = Vec::new();
         for occurrence in &bound.occurrences {
+            // A name the parser supplies, such as the value `---@cast x T` reads at its tag, is
+            // not written there and cannot be renamed there.
+            if text.get(occurrence.span.start..occurrence.span.end) != Some(occurrence.name.as_str()) {
+                continue;
+            }
             match occurrence.binding {
                 Some(binding) => {
                     let declaration = bound.declaration(binding);
