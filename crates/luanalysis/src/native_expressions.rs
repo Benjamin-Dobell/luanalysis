@@ -27,6 +27,9 @@ pub(super) struct ExpressionRecipes {
     functions: HashMap<(usize, usize), NativeFunctionKey>,
     /// Original field syntax only; no inferred receiver or contextual type.
     table_function_owners: HashMap<NativeFunctionKey, NativeExpressionKey>,
+    /// The function a function statement declares, by its target: the contextual site of a
+    /// statement whose target's declared type types it (`function onSave() end`).
+    statement_functions: HashMap<NativeExpressionKey, NativeFunctionKey>,
 }
 
 /// Final selected facets are exact session capabilities owned by the provider.
@@ -244,6 +247,11 @@ impl ExpressionRecipes {
             None
         }
     }
+    /// The function a contextual site types: a function expression's, or a function
+    /// statement's, whose target is the site.
+    pub(super) fn contextual_function_for(&self, key: NativeExpressionKey) -> Option<NativeFunctionKey> {
+        self.function_for(key).or_else(|| self.statement_functions.get(&key).copied())
+    }
     pub(super) fn new(snapshot: u64, file: &File, functions: &HashMap<(usize, usize), u32>) -> Self {
         let mut recipes = Self {
             snapshot,
@@ -251,6 +259,7 @@ impl ExpressionRecipes {
             spans: HashMap::default(),
             functions: functions.iter().map(|(span, index)| (*span, NativeFunctionKey { snapshot, index: *index })).collect(),
             table_function_owners: HashMap::default(),
+            statement_functions: HashMap::default(),
         };
         recipes.statements(&file.statements, None, None);
         recipes
@@ -284,7 +293,8 @@ impl ExpressionRecipes {
                 StmtKind::FunctionDeclaration {
                     target, function, ..
                 } => {
-                    self.index(target, owner, parent);
+                    let target = self.index(target, owner, parent);
+                    self.statement_functions.insert(target, self.function_key(function));
                     self.statements(&function.body, Some(self.function_key(function)), parent);
                 }
                 StmtKind::Block { body, .. } => self.statements(body, owner, parent),

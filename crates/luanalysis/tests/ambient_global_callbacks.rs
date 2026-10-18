@@ -28,12 +28,16 @@ _G.onSave = nil
 "#;
 
 fn check(callbacks: &str, source: &str) -> String {
+    check_with(callbacks, source, &[])
+}
+
+fn check_with(callbacks: &str, source: &str, options: &[&str]) -> String {
     let directory = std::env::temp_dir().join(format!("luanalysis ambient callbacks {} {}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
     fs::create_dir_all(&directory).unwrap();
     fs::write(directory.join("api.def.lua"), format!("{TYPES}\n{callbacks}")).unwrap();
     fs::write(directory.join("main.lua"), source).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).current_dir(&directory)
-        .args(["check", "--lua-version", "5.2", "--library", "api.def.lua", "--dump-types", "main.lua"]).output().unwrap();
+        .args(["check", "--lua-version", "5.2", "--library", "api.def.lua", "--dump-types", "main.lua"]).args(options).output().unwrap();
     fs::remove_dir_all(directory).unwrap();
     format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
 }
@@ -53,6 +57,10 @@ fn every_implementation_spelling_is_checked_with_the_declared_contract() {
         assert!(report.contains("position: tts__Vector"), "{form}\n{report}");
         assert!(report.contains("main.lua:4:5: error[TS2554]: Expected 0 arguments, but got 1."), "{form}\n{report}");
         assert!(report.contains("Property 'doesNotExist' does not exist on type 'tts__Object'"), "{form}\n{report}");
+        // The contract types the parameters, so they are not implicitly `any`, even where the
+        // body's calls check their arguments.
+        let strict = check_with(callbacks, &format!("{form}\n    print(colour, dropped.tag)\nend\n"), &["--no-implicit-any"]);
+        assert!(strict.contains("No type errors"), "{form}\n{strict}");
     }
 }
 

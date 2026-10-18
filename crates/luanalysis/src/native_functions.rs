@@ -744,7 +744,7 @@ impl NativeRegistry {
             .current_contextual_function()
             .filter(|_| inherit_signature_context)
             .filter(|context| self.expressions.contains(context.expression)
-                && self.expressions.function_for(context.expression) == record.owner);
+                && self.expressions.contextual_function_for(context.expression) == record.owner);
         let mut checker = self.checker(queries);
         checker.check_mode = mode;
         checker.type_context = record.owner;
@@ -1349,7 +1349,7 @@ impl NativeRegistry {
         if !self.expressions.contains(context.expression) {
             return self.resolve_binding(binding, queries);
         }
-        let owner = self.expressions.function_for(context.expression);
+        let owner = self.expressions.contextual_function_for(context.expression);
         let source = self.declarations.get(&binding)?.clone();
         match source {
             DeclarationSource::Parameter { function, index }
