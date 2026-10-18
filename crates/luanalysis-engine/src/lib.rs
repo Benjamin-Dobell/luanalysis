@@ -1126,6 +1126,8 @@ pub trait TypeQueries {
     fn widen(&mut self, ty: &Type) -> Type;
     /// Native literal-kind metadata only; does not request signatures or members.
     fn is_primitive_literal(&mut self, ty: &Type) -> bool;
+    /// The value of a single string literal type, fresh or regular.
+    fn string_literal_value(&mut self, ty: &Type) -> Option<Vec<u8>>;
     /// Uses the native base-of-literal worker, including its union mapping.
     fn base_of_literal(&mut self, ty: &Type) -> Type;
     /// The annotation form of a literal, using TypeScript's regular-literal worker.
@@ -2069,6 +2071,19 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             // Do not import another facade recipe just to classify it: named
             // and function imports may legitimately request source metadata.
             _ => false,
+        }
+    }
+    fn string_literal_value(&mut self, ty: &Type) -> Option<Vec<u8>> {
+        match ty {
+            Type::StringLiteral(value) => Some(value.clone()),
+            Type::SessionType(reference) => {
+                let ty = self.handles.resolve(*reference);
+                match self.checker.data(ty) {
+                    TypeData::StringLit { value, .. } => Some(self.checker.atoms().bytes(*value).to_vec()),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
     fn base_of_literal(&mut self, ty: &Type) -> Type {

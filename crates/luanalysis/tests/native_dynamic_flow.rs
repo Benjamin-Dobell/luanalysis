@@ -30,7 +30,8 @@ fn dynamic_writes_reset_potentially_aliased_member_narrowing() {
     let ty = report
         .type_at(source.find("return values.slot").unwrap() + "return values.".len())
         .unwrap();
-    assert!(ty.contains("number") && ty.contains("string"), "{ty}");
+    // Unchanged, or the value written through a key that may be "slot".
+    assert_eq!(ty, "number | \"changed\"");
     clean(&source.replace("return values.slot+1", "return \"value: \"..values.slot"));
 }
 

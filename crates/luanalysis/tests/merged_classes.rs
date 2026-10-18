@@ -166,3 +166,17 @@ fn a_written_field_types_another_partial_declarations_value() {
     assert!(output.status.success(), "{report}");
     assert!(report.contains("main.lua:9:11: text: nil | string"), "{report}");
 }
+
+#[test]
+fn a_computed_key_of_one_string_literal_type_names_a_field() {
+    let fixture = Fixture::new(&[
+        ("main.lua", "local K = { Self = 'self', Target = 'target' }\nlocal Computed = { [K.Self] = { Owner = 'owner' } }\nlocal Stored = {}\nStored[K.Target] = { Owner = 'x' }\n---@param index number\nlocal function f(index)\n    local named = { slot = false }\n    named[index] = 'word'\n    local kept = named.slot\nend\nlocal owner = Computed.self.Owner\nlocal stored = Stored.target\n"),
+    ]);
+    let output = fixture.check();
+    let report = text(&output);
+    assert!(output.status.success(), "{report}");
+    assert!(report.contains("main.lua:11:7: owner: string"), "{report}");
+    assert!(report.contains("main.lua:12:7: stored: { [\"Owner\"]: \"x\" }"), "{report}");
+    // A numeric key cannot write a named field.
+    assert!(report.contains("main.lua:9:11: kept: boolean"), "{report}");
+}

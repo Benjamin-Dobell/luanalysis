@@ -1628,7 +1628,9 @@ impl FlowAdapter<'_> {
             if suffix.is_empty() && !descendants && possible.is_none() {continue;}
             // A different written key leaves this prefix unaffected whatever
             // the receiver aliases; classify the path before proving aliases.
+            // A computed key may name exactly this child of the receiver.
             let affected=if suffix.is_empty() {NativeWriteRelation::Descendant}
+                else if suffix.len()==1 && matches!(written,flow::Key::Dynamic(_)) && !matches!(suffix[0],flow::Key::Dynamic(_)) {NativeWriteRelation::Exact}
                 else if matches!(written,flow::Key::Dynamic(_)) || matches!(suffix[0],flow::Key::Dynamic(_)) {NativeWriteRelation::Ancestor}
                 else if &suffix[0]!=written {compared=true; continue;}
                 else if suffix.len()==1 {NativeWriteRelation::Exact}

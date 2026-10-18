@@ -937,7 +937,23 @@ impl FlowDomain for NativeDomain<'_> {
         let ty = match transfer {
             NativeTransfer::PossibleWrite { at, target, value, input, relation } => {
                 let assigned = match relation {
-                    NativeWriteRelation::PossibleExact => checker.native_flow_value(self.provider, value, input),
+                    NativeWriteRelation::PossibleExact => {
+                        // A computed key writes this field only if it can be this field's key,
+                        // and exactly this field if its type is that one literal.
+                        if let Some(read) = self.provider.write_member_key(walk.reference, walk.reference, at, checker)
+                            && let Some((key, key_input)) = self.provider.write_index_value(walk.reference, target, at) {
+                            let (written, completed) = checker.run_memoizable(|checker| checker.native_flow_value(self.provider, key, key_input));
+                            if completed.is_some() {
+                                let read_type = checker.native_table_key_type(read);
+                                if !checker.is_assignable(read_type, written) { return previous; }
+                                if let Ok(super::native_tables::NativeTableAccessKey::Literal(literal)) = checker.native_table_access(super::native_tables::NativeTableAccessKey::Type(written))
+                                    && read.normalize().ok() == Some(literal) {
+                                    return FlowType::new(checker.native_flow_value(self.provider, value, input), previous.incomplete);
+                                }
+                            }
+                        }
+                        checker.native_flow_value(self.provider, value, input)
+                    }
                     NativeWriteRelation::PossibleDescendant => {
                         if checker.native_definition_flow_target(previous.ty)
                             && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {

@@ -104,7 +104,13 @@ impl Checker<'_> {
                     name.span,
                 ),
                 TableFieldKind::Sequence { index } => (sequence_key(*index), field.value.span),
-                TableFieldKind::Keyed(key) => (self.native_table_key(key), key.span),
+                // A computed key of one string literal type names a field, as a written
+                // literal does: `[Kind.Self] = v` where `Kind.Self` is `"self"`.
+                TableFieldKind::Keyed(key) => (match self.native_table_key(key) {
+                    TableKey::Type(ty) => self.engine.string_literal_value(&ty)
+                        .map_or(TableKey::Type(ty), |value| TableKey::Literal(LuaKey::String(value))),
+                    key => key,
+                }, key.span),
             };
             let written = field.annotation.as_ref().map(|annotation| {
                 AnnotationPack::annotation(annotation).lower(&mut |ty| self.annotation(ty))
