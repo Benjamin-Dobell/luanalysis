@@ -936,8 +936,12 @@ impl<'p, 's> Checker<'p, 's> {
         let mut active = Vec::new();
         for member in std::iter::once(origin.member).chain(origin.overloads.iter().copied()) {
             if !self.native_named_member_active(member)? { continue }
-            // A store governed by an existing contract is not another schema declaration.
-            if self.native_named_member_effective_metadata(member)?.is_assignment && self.native_named_member_context(member)?.is_some() { continue }
+            // A store governed by an existing contract is not another schema declaration, unless
+            // its type is written: as in v1, `self.get = --[[---@type fun(): Dead]] self.get` in a
+            // subclass's constructor declares the subclass's member, checked as an override.
+            let metadata = self.native_named_member_effective_metadata(member)?;
+            if metadata.is_assignment && metadata.origin != crate::types::NativeTableFieldOrigin::Declared
+                && self.native_named_member_context(member)?.is_some() { continue }
             let Some(mapper) = self.native_member_capture_mapper(origin.owner, member)? else { continue };
             active.push((member, mapper));
         }

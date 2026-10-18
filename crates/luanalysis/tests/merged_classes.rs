@@ -195,3 +195,16 @@ fn a_store_below_a_modules_member_is_part_of_its_export() {
         assert_eq!(report.matches("error[").count(), 1, "{report}");
     }
 }
+
+#[test]
+fn a_cast_store_through_a_subclass_constructors_self_overrides_an_inherited_member() {
+    // As in v1, the store declares the subclass's member; it is checked as an override.
+    let source = "---@shape Target\n---@field kind string\n\n---@shape DeadTarget : Target\n---@field kind 'dead'\n\n---@class Zone\n---@field getTarget fun(): Target\n\n---@class DeadZone : Zone\n\n---@param zone Zone\n---@return DeadZone\nlocal function newDeadZone(zone)\n    local self = --[[---@type DeadZone]] zone\n    self.getTarget = --[[---@type fun(): DeadTarget]] self.getTarget\n    return self\nend\n\n---@param dead DeadZone\n---@return DeadTarget\nlocal function deadTarget(dead)\n    return dead.getTarget()\nend\n";
+    let fixture = Fixture::new(&[("main.lua", source)]);
+    let output = fixture.check();
+    assert!(output.status.success(), "{}", text(&output));
+    let wrong = source.replace("--[[---@type fun(): DeadTarget]] self.getTarget", "--[[---@type fun(): number]] function() return 1 end");
+    let fixture = Fixture::new(&[("main.lua", &wrong)]);
+    let report = text(&fixture.check());
+    assert!(report.contains("error[TS2416]: Declared member type 'fun(): number' is not assignable to the inherited member type 'fun(): Target'."), "{report}");
+}

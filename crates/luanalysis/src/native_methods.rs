@@ -35,6 +35,8 @@ pub(super) struct NativeMethods {
     /// Classes defined on a global or a field (`---@class X` above `X = {}` or `M.X = {}`),
     /// by that spelling.
     path_owners: HashMap<ClassPath, Vec<NativeNamedKey>>,
+    /// Inline `@type` casts by the span of the expression they cast.
+    casts: HashMap<(usize, usize), TypeExpr>,
 }
 
 /// Where a class table defined by an assignment is stored: a local or global root and the
@@ -168,6 +170,7 @@ impl NativeMethods {
             fields: Vec::new(),
             owner_applications,
             path_owners,
+            casts: assertions.iter().map(|(&span, &ty)| (span, ty.clone())).collect(),
         };
         methods.statements(&file.statements, spans, bound, &owners, &declaration_owners, &contextual_owners);
         // A method's `self` is an instance of its class, so `self.x = v` in its body assigns a
@@ -252,7 +255,10 @@ impl NativeMethods {
                             self.fields.push(AssignmentFieldSource {
                                 owner, contextual_owner: receiver_binding(receiver, bound).and_then(|binding| contextual_owners.get(&binding).copied()), key, target: target.span, value: value.span,
                                 owner_application: receiver_binding(receiver, bound).and_then(|binding| self.owner_applications.get(&binding).cloned()),
-                                annotation: annotation.as_ref().and_then(|annotation| annotation.types.get(index)).cloned(),
+                                // A cast value, as v1 reads it, writes the member with that type:
+                                // `self.get = --[[---@type fun(): Dead]] self.get` overrides it.
+                                annotation: annotation.as_ref().and_then(|annotation| annotation.types.get(index)).cloned()
+                                    .or_else(|| self.casts.get(&(value.span.start, value.span.end)).cloned()),
                             });
                         }
                     }
