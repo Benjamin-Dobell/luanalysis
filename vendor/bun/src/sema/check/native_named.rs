@@ -1969,6 +1969,24 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_definition_fixed_write(table, key, value).unwrap_or(table)
     }
 
+    /// `native_definition_flow_write` through a path of fixed members: the table each member of a
+    /// runtime table's or definition's view holds receives the write below it. Other views are
+    /// unchanged.
+    pub(super) fn native_definition_flow_write_path(&mut self, table: TypeId, path: &[NativeTableKey], value: TypeId) -> TypeId {
+        let [first, rest @ ..] = path else { return table };
+        if rest.is_empty() { return self.native_definition_flow_write(table, *first, value) }
+        if table.is_never() || self.is_error_type(table) { return table }
+        if self.is_union(table) { return self.map_type(table, |c, part| c.native_definition_flow_write_path(part, path, value)) }
+        let Some(view) = self.native_runtime_table_ref(table).map(|reference| reference.view)
+            .or_else(|| self.native_definition_ref(table).map(|reference| reference.view)) else { return table };
+        let Ok(key) = first.normalize() else { return table };
+        let TypeData::NativeTable(data) = self.data(view) else { return table };
+        let Some(member) = data.fields.iter().find(|field| field.key == key && !field.optional).map(|field| field.value) else { return table };
+        if !self.native_definition_flow_target(member) { return table }
+        let written = self.native_definition_flow_write_path(member, rest, value);
+        self.native_definition_flow_write(table, key, written)
+    }
+
     /// Reads expose optional presence; writes use the original class member T, never T|nil.
     pub(super) fn native_definition_write(&mut self, reference: NativeDefinitionRef, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
         let key = self.native_table_access(key)?;

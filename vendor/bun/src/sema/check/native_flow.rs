@@ -978,7 +978,13 @@ impl FlowDomain for NativeDomain<'_> {
             }
             NativeTransfer::IncompleteCall => unreachable!(),
             NativeTransfer::DefinitionWrite { at, target, value, input } => {
+                // A store below a fixed member (`t.a.b = v` for `t`) writes the table it holds.
                 if checker.native_definition_flow_target(previous.ty)
+                    && let Some(path) = self.provider.reference_member_path(walk.reference, target, checker)
+                    && path.len() > 1 {
+                    let value = checker.native_flow_value(self.provider, value, input);
+                    checker.native_definition_flow_write_path(previous.ty, &path, value)
+                } else if checker.native_definition_flow_target(previous.ty)
                     && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker)
                         .or_else(|| self.literal_store_key(checker, walk, at, target)) {
                     let value = checker.native_flow_value(self.provider, value, input);

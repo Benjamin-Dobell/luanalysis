@@ -180,3 +180,18 @@ fn a_computed_key_of_one_string_literal_type_names_a_field() {
     // A numeric key cannot write a named field.
     assert!(report.contains("main.lua:9:11: kept: boolean"), "{report}");
 }
+
+#[test]
+fn a_store_below_a_modules_member_is_part_of_its_export() {
+    for class in ["", "---@class Types\n"] {
+        let fixture = Fixture::new(&[
+            ("types.lua", &format!("{class}local Types = {{}}\nTypes.Zone = {{}}\nTypes.Zone.Building = 'Building Zone'\nreturn Types\n")),
+            ("main.lua", "local Types = require 'types'\n---@type string\nlocal zone = Types.Zone.Building\nlocal missing = Types.Zone.Missing\n"),
+        ]);
+        let output = fixture.check();
+        let report = text(&output);
+        assert!(report.contains("main.lua:3:7: zone: string"), "{report}");
+        assert!(report.contains("main.lua:4:28: error[TS2339]: Property 'Missing' does not exist"), "{report}");
+        assert_eq!(report.matches("error[").count(), 1, "{report}");
+    }
+}

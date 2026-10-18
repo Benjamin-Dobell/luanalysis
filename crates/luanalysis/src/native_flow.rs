@@ -1475,7 +1475,8 @@ impl NativeFlowSources {
             NativeWriteRelation::Exact
         } else if target.path.len() < query.path.len() && query.path.starts_with(&target.path) {
             NativeWriteRelation::Ancestor
-        } else if target.path.len() == query.path.len() + 1 && !matches!(target.path.last(), Some(flow::Key::Dynamic(_))) {
+        } else if target.path.len() > query.path.len() && !matches!(target.path.last(), Some(flow::Key::Dynamic(_))) {
+            // A fixed child, or a fixed path below one (`t.a.b = v` for `t`).
             NativeWriteRelation::Descendant
         } else {
             NativeWriteRelation::Unaffected
@@ -1612,6 +1613,15 @@ impl FlowAdapter<'_> {
         let flow::NodeKind::Write {address,..}=&node.kind else {return None};
         address.receiver?;
         let written=target_source.path.last()?;
+        // A store below a fixed member of this reference (`t.a.b = v` for `t`) changes the
+        // table that member holds.
+        if target_source.root==query.root && target_source.path.len()>query.path.len()+1
+            && target_source.path.starts_with(&query.path)
+            && !target_source.path.iter().any(|key| matches!(key, flow::Key::Dynamic(_)))
+            && !self.sources.receiver_replaced_in_transaction(target_source,address)
+        {
+            return descendants.then_some(NativeWriteRelation::Descendant).or(Some(NativeWriteRelation::Unaffected));
+        }
         // As in Bun (`isMatchingReference`), the written receiver is this
         // prefix only when it is syntactically the same reference, after
         // parentheses and casts, and the same assignment did not replace it.
