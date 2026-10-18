@@ -853,6 +853,9 @@ impl NativeTypeProvider for ProjectRegistry {
     fn value_declaration_header(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> luanalysis_engine::ValueDeclarationHeader {
         self.owner(key.snapshot).global_header(key)
     }
+    fn value_declaration_is_standard(&self, key: luanalysis_engine::NativeValueDeclarationKey) -> bool {
+        self.snapshots.get(&key.snapshot).is_some_and(|&index| self.files[index].standard_library.is_some())
+    }
     fn value_declaration_contract(&self, key: luanalysis_engine::NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<Type> {
         self.owner(key.snapshot).global_contract(key, queries)
     }

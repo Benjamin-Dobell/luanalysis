@@ -1161,6 +1161,10 @@ impl Checker<'_> {
                         // shape constraint on later environment replacement.
                         if name.text == "_ENV" { continue; }
                         if let Some(constraint) = self.global_read(name) {
+                            // As in TypeScript, a declaration's value is checked against its
+                            // own type: one of another type than the global's first is
+                            // reported once, as a subsequent declaration (TS2403).
+                            let constraint = self.own_global_contract(name).unwrap_or(constraint);
                             self.compatible(&value, &constraint, origin);
                             continue;
                         }

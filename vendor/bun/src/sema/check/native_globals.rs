@@ -65,6 +65,9 @@ pub enum NativeGlobalQueryError {
     InvalidPrimitiveMemberNamespace { binding: NativeGlobalBindingId, kind: NativePrimitiveMemberKind },
     MissingDeclarationContract(NativeValueDeclarationId),
     ConflictingDeclarations { binding: NativeGlobalBindingId, declarations: Vec<NativeValueDeclarationId> },
+    /// A declaration of a global with a type other than its first declaration's, which is the
+    /// global's (TS2403). It is reported, not a query's result: the global keeps its type.
+    SubsequentDeclaration { binding: NativeGlobalBindingId, declaration: NativeValueDeclarationId, expected: TypeId, actual: TypeId },
     MixedCallableDeclarations { binding: NativeGlobalBindingId, declarations: Vec<NativeValueDeclarationId> },
     InvalidDeclarationSignatures { declaration: NativeValueDeclarationId, signature: Option<NativeSignatureId> },
     CircularQuery(NativeGlobalsQuery),
@@ -94,6 +97,8 @@ pub trait NativeGlobalsProvider {
     fn global_binding_declarations(&self, binding: NativeGlobalBindingId) -> Vec<NativeValueDeclarationId>;
     fn contains_value_declaration(&self, declaration: NativeValueDeclarationId) -> bool;
     fn value_declaration_header(&self, declaration: NativeValueDeclarationId) -> NativeValueDeclarationHeader;
+    /// Whether the declaration is the standard library's, which a program's other files follow.
+    fn value_declaration_is_standard(&self, _: NativeValueDeclarationId) -> bool { false }
     /// Pure original callable heads, independent of any runtime function/body.
     /// `Some` must be nonempty; `None` retains ordinary value declaration rules.
     fn value_declaration_signatures(&self, _: NativeValueDeclarationId) -> Option<Vec<NativeSignatureId>> { None }
@@ -454,6 +459,29 @@ impl<'p, 's> Checker<'p, 's> {
             if values.is_empty() {
                 for &declaration in &declarations { values.push((declaration, checker.native_value_declaration_type(declaration)?)); }
             }
+            // In program order: the standard library's declarations, then declaration files',
+            // then sources'. As TypeScript types a global by its first declaration, as lib.d.ts
+            // is, an API's (the standard library's or a declaration file's) is the global's, and
+            // each later declaration of another type is reported where it is.
+            values.sort_by_key(|&(declaration, _)| (
+                !provider.value_declaration_is_standard(declaration),
+                provider.value_declaration_header(declaration).role != NativeGlobalSourceRole::Declaration,
+                declaration.snapshot,
+                declaration.index,
+            ));
+            let (first, expected) = values[0];
+            if provider.value_declaration_is_standard(first)
+                || provider.value_declaration_header(first).role == NativeGlobalSourceRole::Declaration
+            {
+                for &(declaration, actual) in &values[1..] {
+                    if !checker.is_identical(expected, actual) {
+                        checker.report_native_global(NativeGlobalQueryError::SubsequentDeclaration { binding, declaration, expected, actual });
+                    }
+                }
+                return Ok(NativeGlobalsValue::Type(expected));
+            }
+            // Sources that disagree, as a global each file redefines for itself may: none is the
+            // global's, every conflicting one is reported, and the global is not typed by one.
             let mut conflicts = Vec::new();
             for left in 0..values.len() {
                 for right in left + 1..values.len() {
@@ -467,7 +495,7 @@ impl<'p, 's> Checker<'p, 's> {
                 conflicts.dedup();
                 return Err(NativeGlobalQueryError::ConflictingDeclarations { binding, declarations: conflicts });
             }
-            Ok(NativeGlobalsValue::Type(values[0].1))
+            Ok(NativeGlobalsValue::Type(expected))
         }).map(NativeGlobalsValue::into_type)
     }
 }

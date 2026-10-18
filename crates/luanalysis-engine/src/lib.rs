@@ -409,6 +409,8 @@ pub trait NativeTypeProvider {
     fn global_binding_declarations(&self, _: NativeGlobalBindingKey) -> Vec<NativeValueDeclarationKey> { Vec::new() }
     fn contains_value_declaration(&self, _: NativeValueDeclarationKey) -> bool { false }
     fn value_declaration_header(&self, _: NativeValueDeclarationKey) -> ValueDeclarationHeader { panic!("native global value provider is not installed") }
+    /// Whether the declaration is the standard library's, which a program's other files follow.
+    fn value_declaration_is_standard(&self, _: NativeValueDeclarationKey) -> bool { false }
     /// Pure original callable heads; no runtime function or initializer exists.
     fn value_declaration_signatures(&self, _: NativeValueDeclarationKey) -> Option<Vec<NativeSignatureKey>> { None }
     /// Original function heads without classifying the declaration as bodyless.

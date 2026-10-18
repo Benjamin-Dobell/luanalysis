@@ -626,6 +626,12 @@ impl NativeRegistry {
                     source.name.text
                 ),
             ),
+            GlobalQueryError::SubsequentDeclaration { expected, actual, .. } => {
+                // TypeScript's wording; the global keeps its first declaration's type.
+                let message = format!("Subsequent variable declarations must have the same type. Variable '{}' must be of type '{{}}', but here has type '{{}}'.", source.name.text);
+                self.report.borrow_mut().push_type_diagnostic("TS2403", source.name.span, &message, &[expected, actual]);
+                return;
+            }
             GlobalQueryError::MixedCallableDeclarations { .. } => ("LUA2034",format!("Global '{}' mixes bodyless function declarations with runtime or variable declarations; this combination is not supported.",source.name.text)),
             GlobalQueryError::InvalidDeclarationSignatures { .. } => ("LUA2034",format!("Global '{}' has invalid original bodyless function signature identities.",source.name.text)),
             GlobalQueryError::CircularQuery(_) => (
@@ -755,6 +761,7 @@ pub(super) fn query_declarations(error: &GlobalQueryError) -> Vec<NativeValueDec
     match error {
         GlobalQueryError::InvalidDeclaration(key)
         | GlobalQueryError::MissingDeclarationContract(key) => vec![*key],
+        GlobalQueryError::SubsequentDeclaration { declaration, .. } => vec![*declaration],
         GlobalQueryError::ConflictingDeclarations { declarations, .. } | GlobalQueryError::MixedCallableDeclarations { declarations, .. } => declarations.clone(),
         GlobalQueryError::InvalidDeclarationSignatures {declaration,..} => vec![*declaration],
         GlobalQueryError::CircularQuery(query)
@@ -810,6 +817,14 @@ impl Checker<'_> {
                     .iter()
                     .any(|source| source.name.span == name.span && source.annotation.is_some())
             })
+    }
+    /// The type that the global declaration this name is, if it is one with its own contract
+    /// (a `---@type` or a class it defines), declares.
+    pub(crate) fn own_global_contract(&mut self, name: &Name) -> Option<Type> {
+        let native = self.native?;
+        let source = native.globals.declarations.iter().find(|source| source.name.span == name.span)?;
+        if source.annotation.is_none() && native.global_attached_type(source).is_none() { return None; }
+        self.engine.value_declaration_type(source.key).ok()
     }
     pub(crate) fn global_read(&mut self, name: &Name) -> Option<Type> {
         let native = self.native?;

@@ -44,7 +44,7 @@ pub enum GlobalQuery {
     ValueDeclaration(NativeValueDeclarationKey),
     GlobalBinding(NativeGlobalBindingKey),
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum GlobalQueryError {
     InvalidEnvironment(NativeEnvironmentKey),
     InvalidBinding(NativeGlobalBindingKey),
@@ -57,6 +57,14 @@ pub enum GlobalQueryError {
     ConflictingDeclarations {
         binding: NativeGlobalBindingKey,
         declarations: Vec<NativeValueDeclarationKey>,
+    },
+    /// A declaration of a global with a type other than its first declaration's, which is the
+    /// global's (TS2403). It is reported, not a query's result.
+    SubsequentDeclaration {
+        binding: NativeGlobalBindingKey,
+        declaration: NativeValueDeclarationKey,
+        expected: Type,
+        actual: Type,
     },
     MixedCallableDeclarations {
         binding: NativeGlobalBindingKey,
@@ -145,6 +153,9 @@ fn error(error: core::NativeGlobalQueryError) -> GlobalQueryError {
             binding: binding(key),
             declarations: declarations.into_iter().map(declaration).collect(),
         },
+        core::NativeGlobalQueryError::SubsequentDeclaration { .. } => {
+            unreachable!("a subsequent declaration is reported with its types, not a query's result")
+        }
         core::NativeGlobalQueryError::MixedCallableDeclarations { binding: key, declarations } => {
             GlobalQueryError::MixedCallableDeclarations {
                 binding: binding(key),
@@ -208,6 +219,9 @@ impl<P: NativeTypeProvider> core::NativeGlobalsProvider for ProviderAdapter<'_, 
     fn contains_value_declaration(&self, key: core::NativeValueDeclarationId) -> bool {
         self.provider.contains_value_declaration(declaration(key))
     }
+    fn value_declaration_is_standard(&self, key: core::NativeValueDeclarationId) -> bool {
+        self.provider.value_declaration_is_standard(declaration(key))
+    }
     fn value_declaration_header(
         &self,
         key: core::NativeValueDeclarationId,
@@ -266,8 +280,19 @@ impl<P: NativeTypeProvider> core::NativeGlobalsProvider for ProviderAdapter<'_, 
         checker: &mut Checker<'_, '_>,
         value: core::NativeGlobalQueryError,
     ) {
+        let value = match value {
+            core::NativeGlobalQueryError::SubsequentDeclaration { binding: key, declaration: subsequent, expected, actual } => {
+                GlobalQueryError::SubsequentDeclaration {
+                    binding: binding(key),
+                    declaration: declaration(subsequent),
+                    expected: crate::export_type(checker, self.handles, expected),
+                    actual: crate::export_type(checker, self.handles, actual),
+                }
+            }
+            value => error(value),
+        };
         self.provider.global_query_error(
-            error(value),
+            value,
             &mut SessionQueries {
                 checker,
                 handles: self.handles,
@@ -616,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn every_conflicting_original_owner_is_reported_in_canonical_order() {
+    fn a_global_is_of_its_first_declarations_type_and_each_later_conflict_is_reported() {
         Engine::new().with_native_provider(
             || {
                 Globals::new(
@@ -625,18 +650,35 @@ mod tests {
                 )
             },
             |provider, queries| {
+                // As in TypeScript, the first declaration's type, in program order.
+                for _ in 0..2 {
+                    let global = queries.global_binding_type(binding(0, 0)).unwrap();
+                    assert_eq!(queries.format(&global), "number");
+                }
+                let errors = provider.errors.borrow().clone();
+                let [GlobalQueryError::SubsequentDeclaration { binding: reported, declaration: subsequent, expected, actual }] = errors.as_slice() else {
+                    panic!("{errors:?}")
+                };
+                assert_eq!((*reported, *subsequent), (binding(0, 0), declaration(1)));
+                assert_eq!((queries.format(expected), queries.format(actual)), ("number".to_owned(), "string".to_owned()));
+            },
+        );
+    }
+
+    #[test]
+    fn sources_that_disagree_report_every_conflicting_owner_and_none_types_the_global() {
+        Engine::new().with_native_provider(
+            || {
+                let mut globals = Globals::new(vec![Some(Type::Number), Some(Type::String)], vec![vec![1, 0]]);
+                globals.roles = vec![GlobalSourceRole::Implementation; 2];
+                globals
+            },
+            |provider, queries| {
                 let expected = GlobalQueryError::ConflictingDeclarations {
                     binding: binding(0, 0),
-                    declarations: vec![declaration(0), declaration(1), declaration(2)],
+                    declarations: vec![declaration(0), declaration(1)],
                 };
-                assert_eq!(
-                    queries.global_binding_type(binding(0, 0)),
-                    Err(expected.clone())
-                );
-                assert_eq!(
-                    queries.global_binding_type(binding(0, 0)),
-                    Err(expected.clone())
-                );
+                assert_eq!(queries.global_binding_type(binding(0, 0)), Err(expected.clone()));
                 assert_eq!(provider.errors.borrow().as_slice(), [expected]);
             },
         );
@@ -646,10 +688,12 @@ mod tests {
     fn any_is_not_identical_to_a_specific_global_contract() {
         Engine::new().with_native_provider(
             || Globals::new(vec![Some(Type::Any), Some(Type::Number)], vec![vec![0, 1]]),
-            |_, queries| {
+            |provider, queries| {
+                let global = queries.global_binding_type(binding(0, 0)).unwrap();
+                assert_eq!(queries.format(&global), "any");
                 assert!(matches!(
-                    queries.global_binding_type(binding(0, 0)),
-                    Err(GlobalQueryError::ConflictingDeclarations { .. })
+                    provider.errors.borrow().as_slice(),
+                    [GlobalQueryError::SubsequentDeclaration { .. }]
                 ));
             },
         );

@@ -238,33 +238,21 @@ fn written_union_contract_owns_initialization_and_later_writes() {
 }
 
 #[test]
-fn conflicting_global_contracts_report_all_original_owners_in_either_library_order() {
+fn conflicting_global_contracts_keep_the_first_and_report_the_later_in_either_library_order() {
     let fixture = Fixture::new();
     fixture.file("one.def.lua", "---@type number\nanswer = nil\n");
     fixture.file("two.def.lua", "---@type string\nanswer = nil\n");
     fixture.file("main.lua", "local result = answer\n");
-    for libraries in [
-        ["one.def.lua", "two.def.lua"],
-        ["two.def.lua", "one.def.lua"],
+    for (libraries, first) in [
+        (["one.def.lua", "two.def.lua"], "number"),
+        (["two.def.lua", "one.def.lua"], "string"),
     ] {
         let output = fixture.check(&libraries);
         fail(&output, "TS2403");
-        assert!(
-            text(&output).contains("one.def.lua:2:1: error[TS2403]"),
-            "{}",
-            text(&output)
-        );
-        assert!(
-            text(&output).contains("two.def.lua:2:1: error[TS2403]"),
-            "{}",
-            text(&output)
-        );
-        assert_eq!(
-            text(&output).matches("error[TS2403]").count(),
-            2,
-            "{}",
-            text(&output)
-        );
+        assert!(text(&output).contains(&format!("{}:2:1: error[TS2403]", libraries[1])), "{}", text(&output));
+        assert_eq!(text(&output).matches("error[TS2403]").count(), 1, "{}", text(&output));
+        // The global is usable, of its first declaration's type.
+        assert!(text(&output).contains(&format!("result: {first}")), "{}", text(&output));
     }
 }
 
@@ -757,4 +745,21 @@ fn imported_captured_functions_keep_owner_mappers_under_ambient_generic_callback
     fixture.file("factory.lua", "---@generic T\n---@param seed T\nlocal function make(seed) return function() return seed end end\nreturn make\n");
     fixture.file("main.lua", "local make = require('factory')\nlocal numeric = make(42)\nlocal textual = make('word')\n---@type number\nlocal first = invoke(numeric)\n---@type string\nlocal second = invoke(textual)\n---@type number\nlocal again = invoke(numeric)\n");
     pass(&fixture.check(&["api.def.lua"]));
+}
+
+#[test]
+fn a_source_redeclaring_a_standard_global_leaves_it_the_standard_librarys() {
+    let fixture = Fixture::new();
+    // As LuaLS's own meta templates redeclare the standard library.
+    fixture.file("string.lua", "---@meta string\n\n---@class stringlib\nstring = {}\n\nreturn string\n");
+    fixture.file("main.lua", "local length = string.len('x')\nlocal format = string.format\n");
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli"))
+        .current_dir(&fixture.0)
+        .args(["check", "--dump-types", "--lua-version", "5.4", "string.lua", "main.lua"])
+        .output()
+        .unwrap();
+    let report = text(&output);
+    assert!(report.contains("string.lua:4:1: error[TS2403]: Subsequent variable declarations must have the same type. Variable 'string' must be of type 'string', but here has type 'stringlib'."), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+    assert!(report.contains("length: number") && report.contains("format: fun(formatstring: string"), "{report}");
 }

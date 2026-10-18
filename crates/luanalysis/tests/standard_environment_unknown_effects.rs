@@ -416,7 +416,7 @@ fn a_hosts_own_declarations_keep_ordinary_results_and_cannot_replace_type() {
     );
     // `type` is not the host's to replace.
     let rejected = report(fixture.check(source, false, Some(CUSTOM)), 1);
-    assert!(rejected.contains("\"code\":\"TS2403\",\"message\":\"Global 'type' has incompatible declaration owners"), "{rejected}");
+    assert!(rejected.contains("\"code\":\"TS2403\",\"message\":\"Subsequent variable declarations must have the same type. Variable 'type' must be of type"), "{rejected}");
 }
 
 #[test]
