@@ -1,0 +1,87 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 6ce51c6..0cc8fe5 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -1306,6 +1306,16 @@ impl<'p, 's> Checker<'p, 's> {
+         }).collect()
+     }
+ 
++    /// Whether a named object declares the member `key`, its own or inherited, rather than
++    /// admitting it by an index signature.
++    pub(super) fn native_object_declares(&mut self, reference: NativeObjectReference, key: NativeTableKey) -> bool {
++        let Ok(members) = self.native_object_members(reference) else { return false };
++        members.into_iter().any(|member| {
++            let Ok(provider) = self.native_named_provider(member.owner.declaration) else { return false };
++            matches!(provider.type_member_header(self, member.member).key, NativeTypeMemberKey::Fixed(fixed) if fixed.normalize() == Ok(key))
++        })
++    }
++
+     /// The members named `name` that member lookup applies to `ty`, a named object: its own
+     /// first, then each base's, with each callable member's further overloads. For the language
+     /// service's origins and documentation, which must not take a same-spelled member of
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+index 730cf40..35a2469 100644
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -757,7 +757,7 @@ impl<'p, 's> Checker<'p, 's> {
+         if depth > 16 { return }
+         let ty = self.native_runtime_carrier(ty);
+         if self.is_union(ty) || self.is_intersection(ty) {
+-            for part in self.parts(ty).to_vec() { self.native_completion_names(part, names, depth + 1); }
++            for part in self.constituents(ty).to_vec() { self.native_completion_names(part, names, depth + 1); }
+             return;
+         }
+         if let Some(provider) = self.native_globals_provider
+@@ -855,6 +855,7 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+         let base = self.base_constraint_or_type(table);
+         if base != table { let base = self.type_with_this_argument(base, table); return self.native_table_read(base, key) }
++        if self.is_intersection(table) { return self.native_intersection_read(table, key) }
+         if self.is_array_or_tuple(table) { return Err(NativeTableError::NotTable { ty: table }) }
+         let TypeData::NativeTable(data) = self.data(table) else {
+             if let NativeTableAccessKey::Literal(NativeTableKey::String(name)) = key
+@@ -906,6 +907,44 @@ impl<'p, 's> Checker<'p, 's> {
+         } else { self.intersection(&values) })
+     }
+ 
++    /// A member of an intersection, as TypeScript reads one: from the parts that declare it, as
++    /// what they all give, and only when none does, from every part, so that an index signature
++    /// applies only to names no part declares. `Statics & { [string]: Value | nil }` keeps each
++    /// of its statics' types and gives any other name `Value | nil`.
++    fn native_intersection_read(&mut self, table: TypeId, key: NativeTableAccessKey) -> Result<TypeId, NativeTableError> {
++        let parts = self.constituents(table).to_vec();
++        if let NativeTableAccessKey::Literal(literal) = key {
++            let mut declared = Vec::new();
++            for &part in &parts {
++                if self.native_declares_member(part, literal) && let Ok(value) = self.native_table_read(part, key) { declared.push(value); }
++            }
++            if !declared.is_empty() { return Ok(self.intersection(&declared)) }
++        }
++        let mut values = Vec::new();
++        let mut failure = None;
++        for part in parts {
++            match self.native_table_read(part, key) {
++                Ok(value) => values.push(value),
++                Err(error) => { failure.get_or_insert(error); }
++            }
++        }
++        if values.is_empty() { return Err(failure.unwrap_or(NativeTableError::MissingKey { key })) }
++        Ok(self.intersection(&values))
++    }
++
++    /// Whether `ty` declares the member `key` itself, rather than admitting it by an index
++    /// signature. A part of another kind declares what it can be read for.
++    fn native_declares_member(&mut self, ty: TypeId, key: NativeTableKey) -> bool {
++        match *self.data(ty) {
++            TypeData::NativeTable(_) => {
++                let TypeData::NativeTable(data) = self.data(ty) else { unreachable!() };
++                data.fields.iter().any(|field| field.key == key)
++            }
++            TypeData::NativeObject(reference) => self.native_object_declares(reference, key),
++            _ => self.native_table_read(ty, NativeTableAccessKey::Literal(key)).is_ok(),
++        }
++    }
++
+     /// A physical Lua table contributes nil when a different union constituent
+     /// supplies the queried key. This never turns an invalid receiver into a table.
+     pub(super) fn native_table_absent_read(&mut self, table: TypeId, key: NativeTableAccessKey, error: NativeTableError) -> bool {

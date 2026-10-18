@@ -2478,6 +2478,18 @@
       "patch": "vendor/patches/bun-sema-member-origins.patch",
       "reason": "Expose the members member lookup applies to a named object by name, own then inherited with overloads, for the language service's origins and documentation, through kernel c0224e3.",
       "patch_sha256": "bca5422f631861819dad7af5ee0283c10c843b64efd65ab6ae813ef2334204af"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-intersection-reads.patch",
+      "reason": "Read an intersection's member from the parts that declare it, and other names from the parts' index signatures, as TypeScript does, and list an intersection's parts' members for completion, through kernel 5006205.",
+      "patch_sha256": "faa411093e78410e29553899f4fe6958f81dd06b249cb6bd43f8fb108cbb7eb3"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-intersection-reads.patch",
+      "reason": "Read an intersection's member from the parts that declare it, and other names from the parts' index signatures, as TypeScript does, and list an intersection's parts' members for completion, through kernel 5006205.",
+      "patch_sha256": "faa411093e78410e29553899f4fe6958f81dd06b249cb6bd43f8fb108cbb7eb3"
     }
   ],
   "source_additions": {
@@ -2514,7 +2526,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "c9fc3a081399a6460b343048d91d2652c48a6f856e9d1e4e3a6e61feb74aa575",
+      "extracted_sha256": "b23446955278b0ea18c45cc077b9cb685338eb3c37bf83450a9b0e3e27b63bc5",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -2546,7 +2558,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "de30e7cb2478a367e7d7fd91995ef1e3a40e4fc721b045d200f18c70f22df389",
+      "extracted_sha256": "952bb61a47df2c3794cc2bf2991a7d28a87f5949e8997bf10a141426766858ba",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },

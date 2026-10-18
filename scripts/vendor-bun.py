@@ -653,6 +653,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Expose the members member lookup applies to a named object by name, own then inherited with overloads, for the language service's origins and documentation, through kernel c0224e3.",
 })
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-intersection-reads.patch",
+    "reason": "Read an intersection's member from the parts that declare it, and other names from the parts' index signatures, as TypeScript does, and list an intersection's parts' members for completion, through kernel 5006205.",
+} for path in ["native_named.rs", "native_tables.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
