@@ -103,6 +103,10 @@ pub(super) struct Inference {
     pub(super) inferred_type_params: Vec<TypeId>,
     /// `intraExpressionInferenceSites`
     pub(super) intra_expression_inference_sites: Vec<(FileId, ExprId, TypeId)>,
+    /// For a value of a union type whose alternatives gave type parameters different candidates:
+    /// each alternative's candidates. A Lua call distributes over them, so `fun<T>(a: T[]): T[]`
+    /// given `string[] | number[]` returns `string[] | number[]`.
+    pub(super) distributions: Vec<SmallVec<[SmallVec<[(usize, TypeId); 2]>; 4]>>,
 }
 
 impl Inference {
@@ -141,6 +145,7 @@ impl Inference {
             skipped_generic_function: false,
             inferred_type_params: Vec::new(),
             intra_expression_inference_sites: Vec::new(),
+            distributions: Vec::new(),
         }
     }
 
@@ -487,6 +492,59 @@ impl<'p, 's> Checker<'p, 's> {
             }
             (_, TypeData::Intersection(parts)) => {
                 self.infer_to_multiple_types(n, source, None, parts, Multiple::Intersection)
+            }
+            (TypeData::Union(parts), _) if n.priority & PRIORITY_RETURN == 0
+                && parts.iter().filter(|part| !part.is_undefined() && !part.is_null()).nth(1).is_some() => {
+                // What one value holds is one of its alternatives, so the candidates its
+                // alternatives give a type parameter combine as their union: an element of
+                // `string[] | number[]` is `string | number`. (TypeScript keeps them separate and
+                // takes a common supertype, rejecting the rest.) Candidates from other values
+                // are unaffected. Each alternative's candidates are kept for the call to
+                // distribute over.
+                let snapshot = |n: &Inference| -> SmallVec<[(u32, SmallVec<[TypeId; 4]>); 4]> {
+                    n.candidates.iter().map(|c| (c.priority, c.covariant.clone())).collect()
+                };
+                let before = snapshot(n);
+                let mut alternatives: SmallVec<[SmallVec<[(usize, TypeId); 2]>; 4]> = SmallVec::new();
+                for s in self.sorted_parts(source) {
+                    let prior = snapshot(n);
+                    self.infer_types(n, s, target);
+                    let mut alternative = SmallVec::new();
+                    for (index, (priority, old)) in prior.iter().enumerate() {
+                        let c = &n.candidates[index];
+                        let base: &[TypeId] = if c.priority == *priority { old } else { &[] };
+                        let added: SmallVec<[TypeId; 4]> = c.covariant.iter().copied().filter(|ty| !base.contains(ty)).collect();
+                        if !added.is_empty() { alternative.push((index, self.union(&added))); }
+                    }
+                    alternatives.push(alternative);
+                }
+                let mut merged: SmallVec<[usize; 4]> = SmallVec::new();
+                for (index, (priority, old)) in before.into_iter().enumerate() {
+                    let c = &n.candidates[index];
+                    if c.fixed.is_some() { continue }
+                    let base: &[TypeId] = if c.priority == priority { &old } else { &[] };
+                    let added: SmallVec<[(usize, TypeId); 4]> = c.covariant.iter().copied().enumerate()
+                        .filter(|(_, ty)| !base.contains(ty)).collect();
+                    if added.len() < 2 { continue }
+                    merged.push(index);
+                    let depth = added.iter().map(|&(at, _)| c.depths[at]).max().unwrap_or_default();
+                    let types: SmallVec<[TypeId; 4]> = added.iter().map(|&(_, ty)| ty).collect();
+                    let union = self.union(&types);
+                    let c = &mut n.candidates[index];
+                    for &(at, _) in added.iter().rev() {
+                        c.covariant.remove(at);
+                        c.depths.remove(at);
+                    }
+                    if !c.covariant.contains(&union) {
+                        let at = c.depths.iter().position(|&d| d < depth).unwrap_or(c.depths.len());
+                        c.covariant.insert(at, union);
+                        c.depths.insert(at, depth);
+                    }
+                }
+                if !merged.is_empty() {
+                    for alternative in &mut alternatives { alternative.retain(|(index, _)| merged.contains(index)); }
+                    if !n.distributions.contains(&alternatives) { n.distributions.push(alternatives); }
+                }
             }
             (TypeData::Union(_), _) => {
                 for s in self.sorted_parts(source) {

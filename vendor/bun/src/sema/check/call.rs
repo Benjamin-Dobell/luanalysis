@@ -2148,6 +2148,27 @@ impl<'p, 's> Checker<'p, 's> {
                     continue;
                 }
             }
+            // A Lua call given a value of a union type whose alternatives inferred different
+            // type arguments returns what each alternative would: `fun<T>(a: T[]): T[]` given
+            // `string[] | number[]` returns `string[] | number[]`, not `(string | number)[]`.
+            if matches!(s.site, CallSite::Native { .. })
+                && let Some(context) = &inference_context
+                && let Some(alternatives) = context.distributions.last()
+                && alternatives.len() > 1
+            {
+                let inferred: SmallVec<[TypeId; 4]> = (0..context.params.len())
+                    .map(|i| self.get_inferred_type(context, i, false)).collect();
+                let mut packs = Vec::with_capacity(alternatives.len());
+                for alternative in alternatives.clone() {
+                    let mut types = inferred.clone();
+                    for (index, ty) in alternative { types[index] = ty; }
+                    let mapper = self.mapper_from(&context.params, &types);
+                    let instantiated = self.signature_instantiation(candidate, mapper, &context.inferred_type_params);
+                    packs.push(self.sig_result_pack(instantiated));
+                }
+                let pack = self.native_join_packs(&packs);
+                check_candidate = self.types().intern_sig(SigData::WithNativeResultPack { sig: check_candidate, pack });
+            }
             s.candidates[index] = check_candidate;
             return Some(check_candidate);
         }
