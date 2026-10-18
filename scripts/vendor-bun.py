@@ -599,6 +599,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Accept a written void key type as an index that holds no keys, as Luanalysis v1 does, through kernel f5eda3f.",
 })
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_flow.rs",
+    "patch": "vendor/patches/bun-sema-computed-key-writes.patch",
+    "reason": "Treat a store through a computed key as a possible write of exactly the sibling field it may name, nothing for a field whose key it cannot be, and exactly that field for a single literal key, through kernel d1d2c39.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

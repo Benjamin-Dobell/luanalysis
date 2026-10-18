@@ -2412,6 +2412,12 @@
       "patch": "vendor/patches/bun-sema-void-key-type.patch",
       "reason": "Accept a written void key type as an index that holds no keys, as Luanalysis v1 does, through kernel f5eda3f.",
       "patch_sha256": "f680bd59386714cd470435bb944d55cdf5a21554a762a34dfd2fade29aabbb0d"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-computed-key-writes.patch",
+      "reason": "Treat a store through a computed key as a possible write of exactly the sibling field it may name, nothing for a field whose key it cannot be, and exactly that field for a single literal key, through kernel d1d2c39.",
+      "patch_sha256": "e9215ed2f8ebe96f0ae8ece92392bd188f26bbda851e238bd096dc6d35664f18"
     }
   ],
   "source_additions": {
@@ -2432,7 +2438,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "76fab4469aa2a398977852e95d4334c226db7da4f939806ec1c14e0ad918a4e0",
+      "extracted_sha256": "39bb92e9ca83114662490af0559933cdb76579b10f4ce00028ff70d2f167bc1e",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
