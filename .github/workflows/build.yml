@@ -27,8 +27,11 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      # A compiler warning on any platform fails the build.
+      RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Toolchain
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
       - uses: Swatinem/rust-cache@v2
@@ -45,7 +48,7 @@ jobs:
           - { arch: x86_64, runner: ubuntu-24.04 }
           - { arch: aarch64, runner: ubuntu-24.04-arm }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
@@ -75,7 +78,7 @@ jobs:
           ./smoke smoke.lua
           echo "Newest glibc symbol the library needs:"
           objdump -T $out/lib/libluanalysis.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: luanalysis-linux-${{ matrix.arch }}
           path: luanalysis-linux-${{ matrix.arch }}.tar.gz
@@ -92,7 +95,7 @@ jobs:
     env:
       MACOSX_DEPLOYMENT_TARGET: '11.0'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Toolchain
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
       - uses: Swatinem/rust-cache@v2
@@ -106,7 +109,7 @@ jobs:
           cc -Icrates/luanalysis-ffi/include crates/luanalysis-ffi/examples/smoke.c -Ltarget/release -lluanalysis \
             -Wl,-rpath,@executable_path/target/release -o smoke
           ./smoke smoke.lua
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.arch }}
           path: |
@@ -119,12 +122,12 @@ jobs:
     needs: macos
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: macos-x86_64
           path: x86_64
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: macos-aarch64
           path: aarch64
@@ -148,7 +151,7 @@ jobs:
           cc -I$out/include crates/luanalysis-ffi/examples/smoke.c -L$out/lib -lluanalysis \
             -Wl,-rpath,@executable_path/$out/lib -o smoke
           ./smoke smoke.lua
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: luanalysis-macos-universal
           path: luanalysis-macos-universal.tar.gz
@@ -168,7 +171,7 @@ jobs:
     env:
       RUSTFLAGS: -C target-feature=+crt-static
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Toolchain
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
       - uses: Swatinem/rust-cache@v2
@@ -195,7 +198,7 @@ jobs:
           cl /nologo /I%out%\include crates\luanalysis-ffi\examples\smoke.c /link %out%\lib\luanalysis.dll.lib /OUT:smoke.exe || exit /b 1
           copy %out%\bin\luanalysis.dll . || exit /b 1
           smoke.exe smoke.lua || exit /b 1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: luanalysis-windows-${{ matrix.arch }}
           path: luanalysis-windows-${{ matrix.arch }}.zip
@@ -208,11 +211,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: luanalysis-*
           path: artifacts
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*
