@@ -593,6 +593,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Store the field a computed key of one string-literal type names, in a runtime table's schema, its literal reads and its flow, as TypeScript reads a late-bound assignment, through kernel 905e017.",
 } for path in ["native_flow.rs", "native_named.rs", "native_runtime_tables.rs"])
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_tables.rs",
+    "patch": "vendor/patches/bun-sema-void-key-type.patch",
+    "reason": "Accept a written void key type as an index that holds no keys, as Luanalysis v1 does, through kernel f5eda3f.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

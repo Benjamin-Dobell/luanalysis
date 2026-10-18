@@ -2406,6 +2406,12 @@
       "patch": "vendor/patches/bun-sema-literal-computed-keys.patch",
       "reason": "Store the field a computed key of one string-literal type names, in a runtime table's schema, its literal reads and its flow, as TypeScript reads a late-bound assignment, through kernel 905e017.",
       "patch_sha256": "d1143a2d20027eb3fadc7bcb9098552a49da0f5ca9b139612d17f782f088a76a"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-void-key-type.patch",
+      "reason": "Accept a written void key type as an index that holds no keys, as Luanalysis v1 does, through kernel f5eda3f.",
+      "patch_sha256": "f680bd59386714cd470435bb944d55cdf5a21554a762a34dfd2fade29aabbb0d"
     }
   ],
   "source_additions": {
@@ -2474,7 +2480,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "7ceddf0cb2fdbe5680b0daf6e2980f930f444be8d4fa142804b74bd6753246dc",
+      "extracted_sha256": "de30e7cb2478a367e7d7fd91995ef1e3a40e4fc721b045d200f18c70f22df389",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
