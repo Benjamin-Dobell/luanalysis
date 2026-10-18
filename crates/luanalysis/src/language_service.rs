@@ -272,7 +272,7 @@ fn receiver_members(
     registry.check_owned_roots(queries, &[file]);
     let mut receiver = None;
     let mut found: Vec<(String, Type)> = Vec::new();
-    for ty in source.probed_types() {
+    for ty in source.probed_types(span) {
         let ty = queries.exclude_type(&ty, &Type::Nil);
         for (name, value) in queries.type_members(&ty) {
             if !found.iter().any(|(other, _)| *other == name) { found.push((name, value)); }
@@ -542,7 +542,7 @@ fn expression_type(
     if !matches!(alone, Type::Any | Type::Unknown) { return Some(alone); }
     source.probe_expression(span);
     registry.check_owned_roots(queries, &[file]);
-    source.probed_types().into_iter().next().or(Some(alone))
+    source.probed_types(span).into_iter().next().or(Some(alone))
 }
 
 /// Documentation as Markdown: the description, then each parameter's and result's.
@@ -601,8 +601,13 @@ pub(crate) fn member_sites(
     let mut seen = Vec::new();
     while let Some(ty) = pending.pop() {
         let Some(key) = queries.named_object_declaration(&ty).or_else(|| queries.runtime_table_declaration(&ty)) else {
-            // Each alternative of a union, or part of an intersection, declares its own.
-            if let Type::Union(parts) | Type::Intersection(parts) = queries.inspect_type(&ty) { pending.extend(parts); }
+            match if let Type::NativeTypeParameter(_) = ty { ty.clone() } else { queries.inspect_type(&ty) } {
+                // Each alternative of a union, or part of an intersection, declares its own.
+                Type::Union(parts) | Type::Intersection(parts) => pending.extend(parts),
+                // A type parameter's members, such as a method's `self`'s, are its constraint's.
+                Type::NativeTypeParameter(key) => pending.extend(queries.type_parameter_constraint(key)),
+                _ => {}
+            }
             continue;
         };
         if seen.contains(&key) || seen.len() > 32 { continue; }
@@ -675,10 +680,36 @@ pub fn hover_documentation(
 ) {
     let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
-        deliver(documentation_at_offset(project, registry, file, offset, queries)
-            .map(|documentation| documentation_markdown(&documentation, true))
-            .filter(|markdown| !markdown.is_empty()));
+        let markdown = type_name_hover(project, registry, file, offset).or_else(|| {
+            documentation_at_offset(project, registry, file, offset, queries)
+                .map(|documentation| documentation_markdown(&documentation, true))
+        });
+        deliver(markdown.filter(|markdown| !markdown.is_empty()));
     });
+}
+
+/// A hover on a type name in an annotation: the tag that declares the type, and what its
+/// documentation says.
+fn type_name_hover(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    offset: usize,
+) -> Option<String> {
+    let text = &project.file(file)?.source;
+    let names = luanalysis_syntax::type_names(registry.source(file)?.syntax(), text);
+    let at = names.iter().find(|name| name.span.start <= offset && offset <= name.span.end)?;
+    let navigation = type_navigation(project, registry, file, at, &names, false)?;
+    let (path, span, _) = navigation.occurrences.iter().find(|occurrence| occurrence.2)?;
+    let declaration = project.files.iter().find(|other| other.path == *path)?;
+    let line_start = declaration.source[..span.start].rfind('\n').map_or(0, |newline| newline + 1);
+    let line_end = declaration.source[span.end..].find('\n').map_or(declaration.source.len(), |newline| span.end + newline);
+    let tag = declaration.source[line_start..line_end].trim();
+    let documentation = luanalysis_syntax::documentation_at(registry.source(declaration.id)?.syntax(), &declaration.source, span.start);
+    let mut summary = documentation.clone();
+    summary.fields.clear();
+    let described = documentation_markdown(&summary, false);
+    Some(if described.is_empty() { format!("```lua\n{tag}\n```") } else { format!("```lua\n{tag}\n```\n\n{described}") })
 }
 
 fn documentation_at_offset(
@@ -712,6 +743,265 @@ fn documentation_at_offset(
     }
     let value = expression_type(registry, file, name?, queries)?;
     value_documentation(project, registry, &value, queries)
+}
+
+/// A member or type name the editor navigates from, and where it is declared and used.
+#[derive(Clone, Debug, Default)]
+pub struct Navigation {
+    /// The name at the position, and its span there.
+    pub name: String,
+    pub span: Span,
+    /// Each declaration, and when references were asked for, each use: its file, its name's span,
+    /// and whether it declares.
+    pub occurrences: Vec<(std::path::PathBuf, Span, bool)>,
+    /// The text of each file with an occurrence, which the spans index.
+    pub texts: std::collections::HashMap<std::path::PathBuf, String>,
+    /// Whether the name is a type's (which may contain `.`) rather than a member's.
+    pub type_name: bool,
+}
+
+/// Where the member or type name at `offset` in `file` is declared, and with `references`, where
+/// it is used throughout the project. Locals and globals are the symbol index's.
+pub fn navigate(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    offset: usize,
+    references: bool,
+    deliver: impl FnOnce(Option<Navigation>) + Send,
+) {
+    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
+        deliver(navigation(project, registry, file, offset, references, queries));
+    });
+}
+
+type Site = (FileId, Span, bool);
+
+fn navigation(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    offset: usize,
+    references: bool,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<Navigation> {
+    let source = registry.source(file)?;
+    let text = &project.file(file)?.source;
+    let contains = |span: Span| span.start <= offset && offset <= span.end;
+    let names = luanalysis_syntax::type_names(source.syntax(), text);
+    if let Some(at) = names.iter().find(|name| contains(name.span)) {
+        return type_navigation(project, registry, file, at, &names, references);
+    }
+    registry.prepare_documentation_members(queries);
+    let (name, span, sites) = member_target(registry, file, offset, queries)?;
+    let mut navigation = Navigation { name: name.clone(), span, ..Navigation::default() };
+    if references {
+        member_occurrences(project, registry, &name, &sites, &mut navigation, queries);
+    } else {
+        for &(site_file, site, _) in &sites {
+            let Some(site_text) = project.file(site_file) else { continue };
+            let span = word_in(&site_text.source, site, &name).unwrap_or(site);
+            add_occurrence(&mut navigation, &site_text.path, &site_text.source, span, true);
+        }
+    }
+    Some(navigation)
+}
+
+fn add_occurrence(navigation: &mut Navigation, path: &std::path::Path, text: &str, span: Span, declaration: bool) {
+    let occurrence = (path.to_path_buf(), span, declaration);
+    if !navigation.occurrences.contains(&occurrence) { navigation.occurrences.push(occurrence); }
+    navigation.texts.entry(path.to_path_buf()).or_insert_with(|| text.to_owned());
+}
+
+/// The first occurrence of `word` as a whole word in `span` of `text`.
+fn word_in(text: &str, span: Span, word: &str) -> Option<Span> {
+    let region = text.get(span.start..span.end)?;
+    let is_word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    region.match_indices(word).find(|&(index, _)| {
+        let before = index.checked_sub(1).map(|index| region.as_bytes()[index]);
+        let after = region.as_bytes().get(index + word.len()).copied();
+        !before.is_some_and(is_word) && !after.is_some_and(is_word)
+    }).map(|(index, _)| Span { start: span.start + index, end: span.start + index + word.len() })
+}
+
+/// A type name's declarations and uses. A `---@generic` parameter is its documentation block's;
+/// any other name is a type's, declared by `---@class`, `---@shape`, `---@alias` or `---@enum`
+/// in any file of the project.
+fn type_navigation(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    at: &luanalysis_syntax::TypeName,
+    names: &[luanalysis_syntax::TypeName],
+    references: bool,
+) -> Option<Navigation> {
+    use luanalysis_syntax::TypeNameKind;
+    let source = project.file(file)?;
+    let mut navigation = Navigation { name: at.name.clone(), span: at.span, type_name: true, ..Navigation::default() };
+    let shadowed = |names: &[luanalysis_syntax::TypeName], block: Span| names.iter()
+        .any(|name| name.kind == TypeNameKind::Generic && name.block == block && name.name == at.name);
+    if shadowed(names, at.block) {
+        for name in names.iter().filter(|name| name.block == at.block && name.name == at.name) {
+            let declaration = name.kind == TypeNameKind::Generic;
+            if references || declaration { add_occurrence(&mut navigation, &source.path, &source.source, name.span, declaration); }
+        }
+        return Some(navigation);
+    }
+    for other in &project.files {
+        let Some(syntax) = registry.source(other.id).map(|source| source.syntax()) else { continue };
+        let names = luanalysis_syntax::type_names(syntax, &other.source);
+        for name in names.iter().filter(|name| name.name == at.name && name.kind != TypeNameKind::Generic) {
+            let declaration = name.kind == TypeNameKind::Declaration;
+            if (references || declaration) && !shadowed(&names, name.block) {
+                add_occurrence(&mut navigation, &other.path, &other.source, name.span, declaration);
+            }
+        }
+    }
+    // A built-in type (`number`, `string`) has no declaration to navigate to.
+    navigation.occurrences.iter().any(|(_, _, declaration)| *declaration).then_some(navigation)
+}
+
+/// The member named at `offset`: in `receiver.name`, `receiver:name(...)`, a table constructor's
+/// `name = value`, a `---@field name` or a `---@function Owner.name`; with its span and the
+/// sites that declare it.
+fn member_target(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    offset: usize,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<(String, Span, Vec<Site>)> {
+    let source = registry.source(file)?;
+    let syntax = source.syntax();
+    let contains = |span: Span| span.start <= offset && offset <= span.end;
+    for declaration in syntax.type_declarations.iter() {
+        if let luanalysis_syntax::NamedTypeDeclarationKind::Record { fields, .. } = &declaration.kind {
+            for field in fields {
+                if let luanalysis_syntax::TypeFieldKey::Named(name) = &field.key && contains(name.span) {
+                    return Some((name.text.clone(), name.span, vec![(file, field.span, true)]));
+                }
+            }
+        }
+    }
+    for extension in &syntax.type_extensions {
+        for field in &extension.fields {
+            if let luanalysis_syntax::TypeFieldKey::Named(name) = &field.key && contains(name.span) {
+                return Some((name.text.clone(), name.span, vec![(file, field.span, true)]));
+            }
+        }
+    }
+    for declaration in &syntax.function_declarations {
+        if declaration.owner.is_some() && contains(declaration.name.span) {
+            return Some((declaration.name.text.clone(), declaration.name.span, vec![(file, declaration.span, true)]));
+        }
+    }
+    let mut found = None;
+    crate::module_requests::visit_expressions(&syntax.statements, &mut |expression: &Expr| match &expression.kind {
+        ExprKind::Field { base, name } | ExprKind::MethodCall { receiver: base, name, .. } if contains(name.span) => {
+            found = Some((base.span, name.clone()));
+        }
+        ExprKind::Table(fields) => for field in fields {
+            if let luanalysis_syntax::TableFieldKind::Named(name) = &field.kind && contains(name.span) {
+                found = Some((expression.span, name.clone()));
+            }
+        },
+        _ => {}
+    });
+    let (receiver, name) = found?;
+    let receiver = expression_type(registry, file, receiver, queries)?;
+    let receiver = queries.exclude_type(&receiver, &Type::Nil);
+    let sites = member_sites(registry, &receiver, &name.text, queries);
+    (!sites.is_empty()).then_some((name.text, name.span, sites))
+}
+
+/// Every use of the member declared at `sites` in the project: member reads and calls, table
+/// constructor keys, `---@field` and `---@function` tags. A use's receiver is typed at its flow
+/// position; one whose members are declared elsewhere is another member of the same name.
+fn member_occurrences(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    name: &str,
+    sites: &[Site],
+    navigation: &mut Navigation,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) {
+    let declares = |file: FileId, span: Span| sites.iter().any(|&(site_file, site, _)| site_file == file && site.start <= span.start && span.end <= site.end);
+    for other in &project.files {
+        let Some(source) = registry.source(other.id) else { continue };
+        let syntax = source.syntax();
+        for declaration in &syntax.type_declarations {
+            if let luanalysis_syntax::NamedTypeDeclarationKind::Record { fields, .. } = &declaration.kind {
+                for field in fields {
+                    if let luanalysis_syntax::TypeFieldKey::Named(field_name) = &field.key
+                        && field_name.text == name && sites.contains(&(other.id, field.span, true))
+                    {
+                        add_occurrence(navigation, &other.path, &other.source, field_name.span, true);
+                    }
+                }
+            }
+        }
+        for extension in &syntax.type_extensions {
+            for field in &extension.fields {
+                if let luanalysis_syntax::TypeFieldKey::Named(field_name) = &field.key
+                    && field_name.text == name && sites.contains(&(other.id, field.span, true))
+                {
+                    add_occurrence(navigation, &other.path, &other.source, field_name.span, true);
+                }
+            }
+        }
+        for declaration in &syntax.function_declarations {
+            if declaration.name.text == name && sites.contains(&(other.id, declaration.span, true)) {
+                add_occurrence(navigation, &other.path, &other.source, declaration.name.span, true);
+            }
+        }
+        let mut candidates = Vec::new();
+        crate::module_requests::visit_expressions(&syntax.statements, &mut |expression: &Expr| match &expression.kind {
+            ExprKind::Field { base, name: member } | ExprKind::MethodCall { receiver: base, name: member, .. } if member.text == name => {
+                candidates.push((base.span, member.span));
+            }
+            ExprKind::Table(fields) => for field in fields {
+                if let luanalysis_syntax::TableFieldKind::Named(member) = &field.kind && member.text == name {
+                    candidates.push((expression.span, member.span));
+                }
+            },
+            _ => {}
+        });
+        // Receivers without a type of their own, such as a callback's parameters or a method's
+        // `self`, have their types in the frames they are checked in: one check of the file
+        // probes them all.
+        let mut typed = Vec::new();
+        let mut probed = false;
+        for (receiver, span) in candidates {
+            let mut alone = source.source_check_expression(source.expression_key_for_span(receiver), None, NativeCheckMode::empty(), queries);
+            // A name's declared type, such as a method's `self`'s or an annotated parameter's,
+            // needs no check.
+            if matches!(alone, Type::Any | Type::Unknown)
+                && let Some(occurrence) = source.bound().occurrence_at(receiver.start).filter(|occurrence| occurrence.span == receiver)
+                && let Some(binding) = occurrence.binding.and_then(|binding| source.resolve_binding(binding, queries))
+                && !matches!(binding.constraint, Type::Any | Type::Unknown)
+            {
+                alone = binding.constraint;
+            }
+            if matches!(alone, Type::Any | Type::Unknown) {
+                source.probe_expression(receiver);
+                probed = true;
+            }
+            typed.push((receiver, span, alone));
+        }
+        if probed { registry.check_owned_roots(queries, &[other.id]); }
+        for (receiver, span, alone) in typed {
+            let receiver = match alone {
+                Type::Any | Type::Unknown => source.probed_types(receiver).into_iter().next().unwrap_or(alone),
+                alone => alone,
+            };
+            let receiver = queries.exclude_type(&receiver, &Type::Nil);
+            let found = member_sites(registry, &receiver, name, queries);
+            if found.iter().any(|site| sites.contains(site)) {
+                add_occurrence(navigation, &other.path, &other.source, span, declares(other.id, span));
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -484,3 +484,64 @@ fn hover_completion_and_signature_help_show_documentation() {
     assert!(response.contains("Scales a point.") && response.contains("how much,\\nas a ratio"), "{response}");
     server.finish();
 }
+
+#[test]
+fn members_and_types_are_defined_referenced_highlighted_and_renamed() {
+    let root = fixture();
+    let shapes = root.join("shapes.lua");
+    let shapes_source = "---@class Point\n---@field x number\nlocal Point = {}\n\n---@return number\nfunction Point:length() return self.x end\n\nreturn Point\n";
+    fs::write(&shapes, shapes_source).unwrap();
+    let main = root.join("main.lua");
+    let source = "local Point = require('shapes')\n\n---@param point Point\nlocal function show(point)\n    return point.x + point:length()\nend\n\n---@generic T\n---@param value T\n---@return T\nlocal function same(value) return value end\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4", "--module-root", root.to_str().unwrap()]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    let shapes_uri = uri(&shapes);
+    // A field's definition is its @field, in the class's file.
+    let (line, column) = position(source, "point.x", 0);
+    let response = server.request(3, "textDocument/definition", &main, line, column + 6);
+    assert!(response.contains(&shapes_uri) && response.contains(r#""start":{"line":1,"character":10}"#), "{response}");
+    // A method's is its function statement.
+    let (line, column) = position(source, "length()", 0);
+    let response = server.request(4, "textDocument/definition", &main, line, column + 1);
+    assert!(response.contains(&shapes_uri) && response.contains(r#""start":{"line":5,"character":15}"#), "{response}");
+    // References to a field, with its declaration, in both files.
+    server.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":5,"method":"textDocument/references","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":{line},"character":{}}},"context":{{"includeDeclaration":true}}}}}}"#,
+        uri(&main), position(source, "point.x", 0).1 + 6,
+        line = position(source, "point.x", 0).0,
+    ));
+    let response = server.wait(|message| message.contains(r#""id":5,"#));
+    assert_eq!(response.matches(r#""uri""#).count(), 3, "{response}");
+    // A type name's definition is its @class, and a rename renames every use.
+    let (line, column) = position(source, "point Point", 0);
+    let response = server.request(6, "textDocument/definition", &main, line, column + 7);
+    assert!(response.contains(&shapes_uri) && response.contains(r#""start":{"line":0,"character":10}"#), "{response}");
+    server.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":7,"method":"textDocument/rename","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":{line},"character":{}}},"newName":"Vector"}}}}"#,
+        uri(&main), column + 7,
+    ));
+    let response = server.wait(|message| message.contains(r#""id":7,"#));
+    assert_eq!(response.matches(r#""newText":"Vector""#).count(), 2, "{response}");
+    // A type name's hover shows the tag that declares it.
+    let response = server.request(11, "textDocument/hover", &main, line, column + 7);
+    assert!(response.contains("---@class Point"), "{response}");
+    // A generic parameter's definition is its @generic, in its own block.
+    let (line, column) = position(source, "value T", 0);
+    let response = server.request(8, "textDocument/definition", &main, line, column + 6);
+    assert!(response.contains(r#""start":{"line":7,"character":12}"#), "{response}");
+    // A member's uses in the document are highlighted.
+    let (line, column) = position(source, "point.x", 0);
+    let response = server.request(9, "textDocument/documentHighlight", &main, line, column + 6);
+    assert_eq!(response.matches(r#""range""#).count(), 1, "{response}");
+    // Renaming a member renames its declaration and its uses.
+    server.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":10,"method":"textDocument/rename","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":{line},"character":{}}},"newName":"left"}}}}"#,
+        uri(&main), column + 6,
+    ));
+    let response = server.wait(|message| message.contains(r#""id":10,"#));
+    assert_eq!(response.matches(r#""newText":"left""#).count(), 3, "{response}");
+    server.finish();
+}

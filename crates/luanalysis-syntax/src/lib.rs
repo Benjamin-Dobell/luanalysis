@@ -10,6 +10,7 @@ mod lexer;
 mod parser;
 mod types;
 mod documentation;
+mod navigation;
 mod completion_metadata;
 #[cfg(test)]
 mod completion_metadata_tests;
@@ -21,6 +22,7 @@ mod diagnostic_origin_tests;
 pub use lexer::{Lexed, Token, TokenKind, lex};
 pub use parser::parse;
 pub use documentation::{Documentation, documentation_above, documentation_at};
+pub use navigation::{TypeName, TypeNameKind, type_names};
 
 /// Half-open UTF-8 byte offsets in the original Lua source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

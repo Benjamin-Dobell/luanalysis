@@ -126,7 +126,8 @@ pub(super) struct NativeRegistry {
     /// and contextual instances are interned by content, so this does not depend on order.
     canonical_frames: RefCell<HashMap<NativeFunctionKey, (Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
     /// A language-service request's expression and the types it was checked to have.
-    completion_probe: RefCell<Option<(Span, Vec<Type>)>>,
+    /// The expressions the language service asked the types of, and the types checking gave them.
+    completion_probe: RefCell<HashMap<(usize, usize), Vec<Type>>>,
     pending_contextual_owners: RefCell<HashSet<(NativeFunctionKey, NativeFlowKey)>>,
     pending_owner_observations: Cell<u64>,
     pending_owner_bodies: RefCell<HashSet<(NativeFunctionKey, Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
@@ -354,7 +355,7 @@ impl NativeRegistry {
             checked_captured_bodies: RefCell::new(HashSet::default()),
             bodies_checked: RefCell::new(HashSet::default()),
             canonical_frames: RefCell::new(HashMap::default()),
-            completion_probe: RefCell::new(None),
+            completion_probe: RefCell::new(HashMap::default()),
             pending_contextual_owners: RefCell::new(HashSet::default()),
             pending_owner_observations: Cell::new(0),
             pending_owner_bodies: RefCell::new(HashSet::default()),
@@ -1071,16 +1072,18 @@ impl NativeRegistry {
 
     /// Collects the types checking gives the expression at `span`, for the language service.
     pub(crate) fn probe_expression(&self, span: Span) {
-        *self.completion_probe.borrow_mut() = Some((span, Vec::new()));
+        self.completion_probe.borrow_mut().insert((span.start, span.end), Vec::new());
     }
 
-    pub(crate) fn probed_types(&self) -> Vec<Type> {
-        self.completion_probe.borrow_mut().take().map(|(_, types)| types).unwrap_or_default()
+    /// The types checking gave the probed expression at `span`, which is probed no longer.
+    pub(crate) fn probed_types(&self, span: Span) -> Vec<Type> {
+        self.completion_probe.borrow_mut().remove(&(span.start, span.end)).unwrap_or_default()
     }
 
     pub(super) fn record_probed_type(&self, span: Span, ty: &Type) {
-        if let Some((probe, types)) = self.completion_probe.borrow_mut().as_mut()
-            && *probe == span
+        let mut probes = self.completion_probe.borrow_mut();
+        if !probes.is_empty()
+            && let Some(types) = probes.get_mut(&(span.start, span.end))
             && !types.contains(ty)
         {
             types.push(ty.clone());

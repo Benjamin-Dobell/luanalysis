@@ -191,6 +191,24 @@ enum Site {
     Completion(CompletionSite),
     Signature(SignatureSite),
     Hover(HoverSite),
+    Navigate(NavigateSite),
+}
+
+/// A navigation from a member or type name, which the symbol index of locals and globals does
+/// not answer.
+struct NavigateSite {
+    text: String,
+    offset: usize,
+    request: Navigate,
+}
+
+#[derive(Clone)]
+enum Navigate {
+    Definition,
+    References { declaration: bool },
+    Highlight,
+    PrepareRename,
+    Rename(String),
 }
 
 /// A hover in a document's current text, with what the last check knows of the type there.
@@ -208,6 +226,7 @@ impl Query {
             Site::Completion(site) => &site.text,
             Site::Signature(site) => &site.text,
             Site::Hover(site) => &site.text,
+            Site::Navigate(site) => &site.text,
         }
     }
 
@@ -215,7 +234,7 @@ impl Query {
     fn unanswered(&self) -> Json {
         match &self.site {
             Site::Completion(_) => Json::object([("isIncomplete", Json::from(true)), ("items", Json::Array(Vec::new()))]),
-            Site::Signature(_) => Json::Null,
+            Site::Signature(_) | Site::Navigate(_) => Json::Null,
             // Without documentation, a hover still has the last check's type.
             Site::Hover(site) => match &site.ty {
                 None => Json::Null,
@@ -351,25 +370,37 @@ impl Server {
                 self.respond(id, Json::Null);
             }
             "textDocument/hover" => self.hover_request(id, params),
-            "textDocument/definition" => {
-                let result = self.definition(params);
-                self.respond(id, result);
-            }
+            "textDocument/definition" => match self.definition(params) {
+                Json::Null => self.navigate(id, params, Navigate::Definition),
+                result => self.respond(id, result),
+            },
             "textDocument/references" => {
                 let declaration = params.path(&["context", "includeDeclaration"]) == Some(&Json::Bool(true));
-                let result = self.references(params, declaration);
-                self.respond(id, result);
+                match self.references(params, declaration) {
+                    Json::Null => self.navigate(id, params, Navigate::References { declaration }),
+                    result => self.respond(id, result),
+                }
             }
             "textDocument/completion" => self.completion(id, params),
             "textDocument/signatureHelp" => self.signature_help(id, params),
-            "textDocument/documentHighlight" => {
-                let result = self.highlights(params);
-                self.respond(id, result);
-            }
+            "textDocument/documentHighlight" => match self.highlights(params) {
+                Json::Null => self.navigate(id, params, Navigate::Highlight),
+                result => self.respond(id, result),
+            },
+            "textDocument/prepareRename" if self.symbol_at(params).is_none() => self.navigate(id, params, Navigate::PrepareRename),
             "textDocument/prepareRename" => match self.prepare_rename(params) {
                 Ok(result) => self.respond(id, result),
                 Err(error) => self.respond_error(id, REQUEST_FAILED, &error),
             },
+            "textDocument/rename" if self.symbol_at(params).is_none() => {
+                let name = params.get("newName").and_then(Json::as_str).unwrap_or_default().to_owned();
+                let valid = name.split('.').all(|part| {
+                    let mut bytes = part.bytes();
+                    bytes.next().is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+                        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                });
+                if valid { self.navigate(id, params, Navigate::Rename(name)) } else { self.respond_error(id, REQUEST_FAILED, &format!("{name:?} is not a name")) }
+            }
             "textDocument/rename" => match self.rename(params) {
                 Ok(result) => self.respond(id, result),
                 Err(error) => self.respond_error(id, REQUEST_FAILED, &error),
@@ -625,6 +656,25 @@ impl Server {
         self.query(id, path, Site::Completion(site), lines);
     }
 
+    /// Navigation from a member or type name, answered from the document's current text.
+    fn navigate(&mut self, id: Json, params: &Json, request: Navigate) {
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else {
+            return self.respond(id, Json::Null);
+        };
+        let text = match self.documents.get(&path) {
+            Some(document) => document.text.clone(),
+            None => match self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path)) {
+                Some(file) => file.lines.text.clone(),
+                None => return self.respond(id, Json::Null),
+            },
+        };
+        let lines = LineIndex::new(text.clone());
+        let line = params.path(&["position", "line"]).and_then(Json::as_u64).unwrap_or(0) as usize;
+        let character = params.path(&["position", "character"]).and_then(Json::as_u64).unwrap_or(0) as usize;
+        let offset = lines.offset(line, character, self.encoding);
+        self.query(id, path, Site::Navigate(NavigateSite { text, offset, request }), lines);
+    }
+
     /// The signatures of the call the cursor is in, from the document's current text.
     fn signature_help(&mut self, id: Json, params: &Json) {
         let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else {
@@ -808,6 +858,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 Site::Completion(site) => complete(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Signature(site) => signatures(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Hover(site) => hover(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
+                Site::Navigate(site) => navigate(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
             }));
             if completed.is_err() {
                 workspace = ProjectWorkspace::new();
@@ -907,6 +958,50 @@ fn signatures(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mu
             ("activeParameter", Json::from(help.active_parameter)),
         ]),
     }));
+}
+
+fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &NavigateSite, answer: &mut (dyn FnMut(Json) + Send)) {
+    let Some(project) = load(inputs, workspace, loaded, query) else { return };
+    let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
+    let references = !matches!(site.request, Navigate::Definition | Navigate::PrepareRename);
+    let encoding = query.encoding;
+    language_service::navigate(project, options, workspace, file, site.offset, references, |navigation| {
+        let Some(navigation) = navigation else { return answer(Json::Null) };
+        let lines: HashMap<&PathBuf, LineIndex> = navigation.texts.iter().map(|(path, text)| (path, LineIndex::new(text.clone()))).collect();
+        let range = |path: &PathBuf, span: luanalysis_syntax::Span| lines.get(path).map(|lines| lines.range(span.start, span.end, encoding));
+        let location = |(path, span, _): &(PathBuf, luanalysis_syntax::Span, bool)| {
+            Some(Json::object([("uri", Json::from(path_to_uri(path))), ("range", range(path, *span)?)]))
+        };
+        answer(match &site.request {
+            Navigate::Definition => Json::Array(navigation.occurrences.iter().filter(|occurrence| occurrence.2).filter_map(location).collect()),
+            Navigate::References { declaration } => Json::Array(navigation.occurrences.iter()
+                .filter(|occurrence| *declaration || !occurrence.2).filter_map(location).collect()),
+            Navigate::Highlight => Json::Array(navigation.occurrences.iter().filter(|occurrence| occurrence.0 == query.path)
+                .filter_map(|(path, span, declaration)| Some(Json::object([
+                    ("range", range(path, *span)?),
+                    ("kind", Json::from(if *declaration { 3usize } else { 2 })),
+                ]))).collect()),
+            Navigate::PrepareRename => Json::object([
+                ("range", query.lines.range(navigation.span.start, navigation.span.end, encoding)),
+                ("placeholder", Json::from(navigation.name.as_str())),
+            ]),
+            // A member's name is one identifier; a type's may be dotted.
+            Navigate::Rename(name) if name.contains('.') && !navigation.type_name => Json::Null,
+            Navigate::Rename(name) => {
+                let mut changes: Vec<(String, Json)> = Vec::new();
+                for (path, span, _) in &navigation.occurrences {
+                    let Some(range) = range(path, *span) else { continue };
+                    let edit = Json::object([("range", range), ("newText", Json::from(name.as_str()))]);
+                    let uri = path_to_uri(path);
+                    match changes.iter_mut().find(|(existing, _)| *existing == uri) {
+                        Some((_, Json::Array(edits))) => edits.push(edit),
+                        _ => changes.push((uri, Json::Array(vec![edit]))),
+                    }
+                }
+                Json::object([("changes", Json::Object(changes))])
+            }
+        });
+    });
 }
 
 /// Markdown content, as LSP `MarkupContent`.
