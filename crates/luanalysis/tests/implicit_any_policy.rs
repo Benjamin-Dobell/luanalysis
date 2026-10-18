@@ -354,7 +354,7 @@ fn workspace_reuses_syntax_but_rechecks_semantics_when_the_policy_changes() {
             ..Default::default()
         };
         let project = fixture.project(Some(&mut workspace));
-        let warm = workspace.check_project(project, options);
+        let warm = workspace.check_project(project, options.clone());
         let cold = check_project_with_options(fixture.project(None), options);
         let warm_report = original_report(&warm);
         let cold_report = original_report(&cold);

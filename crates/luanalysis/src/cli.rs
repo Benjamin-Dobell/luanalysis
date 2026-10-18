@@ -3,7 +3,7 @@
 use crate::incremental::ProjectWorkspace;
 use crate::project_check::ProjectCheckOptions;
 use crate::report::{CliReport, HostDiagnostic};
-use crate::standard_environment::StandardEnvironmentProfile;
+use crate::standard_environment::{StandardEnvironmentProfile, StandardLibraryAllowList};
 use luanalysis_engine::NativeLoaderPolicy;
 use luanalysis_project::{Project, ProjectConfig, ProjectInput, ProjectLoadPlan, Resolver, SourceRole};
 use std::collections::{HashMap, HashSet};
@@ -35,6 +35,8 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
     let mut module_roots = Vec::new();
     let mut package_path = None;
     let mut environment = StandardEnvironmentProfile::LegacyMinimal;
+    let mut standard_library: Option<StandardLibraryAllowList> = None;
+    let mut no_stdlib = false;
     let mut overload_mode = crate::OverloadMode::default();
     let mut no_implicit_any = false;
     let mut assume_unknown_standard_effects = true;
@@ -94,7 +96,16 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
             continue;
         }
         if !positional && arg == "--no-stdlib" {
-            environment = StandardEnvironmentProfile::None;
+            no_stdlib = true;
+            continue;
+        }
+        if !positional && arg == "--stdlib" {
+            let Some(list) = args.next().and_then(|value| value.into_string().ok()) else {
+                return Err("--stdlib requires a comma-separated list of standard libraries and members".into());
+            };
+            let mut entries = standard_library.take().map(|list| list.entries().to_vec()).unwrap_or_default();
+            entries.extend(StandardLibraryAllowList::parse(&list).entries().iter().cloned());
+            standard_library = Some(StandardLibraryAllowList::new(entries));
             continue;
         }
         if !positional && arg == "--lua-version" {
@@ -139,6 +150,16 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
         files.push(PathBuf::from(arg));
     }
 
+    // Without the standard library, a host declares its own; `--stdlib` adds parts back.
+    if no_stdlib && standard_library.is_none() {
+        standard_library = Some(StandardLibraryAllowList::default());
+    }
+    if standard_library.is_some() && !environment.is_full_lua() {
+        environment = StandardEnvironmentProfile::Lua54;
+    }
+    if let Some(list) = &standard_library {
+        list.validate(environment).map_err(|error| format!("--stdlib: {error}"))?;
+    }
     let inputs = CheckInputs {
         files,
         libraries,
@@ -156,6 +177,7 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
     };
     let options = ProjectCheckOptions {
         environment,
+        standard_library,
         overload_mode,
         no_implicit_any,
         loader_policy,
@@ -283,7 +305,7 @@ pub fn check_once(arguments: &Arguments, workspace: &mut ProjectWorkspace) -> io
     let discovery = arguments.inputs.discover()?;
     let resolver = arguments.inputs.resolver(&discovery)?;
     let project = Project::load_plan(&resolver, discovery.plan.clone(), |source| workspace.static_require_requests(source));
-    let result = workspace.check_project(project, arguments.options);
+    let result = workspace.check_project(project, arguments.options.clone());
     Ok(CliReport::from_project(&result, &discovery.display_paths, discovery.errors.clone(), arguments.dump))
 }
 
@@ -314,7 +336,7 @@ fn expand(path: &Path, errors: &mut Vec<HostDiagnostic>) -> Vec<PathBuf> {
 /// The command line's help text.
 pub fn help() {
     println!(
-        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--lua-version 5.0|5.1|5.2|5.3|5.4 | --no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--no-stdlib disables standard declarations and the legacy minimal type builtin.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
+        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--lua-version 5.0|5.1|5.2|5.3|5.4] [--stdlib <libraries and members>]... [--no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--stdlib declares only the named standard libraries and members, as a sandbox provides them, e.g. basic,string,table,math,os.time (repeatable).\n--no-stdlib declares none of the standard library, for a host that declares its own, except type, assert, setmetatable and the builtin types; --stdlib adds parts back.\nWithout --lua-version, --stdlib and --no-stdlib use Lua 5.4.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
     );
     println!(
         "Selected standard profiles preserve reached builtin/environment bindings across unknown calls and property effects; known assignments still apply.\n--strict-standard-effects requires runtime-effect preservation proofs instead."

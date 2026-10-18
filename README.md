@@ -34,6 +34,7 @@ print(winner.name) -- error: Property 'name' does not exist on type 'nil | Playe
 
 * [Type system](#type-system)
 * [Flow analysis](#flow-analysis)
+* [Standard library](#standard-library)
 * [Projects and modules](#projects-and-modules)
 * [Command line](#command-line)
 * [Editors](#editors)
@@ -285,6 +286,21 @@ In editors, Luanalysis also points out code that type checks but is probably wro
 code, conditions that are always true or always false, comparisons that can never match, unused
 locals, and parameters without types.
 
+## Standard library
+
+A host that embeds Lua often provides only part of the standard library, as a sandbox does.
+`--stdlib` names the parts it provides: whole libraries (`basic`, `coroutine`, `debug`, `io`,
+`math`, `os`, `package`, `string`, `table`, `utf8`, `bit32`) or single members (`print`,
+`os.time`, `require`). Everything else is undeclared, so using it is an error.
+
+```sh
+luanalysis check --lua-version 5.2 --stdlib basic,string,table,math,coroutine,bit32 \
+    --stdlib os.time,os.date,os.clock,require src
+```
+
+`--no-stdlib` declares none of it, for a host that declares its own with `--library`. `type`,
+`assert` and `setmetatable` are always declared: without them, it would not be Lua.
+
 ## Projects and modules
 
 Luanalysis checks a project as a whole. `require` calls are resolved through module roots and
@@ -303,7 +319,8 @@ Directories are searched for `.lua` and `.ttslua` files.
 | Option | Effect |
 | --- | --- |
 | `--lua-version 5.0`…`5.4` | Use that Lua version's standard library declarations. |
-| `--no-stdlib` | Use no standard library declarations. |
+| `--stdlib <list>` | Declare only these standard libraries and members, as a sandbox provides them (repeatable). |
+| `--no-stdlib` | Declare none of the standard library, for a host that declares its own. |
 | `--library <path>` | Include declaration files or directories. |
 | `--module-root <dir>` | Search this directory for `require`d modules (repeatable, in order). |
 | `--package-path <templates>` | `package.path` templates, such as `?.lua;?/init.lua`. |
@@ -320,7 +337,8 @@ luanalysis lsp --lua-version 5.4
 
 runs a language server over stdio, for any editor with a language server client. It accepts the
 options of `check`, and without paths it checks the editor's workspace. It provides diagnostics
-as you type, hover types, go to definition, completion and inspections.
+as you type, hover types, go to definition, find references, rename, completion and inspections.
+Definitions, references and renames follow globals across files, including `_G.name`.
 
 ## Library
 
@@ -337,6 +355,10 @@ luanalysis_server *server = luanalysis_server_start(arguments, 3, on_message, us
 luanalysis_server_send(server, message, length); /* JSON-RPC from the client */
 luanalysis_server_stop(server);
 ```
+
+Options are those of the command line, so a host passes `--stdlib` or `--no-stdlib` the same
+way. Rust callers set them in `ProjectCheckOptions`, and find definitions, references and renames
+in a checked project with `SymbolIndex`.
 
 The server delivers its messages to `on_message` on a server thread. From C#, declare the
 callback with `[UnmanagedFunctionPointer(CallingConvention.Cdecl)]` and keep the delegate alive

@@ -11,6 +11,7 @@ use crate::incremental::ProjectWorkspace;
 use crate::json::Json;
 use crate::language_service::{self, CompletionKind, CompletionSite};
 use crate::project_check::{ProjectCheckOptions, ProjectCheckReport};
+use crate::symbols::{SymbolIndex, SymbolOccurrence};
 use luanalysis_project::{DependencyOutcome, Project, ProjectLoadPlan, SourceOrigin};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Write};
@@ -21,6 +22,7 @@ use std::sync::{Arc, mpsc};
 const PARSE_ERROR: i64 = -32700;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_REQUEST: i64 = -32600;
+const REQUEST_FAILED: i64 = -32803;
 const SERVER_NOT_INITIALIZED: i64 = -32002;
 
 /// Receives each message for the client: one JSON-RPC message, without framing.
@@ -311,19 +313,22 @@ impl Server {
             }
             "textDocument/references" => {
                 let declaration = params.path(&["context", "includeDeclaration"]) == Some(&Json::Bool(true));
-                let result = self.occurrences(params, declaration, |path, file, start, end| Json::object([
-                    ("uri", Json::from(path_to_uri(path))),
-                    ("range", file.range(start, end, self.encoding)),
-                ]));
+                let result = self.references(params, declaration);
                 self.respond(id, result);
             }
             "textDocument/completion" => self.completion(id, params),
             "textDocument/documentHighlight" => {
-                let result = self.occurrences(params, true, |_, file, start, end| Json::object([
-                    ("range", file.range(start, end, self.encoding)),
-                ]));
+                let result = self.highlights(params);
                 self.respond(id, result);
             }
+            "textDocument/prepareRename" => match self.prepare_rename(params) {
+                Ok(result) => self.respond(id, result),
+                Err(error) => self.respond_error(id, REQUEST_FAILED, &error),
+            },
+            "textDocument/rename" => match self.rename(params) {
+                Ok(result) => self.respond(id, result),
+                Err(error) => self.respond_error(id, REQUEST_FAILED, &error),
+            },
             _ => self.respond_error(id, METHOD_NOT_FOUND, &format!("unsupported request {method}")),
         }
     }
@@ -388,11 +393,12 @@ impl Server {
             }
             let (queries, received) = mpsc::channel();
             let events = self.events.clone();
-            let options = self.options;
+            let options = self.options.clone();
+            let query_options = options.clone();
             let query_inputs = inputs.clone();
             std::thread::Builder::new()
                 .name("luanalysis-lsp-query".into())
-                .spawn(move || answer_queries(query_inputs, options, received, events))
+                .spawn(move || answer_queries(query_inputs, query_options, received, events))
                 .expect("start the language server's query thread");
             self.queries = Some(queries);
             let (jobs, received) = mpsc::channel();
@@ -416,6 +422,7 @@ impl Server {
                 ("definitionProvider", Json::from(true)),
                 ("referencesProvider", Json::from(true)),
                 ("documentHighlightProvider", Json::from(true)),
+                ("renameProvider", Json::object([("prepareProvider", Json::from(true))])),
                 ("completionProvider", Json::object([
                     ("triggerCharacters", Json::Array(vec![Json::from("."), Json::from(":")])),
                 ])),
@@ -511,12 +518,10 @@ impl Server {
     }
 
     fn definition(&self, params: &Json) -> Json {
-        let Some((path, file, offset)) = self.file_at(params) else { return Json::Null };
-        if let Some(occurrence) = file.occurrences.iter().find(|occurrence| occurrence.start <= offset && offset <= occurrence.end) {
-            return Json::object([
-                ("uri", Json::from(path_to_uri(path))),
-                ("range", file.range(occurrence.declaration.0, occurrence.declaration.1, self.encoding)),
-            ]);
+        let Some((_, file, offset)) = self.file_at(params) else { return Json::Null };
+        let definitions = self.symbol_at(params).map(|(index, symbol)| index.definitions(&symbol)).unwrap_or_default();
+        if !definitions.is_empty() {
+            return Json::Array(definitions.iter().filter_map(|definition| self.location(definition)).collect());
         }
         if let Some(require) = file.requires.iter().find(|require| require.start <= offset && offset <= require.end) {
             let start = Json::object([("line", Json::from(0usize)), ("character", Json::from(0usize))]);
@@ -550,18 +555,88 @@ impl Server {
         }
     }
 
-    /// Every occurrence in the file of the local under the position, the declaration only when
-    /// `declaration` is set. Locals are lexical, so all their occurrences are in this file.
-    fn occurrences(&self, params: &Json, declaration: bool, item: impl Fn(&Path, &CheckedFile, usize, usize) -> Json) -> Json {
-        let Some((path, file, offset)) = self.file_at(params) else { return Json::Null };
-        let Some(target) = file.occurrences.iter()
-            .find(|occurrence| occurrence.start <= offset && offset <= occurrence.end)
-            .map(|occurrence| occurrence.declaration) else { return Json::Null };
-        Json::Array(file.occurrences.iter()
-            .filter(|occurrence| occurrence.declaration == target)
-            .filter(|occurrence| declaration || (occurrence.start, occurrence.end) != target)
-            .map(|occurrence| item(path, file, occurrence.start, occurrence.end))
+    /// The symbol index of the last check, and the symbol at a request's position.
+    fn symbol_at(&self, params: &Json) -> Option<(&SymbolIndex, crate::symbols::Symbol)> {
+        let (path, file, offset) = self.file_at(params)?;
+        let _ = file;
+        let index = &self.snapshot.as_ref()?.symbols;
+        let (symbol, _) = index.symbol_at(index.file(path)?, offset)?;
+        Some((index, symbol))
+    }
+
+    fn location(&self, occurrence: &SymbolOccurrence) -> Option<Json> {
+        let file = self.snapshot.as_ref()?.files.get(&occurrence.path)?;
+        Some(Json::object([
+            ("uri", Json::from(self.uri(&occurrence.path))),
+            ("range", file.range(occurrence.span.start, occurrence.span.end, self.encoding)),
+        ]))
+    }
+
+    /// The URI the client knows a path by: an open document's own, or the path's.
+    fn uri(&self, path: &Path) -> String {
+        self.documents.get(path).map_or_else(|| path_to_uri(path), |document| document.uri.clone())
+    }
+
+    /// Every occurrence, in every file, of the local or global under the position; its
+    /// definitions only when `declaration` is set.
+    fn references(&self, params: &Json, declaration: bool) -> Json {
+        let Some((index, symbol)) = self.symbol_at(params) else { return Json::Null };
+        Json::Array(index.occurrences(&symbol).iter()
+            .filter(|occurrence| declaration || !occurrence.definition)
+            .filter_map(|occurrence| self.location(occurrence))
             .collect())
+    }
+
+    /// The occurrences in this file of the local or global under the position: definitions as
+    /// writes, the others as reads.
+    fn highlights(&self, params: &Json) -> Json {
+        let Some((path, file, _)) = self.file_at(params) else { return Json::Null };
+        let Some((index, symbol)) = self.symbol_at(params) else { return Json::Null };
+        Json::Array(index.occurrences(&symbol).iter()
+            .filter(|occurrence| occurrence.path == path)
+            .map(|occurrence| Json::object([
+                ("range", file.range(occurrence.span.start, occurrence.span.end, self.encoding)),
+                ("kind", Json::from(if occurrence.definition { 3usize } else { 2 })),
+            ]))
+            .collect())
+    }
+
+    fn prepare_rename(&self, params: &Json) -> Result<Json, String> {
+        let Some((path, file, offset)) = self.file_at(params) else { return Ok(Json::Null) };
+        let index = &self.snapshot.as_ref().expect("a checked file has a snapshot").symbols;
+        let Some(id) = index.file(path) else { return Ok(Json::Null) };
+        let (_, span) = index.prepare_rename(id, offset).map_err(|error| error.to_string())?;
+        Ok(Json::object([
+            ("range", file.range(span.start, span.end, self.encoding)),
+            ("placeholder", Json::from(&file.lines.text[span.start..span.end])),
+        ]))
+    }
+
+    /// The edits that rename the local or global under the position, in every file. A file
+    /// edited since the last check is renamed after the next one, when its offsets are current.
+    fn rename(&self, params: &Json) -> Result<Json, String> {
+        let Some((path, _, offset)) = self.file_at(params) else { return Ok(Json::Null) };
+        let name = params.get("newName").and_then(Json::as_str).unwrap_or_default();
+        let snapshot = self.snapshot.as_ref().expect("a checked file has a snapshot");
+        let Some(id) = snapshot.symbols.file(path) else { return Ok(Json::Null) };
+        let occurrences = snapshot.symbols.rename(id, offset, name).map_err(|error| error.to_string())?;
+        let mut changes: Vec<(String, Json)> = Vec::new();
+        for occurrence in occurrences {
+            let Some(file) = snapshot.files.get(&occurrence.path) else { continue };
+            if self.documents.get(&occurrence.path).is_some_and(|document| document.text != file.lines.text) {
+                return Err("the project is being checked; rename again when it has been".into());
+            }
+            let edit = Json::object([
+                ("range", file.range(occurrence.span.start, occurrence.span.end, self.encoding)),
+                ("newText", Json::from(name)),
+            ]);
+            let uri = self.uri(&occurrence.path);
+            match changes.iter_mut().find(|(existing, _)| *existing == uri) {
+                Some((_, Json::Array(edits))) => edits.push(edit),
+                _ => changes.push((uri, Json::Array(vec![edit]))),
+            }
+        }
+        Ok(Json::object([("changes", Json::Object(changes))]))
     }
 
     fn respond(&self, id: Json, result: Json) {
@@ -591,7 +666,7 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
     while let Ok(mut job) = jobs.recv() {
         // Only the latest revision is worth checking.
         while let Ok(newer) = jobs.try_recv() { job = newer; }
-        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&inputs, options, &mut workspace, &job)));
+        let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&inputs, options.clone(), &mut workspace, &job)));
         let snapshot = match checked {
             Ok(Ok(report)) => Snapshot::of(&report),
             Ok(Err(error)) => Snapshot::failed(error),
@@ -624,7 +699,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
             let result = Json::object([("isIncomplete", Json::from(false)), ("items", Json::Array(items))]);
             let _ = events.send(Event::Answered(query.id.clone(), result));
         };
-        let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| complete(&inputs, options, &mut workspace, &mut loaded, &query, &mut answer)));
+        let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| complete(&inputs, options.clone(), &mut workspace, &mut loaded, &query, &mut answer)));
         if completed.is_err() {
             workspace = ProjectWorkspace::new();
             loaded = None;
@@ -717,6 +792,7 @@ fn with_documents(plan: &ProjectLoadPlan, documents: &HashMap<PathBuf, String>) 
 /// What hover, definition and diagnostics read from one completed check.
 struct Snapshot {
     files: HashMap<PathBuf, CheckedFile>,
+    symbols: SymbolIndex,
     error: Option<String>,
 }
 
@@ -726,19 +802,17 @@ struct CheckedFile {
     diagnostics: Vec<CheckedDiagnostic>,
     bindings: Vec<CheckedBinding>,
     types: Vec<CheckedType>,
-    occurrences: Vec<CheckedOccurrence>,
     requires: Vec<CheckedRequire>,
 }
 
 struct CheckedDiagnostic { start: usize, end: usize, code: &'static str, message: String, category: DiagnosticCategory, unnecessary: bool }
 struct CheckedBinding { start: usize, end: usize, name: String, ty: String }
 struct CheckedType { start: usize, end: usize, ty: String }
-struct CheckedOccurrence { start: usize, end: usize, declaration: (usize, usize) }
 struct CheckedRequire { start: usize, end: usize, target: PathBuf }
 
 impl Snapshot {
     fn failed(error: String) -> Self {
-        Self { files: HashMap::new(), error: Some(error) }
+        Self { files: HashMap::new(), symbols: SymbolIndex::default(), error: Some(error) }
     }
 
     fn of(report: &ProjectCheckReport) -> Self {
@@ -747,10 +821,6 @@ impl Snapshot {
             let Some(source) = report.project.file(checked.file) else { continue };
             if source.origin != SourceOrigin::Filesystem { continue; }
             let result = &checked.report;
-            let occurrences = result.bound.as_ref().map(|bound| bound.occurrences.iter().filter_map(|occurrence| {
-                let declaration = bound.declaration(occurrence.binding?).span;
-                Some(CheckedOccurrence { start: occurrence.span.start, end: occurrence.span.end, declaration: (declaration.start, declaration.end) })
-            }).collect()).unwrap_or_default();
             let requires = report.project.dependencies.iter().filter(|dependency| dependency.from == checked.file).filter_map(|dependency| {
                 let DependencyOutcome::Resolved(target) = dependency.outcome else { return None };
                 Some(CheckedRequire {
@@ -769,11 +839,10 @@ impl Snapshot {
                     start: binding.span.start, end: binding.span.end, name: binding.name.clone(), ty: binding.ty.clone(),
                 }).collect(),
                 types: result.types.iter().map(|ty| CheckedType { start: ty.span.start, end: ty.span.end, ty: ty.ty.clone() }).collect(),
-                occurrences,
                 requires,
             });
         }
-        Self { files, error: None }
+        Self { files, symbols: SymbolIndex::new(report), error: None }
     }
 }
 

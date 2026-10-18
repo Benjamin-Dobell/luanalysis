@@ -389,6 +389,7 @@ impl ProjectRegistry {
         );
         for file in &mut files {
             file.source.flow.set_original_require_capability(standard_environment.require_operation.is_some());
+            file.source.flow.set_require_needs_declaration(environment_profile.is_full_lua());
             for kind in [NativeOpaqueRuntimeKind::Userdata, NativeOpaqueRuntimeKind::Thread] {
                 file.source.flow.set_opaque_runtime_type_enabled(
                     kind, standard_environment.runtime_type_declaration(kind).is_some(),

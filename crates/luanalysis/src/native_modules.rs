@@ -146,6 +146,10 @@ impl Checker<'_> {
     pub(crate) fn native_require_pack(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Option<ValuePack> {
         let (policy, recipe) = self.native?.module_import(span)?;
         let has_original_contract = self.native?.global_binding("require").is_some();
+        if !has_original_contract && self.native?.flow.require_needs_declaration() {
+            // The host's standard library leaves `require` out: this is an ordinary call.
+            return None;
+        }
         if has_original_contract && !self.native?.flow.has_original_require_capability() {
             // An unselected declaration supplies its ordinary callable type;
             // its spelling cannot activate a source module or borrow exports.

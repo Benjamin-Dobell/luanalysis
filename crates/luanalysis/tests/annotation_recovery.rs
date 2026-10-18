@@ -23,7 +23,7 @@ impl Fixture {
         let mut command = Command::new(env!("CARGO_BIN_EXE_luanalysis"));
         command
             .current_dir(&self.0)
-            .args(["check", "--no-stdlib", "--dump-types"]);
+            .args(["check", "--no-stdlib", "--stdlib", "require", "--dump-types"]);
         if library {
             command.args(["--library", "api.def.lua"]);
         }

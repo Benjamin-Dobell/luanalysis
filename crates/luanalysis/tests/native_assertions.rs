@@ -170,6 +170,8 @@ fn authoritative_casts_and_real_errors_agree_in_serial_and_parallel_cli_projects
             .args([
                 "check",
                 "--no-stdlib",
+                "--stdlib",
+                "require",
                 "--no-implicit-any",
                 "--format",
                 "json",

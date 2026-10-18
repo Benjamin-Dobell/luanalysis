@@ -176,6 +176,20 @@ mod tests {
     }
 
     #[test]
+    fn a_host_names_the_standard_library_it_provides() {
+        let directory = fixture("allow list", "local now = os.time()\nlocal handle = io.open('x')\n");
+        let arguments: Vec<CString> = ["--lua-version", "5.2", "--stdlib", "basic,os.time", directory.join("main.lua").to_str().unwrap()]
+            .iter().map(|argument| CString::new(*argument).unwrap()).collect();
+        let pointers: Vec<*const c_char> = arguments.iter().map(|argument| argument.as_ptr()).collect();
+        let report = unsafe { luanalysis_check(pointers.as_ptr(), pointers.len()) };
+        let text = unsafe { CStr::from_ptr(report) }.to_str().unwrap().to_owned();
+        unsafe { luanalysis_string_free(report) };
+        assert!(text.contains(r#""message":"Cannot find name 'io'.""#), "{text}");
+        assert_eq!(text.matches(r#""code":"#).count(), 1, "{text}");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn invalid_arguments_are_reported_in_the_json_report() {
         let argument = CString::new("--jobs").unwrap();
         let report = unsafe { luanalysis_check(&argument.as_ptr(), 1) };
@@ -206,6 +220,7 @@ mod tests {
         assert_eq!(send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":"{uri}","capabilities":{{}}}}}}"#)), 0);
         let initialized = received.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
         assert!(initialized.contains(r#""id":1"#) && initialized.contains("completionProvider"), "{initialized}");
+        assert!(initialized.contains(r#""renameProvider":{"prepareProvider":true}"#), "{initialized}");
         assert_eq!(send("not json"), 0);
         let error = received.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
         assert!(error.contains("-32700"), "{error}");

@@ -25,6 +25,7 @@ pub mod report;
 pub mod project_check;
 mod project_cost;
 pub mod standard_environment;
+pub mod symbols;
 mod functions;
 mod inspections;
 mod native_expressions;

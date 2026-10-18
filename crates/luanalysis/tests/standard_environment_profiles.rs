@@ -532,7 +532,7 @@ fn cli_profile_selection_original_error_correction_and_explicit_empty_mode_are_v
         String::from_utf8_lossy(&fixed.stderr)
     );
     assert!(String::from_utf8_lossy(&fixed.stdout).contains("1 file(s)"));
-    fixture.file("main.lua", "local kind=type(1)\n");
+    fixture.file("main.lua", "local kind=type(1)\nprint(kind)\n");
     let empty = fixture.cli(&["--no-stdlib", "main.lua"]);
     assert_eq!(empty.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&empty.stderr).contains("TS2304"));

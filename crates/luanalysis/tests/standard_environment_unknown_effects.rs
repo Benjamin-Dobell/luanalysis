@@ -389,26 +389,28 @@ fn the_strict_option_keeps_unknown_calls_as_standard_effect_barriers() {
 }
 
 #[test]
-fn no_standard_environment_does_not_seed_missing_builtin_names_after_unknown_calls() {
+fn without_the_standard_library_only_the_fundamentals_remain_after_unknown_calls() {
     let fixture = Fixture::new();
-    let source = "hostEffect()\nlocal kind=type(42)\nlocal module=require('module')\n";
+    // `type`, `assert` and `setmetatable` are always declared; nothing else is seeded.
+    let source = "hostEffect()\nlocal kind=type(42)\nprint(kind)\nlocal module=require('module')\n";
     let rejected = report(fixture.check(source, false, None), 1);
-    error_on(&rejected, source, "TS2304", "local kind=type(42)", "type");
-    // The module host still recognizes a require request without library
-    // declarations. An unresolved call preserves its loader contract.
-    assert!(!rejected.contains("LUA2036"), "{rejected}");
+    error_on(&rejected, source, "TS2304", "print(kind)", "print");
+    error_on(&rejected, source, "TS2304", "local module=require('module')", "require");
+    assert_eq!(rejected.matches("\"code\":").count(), 2, "{rejected}");
 }
 
 #[test]
-fn custom_same_name_declarations_keep_ordinary_results_and_no_type_predicate() {
+fn a_hosts_own_declarations_keep_ordinary_results_and_cannot_replace_type() {
     let fixture = Fixture::new();
-    let source = "hostEffect()\nlocal module=require('absent')\n---@type number\nlocal checked_module=module\n---@param value number|string\nlocal function probe(value)\nif type(value)=='number' then\n---@type number\nlocal checked_type=42\nend\nend\nprobe('text')\n";
-    clean(fixture.check(source, false, Some(CUSTOM)));
+    // A host's own `require` is an ordinary function: it loads no module.
+    let host = &CUSTOM[CUSTOM.find("---@param name").unwrap()..];
+    let source = "hostEffect()\nlocal module=require('absent')\n---@type number\nlocal checked_module=module\n---@param value number|string\nlocal function probe(value)\nif type(value)=='number' then\n---@type number\nlocal checked_type=value\nend\nend\nprobe('text')\n";
+    clean(fixture.check(source, false, Some(host)));
     let wrong_module = source.replace(
         "---@type number\nlocal checked_module",
         "---@type string\nlocal checked_module",
     );
-    let rejected = report(fixture.check(&wrong_module, false, Some(CUSTOM)), 1);
+    let rejected = report(fixture.check(&wrong_module, false, Some(host)), 1);
     error_on(
         &rejected,
         &wrong_module,
@@ -416,15 +418,9 @@ fn custom_same_name_declarations_keep_ordinary_results_and_no_type_predicate() {
         "local checked_module=module",
         "module",
     );
-    let wrong_type = source.replace("local checked_type=42", "local checked_type=value");
-    let rejected = report(fixture.check(&wrong_type, false, Some(CUSTOM)), 1);
-    error_on(
-        &rejected,
-        &wrong_type,
-        "TS2322",
-        "local checked_type=value",
-        "value",
-    );
+    // `type` is not the host's to replace.
+    let rejected = report(fixture.check(source, false, Some(CUSTOM)), 1);
+    assert!(rejected.contains("\"code\":\"TS2403\",\"message\":\"Global 'type' has incompatible declaration owners"), "{rejected}");
 }
 
 #[test]

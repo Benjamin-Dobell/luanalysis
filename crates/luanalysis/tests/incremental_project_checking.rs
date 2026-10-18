@@ -73,7 +73,7 @@ impl Fixture {
         });
         let cold = Project::load_plan(resolver, plan, static_require_requests);
         assert_ne!(warm.id, cold.id);
-        let warm = workspace.check_project(warm, options);
+        let warm = workspace.check_project(warm, options.clone());
         let cold = check_project_with_options(cold, options);
         assert_eq!(normalized(&warm), normalized(&cold));
         assert_eq!(workspace.last_preparation_stats().semantic_reused, 0);
@@ -539,7 +539,7 @@ fn loader_policy_changes_recompute_result_packs_from_reused_module_sources() {
         loader_policy: NativeLoaderPolicy::Lua51StandardFile,
         ..modules()
     };
-    clean(&fixture.compare(&mut workspace, plan(), old_loader));
+    clean(&fixture.compare(&mut workspace, plan(), old_loader.clone()));
     let current = fixture.compare(&mut workspace, plan(), modules());
     diagnostic_at(&current, &main, "TS2322", "loader");
     preparation(&workspace, 0, 3, 0);

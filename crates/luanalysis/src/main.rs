@@ -70,7 +70,7 @@ fn run() -> i32 {
             workspace.static_require_requests(source)
         });
         let watched = watch.then(|| WatchSnapshot::loaded(&discovery, &project));
-        let result = workspace.check_project(project, options);
+        let result = workspace.check_project(project, options.clone());
         let report = CliReport::from_project(
             &result,
             &discovery.display_paths,

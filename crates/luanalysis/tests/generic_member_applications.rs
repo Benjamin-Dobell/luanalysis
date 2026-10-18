@@ -351,6 +351,8 @@ return attach
                 "--format",
                 "json",
                 "--no-stdlib",
+                "--stdlib",
+                "require",
                 "--dump-types",
                 "--library",
                 "types.def.lua",

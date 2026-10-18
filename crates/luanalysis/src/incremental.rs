@@ -561,7 +561,7 @@ mod tests {
         let mut workspace = ProjectWorkspace::new();
         let options = crate::project_check::ProjectCheckOptions { jobs: 1, ..Default::default() };
         let mut check = |workspace: &mut ProjectWorkspace| {
-            let report = workspace.check_project(fixture.load(&[stable.clone(), edited.clone()], &[]), options);
+            let report = workspace.check_project(fixture.load(&[stable.clone(), edited.clone()], &[]), options.clone());
             let revision = workspace.sources.values().find(|snapshot| snapshot.source().starts_with("local function stable")).unwrap().revision;
             (std::sync::Arc::clone(workspace.recipes[&revision].flow()), report.has_errors())
         };

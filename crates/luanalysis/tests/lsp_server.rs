@@ -149,7 +149,7 @@ fn diagnostics_follow_unsaved_edits_and_clear_when_fixed() {
     let wrong = "local util = require('util')\nlocal n = util.double(2)\n---@type string\nlocal s = n\nreturn s\n";
     // The editor's buffer is checked, not the file on disk.
     fs::write(&main, "return nil\n").unwrap();
-    let mut server = Server::start(&["--no-stdlib"]);
+    let mut server = Server::start(&["--no-stdlib", "--stdlib", "require"]);
     server.initialize(&root);
     server.open(&main, wrong);
     let published = server.diagnostics(&main, |message| message.contains("TS2322"));
@@ -171,7 +171,7 @@ fn hover_and_definition_answer_at_utf16_positions() {
     // `n` follows an emoji: two UTF-16 code units, four UTF-8 bytes.
     let text = "local util = require('util')\nlocal s = '\u{1F600}' local n = util.double(2)\nlocal m = n + #s\nreturn m\n";
     fs::write(&main, text).unwrap();
-    let mut server = Server::start(&["--no-stdlib"]);
+    let mut server = Server::start(&["--no-stdlib", "--stdlib", "require"]);
     server.initialize(&root);
     server.open(&main, text);
     server.diagnostics(&main, |_| true);
@@ -204,12 +204,12 @@ fn hover_and_definition_answer_at_utf16_positions() {
 #[test]
 fn requests_before_initialize_and_unknown_requests_are_errors() {
     let root = fixture();
-    let mut server = Server::start(&["--no-stdlib"]);
+    let mut server = Server::start(&["--no-stdlib", "--stdlib", "require"]);
     server.send(r#"{"jsonrpc":"2.0","id":7,"method":"textDocument/hover","params":{}}"#);
     let early = server.wait(|message| message.contains(r#""id":7"#));
     assert!(early.contains("-32002"), "{early}");
     server.initialize(&root);
-    server.send(r#"{"jsonrpc":"2.0","id":8,"method":"textDocument/rename","params":{}}"#);
+    server.send(r#"{"jsonrpc":"2.0","id":8,"method":"textDocument/formatting","params":{}}"#);
     let unknown = server.wait(|message| message.contains(r#""id":8"#));
     assert!(unknown.contains("-32601"), "{unknown}");
     server.finish();
@@ -281,13 +281,89 @@ fn an_open_document_with_no_file_on_disk_is_checked() {
     // A host such as a game may serve a script it keeps in memory, outside the workspace.
     let script = root.join("memory").join("Global.lua");
     assert!(!script.exists());
-    let mut server = Server::start(&["--no-stdlib"]);
+    let mut server = Server::start(&["--no-stdlib", "--stdlib", "require"]);
     server.initialize(&root);
     server.open(&script, "---@type string\nlocal text = 42\nreturn text\n");
     let published = server.diagnostics(&script, |message| message.contains("TS2322"));
     assert!(published.contains(r#""range":{"start":{"line":1,"character":13}"#), "{published}");
     server.change(&script, 2, "---@type string\nlocal text = 'fixed'\nreturn text\n");
     server.diagnostics(&script, |message| message.contains(r#""diagnostics":[]"#));
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// The UTF-16 position of the `nth` occurrence of `needle` in `text`, as `(line, character)`.
+fn position(text: &str, needle: &str, nth: usize) -> (u32, u32) {
+    let offset = text.match_indices(needle).nth(nth).unwrap().0;
+    let line = text[..offset].matches('\n').count();
+    let start = text[..offset].rfind('\n').map_or(0, |newline| newline + 1);
+    (line as u32, text[start..offset].encode_utf16().count() as u32)
+}
+
+#[test]
+fn globals_are_defined_referenced_and_renamed_across_files() {
+    let root = fixture();
+    let util = root.join("util.lua");
+    let util_text = "Counter = 0\nfunction bump() Counter = Counter + 1 end\n";
+    fs::write(&util, util_text).unwrap();
+    let main = root.join("main.lua");
+    let text = "require('util')\nbump()\nprint(Counter, _G.Counter)\nlocal function f() local Counter = 1 return Counter end\n";
+    fs::write(&main, text).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, text);
+    server.diagnostics(&main, |_| true);
+    let (line, character) = position(text, "Counter", 0);
+
+    // A global is defined by each of its writes, in any file.
+    let definition = server.request(2, "textDocument/definition", &main, line, character);
+    assert_eq!(definition.matches(&uri(&util)).count(), 2, "{definition}");
+    assert!(definition.contains(r#""range":{"start":{"line":0,"character":0},"end":{"line":0,"character":7}}"#), "{definition}");
+
+    // Its references include `_G.Counter`, but not the local that shadows it.
+    let references = |server: &mut Server, id: u32, include: bool| {
+        server.send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/references","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":{line},"character":{character}}},"context":{{"includeDeclaration":{include}}}}}}}"#,
+            uri(&main),
+        ));
+        server.wait(|message| message.contains(&format!(r#""id":{id},"#)))
+    };
+    let all = references(&mut server, 3, true);
+    assert_eq!(all.matches(&uri(&util)).count(), 3, "{all}");
+    assert_eq!(all.matches(&uri(&main)).count(), 2, "{all}");
+    let reads = references(&mut server, 4, false);
+    assert_eq!(reads.matches(r#""uri""#).count(), 3, "{reads}");
+    let highlights = server.request(5, "textDocument/documentHighlight", &main, line, character);
+    assert_eq!(highlights.matches(r#""kind":2"#).count(), 2, "{highlights}");
+
+    // Renaming it edits every file.
+    let rename = |server: &mut Server, id: u32, (line, character): (u32, u32), name: &str| {
+        server.send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/rename","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":{line},"character":{character}}},"newName":"{name}"}}}}"#,
+            uri(&main),
+        ));
+        server.wait(|message| message.contains(&format!(r#""id":{id},"#)))
+    };
+    let renamed = rename(&mut server, 6, (line, character), "Total");
+    assert_eq!(renamed.matches(r#""newText":"Total""#).count(), 5, "{renamed}");
+    assert!(renamed.contains(&uri(&util)) && renamed.contains(&uri(&main)), "{renamed}");
+    let (_, field) = position(text, "Counter", 1);
+    assert!(renamed.contains(&format!(r#""range":{{"start":{{"line":2,"character":{field}}},"end":{{"line":2,"character":{}}}}}"#, field + 7)), "{renamed}");
+
+    // A local is renamed in its own scope only.
+    let local = rename(&mut server, 7, position(text, "Counter", 2), "count");
+    assert_eq!(local.matches(r#""newText":"count""#).count(), 2, "{local}");
+    assert!(!local.contains(&uri(&util)), "{local}");
+
+    // What cannot be renamed says why.
+    let invalid = rename(&mut server, 8, (line, character), "end");
+    assert!(invalid.contains("-32803") && invalid.contains("is not a Lua name"), "{invalid}");
+    let (line, character) = position(text, "print", 0);
+    let standard = server.request(9, "textDocument/prepareRename", &main, line, character);
+    assert!(standard.contains("declared by the standard library"), "{standard}");
+    let (line, character) = position(text, "bump", 0);
+    let prepared = server.request(10, "textDocument/prepareRename", &main, line, character);
+    assert!(prepared.contains(r#""placeholder":"bump""#), "{prepared}");
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }

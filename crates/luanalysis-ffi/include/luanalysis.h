@@ -26,7 +26,9 @@ LUANALYSIS_API const char *luanalysis_version(void);
 /*
  * Checks once, as `luanalysis check --format json <arguments>` does, and returns the JSON
  * report (its "exitCode" is the command's). `arguments` are the command's options and paths,
- * for example {"--lua-version", "5.4", "src"}. Returns NULL when an argument is not UTF-8 or
+ * for example {"--lua-version", "5.4", "src"}. A host that provides only part of the standard
+ * library, as a sandbox does, names what it provides: {"--lua-version", "5.2", "--stdlib",
+ * "basic,string,table,math,os.time", "src"}. Returns NULL when an argument is not UTF-8 or
  * checking failed internally. Free the report with luanalysis_string_free.
  */
 LUANALYSIS_API char *luanalysis_check(const char *const *arguments, size_t count);

@@ -64,7 +64,7 @@ impl Fixture {
         if lua54 {
             command.args(["--lua-version", "5.4"]);
         } else {
-            command.arg("--no-stdlib");
+            command.args(["--no-stdlib", "--stdlib", "require"]);
         }
         command
             .args(["--dump-types", "--module-root", ".", "main.lua"])

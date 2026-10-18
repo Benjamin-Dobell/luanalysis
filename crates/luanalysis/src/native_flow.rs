@@ -166,6 +166,9 @@ pub(super) struct NativeFlowRecipes {
     runtime_thread_enabled: bool,
     loader_mutations: HashSet<(usize, usize)>,
     original_require_capability: bool,
+    /// A full Lua standard library is selected, so `require` is a standard function only where
+    /// it is declared: a host's allow-list can leave it out.
+    require_needs_declaration: bool,
     capability_bindings: HashSet<BindingId>,
     environment_candidates: HashMap<BindingId, HashSet<Vec<flow::Key>>>,
     environment_cell_written: bool,
@@ -234,6 +237,11 @@ impl NativeFlowSources {
         Arc::make_mut(&mut self.recipes).original_require_capability = enabled;
     }
     pub(super) fn has_original_require_capability(&self) -> bool { self.original_require_capability }
+    pub(super) fn set_require_needs_declaration(&mut self, needed: bool) {
+        if self.require_needs_declaration == needed { return; }
+        Arc::make_mut(&mut self.recipes).require_needs_declaration = needed;
+    }
+    pub(super) fn require_needs_declaration(&self) -> bool { self.require_needs_declaration }
     pub(super) fn environment_cell_is_immutable(&self) -> bool { !self.environment_cell_written }
     /// Whether a read at `position` in `graph` sees the chunk's original environment.
     pub(super) fn reads_original_environment(&self, graph: NativeGraphKey, position: usize) -> bool {
@@ -284,6 +292,7 @@ impl NativeFlowSources {
             runtime_thread_enabled: false,
             loader_mutations: bound.module_environment_mutations().iter().chain(bound.computed_environment_mutations()).chain(bound.environment_rebindings()).map(|span| (span.start, span.end)).collect(),
             original_require_capability: false,
+            require_needs_declaration: false,
             capability_bindings: HashSet::default(),
             environment_candidates: HashMap::default(),
             environment_cell_written,

@@ -1,7 +1,7 @@
 //! Native checker tasks over an immutable collection of original Lua files.
 //! Files retain their own syntax, lexical identities, graphs and source reports.
 use crate::native_functions::project_provider::{ProjectRegistrySnapshot, RegistryInput};
-use crate::standard_environment::{StandardEnvironmentProfile, StandardEnvironmentSelection};
+use crate::standard_environment::{StandardEnvironmentProfile, StandardEnvironmentSelection, StandardLibraryAllowList};
 use crate::{CheckReport, Diagnostic};
 use luanalysis_engine::{
     Engine, NativeLoaderPolicy, NativePlanOptions, NativeTaskRunStats,
@@ -14,13 +14,15 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ProjectCheckOptions {
     /// Maximum simultaneous native checker tasks. Zero selects the host's
     /// available parallelism; one requests deterministic serial execution.
     pub jobs: usize,
     pub loader_policy: NativeLoaderPolicy,
     pub environment: StandardEnvironmentProfile,
+    /// The parts of the standard library the host provides; None provides all of it.
+    pub standard_library: Option<StandardLibraryAllowList>,
     pub overload_mode: crate::OverloadMode,
     /// Opt-in missing parameter/rest contract diagnostics; ordinary analysis
     /// preserves v1's acceptance of unannotated runtime functions.
@@ -42,6 +44,7 @@ impl Default for ProjectCheckOptions {
             jobs: 0,
             loader_policy: NativeLoaderPolicy::Lua54StandardFile,
             environment: StandardEnvironmentProfile::LegacyMinimal,
+            standard_library: None,
             overload_mode: crate::OverloadMode::default(),
             no_implicit_any: false,
             assume_unknown_standard_effects: true,
@@ -155,11 +158,11 @@ struct PreparedProgram {
 
 fn prepare_program(
     project: &mut Project,
-    options: ProjectCheckOptions,
+    options: &ProjectCheckOptions,
     workspace: &mut crate::incremental::ProjectWorkspace,
 ) -> PreparedProgram {
     let (selection, environment_errors) =
-        match StandardEnvironmentSelection::register(project, options.environment) {
+        match StandardEnvironmentSelection::register(project, options.environment, options.standard_library.as_ref()) {
             Ok(selection) => (selection, Vec::new()),
             Err(error) => (
                 StandardEnvironmentSelection::empty(StandardEnvironmentProfile::None),
@@ -228,7 +231,7 @@ pub(crate) fn with_project_session<R: Send>(
     workspace: &mut crate::incremental::ProjectWorkspace,
     query: impl FnOnce(&Project, &crate::native_functions::project_provider::ProjectRegistry, &mut dyn luanalysis_engine::TypeQueries) -> R + Send,
 ) -> R {
-    let prepared = prepare_program(&mut project, options, workspace);
+    let prepared = prepare_program(&mut project, &options, workspace);
     let snapshot = &prepared.snapshot;
     let project = &project;
     let (result, flows) = Engine::new().with_native_provider(
@@ -256,7 +259,7 @@ pub(crate) fn check_project_with_workspace(
     let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
     let started = Instant::now();
     let PreparedProgram { mut snapshot, revisions, mut files, source_costs, standard_library_files, environment_errors } =
-        prepare_program(&mut project, options, workspace);
+        prepare_program(&mut project, &options, workspace);
     // As in Bun, the program is every file the load reached: explicit inputs and
     // the targets of their syntactic require calls. Each is checked once, by one
     // task, whether or not the checker later proves the call's loader.

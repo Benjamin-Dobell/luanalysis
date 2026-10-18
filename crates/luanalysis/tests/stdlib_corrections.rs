@@ -97,23 +97,22 @@ fn corrected_original_error_contract_terminates_both_public_arities_without_body
     }
 }
 #[test]
-fn corrected_original_assert_public_head_accepts_real_extra_arguments_without_granting_user_effects()
- {
+fn the_fundamental_assert_forwards_its_real_extra_arguments() {
+    // `assert` is always the standard one, even without the standard library: a host's
+    // library cannot replace it.
+    let fixture = Fixture::new("", "---@type number\nlocal first=assert(42,'label',false)\n");
+    pass(&fixture.check());
+    fixture.source("---@type number,string\nlocal first,second=assert(42,'label',false)\n");
+    pass(&fixture.check());
+    fixture.source("---@type number,number\nlocal first,second=assert(42,'label',false)\n");
+    fail(&fixture.check(), "TS2322");
     let original = excerpt(
         GLOBAL,
         "---@overload fun<T>(v: T, ...: unknown): T",
         "function assert(v, message) end",
     );
-    let fixture = Fixture::new(
-        original,
-        "---@type number\nlocal first=assert(42,'label',false)\n",
-    );
-    pass(&fixture.check());
-    fixture.source("---@type number,string\nlocal first,second=assert(42,'label',false)\n");
-    // An ordinary user library does not gain trusted argument-pack forwarding.
-    fail(&fixture.check(), "TS2322");
-    fixture.source("---@type number\nlocal first=assert(42,'label',false)\n");
-    pass(&fixture.check());
+    let fixture = Fixture::new(original, "local first=assert(42)\n");
+    fail(&fixture.check(), "LUA2039");
 }
 #[test]
 fn minimally_corrected_original_math_and_table_resources_keep_actual_result_contracts() {
