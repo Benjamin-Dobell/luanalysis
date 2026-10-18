@@ -850,11 +850,8 @@ fn signatures(
             ranges.push(label.len()..label.len() + parameter.len());
             label.push_str(parameter);
         }
-        label.push(')');
-        if !returns.is_empty() {
-            label.push_str(": ");
-            label.push_str(&returns);
-        }
+        label.push_str("): ");
+        label.push_str(&returns);
         let rest = shown.last().is_some_and(|parameter| parameter.starts_with("..."));
         let active_parameter = if rest { site.argument.min(shown.len() - 1) } else { site.argument };
         let parameter_documentation = shown.iter().map(|parameter| {

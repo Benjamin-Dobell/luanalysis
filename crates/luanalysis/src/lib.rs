@@ -1439,7 +1439,11 @@ fn describe_native_at_precedence(
             stack.push(ty.clone());
             let inspected = engine.inspect_type(ty);
             let text = if let Type::Function(function) = &inspected {
-                describe_native_function(function, Some(ty), engine, stack, diagnostic, minimum)
+                parenthesize_type(
+                    describe_native_function(function, Some(ty), engine, stack, diagnostic),
+                    TypePrecedence::Function,
+                    minimum,
+                )
             } else if &inspected == ty {
                 engine.format(ty)
             } else {
@@ -1480,7 +1484,11 @@ fn describe_native_at_precedence(
             stack.pop();
             text
         }
-        Type::Function(function) => describe_native_function(function, None, engine, stack, diagnostic, minimum),
+        Type::Function(function) => parenthesize_type(
+            describe_native_function(function, None, engine, stack, diagnostic),
+            TypePrecedence::Function,
+            minimum,
+        ),
         Type::Union(types) => parenthesize_type(
             types
                 .iter()
@@ -1538,29 +1546,19 @@ fn describe_native_at_precedence(
     }
 }
 
-/// A function type as it is written: `fun(parameters): results`, parenthesized where `minimum`
-/// requires, or `fun(parameters)` when its results are unspecified, which needs no parentheses.
 fn describe_native_function(
     function: &luanalysis_engine::FunctionType,
     original: Option<&Type>,
     engine: &mut dyn TypeQueries,
     stack: &mut Vec<Type>,
     diagnostic: bool,
-    minimum: TypePrecedence,
 ) -> String {
     let (parameters, returns) = describe_native_function_parts(function, original, engine, stack, diagnostic);
-    match returns.is_empty() {
-        true => format!("fun({})", parameters.join(", ")),
-        false => parenthesize_type(format!("fun({}): {}", parameters.join(", "), returns), TypePrecedence::Function, minimum),
-    }
+    format!("fun({}): {}", parameters.join(", "), returns)
 }
 
-/// The results of a function type written without them (`fun(id: number)`): none, or any number
-/// of anything.
-const UNSPECIFIED_RESULTS: &str = "void | (any...)";
-
 /// A signature's parameters (`name: type`, `name?: type`, `...: type`) and its results, as a
-/// `fun(...)` type prints them, for signature help: empty when they are unspecified.
+/// `fun(...)` type prints them, for signature help.
 pub(crate) fn describe_signature(head: &Type, engine: &mut dyn TypeQueries) -> Option<(Vec<String>, String)> {
     let mut stack = Vec::new();
     let mut ty = head.clone();
@@ -1635,7 +1633,6 @@ fn describe_native_function_parts(
         .and_then(|ty| engine.function_result_pack(ty))
         .map(|pack| describe_native_pack(&pack, engine, stack, diagnostic))
         .unwrap_or_else(|| describe_native_mode(&function.returns, engine, stack, diagnostic));
-    let returns = if returns == UNSPECIFIED_RESULTS { String::new() } else { returns };
     (parameters, returns)
 }
 
