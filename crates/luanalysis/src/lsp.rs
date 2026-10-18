@@ -210,6 +210,8 @@ struct Query {
     id: Json,
     path: PathBuf,
     overlays: HashMap<PathBuf, String>,
+    /// The URIs the client uses for its open documents.
+    uris: HashMap<PathBuf, String>,
     /// The server's `disk_generation` when the query was made.
     disk: u64,
     site: Site,
@@ -278,8 +280,7 @@ struct HintSite {
     types: Vec<Json>,
 }
 
-/// A navigation from a member or type name, which the symbol index of locals and globals does
-/// not answer.
+/// A navigation from the current buffers, including renames while the checked index is stale.
 struct NavigateSite {
     text: String,
     offset: usize,
@@ -342,7 +343,17 @@ impl Query {
     }
 
     fn same_kind(&self, other: &Query) -> bool {
+        // Preparing and accepting a rename must receive their results even when another
+        // navigation request arrives before the worker starts them.
+        let rename = |site: &Site| matches!(site, Site::Navigate(NavigateSite {
+            request: Navigate::PrepareRename | Navigate::Rename(_), ..
+        }));
+        if rename(&self.site) || rename(&other.site) { return false; }
         std::mem::discriminant(&self.site) == std::mem::discriminant(&other.site)
+    }
+
+    fn uri(&self, path: &Path) -> String {
+        self.uris.get(path).cloned().unwrap_or_else(|| path_to_uri(path))
     }
 }
 
@@ -584,12 +595,12 @@ impl Server {
                 Json::Null => self.navigate(id, params, Navigate::Highlight),
                 result => self.respond(id, result),
             },
-            "textDocument/prepareRename" if self.symbol_at(params).is_none() => self.navigate(id, params, Navigate::PrepareRename),
+            "textDocument/prepareRename" if !self.documents_are_checked() || self.symbol_at(params).is_none() => self.navigate(id, params, Navigate::PrepareRename),
             "textDocument/prepareRename" => match self.prepare_rename(params) {
                 Ok(result) => self.respond(id, result),
                 Err(error) => self.respond_error(id, REQUEST_FAILED, &error),
             },
-            "textDocument/rename" if self.symbol_at(params).is_none() => {
+            "textDocument/rename" if !self.documents_are_checked() || self.symbol_at(params).is_none() => {
                 let name = params.get("newName").and_then(Json::as_str).unwrap_or_default().to_owned();
                 let valid = name.split('.').all(|part| {
                     let mut bytes = part.bytes();
@@ -1295,7 +1306,7 @@ impl Server {
         let overlays: HashMap<PathBuf, String> = self.documents.iter()
             .map(|(path, document)| (path.clone(), document.text.clone())).collect();
         let lines = LineIndex::new(text.clone());
-        let query = Query { id: Json::Null, path, overlays, disk: self.disk_generation, site: Site::Warm(text), lines, encoding: self.encoding, snippets: false, call_snippets: false, deprecation: self.deprecation };
+        let query = Query { id: Json::Null, path, overlays, uris: HashMap::new(), disk: self.disk_generation, site: Site::Warm(text), lines, encoding: self.encoding, snippets: false, call_snippets: false, deprecation: self.deprecation };
         if let Some(queries) = &self.queries { let _ = queries.send(query); }
     }
 
@@ -1304,13 +1315,24 @@ impl Server {
     fn query(&mut self, id: Json, path: PathBuf, site: Site, lines: LineIndex) {
         let mut overlays: HashMap<PathBuf, String> = self.documents.iter()
             .map(|(path, document)| (path.clone(), document.text.clone())).collect();
-        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets, call_snippets: self.snippets && self.preferences.call_snippets, deprecation: self.deprecation };
+        let uris = self.documents.iter().map(|(path, document)| (path.clone(), document.uri.clone())).collect();
+        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), uris, disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets, call_snippets: self.snippets && self.preferences.call_snippets, deprecation: self.deprecation };
         overlays.insert(path, query.text().to_owned());
         let query = Query { overlays, ..query };
         let unanswered = query.unanswered();
         if self.queries.as_ref().is_none_or(|queries| queries.send(query).is_err()) {
             self.respond(id, unanswered);
         }
+    }
+
+    /// Snapshot renames are safe only while every open buffer still has its checked text.
+    /// An inline editor may restore its preview immediately before asking for the real edits;
+    /// the query worker can answer from those current buffers while checking catches up.
+    fn documents_are_checked(&self) -> bool {
+        let Some(snapshot) = &self.snapshot else { return false };
+        self.documents.iter().all(|(path, document)| {
+            snapshot.files.get(path).is_some_and(|file| document.text == file.lines.text)
+        })
     }
 
     /// The symbol index of the last check, and the symbol at a request's position.
@@ -1370,8 +1392,7 @@ impl Server {
         ]))
     }
 
-    /// The edits that rename the local or global under the position, in every file. A file
-    /// edited since the last check is renamed after the next one, when its offsets are current.
+    /// The snapshot fast path for renaming a local or global when open buffers match the check.
     fn rename(&self, params: &Json) -> Result<Json, String> {
         let Some((path, _, offset)) = self.file_at(params) else { return Ok(Json::Null) };
         let name = params.get("newName").and_then(Json::as_str).unwrap_or_default();
@@ -1689,7 +1710,7 @@ fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
         let lines: HashMap<&PathBuf, LineIndex> = navigation.texts.iter().map(|(path, text)| (path, LineIndex::new(text.clone()))).collect();
         let range = |path: &PathBuf, span: luanalysis_syntax::Span| lines.get(path).map(|lines| lines.range(span.start, span.end, encoding));
         let location = |(path, span, _): &(PathBuf, luanalysis_syntax::Span, bool)| {
-            Some(Json::object([("uri", Json::from(path_to_uri(path))), ("range", range(path, *span)?)]))
+            Some(Json::object([("uri", Json::from(query.uri(path))), ("range", range(path, *span)?)]))
         };
         answer(Ok(match &site.request {
             Navigate::Definition | Navigate::TypeDefinition => Json::Array(navigation.occurrences.iter().filter(|occurrence| occurrence.2).filter_map(location).collect()),
@@ -1709,7 +1730,7 @@ fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
                 for (path, span, _) in &navigation.occurrences {
                     let Some(range) = range(path, *span) else { continue };
                     let edit = Json::object([("range", range), ("newText", Json::from(name.as_str()))]);
-                    let uri = path_to_uri(path);
+                    let uri = query.uri(path);
                     match changes.iter_mut().find(|(existing, _)| *existing == uri) {
                         Some((_, Json::Array(edits))) => edits.push(edit),
                         _ => changes.push((uri, Json::Array(vec![edit]))),
@@ -2097,4 +2118,41 @@ fn path_to_uri(path: &Path) -> String {
         }
     }
     uri
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queued_rename_is_not_superseded_by_navigation() {
+        let path = std::env::temp_dir().join("luanalysis queued rename.lua");
+        let text = "local function greet() end\ngreet()\n";
+        let query = |id: usize, request| Query {
+            id: Json::from(id), path: path.clone(),
+            overlays: HashMap::from([(path.clone(), text.to_owned())]),
+            uris: HashMap::new(), disk: 0,
+            site: Site::Navigate(NavigateSite { text: text.to_owned(), offset: 15, request }),
+            lines: LineIndex::new(text.to_owned()), encoding: Encoding::Utf16,
+            snippets: false, call_snippets: false, deprecation: Deprecation::None,
+        };
+        let (send, queries) = mpsc::channel();
+        send.send(query(1, Navigate::Rename("welcome".into()))).unwrap();
+        send.send(query(2, Navigate::PrepareRename)).unwrap();
+        send.send(query(3, Navigate::Definition)).unwrap();
+        drop(send);
+        let (events, answers) = mpsc::channel();
+        let inputs = CheckInputs { files: Vec::new(), libraries: Vec::new(), module_roots: Vec::new(), package_path: None, module_map: None };
+        answer_queries(inputs, ProjectCheckOptions::default(), queries, events,
+            Arc::new(std::sync::Mutex::new(HashSet::new())), Arc::new(crate::incremental::SharedSources::default()));
+        let answers: Vec<_> = answers.try_iter().collect();
+        let response = |request| answers.iter().find_map(|event| match event {
+            Event::Answered(id, result) if id == &Json::from(request) => Some(result.to_string()),
+            _ => None,
+        }).expect("the queued request is answered");
+        let rename = response(1usize);
+        assert_eq!(rename.matches(r#""newText":"welcome""#).count(), 2, "{rename}");
+        let prepared = response(2usize);
+        assert!(prepared.contains(r#""placeholder":"greet""#), "{prepared}");
+    }
 }

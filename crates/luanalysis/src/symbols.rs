@@ -11,7 +11,7 @@
 use crate::bind::{BoundFile, DeclarationKind, OccurrenceKind};
 use crate::collections::HashMap;
 use crate::project_check::ProjectCheckReport;
-use luanalysis_project::{FileId, SourceOrigin, SourceRole};
+use luanalysis_project::{FileId, SourceFile, SourceOrigin, SourceRole};
 use luanalysis_syntax::Span;
 use std::path::{Path, PathBuf};
 
@@ -121,18 +121,24 @@ pub struct SymbolIndex {
 
 impl SymbolIndex {
     pub fn new(report: &ProjectCheckReport) -> Self {
+        Self::from_bound_sources(report.files.iter().filter_map(|checked| {
+            Some((report.project.file(checked.file)?, checked.report.bound.as_deref()?))
+        }))
+    }
+
+    /// Indexes a query session's current sources without checking their bodies again.
+    pub(crate) fn from_bound_sources<'a>(sources: impl IntoIterator<Item = (&'a SourceFile, &'a BoundFile)>) -> Self {
         let mut index = Self::default();
-        for checked in &report.files {
-            let (Some(source), Some(bound)) = (report.project.file(checked.file), checked.report.bound.as_ref()) else { continue };
+        for (source, bound) in sources {
             let bundled = !matches!(source.origin, SourceOrigin::Filesystem);
             let library = bundled || source.role == SourceRole::Declaration;
             let entries = index.file_entries(&source.source, bound);
             for (position, entry) in entries.iter().enumerate() {
                 if let Key::Global(global) = entry.key {
-                    index.global_occurrences[global].push((checked.file, position));
+                    index.global_occurrences[global].push((source.id, position));
                 }
             }
-            index.files.insert(checked.file, FileSymbols { path: source.path.clone(), text: source.source.clone(), bundled, library, entries });
+            index.files.insert(source.id, FileSymbols { path: source.path.clone(), text: source.source.clone(), bundled, library, entries });
         }
         index
     }

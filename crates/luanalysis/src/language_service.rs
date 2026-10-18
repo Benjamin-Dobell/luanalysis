@@ -1402,7 +1402,7 @@ fn documentation_at_offset(
     value_documentation(project, registry, &value, queries)
 }
 
-/// A member or type name the editor navigates from, and where it is declared and used.
+/// A name the editor navigates from, and where it is declared and used.
 #[derive(Clone, Debug, Default)]
 pub struct Navigation {
     /// The name at the position, and its span there.
@@ -1742,7 +1742,7 @@ fn string_key(text: &str, key: &Expr) -> Option<Name> {
         .then(|| Name { text: inner.to_owned(), span: Span::new(key.span.start + 1, key.span.end - 1) })
 }
 
-/// The member or type name at `offset` in `file`, and with `name`, every occurrence renaming it
+/// The name at `offset` in `file`, and with `name`, every occurrence renaming it
 /// to `name` edits; or why it cannot be renamed. A library's names, such as a host API's, are
 /// not the project's to rename, and a rename must not merge two members or types, nor make a
 /// use refer to something else.
@@ -1771,6 +1771,21 @@ fn renaming(
 ) -> Result<Option<Navigation>, String> {
     let (Some(source), Some(text)) = (registry.source(file), project.file(file)) else { return Ok(None) };
     let text = &text.source;
+    let symbols = crate::symbols::SymbolIndex::from_bound_sources(project.files.iter().filter_map(|file| {
+        Some((file, registry.source(file.id)?.bound()))
+    }));
+    if let Some((_, span)) = symbols.symbol_at(file, offset) {
+        let occurrences = match name {
+            Some(name) => symbols.rename(file, offset, name),
+            None => symbols.prepare_rename(file, offset).map(|_| Vec::new()),
+        }.map_err(|error| error.to_string())?;
+        let mut navigation = Navigation { name: text[span.start..span.end].to_owned(), span, ..Navigation::default() };
+        for occurrence in occurrences {
+            let Some(source) = project.file(occurrence.file) else { continue };
+            add_occurrence(&mut navigation, &source.path, &source.source, occurrence.span, occurrence.definition);
+        }
+        return Ok(Some(navigation));
+    }
     let names = luanalysis_syntax::type_names(source.syntax(), text);
     if let Some(at) = names.iter().find(|type_name| type_name.span.start <= offset && offset <= type_name.span.end) {
         let Some(navigation) = type_navigation(project, registry, file, at, &names, name.is_some()) else { return Ok(None) };
@@ -2823,6 +2838,71 @@ fn types_related(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Calls the same current-buffer query as the LSP worker, with no background check that
+    /// could replace the inputs before the query starts.
+    fn rename_buffers(files: &[(&str, &str)], focus: &str, needle: &str, name: Option<&str>) -> Result<Option<Navigation>, String> {
+        use luanalysis_project::{ProjectConfig, ProjectInput, ProjectLoadPlan, Resolver, SourceRole};
+        let root = std::env::temp_dir().join(format!("luanalysis rename buffers {}", std::process::id()));
+        let overlays: std::collections::HashMap<_, _> = files.iter()
+            .map(|(path, text)| (root.join(path), (*text).to_owned())).collect();
+        let plan = ProjectLoadPlan {
+            entries: files.iter().filter(|(path, _)| !path.ends_with(".def.lua")).map(|(path, _)| root.join(path)).collect(),
+            libraries: files.iter().filter(|(path, _)| path.ends_with(".def.lua"))
+                .map(|(path, _)| ProjectInput::new(root.join(path), SourceRole::Declaration)).collect(),
+        };
+        let resolver = Resolver::new(ProjectConfig::new([root.clone()])).unwrap();
+        let mut workspace = ProjectWorkspace::new();
+        let project = Project::load_plan_with_overlays(&resolver, plan, &overlays, |source| workspace.static_require_requests(source));
+        let file = project.file_by_path(&root.join(focus)).unwrap();
+        let (file, offset) = (file.id, file.source.find(needle).unwrap());
+        let mut result = None;
+        rename(project, ProjectCheckOptions {
+            environment: crate::standard_environment::StandardEnvironmentProfile::Lua54,
+            ..ProjectCheckOptions::default()
+        }, &mut workspace, file, offset, name.map(str::to_owned), |navigation| result = Some(navigation));
+        result.expect("a rename result")
+    }
+
+    #[test]
+    fn current_buffer_renames_include_locals_and_globals() {
+        let text = "local function greet(name) return name end\nlocal message = greet('world')\nreturn greet(message)\n";
+        let renamed = rename_buffers(&[("main.lua", text)], "main.lua", "greet('world')", Some("welcome")).unwrap().unwrap();
+        assert_eq!(renamed.occurrences.len(), 3);
+        assert_eq!(renamed.span.start, text.find("greet('world')").unwrap());
+        assert!(renamed.occurrences.iter().all(|(_, span, _)| &text[span.start..span.end] == "greet"));
+
+        let other = "-- unsaved line\nCounter = 0\n";
+        let main = "return Counter\n";
+        let renamed = rename_buffers(&[("main.lua", main), ("other.lua", other)], "main.lua", "Counter", Some("Total")).unwrap().unwrap();
+        assert_eq!(renamed.occurrences.len(), 2);
+        let (path, span, _) = renamed.occurrences.iter().find(|(path, _, _)| path.ends_with("other.lua")).unwrap();
+        assert_eq!(span.start, other.find("Counter").unwrap());
+        assert_eq!(renamed.texts[path], other);
+    }
+
+    #[test]
+    fn current_buffer_renames_preserve_lexical_and_library_safety() {
+        let text = "local first = 1\nlocal second = 2\nprint(first, second)\nGlobal = 1\nlocal Point = {}\nfunction Point:move() return self end\n";
+        let files = [("main.lua", text)];
+        for name in ["end", "nested.name"] {
+            let error = rename_buffers(&files, "main.lua", "first", Some(name)).unwrap_err();
+            assert!(error.contains("is not a Lua name"), "{error}");
+        }
+        let captured = rename_buffers(&files, "main.lua", "first", Some("second")).unwrap_err();
+        assert!(captured.contains("would change what the name at"), "{captured}");
+        let collision = rename_buffers(&files, "main.lua", "Global", Some("print")).unwrap_err();
+        assert!(collision.contains("a global named print already exists"), "{collision}");
+        for name in [None, Some("receiver")] {
+            let error = rename_buffers(&files, "main.lua", "self", name).unwrap_err();
+            assert!(error.contains("implicit receiver"), "{error}");
+            let error = rename_buffers(&files, "main.lua", "print", name).unwrap_err();
+            assert!(error.contains("declared by a library"), "{error}");
+        }
+        let library = [("main.lua", "return HostValue\n"), ("host.def.lua", "HostValue = 1\n")];
+        let error = rename_buffers(&library, "main.lua", "HostValue", Some("Other")).unwrap_err();
+        assert!(error.contains("declared by a library"), "{error}");
+    }
 
     fn site(text: &str) -> Option<CompletionSite> {
         let offset = text.find('|').expect("a cursor");
