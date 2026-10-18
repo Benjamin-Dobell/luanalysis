@@ -58,3 +58,9 @@ fn an_operator_needs_a_named_type() {
     let unknown = check("---@class A\n---@operator plus(A): A\nlocal A = {}\n");
     assert!(text(&unknown).contains("unknown operator 'plus'"), "{}", text(&unknown));
 }
+
+#[test]
+fn an_any_operand_may_declare_the_operator_so_arithmetic_with_it_is_any() {
+    // An unresolved lpeg pattern is `any`; its `*` and `+` dispatch through metamethods.
+    clean("---@type any\nlocal lpeg\nlocal pattern = 'b' * lpeg.P('a') + lpeg.S('x')\nlocal captured = lpeg.C(pattern) / tostring\n---@type string\nlocal whatever = lpeg.P('x') * 'y'\n");
+}

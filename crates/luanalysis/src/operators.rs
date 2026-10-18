@@ -206,6 +206,15 @@ impl Checker<'_> {
             | BinaryOperator::ShiftRight => {
                 let valid_left = self.engine.is_assignable(&left_type, &Type::Number);
                 let valid_right = self.engine.is_assignable(&right_type, &Type::Number);
+                // An `any` operand may carry a metamethod for the other one (an lpeg pattern
+                // and a string), so that operand is not an error and the result is `any`, as it
+                // is for two `any` operands. With a number, the result is a number, as
+                // TypeScript types `any * 1`.
+                let left_any = matches!(left_type, Type::Any);
+                let right_any = matches!(right_type, Type::Any);
+                if left_any && (right_any || !valid_right) || right_any && !valid_left {
+                    return Type::Any;
+                }
                 if !(valid_left && valid_right)
                     && let Some(operator) = arithmetic_operator(op)
                     && let Some(result) = self.declared_binary_operator(operator, &left_type, &right_type)
