@@ -34,6 +34,8 @@ pub enum CompletionContext {
     Tag,
     /// A type in an annotation: `---@param point Po`.
     AnnotationType,
+    /// The name of a global function being defined: `function onObjectDr`.
+    FunctionName,
 }
 
 /// Where a completion was requested, and the text to check in its place.
@@ -46,6 +48,10 @@ pub struct CompletionSite {
     pub placeholder: Span,
     /// The word at the cursor in the editor's text, which a completion replaces.
     pub word: Range<usize>,
+    /// Whether the word alone begins a statement of the main chunk, on a line of its own.
+    pub statement: bool,
+    /// Whether a parameter list already follows the word.
+    pub parameters_follow: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +63,8 @@ pub enum CompletionKind {
     Keyword,
     Class,
     TypeParameter,
+    /// A function implementation of a host's callback.
+    Snippet,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,6 +78,9 @@ pub struct CompletionItem {
     /// A callable's required parameters, which a call snippet fills in, and whether it takes
     /// more (optional or variadic ones) after them.
     pub parameters: Option<(Vec<String>, bool)>,
+    /// A callback's implementation: its parameters' names, and whether `function` is inserted
+    /// before its name.
+    pub implementation: Option<(Vec<String>, bool)>,
 }
 
 /// The completion site at a byte offset of `text`, or `None` where nothing is completed: inside
@@ -85,7 +96,7 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
     if bytes.get(start).is_some_and(u8::is_ascii_digit) { return None; }
     let tokens = luanalysis_syntax::lex(text).tokens;
     if let Some(context) = annotation_context(text, &tokens, start, offset) {
-        return Some(CompletionSite { context, text: text.to_owned(), placeholder: Span { start, end: start }, word: start..end });
+        return Some(CompletionSite { context, text: text.to_owned(), placeholder: Span { start, end: start }, word: start..end, statement: false, parameters_follow: false });
     }
     for token in &tokens {
         let inside = match &token.kind {
@@ -103,16 +114,31 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
     let context = match previous.map(|token| &token.kind) {
         Some(TokenKind::Symbol(symbol)) if symbol == "." => CompletionContext::Member { method: false },
         Some(TokenKind::Symbol(symbol)) if symbol == ":" => CompletionContext::Member { method: true },
-        // A name being declared is not completed.
-        Some(TokenKind::Keyword(keyword)) if keyword == "local" || keyword == "function" || keyword == "for" => return None,
+        // A global function's name may implement a host's callback; a local's is its own.
+        Some(TokenKind::Keyword(keyword)) if keyword == "function" => {
+            let before = tokens.iter()
+                .filter(|token| previous.is_some_and(|previous| token.span.end <= previous.span.start)
+                    && !matches!(token.kind, TokenKind::Newline | TokenKind::Comment(_) | TokenKind::Eof))
+                .next_back();
+            if matches!(before.map(|token| &token.kind), Some(TokenKind::Keyword(keyword)) if keyword == "local") { return None; }
+            CompletionContext::FunctionName
+        }
+        // Any other name being declared is not completed.
+        Some(TokenKind::Keyword(keyword)) if keyword == "local" || keyword == "for" => return None,
         _ => CompletionContext::Name,
     };
     let head = &text[..start];
     let tail = &text[end..];
+    let line_head = &head[head.rfind('\n').map_or(0, |newline| newline + 1)..];
+    let line_tail = &tail[..tail.find('\n').unwrap_or(tail.len())];
+    let statement = context == CompletionContext::Name && line_head.trim().is_empty() && line_tail.trim().is_empty() && closers(head).is_empty();
+    let parameters_follow = tail.trim_start().starts_with('(');
     let mut candidates = vec![
         format!("{head}{PLACEHOLDER}{tail}"),
         format!("{head}{PLACEHOLDER}(){tail}"),
     ];
+    // A function being named is completed as an empty one, keeping the rest of the text.
+    if context == CompletionContext::FunctionName { candidates.insert(1, format!("{head}{PLACEHOLDER}() end{tail}")); }
     for call in ["", "()"] {
         let prefix = format!("{head}{PLACEHOLDER}{call}");
         let closers = closers(&prefix);
@@ -124,6 +150,8 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
         text,
         placeholder: Span { start, end: start + PLACEHOLDER.len() },
         word: start..end,
+        statement,
+        parameters_follow,
     })
 }
 
@@ -260,12 +288,13 @@ fn completions(
                     .and_then(|receiver| member_documentation(project, registry, receiver, &name, &value, queries))
                     .map(|documentation| documentation_markdown(&documentation, true));
                 let parameters = callable.then(|| required_parameters(&value, usize::from(method), queries)).flatten();
-                items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters });
+                items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters, implementation: None });
             }
         }
+        CompletionContext::FunctionName => items.extend(callback_implementations(project, registry, file, site, false, queries)),
         CompletionContext::Tag => {
             for tag in ["param", "return", "type", "class", "shape", "field", "alias", "generic", "overload", "vararg", "function", "operator", "not", "see", "module", "enum", "cast", "as"] {
-                items.push(CompletionItem { label: tag.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None });
+                items.push(CompletionItem { label: tag.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None });
             }
         }
         CompletionContext::AnnotationType => {
@@ -283,12 +312,12 @@ fn completions(
                     let documentation = (kind == CompletionKind::Class).then(|| luanalysis_syntax::documentation_at(syntax, &other.source, name.span.start))
                         .map(|documentation| { let mut summary = documentation; summary.fields.clear(); documentation_markdown(&summary, false) })
                         .filter(|markdown| !markdown.is_empty());
-                    items.push(CompletionItem { label: name.name, kind, detail: None, documentation, parameters: None });
+                    items.push(CompletionItem { label: name.name, kind, detail: None, documentation, parameters: None, implementation: None });
                 }
             }
             for builtin in ["nil", "boolean", "number", "integer", "string", "table", "function", "userdata", "thread", "any", "unknown", "never", "void", "self", "fun"] {
                 if !items.iter().any(|item| item.label == builtin) {
-                    items.push(CompletionItem { label: builtin.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None });
+                    items.push(CompletionItem { label: builtin.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None });
                 }
             }
         }
@@ -309,7 +338,7 @@ fn completions(
                     let value = source.resolve_binding(binding, queries)?.constraint;
                     required_parameters(&value, 0, queries)
                 }).flatten();
-                items.push(CompletionItem { label: declaration.name.clone(), kind, detail, documentation, parameters });
+                items.push(CompletionItem { label: declaration.name.clone(), kind, detail, documentation, parameters, implementation: None });
             }
             if let Some(environment) = source.global_environment()
                 && let Ok(environment) = queries.global_environment_type(environment)
@@ -320,13 +349,91 @@ fn completions(
                     let documentation = value_documentation(project, registry, &value, queries)
                         .map(|documentation| documentation_markdown(&documentation, true));
                     let parameters = (kind == CompletionKind::Function).then(|| required_parameters(&value, 0, queries)).flatten();
-                    items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters });
+                    items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters, implementation: None });
                 }
             }
-            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None }));
+            // A statement of its own may begin a callback's implementation.
+            if site.statement { items.extend(callback_implementations(project, registry, file, site, true, queries)); }
+            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None }));
         }
     }
     items
+}
+
+/// Implementations of the callbacks a declaration library declares as values of a function type
+/// (`---@type nil | fun(...)` above `name = nil`), for a global function's name or a statement
+/// of its own. A callback with several signatures, one the workspace already implements, and one
+/// a local of the same name hides are not offered.
+fn callback_implementations(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    site: &CompletionSite,
+    keyword: bool,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Vec<CompletionItem> {
+    let Some(source) = registry.source(file) else { return Vec::new() };
+    let bound = source.bound();
+    let shadowed: Vec<String> = visible_bindings(bound, site.placeholder.start).into_iter().map(|binding| bound.declaration(binding).name.clone()).collect();
+    let implemented = implemented_globals(project, registry, file, site.word.start);
+    let mut items = Vec::new();
+    for (declared_in, name, key, statement) in registry.ambient_values() {
+        if shadowed.contains(&name) || implemented.contains(&name) || items.iter().any(|item: &CompletionItem| item.label == name) { continue; }
+        let Ok(declared) = queries.value_declaration_type(key) else { continue };
+        let callable = queries.exclude_type(&declared, &Type::Nil);
+        let heads = queries.call_signature_types(&callable);
+        let [head] = heads.as_slice() else { continue };
+        let Some((parameters, _)) = crate::describe_signature(head, queries) else { continue };
+        let names: Vec<String> = parameters.iter().map(|parameter| parameter.split(':').next().unwrap_or_default().trim_end_matches('?').trim().to_owned()).collect();
+        let documentation = registry.source(declared_in).zip(project.file(declared_in))
+            .map(|(declaring, text)| luanalysis_syntax::documentation_above(declaring.syntax(), &text.source, statement.start))
+            .filter(|documentation| !documentation.is_empty())
+            .map(|documentation| documentation_markdown(&documentation, true));
+        // With a parameter list already written, only the name is completed.
+        let implementation = (!site.parameters_follow).then(|| (names.clone(), keyword));
+        let kind = if implementation.is_some() { CompletionKind::Snippet } else { CompletionKind::Function };
+        items.push(CompletionItem {
+            detail: Some(format!("Implement {name}({})", names.join(", "))),
+            label: name,
+            kind,
+            documentation,
+            parameters: None,
+            implementation,
+        });
+    }
+    items
+}
+
+/// The globals the workspace's scripts implement at the top level of their main chunks
+/// (`function name()`, `name = function() end`, or through `_G`), except at `except` in `file`.
+fn implemented_globals(project: &Project, registry: &crate::native_functions::project_provider::ProjectRegistry, file: FileId, except: usize) -> Vec<String> {
+    let mut names = Vec::new();
+    for other in project.files.iter().filter(|other| other.role != luanalysis_project::SourceRole::Declaration) {
+        let Some(source) = registry.source(other.id) else { continue };
+        let bound = source.bound();
+        let global = |target: &Expr| -> Option<Name> {
+            match &target.kind {
+                ExprKind::Name(name) if bound.binding_at(name.span.start).is_none() => Some(name.clone()),
+                ExprKind::Field { base, name } if matches!(&base.kind, ExprKind::Name(root) if root.text == "_G" && bound.binding_at(root.span.start).is_none()) => Some(name.clone()),
+                _ => None,
+            }
+        };
+        for statement in &source.syntax().statements {
+            let implemented = match &statement.kind {
+                luanalysis_syntax::StmtKind::FunctionDeclaration { target, .. } => global(target),
+                luanalysis_syntax::StmtKind::Assign { targets, values, .. } => targets.iter().zip(values)
+                    .find(|(_, value)| matches!(value.kind, ExprKind::Function(_)))
+                    .and_then(|(target, _)| global(target)),
+                _ => None,
+            };
+            if let Some(name) = implemented
+                && !(other.id == file && name.span.start <= except && except <= name.span.end)
+            {
+                names.push(name.text);
+            }
+        }
+    }
+    names
 }
 
 /// The names of the required parameters of a callable's first signature, after the `hidden`

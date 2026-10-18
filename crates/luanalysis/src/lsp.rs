@@ -1410,6 +1410,7 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
                 CompletionKind::Keyword => 14,
                 CompletionKind::Class => 7,
                 CompletionKind::TypeParameter => 25,
+                CompletionKind::Snippet => 15,
             })),
             ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(item.label.as_str()))])),
         ];
@@ -1428,6 +1429,16 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
             };
             fields[2] = ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(snippet))]));
             fields.push(("insertTextFormat".to_owned(), Json::from(2usize)));
+        }
+        // A callback's implementation: its name, parameters, an empty body and `end`, with the
+        // caret in the body when the client takes snippets, and plain text otherwise.
+        if let Some((parameters, keyword)) = &item.implementation {
+            let header = format!("{}{}({})", if *keyword { "function " } else { "" }, item.label, parameters.join(", "));
+            let body = if query.snippets { "$0" } else { "" };
+            let text = if query.snippets { header.replace('\\', "\\\\").replace('$', "\\$").replace('}', "\\}") } else { header };
+            fields[2] = ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(format!("{text}\n\t{body}\nend")))]));
+            fields.push(("filterText".to_owned(), Json::from(item.label.as_str())));
+            if query.snippets { fields.push(("insertTextFormat".to_owned(), Json::from(2usize))); }
         }
         if let Some(detail) = item.detail { fields.push(("detail".to_owned(), Json::from(detail))); }
         if let Some(documentation) = item.documentation {

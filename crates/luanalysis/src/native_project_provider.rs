@@ -511,6 +511,17 @@ impl ProjectRegistry {
             Some((file.id, source.syntax.name.span))
         }).collect()
     }
+    /// The globals a declaration library declares as values of a written type (`---@type T`
+    /// above `name = nil` or `_G.name = nil`), which a script may implement: each one's file,
+    /// name, key and declaring statement. Function declarations are the library's own.
+    pub(crate) fn ambient_values(&self) -> Vec<(FileId, String, luanalysis_engine::NativeValueDeclarationKey, luanalysis_syntax::Span)> {
+        self.files.iter()
+            .filter(|file| file.source.source_role() == SourceRole::Declaration)
+            .flat_map(|file| file.source.globals.declarations.iter()
+                .filter(|source| source.annotation.is_some() && source.function.is_none() && source.documentation_function.is_none() && source.namespace.is_none())
+                .map(|source| (file.id, source.name.text.clone(), source.key, source.statement)))
+            .collect()
+    }
     /// Where a member is declared: its file, its span, and whether that is a documentation tag.
     pub(crate) fn member_site(&self, key: NativeTypeMemberKey) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];

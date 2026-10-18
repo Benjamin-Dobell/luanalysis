@@ -813,3 +813,52 @@ fn checks_show_progress_and_every_workspace_folder_is_checked() {
     }
     server.finish();
 }
+
+#[test]
+fn host_callbacks_complete_as_implementations() {
+    let root = fixture();
+    let library = root.join("api.def.lua");
+    fs::write(&library, "---@alias tts__PlayerColor \"Red\" | \"Blue\"\n---@class tts__Object\n\n--- Called after an object is dropped.\n---@type nil | fun(player_color: tts__PlayerColor, object: tts__Object): void\n_G.onObjectDrop = nil\n\n---@type nil | fun(): string | nil\n_G.onSave = nil\n\n---@param value string\nfunction print2(value) end\n").unwrap();
+    let main = root.join("main.lua");
+    let initial = "function onSave() return nil end\n";
+    fs::write(&main, initial).unwrap();
+    let library_argument = library.to_str().unwrap().to_owned();
+    let start = |snippets: bool| {
+        let mut server = Server::start(&["--lua-version", "5.2", "--library", &library_argument]);
+        server.send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":"{}","capabilities":{{"textDocument":{{"completion":{{"completionItem":{{"snippetSupport":{snippets}}}}}}}}}}}}}"#, uri(&root)));
+        server.wait(|message| message.contains(r#""id":1"#));
+        server.send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
+        server.open(&main, initial);
+        server.diagnostics(&main, |_| true);
+        server
+    };
+    let mut server = start(true);
+    let mut version = 1;
+    let mut complete = |server: &mut Server, text: &str, line: u32, character: u32| {
+        version += 1;
+        server.change(&main, version, text);
+        server.request(version + 10, "textDocument/completion", &main, line, character)
+    };
+    // After `function`, a callback's implementation.
+    let response = complete(&mut server, &format!("function onObjectDr\n{initial}"), 0, 19);
+    assert!(response.contains(r#""label":"onObjectDrop","kind":15,"textEdit":{"range":{"start":{"line":0,"character":9},"end":{"line":0,"character":19}},"newText":"onObjectDrop(player_color, object)\n\t$0\nend"},"filterText":"onObjectDrop","insertTextFormat":2,"detail":"Implement onObjectDrop(player_color, object)""#), "{response}");
+    assert!(response.contains("Called after an object is dropped."), "{response}");
+    // Not for a callback already implemented, nor for a library function.
+    assert!(!response.contains(r#""label":"onSave""#) && !response.contains(r#""label":"print2""#), "{response}");
+    // A statement of its own inserts `function` too.
+    let response = complete(&mut server, &format!("onObjectDr\n{initial}"), 0, 10);
+    assert!(response.contains(r#""range":{"start":{"line":0,"character":0},"end":{"line":0,"character":10}},"newText":"function onObjectDrop(player_color, object)\n\t$0\nend""#), "{response}");
+    // Not in an expression, a local function or before a written parameter list.
+    let response = complete(&mut server, &format!("local handler = onObjectDr\n{initial}"), 0, 26);
+    assert!(!response.contains(r#""kind":15"#), "{response}");
+    let response = complete(&mut server, &format!("local function onObjectDr\n{initial}"), 0, 25);
+    assert!(!response.contains(r#""kind":15"#), "{response}");
+    let response = complete(&mut server, &format!("function onObjectDr(a, b) end\n{initial}"), 0, 19);
+    assert!(response.contains(r#""label":"onObjectDrop""#) && !response.contains(r#""kind":15"#), "{response}");
+    server.finish();
+    // A client without snippets receives plain text.
+    let mut server = start(false);
+    let response = complete(&mut server, &format!("function onObjectDr\n{initial}"), 0, 19);
+    assert!(response.contains(r#""newText":"onObjectDrop(player_color, object)\n\t\nend""#) && !response.contains("insertTextFormat"), "{response}");
+    server.finish();
+}
