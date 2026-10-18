@@ -1205,6 +1205,15 @@ impl Parser<'_> {
         }
         self.depth += 1;
         let (mut expr, mut built_depth) = self.prefix_with_suffix();
+        // As in v1, a cast types the operand after it: `--[[---@type T]] a + b` casts `a`.
+        for (kind, annotation, comment) in std::mem::take(&mut assertions) {
+            self.expression_assertions.push(crate::ExpressionAssertion {
+                kind,
+                annotation,
+                expression: expr.span,
+                span: comment.join(expr.span),
+            });
+        }
         let mut binary_exceeded = false;
         loop {
             let next = &self.tokens[self.significant_index()];

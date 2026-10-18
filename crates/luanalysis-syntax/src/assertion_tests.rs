@@ -82,10 +82,11 @@ fn assertion_operand_precedence_and_parentheses_remain_lua() {
     let source = "local value=--[[---@type number]] x+f()\nlocal one=(--[[---@type number,string]] f())\nlocal key=tab[--[[---@type number]] other]";
     let file = parsed(source);
     assert_eq!(file.expression_assertions.len(), 3);
+    // As in v1, the cast types the operand after it.
     assert_eq!(
         &source[file.expression_assertions[0].expression.start
             ..file.expression_assertions[0].expression.end],
-        "x+f()"
+        "x"
     );
     let StmtKind::Local { values, .. } = &file.statements[1].kind else {
         panic!()
