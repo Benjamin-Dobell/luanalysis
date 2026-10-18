@@ -569,6 +569,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Use module exports, global declarations and loader states completed under an uncacheable context, uncached; follow straight runs of flow nodes in the loader walk without a frame each; and order unnamed Lua types in unions by declaration and structure rather than creation, so reports do not depend on how files are grouped into tasks, through kernel 8b93185.",
 } for path in ["native_globals.rs", "native_project.rs", "native_standard_assumptions.rs", "unions.rs"])
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_tables.rs",
+    "patch": "vendor/patches/bun-sema-nil-declared-keys.patch",
+    "reason": "Let a written key type include nil, as Luanalysis v1 does (table<nil | string, V>): lookups whose key may be nil check against it, while constructor keys and nil-only key types stay invalid, through kernel 20c113d.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

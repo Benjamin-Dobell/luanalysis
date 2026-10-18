@@ -2364,6 +2364,12 @@
       "patch": "vendor/patches/bun-sema-task-independence.patch",
       "reason": "Use module exports, global declarations and loader states completed under an uncacheable context, uncached; follow straight runs of flow nodes in the loader walk without a frame each; and order unnamed Lua types in unions by declaration and structure rather than creation, so reports do not depend on how files are grouped into tasks, through kernel 8b93185.",
       "patch_sha256": "0ddb627972aee5b2b5f305d938d34d0c862a6b7a0bf81d724d3a2efc32490b6b"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-nil-declared-keys.patch",
+      "reason": "Let a written key type include nil, as Luanalysis v1 does (table<nil | string, V>): lookups whose key may be nil check against it, while constructor keys and nil-only key types stay invalid, through kernel 20c113d.",
+      "patch_sha256": "6b6c8807534b82734972d3eab864acc60e7835a6e8e0a6f9de10552e2997046c"
     }
   ],
   "source_additions": {
@@ -2432,7 +2438,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "4e2a5c0c5d030e36057fd88a030b53047ccc2d90533d0b1737d1aa14fdebd757",
+      "extracted_sha256": "7ceddf0cb2fdbe5680b0daf6e2980f930f444be8d4fa142804b74bd6753246dc",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
