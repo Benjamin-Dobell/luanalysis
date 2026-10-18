@@ -67,7 +67,11 @@ pub(super) fn advance_metadata_clock() {
 
 pub(super) struct NativeTypes {
     snapshot: u64,
+    /// This source's own scopes, and imported ones it has changed.
     scopes: HashMap<NativeTypeContext, TypeScope>,
+    /// The other sources' scopes, shared by every source of a project rather than copied into
+    /// each: a project's sources would otherwise each copy every named type's scope.
+    imported: Option<Rc<OriginalTypeScopes>>,
     parameters: Vec<TypeParameterSource>,
     diagnostics: Vec<Diagnostic>,
     metadata_epochs: Vec<Rc<Cell<u64>>>,
@@ -78,6 +82,21 @@ pub(super) struct NativeTypes {
 #[derive(Clone)]
 pub(super) struct OriginalTypeScopes(HashMap<NativeTypeContext,TypeScope>, Vec<Rc<Cell<u64>>>);
 
+impl OriginalTypeScopes {
+    /// The scopes of every one of `sources`, the first's of an owner first, and their epochs.
+    pub(super) fn merge<'a>(sources: impl IntoIterator<Item = &'a OriginalTypeScopes>) -> Self {
+        let mut merged = OriginalTypeScopes(HashMap::default(), Vec::new());
+        let mut epochs = HashSet::default();
+        for source in sources {
+            for (&owner, scope) in &source.0 { merged.0.entry(owner).or_insert_with(|| scope.clone()); }
+            for epoch in &source.1 {
+                if epochs.insert(Rc::as_ptr(epoch)) { merged.1.push(Rc::clone(epoch)); }
+            }
+        }
+        merged
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum TypeNameResolution {
     Missing,
@@ -87,43 +106,65 @@ pub(super) enum TypeNameResolution {
 }
 
 impl NativeTypes {
+    /// The scope of `owner`: this source's own, or an imported one.
+    fn scope(&self, owner: &NativeTypeContext) -> Option<&TypeScope> {
+        self.scopes.get(owner).or_else(|| self.imported.as_ref()?.0.get(owner))
+    }
+    /// The scope of `owner`, to change: an imported one is copied into this source's own first,
+    /// as importing used to copy every one.
+    fn scope_mut(&mut self, owner: &NativeTypeContext) -> Option<&mut TypeScope> {
+        if !self.scopes.contains_key(owner) {
+            let copy = self.imported.as_ref()?.0.get(owner)?.clone();
+            self.scopes.insert(*owner, copy);
+        }
+        self.scopes.get_mut(owner)
+    }
+    /// Every scope this source sees: its own, then imported ones it has not changed.
+    fn all_scopes(&self) -> impl Iterator<Item = (&NativeTypeContext, &TypeScope)> {
+        self.scopes.iter().chain(self.imported.iter().flat_map(|imported| imported.0.iter()).filter(|(owner, _)| !self.scopes.contains_key(owner)))
+    }
+    /// Every metadata epoch this source observes: its own, then imported ones.
+    fn all_epochs(&self) -> Vec<Rc<Cell<u64>>> {
+        let mut epochs = self.metadata_epochs.clone();
+        for epoch in self.imported.iter().flat_map(|imported| imported.1.iter()) {
+            if !epochs.iter().any(|known| Rc::ptr_eq(known, epoch)) { epochs.push(Rc::clone(epoch)); }
+        }
+        epochs
+    }
     pub(super) fn original_scopes(&self) -> OriginalTypeScopes {
-        let mut pending:Vec<_>=self.scopes.keys().filter(|owner|matches!(owner,NativeTypeContext::NamedType(_))).copied().collect();
+        let mut pending:Vec<_>=self.all_scopes().map(|(owner, _)| *owner).filter(|owner|matches!(owner,NativeTypeContext::NamedType(_))).collect();
         let mut scopes=HashMap::default();
         while let Some(owner)=pending.pop() {
             if scopes.contains_key(&owner) {continue;}
-            let scope=self.scopes.get(&owner).expect("original named enclosing scope");
+            let scope=self.scope(&owner).expect("original named enclosing scope");
             pending.extend(scope.parent);
             pending.extend(scope.method_owner.get());
             pending.extend(scope.annotation_scope);
             pending.extend(scope.documentation_parents.iter().copied());
             scopes.insert(owner,scope.clone());
         }
-        OriginalTypeScopes(scopes, self.metadata_epochs.clone())
+        OriginalTypeScopes(scopes, self.all_epochs())
     }
+    #[cfg(test)]
     pub(super) fn import_original_scopes(&mut self, metadata: &OriginalTypeScopes) {
-        let mut changed = false;
-        for (&owner,scope) in &metadata.0 {
-            if let std::collections::hash_map::Entry::Vacant(entry) = self.scopes.entry(owner) {
-                entry.insert(scope.clone());
-                changed = true;
-            }
-        }
-        for epoch in &metadata.1 {
-            if !self.metadata_epochs.iter().any(|known| Rc::ptr_eq(known, epoch)) {
-                self.metadata_epochs.push(Rc::clone(epoch));
-                changed = true;
-            }
-        }
+        let merged = OriginalTypeScopes::merge(self.imported.iter().map(|imported| &**imported).chain([metadata]));
+        self.share_original_scopes(Rc::new(merged));
+    }
+    /// Sees `imported`, the scopes of a project's sources merged once for all of them, behind
+    /// this source's own.
+    pub(super) fn share_original_scopes(&mut self, imported: Rc<OriginalTypeScopes>) {
+        let changed = imported.0.keys().any(|owner| !self.scopes.contains_key(owner))
+            || imported.1.iter().any(|epoch| !self.metadata_epochs.iter().any(|known| Rc::ptr_eq(known, epoch)));
+        self.imported = Some(imported);
         if changed { Self::advance_metadata(&self.metadata_epochs[0]); }
     }
     pub(super) fn attach_documentation_owner(&self, signature:luanalysis_engine::NativeSignatureKey,owner:NativeNamedKey) {
-        let scope = &self.scopes[&NativeTypeContext::Signature(signature)];
+        let scope = self.scope(&NativeTypeContext::Signature(signature)).expect("original signature scope");
         let owner = Some(NativeTypeContext::NamedType(owner));
         if scope.method_owner.replace(owner) != owner { Self::advance_metadata(&scope.metadata_epoch); }
     }
     pub(super) fn clear_documentation_owner(&self, signature:luanalysis_engine::NativeSignatureKey) {
-        let scope = &self.scopes[&NativeTypeContext::Signature(signature)];
+        let scope = self.scope(&NativeTypeContext::Signature(signature)).expect("original signature scope");
         if scope.method_owner.replace(None).is_some() { Self::advance_metadata(&scope.metadata_epoch); }
     }
     fn advance_metadata(epoch: &Cell<u64>) {
@@ -133,7 +174,7 @@ impl NativeTypes {
     /// Original scope revisions only; these never name inferred checker types.
     #[cfg(test)]
     pub(super) fn metadata_revisions(&self) -> Vec<u64> {
-        self.metadata_epochs.iter().map(|epoch| epoch.get()).collect()
+        self.all_epochs().iter().map(|epoch| epoch.get()).collect()
     }
     #[cfg(test)]
     pub(super) fn own_metadata_revision(&self) -> u64 { self.metadata_epochs[0].get() }
@@ -147,6 +188,7 @@ impl NativeTypes {
         let mut result = Self {
             snapshot,
             scopes: HashMap::default(),
+            imported: None,
             parameters: Vec::new(),
             diagnostics: Vec::new(),
             metadata_epochs: vec![Rc::new(Cell::new(0))],
@@ -235,7 +277,7 @@ impl NativeTypes {
 
     pub(super) fn register_self_parameter(&mut self, owner: NativeNamedKey, span: Span) -> NativeTypeParameterKey {
         let context = NativeTypeContext::NamedType(owner);
-        if let Some(key) = self.scopes[&context].self_parameter { return key }
+        if let Some(key) = self.scope(&context).expect("original class type scope").self_parameter { return key }
         let key = NativeTypeParameterKey {
             snapshot: self.snapshot,
             index: self.parameters.len().try_into().expect("semantic self parameter index fits u32"),
@@ -248,23 +290,23 @@ impl NativeTypes {
             constraint: None,
             semantic_self: Some(owner),
         });
-        self.scopes.get_mut(&context).expect("original class type scope").self_parameter = Some(key);
+        self.scope_mut(&context).expect("original class type scope").self_parameter = Some(key);
         Self::advance_metadata(&self.metadata_epochs[0]);
         key
     }
 
     pub(super) fn self_parameter(&self, owner: NativeNamedKey) -> Option<NativeTypeParameterKey> {
-        self.scopes.get(&NativeTypeContext::NamedType(owner)).and_then(|scope| scope.self_parameter)
+        self.scope(&NativeTypeContext::NamedType(owner)).and_then(|scope| scope.self_parameter)
     }
 
     /// Imported scopes preserve their original canonical self key. Its owning
     /// parameter recipe remains in the original file, not this local allocator.
     pub(super) fn is_semantic_self_parameter(&self, key: NativeTypeParameterKey) -> bool {
-        self.scopes.values().any(|scope| scope.self_parameter == Some(key))
+        self.all_scopes().any(|(_, scope)| scope.self_parameter == Some(key))
     }
 
     pub(crate) fn lexical_function_parent(&self, function: NativeFunctionKey) -> Option<NativeFunctionKey> {
-        match self.scopes.get(&NativeTypeContext::Function(function))?.parent? {
+        match self.scope(&NativeTypeContext::Function(function))?.parent? {
             NativeTypeContext::Function(parent) => Some(parent),
             _ => None,
         }
@@ -276,15 +318,15 @@ impl NativeTypes {
 
     pub(super) fn attach_owner_scope(&mut self, member: NativeTypeContext, owner: NativeNamedKey) {
         let context = NativeTypeContext::NamedType(owner);
-        assert!(self.scopes.contains_key(&context), "original class scope");
-        let scope = &self.scopes[&member];
+        assert!(self.scope(&context).is_some(), "original class scope");
+        let scope = self.scope(&member).expect("original member scope");
         if scope.method_owner.replace(Some(context)) != Some(context) { Self::advance_metadata(&scope.metadata_epoch); }
     }
 
     pub(super) fn attach_signature_scope(&mut self,function:NativeFunctionKey,signature:luanalysis_engine::NativeSignatureKey) {
         let context=NativeTypeContext::Signature(signature);
-        assert!(self.scopes.contains_key(&context),"original annotation signature scope");
-        let scope = self.scopes.get_mut(&NativeTypeContext::Function(function))
+        assert!(self.scope(&context).is_some(),"original annotation signature scope");
+        let scope = self.scope_mut(&NativeTypeContext::Function(function))
             .expect("original runtime function scope");
         if scope.annotation_scope != Some(context) {
             scope.annotation_scope = Some(context);
@@ -318,8 +360,7 @@ impl NativeTypes {
         &self,
         owner: NativeTypeContext,
     ) -> Vec<NativeTypeParameterKey> {
-        self.scopes
-            .get(&owner)
+        self.scope(&owner)
             .expect("original generic owner scope")
             .parameters
             .clone()
@@ -339,14 +380,14 @@ impl NativeTypes {
         let mut visited = HashSet::default();
         while let Some(owner) = pending.pop() {
             if !visited.insert(owner) { continue }
-            let Some(scope) = self.scopes.get(&owner) else {
+            let Some(scope) = self.scope(&owner) else {
                 return TypeNameResolution::Missing;
             };
             if let Some(key) = own_name(scope, name) {
                 return TypeNameResolution::Parameter(key);
             }
             if let Some(annotation)=scope.annotation_scope {
-                if let Some(key)=own_name(&self.scopes[&annotation], name) {
+                if let Some(key)=own_name(self.scope(&annotation).expect("original annotation scope"), name) {
                     return TypeNameResolution::Parameter(key);
                 }
             }
@@ -355,7 +396,7 @@ impl NativeTypes {
             let mut candidates: Vec<_> = scope
                 .documentation_parents
                 .iter()
-                .filter_map(|owner| self.scopes.get(owner))
+                .filter_map(|owner| self.scope(owner))
                 .filter_map(|scope| own_name(scope, name))
                 .collect();
             candidates.sort_by_key(|key| key.index);
@@ -390,7 +431,7 @@ impl NativeTypes {
     /// Whether any context enclosing `owner`, but not `owner` itself, declares a type parameter
     /// (or a self type): otherwise `owner` has no outer type parameters.
     pub(super) fn any_outer_parameter(&self, owner: NativeFunctionKey) -> bool {
-        let Some(scope) = self.scopes.get(&NativeTypeContext::Function(owner)) else { return true };
+        let Some(scope) = self.scope(&NativeTypeContext::Function(owner)) else { return true };
         self.any_parameter_from(scope.parent.into_iter().chain(scope.method_owner.get()).chain(scope.documentation_parents.iter().copied()).collect())
     }
 
@@ -398,7 +439,7 @@ impl NativeTypes {
         let mut visited = HashSet::default();
         while let Some(owner) = pending.pop() {
             if !visited.insert(owner) { continue }
-            let Some(scope) = self.scopes.get(&owner) else { continue };
+            let Some(scope) = self.scope(&owner) else { continue };
             if !scope.parameters.is_empty() || scope.self_parameter.is_some() { return true }
             pending.extend(scope.parent);
             pending.extend(scope.method_owner.get());
@@ -413,15 +454,14 @@ impl NativeTypes {
         used: &HashSet<NativeTypeParameterKey>,
     ) -> Vec<NativeTypeParameterKey> {
         let scope = self
-            .scopes
-            .get(&owner)
+            .scope(&owner)
             .expect("original generic owner scope");
         let mut pending: Vec<_> = scope.parent.into_iter().chain(scope.method_owner.get()).chain(scope.documentation_parents.iter().copied()).collect();
         let mut visited = HashSet::default();
         let mut parameters = Vec::new();
         while let Some(owner) = pending.pop() {
             if !visited.insert(owner) { continue }
-            let scope = self.scopes.get(&owner).expect("original enclosing generic owner scope");
+            let scope = self.scope(&owner).expect("original enclosing generic owner scope");
             parameters.extend(scope.parameters.iter().copied().chain(scope.self_parameter));
             pending.extend(scope.parent);
             pending.extend(scope.method_owner.get());

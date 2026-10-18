@@ -305,9 +305,11 @@ impl ProjectRegistry {
             .collect();
         names.merge_classes(&classes, &declared);
         let names = Rc::new(names);
-        let original_scopes:Vec<_>=files.iter().map(|file|file.source.types.original_scopes()).collect();
+        // Every source sees every other's scopes, merged once for all of them.
+        let original_scopes: Vec<_> = files.iter().map(|file| file.source.types.original_scopes()).collect();
+        let shared = Rc::new(crate::native_types::OriginalTypeScopes::merge(&original_scopes));
+        for file in &mut files { file.source.types.share_original_scopes(Rc::clone(&shared)); }
         for file in &mut files {
-            for scopes in &original_scopes { file.source.types.import_original_scopes(scopes); }
             file.source.set_project_names(Rc::clone(&names));
             file.source.attach_documentation_signature_owners();
             file.source.rebuild_documentation_members();
