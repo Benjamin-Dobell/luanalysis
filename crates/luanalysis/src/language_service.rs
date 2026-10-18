@@ -427,10 +427,26 @@ fn completions(
                     .and_then(|value| required_parameters(&value, 0, queries));
                 items.push(CompletionItem { label: declaration.name.clone(), kind, detail, documentation, parameters, implementation: None, deprecated });
             }
-            if let Some(environment) = source.global_environment()
+            // Listing globals for an editor that resolves their details needs no global's value:
+            // their kinds and calls come from their declarations. Typing every global would
+            // infer each one's value, the modules it requires included.
+            if site.details == Details::Lazy {
+                for (name, parameters) in registry.global_completions(queries) {
+                    if !is_identifier(&name) || items.iter().any(|item| item.label == name) { continue; }
+                    let kind = if parameters.is_some() { CompletionKind::Function } else { CompletionKind::Variable };
+                    let deprecated = global_documentation(project, registry, &name).is_some_and(|documentation| documentation.deprecated.is_some());
+                    items.push(CompletionItem { label: name, kind, detail: None, documentation: None, parameters, implementation: None, deprecated });
+                }
+            } else if let Some(environment) = source.global_environment()
                 && let Ok(environment) = queries.global_environment_type(environment)
             {
-                for (name, value) in queries.type_members(&environment) {
+                let members = match &site.details {
+                    // Resolving one global's details types that global alone.
+                    Details::Only(label) => queries.table_lookup(&environment, &luanalysis_engine::TableKey::Literal(luanalysis_engine::LuaKey::String(label.as_bytes().to_vec())))
+                        .ok().filter(|value| !matches!(value, Type::Nil | Type::Undefined)).map(|value| vec![(label.clone(), value)]).unwrap_or_default(),
+                    _ => queries.type_members(&environment),
+                };
+                for (name, value) in members {
                     if !is_identifier(&name) || items.iter().any(|item| item.label == name) { continue; }
                     let shown = site.details.shown(&name);
                     let kind = if queries.call_signature_types(&value).is_empty() { CompletionKind::Variable } else { CompletionKind::Function };

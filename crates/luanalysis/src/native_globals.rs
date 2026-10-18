@@ -386,6 +386,21 @@ impl NativeRegistry {
                     || annotations.vararg.is_some()
             })
     }
+    /// The required parameters of the function a global declaration declares (and whether it
+    /// takes more), from its signature alone: no function body or value is inferred.
+    pub(super) fn global_function_parameters(&self, key: NativeValueDeclarationKey, queries: &mut dyn TypeQueries) -> Option<(Vec<String>, bool)> {
+        let source = self.globals.declaration(key)?;
+        let (parameters, variadic) = if let Some(function) = source.function {
+            (self.metadata(function, queries).0, self.function(function).vararg.is_some())
+        } else {
+            let declaration = self.documentation_function(source.documentation_function?)?;
+            let signature = self.signature_key_for(declaration.signature.span)?;
+            (self.source_signature_parameters(signature, queries), declaration.signature.vararg.is_some())
+        };
+        let required: Vec<String> = parameters.iter().take_while(|parameter| !parameter.optional).map(|parameter| parameter.name.clone()).collect();
+        let more = variadic || parameters.len() > required.len();
+        Some((required, more))
+    }
     pub(super) fn global_binding(&self, name: &str) -> Option<NativeGlobalBindingKey> {
         self.project_globals.as_ref()?.binding(name)
     }

@@ -198,10 +198,10 @@ fn prepare_program(
     for source in workspace.prepare_registered_sources(project).sources {
         let parsed = source.snapshot.syntax();
         if parsed.has_lua_syntax_errors() { unparsed.insert(source.id); }
-        if let Some(bound) = source.snapshot.bound() {
+        if source.snapshot.bound().is_some() {
             source_costs.insert(
                 source.id,
-                crate::project_cost::checking_cost(parsed, bound, plan_options.type_node_cost),
+                source.snapshot.checking_cost(plan_options.type_node_cost),
             );
             revisions.push(source.snapshot.revision());
             inputs.push(RegistryInput {

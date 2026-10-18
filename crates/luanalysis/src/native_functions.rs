@@ -171,6 +171,8 @@ struct DerivedRecipes {
     packs: std::sync::Arc<NativePacks>,
     runtime_tables: std::sync::Arc<super::native_runtime_tables::RuntimeTableRecipes>,
     globals: std::sync::Arc<globals::NativeGlobals>,
+    /// The source's `require` calls.
+    module_calls: Vec<crate::module_requests::RequireCall>,
 }
 
 impl SourceRecipes {
@@ -318,6 +320,7 @@ impl NativeRegistry {
             let runtime_tables = super::native_runtime_tables::NativeRuntimeTables::new(&file, &expressions, &flow).recipes();
             let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
             DerivedRecipes {
+                module_calls: crate::module_requests::require_calls(&file, &bound),
                 metatables: std::sync::Arc::new(metatables),
                 methods: std::sync::Arc::new(methods),
                 packs: std::sync::Arc::new(packs),
@@ -479,6 +482,9 @@ impl NativeRegistry {
     pub(crate) fn set_no_implicit_any(&mut self, enabled: bool) { self.no_implicit_any = enabled; }
     pub(crate) fn inspections(&self) -> bool { self.inspections }
     pub(crate) fn set_inspections(&mut self, enabled: bool) { self.inspections = enabled; }
+    pub(super) fn derived_module_calls(&self) -> &[crate::module_requests::RequireCall] {
+        &self.derived.get().expect("a registry derives its recipes when it is built").module_calls
+    }
     pub(crate) fn set_cancellation(&mut self, cancellation: &crate::project_check::Cancellation) { self.cancellation = cancellation.clone(); }
     pub(crate) fn set_overload_mode(&mut self, mode: crate::OverloadMode) {
         self.overload_mode = mode;

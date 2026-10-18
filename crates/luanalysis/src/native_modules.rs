@@ -56,8 +56,9 @@ impl NativeRegistry {
             index: 0,
         }
     }
-    pub(crate) fn module_calls(&self) -> Vec<RequireCall> {
-        crate::module_requests::require_calls(&self.file, &self.bound)
+    /// The source's `require` calls, found once per revision.
+    pub(crate) fn module_calls(&self) -> &[RequireCall] {
+        self.derived_module_calls()
     }
     pub(crate) fn module_import(&self, span: Span) -> Option<(NativeLoaderPolicy, ImportRecipe)> {
         let modules = self.project_modules.as_ref()?;

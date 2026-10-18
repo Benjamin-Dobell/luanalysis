@@ -187,6 +187,8 @@ pub(super) struct NativeFlowRecipes {
     pack_projections: HashMap<BindingId, (flow::EvaluationId, usize)>,
     iterator_projections: HashMap<BindingId, (flow::IteratorId, usize)>,
     write_metadata: OriginalWriteMetadata,
+    /// `environment_replacements`, computed once for these recipes: it walks every node.
+    environment_replacements: std::sync::OnceLock<(u8, bool)>,
 }
 
 pub(super) struct NativeFlowSources {
@@ -336,6 +338,7 @@ impl NativeFlowSources {
             iterator_projections: HashMap::default(),
             write_metadata: OriginalWriteMetadata::default(),
             program,
+            environment_replacements: std::sync::OnceLock::new(),
         };
         for (span, index) in functions {
             let graph = result.program.functions[span];
@@ -690,6 +693,9 @@ impl NativeFlowSources {
     /// other globals, they are unknown effects in ordinary checking. Direct
     /// writes and `rawset` calls are also recorded by the binder.
     pub(super) fn environment_replacements(&self) -> (u8, bool) {
+        *self.recipes.environment_replacements.get_or_init(|| self.compute_environment_replacements())
+    }
+    fn compute_environment_replacements(&self) -> (u8, bool) {
         let (mut names, mut loader) = (0, false);
         for node in self.program.graphs.iter().flat_map(|graph| &graph.nodes) {
             let flow::NodeKind::Write { address, .. } = &node.kind else { continue; };

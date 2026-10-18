@@ -549,6 +549,21 @@ impl ProjectRegistry {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];
         Some((file.id, file.source.runtime_table_field_site(key, name)?, false))
     }
+    /// The project's globals by name, with the required parameters of each one a function
+    /// declaration declares (and whether it takes more), from declarations alone: unlike the
+    /// environment's members, no global's value is inferred.
+    pub(crate) fn global_completions(&self, queries: &mut dyn TypeQueries) -> Vec<(String, Option<(Vec<String>, bool)>)> {
+        let mut globals = Vec::new();
+        for (name, binding) in self.globals.bindings() {
+            let Ok(name) = String::from_utf8(name) else { continue };
+            let parameters = self.globals.declarations(binding).into_iter().find_map(|key| {
+                let file = &self.files[*self.snapshots.get(&key.snapshot)?];
+                file.source.global_function_parameters(key, queries)
+            });
+            globals.push((name, parameters));
+        }
+        globals
+    }
     /// Where a member is declared: its file, its span, and whether that is a documentation tag.
     pub(crate) fn member_site(&self, key: NativeTypeMemberKey) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];

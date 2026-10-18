@@ -32,9 +32,20 @@ pub struct SourceSnapshot {
     source: Arc<str>,
     syntax: Arc<File>,
     bound: Option<Arc<BoundFile>>,
+    /// The cost of checking this revision, which schedules a project check's tasks, computed
+    /// once for it.
+    checking_cost: std::sync::OnceLock<usize>,
 }
 
 impl SourceSnapshot {
+    /// The cost of checking this revision, with `type_node_cost` per annotation type node.
+    pub(crate) fn checking_cost(&self, type_node_cost: usize) -> usize {
+        *self.checking_cost.get_or_init(|| match self.bound() {
+            Some(bound) => crate::project_cost::checking_cost(self.syntax(), bound, type_node_cost),
+            None => 1,
+        })
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -220,6 +231,7 @@ impl ProjectWorkspace {
             source: Arc::from(source.source.as_str()),
             syntax: Arc::new(syntax),
             bound,
+            checking_cost: std::sync::OnceLock::new(),
         });
         self.sources.insert(identity, Arc::clone(&snapshot));
         (snapshot, true)
