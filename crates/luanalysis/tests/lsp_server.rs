@@ -503,6 +503,9 @@ fn members_and_types_are_defined_referenced_highlighted_and_renamed() {
     let (line, column) = position(source, "point.x", 0);
     let response = server.request(3, "textDocument/definition", &main, line, column + 6);
     assert!(response.contains(&shapes_uri) && response.contains(r#""start":{"line":1,"character":10}"#), "{response}");
+    // A value's type definition is its class's declaration.
+    let response = server.request(12, "textDocument/typeDefinition", &main, line, column + 2);
+    assert!(response.contains(&shapes_uri) && response.contains(r#""start":{"line":0,"character":10}"#), "{response}");
     // A method's is its function statement.
     let (line, column) = position(source, "length()", 0);
     let response = server.request(4, "textDocument/definition", &main, line, column + 1);
@@ -623,5 +626,31 @@ fn requires_link_and_documents_fold_and_select() {
     server.send(&format!(r#"{{"jsonrpc":"2.0","id":5,"method":"textDocument/selectionRange","params":{{"textDocument":{{"uri":"{}"}},"positions":[{{"line":2,"character":12}}]}}}}"#, uri(&main)));
     let response = server.wait(|message| message.contains(r#""id":5,"#));
     assert!(response.contains(r#""range":{"start":{"line":2,"character":11},"end":{"line":2,"character":17}}"#) && response.contains(r#""parent""#), "{response}");
+    server.finish();
+}
+
+#[test]
+fn inlay_hints_show_inferred_types_and_literal_arguments_parameters() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "---@param x number\n---@param label string\n---@return number\nlocal function move(x, label) return x end\n\nlocal moved = move(1, 'a')\nlocal count = 0\nfor index, value in ipairs({ 'a' }) do end\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/inlayHint","params":{{"textDocument":{{"uri":"{}"}},"range":{{"start":{{"line":0,"character":0}},"end":{{"line":9,"character":0}}}}}}}}"#, uri(&main)));
+    let response = server.wait(|message| message.contains(r#""id":3,"#));
+    // The type of a local whose initializer does not show it, and of loop variables.
+    assert!(response.contains(r#"{"position":{"line":5,"character":11},"label":": number","kind":1}"#), "{response}");
+    assert!(response.contains(r#"{"position":{"line":7,"character":9},"label":": number","kind":1}"#), "{response}");
+    assert!(response.contains(r#"{"position":{"line":7,"character":16},"label":": \"a\"","kind":1}"#), "{response}");
+    // Not of one initialized with a literal.
+    assert!(!response.contains(r#""position":{"line":6,"#), "{response}");
+    // The parameter names of literal arguments.
+    assert!(response.contains(r#"{"position":{"line":5,"character":19},"label":"x:","kind":2,"paddingRight":true}"#), "{response}");
+    assert!(response.contains(r#""label":"label:""#), "{response}");
+    // Not of a table argument.
+    assert!(!response.contains(r#""label":"t:""#), "{response}");
     server.finish();
 }

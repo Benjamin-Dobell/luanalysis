@@ -503,6 +503,14 @@ impl ProjectRegistry {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];
         Some((file.id, file.source.signatures.get(key).span))
     }
+    /// Where a named type's name is declared: in its own declaration and those merged into it.
+    pub(crate) fn type_declaration_sites(&self, key: NativeTypeDeclarationKey) -> Vec<(FileId, luanalysis_syntax::Span)> {
+        std::iter::once(key).chain(self.names.merged_into(key).iter().copied()).filter_map(|key| {
+            let file = &self.files[*self.snapshots.get(&key.snapshot)?];
+            let source = file.source.named.declaration(crate::native_named::NativeNamedKey { snapshot: key.snapshot, index: key.index })?;
+            Some((file.id, source.syntax.name.span))
+        }).collect()
+    }
     /// Where a member is declared: its file, its span, and whether that is a documentation tag.
     pub(crate) fn member_site(&self, key: NativeTypeMemberKey) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];

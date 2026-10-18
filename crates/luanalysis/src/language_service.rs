@@ -1005,6 +1005,65 @@ fn member_target(
     (!sites.is_empty()).then_some((name.text, name.span, sites))
 }
 
+/// Where the type of the value at `offset` in `file` is declared: each named type (class, shape,
+/// alias) it is, of each alternative of a union and a type parameter's constraint.
+pub fn type_definition(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    offset: usize,
+    deliver: impl FnOnce(Option<Navigation>) + Send,
+) {
+    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
+        deliver(type_definitions(project, registry, file, offset, queries));
+    });
+}
+
+fn type_definitions(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    offset: usize,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<Navigation> {
+    let source = registry.source(file)?;
+    let contains = |span: Span| span.start <= offset && offset <= span.end;
+    // The innermost expression at the position, or the local declared there.
+    let mut innermost: Option<Span> = None;
+    crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| {
+        let span = match &expression.kind {
+            ExprKind::MethodCall { name, .. } if contains(name.span) => return,
+            _ => expression.span,
+        };
+        if contains(span) && innermost.is_none_or(|other| span.end - span.start < other.end - other.start) { innermost = Some(span); }
+    });
+    let ty = match innermost {
+        Some(span) => expression_type(registry, file, span, queries)?,
+        None => source.resolve_binding(source.bound().binding_at(offset)?, queries)?.constraint,
+    };
+    let mut navigation = Navigation::default();
+    let mut pending = vec![ty];
+    let mut seen = Vec::new();
+    while let Some(ty) = pending.pop() {
+        if seen.len() > 32 || seen.contains(&ty) { continue; }
+        seen.push(ty.clone());
+        if let Some(key) = queries.named_object_declaration(&ty) {
+            for (site_file, span) in registry.type_declaration_sites(key) {
+                if let Some(site) = project.file(site_file) { add_occurrence(&mut navigation, &site.path, &site.source, span, true); }
+            }
+            continue;
+        }
+        match if let Type::NativeTypeParameter(_) = ty { ty.clone() } else { queries.inspect_type(&ty) } {
+            Type::Union(parts) | Type::Intersection(parts) => pending.extend(parts.into_iter().rev()),
+            Type::NativeTypeParameter(key) => pending.extend(queries.type_parameter_constraint(key)),
+            _ => {}
+        }
+    }
+    (!navigation.occurrences.is_empty()).then_some(navigation)
+}
+
 /// Every use of the member declared at `sites` in the project: member reads and calls, table
 /// constructor keys, `---@field` and `---@function` tags. A use's receiver is typed at its flow
 /// position; one whose members are declared elsewhere is another member of the same name.
@@ -1385,6 +1444,118 @@ fn statement_spans(statements: &[luanalysis_syntax::Stmt], spans: &mut Vec<Span>
             _ => {}
         }
     }
+}
+
+/// The names a source declares without a written type whose type is not plain from their
+/// initializer: locals without `---@type` holding something other than a literal, a table or a
+/// function, and generic `for` variables. An inlay hint shows each one's type.
+pub fn untyped_declarations(text: &str) -> Vec<Span> {
+    fn collect(statements: &[luanalysis_syntax::Stmt], names: &mut Vec<Span>) {
+        use luanalysis_syntax::StmtKind;
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::Local { names: declared, values, annotation: None, .. } => {
+                    for (index, name) in declared.iter().enumerate() {
+                        // Extra names take the last value's further results.
+                        let value = values.get(index).or(if index >= values.len() { values.last() } else { None });
+                        let plain = value.is_some_and(|value| matches!(value.kind,
+                            ExprKind::Nil | ExprKind::Boolean(_) | ExprKind::Number(_) | ExprKind::String(_) | ExprKind::Table(_) | ExprKind::Function(_)));
+                        if value.is_some() && !plain { names.push(name.span); }
+                    }
+                }
+                StmtKind::GenericFor { names: declared, .. } => names.extend(declared.iter().map(|name| name.span)),
+                _ => {}
+            }
+            match &statement.kind {
+                StmtKind::LocalFunction { function, .. } | StmtKind::FunctionDeclaration { function, .. } => collect(&function.body, names),
+                StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
+                    | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => collect(body, names),
+                StmtKind::If { branches, else_branch } => {
+                    for branch in branches { collect(&branch.body, names); }
+                    if let Some(branch) = else_branch { collect(&branch.body, names); }
+                }
+                _ => {}
+            }
+        }
+    }
+    let file = luanalysis_syntax::parse(text);
+    let mut names = Vec::new();
+    collect(&file.statements, &mut names);
+    // Functions written as values hold statements too.
+    crate::module_requests::visit_expressions(&file.statements, &mut |expression: &Expr| {
+        if let ExprKind::Function(function) = &expression.kind { collect(&function.body, &mut names); }
+    });
+    names.sort_by_key(|span| span.start);
+    names.dedup();
+    names
+}
+
+/// The parameter names of the literal arguments of the calls in `range` of `file`: each
+/// argument's offset and its parameter's name, as TypeScript's "literals" inlay hints show them.
+pub fn parameter_hints(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    range: Range<usize>,
+    deliver: impl FnOnce(Vec<(usize, String)>) + Send,
+) {
+    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
+        deliver(literal_parameter_names(registry, file, range, queries));
+    });
+}
+
+fn literal_parameter_names(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    range: Range<usize>,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Vec<(usize, String)> {
+    let Some(source) = registry.source(file) else { return Vec::new() };
+    // As TypeScript's "literals" hints: scalars, not tables or functions.
+    let literal = |argument: &Expr| matches!(argument.kind, ExprKind::Nil | ExprKind::Boolean(_) | ExprKind::Number(_) | ExprKind::String(_))
+        || matches!(&argument.kind, ExprKind::Unary { value, .. } if matches!(value.kind, ExprKind::Number(_)));
+    let mut calls = Vec::new();
+    crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| {
+        if expression.span.end < range.start || expression.span.start > range.end { return; }
+        match &expression.kind {
+            ExprKind::Call { callee, args } if args.iter().any(literal) => calls.push((callee.span, None, args.clone())),
+            ExprKind::MethodCall { receiver, name, args } if args.iter().any(literal) => calls.push((receiver.span, Some(name.text.clone()), args.clone())),
+            _ => {}
+        }
+    });
+    let mut hints = Vec::new();
+    for (callee, method, args) in calls {
+        let alone = |span: Span, queries: &mut dyn luanalysis_engine::TypeQueries| {
+            source.source_check_expression(source.expression_key_for_span(span), None, NativeCheckMode::empty(), queries)
+        };
+        let value = match &method {
+            None => alone(callee, queries),
+            Some(name) => {
+                let receiver = alone(callee, queries);
+                let receiver = queries.exclude_type(&receiver, &Type::Nil);
+                let Some((_, member)) = queries.type_members(&receiver).into_iter().find(|(member, _)| member == name) else { continue };
+                member
+            }
+        };
+        let hidden = usize::from(method.is_some());
+        // The first overload that takes as many arguments.
+        let mut names: Option<Vec<String>> = None;
+        for head in queries.call_signature_types(&value) {
+            let Some((parameters, _)) = crate::describe_signature(&head, queries) else { continue };
+            let shown: Vec<String> = parameters.iter().skip(hidden).map(|parameter| parameter.split(':').next().unwrap_or_default().trim_end_matches('?').to_owned()).collect();
+            let rest = shown.last().is_some_and(|name| name == "...");
+            if rest || shown.len() >= args.len() { names = Some(shown); break; }
+        }
+        let Some(names) = names else { continue };
+        for (argument, name) in args.iter().zip(&names) {
+            if literal(argument) && name != "..." && !name.is_empty() && range.contains(&argument.span.start) {
+                hints.push((argument.span.start, name.clone()));
+            }
+        }
+    }
+    hints
 }
 
 #[cfg(test)]

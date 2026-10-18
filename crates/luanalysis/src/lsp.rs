@@ -194,6 +194,15 @@ enum Site {
     Signature(SignatureSite),
     Hover(HoverSite),
     Navigate(NavigateSite),
+    Hints(HintSite),
+}
+
+/// Inlay hints for a range of a document: the type hints the last check gives, to which the
+/// parameter names of the range's calls are added.
+struct HintSite {
+    text: String,
+    range: std::ops::Range<usize>,
+    types: Vec<Json>,
 }
 
 /// A navigation from a member or type name, which the symbol index of locals and globals does
@@ -207,6 +216,7 @@ struct NavigateSite {
 #[derive(Clone)]
 enum Navigate {
     Definition,
+    TypeDefinition,
     References { declaration: bool },
     Highlight,
     PrepareRename,
@@ -229,6 +239,7 @@ impl Query {
             Site::Signature(site) => &site.text,
             Site::Hover(site) => &site.text,
             Site::Navigate(site) => &site.text,
+            Site::Hints(site) => &site.text,
         }
     }
 
@@ -237,6 +248,7 @@ impl Query {
         match &self.site {
             Site::Completion(_) => Json::object([("isIncomplete", Json::from(true)), ("items", Json::Array(Vec::new()))]),
             Site::Signature(_) | Site::Navigate(_) => Json::Null,
+            Site::Hints(site) => Json::Array(site.types.clone()),
             // Without documentation, a hover still has the last check's type.
             Site::Hover(site) => match &site.ty {
                 None => Json::Null,
@@ -378,6 +390,7 @@ impl Server {
                 self.respond(id, Json::Null);
             }
             "textDocument/hover" => self.hover_request(id, params),
+            "textDocument/typeDefinition" => self.navigate(id, params, Navigate::TypeDefinition),
             "textDocument/definition" => match self.definition(params) {
                 Json::Null => self.navigate(id, params, Navigate::Definition),
                 result => self.respond(id, result),
@@ -398,6 +411,7 @@ impl Server {
                 let result = self.workspace_symbols(params);
                 self.respond(id, result);
             }
+            "textDocument/inlayHint" => self.inlay_hints(id, params),
             "textDocument/foldingRange" => {
                 let result = self.folding_ranges(params);
                 self.respond(id, result);
@@ -525,11 +539,13 @@ impl Server {
                 ])),
                 ("hoverProvider", Json::from(true)),
                 ("definitionProvider", Json::from(true)),
+                ("typeDefinitionProvider", Json::from(true)),
                 ("referencesProvider", Json::from(true)),
                 ("documentHighlightProvider", Json::from(true)),
                 ("documentSymbolProvider", Json::from(true)),
                 ("workspaceSymbolProvider", Json::from(true)),
                 ("foldingRangeProvider", Json::from(true)),
+                ("inlayHintProvider", Json::from(true)),
                 ("selectionRangeProvider", Json::from(true)),
                 ("documentLinkProvider", Json::object([("resolveProvider", Json::from(false))])),
                 ("renameProvider", Json::object([("prepareProvider", Json::from(true))])),
@@ -752,6 +768,37 @@ impl Server {
             }
         }
         Json::Array(results)
+    }
+
+    /// Inlay hints for a range of a document: the types of its locals declared without one, from
+    /// the last check while the document is as it was checked, and the parameter names of its
+    /// calls' literal arguments.
+    fn inlay_hints(&mut self, id: Json, params: &Json) {
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else {
+            return self.respond(id, Json::Null);
+        };
+        let Some(text) = self.file_text(&path) else { return self.respond(id, Json::Null) };
+        let lines = LineIndex::new(text.clone());
+        let position = |name: &str| {
+            let line = params.path(&["range", name, "line"]).and_then(Json::as_u64).unwrap_or(0) as usize;
+            let character = params.path(&["range", name, "character"]).and_then(Json::as_u64).unwrap_or(0) as usize;
+            lines.offset(line, character, self.encoding)
+        };
+        let range = position("start")..position("end");
+        let mut types = Vec::new();
+        if let Some(file) = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path)).filter(|file| file.lines.text == text) {
+            for span in language_service::untyped_declarations(&text) {
+                if !range.contains(&span.start) { continue; }
+                let Some(binding) = file.bindings.iter().find(|binding| binding.start == span.start && binding.end == span.end) else { continue };
+                let ty = if binding.ty.chars().count() > 60 { format!("{}…", binding.ty.chars().take(59).collect::<String>()) } else { binding.ty.clone() };
+                types.push(Json::object([
+                    ("position", lines.position(span.end, self.encoding)),
+                    ("label", Json::from(format!(": {ty}"))),
+                    ("kind", Json::from(1usize)),
+                ]));
+            }
+        }
+        self.query(id, path, Site::Hints(HintSite { text, range, types }), lines);
     }
 
     /// The ranges a document folds: a fold hides the lines after its first, up to the line before
@@ -1030,6 +1077,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 Site::Signature(site) => signatures(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Hover(site) => hover(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Navigate(site) => navigate(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
+                Site::Hints(site) => hints(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
             }));
             if completed.is_err() {
                 workspace = ProjectWorkspace::new();
@@ -1153,9 +1201,9 @@ fn signatures(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mu
 fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &NavigateSite, answer: &mut (dyn FnMut(Json) + Send)) {
     let Some(project) = load(inputs, workspace, loaded, query) else { return };
     let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
-    let references = !matches!(site.request, Navigate::Definition | Navigate::PrepareRename);
+    let references = !matches!(site.request, Navigate::Definition | Navigate::TypeDefinition | Navigate::PrepareRename);
     let encoding = query.encoding;
-    language_service::navigate(project, options, workspace, file, site.offset, references, |navigation| {
+    let respond = |navigation: Option<language_service::Navigation>| {
         let Some(navigation) = navigation else { return answer(Json::Null) };
         let lines: HashMap<&PathBuf, LineIndex> = navigation.texts.iter().map(|(path, text)| (path, LineIndex::new(text.clone()))).collect();
         let range = |path: &PathBuf, span: luanalysis_syntax::Span| lines.get(path).map(|lines| lines.range(span.start, span.end, encoding));
@@ -1163,7 +1211,7 @@ fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
             Some(Json::object([("uri", Json::from(path_to_uri(path))), ("range", range(path, *span)?)]))
         };
         answer(match &site.request {
-            Navigate::Definition => Json::Array(navigation.occurrences.iter().filter(|occurrence| occurrence.2).filter_map(location).collect()),
+            Navigate::Definition | Navigate::TypeDefinition => Json::Array(navigation.occurrences.iter().filter(|occurrence| occurrence.2).filter_map(location).collect()),
             Navigate::References { declaration } => Json::Array(navigation.occurrences.iter()
                 .filter(|occurrence| *declaration || !occurrence.2).filter_map(location).collect()),
             Navigate::Highlight => Json::Array(navigation.occurrences.iter().filter(|occurrence| occurrence.0 == query.path)
@@ -1191,7 +1239,11 @@ fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
                 Json::object([("changes", Json::Object(changes))])
             }
         });
-    });
+    };
+    match site.request {
+        Navigate::TypeDefinition => language_service::type_definition(project, options, workspace, file, site.offset, respond),
+        _ => language_service::navigate(project, options, workspace, file, site.offset, references, respond),
+    }
 }
 
 /// An outline symbol's LSP `SymbolKind`.
@@ -1208,6 +1260,21 @@ fn symbol_kind(kind: language_service::SymbolKind) -> usize {
         SymbolKind::Constant => 14,
         SymbolKind::Alias => 26,
     }
+}
+
+fn hints(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &HintSite, answer: &mut (dyn FnMut(Json) + Send)) {
+    let Some(project) = load(inputs, workspace, loaded, query) else { return };
+    let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
+    language_service::parameter_hints(project, options, workspace, file, site.range.clone(), |names| {
+        let mut hints = site.types.clone();
+        hints.extend(names.into_iter().map(|(offset, name)| Json::object([
+            ("position", query.lines.position(offset, query.encoding)),
+            ("label", Json::from(format!("{name}:"))),
+            ("kind", Json::from(2usize)),
+            ("paddingRight", Json::from(true)),
+        ])));
+        answer(Json::Array(hints));
+    });
 }
 
 /// Markdown content, as LSP `MarkupContent`.
