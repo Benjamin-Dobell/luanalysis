@@ -412,6 +412,10 @@ impl Server {
                 self.respond(id, result);
             }
             "textDocument/inlayHint" => self.inlay_hints(id, params),
+            "textDocument/semanticTokens/full" => {
+                let result = self.semantic_tokens(params);
+                self.respond(id, result);
+            }
             "textDocument/foldingRange" => {
                 let result = self.folding_ranges(params);
                 self.respond(id, result);
@@ -546,6 +550,13 @@ impl Server {
                 ("workspaceSymbolProvider", Json::from(true)),
                 ("foldingRangeProvider", Json::from(true)),
                 ("inlayHintProvider", Json::from(true)),
+                ("semanticTokensProvider", Json::object([
+                    ("legend", Json::object([
+                        ("tokenTypes", Json::Array(["class", "interface", "type", "typeParameter", "parameter", "variable", "property", "function", "method"].into_iter().map(Json::from).collect())),
+                        ("tokenModifiers", Json::Array(["declaration", "readonly", "defaultLibrary", "global"].into_iter().map(Json::from).collect())),
+                    ])),
+                    ("full", Json::from(true)),
+                ])),
                 ("selectionRangeProvider", Json::from(true)),
                 ("documentLinkProvider", Json::object([("resolveProvider", Json::from(false))])),
                 ("renameProvider", Json::object([("prepareProvider", Json::from(true))])),
@@ -799,6 +810,29 @@ impl Server {
             }
         }
         self.query(id, path, Site::Hints(HintSite { text, range, types }), lines);
+    }
+
+    /// A document's semantic tokens, relative to one another as LSP encodes them.
+    fn semantic_tokens(&self, params: &Json) -> Json {
+        use language_service::TokenType;
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else { return Json::Null };
+        let Some(text) = self.file_text(&path) else { return Json::Null };
+        let lines = LineIndex::new(text.clone());
+        let units = |slice: &str| match self.encoding { Encoding::Utf8 => slice.len(), Encoding::Utf16 => slice.encode_utf16().count() };
+        let mut data = Vec::new();
+        let (mut previous_line, mut previous_start) = (0, 0);
+        for token in language_service::semantic_tokens(&text) {
+            let line = lines.line(token.span.start);
+            let start = units(&text[lines.line_starts[line]..token.span.start]);
+            let delta_start = if line == previous_line { start - previous_start } else { start };
+            let kind = match token.kind {
+                TokenType::Class => 0usize, TokenType::Interface => 1, TokenType::Type => 2, TokenType::TypeParameter => 3,
+                TokenType::Parameter => 4, TokenType::Variable => 5, TokenType::Property => 6, TokenType::Function => 7, TokenType::Method => 8,
+            };
+            data.extend([line - previous_line, delta_start, units(&text[token.span.start..token.span.end]), kind, token.modifiers as usize].map(Json::from));
+            (previous_line, previous_start) = (line, start);
+        }
+        Json::object([("data", Json::Array(data))])
     }
 
     /// The ranges a document folds: a fold hides the lines after its first, up to the line before

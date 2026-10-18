@@ -1558,6 +1558,164 @@ fn literal_parameter_names(
     hints
 }
 
+/// What a semantic token is, in the order of the language server's legend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenType {
+    Class,
+    Interface,
+    Type,
+    TypeParameter,
+    Parameter,
+    Variable,
+    Property,
+    Function,
+    Method,
+}
+
+/// Semantic token modifiers, as bits in the order of the legend.
+pub const MODIFIER_DECLARATION: u32 = 1;
+pub const MODIFIER_READONLY: u32 = 2;
+pub const MODIFIER_DEFAULT_LIBRARY: u32 = 4;
+pub const MODIFIER_GLOBAL: u32 = 8;
+
+const STANDARD_GLOBALS: [&str; 40] = [
+    "_G", "_VERSION", "_ENV", "assert", "collectgarbage", "dofile", "error", "getmetatable", "ipairs", "load",
+    "loadfile", "next", "pairs", "pcall", "print", "rawequal", "rawget", "rawlen", "rawset", "require",
+    "select", "setmetatable", "tonumber", "tostring", "type", "xpcall", "unpack", "loadstring", "setfenv", "getfenv",
+    "coroutine", "debug", "io", "math", "os", "package", "string", "table", "utf8", "bit32",
+];
+const BUILTIN_TYPES: [&str; 14] = ["nil", "boolean", "number", "integer", "string", "table", "function", "userdata", "thread", "any", "unknown", "never", "void", "self"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SemanticToken {
+    pub span: Span,
+    pub kind: TokenType,
+    pub modifiers: u32,
+}
+
+/// The semantic tokens of a Lua source: what each name is, from its binding (a parameter, a
+/// local, a function, a global, the standard library's), its place (a field, a method, a table
+/// key) and in annotations, a type's declaring tag or a generic parameter.
+pub fn semantic_tokens(text: &str) -> Vec<SemanticToken> {
+    use std::collections::HashSet;
+    let file = luanalysis_syntax::parse(text);
+    let bound = bind::bind(&file);
+    let mut tokens = Vec::new();
+    // Names called, and locals holding functions.
+    let mut called: HashSet<(usize, usize)> = HashSet::new();
+    let mut functions: HashSet<(usize, usize)> = HashSet::new();
+    let mut members: Vec<(Span, TokenType, u32)> = Vec::new();
+    // Declarations first: a `function M:f()` target is also a field expression.
+    declarations(&file.statements, &mut functions, &mut members);
+    crate::module_requests::visit_expressions(&file.statements, &mut |expression: &Expr| match &expression.kind {
+        ExprKind::Call { callee, .. } => {
+            let span = match &callee.kind { ExprKind::Field { name, .. } => name.span, _ => callee.span };
+            called.insert((span.start, span.end));
+        }
+        ExprKind::Field { name, .. } => members.push((name.span, TokenType::Property, 0)),
+        ExprKind::MethodCall { name, .. } => members.push((name.span, TokenType::Method, 0)),
+        ExprKind::Table(fields) => for field in fields {
+            if let luanalysis_syntax::TableFieldKind::Named(key) = &field.kind {
+                let kind = if matches!(field.value.kind, ExprKind::Function(_)) { TokenType::Method } else { TokenType::Property };
+                members.push((key.span, kind, MODIFIER_DECLARATION));
+            }
+        },
+        _ => {}
+    });
+    fn declarations(statements: &[luanalysis_syntax::Stmt], functions: &mut std::collections::HashSet<(usize, usize)>, members: &mut Vec<(Span, TokenType, u32)>) {
+        use luanalysis_syntax::StmtKind;
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::Local { names, values, .. } => for (name, value) in names.iter().zip(values) {
+                    if matches!(value.kind, ExprKind::Function(_)) { functions.insert((name.span.start, name.span.end)); }
+                },
+                StmtKind::FunctionDeclaration { target, function, .. } => {
+                    if let ExprKind::Field { name, .. } = &target.kind { members.push((name.span, TokenType::Method, MODIFIER_DECLARATION)); }
+                    declarations(&function.body, functions, members);
+                }
+                StmtKind::LocalFunction { function, .. } => declarations(&function.body, functions, members),
+                StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
+                    | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => declarations(body, functions, members),
+                StmtKind::If { branches, else_branch } => {
+                    for branch in branches { declarations(&branch.body, functions, members); }
+                    if let Some(branch) = else_branch { declarations(&branch.body, functions, members); }
+                }
+                _ => {}
+            }
+        }
+    }
+    for occurrence in &bound.occurrences {
+        let key = (occurrence.span.start, occurrence.span.end);
+        let declaration_modifier = if occurrence.kind == bind::OccurrenceKind::Declaration { MODIFIER_DECLARATION } else { 0 };
+        let (kind, modifiers) = match occurrence.binding.map(|binding| bound.declaration(binding)) {
+            Some(declaration) => {
+                let declared = (declaration.span.start, declaration.span.end);
+                let kind = match declaration.kind {
+                    bind::DeclarationKind::Parameter | bind::DeclarationKind::ImplicitReceiver => TokenType::Parameter,
+                    bind::DeclarationKind::LocalFunction => TokenType::Function,
+                    _ if functions.contains(&declared) || called.contains(&key) => TokenType::Function,
+                    _ => TokenType::Variable,
+                };
+                (kind, declaration_modifier | if declaration.constant { MODIFIER_READONLY } else { 0 })
+            }
+            None => {
+                let library = if STANDARD_GLOBALS.contains(&occurrence.name.as_str()) { MODIFIER_DEFAULT_LIBRARY } else { 0 };
+                let kind = if called.contains(&key) { TokenType::Function } else { TokenType::Variable };
+                (kind, MODIFIER_GLOBAL | library | declaration_modifier)
+            }
+        };
+        tokens.push(SemanticToken { span: occurrence.span, kind, modifiers });
+    }
+    for (span, kind, modifiers) in members {
+        let kind = if kind == TokenType::Property && called.contains(&(span.start, span.end)) { TokenType::Method } else { kind };
+        tokens.push(SemanticToken { span, kind, modifiers });
+    }
+    for declaration in &file.type_declarations {
+        if let luanalysis_syntax::NamedTypeDeclarationKind::Record { fields, .. } = &declaration.kind {
+            for field in fields {
+                if let luanalysis_syntax::TypeFieldKey::Named(name) = &field.key { tokens.push(SemanticToken { span: name.span, kind: TokenType::Property, modifiers: MODIFIER_DECLARATION }); }
+            }
+        }
+    }
+    let names = luanalysis_syntax::type_names(&file, text);
+    for name in &names {
+        let generic = names.iter().any(|other| other.kind == luanalysis_syntax::TypeNameKind::Generic && other.block == name.block && other.name == name.name);
+        let (kind, modifiers) = match name.kind {
+            luanalysis_syntax::TypeNameKind::Generic => (TokenType::TypeParameter, MODIFIER_DECLARATION),
+            _ if generic => (TokenType::TypeParameter, 0),
+            luanalysis_syntax::TypeNameKind::Declaration => {
+                let declared = file.type_declarations.iter().find(|declaration| declaration.name.span == name.span).map(|declaration| &declaration.kind);
+                let kind = match declared {
+                    Some(luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor: luanalysis_syntax::NamedRecordKind::Shape, .. }) => TokenType::Interface,
+                    Some(luanalysis_syntax::NamedTypeDeclarationKind::Record { .. }) => TokenType::Class,
+                    _ => TokenType::Type,
+                };
+                (kind, MODIFIER_DECLARATION)
+            }
+            _ if BUILTIN_TYPES.contains(&name.name.as_str()) => (TokenType::Type, MODIFIER_DEFAULT_LIBRARY),
+            _ => {
+                let declared = file.type_declarations.iter().find(|declaration| declaration.name.text == name.name).map(|declaration| &declaration.kind);
+                match declared {
+                    Some(luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor: luanalysis_syntax::NamedRecordKind::Shape, .. }) => (TokenType::Interface, 0),
+                    Some(luanalysis_syntax::NamedTypeDeclarationKind::Record { .. }) => (TokenType::Class, 0),
+                    _ => (TokenType::Type, 0),
+                }
+            }
+        };
+        tokens.push(SemanticToken { span: name.span, kind, modifiers });
+    }
+    // Only names are tokens; an implicit `self` is declared by its method's `:`.
+    tokens.retain(|token| text.get(token.span.start..token.span.end)
+        .is_some_and(|name| name.starts_with(|ch: char| ch.is_alphabetic() || ch == '_') && !name.contains('\n')));
+    tokens.sort_by_key(|token| (token.span.start, token.span.end));
+    // Overlapping tokens keep the first.
+    let mut kept: Vec<SemanticToken> = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        if kept.last().is_none_or(|last| last.span.end <= token.span.start) { kept.push(token); }
+    }
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1685,6 +1843,27 @@ mod tests {
         let chain: Vec<_> = selection_ranges(text, &[offset])[0].iter().map(|span| &text[span.start..span.end]).collect();
         assert_eq!(chain[..4], ["x", "point.x", "point.x + 1", "return point.x + 1"]);
         assert_eq!(*chain.last().unwrap(), text);
+    }
+
+    #[test]
+    fn semantic_tokens_classify_names_members_and_annotation_types() {
+        let text = "---@class Point\n---@field x number\nlocal Point = {}\n\n---@generic T\n---@param value T\nfunction Point:move(value) local limit <const> = 1 print(self.x, limit) return { y = value } end\n";
+        let tokens: Vec<_> = semantic_tokens(text).into_iter().map(|token| (&text[token.span.start..token.span.end], token.kind, token.modifiers)).collect();
+        for expected in [
+            ("Point", TokenType::Class, MODIFIER_DECLARATION),
+            ("x", TokenType::Property, MODIFIER_DECLARATION),
+            ("number", TokenType::Type, MODIFIER_DEFAULT_LIBRARY),
+            ("T", TokenType::TypeParameter, MODIFIER_DECLARATION),
+            ("value", TokenType::Parameter, 0),
+            ("T", TokenType::TypeParameter, 0),
+            ("move", TokenType::Method, MODIFIER_DECLARATION),
+            ("limit", TokenType::Variable, MODIFIER_DECLARATION | MODIFIER_READONLY),
+            ("print", TokenType::Function, MODIFIER_GLOBAL | MODIFIER_DEFAULT_LIBRARY),
+            ("self", TokenType::Parameter, 0),
+            ("y", TokenType::Property, MODIFIER_DECLARATION),
+        ] {
+            assert!(tokens.contains(&expected), "{expected:?} in {tokens:?}");
+        }
     }
 
     #[test]

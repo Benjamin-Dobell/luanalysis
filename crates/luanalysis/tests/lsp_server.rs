@@ -654,3 +654,18 @@ fn inlay_hints_show_inferred_types_and_literal_arguments_parameters() {
     assert!(!response.contains(r#""label":"t:""#), "{response}");
     server.finish();
 }
+
+#[test]
+fn semantic_tokens_are_encoded_relative_to_one_another() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "local count = 1\nprint(count)\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    let response = server.request(3, "textDocument/semanticTokens/full", &main, 0, 0);
+    // `count` (a variable's declaration), `print` (a standard global function) and `count`.
+    assert!(response.contains(r#""data":[0,6,5,5,1,1,0,5,7,12,0,6,5,5,0]"#), "{response}");
+    server.finish();
+}
