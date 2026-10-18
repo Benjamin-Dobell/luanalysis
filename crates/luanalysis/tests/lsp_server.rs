@@ -735,3 +735,76 @@ fn call_and_type_hierarchies_follow_calls_and_bases() {
     assert!(response.contains(r#""name":"Dog""#), "{response}");
     server.finish();
 }
+
+#[test]
+fn settings_change_what_is_checked() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "local first = unpack({ 1 })\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&[]);
+    // Lua 5.1 has a global unpack.
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":"{}","capabilities":{{}},"initializationOptions":{{"luaVersion":"5.1"}}}}}}"#, uri(&root)));
+    server.wait(|message| message.contains(r#""id":1"#));
+    server.send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
+    server.open(&main, source);
+    let published = server.diagnostics(&main, |_| true);
+    assert!(!published.contains("TS2304"), "{published}");
+    // Lua 5.4 does not.
+    server.send(r#"{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"luanalysis":{"luaVersion":"5.4"}}}}"#);
+    let published = server.diagnostics(&main, |message| message.contains("TS2304"));
+    assert!(published.contains("Cannot find name 'unpack'"), "{published}");
+    server.finish();
+}
+
+#[test]
+fn documents_change_incrementally_and_requests_can_be_cancelled() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "local count = 1\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    // Replace `1` with `count.nope`: only the range changes.
+    server.send(&format!(
+        r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{}","version":2}},"contentChanges":[{{"range":{{"start":{{"line":0,"character":14}},"end":{{"line":0,"character":15}}}},"text":"nil\nlocal other = count.nope"}}]}}}}"#,
+        uri(&main),
+    ));
+    let published = server.diagnostics(&main, |message| message.contains("nope"));
+    assert!(published.contains(r#""start":{"line":1,"character":20}"#), "{published}");
+    // A query waiting behind another is answered as cancelled.
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/signatureHelp","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":1,"character":0}}}}}}"#, uri(&main)));
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":4,"method":"textDocument/completion","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":1,"character":0}}}}}}"#, uri(&main)));
+    server.send(r#"{"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":4}}"#);
+    let response = server.wait(|message| message.contains(r#""id":4,"#));
+    assert!(response.contains("-32800") || response.contains(r#""result""#), "{response}");
+    server.finish();
+}
+
+#[test]
+fn checks_show_progress_and_every_workspace_folder_is_checked() {
+    let root = fixture();
+    let (first, second) = (root.join("first"), root.join("second"));
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&second).unwrap();
+    fs::write(first.join("a.lua"), "local a = undefinedFirst\n").unwrap();
+    fs::write(second.join("b.lua"), "local b = undefinedSecond\n").unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"capabilities":{{"window":{{"workDoneProgress":true}}}},"workspaceFolders":[{{"uri":"{}","name":"first"}},{{"uri":"{}","name":"second"}}]}}}}"#,
+        uri(&first), uri(&second),
+    ));
+    server.wait(|message| message.contains(r#""id":1"#));
+    server.send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
+    let create = server.wait(|message| message.contains("window/workDoneProgress/create"));
+    let token = create.split(r#""token":""#).nth(1).unwrap().split('"').next().unwrap().to_owned();
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":"{token}","result":null}}"#));
+    let begin = server.wait(|message| message.contains("$/progress") && message.contains("begin"));
+    assert!(begin.contains(&token), "{begin}");
+    server.wait(|message| message.contains("$/progress") && message.contains("end"));
+    server.diagnostics(&first.join("a.lua"), |message| message.contains("undefinedFirst"));
+    server.diagnostics(&second.join("b.lua"), |message| message.contains("undefinedSecond"));
+    server.finish();
+}

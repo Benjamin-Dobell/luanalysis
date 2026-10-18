@@ -388,6 +388,12 @@ options of `check`, and without paths it checks the editor's workspace. It provi
   `--region`), selection ranges, links for `require`d modules, and quick fixes for misspelled
   names and members and for unused names.
 
+Editors' settings, in `initializationOptions` or `workspace/didChangeConfiguration` (directly or
+under `luanalysis`), apply on top of the command line's options: `luaVersion`, `libraries`,
+`moduleRoots`, `packagePath`, `stdlib`, `noStdlib` and `noImplicitAny`, and
+`inlayHints.types`, `inlayHints.parameterNames` and `completion.callSnippets` to turn those off.
+Every workspace folder is checked, and a check in progress is shown as work-done progress.
+
 ## Library
 
 Luanalysis is also a C library, so applications that host Lua, such as games and editors, can

@@ -23,6 +23,7 @@ const PARSE_ERROR: i64 = -32700;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_REQUEST: i64 = -32600;
 const REQUEST_FAILED: i64 = -32803;
+const REQUEST_CANCELLED: i64 = -32800;
 const SERVER_NOT_INITIALIZED: i64 = -32002;
 
 /// Receives each message for the client: one JSON-RPC message, without framing.
@@ -167,6 +168,8 @@ enum Event {
     Checked(Box<Snapshot>),
     /// A response computed off the main thread.
     Answered(Json, Json),
+    /// A request the client cancelled before it was answered.
+    Cancelled(Json),
 }
 
 struct Job {
@@ -329,6 +332,18 @@ struct Server {
     checking: bool,
     snapshot: Option<Snapshot>,
     published: HashSet<PathBuf>,
+    /// The checked paths and options before the client's settings, and what the settings make of
+    /// them and of the editor's features.
+    base: Option<(CheckInputs, ProjectCheckOptions)>,
+    settings: Json,
+    preferences: Preferences,
+    /// The requests the client cancelled, which the query thread answers as cancelled.
+    cancelled: Arc<std::sync::Mutex<HashSet<String>>>,
+    /// Whether the client shows work-done progress; the requests made to create a token, and the
+    /// token of the progress shown while a check runs.
+    progress: bool,
+    next_request: u64,
+    progress_token: Option<(String, bool)>,
     /// Each file's outline, by the text it was made from.
     symbols: HashMap<PathBuf, (String, Vec<language_service::DocumentSymbol>)>,
 }
@@ -353,6 +368,13 @@ impl Server {
             checking: false,
             snapshot: None,
             published: HashSet::new(),
+            base: None,
+            settings: Json::Null,
+            preferences: Preferences::default(),
+            cancelled: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            progress: false,
+            next_request: 0,
+            progress_token: None,
             symbols: HashMap::new(),
         }
     }
@@ -369,6 +391,7 @@ impl Server {
                     }
                     Event::Checked(snapshot) => self.checked(*snapshot),
                     Event::Answered(id, result) => self.respond(id, result),
+                    Event::Cancelled(id) => self.respond_error(id, REQUEST_CANCELLED, "the request was cancelled"),
                     Event::Malformed(error) => self.respond_error(Json::Null, PARSE_ERROR, &format!("a message that is not JSON: {error}")),
                 }
                 next = received.try_recv().ok();
@@ -385,6 +408,7 @@ impl Server {
         if jobs.send(Job { overlays }).is_ok() {
             self.requested = Some(self.revision);
             self.checking = true;
+            self.begin_progress();
         }
     }
 
@@ -394,8 +418,24 @@ impl Server {
         match (method, message.get("id").cloned()) {
             (Some(method), Some(id)) => self.request(&method, id, &params),
             (Some(method), None) => return self.notification(&method, &params),
-            // A response to a request of ours: there are none.
-            (None, _) => {}
+            // A response to a request of ours: a progress token the client created.
+            (None, Some(id)) => {
+                if let Some((token, begun)) = &mut self.progress_token
+                    && id.as_str() == Some(token.as_str()) && !*begun
+                {
+                    *begun = true;
+                    let token = token.clone();
+                    if self.checking {
+                        self.notify("$/progress", Json::object([("token", Json::from(token)), ("value", Json::object([
+                            ("kind", Json::from("begin")),
+                            ("title", Json::from("Checking Lua")),
+                        ]))]));
+                    } else {
+                        self.progress_token = None;
+                    }
+                }
+            }
+            (None, None) => {}
         }
         None
     }
@@ -508,14 +548,53 @@ impl Server {
             "textDocument/didChange" => {
                 let uri = params.path(&["textDocument", "uri"]).and_then(Json::as_str);
                 let version = params.path(&["textDocument", "version"]).and_then(Json::as_u64);
-                // Full synchronization: the last change holds the whole text.
-                let text = params.get("contentChanges").and_then(Json::as_array)
-                    .and_then(|changes| changes.last()).and_then(|change| change.get("text")).and_then(Json::as_str);
-                if let (Some(uri), Some(text)) = (uri, text) && let Some(path) = uri_to_path(uri) {
+                if let Some(uri) = uri && let Some(path) = uri_to_path(uri) {
+                    let encoding = self.encoding;
                     let document = self.documents.entry(path).or_insert_with(|| Document { uri: uri.to_owned(), text: String::new(), version: 0 });
-                    document.text = text.to_owned();
+                    // Incremental synchronization: each change replaces a range, or without one, the whole text.
+                    for change in params.get("contentChanges").and_then(Json::as_array).unwrap_or(&[]) {
+                        let Some(text) = change.get("text").and_then(Json::as_str) else { continue };
+                        match change.get("range") {
+                            Some(range) => {
+                                let lines = LineIndex::new(std::mem::take(&mut document.text));
+                                let offset = |name: &str| lines.offset(
+                                    range.path(&[name, "line"]).and_then(Json::as_u64).unwrap_or(0) as usize,
+                                    range.path(&[name, "character"]).and_then(Json::as_u64).unwrap_or(0) as usize,
+                                    encoding,
+                                );
+                                let (start, end) = (offset("start"), offset("end"));
+                                let mut edited = lines.text;
+                                edited.replace_range(start..end.max(start), text);
+                                document.text = edited;
+                            }
+                            None => document.text = text.to_owned(),
+                        }
+                    }
                     if let Some(version) = version { document.version = version as i64; }
                     self.revision += 1;
+                }
+            }
+            "workspace/didChangeConfiguration" => {
+                let settings = params.get("settings").cloned().unwrap_or(Json::Null);
+                if let Err(error) = self.configure(&settings) { self.log(1, &format!("luanalysis: settings: {error}")); }
+            }
+            "workspace/didChangeWorkspaceFolders" => {
+                let folders = |kind: &str| -> Vec<PathBuf> { params.path(&["event", kind]).and_then(Json::as_array).unwrap_or(&[]).iter()
+                    .filter_map(|folder| folder.get("uri").and_then(Json::as_str).and_then(uri_to_path)).collect() };
+                let (added, removed) = (folders("added"), folders("removed"));
+                if let Some((inputs, _)) = &mut self.base {
+                    inputs.files.retain(|file| !removed.contains(file));
+                    for folder in added {
+                        if !inputs.files.contains(&folder) { inputs.files.push(folder); }
+                    }
+                }
+                // The settings already applied apply to the new folders too.
+                let settings = self.settings.clone();
+                if let Err(error) = self.configure(&settings) { self.log(1, &format!("luanalysis: settings: {error}")); }
+            }
+            "$/cancelRequest" => {
+                if let Some(id) = params.get("id") {
+                    self.cancelled.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id.to_string());
                 }
             }
             "textDocument/didClose" => {
@@ -535,37 +614,92 @@ impl Server {
         None
     }
 
+    /// Applies the client's settings (`initializationOptions`, or `workspace/didChangeConfiguration`'s,
+    /// either whole or under `luanalysis`) to the checked paths and options, and restarts checking
+    /// and queries with them.
+    fn configure(&mut self, settings: &Json) -> Result<(), String> {
+        self.settings = settings.clone();
+        let Some((inputs, options)) = self.base.clone() else { return Ok(()) };
+        let settings = settings.get("luanalysis").unwrap_or(settings);
+        let (inputs, options, preferences) = apply_settings(inputs, options, settings)?;
+        self.preferences = preferences;
+        self.start_workers(inputs, options);
+        Ok(())
+    }
+
+    /// Starts the threads that check and answer queries, ending any running with older settings.
+    fn start_workers(&mut self, inputs: CheckInputs, options: ProjectCheckOptions) {
+        let (queries, received) = mpsc::channel();
+        let events = self.events.clone();
+        let query_options = options.clone();
+        let query_inputs = inputs.clone();
+        let cancelled = Arc::clone(&self.cancelled);
+        std::thread::Builder::new()
+            .name("luanalysis-lsp-query".into())
+            .spawn(move || answer_queries(query_inputs, query_options, received, events, cancelled))
+            .expect("start the language server's query thread");
+        self.queries = Some(queries);
+        let (jobs, received) = mpsc::channel();
+        let events = self.events.clone();
+        std::thread::Builder::new()
+            .name("luanalysis-lsp-check".into())
+            .spawn(move || check_jobs(inputs, options, received, events))
+            .expect("start the language server's checking thread");
+        self.jobs = Some(jobs);
+        // A new checker checks everything again, and a new query thread loads the project again.
+        self.requested = None;
+        self.checking = false;
+        self.revision += 1;
+        self.disk_generation += 1;
+    }
+
+    fn log(&self, level: usize, message: &str) {
+        self.notify("window/logMessage", Json::object([("type", Json::from(level)), ("message", Json::from(message))]));
+    }
+
+    /// Shows that the workspace is being checked, when the client shows progress: a token is
+    /// created first, and progress begins when the client answers.
+    fn begin_progress(&mut self) {
+        if !self.progress || self.progress_token.is_some() { return; }
+        self.next_request += 1;
+        let token = format!("luanalysis/check/{}", self.next_request);
+        self.write(&Json::object([
+            ("jsonrpc", Json::from("2.0")),
+            ("id", Json::from(token.as_str())),
+            ("method", Json::from("window/workDoneProgress/create")),
+            ("params", Json::object([("token", Json::from(token.as_str()))])),
+        ]));
+        self.progress_token = Some((token, false));
+    }
+
+    fn end_progress(&mut self) {
+        if let Some((token, true)) = self.progress_token.take() {
+            self.notify("$/progress", Json::object([("token", Json::from(token)), ("value", Json::object([("kind", Json::from("end"))]))]));
+        }
+    }
+
     fn initialize(&mut self, params: &Json) -> Json {
         let encodings = params.path(&["capabilities", "general", "positionEncodings"]).and_then(Json::as_array).unwrap_or(&[]);
         self.encoding = if encodings.iter().any(|encoding| encoding.as_str() == Some("utf-8")) { Encoding::Utf8 } else { Encoding::Utf16 };
         self.snippets = params.path(&["capabilities", "textDocument", "completion", "completionItem", "snippetSupport"]) == Some(&Json::Bool(true));
+        self.progress = params.path(&["capabilities", "window", "workDoneProgress"]) == Some(&Json::Bool(true));
         if let Some(mut inputs) = self.inputs.take() {
             if inputs.files.is_empty() {
-                let root = params.get("rootUri").and_then(Json::as_str)
-                    .or_else(|| params.get("workspaceFolders").and_then(Json::as_array)
-                        .and_then(|folders| folders.first()).and_then(|folder| folder.get("uri")).and_then(Json::as_str))
-                    .and_then(uri_to_path)
-                    .or_else(|| params.get("rootPath").and_then(Json::as_str).map(PathBuf::from))
-                    .or_else(|| std::env::current_dir().ok());
-                inputs.files.extend(root);
+                // Every workspace folder, or failing that the root.
+                let folders: Vec<PathBuf> = params.get("workspaceFolders").and_then(Json::as_array).unwrap_or(&[]).iter()
+                    .filter_map(|folder| folder.get("uri").and_then(Json::as_str).and_then(uri_to_path)).collect();
+                if folders.is_empty() {
+                    let root = params.get("rootUri").and_then(Json::as_str).and_then(uri_to_path)
+                        .or_else(|| params.get("rootPath").and_then(Json::as_str).map(PathBuf::from))
+                        .or_else(|| std::env::current_dir().ok());
+                    inputs.files.extend(root);
+                } else {
+                    inputs.files.extend(folders);
+                }
             }
-            let (queries, received) = mpsc::channel();
-            let events = self.events.clone();
-            let options = self.options.clone();
-            let query_options = options.clone();
-            let query_inputs = inputs.clone();
-            std::thread::Builder::new()
-                .name("luanalysis-lsp-query".into())
-                .spawn(move || answer_queries(query_inputs, query_options, received, events))
-                .expect("start the language server's query thread");
-            self.queries = Some(queries);
-            let (jobs, received) = mpsc::channel();
-            let events = self.events.clone();
-            std::thread::Builder::new()
-                .name("luanalysis-lsp-check".into())
-                .spawn(move || check_jobs(inputs, options, received, events))
-                .expect("start the language server's checking thread");
-            self.jobs = Some(jobs);
+            self.base = Some((inputs, self.options.clone()));
+            let settings = params.get("initializationOptions").cloned().unwrap_or(Json::Null);
+            if let Err(error) = self.configure(&settings) { self.log(1, &format!("luanalysis: settings: {error}")); }
         }
         self.initialized = true;
         Json::object([
@@ -573,7 +707,7 @@ impl Server {
                 ("positionEncoding", Json::from(match self.encoding { Encoding::Utf8 => "utf-8", Encoding::Utf16 => "utf-16" })),
                 ("textDocumentSync", Json::object([
                     ("openClose", Json::from(true)),
-                    ("change", Json::from(1usize)),
+                    ("change", Json::from(2usize)),
                     ("save", Json::object([("includeText", Json::from(false))])),
                 ])),
                 ("hoverProvider", Json::from(true)),
@@ -587,6 +721,10 @@ impl Server {
                 ("inlayHintProvider", Json::from(true)),
                 ("codeActionProvider", Json::object([("codeActionKinds", Json::Array(vec![Json::from("quickfix")]))])),
                 ("callHierarchyProvider", Json::from(true)),
+                ("workspace", Json::object([("workspaceFolders", Json::object([
+                    ("supported", Json::from(true)),
+                    ("changeNotifications", Json::from(true)),
+                ]))])),
                 ("typeHierarchyProvider", Json::from(true)),
                 ("semanticTokensProvider", Json::object([
                     ("legend", Json::object([
@@ -615,6 +753,7 @@ impl Server {
 
     fn checked(&mut self, snapshot: Snapshot) {
         self.checking = false;
+        if self.requested == Some(self.revision) { self.end_progress(); }
         if let Some(error) = &snapshot.error {
             self.notify("window/logMessage", Json::object([
                 ("type", Json::from(1usize)),
@@ -835,7 +974,7 @@ impl Server {
         };
         let range = position("start")..position("end");
         let mut types = Vec::new();
-        if let Some(file) = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path)).filter(|file| file.lines.text == text) {
+        if self.preferences.type_hints && let Some(file) = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path)).filter(|file| file.lines.text == text) {
             for span in language_service::untyped_declarations(&text) {
                 if !range.contains(&span.start) { continue; }
                 let Some(binding) = file.bindings.iter().find(|binding| binding.start == span.start && binding.end == span.end) else { continue };
@@ -847,6 +986,7 @@ impl Server {
                 ]));
             }
         }
+        if !self.preferences.parameter_hints { return self.respond(id, Json::Array(types)); }
         self.query(id, path, Site::Hints(HintSite { text, range, types }), lines);
     }
 
@@ -1036,7 +1176,7 @@ impl Server {
     fn query(&mut self, id: Json, path: PathBuf, site: Site, lines: LineIndex) {
         let mut overlays: HashMap<PathBuf, String> = self.documents.iter()
             .map(|(path, document)| (path.clone(), document.text.clone())).collect();
-        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets };
+        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets && self.preferences.call_snippets };
         overlays.insert(path, query.text().to_owned());
         let query = Query { overlays, ..query };
         let unanswered = query.unanswered();
@@ -1169,7 +1309,7 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
     }
 }
 
-fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>) {
+fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mpsc::Receiver<Query>, events: mpsc::Sender<Event>, cancelled: Arc<std::sync::Mutex<HashSet<String>>>) {
     let mut workspace = ProjectWorkspace::new();
     let mut loaded = None;
     while let Ok(first) = queries.recv() {
@@ -1186,6 +1326,11 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
             }
         }
         for query in latest.into_iter().rev() {
+            // A query the client cancelled before it began is not answered.
+            if cancelled.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&query.id.to_string()) {
+                if events.send(Event::Cancelled(query.id.clone())).is_err() { return; }
+                continue;
+            }
             let started = std::time::Instant::now();
             let mut answered = false;
             // The answer is sent as soon as it is known, before the session's state is dropped.
@@ -1466,6 +1611,66 @@ fn actions(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut P
             query.lines.range(fix.span.start, fix.span.end, query.encoding), fix.replacement)));
         answer(Json::Array(actions));
     });
+}
+
+/// What the client's settings ask of the editor's features.
+#[derive(Clone, Copy)]
+struct Preferences {
+    type_hints: bool,
+    parameter_hints: bool,
+    call_snippets: bool,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self { type_hints: true, parameter_hints: true, call_snippets: true }
+    }
+}
+
+/// The checked paths and options with the client's settings applied, as the command line's
+/// options would apply them: `luaVersion`, `libraries`, `moduleRoots`, `packagePath`, `stdlib`,
+/// `noStdlib` and `noImplicitAny`; and the editor preferences `inlayHints.types`,
+/// `inlayHints.parameterNames` and `completion.callSnippets`. A relative path is the workspace's.
+fn apply_settings(mut inputs: CheckInputs, mut options: ProjectCheckOptions, settings: &Json) -> Result<(CheckInputs, ProjectCheckOptions, Preferences), String> {
+    let root = inputs.files.iter().find(|file| file.is_dir()).cloned();
+    let strings = |name: &str| -> Vec<String> {
+        match settings.get(name) {
+            Some(Json::Array(values)) => values.iter().filter_map(Json::as_str).map(str::to_owned).collect(),
+            Some(value) => value.as_str().map(|value| value.split(',').map(|part| part.trim().to_owned()).filter(|part| !part.is_empty()).collect()).unwrap_or_default(),
+            None => Vec::new(),
+        }
+    };
+    let path = |value: String| {
+        let path = PathBuf::from(value);
+        match &root { Some(root) if path.is_relative() => root.join(path), _ => path }
+    };
+    let flag = |path: &[&str]| settings.path(path).and_then(|value| match value { Json::Bool(value) => Some(*value), _ => None });
+    if let Some(version) = settings.get("luaVersion").and_then(Json::as_str) {
+        options.environment = crate::cli::lua_version(version)
+            .ok_or_else(|| format!("luaVersion {version:?} is not one of 5.0, 5.1, 5.2, 5.3 and 5.4"))?;
+    }
+    inputs.libraries.extend(strings("libraries").into_iter().map(path));
+    inputs.module_roots.extend(strings("moduleRoots").into_iter().map(path));
+    if let Some(package_path) = settings.get("packagePath").and_then(Json::as_str) { inputs.package_path = Some(package_path.to_owned()); }
+    let stdlib = strings("stdlib");
+    if !stdlib.is_empty() {
+        options.standard_library = Some(crate::standard_environment::StandardLibraryAllowList::parse(&stdlib.join(",")));
+    } else if flag(&["noStdlib"]) == Some(true) {
+        options.standard_library = Some(crate::standard_environment::StandardLibraryAllowList::default());
+    }
+    // A selected standard library is a whole Lua's, as on the command line.
+    if options.standard_library.is_some() && !options.environment.is_full_lua() {
+        options.environment = crate::standard_environment::StandardEnvironmentProfile::Lua54;
+    }
+    if let Some(list) = &options.standard_library { list.validate(options.environment).map_err(|error| format!("stdlib: {error}"))?; }
+    options.loader_policy = crate::cli::loader_policy(options.environment);
+    if let Some(enabled) = flag(&["noImplicitAny"]) { options.no_implicit_any = enabled; }
+    let preferences = Preferences {
+        type_hints: flag(&["inlayHints", "types"]).unwrap_or(true),
+        parameter_hints: flag(&["inlayHints", "parameterNames"]).unwrap_or(true),
+        call_snippets: flag(&["completion", "callSnippets"]).unwrap_or(true),
+    };
+    Ok((inputs, options, preferences))
 }
 
 /// Markdown content, as LSP `MarkupContent`.

@@ -112,19 +112,10 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
             let Some(version) = args.next() else {
                 return Err("--lua-version requires a supported version (5.0, 5.1, 5.2, 5.3 or 5.4)".into());
             };
-            environment = match version.to_str() {
-                Some("5.0") => StandardEnvironmentProfile::Lua50,
-                Some("5.1") => StandardEnvironmentProfile::Lua51,
-                Some("5.2") => StandardEnvironmentProfile::Lua52,
-                Some("5.3") => StandardEnvironmentProfile::Lua53,
-                Some("5.4") => StandardEnvironmentProfile::Lua54,
-                _ => {
-                    return Err(format!(
-                        "Lua standard environment {:?} is not implemented; supported versions: 5.0, 5.1, 5.2, 5.3, 5.4",
-                        version
-                    ));
-                }
-            };
+            environment = version.to_str().and_then(lua_version).ok_or_else(|| format!(
+                "Lua standard environment {:?} is not implemented; supported versions: 5.0, 5.1, 5.2, 5.3, 5.4",
+                version
+            ))?;
             continue;
         }
         if !positional && arg == "--module-root" {
@@ -166,15 +157,7 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
         module_roots,
         package_path,
     };
-    let loader_policy = match environment {
-        StandardEnvironmentProfile::Lua50 => NativeLoaderPolicy::Lua50StandardFile,
-        StandardEnvironmentProfile::Lua51 => NativeLoaderPolicy::Lua51StandardFile,
-        StandardEnvironmentProfile::Lua52 => NativeLoaderPolicy::Lua52StandardFile,
-        StandardEnvironmentProfile::Lua53 => NativeLoaderPolicy::Lua53StandardFile,
-        StandardEnvironmentProfile::Lua54
-        | StandardEnvironmentProfile::LegacyMinimal
-        | StandardEnvironmentProfile::None => NativeLoaderPolicy::Lua54StandardFile,
-    };
+    let loader_policy = loader_policy(environment);
     let options = ProjectCheckOptions {
         environment,
         standard_library,
@@ -187,6 +170,31 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
         inspections: false,
     };
     Ok(Parsed::Run(Arguments { dump, watch, inputs, options }))
+}
+
+/// The standard environment of a `--lua-version`.
+pub(crate) fn lua_version(version: &str) -> Option<StandardEnvironmentProfile> {
+    Some(match version {
+        "5.0" => StandardEnvironmentProfile::Lua50,
+        "5.1" => StandardEnvironmentProfile::Lua51,
+        "5.2" => StandardEnvironmentProfile::Lua52,
+        "5.3" => StandardEnvironmentProfile::Lua53,
+        "5.4" => StandardEnvironmentProfile::Lua54,
+        _ => return None,
+    })
+}
+
+/// How `require` loads files in a standard environment.
+pub(crate) fn loader_policy(environment: StandardEnvironmentProfile) -> NativeLoaderPolicy {
+    match environment {
+        StandardEnvironmentProfile::Lua50 => NativeLoaderPolicy::Lua50StandardFile,
+        StandardEnvironmentProfile::Lua51 => NativeLoaderPolicy::Lua51StandardFile,
+        StandardEnvironmentProfile::Lua52 => NativeLoaderPolicy::Lua52StandardFile,
+        StandardEnvironmentProfile::Lua53 => NativeLoaderPolicy::Lua53StandardFile,
+        StandardEnvironmentProfile::Lua54
+        | StandardEnvironmentProfile::LegacyMinimal
+        | StandardEnvironmentProfile::None => NativeLoaderPolicy::Lua54StandardFile,
+    }
 }
 
 /// The paths and module search settings of a check.
