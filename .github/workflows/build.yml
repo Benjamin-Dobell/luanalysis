@@ -1,11 +1,13 @@
 name: Build
 
-# The command line tool and the shared and static libraries (with luanalysis.h) for Linux, macOS
-# and Windows, on x86-64 and ARM64, each built and smoke-tested on its own architecture. Linux
-# tools are static musl executables; Linux libraries are built in manylinux_2_28 containers, so
-# any process with glibc 2.28 or later can load them. macOS archives are universal (lipo).
-# Archives are built with the `dist` profile (whole-program optimisation, no symbol table). Each
-# static library is linked by path in a smoke test, with the system libraries rustc reports.
+# The command line tool, and separately the shared and static libraries (with luanalysis.h), for
+# Linux, macOS and Windows, on x86-64 and ARM64, each built and smoke-tested on its own
+# architecture: luanalysis-<platform> archives hold the tool, luanalysis-library-<platform>
+# archives the libraries. Linux tools are static musl executables; Linux libraries are built in
+# manylinux_2_28 containers, so any process with glibc 2.28 or later can load them. macOS
+# archives are universal (lipo). Archives are built with the `dist` profile (whole-program
+# optimisation, no symbol table). Each static library is linked by path in a smoke test, with the
+# system libraries rustc reports, which its archive lists in lib/native-static-libs.txt.
 
 on:
   push:
@@ -71,30 +73,38 @@ jobs:
           sed -n 's/^note: native-static-libs: //p' libraries.log > target/dist/native-static-libs.txt
       - name: Package
         run: |
-          out=luanalysis-linux-${{ matrix.arch }}
-          mkdir -p $out/bin $out/lib $out/include
-          cp target/${{ matrix.arch }}-unknown-linux-musl/dist/luanalysis-cli $out/bin/luanalysis
-          cp target/dist/libluanalysis.so target/dist/libluanalysis.a $out/lib/
-          cp crates/luanalysis-ffi/include/luanalysis.h $out/include/
-          cp README.md LICENSE $out/
-          tar czf $out.tar.gz $out
+          tool=luanalysis-linux-${{ matrix.arch }}
+          library=luanalysis-library-linux-${{ matrix.arch }}
+          mkdir -p $tool/bin $library/lib $library/include
+          cp target/${{ matrix.arch }}-unknown-linux-musl/dist/luanalysis-cli $tool/bin/luanalysis
+          cp target/dist/libluanalysis.so target/dist/libluanalysis.a target/dist/native-static-libs.txt $library/lib/
+          cp crates/luanalysis-ffi/include/luanalysis.h $library/include/
+          cp README.md LICENSE $tool/
+          cp README.md LICENSE $library/
+          tar czf $tool.tar.gz $tool
+          tar czf $library.tar.gz $library
       - name: Smoke test
         run: |
-          out=luanalysis-linux-${{ matrix.arch }}
+          tool=luanalysis-linux-${{ matrix.arch }}
+          library=luanalysis-library-linux-${{ matrix.arch }}
           printf 'local x = 1\n' > smoke.lua
-          $out/bin/luanalysis --version
-          $out/bin/luanalysis check --lua-version 5.4 smoke.lua
-          cc -I$out/include crates/luanalysis-ffi/examples/smoke.c -L$out/lib -lluanalysis -Wl,-rpath,'$ORIGIN/'$out/lib -o smoke
+          $tool/bin/luanalysis --version
+          $tool/bin/luanalysis check --lua-version 5.4 smoke.lua
+          cc -I$library/include crates/luanalysis-ffi/examples/smoke.c -L$library/lib -lluanalysis -Wl,-rpath,'$ORIGIN/'$library/lib -o smoke
           ./smoke smoke.lua
-          cc -I$out/include crates/luanalysis-ffi/examples/smoke.c $out/lib/libluanalysis.a $(cat target/dist/native-static-libs.txt) \
+          cc -I$library/include crates/luanalysis-ffi/examples/smoke.c $library/lib/libluanalysis.a $(cat $library/lib/native-static-libs.txt) \
             -o smoke-static
           ./smoke-static smoke.lua
           echo "Newest glibc symbol the library needs:"
-          objdump -T $out/lib/libluanalysis.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+          objdump -T $library/lib/libluanalysis.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
       - uses: actions/upload-artifact@v7
         with:
           name: luanalysis-linux-${{ matrix.arch }}
           path: luanalysis-linux-${{ matrix.arch }}.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: luanalysis-library-linux-${{ matrix.arch }}
+          path: luanalysis-library-linux-${{ matrix.arch }}.tar.gz
 
   macos:
     name: macOS ${{ matrix.arch }}
@@ -159,31 +169,42 @@ jobs:
           gh run download ${{ github.run_id }} --name macos-aarch64 --dir aarch64
       - name: Package
         run: |
-          out=luanalysis-macos-universal
-          mkdir -p $out/bin $out/lib $out/include
-          lipo -create -output $out/bin/luanalysis x86_64/luanalysis-cli aarch64/luanalysis-cli
-          lipo -create -output $out/lib/libluanalysis.dylib x86_64/libluanalysis.dylib aarch64/libluanalysis.dylib
-          lipo -create -output $out/lib/libluanalysis.a x86_64/libluanalysis.a aarch64/libluanalysis.a
-          chmod +x $out/bin/luanalysis
-          cp crates/luanalysis-ffi/include/luanalysis.h $out/include/
-          cp README.md LICENSE $out/
-          lipo -info $out/bin/luanalysis $out/lib/libluanalysis.dylib $out/lib/libluanalysis.a
-          tar czf $out.tar.gz $out
+          tool=luanalysis-macos-universal
+          library=luanalysis-library-macos-universal
+          mkdir -p $tool/bin $library/lib $library/include
+          lipo -create -output $tool/bin/luanalysis x86_64/luanalysis-cli aarch64/luanalysis-cli
+          lipo -create -output $library/lib/libluanalysis.dylib x86_64/libluanalysis.dylib aarch64/libluanalysis.dylib
+          lipo -create -output $library/lib/libluanalysis.a x86_64/libluanalysis.a aarch64/libluanalysis.a
+          chmod +x $tool/bin/luanalysis
+          # Both architectures link the same system libraries.
+          cmp aarch64/native-static-libs.txt x86_64/native-static-libs.txt
+          cp aarch64/native-static-libs.txt $library/lib/
+          cp crates/luanalysis-ffi/include/luanalysis.h $library/include/
+          cp README.md LICENSE $tool/
+          cp README.md LICENSE $library/
+          lipo -info $tool/bin/luanalysis $library/lib/libluanalysis.dylib $library/lib/libluanalysis.a
+          tar czf $tool.tar.gz $tool
+          tar czf $library.tar.gz $library
       - name: Smoke test
         run: |
-          out=luanalysis-macos-universal
+          tool=luanalysis-macos-universal
+          library=luanalysis-library-macos-universal
           printf 'local x = 1\n' > smoke.lua
-          $out/bin/luanalysis check --lua-version 5.4 smoke.lua
-          cc -I$out/include crates/luanalysis-ffi/examples/smoke.c -L$out/lib -lluanalysis \
-            -Wl,-rpath,@executable_path/$out/lib -o smoke
+          $tool/bin/luanalysis check --lua-version 5.4 smoke.lua
+          cc -I$library/include crates/luanalysis-ffi/examples/smoke.c -L$library/lib -lluanalysis \
+            -Wl,-rpath,@executable_path/$library/lib -o smoke
           ./smoke smoke.lua
-          cc -I$out/include crates/luanalysis-ffi/examples/smoke.c $out/lib/libluanalysis.a \
-            $(cat aarch64/native-static-libs.txt) -o smoke-static
+          cc -I$library/include crates/luanalysis-ffi/examples/smoke.c $library/lib/libluanalysis.a \
+            $(cat $library/lib/native-static-libs.txt) -o smoke-static
           ./smoke-static smoke.lua
       - uses: actions/upload-artifact@v7
         with:
           name: luanalysis-macos-universal
           path: luanalysis-macos-universal.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: luanalysis-library-macos-universal
+          path: luanalysis-library-macos-universal.tar.gz
 
   windows:
     name: Windows ${{ matrix.arch }}
@@ -213,33 +234,41 @@ jobs:
           sed -n 's/^note: native-static-libs: //p' libraries.log > target/dist/native-static-libs.txt
       - name: Package
         run: |
-          out=luanalysis-windows-${{ matrix.arch }}
-          mkdir -p $out/bin $out/lib $out/include
-          cp target/dist/luanalysis-cli.exe $out/bin/luanalysis.exe
-          cp target/dist/luanalysis.dll $out/bin/
-          cp target/dist/luanalysis.dll.lib target/dist/luanalysis.lib $out/lib/
-          cp crates/luanalysis-ffi/include/luanalysis.h $out/include/
-          cp README.md LICENSE $out/
-          7z a $out.zip $out
+          tool=luanalysis-windows-${{ matrix.arch }}
+          library=luanalysis-library-windows-${{ matrix.arch }}
+          mkdir -p $tool/bin $library/bin $library/lib $library/include
+          cp target/dist/luanalysis-cli.exe $tool/bin/luanalysis.exe
+          cp target/dist/luanalysis.dll $library/bin/
+          cp target/dist/luanalysis.dll.lib target/dist/luanalysis.lib target/dist/native-static-libs.txt $library/lib/
+          cp crates/luanalysis-ffi/include/luanalysis.h $library/include/
+          cp README.md LICENSE $tool/
+          cp README.md LICENSE $library/
+          7z a $tool.zip $tool
+          7z a $library.zip $library
       - name: Smoke test
         shell: cmd
         run: |
           for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath`) do set vs=%%i
           call "%vs%\VC\Auxiliary\Build\${{ matrix.vcvars }}"
-          set out=luanalysis-windows-${{ matrix.arch }}
+          set tool=luanalysis-windows-${{ matrix.arch }}
+          set library=luanalysis-library-windows-${{ matrix.arch }}
           > smoke.lua echo local x = 1
-          %out%\bin\luanalysis.exe --version || exit /b 1
-          %out%\bin\luanalysis.exe check --lua-version 5.4 smoke.lua || exit /b 1
-          cl /nologo /I%out%\include crates\luanalysis-ffi\examples\smoke.c /link %out%\lib\luanalysis.dll.lib /OUT:smoke.exe || exit /b 1
-          copy %out%\bin\luanalysis.dll . || exit /b 1
+          %tool%\bin\luanalysis.exe --version || exit /b 1
+          %tool%\bin\luanalysis.exe check --lua-version 5.4 smoke.lua || exit /b 1
+          cl /nologo /I%library%\include crates\luanalysis-ffi\examples\smoke.c /link %library%\lib\luanalysis.dll.lib /OUT:smoke.exe || exit /b 1
+          copy %library%\bin\luanalysis.dll . || exit /b 1
           smoke.exe smoke.lua || exit /b 1
-          set /p nativelibs=<target\dist\native-static-libs.txt
-          cl /nologo /MT /DLUANALYSIS_STATIC /I%out%\include /Fosmoke-static.obj crates\luanalysis-ffi\examples\smoke.c /link %out%\lib\luanalysis.lib %nativelibs% /OUT:smoke-static.exe || exit /b 1
+          set /p nativelibs=<%library%\lib\native-static-libs.txt
+          cl /nologo /MT /DLUANALYSIS_STATIC /I%library%\include /Fosmoke-static.obj crates\luanalysis-ffi\examples\smoke.c /link %library%\lib\luanalysis.lib %nativelibs% /OUT:smoke-static.exe || exit /b 1
           smoke-static.exe smoke.lua || exit /b 1
       - uses: actions/upload-artifact@v7
         with:
           name: luanalysis-windows-${{ matrix.arch }}
           path: luanalysis-windows-${{ matrix.arch }}.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: luanalysis-library-windows-${{ matrix.arch }}
+          path: luanalysis-library-windows-${{ matrix.arch }}.zip
 
   release:
     name: Release
