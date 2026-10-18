@@ -1,0 +1,59 @@
+diff --git a/src/sema/check/native_runtime_tables.rs b/src/sema/check/native_runtime_tables.rs
+index 3d61975..a3e6479 100644
+--- a/src/sema/check/native_runtime_tables.rs
++++ b/src/sema/check/native_runtime_tables.rs
+@@ -356,6 +356,32 @@ impl<'p, 's> Checker<'p, 's> {
+     }
+ 
+     fn native_runtime_numeric_store_view(&mut self, reference: NativeRuntimeTableRef, value: TypeId) -> TypeId {
++        // As TypeScript evolves an array by an element store, a store through a numeric key keeps
++        // a sequence a sequence (`n = n + 1; list[n] = value`): its open tail, and any element the
++        // key may name, holds the value. It may leave a hole; useful over sound.
++        let sequence = {
++            let TypeData::NativeTable(data) = self.data(reference.view) else { unreachable!("a runtime table retains its original table view"); };
++            let data = (**data).clone_in(self.arena);
++            self.native_array_source_is_sequence(&data) && !data.is_array
++        };
++        if sequence {
++            // Storing nil adds no element; a sequence it empties a cell of (`list[#list] = nil`)
++            // remains one.
++            if self.without_undefined(value).is_never() { return self.intern(TypeData::NativeRuntimeTable(reference)) }
++            let appended = self.native_runtime_append_view(reference, value);
++            let Some(appended_reference) = self.native_runtime_table_ref(appended) else { return appended };
++            let TypeData::NativeTable(data) = self.data(appended_reference.view) else { return appended };
++            let mut description = (**data).clone_in(self.arena);
++            let present = self.without_undefined(value);
++            let present = self.widened(present);
++            let mut fields = data.fields.to_vec();
++            for field in &mut fields {
++                if matches!(field.key, NativeTableKey::Integer(_)) { field.value = self.union_reduced(&[field.value, present]); }
++            }
++            description.fields = self.list(&fields);
++            let view = self.intern(TypeData::NativeTable(self.boxed(description)));
++            return self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { view, ..appended_reference }));
++        }
+         let TypeData::NativeTable(data) = self.data(reference.view) else { unreachable!("a runtime table retains its original table view"); };
+         let mut description = (**data).clone_in(self.arena);
+         let mut indexers = data.indexers.to_vec();
+@@ -457,6 +483,21 @@ impl<'p, 's> Checker<'p, 's> {
+             _ => None,
+         });
+         let reached = bound.map_or(present, |(bound, _)| self.resolved_assignment_type(bound, present));
++        // An element at or beyond a sequence's open tail is one of its elements.
++        if bound.is_none() && let NativeTableKey::Integer(index) = key
++            && !fields.iter().any(|field| field.key == key)
++            && let Some(tail) = data.sequence_tails.iter().filter(|tail| tail.start <= index).min_by_key(|tail| tail.start)
++        {
++            let start = tail.start;
++            let widened = self.widened(reached);
++            let mut tails = data.sequence_tails.to_vec();
++            let tail = tails.iter_mut().find(|tail| tail.start == start).expect("the selected tail");
++            tail.value = self.union_reduced(&[tail.value, widened]);
++            description.sequence_tails = self.list(&tails);
++            description.fresh = false;
++            let view = self.intern(TypeData::NativeTable(self.boxed(description)));
++            return self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { view, ..reference }));
++        }
+         if let Some(field) = fields.iter_mut().find(|field| field.key == key) {
+             // Validation uses the original schema. Narrow against the original
+             // written constructor bound, never the previous reached value.

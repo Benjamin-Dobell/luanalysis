@@ -2448,6 +2448,12 @@
       "patch": "vendor/patches/bun-sema-generic-correlated-slots.patch",
       "reason": "Keep a part of a correlated binding's view only if it relates to a type-variable slot by assignability, not comparability, as TypeScript does not compare undefined with an unconstrained parameter, through kernel ffe75c9.",
       "patch_sha256": "773d368d694b7b6036ef83f7712e11a77529c0b25c5876242a8af2279294efc7"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-evolving-sequences.patch",
+      "reason": "Keep a runtime table a sequence through numeric and literal-index stores, as TypeScript evolves an array by an element store, through kernel 8f44124.",
+      "patch_sha256": "3514b71f10f239713015325b31236a610cbc6164435b9a7eaa57a557f79ced6f"
     }
   ],
   "source_additions": {
@@ -2504,7 +2510,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "2f4fd051d530a1596f9ea01d0299add9f8ef59ba8356b92104350de18b4f451b",
+      "extracted_sha256": "4eef1549f07bfeedcfa701bf27f3e8ab0a42b7667ffc76f0aaaa7b4935c5dad8",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {

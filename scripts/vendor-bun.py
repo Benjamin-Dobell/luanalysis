@@ -629,6 +629,12 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Keep a part of a correlated binding's view only if it relates to a type-variable slot by assignability, not comparability, as TypeScript does not compare undefined with an unconstrained parameter, through kernel ffe75c9.",
 })
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_runtime_tables.rs",
+    "patch": "vendor/patches/bun-sema-evolving-sequences.patch",
+    "reason": "Keep a runtime table a sequence through numeric and literal-index stores, as TypeScript evolves an array by an element store, through kernel 8f44124.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
