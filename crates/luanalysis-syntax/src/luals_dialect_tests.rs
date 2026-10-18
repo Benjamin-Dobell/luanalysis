@@ -203,3 +203,12 @@ fn a_closing_parenthesis_after_a_type_starts_its_description_as_in_v1() {
     let StmtKind::LocalFunction { function, .. } = &file.statements[0].kind else { panic!("a function") };
     assert_eq!(function.annotations.params.len(), 1);
 }
+
+#[test]
+fn a_lua_comment_after_a_type_is_its_description() {
+    let file = checked("---@class Box\n---@field constraints nil | string[] -- OR\nlocal Box = {}\n---@param x number -- the value\nlocal function f(x) end\n");
+    let NamedTypeDeclarationKind::Record { fields, .. } = &file.type_declarations[0].kind else { panic!("a class") };
+    assert_eq!(fields.len(), 1);
+    let StmtKind::LocalFunction { function, .. } = &file.statements[1].kind else { panic!("a function") };
+    assert_eq!(function.annotations.params.len(), 1);
+}
