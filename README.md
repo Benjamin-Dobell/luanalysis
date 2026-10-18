@@ -377,7 +377,8 @@ and inspections. Definitions, references, highlights and renames follow locals, 
 alternative of a union), and type names in annotations, across files. Signature help shows each overload of the call being typed, highlights the argument's
 parameter, and selects the overload that the arguments typed so far resolve to. Hover, completion
 and signature help show what doc comments say: a declaration's description, and its parameters',
-results' and fields'.
+results' and fields'. Completion offers tag and type names in annotations, and inserts a
+function's call with its required parameters as placeholders.
 
 ## Library
 

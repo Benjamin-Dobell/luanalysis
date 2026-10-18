@@ -185,6 +185,8 @@ struct Query {
     /// The document's text, which the site indexes.
     lines: LineIndex,
     encoding: Encoding,
+    /// Whether the client inserts completion snippets.
+    snippets: bool,
 }
 
 enum Site {
@@ -272,6 +274,8 @@ struct Server {
     jobs: Option<mpsc::Sender<Job>>,
     queries: Option<mpsc::Sender<Query>>,
     encoding: Encoding,
+    /// Whether the client inserts completion snippets.
+    snippets: bool,
     initialized: bool,
     shutdown: bool,
     documents: HashMap<PathBuf, Document>,
@@ -297,6 +301,7 @@ impl Server {
             jobs: None,
             queries: None,
             encoding: Encoding::Utf16,
+            snippets: false,
             initialized: false,
             shutdown: false,
             documents: HashMap::new(),
@@ -457,6 +462,7 @@ impl Server {
     fn initialize(&mut self, params: &Json) -> Json {
         let encodings = params.path(&["capabilities", "general", "positionEncodings"]).and_then(Json::as_array).unwrap_or(&[]);
         self.encoding = if encodings.iter().any(|encoding| encoding.as_str() == Some("utf-8")) { Encoding::Utf8 } else { Encoding::Utf16 };
+        self.snippets = params.path(&["capabilities", "textDocument", "completion", "completionItem", "snippetSupport"]) == Some(&Json::Bool(true));
         if let Some(mut inputs) = self.inputs.take() {
             if inputs.files.is_empty() {
                 let root = params.get("rootUri").and_then(Json::as_str)
@@ -500,7 +506,7 @@ impl Server {
                 ("documentHighlightProvider", Json::from(true)),
                 ("renameProvider", Json::object([("prepareProvider", Json::from(true))])),
                 ("completionProvider", Json::object([
-                    ("triggerCharacters", Json::Array(vec![Json::from("."), Json::from(":")])),
+                    ("triggerCharacters", Json::Array(vec![Json::from("."), Json::from(":"), Json::from("@")])),
                 ])),
                 ("signatureHelpProvider", Json::object([
                     ("triggerCharacters", Json::Array(vec![Json::from("("), Json::from(",")])),
@@ -694,7 +700,7 @@ impl Server {
     fn query(&mut self, id: Json, path: PathBuf, site: Site, lines: LineIndex) {
         let mut overlays: HashMap<PathBuf, String> = self.documents.iter()
             .map(|(path, document)| (path.clone(), document.text.clone())).collect();
-        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), disk: self.disk_generation, site, lines, encoding: self.encoding };
+        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets };
         overlays.insert(path, query.text().to_owned());
         let query = Query { overlays, ..query };
         let unanswered = query.unanswered();
@@ -910,6 +916,7 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
     let Some(project) = load(inputs, workspace, loaded, query) else { return };
     let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
     let range = query.lines.range(site.word.start, site.word.end, query.encoding);
+    let called = query.lines.text[site.word.end..].trim_start_matches([' ', '\t']).starts_with(['(', '"', '\'', '{']);
     language_service::complete(project, options, workspace, file, site, |items| answer(Json::object([("isIncomplete", Json::from(false)), ("items", Json::Array(items.into_iter().map(|item| {
         let mut fields = vec![
             ("label".to_owned(), Json::from(item.label.as_str())),
@@ -919,9 +926,27 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
                 CompletionKind::Field => 5,
                 CompletionKind::Variable => 6,
                 CompletionKind::Keyword => 14,
+                CompletionKind::Class => 7,
+                CompletionKind::TypeParameter => 25,
             })),
             ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(item.label.as_str()))])),
         ];
+        // A callable inserts a call with its required parameters as placeholders, unless a call
+        // already follows.
+        if let Some((parameters, more)) = item.parameters.filter(|_| query.snippets && !called) {
+            let arguments: Vec<String> = parameters.iter().enumerate()
+                .map(|(index, name)| format!("${{{}:{}}}", index + 1, name.replace(['$', '}', '\\'], "")))
+                .collect();
+            // With no required parameter, the cursor goes between the parentheses if there are
+            // optional ones to type, and after them if there are none.
+            let snippet = match (arguments.is_empty(), more) {
+                (true, true) => format!("{}($0)", item.label),
+                (true, false) => format!("{}()$0", item.label),
+                (false, _) => format!("{}({})$0", item.label, arguments.join(", ")),
+            };
+            fields[2] = ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(snippet))]));
+            fields.push(("insertTextFormat".to_owned(), Json::from(2usize)));
+        }
         if let Some(detail) = item.detail { fields.push(("detail".to_owned(), Json::from(detail))); }
         if let Some(documentation) = item.documentation {
             fields.push(("documentation".to_owned(), markdown(documentation)));

@@ -30,6 +30,10 @@ pub enum CompletionContext {
     Name,
     /// A member after `.`, or after `:` when `method` is set.
     Member { method: bool },
+    /// A tag's name after `---@`.
+    Tag,
+    /// A type in an annotation: `---@param point Po`.
+    AnnotationType,
 }
 
 /// Where a completion was requested, and the text to check in its place.
@@ -51,6 +55,8 @@ pub enum CompletionKind {
     Field,
     Method,
     Keyword,
+    Class,
+    TypeParameter,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,6 +67,9 @@ pub struct CompletionItem {
     pub detail: Option<String>,
     /// What the item's declaration documents, as Markdown.
     pub documentation: Option<String>,
+    /// A callable's required parameters, which a call snippet fills in, and whether it takes
+    /// more (optional or variadic ones) after them.
+    pub parameters: Option<(Vec<String>, bool)>,
 }
 
 /// The completion site at a byte offset of `text`, or `None` where nothing is completed: inside
@@ -75,6 +84,9 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
     while end < bytes.len() && is_word(bytes[end]) { end += 1; }
     if bytes.get(start).is_some_and(u8::is_ascii_digit) { return None; }
     let tokens = luanalysis_syntax::lex(text).tokens;
+    if let Some(context) = annotation_context(text, &tokens, start, offset) {
+        return Some(CompletionSite { context, text: text.to_owned(), placeholder: Span { start, end: start }, word: start..end });
+    }
     for token in &tokens {
         let inside = match &token.kind {
             TokenKind::Comment(comment) => token.span.start < offset
@@ -113,6 +125,35 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
         placeholder: Span { start, end: start + PLACEHOLDER.len() },
         word: start..end,
     })
+}
+
+/// The completion an annotation takes at `offset`, when it is in a documentation comment: a tag
+/// name after `@`, or a type where the tag takes one. A tag's own names (`@param name`,
+/// `@class Name`) and its description are not completed.
+fn annotation_context(text: &str, tokens: &[luanalysis_syntax::Token], start: usize, offset: usize) -> Option<CompletionContext> {
+    let comment = tokens.iter().find(|token| matches!(&token.kind, TokenKind::Comment(comment) if comment.kind == CommentKind::Documentation)
+        && token.span.start < offset && offset <= token.span.end)?;
+    let line_start = text[..start].rfind('\n').map_or(0, |newline| newline + 1).max(comment.span.start);
+    let line = &text[line_start..start];
+    let content = line.trim_start().trim_start_matches('-').trim_start_matches(['[', '=']).trim_start();
+    let Some(tag) = content.strip_prefix('@') else {
+        // A line continuing a tag continues its type.
+        return (!content.trim().is_empty() || line.trim_start().starts_with("---")).then_some(CompletionContext::AnnotationType);
+    };
+    let name_end = tag.find(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_').unwrap_or(tag.len());
+    if name_end == tag.len() { return Some(CompletionContext::Tag); }
+    let (name, rest) = tag.split_at(name_end);
+    // The words a tag names before its type: `@param name`, `@field name`, `@cast name`.
+    let words = rest.split_whitespace().count() + usize::from(rest.ends_with(char::is_whitespace));
+    let typed = match name {
+        "type" | "return" | "vararg" | "not" | "as" | "overload" => true,
+        "param" | "field" | "cast" => words >= 2,
+        "class" | "shape" | "module" => rest.contains(':'),
+        "alias" => words >= 2,
+        "generic" => rest.contains(':'),
+        _ => false,
+    };
+    typed.then_some(CompletionContext::AnnotationType)
 }
 
 fn floor_char_boundary(text: &str, mut offset: usize) -> usize {
@@ -218,7 +259,37 @@ fn completions(
                 let documentation = receiver_type.as_ref()
                     .and_then(|receiver| member_documentation(project, registry, receiver, &name, &value, queries))
                     .map(|documentation| documentation_markdown(&documentation, true));
-                items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation });
+                let parameters = callable.then(|| required_parameters(&value, usize::from(method), queries)).flatten();
+                items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters });
+            }
+        }
+        CompletionContext::Tag => {
+            for tag in ["param", "return", "type", "class", "shape", "field", "alias", "generic", "overload", "vararg", "function", "operator", "not", "see", "module", "enum", "cast", "as"] {
+                items.push(CompletionItem { label: tag.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None });
+            }
+        }
+        CompletionContext::AnnotationType => {
+            let block = luanalysis_syntax::type_names(source.syntax(), &project.file(file).map(|file| file.source.clone()).unwrap_or_default())
+                .into_iter().find(|name| name.block.start <= site.word.start && site.word.start <= name.block.end).map(|name| name.block);
+            for other in &project.files {
+                let Some(syntax) = registry.source(other.id).map(|source| source.syntax()) else { continue };
+                for name in luanalysis_syntax::type_names(syntax, &other.source) {
+                    let kind = match name.kind {
+                        luanalysis_syntax::TypeNameKind::Declaration => CompletionKind::Class,
+                        luanalysis_syntax::TypeNameKind::Generic if other.id == file && Some(name.block) == block => CompletionKind::TypeParameter,
+                        _ => continue,
+                    };
+                    if name.name == PLACEHOLDER || items.iter().any(|item: &CompletionItem| item.label == name.name) { continue; }
+                    let documentation = (kind == CompletionKind::Class).then(|| luanalysis_syntax::documentation_at(syntax, &other.source, name.span.start))
+                        .map(|documentation| { let mut summary = documentation; summary.fields.clear(); documentation_markdown(&summary, false) })
+                        .filter(|markdown| !markdown.is_empty());
+                    items.push(CompletionItem { label: name.name, kind, detail: None, documentation, parameters: None });
+                }
+            }
+            for builtin in ["nil", "boolean", "number", "integer", "string", "table", "function", "userdata", "thread", "any", "unknown", "never", "void", "self", "fun"] {
+                if !items.iter().any(|item| item.label == builtin) {
+                    items.push(CompletionItem { label: builtin.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None });
+                }
             }
         }
         CompletionContext::Name => {
@@ -234,7 +305,11 @@ fn completions(
                 };
                 let documentation = binding_documentation(project, registry, file, binding)
                     .map(|documentation| documentation_markdown(&documentation, true));
-                items.push(CompletionItem { label: declaration.name.clone(), kind, detail, documentation });
+                let parameters = (kind == CompletionKind::Function).then(|| {
+                    let value = source.resolve_binding(binding, queries)?.constraint;
+                    required_parameters(&value, 0, queries)
+                }).flatten();
+                items.push(CompletionItem { label: declaration.name.clone(), kind, detail, documentation, parameters });
             }
             if let Some(environment) = source.global_environment()
                 && let Ok(environment) = queries.global_environment_type(environment)
@@ -244,13 +319,28 @@ fn completions(
                     let kind = if queries.call_signature_types(&value).is_empty() { CompletionKind::Variable } else { CompletionKind::Function };
                     let documentation = value_documentation(project, registry, &value, queries)
                         .map(|documentation| documentation_markdown(&documentation, true));
-                    items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation });
+                    let parameters = (kind == CompletionKind::Function).then(|| required_parameters(&value, 0, queries)).flatten();
+                    items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters });
                 }
             }
-            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None }));
+            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None }));
         }
     }
     items
+}
+
+/// The names of the required parameters of a callable's first signature, after the `hidden`
+/// ones a method call passes itself, and whether it takes more after them.
+fn required_parameters(value: &Type, hidden: usize, queries: &mut dyn luanalysis_engine::TypeQueries) -> Option<(Vec<String>, bool)> {
+    let head = queries.call_signature_types(value).into_iter().next()?;
+    let (parameters, _) = crate::describe_signature(&head, queries)?;
+    let parameters: Vec<&String> = parameters.iter().skip(hidden).collect();
+    let required: Vec<String> = parameters.iter()
+        .take_while(|parameter| !parameter.starts_with("...") && !parameter.split(':').next().is_some_and(|name| name.ends_with('?')))
+        .map(|parameter| parameter.split(':').next().unwrap_or_default().trim().to_owned())
+        .collect();
+    let more = parameters.len() > required.len();
+    Some((required, more))
 }
 
 /// The members of the receiver at `span`. Asked alone, the receiver has its type at its flow
@@ -1076,6 +1166,20 @@ mod tests {
             assert!(call(text).is_none(), "{text}");
         }
         assert!(call("f('a', |").is_some());
+    }
+
+    #[test]
+    fn annotations_complete_tags_and_types_but_not_the_names_they_declare() {
+        let context = |text: &str| site(text).map(|site| site.context);
+        assert_eq!(context("---@par|"), Some(CompletionContext::Tag));
+        assert_eq!(context("---@param point Po|"), Some(CompletionContext::AnnotationType));
+        assert_eq!(context("---@type |"), Some(CompletionContext::AnnotationType));
+        assert_eq!(context("---@return number, str|"), Some(CompletionContext::AnnotationType));
+        assert_eq!(context("---@class Point : Ba|"), Some(CompletionContext::AnnotationType));
+        assert_eq!(context("---@type\n---| str|"), Some(CompletionContext::AnnotationType));
+        assert_eq!(context("---@param po|"), None);
+        assert_eq!(context("---@class Po|"), None);
+        assert_eq!(context("-- not documentation @param x Po|"), None);
     }
 
     #[test]

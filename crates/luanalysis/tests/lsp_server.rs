@@ -545,3 +545,40 @@ fn members_and_types_are_defined_referenced_highlighted_and_renamed() {
     assert_eq!(response.matches(r#""newText":"left""#).count(), 3, "{response}");
     server.finish();
 }
+
+#[test]
+fn annotations_complete_type_names_and_calls_complete_their_parameters() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "--- A point.\n---@class Point\nlocal Point = {}\n\n---@param x number\n---@param y? number\nlocal function move(x, y) end\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":"{}","capabilities":{{"textDocument":{{"completion":{{"completionItem":{{"snippetSupport":true}}}}}}}}}}}}"#, uri(&root)));
+    server.wait(|message| message.contains(r#""id":1"#));
+    server.send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    // A type in an annotation completes the project's types, with their documentation.
+    let typed = format!("{source}---@param p Po\nlocal function f(p) end\n");
+    server.change(&main, 2, &typed);
+    let line = source.matches('\n').count() as u32;
+    let response = server.request(3, "textDocument/completion", &main, line, 14);
+    assert!(response.contains(r#""label":"Point","kind":7"#) && response.contains("A point."), "{response}");
+    assert!(response.contains(r#""label":"number""#), "{response}");
+    // A tag's name after `---@`.
+    let typed = format!("{source}---@par\n");
+    server.change(&main, 3, &typed);
+    let response = server.request(4, "textDocument/completion", &main, line, 7);
+    assert!(response.contains(r#""label":"param""#), "{response}");
+    // A function inserts a call with its required parameters as placeholders.
+    let typed = format!("{source}mov\n");
+    server.change(&main, 4, &typed);
+    let response = server.request(5, "textDocument/completion", &main, line, 3);
+    assert!(response.contains(r#""newText":"move(${1:x})$0""#) && response.contains(r#""insertTextFormat":2"#), "{response}");
+    // Unless the call is already written.
+    let typed = format!("{source}mov(1)\n");
+    server.change(&main, 5, &typed);
+    let response = server.request(6, "textDocument/completion", &main, line, 3);
+    assert!(response.contains(r#""newText":"move""#), "{response}");
+    server.finish();
+}
