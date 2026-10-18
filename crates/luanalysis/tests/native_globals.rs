@@ -53,15 +53,21 @@ fn self_referential_later_writes_and_written_union_contracts_use_the_original_in
 }
 
 #[test]
-fn global_writes_from_generic_bodies_cannot_silently_escape_original_type_parameters() {
-    let source = "---@generic T\n---@param value T\n---@return void\nlocal function publish(value) stored = value end\npublish(42)\n";
+fn a_global_assigned_in_a_generic_function_is_any_rather_than_its_type_parameter() {
+    let source = "---@generic T\n---@param value T\n---@return void\nlocal function publish(value) stored = value end\npublish(42)\nlocal copy = stored\n";
     let report = check(source);
-    let gate = report
-        .diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code == "LUA2037")
-        .expect("generic global write needs an explicit environment contract");
-    assert_eq!(&source[gate.span.start..gate.span.end], "stored");
+    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn globals_assigned_only_inside_functions_are_declared_there() {
+    // Lua creates a global wherever one is assigned. A top-level assignment in any file still
+    // declares it, and other writes are checked against that.
+    let source = "local function init()\n    ROOTDIR = '/tmp/'\n    local function nested() function HANDLER() return 1 end end\nend\ninit()\n---@type string\nlocal path = ROOTDIR .. 'x'\n---@type number\nlocal handled = HANDLER()\nCOUNT = 0\nlocal function bump() COUNT = 'x' end\n";
+    let report = check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "'x'");
 }
 
 #[test]

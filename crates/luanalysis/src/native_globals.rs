@@ -10,7 +10,7 @@ use luanalysis_engine::{
     ValueDeclarationHeader, ValuePack,
 };
 use luanalysis_project::SourceRole;
-use luanalysis_syntax::{DocFunctionDeclarationId, ExprKind, File, Name, Span, StmtKind, TypeExpr};
+use luanalysis_syntax::{DocFunctionDeclarationId, Expr, ExprKind, File, Name, Span, Stmt, StmtKind, TypeExpr};
 use std::collections::BTreeMap;
 use crate::collections::{HashMap, HashSet};
 
@@ -30,6 +30,9 @@ pub(super) struct GlobalDeclarationSource {
     pub initializer: Option<NativeExpressionKey>,
     pub expanded_initializer: bool,
     pub namespace: Option<NamespaceTarget>,
+    /// An assignment inside a function body or block. It declares the global only where no
+    /// file assigns it at top level, as Lua creates a global wherever one is assigned.
+    pub nested: bool,
 }
 
 pub(super) struct NativeGlobals {
@@ -112,6 +115,7 @@ impl NativeGlobals {
                                     )
                                 }),
                             namespace,
+                            nested: false,
                         });
                     }
                 }
@@ -158,6 +162,7 @@ impl NativeGlobals {
                         initializer: None,
                         expanded_initializer: false,
                         namespace,
+                        nested: false,
                     });
                 }
                 _ => result.unsupported.push(statement.span),
@@ -169,10 +174,82 @@ impl NativeGlobals {
             result.declarations.push(GlobalDeclarationSource {
                 key,name:declaration.name.clone(),statement:declaration.span,annotation:None,
                 function:None,documentation_function:Some(declaration.id),initializer:None,
-                expanded_initializer:false,namespace:None,
+                expanded_initializer:false,namespace:None,nested:false,
             });
         }
+        result.nested_declarations(snapshot, file, bound, functions, expressions);
         result
+    }
+
+    /// Globals assigned inside function bodies and blocks: `name = value` and `function name()`.
+    fn nested_declarations(
+        &mut self,
+        snapshot: u64,
+        file: &File,
+        bound: &BoundFile,
+        functions: &HashMap<(usize, usize), u32>,
+        expressions: &super::NativeExpressions,
+    ) {
+        let mut statements = Vec::new();
+        for statement in &file.statements {
+            nested_statements(statement, &mut statements);
+        }
+        for (_, source) in expressions.sources() {
+            if let ExprKind::Function(function) = &source.expression.kind {
+                for statement in &function.body {
+                    statements.push(statement);
+                    nested_statements(statement, &mut statements);
+                }
+            }
+        }
+        statements.sort_by_key(|statement| (statement.span.start, statement.span.end));
+        statements.dedup_by_key(|statement| (statement.span.start, statement.span.end));
+        for statement in statements {
+            let global = |target: &Expr| match &target.kind {
+                ExprKind::Name(name) if bound.binding_at(name.span.start).is_none()
+                    && name.text != "_ENV" && !nonstandard_environment(bound, name.span.start) => Some(name.clone()),
+                _ => None,
+            };
+            match &statement.kind {
+                StmtKind::Assign { targets, values, annotation } => {
+                    for (index, target) in targets.iter().enumerate() {
+                        let Some(name) = global(target) else { continue };
+                        let key = NativeValueDeclarationKey { snapshot, index: self.declarations.len() as u32 };
+                        self.declarations.push(GlobalDeclarationSource {
+                            key,
+                            name,
+                            statement: statement.span,
+                            annotation: annotation.as_ref().and_then(|annotation| annotation.types.get(index)).cloned(),
+                            function: None,
+                            documentation_function: None,
+                            initializer: values.get(index).map(|value| expressions.key_for_span(value.span)),
+                            expanded_initializer: index >= values.len() && values.last().is_some_and(|value| {
+                                matches!(value.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Vararg)
+                            }),
+                            namespace: None,
+                            nested: true,
+                        });
+                    }
+                }
+                StmtKind::FunctionDeclaration { target, function, method_span: None } => {
+                    let Some(name) = global(target) else { continue };
+                    let key = NativeValueDeclarationKey { snapshot, index: self.declarations.len() as u32 };
+                    self.declarations.push(GlobalDeclarationSource {
+                        key,
+                        name,
+                        statement: statement.span,
+                        annotation: None,
+                        function: Some(NativeFunctionKey { snapshot, index: functions[&(function.span.start, function.span.end)] }),
+                        documentation_function: None,
+                        initializer: None,
+                        expanded_initializer: false,
+                        namespace: None,
+                        nested: true,
+                    });
+                }
+                _ => {}
+            }
+        }
     }
 
     fn declaration(&self, key: NativeValueDeclarationKey) -> Option<&GlobalDeclarationSource> {
@@ -200,6 +277,13 @@ impl ProjectGlobalIndex {
         let mut replaced_standard_names = 0;
         let mut loader_mutated = false;
         let mut declaration_owners = HashSet::default();
+        // A global assigned at the top level of any file is declared there; assignments inside
+        // functions declare only the globals nothing declares at top level.
+        let top_level: HashSet<&str> = sources.iter()
+            .flat_map(|source| source.globals.declarations.iter())
+            .filter(|declaration| !declaration.nested && declaration.namespace.is_none())
+            .map(|declaration| declaration.name.text.as_str())
+            .collect();
         for source in sources {
             if source.source_role() != SourceRole::Declaration {
                 let (names, loader) = source.flow.environment_replacements();
@@ -208,7 +292,7 @@ impl ProjectGlobalIndex {
             }
             let mut introduced = HashSet::default();
             for declaration in &source.globals.declarations {
-                if declaration.namespace.is_some() {
+                if declaration.namespace.is_some() || declaration.nested && top_level.contains(declaration.name.text.as_str()) {
                     continue;
                 }
                 let explicit = source.is_global_contract_owner(declaration);
@@ -470,6 +554,14 @@ impl NativeRegistry {
             }
             return Type::Nil;
         };
+        // A value assigned inside a generic function may be of its type parameters, which mean
+        // nothing outside it: the global it declares is `any`.
+        if source.nested
+            && let Some(owner) = self.expressions.get(expression).owner
+            && (!self.function_type_parameters(owner, queries).is_empty() || !self.function_outer_type_parameters(owner).is_empty())
+        {
+            return Type::Any;
+        }
         let mut checker = self.checker_for_expression(
             expression,
             luanalysis_engine::NativeCheckMode::empty(),
@@ -692,20 +784,6 @@ impl Checker<'_> {
                     .any(|source| source.name.span == name.span && source.annotation.is_some())
             })
     }
-    pub(crate) fn rejects_generic_global_write(&mut self, name: &Name) -> bool {
-        let (Some(native), Some(function)) = (self.native, self.type_context) else {
-            return false;
-        };
-        if native
-            .function_type_parameters(function, self.engine)
-            .is_empty()
-            && native.function_outer_type_parameters(function).is_empty()
-        {
-            return false;
-        }
-        self.error("LUA2037", name.span, "Global writes from a generic function require an original environment write contract that prevents declaration type parameters escaping their owner.");
-        true
-    }
     pub(crate) fn global_read(&mut self, name: &Name) -> Option<Type> {
         let native = self.native?;
         if native.project_globals.is_none() { return None; }
@@ -851,5 +929,33 @@ mod standard_callable_pending_tests {
                 },
             );
         }
+    }
+}
+
+/// The statements nested in `statement`: the bodies of its blocks, loops, branches and named
+/// functions, at any depth. Function expressions are visited from their own sources.
+fn nested_statements<'a>(statement: &'a Stmt, result: &mut Vec<&'a Stmt>) {
+    let mut visit = |body: &'a [Stmt], result: &mut Vec<&'a Stmt>| {
+        for statement in body {
+            result.push(statement);
+            nested_statements(statement, result);
+        }
+    };
+    match &statement.kind {
+        StmtKind::Block { body, .. }
+        | StmtKind::While { body, .. }
+        | StmtKind::Repeat { body, .. }
+        | StmtKind::NumericFor { body, .. }
+        | StmtKind::GenericFor { body, .. } => visit(body, result),
+        StmtKind::LocalFunction { function, .. } | StmtKind::FunctionDeclaration { function, .. } => visit(&function.body, result),
+        StmtKind::If { branches, else_branch } => {
+            for branch in branches {
+                visit(&branch.body, result);
+            }
+            if let Some(branch) = else_branch {
+                visit(&branch.body, result);
+            }
+        }
+        _ => {}
     }
 }
