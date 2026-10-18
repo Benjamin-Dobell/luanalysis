@@ -854,6 +854,39 @@ fn checks_show_progress_and_every_workspace_folder_is_checked() {
 }
 
 #[test]
+fn a_members_origins_and_documentation_are_its_owners() {
+    let root = fixture();
+    let library = root.join("api.def.lua");
+    // Members declared apart from their classes: every declaration's candidates include each
+    // same-spelled one, of whichever owner.
+    fs::write(&library, "---@class Color\n---@field r number\n\n--- Sets the colour's components.\n---@function Color:set(r: number, g: number, b: number): void\n\n---@class Vector\n---@field x number\n\n--- Sets the vector's components.\n---@param x number # New X.\n---@function Vector:set(x: number): void\n\n---@class Object\n---@field name string\n\n--- This object's type.\n---@deprecated Use type instead.\n---@field Object.tag string\n\n---@shape ButtonElement\n---@field tag \"Button\"\n").unwrap();
+    let main = root.join("main.lua");
+    let text = "---@param vector Vector\nlocal function move(vector)\n    vector:set(1)\nend\n---@param element ButtonElement\nlocal function probe(element)\n    local kind = element.tag\n    local other = element.\nend\n";
+    fs::write(&main, text).unwrap();
+    let library_argument = library.to_str().unwrap().to_owned();
+    let mut server = Server::start(&["--lua-version", "5.2", "--library", &library_argument]);
+    server.initialize(&root);
+    server.open(&main, text);
+    server.diagnostics(&main, |_| true);
+    let hover = server.request(2, "textDocument/hover", &main, 2, 12);
+    assert!(hover.contains("Sets the vector's components.") && hover.contains("New X.") && !hover.contains("colour"), "{hover}");
+    let signature = server.request(3, "textDocument/signatureHelp", &main, 2, 15);
+    assert!(signature.contains("Sets the vector's components.") && !signature.contains("colour"), "{signature}");
+    let definition = server.request(4, "textDocument/definition", &main, 2, 12);
+    assert_eq!(definition.matches(r#""uri""#).count(), 1, "{definition}");
+    assert!(definition.contains(r#""start":{"line":11,"#), "{definition}");
+    // Another class's deprecated field is not this shape's.
+    let definition = server.request(5, "textDocument/definition", &main, 6, 26);
+    assert_eq!(definition.matches(r#""uri""#).count(), 1, "{definition}");
+    assert!(definition.contains(r#""start":{"line":21,"#), "{definition}");
+    let completion = server.request(6, "textDocument/completion", &main, 7, 26);
+    assert!(completion.contains(r#""label":"tag""#) && completion.contains(r#""detail":"\"Button\"""#), "{completion}");
+    assert!(!completion.contains("Deprecated") && !completion.contains(r#""tags":[1]"#), "{completion}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn host_callbacks_complete_as_implementations() {
     let root = fixture();
     let library = root.join("api.def.lua");

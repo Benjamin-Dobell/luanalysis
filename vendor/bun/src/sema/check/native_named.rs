@@ -1306,6 +1306,26 @@ impl<'p, 's> Checker<'p, 's> {
         }).collect()
     }
 
+    /// The members named `name` that member lookup applies to `ty`, a named object: its own
+    /// first, then each base's, with each callable member's further overloads. For the language
+    /// service's origins and documentation, which must not take a same-spelled member of
+    /// another owner.
+    pub fn native_object_member_origins(&mut self, ty: TypeId, name: &[u8]) -> Vec<NativeTypeMemberId> {
+        let TypeData::NativeObject(reference) = *self.data(ty) else { return Vec::new() };
+        let Ok(members) = self.native_object_members(reference) else { return Vec::new() };
+        let mut origins = Vec::new();
+        for member in members {
+            let Ok(provider) = self.native_named_provider(member.owner.declaration) else { continue };
+            let NativeTypeMemberKey::Fixed(key) = provider.type_member_header(self, member.member).key else { continue };
+            let Ok(NativeTableKey::String(atom)) = key.normalize() else { continue };
+            if self.atoms().bytes(atom) != name { continue }
+            for member in std::iter::once(member.member).chain(member.overloads) {
+                if !origins.contains(&member) { origins.push(member); }
+            }
+        }
+        origins
+    }
+
     /// Written value context needs only this key's declared recipes. Resolving
     /// an inferred store's receiver here would let an initializer demand its
     /// own prospective schema before its actual allocation is published.

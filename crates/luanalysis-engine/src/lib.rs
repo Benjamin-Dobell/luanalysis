@@ -848,6 +848,9 @@ pub trait TypeQueries {
     /// The language service's members of a value: each string key a read of it accepts, with the
     /// type that read returns.
     fn type_members(&mut self, _: &Type) -> Vec<(String, Type)> { Vec::new() }
+    /// The declared members named `name` that member lookup applies to `ty`, a named object:
+    /// its own, then its bases', with overloads. Not another owner's same-spelled member.
+    fn named_object_member_origins(&mut self, _: &Type, _: &str) -> Vec<NativeTypeMemberKey> { Vec::new() }
     /// TypeScript's comparable relation, in either direction, without widening: whether `==` can
     /// equate the two (`isTypeEqualityComparableTo`).
     fn types_comparable(&mut self, _: &Type, _: &Type) -> bool { true }
@@ -1377,6 +1380,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
 
     fn assertion_overlap(&mut self, source: &Type, target: &Type) -> bool { self.assertion_overlap_native(source, target) }
     fn type_members(&mut self, ty: &Type) -> Vec<(String, Type)> { self.type_members_native(ty) }
+    fn named_object_member_origins(&mut self, ty: &Type, name: &str) -> Vec<NativeTypeMemberKey> { self.named_object_member_origins_native(ty, name) }
     fn types_comparable(&mut self, left: &Type, right: &Type) -> bool { self.types_comparable_native(left, right) }
     fn exclude_type(&mut self, source: &Type, excluded: &Type) -> Type { self.exclude_type_native(source, excluded) }
     fn exclude_pack(&mut self, source: &ValuePack, fixed: &[Type], tail: Option<&Type>) -> ValuePack { self.exclude_pack_native(source, fixed, tail) }

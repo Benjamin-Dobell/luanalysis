@@ -12,6 +12,13 @@ impl SessionQueries<'_, '_, '_> {
 }
 
 impl SessionQueries<'_, '_, '_> {
+    pub(super) fn named_object_member_origins_native(&mut self, ty: &Type, name: &str) -> Vec<crate::NativeTypeMemberKey> {
+        let ty = import_type(self.checker, self.handles, ty);
+        self.checker.native_object_member_origins(ty, name.as_bytes()).into_iter()
+            .map(|member| crate::NativeTypeMemberKey { snapshot: member.snapshot, index: member.index })
+            .collect()
+    }
+
     pub(super) fn types_comparable_native(&mut self, left: &Type, right: &Type) -> bool {
         let left = import_type(self.checker, self.handles, left);
         let right = import_type(self.checker, self.handles, right);

@@ -1229,9 +1229,19 @@ pub(crate) fn member_sites(
             if !sites.contains(&site) { sites.push(site); }
             continue;
         }
+        // The members checking applies to this object, its own and then inherited ones: a
+        // declaration's candidates include every same-spelled augmentation, of any owner.
+        let applied = queries.named_object_member_origins(&ty, name);
+        if !applied.is_empty() {
+            for member in applied {
+                if let Some(site) = registry.member_site(member) && !sites.contains(&site) { sites.push(site); }
+            }
+            continue;
+        }
         for member in registry.type_declaration_members(key) {
             let named = matches!(registry.type_member_header(member).key, TypeMemberKeyRecipe::Fixed(LuaKey::String(bytes)) if bytes == name.as_bytes());
-            if named && let Some(site) = registry.member_site(member) && !sites.contains(&site) { sites.push(site); }
+            if named && queries.named_member_owner(member).map_or(true, |owner| owner.declaration == key)
+                && let Some(site) = registry.member_site(member) && !sites.contains(&site) { sites.push(site); }
         }
         if sites.is_empty() { pending.extend(registry.type_declaration_bases(key, queries)); }
     }
