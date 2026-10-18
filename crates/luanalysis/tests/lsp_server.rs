@@ -367,3 +367,32 @@ fn globals_are_defined_referenced_and_renamed_across_files() {
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn completions_include_declared_fields_and_functions_of_a_library_class() {
+    let root = fixture();
+    let library = root.join("api.def.lua");
+    fs::write(&library, "---@class tts__Vector\n---@field x number\n\n---@class tts__Object : userdata\n---@field guid string\n\n---@function tts__Object.getPosition(): tts__Vector\n\n---@function tts__Object:getName(): string\n").unwrap();
+    let extra = root.join("extra.def.lua");
+    fs::write(&extra, "---@field tts__Object.color string\n\n---@function tts__Object.highlight(color: string)\n").unwrap();
+    let main = root.join("main.lua");
+    let source = "---@param object tts__Object\nlocal function show(object)\n    return object.guid\nend\n";
+    fs::write(&main, source).unwrap();
+    let library_argument = library.to_str().unwrap().to_owned();
+    let extra_argument = extra.to_str().unwrap().to_owned();
+    let mut server = Server::start(&["--lua-version", "5.4", "--library", &library_argument, "--library", &extra_argument]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    let typed = source.replace("    return object.guid\n", "    object.\n    return object.guid\n");
+    server.change(&main, 2, &typed);
+    let response = server.request(3, "textDocument/completion", &main, 2, 11);
+    for label in ["guid", "getPosition", "getName", "color", "highlight"] {
+        assert!(response.contains(&format!(r#""label":"{label}""#)), "{label}: {response}");
+    }
+    let typed = source.replace("    return object.guid\n", "    object:\n    return object.guid\n");
+    server.change(&main, 3, &typed);
+    let response = server.request(4, "textDocument/completion", &main, 2, 11);
+    assert!(response.contains(r#""label":"getName""#), "{response}");
+    server.finish();
+}

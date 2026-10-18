@@ -190,6 +190,7 @@ fn completions(
     queries: &mut dyn luanalysis_engine::TypeQueries,
 ) -> Vec<CompletionItem> {
     let Some(source) = registry.source(file) else { return Vec::new() };
+    registry.prepare_documentation_members(queries);
     let mut items = Vec::new();
     match site.context {
         CompletionContext::Member { method } => {

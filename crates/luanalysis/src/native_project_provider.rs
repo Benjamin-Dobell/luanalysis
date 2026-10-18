@@ -488,6 +488,11 @@ impl ProjectRegistry {
             .expect("native source key belongs to this immutable project provider")
     }
 
+    /// Ready documentation members (`---@function Owner.member`) for queries made outside a check,
+    /// as a language service's are: checking a file's declarations prepares its own.
+    pub(crate) fn prepare_documentation_members(&self, queries: &mut dyn TypeQueries) {
+        for file in &self.files { file.source.prepare_documentation_scopes(queries); }
+    }
     /// The checker registry of one source, for the language service.
     pub(crate) fn source(&self, file: FileId) -> Option<&NativeRegistry> {
         self.files.iter().find(|registry| registry.id == file).map(|registry| &registry.source)
