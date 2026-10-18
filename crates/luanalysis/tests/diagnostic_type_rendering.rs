@@ -143,6 +143,15 @@ fn a_callable_union_member_groups_its_own_nullable_return_type() {
     no_placeholders(&diagnostic.message);
 }
 
+#[test]
+fn a_function_type_written_without_results_is_shown_without_them() {
+    let source = "---@param value string | fun(id: number)\nlocal function read(value) value(1) end\n---@return fun(name: string)\nlocal function make() return 1 end\n";
+    let report = check(source);
+    // Unspecified results are not shown, nor do they need parentheses in a union.
+    assert!(error(&report, "TS2349", "has no call signatures").message.contains("'string | fun(id: number)'"), "{:#?}", report.diagnostics);
+    assert!(error(&report, "TS2322", "Expected").message.ends_with("Expected: fun(name: string)."), "{:#?}", report.diagnostics);
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 const OVERLOAD: &str = "-- Unicode: λ\r\n---@shape Receipt<T>\r\n---@field value T\r\n\r\n---@overload fun(value:Receipt<number[]>):Receipt<number[]>\r\n---@param value Receipt<string[]>\r\n---@return Receipt<string[]>\r\nlocal function exchange(value) return value end\r\n";
