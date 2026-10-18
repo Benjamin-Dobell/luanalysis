@@ -67,19 +67,25 @@ impl NativeGlobals {
                     annotation,
                 } => {
                     for (index, target) in targets.iter().enumerate() {
-                        let Some((name, namespace)) = namespace::declaration_target(
-                            target,
-                            snapshot,
-                            member_start,
-                            result.declarations.iter().filter(|source| source.namespace.is_some()).count(),
-                        ) else {
+                        let target_declaration = match environment_member(target, bound) {
+                            Some(name) => Some((name, None)),
+                            None => namespace::declaration_target(
+                                target,
+                                snapshot,
+                                member_start,
+                                result.declarations.iter().filter(|source| source.namespace.is_some()).count(),
+                            ),
+                        };
+                        let Some((name, namespace)) = target_declaration else {
                             result.unsupported.push(target.span);
                             continue;
                         };
                         let root = namespace.as_ref().map_or(&name, |target| &target.root);
-                        if bound.binding_at(root.span.start).is_some()
+                        // A `_G.name` target's environment was resolved above.
+                        let environment_member = namespace.is_none() && !matches!(target.kind, ExprKind::Name(_));
+                        if !environment_member && (bound.binding_at(root.span.start).is_some()
                             || root.text == "_ENV"
-                            || nonstandard_environment(bound, root.span.start)
+                            || nonstandard_environment(bound, root.span.start))
                         {
                             result.unsupported.push(target.span);
                             continue;
@@ -124,23 +130,29 @@ impl NativeGlobals {
                     function,
                     ..
                 } => {
-                    let Some((name, namespace)) = namespace::declaration_target(
-                        target,
-                        snapshot,
-                        member_start,
-                        result
-                            .declarations
-                            .iter()
-                            .filter(|source| source.namespace.is_some())
-                            .count(),
-                    ) else {
+                    let target_declaration = match environment_member(target, bound) {
+                        Some(name) => Some((name, None)),
+                        None => namespace::declaration_target(
+                            target,
+                            snapshot,
+                            member_start,
+                            result
+                                .declarations
+                                .iter()
+                                .filter(|source| source.namespace.is_some())
+                                .count(),
+                        ),
+                    };
+                    let Some((name, namespace)) = target_declaration else {
                         result.unsupported.push(target.span);
                         continue;
                     };
                     let root = namespace.as_ref().map_or(&name, |target| &target.root);
-                    if bound.binding_at(root.span.start).is_some()
+                    // A `function _G.name()` target's environment was resolved above.
+                    let environment_member = namespace.is_none() && !matches!(target.kind, ExprKind::Name(_));
+                    if !environment_member && (bound.binding_at(root.span.start).is_some()
                         || root.text == "_ENV"
-                        || nonstandard_environment(bound, root.span.start)
+                        || nonstandard_environment(bound, root.span.start))
                     {
                         result.unsupported.push(target.span);
                         continue;
@@ -208,7 +220,7 @@ impl NativeGlobals {
             let global = |target: &Expr| match &target.kind {
                 ExprKind::Name(name) if bound.binding_at(name.span.start).is_none()
                     && name.text != "_ENV" && !nonstandard_environment(bound, name.span.start) => Some(name.clone()),
-                _ => None,
+                _ => environment_member(target, bound),
             };
             match &statement.kind {
                 StmtKind::Assign { targets, values, annotation } => {
@@ -852,6 +864,25 @@ impl Checker<'_> {
         let value = self.expression_at_current_flow(expression, None);
         self.engine.global_environment_origin(&value)
     }
+}
+
+/// The global a `_G.name` or `_G["name"]` target names when `_G` is the original global
+/// environment (no local `_G`, no rebound `_ENV`), as `name` would.
+fn environment_member(target: &Expr, bound: &BoundFile) -> Option<Name> {
+    let (base, name) = match &target.kind {
+        ExprKind::Field { base, name } => (base, name.clone()),
+        ExprKind::Index { base, index } => match &index.kind {
+            // A quoted name: its span is inside the quotes.
+            ExprKind::String(bytes) if index.span.end - index.span.start == bytes.len() + 2
+                && bytes.first().is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+                && bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') =>
+                (base, Name { text: String::from_utf8_lossy(bytes).into_owned(), span: Span::new(index.span.start + 1, index.span.end - 1) }),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let ExprKind::Name(root) = &base.kind else { return None };
+    (root.text == "_G" && bound.binding_at(root.span.start).is_none() && !nonstandard_environment(bound, root.span.start)).then_some(name)
 }
 
 fn nonstandard_environment(bound: &BoundFile, offset: usize) -> bool {

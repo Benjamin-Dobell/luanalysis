@@ -504,7 +504,12 @@ impl Checker<'_> {
         if let ExprKind::Name(name) = &target.kind {
             if self.bound.binding_at(name.span.start).is_none() {
                 if let Some(constraint) = self.global_read(name) {
-                    let value = self.function_expression(function);
+                    // The declared global types the implementation's parameters and body, as an
+                    // assignment's target does (`name = function(...) end`).
+                    let value = match self.native {
+                        Some(native) => native.source_named_function_value(function, target, &constraint, self.check_mode, self.engine),
+                        None => self.function_expression(function),
+                    };
                     self.compatible(&value, &constraint, function.span);
                     return;
                 }
