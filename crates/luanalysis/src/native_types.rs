@@ -465,6 +465,32 @@ impl NativeTypes {
         self.outer_parameters_in_context(NativeTypeContext::Function(owner), used)
     }
 
+    /// Whether `owner` or any context enclosing it declares a type parameter (or a self type):
+    /// otherwise nothing it holds can depend on one.
+    pub(super) fn any_parameter_in_scope(&self, owner: NativeFunctionKey) -> bool {
+        self.any_parameter_from(vec![NativeTypeContext::Function(owner)])
+    }
+
+    /// Whether any context enclosing `owner`, but not `owner` itself, declares a type parameter
+    /// (or a self type): otherwise `owner` has no outer type parameters.
+    pub(super) fn any_outer_parameter(&self, owner: NativeFunctionKey) -> bool {
+        let Some(scope) = self.scopes.get(&NativeTypeContext::Function(owner)) else { return true };
+        self.any_parameter_from(scope.parent.into_iter().chain(scope.method_owner.get()).chain(scope.documentation_parents.iter().copied()).collect())
+    }
+
+    fn any_parameter_from(&self, mut pending: Vec<NativeTypeContext>) -> bool {
+        let mut visited = HashSet::default();
+        while let Some(owner) = pending.pop() {
+            if !visited.insert(owner) { continue }
+            let Some(scope) = self.scopes.get(&owner) else { continue };
+            if !scope.parameters.is_empty() || scope.self_parameter.is_some() { return true }
+            pending.extend(scope.parent);
+            pending.extend(scope.method_owner.get());
+            pending.extend(scope.documentation_parents.iter().copied());
+        }
+        false
+    }
+
     pub(super) fn outer_parameters_in_context(
         &self,
         owner: NativeTypeContext,

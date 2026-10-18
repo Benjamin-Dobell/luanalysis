@@ -7,6 +7,16 @@ use crate::native_named::{NamedDeclarationSource, RuntimeAttachmentKind};
 use luanalysis_engine::{NativeTypeDeclarationKey, Type};
 use luanalysis_syntax::{NamedRecordKind, NamedTypeDeclarationKind, Span};
 
+/// The file's shape attachments by binding and by initializer, so that finding the shape a
+/// local or a table constructor is attached to does not recompute every directive.
+#[derive(Default)]
+pub(super) struct ShapeAttachmentIndex {
+    directives: Vec<ShapeAttachmentDirective>,
+    by_binding: std::collections::HashMap<BindingId, usize>,
+    by_initializer: std::collections::HashMap<(usize, usize), usize>,
+}
+
+#[derive(Clone)]
 pub(super) struct ShapeAttachmentDirective {
     pub declaration: NativeTypeDeclarationKey,
     pub declaration_span: Span,
@@ -76,21 +86,28 @@ impl NativeRegistry {
             explicit: attachment.has_explicit_type_annotation,
         }))
     }
-    pub(super) fn shape_for_binding(&self, binding: BindingId) -> Option<ShapeAttachmentDirective> {
-        self.named.declarations().iter().find_map(|source| {
-            self.shape_attachment_directive(source)
-                .ok()
-                .flatten()
-                .filter(|directive| directive.binding == binding)
+    fn shape_attachment_index(&self) -> &ShapeAttachmentIndex {
+        self.shape_attachments.get_or_init(|| {
+            let mut index = ShapeAttachmentIndex::default();
+            for source in self.named.declarations() {
+                let Ok(Some(directive)) = self.shape_attachment_directive(source) else { continue };
+                let position = index.directives.len();
+                index.by_binding.entry(directive.binding).or_insert(position);
+                if let Some(initializer) = directive.initializer {
+                    index.by_initializer.entry((initializer.start, initializer.end)).or_insert(position);
+                }
+                index.directives.push(directive);
+            }
+            index
         })
     }
+    pub(super) fn shape_for_binding(&self, binding: BindingId) -> Option<ShapeAttachmentDirective> {
+        let index = self.shape_attachment_index();
+        Some(index.directives[*index.by_binding.get(&binding)?].clone())
+    }
     pub(super) fn shape_for_initializer(&self, span: Span) -> Option<ShapeAttachmentDirective> {
-        self.named.declarations().iter().find_map(|source| {
-            self.shape_attachment_directive(source)
-                .ok()
-                .flatten()
-                .filter(|directive| directive.initializer == Some(span))
-        })
+        let index = self.shape_attachment_index();
+        Some(index.directives[*index.by_initializer.get(&(span.start, span.end))?].clone())
     }
 }
 

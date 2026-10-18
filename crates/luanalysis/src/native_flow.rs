@@ -147,8 +147,16 @@ impl OriginalWriteMetadata {
 pub(super) struct NativeFlowRecipes {
     pub program: flow::ProgramFlow,
     functions: HashMap<NativeFunctionKey, u32>,
+    /// The function each region's graph is the body of; the main chunk has none.
+    graph_functions: Vec<Option<NativeFunctionKey>>,
     references: Vec<Vec<flow::Reference>>,
     reference_indices: Vec<HashMap<flow::Reference, u32>>,
+    /// References every region has: the environment's members, one key deep, for each key
+    /// the file uses and each global the project declares. They are stored once, after each
+    /// region's own references (`SHARED_REFERENCE_BASE`), rather than copied into every region,
+    /// which made a large file's setup quadratic in its functions and keys.
+    shared_references: Vec<flow::Reference>,
+    shared_reference_indices: HashMap<flow::Reference, u32>,
     values: Vec<ValueRecipe>,
     evaluation_values: HashMap<flow::EvaluationId, u32>,
     iterator_values: HashMap<flow::IteratorId, u32>,
@@ -206,13 +214,11 @@ impl NativeFlowSources {
     /// addresses. It creates no expression, flow node, value or declaration.
     pub(super) fn seed_original_global_reference_keys(&mut self, names: &[Vec<u8>]) {
         let recipes = Arc::make_mut(&mut self.recipes);
-        for region in 0..recipes.references.len() {
-            for name in names {
-                let path = vec![flow::Key::String(name.clone())];
-                for root in [flow::ReferenceRoot::EnvironmentObject, flow::ReferenceRoot::EnvironmentCell] {
-                    intern_reference(&mut recipes.references[region], &mut recipes.reference_indices[region],
-                        &flow::Reference { root, path: path.clone() });
-                }
+        for name in names {
+            let path = vec![flow::Key::String(name.clone())];
+            for root in [flow::ReferenceRoot::EnvironmentObject, flow::ReferenceRoot::EnvironmentCell] {
+                intern_reference(&mut recipes.shared_references, &mut recipes.shared_reference_indices,
+                    &flow::Reference { root, path: path.clone() });
             }
         }
     }
@@ -301,7 +307,10 @@ impl NativeFlowSources {
         let mut result = NativeFlowRecipes {
             references: vec![Vec::new(); program.graphs.len()],
             reference_indices: vec![HashMap::default(); program.graphs.len()],
+            shared_references: Vec::new(),
+            shared_reference_indices: HashMap::default(),
             functions: HashMap::default(),
+            graph_functions: vec![None; program.graphs.len()],
             values: Vec::new(),
             evaluation_values: HashMap::default(),
             iterator_values: HashMap::default(),
@@ -329,13 +338,12 @@ impl NativeFlowSources {
         };
         for (span, index) in functions {
             let graph = result.program.functions[span];
-            result.functions.insert(
-                NativeFunctionKey {
-                    snapshot: native_snapshot,
-                    index: *index,
-                },
-                graph,
-            );
+            let key = NativeFunctionKey {
+                snapshot: native_snapshot,
+                index: *index,
+            };
+            result.functions.insert(key, graph);
+            result.graph_functions[graph as usize].get_or_insert(key);
         }
         for evaluation in &result.program.evaluations {
             let expression = &result.program.expression(evaluation.expression).expression;
@@ -595,12 +603,12 @@ impl NativeFlowSources {
                     intern_reference(&mut result.references[region], &mut result.reference_indices[region], &reference);
                 }
             }
-            for key in &members {
-                intern_reference(&mut result.references[region], &mut result.reference_indices[region],
-                    &flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: vec![key.clone()] });
-                intern_reference(&mut result.references[region], &mut result.reference_indices[region],
-                    &flow::Reference { root: flow::ReferenceRoot::EnvironmentCell, path: vec![key.clone()] });
-            }
+        }
+        for key in &members {
+            intern_reference(&mut result.shared_references, &mut result.shared_reference_indices,
+                &flow::Reference { root: flow::ReferenceRoot::EnvironmentObject, path: vec![key.clone()] });
+            intern_reference(&mut result.shared_references, &mut result.shared_reference_indices,
+                &flow::Reference { root: flow::ReferenceRoot::EnvironmentCell, path: vec![key.clone()] });
         }
         result.write_metadata = OriginalWriteMetadata::new(&result);
         Self::from_shared_recipes(Arc::new(result))
@@ -867,9 +875,7 @@ impl NativeFlowSources {
     }
 
     pub(super) fn function_for_graph(&self, graph: NativeGraphKey) -> Option<NativeFunctionKey> {
-        self.functions
-            .iter()
-            .find_map(|(key, region)| (*region == graph.region).then_some(*key))
+        *self.graph_functions.get(graph.region as usize)?
     }
     pub(super) fn binding_function_owner(&self,binding:BindingId)->Option<NativeFunctionKey> {
         self.function_for_graph(self.graph(*self.binding_owners.get(&binding)?,0))
@@ -999,7 +1005,10 @@ impl NativeFlowSources {
         if !self.contains_graph(key.graph) {
             return None;
         }
-        self.references[key.graph.region as usize].get(key.reference as usize)
+        match key.reference.checked_sub(SHARED_REFERENCE_BASE) {
+            Some(shared) => self.shared_references.get(shared as usize),
+            None => self.references[key.graph.region as usize].get(key.reference as usize),
+        }
     }
 
     pub(super) fn value(&self, key: NativeValueKey) -> Option<&ValueRecipe> {
@@ -1024,12 +1033,11 @@ impl NativeFlowSources {
         if !self.contains_graph(graph) {
             return None;
         }
-        self.reference_indices[graph.region as usize]
+        let index = self.reference_indices[graph.region as usize]
             .get(reference)
-            .map(|reference| NativeReferenceKey {
-                graph,
-                reference: *reference,
-            })
+            .copied()
+            .or_else(|| Some(SHARED_REFERENCE_BASE + self.shared_reference_indices.get(reference)?))?;
+        Some(NativeReferenceKey { graph, reference: index })
     }
 
     pub(super) fn evaluation_value(&self, evaluation: flow::EvaluationId) -> NativeValueKey {
@@ -1483,6 +1491,9 @@ impl NativeFlowSources {
         }
     }
 }
+
+/// The first index of the references every region shares, above any region's own.
+pub(super) const SHARED_REFERENCE_BASE: u32 = 1 << 31;
 
 fn intern_reference(
     references: &mut Vec<flow::Reference>,

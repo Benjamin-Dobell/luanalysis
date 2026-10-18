@@ -395,8 +395,8 @@ Checking the 434 Lua files of [lua-language-server](https://github.com/LuaLS/lua
 | Checker | Wall time | CPU time |
 | --- | --- | --- |
 | lua-language-server 3.19.2 `--check` | 40.2 s | 39.3 s |
-| Luanalysis, one thread | 4.0 s | 3.7 s |
-| Luanalysis, ten threads | 2.2 s | 7.3 s |
+| Luanalysis, one thread | 2.9 s | 2.6 s |
+| Luanalysis, ten threads | 1.6 s | 4.9 s |
 
 In the language server, completions typically answer in under 75 ms.
 

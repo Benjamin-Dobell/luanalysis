@@ -1,5 +1,5 @@
 use super::*;
-use crate::native_flow::SignatureFrame;
+use crate::native_flow::{SHARED_REFERENCE_BASE, SignatureFrame};
 use luanalysis_engine::{Engine, FunctionType, NativeReferenceKey};
 use std::sync::Arc;
 
@@ -78,12 +78,14 @@ fn fingerprint(provider: &ProjectRegistry) -> Vec<String> {
                     .map(|node| format!("{:?}:{:?}", node.id, node.kind)),
             );
             let graph = source.flow.graph(graph.index, 0);
-            for reference in 0.. {
-                let key = NativeReferenceKey { graph, reference };
-                let Some(original) = source.flow.source_reference(key) else {
-                    break;
-                };
-                result.push(format!("{key:?}:{original:?}"));
+            for first in [0, SHARED_REFERENCE_BASE] {
+                for reference in first.. {
+                    let key = NativeReferenceKey { graph, reference };
+                    let Some(original) = source.flow.source_reference(key) else {
+                        break;
+                    };
+                    result.push(format!("{key:?}:{original:?}"));
+                }
             }
         }
     }

@@ -12,6 +12,16 @@ use luanalysis_syntax::{NamedRecordKind, NamedTypeDeclarationKind, Span};
 pub(super) struct NativeClassDefinitions {
     snapshot: u64,
     sources: Vec<NativeNamedKey>,
+    /// Each source's directive, and the sources by initializer and by binding, so that
+    /// finding the definition an expression initializes does not recompute every directive.
+    index: std::cell::OnceCell<ClassDefinitionIndex>,
+}
+#[derive(Default)]
+struct ClassDefinitionIndex {
+    directives: Vec<Result<Option<ClassDefinitionDirective>, &'static str>>,
+    by_source: std::collections::HashMap<NativeNamedKey, usize>,
+    by_initializer: std::collections::HashMap<(usize, usize), usize>,
+    by_binding: std::collections::HashMap<BindingId, usize>,
 }
 impl NativeClassDefinitions {
     pub(super) fn new(snapshot: u64, named: &NativeNamed) -> Self {
@@ -31,9 +41,16 @@ impl NativeClassDefinitions {
                 })
                 .map(|source| source.key)
                 .collect(),
+            index: Default::default(),
         }
     }
+    /// Directives depend on the source role and the project's merged names, which are set up
+    /// before checking starts.
+    pub(super) fn invalidate(&mut self) {
+        self.index.take();
+    }
 }
+#[derive(Clone)]
 pub(crate) struct ClassDefinitionDirective {
     pub key: NativeClassDefinitionKey,
     pub declaration: NativeTypeDeclarationKey,
@@ -54,8 +71,40 @@ impl NativeRegistry {
         self.named
             .declaration(*self.class_definitions.sources.get(key.index as usize)?)
     }
+    fn class_definition_index(&self) -> &ClassDefinitionIndex {
+        self.class_definitions.index.get_or_init(|| {
+            let mut index = ClassDefinitionIndex::default();
+            for (position, &key) in self.class_definitions.sources.iter().enumerate() {
+                let directive = match self.named.declaration(key) {
+                    Some(source) => self.compute_class_definition_directive(position, source),
+                    None => Ok(None),
+                };
+                index.by_source.insert(key, position);
+                if let Ok(Some(directive)) = &directive {
+                    index.by_initializer.entry((directive.initializer.start, directive.initializer.end)).or_insert(position);
+                    if let Some(binding) = directive.binding {
+                        index.by_binding.entry(binding).or_insert(position);
+                    }
+                }
+                index.directives.push(directive);
+            }
+            index
+        })
+    }
     pub(crate) fn class_definition_directive(
         &self,
+        source: &NamedDeclarationSource,
+    ) -> Result<Option<ClassDefinitionDirective>, &'static str> {
+        let index = self.class_definition_index();
+        match index.by_source.get(&source.key) {
+            Some(&position) => index.directives[position].clone(),
+            // Not a class with an attachment.
+            None => Ok(None),
+        }
+    }
+    fn compute_class_definition_directive(
+        &self,
+        index: usize,
         source: &NamedDeclarationSource,
     ) -> Result<Option<ClassDefinitionDirective>, &'static str> {
         if !matches!(
@@ -124,12 +173,6 @@ impl NativeRegistry {
         let [value] = attachment.local_values.as_slice() else {
             return Err("class definition needs one initializer");
         };
-        let index = self
-            .class_definitions
-            .sources
-            .iter()
-            .position(|key| *key == source.key)
-            .expect("original definition allocated before demands");
         Ok(Some(ClassDefinitionDirective {
             key: NativeClassDefinitionKey {
                 snapshot: self.snapshot,
@@ -154,24 +197,16 @@ impl NativeRegistry {
         queries.named_declared_type(directive.declaration).ok()
     }
     fn class_definition_for_binding(&self, binding: BindingId) -> Option<ClassDefinitionDirective> {
-        self.class_definitions.sources.iter().find_map(|&key| {
-            self.class_definition_directive(self.named.declaration(key)?)
-                .ok()
-                .flatten()
-                .filter(|directive| directive.binding == Some(binding))
-        })
+        let index = self.class_definition_index();
+        index.directives[*index.by_binding.get(&binding)?].clone().ok().flatten()
     }
     /// Whether the expression at `span` initializes a class definition.
     pub(crate) fn is_class_definition_initializer(&self, span: Span) -> bool {
         self.class_definition_for_initializer(span).is_some()
     }
     fn class_definition_for_initializer(&self, span: Span) -> Option<ClassDefinitionDirective> {
-        self.class_definitions.sources.iter().find_map(|&key| {
-            self.class_definition_directive(self.named.declaration(key)?)
-                .ok()
-                .flatten()
-                .filter(|directive| directive.initializer == span)
-        })
+        let index = self.class_definition_index();
+        index.directives[*index.by_initializer.get(&(span.start, span.end))?].clone().ok().flatten()
     }
 }
 impl Checker<'_> {

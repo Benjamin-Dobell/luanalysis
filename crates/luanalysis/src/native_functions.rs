@@ -96,7 +96,11 @@ pub(super) struct NativeRegistry {
     /// The `---@type` of each value assigned to a local by an annotated assignment statement,
     /// by the value's span. Computed once per registry.
     assignment_annotations: std::cell::OnceCell<HashMap<(usize, usize), luanalysis_syntax::TypeAnnotation>>,
+    /// The inline casts of each expression, by its span, so that finding them does not scan the
+    /// file's casts for every expression.
+    expression_assertion_index: std::cell::OnceCell<HashMap<(usize, usize), Vec<usize>>>,
     class_definitions: class_definitions::NativeClassDefinitions,
+    shape_attachments: std::cell::OnceCell<shape_attachment::ShapeAttachmentIndex>,
     methods: methods::NativeMethods,
     metatables: metatables::NativeMetatables,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
@@ -331,7 +335,9 @@ impl NativeRegistry {
             runtime_tables,
             runtime_store_owners: Default::default(),
             assignment_annotations: Default::default(),
+            expression_assertion_index: Default::default(),
             class_definitions,
+            shape_attachments: Default::default(),
             methods,
             metatables,
             project_names: None,
@@ -443,6 +449,7 @@ impl NativeRegistry {
     pub(crate) fn set_source_role(&mut self, role: luanalysis_project::SourceRole) {
         if self.source_role != role {
             self.source_role = role;
+            self.class_definitions.invalidate();
             if role == luanalysis_project::SourceRole::Declaration {
                 for method in self.methods.sources() {
                     if let Some(owner) = method.declaration_owner {
@@ -463,6 +470,7 @@ impl NativeRegistry {
     }
     pub(super) fn set_project_names(&mut self, names: std::rc::Rc<project_provider::ProjectNamedIndex>) {
         self.header_metadata.get_mut().invalidate();
+        self.class_definitions.invalidate();
         self.project_names = Some(names);
     }
 
@@ -547,7 +555,16 @@ impl NativeRegistry {
     }
 
     pub(super) fn expression_assertions(&self, expression: Span) -> Vec<luanalysis_syntax::ExpressionAssertion> {
-        self.file.expression_assertions.iter().filter(|assertion| assertion.expression == expression).cloned().collect()
+        let index = self.expression_assertion_index.get_or_init(|| {
+            let mut index: HashMap<(usize, usize), Vec<usize>> = HashMap::default();
+            for (position, assertion) in self.file.expression_assertions.iter().enumerate() {
+                index.entry((assertion.expression.start, assertion.expression.end)).or_default().push(position);
+            }
+            index
+        });
+        index.get(&(expression.start, expression.end)).map_or_else(Vec::new, |positions| {
+            positions.iter().map(|&position| self.file.expression_assertions[position].clone()).collect()
+        })
     }
 
     pub(super) fn packs(&self) -> &NativePacks {
@@ -2954,10 +2971,19 @@ impl NativeTypeProvider for NativeRegistry {
         &self,
         key: NativeFunctionKey,
     ) -> Vec<NativeTypeParameterKey> {
+        // Only an enclosing parameter, or a contextual self, can be an outer one: without either,
+        // there is nothing to find in the function's annotations.
+        let context = NativeTypeContext::Function(key);
+        if !self.types.any_outer_parameter(key)
+            && !self.metatable_annotation_function(context).is_some_and(|function| self.method_owner(function).is_none()
+                && self.contextual_self_dependency(function).is_some())
+        {
+            return Vec::new();
+        }
         let mut used = HashSet::default();
         self.function_type_dependencies(key, &mut used, &mut HashSet::default(), &mut HashSet::default());
         let mut outer = self.types.outer_parameters(key, &used);
-        self.extend_contextual_self_dependencies(NativeTypeContext::Function(key), &used, &mut outer);
+        self.extend_contextual_self_dependencies(context, &used, &mut outer);
         outer
     }
     fn function_outer_type_parameter_instances(&self,key:NativeFunctionKey,queries:&mut dyn TypeQueries)->Vec<Type>{

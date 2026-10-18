@@ -97,16 +97,14 @@ fn declaration_shape(value: Option<NativeVariableDeclaration>) -> Option<Declara
 
 fn compare_every_reference(sources: &NativeFlowSources, context: u64) {
     for (region, references) in sources.references.iter().enumerate() {
-        for index in 0..references.len() {
-            let reference = NativeReferenceKey {
-                graph: sources.graph(region as u32, context),
-                reference: index as u32,
-            };
+        let shared = sources.shared_references.iter().filter(|reference| !sources.reference_indices[region].contains_key(reference));
+        for original in references.iter().chain(shared) {
+            let reference = sources.reference_key(sources.graph(region as u32, context), original).unwrap();
             assert_eq!(
                 declaration_shape(sources.reference_declaration(reference)),
                 declaration_shape(scanned_declaration(sources, reference)),
                 "original reference {:?}",
-                references[index]
+                original
             );
         }
     }

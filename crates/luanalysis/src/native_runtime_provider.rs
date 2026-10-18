@@ -154,6 +154,16 @@ impl NativeRegistry {
         key: NativeTypeDeclarationKey,
     ) -> Option<TypeDeclarationHeader> {
         let source = self.runtime_tables.schema(key)?;
+        let header = |outer| TypeDeclarationHeader {
+            kind: TypeDeclarationKind::RuntimeTable,
+            name: String::new(),
+            object_form: Some(ObjectDeclarationForm::Record),
+            parameters: Vec::new(),
+            outer_parameters: outer,
+        };
+        // Only type parameters in scope where the table is created can be outer parameters, and
+        // most tables are created where there are none.
+        if !source.owner.is_some_and(|owner| self.types.any_parameter_in_scope(owner)) { return Some(header(Vec::new())) }
         let mut used = HashSet::default();
         self.value_type_dependencies(
             &self.expressions().get(source.key).expression,
@@ -161,7 +171,9 @@ impl NativeRegistry {
             &mut HashSet::default(),
             &mut HashSet::default(),
         );
-        for store in self.runtime_tables.stores() {
+        for (index, store) in self.runtime_tables.stores().iter().enumerate() {
+            // Only this table's own stores describe its members.
+            if self.runtime_store_owner(index) != Some(source.key) { continue }
             if let Some((annotation, _)) = &store.annotation {
                 let context = self
                     .expressions()
@@ -222,13 +234,7 @@ impl NativeRegistry {
         });
         outer.sort_by_key(|key| (key.snapshot, key.index));
         outer.dedup();
-        Some(TypeDeclarationHeader {
-            kind: TypeDeclarationKind::RuntimeTable,
-            name: String::new(),
-            object_form: Some(ObjectDeclarationForm::Record),
-            parameters: Vec::new(),
-            outer_parameters: outer,
-        })
+        Some(header(outer))
     }
     pub(crate) fn runtime_schema_seed(
         &self,
