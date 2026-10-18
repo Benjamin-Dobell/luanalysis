@@ -81,6 +81,8 @@ pub struct CompletionItem {
     /// A callback's implementation: its parameters' names, and whether `function` is inserted
     /// before its name.
     pub implementation: Option<(Vec<String>, bool)>,
+    /// Whether its declaration is `---@deprecated`.
+    pub deprecated: bool,
 }
 
 /// The completion site at a byte offset of `text`, or `None` where nothing is completed: inside
@@ -285,16 +287,17 @@ fn completions(
                     (true, false) => CompletionKind::Function,
                 };
                 let documentation = receiver_type.as_ref()
-                    .and_then(|receiver| member_documentation(project, registry, receiver, &name, &value, queries))
-                    .map(|documentation| documentation_markdown(&documentation, true));
+                    .and_then(|receiver| member_documentation(project, registry, receiver, &name, &value, queries));
+                let deprecated = documentation.as_ref().is_some_and(|documentation| documentation.deprecated.is_some());
+                let documentation = documentation.map(|documentation| documentation_markdown(&documentation, true));
                 let parameters = callable.then(|| required_parameters(&value, usize::from(method), queries)).flatten();
-                items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters, implementation: None });
+                items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters, implementation: None, deprecated });
             }
         }
         CompletionContext::FunctionName => items.extend(callback_implementations(project, registry, file, site, false, queries)),
         CompletionContext::Tag => {
             for tag in ["param", "return", "type", "class", "shape", "field", "alias", "generic", "overload", "vararg", "function", "operator", "not", "see", "module", "enum", "cast", "as"] {
-                items.push(CompletionItem { label: tag.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None });
+                items.push(CompletionItem { label: tag.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false });
             }
         }
         CompletionContext::AnnotationType => {
@@ -312,12 +315,12 @@ fn completions(
                     let documentation = (kind == CompletionKind::Class).then(|| luanalysis_syntax::documentation_at(syntax, &other.source, name.span.start))
                         .map(|documentation| { let mut summary = documentation; summary.fields.clear(); documentation_markdown(&summary, false) })
                         .filter(|markdown| !markdown.is_empty());
-                    items.push(CompletionItem { label: name.name, kind, detail: None, documentation, parameters: None, implementation: None });
+                    items.push(CompletionItem { label: name.name, kind, detail: None, documentation, parameters: None, implementation: None, deprecated: false });
                 }
             }
             for builtin in ["nil", "boolean", "number", "integer", "string", "table", "function", "userdata", "thread", "any", "unknown", "never", "void", "self", "fun"] {
                 if !items.iter().any(|item| item.label == builtin) {
-                    items.push(CompletionItem { label: builtin.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None });
+                    items.push(CompletionItem { label: builtin.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false });
                 }
             }
         }
@@ -332,13 +335,14 @@ fn completions(
                     bind::DeclarationKind::LocalFunction => CompletionKind::Function,
                     _ => CompletionKind::Variable,
                 };
-                let documentation = binding_documentation(project, registry, file, binding)
-                    .map(|documentation| documentation_markdown(&documentation, true));
+                let documentation = binding_documentation(project, registry, file, binding);
+                let deprecated = documentation.as_ref().is_some_and(|documentation| documentation.deprecated.is_some());
+                let documentation = documentation.map(|documentation| documentation_markdown(&documentation, true));
                 let parameters = (kind == CompletionKind::Function).then(|| {
                     let value = source.resolve_binding(binding, queries)?.constraint;
                     required_parameters(&value, 0, queries)
                 }).flatten();
-                items.push(CompletionItem { label: declaration.name.clone(), kind, detail, documentation, parameters, implementation: None });
+                items.push(CompletionItem { label: declaration.name.clone(), kind, detail, documentation, parameters, implementation: None, deprecated });
             }
             if let Some(environment) = source.global_environment()
                 && let Ok(environment) = queries.global_environment_type(environment)
@@ -346,15 +350,17 @@ fn completions(
                 for (name, value) in queries.type_members(&environment) {
                     if !is_identifier(&name) || items.iter().any(|item| item.label == name) { continue; }
                     let kind = if queries.call_signature_types(&value).is_empty() { CompletionKind::Variable } else { CompletionKind::Function };
-                    let documentation = value_documentation(project, registry, &value, queries)
-                        .map(|documentation| documentation_markdown(&documentation, true));
+                    let documentation = global_documentation(project, registry, &name)
+                        .or_else(|| value_documentation(project, registry, &value, queries));
+                    let deprecated = documentation.as_ref().is_some_and(|documentation| documentation.deprecated.is_some());
+                    let documentation = documentation.map(|documentation| documentation_markdown(&documentation, true));
                     let parameters = (kind == CompletionKind::Function).then(|| required_parameters(&value, 0, queries)).flatten();
-                    items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters, implementation: None });
+                    items.push(CompletionItem { label: name, kind, detail: Some(describe_native(&value, queries, &mut Vec::new())), documentation, parameters, implementation: None, deprecated });
                 }
             }
             // A statement of its own may begin a callback's implementation.
             if site.statement { items.extend(callback_implementations(project, registry, file, site, true, queries)); }
-            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None }));
+            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false }));
         }
     }
     items
@@ -399,6 +405,7 @@ fn callback_implementations(
             documentation,
             parameters: None,
             implementation,
+            deprecated: false,
         });
     }
     items
@@ -745,6 +752,9 @@ fn expression_type(
 /// Documentation as Markdown: the description, then each parameter's and result's.
 pub fn documentation_markdown(documentation: &Documentation, parameters: bool) -> String {
     let mut sections = Vec::new();
+    if let Some(deprecated) = &documentation.deprecated {
+        sections.push(if deprecated.is_empty() { "**Deprecated.**".to_owned() } else { format!("**Deprecated:** {deprecated}") });
+    }
     if !documentation.description.is_empty() { sections.push(documentation.description.clone()); }
     if parameters {
         let lines: Vec<String> = documentation.params.iter()
@@ -846,6 +856,24 @@ fn member_documentation(
     value_documentation(project, registry, value, queries)
 }
 
+/// The documentation of the global `name`: what its declaration's doc comments say, whether it
+/// is declared by a statement or a `---@function` tag.
+fn global_documentation(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    name: &str,
+) -> Option<Documentation> {
+    registry.global_sites(name).into_iter().find_map(|(file, span, tag)| {
+        let (source, text) = (registry.source(file)?, project.file(file)?);
+        let documentation = if tag {
+            luanalysis_syntax::documentation_at(source.syntax(), &text.source, span.start)
+        } else {
+            luanalysis_syntax::documentation_above(source.syntax(), &text.source, span.start)
+        };
+        (!documentation.is_empty()).then_some(documentation)
+    })
+}
+
 /// The documentation of a local or parameter: the doc comments above its declaration, or for a
 /// parameter, its function's `---@param`.
 fn binding_documentation(
@@ -938,7 +966,13 @@ fn documentation_at_offset(
         if let Some(documentation) = binding_documentation(project, registry, file, binding) { return Some(documentation); }
         if source.bound().declaration(binding).kind == bind::DeclarationKind::Parameter { return None; }
     }
-    let value = expression_type(registry, file, name?, queries)?;
+    let name = name?;
+    if let Some(text) = registry.source(file).zip(project.file(file)).and_then(|(_, text)| text.source.get(name.start..name.end))
+        && let Some(documentation) = global_documentation(project, registry, text)
+    {
+        return Some(documentation);
+    }
+    let value = expression_type(registry, file, name, queries)?;
     value_documentation(project, registry, &value, queries)
 }
 

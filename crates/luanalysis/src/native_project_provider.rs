@@ -522,6 +522,19 @@ impl ProjectRegistry {
                 .map(|source| (file.id, source.name.text.clone(), source.key, source.statement)))
             .collect()
     }
+    /// Where the global `name` is declared: each declaration's file, its statement or its
+    /// `---@function` tag, and whether that is a tag.
+    pub(crate) fn global_sites(&self, name: &str) -> Vec<(FileId, luanalysis_syntax::Span, bool)> {
+        self.files.iter().flat_map(|file| file.source.globals.declarations.iter()
+            .filter(|source| source.namespace.is_none() && source.name.text == name)
+            .map(|source| match source.documentation_function
+                .and_then(|id| file.source.syntax().function_declarations.iter().find(|declaration| declaration.id == id))
+            {
+                Some(declaration) => (file.id, declaration.span, true),
+                None => (file.id, source.statement, false),
+            }))
+            .collect()
+    }
     /// Where a member is declared: its file, its span, and whether that is a documentation tag.
     pub(crate) fn member_site(&self, key: NativeTypeMemberKey) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];

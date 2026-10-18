@@ -15,11 +15,13 @@ pub struct Documentation {
     pub returns: Vec<String>,
     /// Each `@field`'s description, by field name.
     pub fields: Vec<(String, String)>,
+    /// What a `---@deprecated` says, when the declaration is deprecated (empty when nothing).
+    pub deprecated: Option<String>,
 }
 
 impl Documentation {
     pub fn is_empty(&self) -> bool {
-        self.description.is_empty() && self.params.is_empty() && self.returns.is_empty() && self.fields.is_empty()
+        self.description.is_empty() && self.params.is_empty() && self.returns.is_empty() && self.fields.is_empty() && self.deprecated.is_none()
     }
 
     pub fn param(&self, name: &str) -> Option<&str> {
@@ -85,6 +87,7 @@ fn collect(file: &File, source: &str, first: usize, last: usize) -> Documentatio
     for comment in &file.comments[first..=last] {
         if !standalone(source, comment.span.start) { continue; }
         let (parsed, _) = crate::types::annotations(comment);
+        if parsed.deprecated.is_some() { documentation.deprecated = parsed.deprecated.clone(); }
         let prose = parsed.prose.join("\n");
         if !prose.trim().is_empty() { description.push(prose.trim().to_owned()); }
         for tag in parsed.descriptions {

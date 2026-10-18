@@ -862,3 +862,31 @@ fn host_callbacks_complete_as_implementations() {
     assert!(response.contains(r#""newText":"onObjectDrop(player_color, object)\n\t\nend""#) && !response.contains("insertTextFormat"), "{response}");
     server.finish();
 }
+
+#[test]
+fn deprecated_declarations_are_marked_and_explained() {
+    let root = fixture();
+    let library = root.join("api.def.lua");
+    fs::write(&library, "--- Summary explaining the old API and its replacement.\n---@deprecated Use newApi instead.\n---@function oldApi(value: string): boolean\n\n--- The new API.\n---@function newApi(value: string): boolean\n").unwrap();
+    let main = root.join("main.lua");
+    let source = "local ok = oldApi('x')\n";
+    fs::write(&main, source).unwrap();
+    let library_argument = library.to_str().unwrap().to_owned();
+    for (capability, marked) in [(r#"{"tagSupport":{"valueSet":[1]}}"#, r#""tags":[1]"#), (r#"{"deprecatedSupport":true}"#, r#""deprecated":true"#)] {
+        let mut server = Server::start(&["--lua-version", "5.4", "--library", &library_argument]);
+        server.send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":"{}","capabilities":{{"textDocument":{{"completion":{{"completionItem":{capability}}}}}}}}}}}"#, uri(&root)));
+        server.wait(|message| message.contains(r#""id":1"#));
+        server.send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
+        server.open(&main, source);
+        server.diagnostics(&main, |_| true);
+        server.change(&main, 2, &format!("{source}local other = old\n"));
+        let response = server.request(3, "textDocument/completion", &main, 1, 17);
+        let old_item = response.split(r#"{"label":"oldApi""#).nth(1).unwrap_or_default();
+        let old_item = &old_item[..old_item.find("{\"label\"").unwrap_or(old_item.len())];
+        assert!(old_item.contains(marked) && old_item.contains("**Deprecated:** Use newApi instead.") && old_item.contains("Summary explaining"), "{response}");
+        let new_item = response.split(r#"{"label":"newApi""#).nth(1).unwrap_or_default();
+        let new_item = &new_item[..new_item.find("{\"label\"").unwrap_or(new_item.len())];
+        assert!(!new_item.contains(marked) && new_item.contains("The new API."), "{response}");
+        server.finish();
+    }
+}

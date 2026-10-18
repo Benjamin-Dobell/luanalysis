@@ -19,6 +19,8 @@ pub(crate) struct ParsedDocumentation {
     pub prose: Vec<String>,
     /// Each tag's description: the text after its complete type.
     pub descriptions: Vec<TagDescription>,
+    /// `---@deprecated`, with what it says (the replacement to use), on its line or those after.
+    pub deprecated: Option<String>,
 }
 
 /// What a tag says beside its type: `---@param path string the file` describes `path`.
@@ -121,7 +123,15 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 .unwrap_or(tag.len());
             let tag_name = &tag[..tag_len];
             // LuaLS annotations that state nothing this checker uses: editor and diagnostic
-            // directives, visibility, deprecation, and operators and casts not yet modelled.
+            // directives, visibility, and operators and casts not yet modelled. Deprecation is
+            // documentation: the editor marks what it deprecates.
+            if tag_name == "deprecated" {
+                let mut text = tag[tag_len..].to_owned();
+                for continuation in lines[index + 1..].iter().take_while(|line| !is_tag_line(line)) {
+                    text.push_str(&continuation_text(continuation));
+                }
+                result.deprecated = Some(description_text(&text));
+            }
             if matches!(
                 tag_name,
                 "async" | "nodiscard" | "deprecated" | "package" | "private" | "protected"

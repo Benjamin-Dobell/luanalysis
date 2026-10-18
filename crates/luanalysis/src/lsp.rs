@@ -190,6 +190,17 @@ struct Query {
     encoding: Encoding,
     /// Whether the client inserts completion snippets.
     snippets: bool,
+    /// How the client marks deprecated completions.
+    deprecation: Deprecation,
+}
+
+/// How a client marks a deprecated completion: by tag (LSP 3.15), by the older flag, or not.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Deprecation {
+    Tag,
+    Flag,
+    #[default]
+    None,
 }
 
 enum Site {
@@ -319,6 +330,7 @@ struct Server {
     encoding: Encoding,
     /// Whether the client inserts completion snippets.
     snippets: bool,
+    deprecation: Deprecation,
     initialized: bool,
     shutdown: bool,
     documents: HashMap<PathBuf, Document>,
@@ -359,6 +371,7 @@ impl Server {
             queries: None,
             encoding: Encoding::Utf16,
             snippets: false,
+            deprecation: Deprecation::None,
             initialized: false,
             shutdown: false,
             documents: HashMap::new(),
@@ -680,6 +693,16 @@ impl Server {
         let encodings = params.path(&["capabilities", "general", "positionEncodings"]).and_then(Json::as_array).unwrap_or(&[]);
         self.encoding = if encodings.iter().any(|encoding| encoding.as_str() == Some("utf-8")) { Encoding::Utf8 } else { Encoding::Utf16 };
         self.snippets = params.path(&["capabilities", "textDocument", "completion", "completionItem", "snippetSupport"]) == Some(&Json::Bool(true));
+        let item = params.path(&["capabilities", "textDocument", "completion", "completionItem"]);
+        self.deprecation = if item.and_then(|item| item.path(&["tagSupport", "valueSet"])).and_then(Json::as_array)
+            .is_some_and(|tags| tags.iter().any(|tag| tag.as_u64() == Some(1)))
+        {
+            Deprecation::Tag
+        } else if item.and_then(|item| item.get("deprecatedSupport")) == Some(&Json::Bool(true)) {
+            Deprecation::Flag
+        } else {
+            Deprecation::None
+        };
         self.progress = params.path(&["capabilities", "window", "workDoneProgress"]) == Some(&Json::Bool(true));
         if let Some(mut inputs) = self.inputs.take() {
             if inputs.files.is_empty() {
@@ -1174,7 +1197,7 @@ impl Server {
     fn query(&mut self, id: Json, path: PathBuf, site: Site, lines: LineIndex) {
         let mut overlays: HashMap<PathBuf, String> = self.documents.iter()
             .map(|(path, document)| (path.clone(), document.text.clone())).collect();
-        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets && self.preferences.call_snippets };
+        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets && self.preferences.call_snippets, deprecation: self.deprecation };
         overlays.insert(path, query.text().to_owned());
         let query = Query { overlays, ..query };
         let unanswered = query.unanswered();
@@ -1441,6 +1464,13 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
             if query.snippets { fields.push(("insertTextFormat".to_owned(), Json::from(2usize))); }
         }
         if let Some(detail) = item.detail { fields.push(("detail".to_owned(), Json::from(detail))); }
+        if item.deprecated {
+            match query.deprecation {
+                Deprecation::Tag => fields.push(("tags".to_owned(), Json::Array(vec![Json::from(1usize)]))),
+                Deprecation::Flag => fields.push(("deprecated".to_owned(), Json::from(true))),
+                Deprecation::None => {}
+            }
+        }
         if let Some(documentation) = item.documentation {
             fields.push(("documentation".to_owned(), markdown(documentation)));
         }
