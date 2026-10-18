@@ -358,10 +358,28 @@ Directories are searched for `.lua` and `.ttslua` files.
 | `--library <path>` | Include declaration files or directories. |
 | `--module-root <dir>` | Search this directory for `require`d modules (repeatable, in order). |
 | `--package-path <templates>` | `package.path` templates, such as `?.lua;?/init.lua`. |
+| `--module-map <manifest.json>` | Resolve `require`s with a host's own module map instead (below). |
 | `--jobs <n>` | Worker threads; by default, one per core. |
 | `--watch` | Check again whenever sources or declarations change. |
 | `--no-implicit-any` | Require types for parameters and for locals whose type cannot be inferred. |
 | `--format text\|json` | Report format. JSON reports include exact source ranges. |
+
+A host whose modules are not files that `package.path` finds, such as a game's scripts, can
+supply its own module map: each source's modules, by their exact, case-sensitive names.
+
+```json
+{
+  "version": 1,
+  "sources": [
+    { "file": "main.lua", "imports": { "Case": "a.lua", "case": "b.lua" } }
+  ]
+}
+```
+
+Paths are relative to the manifest, or absolute, and name existing files. With a map, a
+module is what the map names for the importing source, or unresolved: neither `package.path`
+nor a `---@meta` declaration provides one. The manifest is read again for each check and each
+language-server query, so a host can change it as its scripts change.
 
 ## Editors
 
@@ -391,8 +409,9 @@ options of `check`, and without paths it checks the editor's workspace. It provi
   refused, with why.
 * The document outline and workspace symbol search, call and type hierarchies, inlay hints for
   inferred types and literal arguments' parameters, semantic highlighting, folding (including
-  `--region`), selection ranges, links for `require`d modules, and quick fixes for misspelled
-  names and members and for unused names.
+  `--region`), selection ranges, links for `require`d modules (calls the check takes as the
+  standard loader's, not a replacement's), and quick fixes for misspelled names and members and
+  for unused names.
 
 Editors' settings, in `initializationOptions` or `workspace/didChangeConfiguration` (directly or
 under `luanalysis`), apply on top of the command line's options: `luaVersion`, `libraries`,

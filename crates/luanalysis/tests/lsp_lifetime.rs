@@ -19,7 +19,7 @@ fn stopping_a_server_ends_a_check_in_progress_and_every_worker() {
     }
     let main = root.join("module0.lua");
     let (sender, messages) = mpsc::channel::<String>();
-    let inputs = CheckInputs { files: vec![root.clone()], libraries: Vec::new(), module_roots: Vec::new(), package_path: None };
+    let inputs = CheckInputs { files: vec![root.clone()], libraries: Vec::new(), module_roots: Vec::new(), package_path: None, module_map: None };
     let server = LanguageServer::start(inputs, ProjectCheckOptions { jobs: 2, ..ProjectCheckOptions::default() }, move |message| {
         let _ = sender.send(message.to_owned());
     });

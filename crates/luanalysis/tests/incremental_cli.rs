@@ -298,6 +298,59 @@ fn watch_reloads_declarations_and_discovers_added_and_deleted_sources() {
 }
 
 #[test]
+fn watch_resolves_a_module_map_for_each_importer_and_follows_its_manifest() {
+    let fixture = Fixture::new();
+    fixture.file("main.lua", "local module=require('Mod')\n---@type number\nlocal value=module.value\n");
+    let target = fixture.file("m1.lua", "return {value=42}\n");
+    fixture.file("m2.lua", "return {value='wrong'}\n");
+    let manifest = |file: &str| format!(r#"{{"version":1,"sources":[{{"file":"main.lua","imports":{{"Mod":"{file}"}}}}]}}"#);
+    let map = fixture.file("map.json", &manifest("m1.lua"));
+    let mut watch = fixture.watch(&["--lua-version", "5.2", "--stdlib", "require", "--module-map", "map.json", "main.lua"]);
+    watch.report(0, 2);
+    // A mapped module resolves for the source that imports it, not as no source's: nothing
+    // changed, so nothing is checked again.
+    watch.unchanged();
+    fs::write(&target, "return {value='wrong'}\n").unwrap();
+    assert!(watch.report(1, 2).contains("\"code\":\"TS2322\""));
+    fs::write(&target, "return {value=42}\n").unwrap();
+    watch.report(0, 2);
+    fs::write(&map, manifest("m2.lua")).unwrap();
+    assert!(watch.report(1, 2).contains("\"code\":\"TS2322\""));
+    watch.unchanged();
+}
+
+#[test]
+fn watch_keeps_importer_namespaces_and_rechecks_a_changed_host_module_map_once() {
+    let fixture = Fixture::new();
+    fixture.file("m0.lua", "local other=require('other')\n---@type number\nlocal own=require('shared')\n---@type string\nlocal text=other\n");
+    fixture.file("m1.lua", "return require('shared')\n");
+    fixture.file("m2.lua", "return 42\n");
+    fixture.file("m3.lua", "return 'another namespace'\n");
+    let original = r#"{"version":1,"sources":[{"file":"m0.lua","imports":{"other":"m1.lua","shared":"m2.lua"}},{"file":"m1.lua","imports":{"shared":"m3.lua"}}]}"#;
+    let manifest = fixture.file("module-map.json", original);
+    let replace_map = |text: &str| {
+        let pending = fixture.file("module-map.next.json", text);
+        fs::rename(pending, &manifest).unwrap();
+    };
+    let mut watch = fixture.watch(&["--module-map", "module-map.json", "m0.lua"]);
+    watch.report(0, 4);
+    watch.unchanged();
+    // Only the manifest changes: this importer's `shared` becomes numeric, while the other
+    // importer's same-spelled module stays as it was.
+    replace_map(r#"{"version":1,"sources":[{"file":"m0.lua","imports":{"other":"m1.lua","shared":"m2.lua"}},{"file":"m1.lua","imports":{"shared":"m2.lua"}}]}"#);
+    let changed = watch.report(1, 3);
+    assert_eq!(changed.matches("\"code\":\"TS2322\"").count(), 1, "{changed}");
+    watch.unchanged();
+    replace_map(r#"{"version":1,"sources":[{"file":"m0.lua","imports":{"other":"m1.lua","shared":"m3.lua"}},{"file":"m1.lua","imports":{"shared":"m2.lua"}}]}"#);
+    let independent = watch.report(1, 4);
+    assert_eq!(independent.matches("\"code\":\"TS2322\"").count(), 2, "{independent}");
+    watch.unchanged();
+    replace_map(original);
+    watch.report(0, 4);
+    watch.unchanged();
+}
+
+#[test]
 fn watch_retries_missing_modules_and_observes_package_path_priority_changes() {
     let fixture = Fixture::new();
     fixture.file(

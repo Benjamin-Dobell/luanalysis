@@ -19,12 +19,21 @@ pub struct ProjectConfig {
     pub templates: Vec<String>,
     pub discovery_extensions: Vec<String>,
     pub excluded: Vec<PathBuf>,
+    /// A host's own module namespace, closed: each importing source's modules by their exact
+    /// names. With it, a module is what the map says or unresolved; neither package.path nor a
+    /// `---@meta` declaration provides one.
+    pub module_map: Option<ModuleMap>,
 }
+
+/// Each importing source's modules: the file each exact, case-sensitive module name resolves to.
+pub type ModuleMap = HashMap<PathBuf, HashMap<String, PathBuf>>;
+
 impl ProjectConfig {
     pub fn new(roots: impl IntoIterator<Item = PathBuf>) -> Self {
         Self {
             roots: roots.into_iter().collect(),
             templates: vec!["?.lua".into(), "?/init.lua".into()],
+            module_map: None,
             discovery_extensions: vec!["lua".into()],
             excluded: Vec::new(),
         }
@@ -68,6 +77,8 @@ pub enum ResolveError {
         module: String,
         attempted: Vec<PathBuf>,
     },
+    /// A host's module map names no such module for the importing source.
+    Unmapped(String),
     Io(PathFailure),
 }
 impl std::fmt::Display for ResolveError {
@@ -79,6 +90,7 @@ impl std::fmt::Display for ResolveError {
                 "module {module:?} was not found in {} candidate paths",
                 attempted.len()
             ),
+            Self::Unmapped(module) => write!(f, "module {module:?} is not in the module map's imports of this file"),
             Self::Io(error) => error.fmt(f),
         }
     }
@@ -108,14 +120,43 @@ impl Resolver {
                 *excluded = cwd.join(&*excluded);
             }
         }
+        // A map's sources and targets are files, named as the project names them.
+        if let Some(map) = config.module_map.take() {
+            let mut canonical = ModuleMap::new();
+            for (source, imports) in map {
+                let source = mapped_file(&source)?;
+                let mut targets = HashMap::new();
+                for (module, target) in imports {
+                    if module.is_empty() || module.contains('\0') {
+                        return Err(io::Error::new(io::ErrorKind::InvalidInput, "module map names must be nonempty and contain no NUL"));
+                    }
+                    targets.insert(module, mapped_file(&target)?);
+                }
+                if canonical.insert(source.clone(), targets).is_some() {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("duplicate module map source {}", source.display())));
+                }
+            }
+            config.module_map = Some(canonical);
+        }
         Ok(Self { config })
     }
     pub fn config(&self) -> &ProjectConfig {
         &self.config
     }
     pub fn resolve(&self, module: &str) -> Result<ResolvedModule, ResolveError> {
+        self.resolve_from(None, module)
+    }
+    /// The module `module` names for the source at `source`: in a module map, the one it maps
+    /// that name to for that source; otherwise the first package.path finds.
+    pub fn resolve_from(&self, source: Option<&Path>, module: &str) -> Result<ResolvedModule, ResolveError> {
         if module.is_empty() || module.contains('\0') {
             return Err(ResolveError::InvalidModule(module.into()));
+        }
+        if let Some(map) = &self.config.module_map {
+            return match source.and_then(|source| map.get(source)).and_then(|imports| imports.get(module)) {
+                Some(path) => Ok(ResolvedModule { module: module.into(), path: path.clone(), attempted: vec![path.clone()] }),
+                None => Err(ResolveError::Unmapped(module.into())),
+            };
         }
         let name = module.replace('.', std::path::MAIN_SEPARATOR_STR);
         let mut attempted = Vec::new();
@@ -224,6 +265,15 @@ impl Resolver {
         result
     }
 }
+/// A module map's file, as the project names it: its canonical path.
+fn mapped_file(path: &Path) -> io::Result<PathBuf> {
+    let path = fs::canonicalize(path)?;
+    if !fs::metadata(&path)?.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("module map path is not a file: {}", path.display())));
+    }
+    Ok(path)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Discovery {
     pub files: Vec<PathBuf>,
@@ -506,10 +556,12 @@ impl Project {
                     && source.is_char_boundary(request.span.end);
                 let outcome = if !valid {
                     DependencyOutcome::InvalidSpan
-                } else if let Some(&target) = project.provided.get(&request.module) {
+                } else if resolver.config.module_map.is_none()
+                    && let Some(&target) = project.provided.get(&request.module)
+                {
                     DependencyOutcome::Resolved(target)
                 } else {
-                    match resolver.resolve(&request.module) {
+                    match resolver.resolve_from(Some(&project.files[file.index as usize].path), &request.module) {
                         Err(error) => DependencyOutcome::Unresolved(error),
                         Ok(module) => match project.register(&module.path, None, overlays) {
                             Ok((target, new)) => {

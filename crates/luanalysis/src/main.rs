@@ -121,7 +121,9 @@ fn file_contents(path: &Path) -> FileContents {
 struct WatchSnapshot {
     discovery: DiscoveredInputs,
     files: BTreeMap<PathBuf, FileContents>,
-    modules: BTreeMap<String, Result<PathBuf, ResolveError>>,
+    /// Each importing source's modules and what they resolved to: a host's module map
+    /// resolves a module for its importer.
+    modules: BTreeMap<(PathBuf, String), Result<PathBuf, ResolveError>>,
 }
 
 impl WatchSnapshot {
@@ -153,8 +155,9 @@ impl WatchSnapshot {
         }
         let mut modules = BTreeMap::new();
         for dependency in &project.dependencies {
-            // A module provided by name follows its provider's source, which is already watched.
-            if project.provider(&dependency.request.module).is_some() {
+            // A module provided by name follows its provider's source, which is already watched;
+            // a module map resolves no module by its provider.
+            if discovery.module_map.is_none() && project.provider(&dependency.request.module).is_some() {
                 continue;
             }
             let resolution = match &dependency.outcome {
@@ -169,8 +172,10 @@ impl WatchSnapshot {
                 }
                 DependencyOutcome::InvalidSpan => None,
             };
-            if let Some(resolution) = resolution {
-                modules.insert(dependency.request.module.clone(), resolution);
+            if let Some(resolution) = resolution
+                && let Some(importer) = project.file(dependency.from)
+            {
+                modules.insert((importer.path.clone(), dependency.request.module.clone()), resolution);
             }
         }
         let files = paths
@@ -214,8 +219,8 @@ impl WatchSnapshot {
             || self.files.iter().any(|(path, contents)| file_contents(path) != *contents)
             // Resolve again even for failed requests. A newly created candidate
             // or a higher-priority package.path candidate changes the closure.
-            || self.modules.iter().any(|(module, previous)| {
-                resolver.resolve(module).map(|resolved| resolved.path) != *previous
+            || self.modules.iter().any(|((importer, module), previous)| {
+                resolver.resolve_from(Some(importer), module).map(|resolved| resolved.path) != *previous
             })
     }
 }

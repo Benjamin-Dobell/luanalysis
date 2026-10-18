@@ -638,6 +638,37 @@ fn requires_link_and_documents_fold_and_select() {
 }
 
 #[test]
+fn a_require_string_links_only_through_the_standard_loader() {
+    let root = fixture();
+    fs::write(root.join("shapes.lua"), "return {}\n").unwrap();
+    let main = root.join("main.lua");
+    // An alias of the loader is the loader until it is reassigned.
+    let source = "local loader = require\nlocal a = loader('shapes')\nloader = function(name) return name end\nlocal b = loader('shapes')\n";
+    fs::write(&main, source).unwrap();
+    let replaced = root.join("replaced.lua");
+    // A replaced global `require` is an ordinary call to its replacement.
+    let replacing = "require = function(name) return name end\nlocal c = require('shapes')\n";
+    fs::write(&replaced, replacing).unwrap();
+    let shapes = uri(&root.join("shapes.lua"));
+    let mut server = Server::start(&["--lua-version", "5.2", "--stdlib", "require", "--module-root", root.to_str().unwrap()]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |_| true);
+    let response = server.request(2, "textDocument/definition", &main, 1, 19);
+    assert!(response.contains(&shapes), "{response}");
+    let response = server.request(3, "textDocument/definition", &main, 3, 19);
+    assert!(response.contains(r#""result":null"#), "{response}");
+    let response = server.request(4, "textDocument/documentLink", &main, 0, 0);
+    assert_eq!(response.matches(&shapes).count(), 1, "{response}");
+    server.open(&replaced, replacing);
+    server.diagnostics(&replaced, |_| true);
+    let response = server.request(5, "textDocument/definition", &replaced, 1, 20);
+    assert!(response.contains(r#""result":null"#), "{response}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn inlay_hints_show_inferred_types_and_literal_arguments_parameters() {
     let root = fixture();
     let main = root.join("main.lua");
@@ -1164,6 +1195,38 @@ fn completion_and_hover_answer_in_a_file_with_syntax_errors_elsewhere() {
     assert!(hover.contains("number"), "{hover}");
     let members = server.request(4, "textDocument/completion", &main, 1, 20);
     assert!(members.contains(r#""label":"format""#), "{members}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_host_module_map_resolves_requires_for_queries() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let text = "local Mod = require('Virtual Module')\nlocal value = Mod.\nlocal upper, lower = require('Case'), require('case')\n";
+    fs::write(&main, text).unwrap();
+    fs::write(root.join("m1.lua"), "return { answer = 42, name = 'x' }\n").unwrap();
+    fs::write(root.join("m2.lua"), "return { other = 1 }\n").unwrap();
+    let manifest = root.join("map.json");
+    let map = |module| format!(r#"{{"version": 1, "sources": [{{"file": "main.lua", "imports": {{"Virtual Module": "{module}", "Case": "m1.lua", "case": "m2.lua"}}}}]}}"#);
+    fs::write(&manifest, map("m1.lua")).unwrap();
+    let manifest_argument = manifest.to_string_lossy().into_owned();
+    let mut server = Server::start(&["--lua-version", "5.2", "--stdlib", "require", "--module-map", &manifest_argument]);
+    server.initialize(&root);
+    server.open(&main, text);
+    server.diagnostics(&main, |_| true);
+    let response = server.request(2, "textDocument/completion", &main, 1, 18);
+    assert!(response.contains(r#""label":"answer""#) && response.contains(r#""label":"name""#), "{response}");
+    // Names differing only in case are different modules.
+    let response = server.request(3, "textDocument/definition", &main, 2, 31);
+    assert!(response.contains(&uri(&root.join("m1.lua"))), "{response}");
+    let response = server.request(4, "textDocument/definition", &main, 2, 47);
+    assert!(response.contains(&uri(&root.join("m2.lua"))), "{response}");
+    // A host that rewrites its manifest need not also report it as a watched file: queries
+    // read the current one.
+    fs::write(&manifest, map("m2.lua")).unwrap();
+    let response = server.request(5, "textDocument/completion", &main, 1, 18);
+    assert!(response.contains(r#""label":"other""#) && !response.contains(r#""label":"answer""#), "{response}");
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }

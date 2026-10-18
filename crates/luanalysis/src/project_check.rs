@@ -456,6 +456,8 @@ fn merge_reports(reports: Vec<FileCheckReport>) -> Vec<FileCheckReport> {
             ))
         });
         report.types.dedup();
+        report.imports.sort_by_key(|span| (span.start, span.end));
+        report.imports.dedup();
     }
     merged
 }

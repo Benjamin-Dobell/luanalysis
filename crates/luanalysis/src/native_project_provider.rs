@@ -746,6 +746,8 @@ impl ProjectRegistry {
                 .types
                 .sort_by_key(|ty| (ty.span.start, ty.span.end));
             report.report.types.dedup();
+            report.report.imports.sort_by_key(|span| (span.start, span.end));
+            report.report.imports.dedup();
             report.report.bound = Some(file.source.bound_arc());
         }
         reports = reports.into_iter().enumerate().filter_map(|(index, report)| {

@@ -34,6 +34,7 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
     let mut libraries = Vec::new();
     let mut module_roots = Vec::new();
     let mut package_path = None;
+    let mut module_map = None;
     let mut environment = StandardEnvironmentProfile::LegacyMinimal;
     let mut standard_library: Option<StandardLibraryAllowList> = None;
     let mut no_stdlib = false;
@@ -125,6 +126,15 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
             module_roots.push(PathBuf::from(path));
             continue;
         }
+        if !positional && arg == "--module-map" {
+            let Some(path) = args.next() else {
+                return Err("--module-map requires a JSON manifest path".into());
+            };
+            if module_map.replace(PathBuf::from(path)).is_some() {
+                return Err("--module-map may only be given once".into());
+            }
+            continue;
+        }
         if !positional && arg == "--package-path" {
             let Some(path) = args.next().and_then(|value| value.into_string().ok()) else {
                 return Err("--package-path requires UTF-8 package.path templates".into());
@@ -156,6 +166,7 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
         libraries,
         module_roots,
         package_path,
+        module_map,
     };
     let loader_policy = loader_policy(environment);
     let options = ProjectCheckOptions {
@@ -205,6 +216,8 @@ pub struct CheckInputs {
     pub libraries: Vec<PathBuf>,
     pub module_roots: Vec<PathBuf>,
     pub package_path: Option<String>,
+    /// A host's module map manifest (`--module-map`), read again by each discovery.
+    pub module_map: Option<PathBuf>,
 }
 
 /// The files `CheckInputs` name, and how their modules resolve.
@@ -214,6 +227,8 @@ pub struct DiscoveredInputs {
     pub display_paths: HashMap<PathBuf, PathBuf>,
     pub roots: Vec<PathBuf>,
     pub errors: Vec<HostDiagnostic>,
+    /// The host's module map, as its manifest says at discovery.
+    pub module_map: Option<luanalysis_project::ModuleMap>,
 }
 
 impl CheckInputs {
@@ -277,6 +292,7 @@ impl CheckInputs {
             display_paths,
             roots,
             errors: host_errors,
+            module_map: self.module_map.as_deref().map(crate::module_map::read).transpose()?,
         })
     }
 
@@ -287,6 +303,7 @@ impl CheckInputs {
                 .as_deref()
                 .unwrap_or("?.lua;?/init.lua;?.ttslua;?/init.ttslua"),
         );
+        config.module_map = discovery.module_map.clone();
         Resolver::new(config)
     }
 }
@@ -345,7 +362,7 @@ fn expand(path: &Path, errors: &mut Vec<HostDiagnostic>) -> Vec<PathBuf> {
 /// The command line's help text.
 pub fn help() {
     println!(
-        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--lua-version 5.0|5.1|5.2|5.3|5.4] [--stdlib <libraries and members>]... [--no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--stdlib declares only the named standard libraries and members, as a sandbox provides them, e.g. basic,string,table,math,os.time (repeatable).\n--no-stdlib declares none of the standard library, for a host that declares its own, except type, assert, setmetatable and the builtin types; --stdlib adds parts back.\nWithout --lua-version, --stdlib and --no-stdlib use Lua 5.4.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
+        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--lua-version 5.0|5.1|5.2|5.3|5.4] [--stdlib <libraries and members>]... [--no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] [--module-map <manifest.json>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--stdlib declares only the named standard libraries and members, as a sandbox provides them, e.g. basic,string,table,math,os.time (repeatable).\n--no-stdlib declares none of the standard library, for a host that declares its own, except type, assert, setmetatable and the builtin types; --stdlib adds parts back.\nWithout --lua-version, --stdlib and --no-stdlib use Lua 5.4.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\n--module-map supplies a host's closed module namespace: each source's modules by their exact names (version 1 JSON; paths relative to the manifest). An unmapped module is unresolved, never found by package.path.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
     );
     println!(
         "Selected standard profiles preserve reached builtin/environment bindings across unknown calls and property effects; known assignments still apply.\n--strict-standard-effects requires runtime-effect preservation proofs instead."

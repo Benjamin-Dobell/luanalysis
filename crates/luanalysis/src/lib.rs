@@ -14,6 +14,7 @@ pub(crate) mod collections {
 pub mod bind;
 mod builtins;
 mod diagnostic_types;
+mod module_map;
 mod module_requests;
 pub mod flow;
 pub mod cli;
@@ -124,6 +125,9 @@ pub struct CheckReport {
     pub diagnostics: Vec<Diagnostic>,
     pub bindings: Vec<BindingInfo>,
     pub types: Vec<TypeInfo>,
+    /// The module names of the `require` calls checked as the standard loader's: a call to a
+    /// replacement is an ordinary call and names no module.
+    pub imports: Vec<Span>,
     pub bound: Option<std::sync::Arc<BoundFile>>,
     pending_bindings: Vec<(BindingId, Type)>,
     pending_types: Vec<(Span, Type)>,
@@ -139,6 +143,7 @@ impl CheckReport {
         self.diagnostics.append(&mut other.diagnostics);
         self.bindings.append(&mut other.bindings);
         self.types.append(&mut other.types);
+        self.imports.append(&mut other.imports);
         self.pending_bindings.append(&mut other.pending_bindings);
         self.pending_types.append(&mut other.pending_types);
         self.pending_diagnostics.append(&mut other.pending_diagnostics);
@@ -325,6 +330,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
                 .collect(),
             bindings: Vec::new(),
             types: Vec::new(),
+            imports: Vec::new(),
             bound: None,
             pending_bindings: Vec::new(),
             pending_types: Vec::new(),
@@ -395,6 +401,8 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
                 .types
                 .sort_by_key(|info| (info.span.start, info.span.end));
             report.types.dedup();
+            report.imports.sort_by_key(|span| (span.start, span.end));
+            report.imports.dedup();
             report.bound = Some(registry.bound_arc());
             report
         },

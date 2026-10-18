@@ -1515,6 +1515,8 @@ struct LoadedProject {
     path: PathBuf,
     /// The other documents' texts it was loaded with.
     others: HashMap<PathBuf, String>,
+    /// The host's module map it was loaded with.
+    module_map: Option<luanalysis_project::ModuleMap>,
     project: Project,
 }
 
@@ -1527,8 +1529,10 @@ fn load(inputs: &CheckInputs, workspace: &mut ProjectWorkspace, loaded: &mut Opt
         .filter(|(path, _)| **path != query.path)
         .map(|(path, text)| (path.clone(), text.clone()))
         .collect();
+    // A host's module map is read for each query: it can change with no file on disk changing.
+    let module_map = inputs.module_map.as_deref().map(crate::module_map::read).transpose().ok()?;
     if let Some(last) = loaded.as_mut()
-        && last.disk == query.disk && last.path == query.path && last.others == others
+        && last.disk == query.disk && last.path == query.path && last.others == others && last.module_map == module_map
         && let Some(file) = last.project.file_by_path(&query.path).cloned()
     {
         let edited = luanalysis_project::SourceFile { source: query.text().to_owned(), ..file };
@@ -1542,7 +1546,7 @@ fn load(inputs: &CheckInputs, workspace: &mut ProjectWorkspace, loaded: &mut Opt
     let project = Project::load_plan_with_overlays(&resolver, with_documents(&discovery.plan, &query.overlays), &query.overlays, |source| {
         workspace.static_require_requests(source)
     });
-    *loaded = Some(LoadedProject { disk: query.disk, path: query.path.clone(), others, project: project.clone() });
+    *loaded = Some(LoadedProject { disk: query.disk, path: query.path.clone(), others, module_map: discovery.module_map, project: project.clone() });
     Some(project)
 }
 
@@ -1947,8 +1951,12 @@ impl Snapshot {
             let Some(source) = report.project.file(checked.file) else { continue };
             if source.origin != SourceOrigin::Filesystem { continue; }
             let result = &checked.report;
+            // A module is a `require` call's only when the check took its callee as the
+            // standard loader, not merely spelled `require`.
+            let imported = |start, end| result.imports.iter().any(|span| span.start == start && span.end == end);
             let requires = report.project.dependencies.iter().filter(|dependency| dependency.from == checked.file).filter_map(|dependency| {
                 let DependencyOutcome::Resolved(target) = dependency.outcome else { return None };
+                if !imported(dependency.request.span.start, dependency.request.span.end) { return None; }
                 Some(CheckedRequire {
                     start: dependency.request.span.start,
                     end: dependency.request.span.end,

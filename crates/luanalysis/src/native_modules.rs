@@ -217,8 +217,11 @@ impl Checker<'_> {
                 self.compatible(&value, &Type::String, argument.span);
             }
         }
-        if !self.incomplete_flow && let Some(target) = recipe.target {
-            self.native?.project_modules.as_ref()?.required_files.borrow_mut().insert(target);
+        if !self.incomplete_flow {
+            self.report.imports.push(recipe.argument_span);
+            if let Some(target) = recipe.target {
+                self.native?.project_modules.as_ref()?.required_files.borrow_mut().insert(target);
+            }
         }
         let result:String=match recipe.outcome {
             ImportOutcome::Module(module)=>match self.engine.require_pack(module,policy) {
