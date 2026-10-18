@@ -11,7 +11,7 @@
 use crate::bind::{BoundFile, DeclarationKind, OccurrenceKind};
 use crate::collections::HashMap;
 use crate::project_check::ProjectCheckReport;
-use luanalysis_project::{FileId, SourceOrigin};
+use luanalysis_project::{FileId, SourceOrigin, SourceRole};
 use luanalysis_syntax::Span;
 use std::path::{Path, PathBuf};
 
@@ -48,8 +48,14 @@ pub enum RenameError {
     ImplicitReceiver,
     /// The new name is not a Lua name.
     InvalidName(String),
-    /// The global is declared by the standard library, which the project cannot edit.
-    StandardLibrary(String),
+    /// The name is a library's, such as the standard library's or a `--library` declaration
+    /// file's, which the project does not own and a rename cannot edit.
+    Library(String),
+    /// A global of the new name already exists, and renaming would make the two one.
+    Exists(String),
+    /// After renaming, the name at this position would refer to something else: the renamed
+    /// name would be captured by another binding, or would capture another name.
+    Capture { name: String, path: PathBuf, line: usize, column: usize },
 }
 
 impl std::fmt::Display for RenameError {
@@ -58,7 +64,11 @@ impl std::fmt::Display for RenameError {
             Self::NoSymbol => f.write_str("there is no local or global to rename here"),
             Self::ImplicitReceiver => f.write_str("self is a method's implicit receiver and cannot be renamed"),
             Self::InvalidName(name) => write!(f, "{name:?} is not a Lua name"),
-            Self::StandardLibrary(name) => write!(f, "{name} is declared by the standard library and cannot be renamed"),
+            Self::Library(name) => write!(f, "{name} is declared by a library and cannot be renamed"),
+            Self::Exists(name) => write!(f, "a global named {name} already exists"),
+            Self::Capture { name, path, line, column } => {
+                write!(f, "renaming to {name} would change what the name at {}:{line}:{column} refers to", path.display())
+            }
         }
     }
 }
@@ -83,10 +93,20 @@ struct Entry {
 #[derive(Clone, Debug)]
 struct FileSymbols {
     path: PathBuf,
+    text: String,
     /// A declaration the checker carries, such as the standard library: not a file to edit.
     bundled: bool,
+    /// A library's declarations, bundled or a `--library` file: not the project's to rename.
+    library: bool,
     /// Sorted by start.
     entries: Vec<Entry>,
+}
+
+/// What a name occurrence refers to: a local by its declaration's span, or a global by name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Resolution {
+    Local(Span),
+    Global(String),
 }
 
 /// The symbols of every file of a checked project.
@@ -105,13 +125,14 @@ impl SymbolIndex {
         for checked in &report.files {
             let (Some(source), Some(bound)) = (report.project.file(checked.file), checked.report.bound.as_ref()) else { continue };
             let bundled = !matches!(source.origin, SourceOrigin::Filesystem);
+            let library = bundled || source.role == SourceRole::Declaration;
             let entries = index.file_entries(&source.source, bound);
             for (position, entry) in entries.iter().enumerate() {
                 if let Key::Global(global) = entry.key {
                     index.global_occurrences[global].push((checked.file, position));
                 }
             }
-            index.files.insert(checked.file, FileSymbols { path: source.path.clone(), bundled, entries });
+            index.files.insert(checked.file, FileSymbols { path: source.path.clone(), text: source.source.clone(), bundled, library, entries });
         }
         index
     }
@@ -128,39 +149,15 @@ impl SymbolIndex {
     }
 
     fn file_entries(&mut self, text: &str, bound: &BoundFile) -> Vec<Entry> {
-        let mut entries = Vec::new();
-        for occurrence in &bound.occurrences {
-            // A name the parser supplies, such as the value `---@cast x T` reads at its tag, is
-            // not written there and cannot be renamed there.
-            if text.get(occurrence.span.start..occurrence.span.end) != Some(occurrence.name.as_str()) {
-                continue;
-            }
-            match occurrence.binding {
-                Some(binding) => {
-                    let declaration = bound.declaration(binding);
-                    entries.push(Entry {
-                        span: occurrence.span,
-                        key: Key::Local(declaration.span.start, declaration.span.end),
-                        definition: occurrence.kind == OccurrenceKind::Declaration,
-                        receiver: declaration.kind == DeclarationKind::ImplicitReceiver,
-                    });
-                }
-                None if occurrence.kind != OccurrenceKind::Annotation
-                    && bound.environment_binding_at(occurrence.span.start).is_none() =>
-                {
-                    let write = occurrence.kind == OccurrenceKind::Write;
-                    entries.push(Entry { span: occurrence.span, key: Key::Global(self.global(&occurrence.name)), definition: write, receiver: false });
-                    if matches!(occurrence.name.as_str(), "_G" | "_ENV") && !write
-                        && let Some((span, name, write)) = environment_field(text, occurrence.span)
-                    {
-                        entries.push(Entry { span, key: Key::Global(self.global(name)), definition: write, receiver: false });
-                    }
-                }
-                None => {}
-            }
-        }
-        entries.sort_by_key(|entry| entry.span.start);
-        entries
+        resolutions(text, bound).into_iter().map(|(span, resolution, definition, receiver)| Entry {
+            span,
+            key: match resolution {
+                Resolution::Local(declaration) => Key::Local(declaration.start, declaration.end),
+                Resolution::Global(name) => Key::Global(self.global(&name)),
+            },
+            definition,
+            receiver,
+        }).collect()
     }
 
     /// The file of `path`, when the project has one.
@@ -219,29 +216,127 @@ impl SymbolIndex {
             .collect()
     }
 
-    /// The occurrence a rename at `offset` would rename, after checking it can be renamed.
+    /// The occurrence a rename at `offset` would rename, after checking it can be renamed: not
+    /// `self`, and not a library's name, which a rename could not edit everywhere it occurs.
     pub fn prepare_rename(&self, file: FileId, offset: usize) -> Result<(Symbol, Span), RenameError> {
-        let (entry, _) = self.entry_at(file, offset).ok_or(RenameError::NoSymbol)?;
+        let (entry, symbols) = self.entry_at(file, offset).ok_or(RenameError::NoSymbol)?;
         if entry.receiver {
             return Err(RenameError::ImplicitReceiver);
         }
         let symbol = self.symbol(file, entry);
-        if let Symbol::Global { name } = &symbol
-            && self.occurrences(&symbol).iter().any(|occurrence| self.files[&occurrence.file].bundled)
-        {
-            return Err(RenameError::StandardLibrary(name.clone()));
+        if self.occurrences(&symbol).iter().any(|occurrence| self.files[&occurrence.file].library) {
+            return Err(RenameError::Library(symbols.text[entry.span.start..entry.span.end].to_owned()));
         }
         Ok((symbol, entry.span))
     }
 
-    /// The spans to replace with `name` to rename the symbol at `offset`, in every file.
+    /// The spans to replace with `name` to rename the symbol at `offset`, in every file. A rename
+    /// must leave every name referring to what it did: the renamed name to its own declaration
+    /// (or global), and every other name to its own.
     pub fn rename(&self, file: FileId, offset: usize, name: &str) -> Result<Vec<SymbolOccurrence>, RenameError> {
         if !is_name(name) {
             return Err(RenameError::InvalidName(name.to_owned()));
         }
-        let (symbol, _) = self.prepare_rename(file, offset)?;
-        Ok(self.occurrences(&symbol))
+        let (symbol, span) = self.prepare_rename(file, offset)?;
+        let occurrences = self.occurrences(&symbol);
+        if self.files[&file].text[span.start..span.end] == *name {
+            return Ok(occurrences);
+        }
+        if matches!(symbol, Symbol::Global { .. })
+            && self.global_ids.get(name).is_some_and(|&global| !self.global_occurrences[global].is_empty())
+        {
+            return Err(RenameError::Exists(name.to_owned()));
+        }
+        let mut files: Vec<FileId> = occurrences.iter().map(|occurrence| occurrence.file).collect();
+        files.dedup();
+        for id in files {
+            let edits: Vec<Span> = occurrences.iter().filter(|occurrence| occurrence.file == id).map(|occurrence| occurrence.span).collect();
+            self.verify_rename(id, &symbol, &edits, name)?;
+        }
+        Ok(occurrences)
     }
+
+    /// Whether renaming `symbol`'s occurrences `edits` in `file` to `name` leaves every name of
+    /// the file referring to what it did.
+    fn verify_rename(&self, file: FileId, symbol: &Symbol, edits: &[Span], name: &str) -> Result<(), RenameError> {
+        let symbols = &self.files[&file];
+        let mut text = String::with_capacity(symbols.text.len());
+        let mut last = 0;
+        for edit in edits {
+            text.push_str(&symbols.text[last..edit.start]);
+            text.push_str(name);
+            last = edit.end;
+        }
+        text.push_str(&symbols.text[last..]);
+        // An offset in the renamed text: each edit ending at or before it moves it.
+        let shift = |offset: usize| {
+            let before = edits.iter().filter(|edit| edit.end <= offset);
+            before.fold(offset, |offset, edit| offset + name.len() - (edit.end - edit.start))
+        };
+        let moved = |span: Span| Span::new(shift(span.start), shift(span.end));
+        let parsed = luanalysis_syntax::parse(&text);
+        let renamed: HashMap<usize, Resolution> = resolutions(&text, &crate::bind::bind(&parsed)).into_iter()
+            .map(|(span, resolution, _, _)| (span.start, resolution))
+            .collect();
+        for entry in &symbols.entries {
+            let edited = edits.iter().any(|edit| *edit == entry.span);
+            let expected = match (&entry.key, symbol) {
+                (_, Symbol::Global { .. }) if edited => Resolution::Global(name.to_owned()),
+                (&Key::Local(start, end), _) => Resolution::Local(moved(Span::new(start, end))),
+                (&Key::Global(global), _) => Resolution::Global(self.globals[global].clone()),
+            };
+            if renamed.get(&shift(entry.span.start)) != Some(&expected) {
+                let (line, column) = line_column(&symbols.text, entry.span.start);
+                return Err(RenameError::Capture { name: name.to_owned(), path: symbols.path.clone(), line, column });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The one-based line and column of `offset` in `text`, in characters.
+pub(crate) fn line_column(text: &str, offset: usize) -> (usize, usize) {
+    let before = &text[..offset];
+    let line_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+    (before.matches('\n').count() + 1, before[line_start..].chars().count() + 1)
+}
+
+/// Every name occurrence of a bound file, sorted by start: its span, what it refers to, whether
+/// it declares a local or writes a global, and whether it is an implicit `self`.
+fn resolutions(text: &str, bound: &BoundFile) -> Vec<(Span, Resolution, bool, bool)> {
+    let mut resolutions = Vec::new();
+    for occurrence in &bound.occurrences {
+        // A name the parser supplies, such as the value `---@cast x T` reads at its tag, is
+        // not written there and cannot be renamed there.
+        if text.get(occurrence.span.start..occurrence.span.end) != Some(occurrence.name.as_str()) {
+            continue;
+        }
+        match occurrence.binding {
+            Some(binding) => {
+                let declaration = bound.declaration(binding);
+                resolutions.push((
+                    occurrence.span,
+                    Resolution::Local(declaration.span),
+                    occurrence.kind == OccurrenceKind::Declaration,
+                    declaration.kind == DeclarationKind::ImplicitReceiver,
+                ));
+            }
+            None if occurrence.kind != OccurrenceKind::Annotation
+                && bound.environment_binding_at(occurrence.span.start).is_none() =>
+            {
+                let write = occurrence.kind == OccurrenceKind::Write;
+                resolutions.push((occurrence.span, Resolution::Global(occurrence.name.clone()), write, false));
+                if matches!(occurrence.name.as_str(), "_G" | "_ENV") && !write
+                    && let Some((span, name, write)) = environment_field(text, occurrence.span)
+                {
+                    resolutions.push((span, Resolution::Global(name.to_owned()), write, false));
+                }
+            }
+            None => {}
+        }
+    }
+    resolutions.sort_by_key(|(span, ..)| span.start);
+    resolutions
 }
 
 fn occurrence(file: FileId, symbols: &FileSymbols, entry: &Entry) -> SymbolOccurrence {

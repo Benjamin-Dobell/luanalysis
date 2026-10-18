@@ -168,6 +168,8 @@ enum Event {
     Checked(Box<Snapshot>),
     /// A response computed off the main thread.
     Answered(Json, Json),
+    /// A request refused off the main thread, with why.
+    Refused(Json, String),
     /// A request the client cancelled before it was answered.
     Cancelled(Json),
 }
@@ -404,6 +406,7 @@ impl Server {
                     }
                     Event::Checked(snapshot) => self.checked(*snapshot),
                     Event::Answered(id, result) => self.respond(id, result),
+                    Event::Refused(id, error) => self.respond_error(id, REQUEST_FAILED, &error),
                     Event::Cancelled(id) => self.respond_error(id, REQUEST_CANCELLED, "the request was cancelled"),
                     Event::Malformed(error) => self.respond_error(Json::Null, PARSE_ERROR, &format!("a message that is not JSON: {error}")),
                 }
@@ -1355,21 +1358,24 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
             let started = std::time::Instant::now();
             let mut answered = false;
             // The answer is sent as soon as it is known, before the session's state is dropped.
-            let mut answer = |result: Json| {
+            let mut answer = |result: Result<Json, String>| {
                 answered = true;
                 if std::env::var_os("LUANALYSIS_PROFILE").is_some() {
                     eprintln!("luanalysis profile: query={:.6}s", started.elapsed().as_secs_f64());
                 }
-                let _ = events.send(Event::Answered(query.id.clone(), result));
+                let _ = events.send(match result {
+                    Ok(result) => Event::Answered(query.id.clone(), result),
+                    Err(error) => Event::Refused(query.id.clone(), error),
+                });
             };
             let completed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &query.site {
-                Site::Completion(site) => complete(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
-                Site::Signature(site) => signatures(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
-                Site::Hover(site) => hover(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
+                Site::Completion(site) => complete(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
+                Site::Signature(site) => signatures(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
+                Site::Hover(site) => hover(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
                 Site::Navigate(site) => navigate(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
-                Site::Hints(site) => hints(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
-                Site::Actions(site) => actions(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
-                Site::Hierarchy(site) => hierarchy(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
+                Site::Hints(site) => hints(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
+                Site::Actions(site) => actions(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
+                Site::Hierarchy(site) => hierarchy(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
             }));
             if completed.is_err() {
                 workspace = ProjectWorkspace::new();
@@ -1508,19 +1514,23 @@ fn signatures(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mu
     }));
 }
 
-fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &NavigateSite, answer: &mut (dyn FnMut(Json) + Send)) {
+fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &NavigateSite, answer: &mut (dyn FnMut(Result<Json, String>) + Send)) {
     let Some(project) = load(inputs, workspace, loaded, query) else { return };
     let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
     let references = !matches!(site.request, Navigate::Definition | Navigate::TypeDefinition | Navigate::PrepareRename);
     let encoding = query.encoding;
-    let respond = |navigation: Option<language_service::Navigation>| {
-        let Some(navigation) = navigation else { return answer(Json::Null) };
+    let mut respond = |navigation: Result<Option<language_service::Navigation>, String>| {
+        let navigation = match navigation {
+            Ok(Some(navigation)) => navigation,
+            Ok(None) => return answer(Ok(Json::Null)),
+            Err(error) => return answer(Err(error)),
+        };
         let lines: HashMap<&PathBuf, LineIndex> = navigation.texts.iter().map(|(path, text)| (path, LineIndex::new(text.clone()))).collect();
         let range = |path: &PathBuf, span: luanalysis_syntax::Span| lines.get(path).map(|lines| lines.range(span.start, span.end, encoding));
         let location = |(path, span, _): &(PathBuf, luanalysis_syntax::Span, bool)| {
             Some(Json::object([("uri", Json::from(path_to_uri(path))), ("range", range(path, *span)?)]))
         };
-        answer(match &site.request {
+        answer(Ok(match &site.request {
             Navigate::Definition | Navigate::TypeDefinition => Json::Array(navigation.occurrences.iter().filter(|occurrence| occurrence.2).filter_map(location).collect()),
             Navigate::References { declaration } => Json::Array(navigation.occurrences.iter()
                 .filter(|occurrence| *declaration || !occurrence.2).filter_map(location).collect()),
@@ -1533,8 +1543,6 @@ fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
                 ("range", query.lines.range(navigation.span.start, navigation.span.end, encoding)),
                 ("placeholder", Json::from(navigation.name.as_str())),
             ]),
-            // A member's name is one identifier; a type's may be dotted.
-            Navigate::Rename(name) if name.contains('.') && !navigation.type_name => Json::Null,
             Navigate::Rename(name) => {
                 let mut changes: Vec<(String, Json)> = Vec::new();
                 for (path, span, _) in &navigation.occurrences {
@@ -1548,11 +1556,13 @@ fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
                 }
                 Json::object([("changes", Json::Object(changes))])
             }
-        });
+        }));
     };
-    match site.request {
-        Navigate::TypeDefinition => language_service::type_definition(project, options, workspace, file, site.offset, respond),
-        _ => language_service::navigate(project, options, workspace, file, site.offset, references, respond),
+    match &site.request {
+        Navigate::TypeDefinition => language_service::type_definition(project, options, workspace, file, site.offset, move |navigation| respond(Ok(navigation))),
+        Navigate::PrepareRename => language_service::rename(project, options, workspace, file, site.offset, None, respond),
+        Navigate::Rename(name) => language_service::rename(project, options, workspace, file, site.offset, Some(name.clone()), respond),
+        _ => language_service::navigate(project, options, workspace, file, site.offset, references, move |navigation| respond(Ok(navigation))),
     }
 }
 

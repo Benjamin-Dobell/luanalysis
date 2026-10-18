@@ -131,6 +131,14 @@ impl Server {
         self.wait(|message| message.contains(&format!(r#""id":{id},"#)) && !message.contains("\"method\""))
     }
 
+    fn rename(&mut self, id: u32, path: &Path, (line, character): (u32, u32), name: &str) -> String {
+        self.send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/rename","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":{line},"character":{character}}},"newName":"{name}"}}}}"#,
+            uri(path),
+        ));
+        self.wait(|message| message.contains(&format!(r#""id":{id},"#)) && !message.contains("\"method\""))
+    }
+
     fn finish(mut self) {
         self.send(r#"{"jsonrpc":"2.0","id":99,"method":"shutdown"}"#);
         let response = self.wait(|message| message.contains(r#""id":99"#));
@@ -360,7 +368,7 @@ fn globals_are_defined_referenced_and_renamed_across_files() {
     assert!(invalid.contains("-32803") && invalid.contains("is not a Lua name"), "{invalid}");
     let (line, character) = position(text, "print", 0);
     let standard = server.request(9, "textDocument/prepareRename", &main, line, character);
-    assert!(standard.contains("declared by the standard library"), "{standard}");
+    assert!(standard.contains("declared by a library"), "{standard}");
     let (line, character) = position(text, "bump", 0);
     let prepared = server.request(10, "textDocument/prepareRename", &main, line, character);
     assert!(prepared.contains(r#""placeholder":"bump""#), "{prepared}");
@@ -889,4 +897,129 @@ fn deprecated_declarations_are_marked_and_explained() {
         assert!(!new_item.contains(marked) && new_item.contains("The new API."), "{response}");
         server.finish();
     }
+}
+
+/// The lines of a rename's edits, in one file.
+fn edited_lines(response: &str) -> Vec<u32> {
+    response.match_indices(r#""range":{"start":{"line":"#).map(|(at, prefix)| {
+        let rest = &response[at + prefix.len()..];
+        rest[..rest.find(',').unwrap()].parse().unwrap()
+    }).collect()
+}
+
+#[test]
+fn table_fields_are_followed_through_aliases_and_modules_and_kept_apart() {
+    let root = fixture();
+    let module = root.join("counter.lua");
+    let module_text = "local M = {}\nM.value = 1\nfunction M.bump() M.value = M.value + 1 end\nreturn M\n";
+    fs::write(&module, module_text).unwrap();
+    let main = root.join("main.lua");
+    let text = "local record = { count = 1 }\nlocal alias = record\nprint(record.count, alias.count)\nrecord.count = 2\nprint(record[\"count\"])\n\nlocal other = { count = 7 }\nprint(other.count)\nlocal counter = require('counter')\ncounter.bump()\nprint(counter.value)\n";
+    fs::write(&main, text).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4", "--module-root", root.to_str().unwrap()]);
+    server.initialize(&root);
+    server.open(&main, text);
+    server.diagnostics(&main, |_| true);
+    // An alias's field is the original table's.
+    let (line, character) = position(text, "count)", 0);
+    let definition = server.request(2, "textDocument/definition", &main, line, character);
+    assert!(definition.contains(r#""range":{"start":{"line":0,"character":17},"end":{"line":0,"character":22}}"#), "{definition}");
+    // Its references are the constructor key, reads through either name, the write and the
+    // constant-string index; not the other table's.
+    server.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/references","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":{line},"character":{character}}},"context":{{"includeDeclaration":true}}}}}}"#,
+        uri(&main),
+    ));
+    let references = server.wait(|message| message.contains(r#""id":3,"#));
+    assert_eq!(edited_lines(&references), [0, 2, 2, 3, 4], "{references}");
+    let renamed = server.rename(4, &main, (line, character), "total");
+    assert_eq!(edited_lines(&renamed), [0, 2, 2, 3, 4], "{renamed}");
+    assert!(renamed.contains(r#""range":{"start":{"line":4,"character":14},"end":{"line":4,"character":19}}"#), "{renamed}");
+    // The other table's field is its own.
+    let other = server.rename(5, &main, position(text, "count = 7", 0), "total");
+    assert_eq!(edited_lines(&other), [6, 7], "{other}");
+    // A module's export is the module table's field, in both files.
+    let exported = server.rename(6, &main, position(text, "value)", 0), "amount");
+    assert_eq!(exported.matches(r#""newText":"amount""#).count(), 4, "{exported}");
+    assert!(exported.contains(&uri(&module)), "{exported}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn renames_that_would_merge_or_capture_names_are_refused() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let text = "local first = 1\nlocal second = 2\nprint(first, second)\nlocal function shadowed()\n    local print = 0\n    return Shared + print\nend\nShared = 1\nOther = 2\nlocal point = { x = 1, y = 2 }\nprint(point.x)\n\n---@param flag boolean\nlocal function pick(flag)\n    local a, b = { n = 1 }, { n = 2 }\n    local either = flag and a or b\n    return either.n, a.n\nend\n\n---@class Box\n---@field width number\n---@field height number\n\n---@class Crate\n\n---@generic T\n---@param value T\n---@return T | Crate\nlocal function keep(value) return value end\n";
+    fs::write(&main, text).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, text);
+    server.diagnostics(&main, |_| true);
+    let refused = |response: &str, reason: &str| response.contains("-32803") && response.contains(reason);
+    // A local renamed to another's name would refer to that one at `print(first, ...)`.
+    let response = server.rename(2, &main, position(text, "first", 0), "second");
+    assert!(refused(&response, "would change what the name at"), "{response}");
+    // A global renamed to a local's name would be captured by it, and to another global's
+    // would merge the two.
+    let response = server.rename(3, &main, position(text, "Shared", 1), "print");
+    assert!(refused(&response, "already exists") || refused(&response, "would change"), "{response}");
+    let response = server.rename(4, &main, position(text, "Shared", 1), "Other");
+    assert!(refused(&response, "a global named Other already exists"), "{response}");
+    // Renaming a name to what it is, or to a fresh name, is fine.
+    let response = server.rename(5, &main, position(text, "first", 0), "initial");
+    assert_eq!(response.matches(r#""newText":"initial""#).count(), 2, "{response}");
+    // A table's field renamed to another of its fields would merge them.
+    let response = server.rename(6, &main, position(text, "x)", 0), "y");
+    assert!(refused(&response, "already has a member named y"), "{response}");
+    // A use that may be either of two tables' fields cannot be renamed for one of them.
+    let response = server.rename(7, &main, position(text, "n = 1", 0), "count");
+    assert!(refused(&response, "may be another table's n too"), "{response}");
+    // A class's field renamed to another of its fields; a type to a built-in or another type;
+    // a generic to a name its block uses.
+    let response = server.rename(8, &main, position(text, "width", 0), "height");
+    assert!(refused(&response, "Box already has a member named height"), "{response}");
+    let response = server.rename(9, &main, position(text, "Box", 0), "number");
+    assert!(refused(&response, "number is a built-in type"), "{response}");
+    let response = server.rename(10, &main, position(text, "Box", 0), "Crate");
+    assert!(refused(&response, "a type named Crate is already declared"), "{response}");
+    let response = server.rename(11, &main, position(text, "T\n", 0), "Crate");
+    assert!(refused(&response, "would change what the type name at"), "{response}");
+    let response = server.rename(12, &main, position(text, "T\n", 0), "Value");
+    assert_eq!(response.matches(r#""newText":"Value""#).count(), 3, "{response}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn library_declarations_are_navigable_but_not_renamed() {
+    let root = fixture();
+    let library = root.join("api.def.lua");
+    fs::write(&library, "---@class tts__Vector\n---@field x number\n\n---@class tts__Object\n---@field tag string\n\n---@function tts__Object.getPosition(): tts__Vector\n\n---@param guid string\n---@return tts__Object\nfunction getObjectFromGUID(guid) end\n\n---@type nil | fun(player_color: string, object: tts__Object): void\n_G.onObjectDrop = nil\n").unwrap();
+    let main = root.join("main.lua");
+    let text = "function onObjectDrop(colour, dropped)\n    local position = dropped.getPosition()\n    print(position.x, dropped.tag)\n    local found = getObjectFromGUID('abc')\nend\n\nlocal function lookup()\n    local getObjectFromGUID = 1\n    return getObjectFromGUID\nend\n";
+    fs::write(&main, text).unwrap();
+    let library_argument = library.to_string_lossy().into_owned();
+    let mut server = Server::start(&["--lua-version", "5.2", "--library", &library_argument]);
+    server.initialize(&root);
+    server.open(&main, text);
+    server.diagnostics(&main, |_| true);
+    // A bodyless `---@function`'s definition is its declaration in the library.
+    let (line, character) = position(text, "getPosition", 0);
+    let definition = server.request(2, "textDocument/definition", &main, line, character + 1);
+    assert!(definition.contains(&uri(&library)) && definition.contains(r#""start":{"line":6,"character":25}"#), "{definition}");
+    // The library's members, types, functions and callbacks are not the project's to rename.
+    let refused = |response: &str| response.contains("-32803") && response.contains("declared by a library");
+    for (id, needle) in [(3, "getPosition"), (4, "tag)"), (5, "x,"), (6, "getObjectFromGUID('"), (7, "onObjectDrop")] {
+        let (line, character) = position(text, needle, 0);
+        let prepared = server.request(id, "textDocument/prepareRename", &main, line, character + 1);
+        assert!(refused(&prepared), "{needle}: {prepared}");
+        let renamed = server.rename(id + 10, &main, (line, character + 1), "renamed");
+        assert!(refused(&renamed), "{needle}: {renamed}");
+    }
+    // A local that shadows a library's name is the project's own.
+    let renamed = server.rename(30, &main, position(text, "getObjectFromGUID = 1", 0), "found");
+    assert_eq!(renamed.matches(r#""newText":"found""#).count(), 2, "{renamed}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
 }

@@ -743,10 +743,16 @@ fn expression_type(
 ) -> Option<Type> {
     let source = registry.source(file)?;
     let alone = source.source_check_expression(source.expression_key_for_span(span), None, NativeCheckMode::empty(), queries);
-    if !matches!(alone, Type::Any | Type::Unknown) { return Some(alone); }
+    if !untyped(&alone, queries) { return Some(alone); }
     source.probe_expression(span);
     registry.check_owned_roots(queries, &[file]);
     source.probed_types(span).into_iter().next().or(Some(alone))
+}
+
+/// Whether `ty` says nothing of a value: `any` or `unknown`, as the value of an expression
+/// checked alone, outside the function that gives it a type, often is.
+fn untyped(ty: &Type, queries: &mut dyn luanalysis_engine::TypeQueries) -> bool {
+    matches!(ty, Type::Any | Type::Unknown) || matches!(queries.inspect_type(ty), Type::Any | Type::Unknown)
 }
 
 /// Documentation as Markdown: the description, then each parameter's and result's.
@@ -819,6 +825,12 @@ pub(crate) fn member_sites(
         };
         if seen.contains(&key) || seen.len() > 32 { continue; }
         seen.push(key);
+        // A table's constructor declares the fields it is built with; later stores declare the
+        // others.
+        if let Some(site) = registry.runtime_table_field_site(key, name) {
+            if !sites.contains(&site) { sites.push(site); }
+            continue;
+        }
         for member in registry.type_declaration_members(key) {
             let named = matches!(registry.type_member_header(member).key, TypeMemberKeyRecipe::Fixed(LuaKey::String(bytes)) if bytes == name.as_bytes());
             if named && let Some(site) = registry.member_site(member) && !sites.contains(&site) { sites.push(site); }
@@ -1026,10 +1038,10 @@ fn navigation(
         return type_navigation(project, registry, file, at, &names, references);
     }
     registry.prepare_documentation_members(queries);
-    let (name, span, sites) = member_target(registry, file, offset, queries)?;
+    let (name, span, sites) = member_target(registry, file, text, offset, queries)?;
     let mut navigation = Navigation { name: name.clone(), span, ..Navigation::default() };
     if references {
-        member_occurrences(project, registry, &name, &sites, &mut navigation, queries);
+        let _ = member_occurrences(project, registry, &name, &sites, &mut navigation, None, queries);
     } else {
         for &(site_file, site, _) in &sites {
             let Some(site_text) = project.file(site_file) else { continue };
@@ -1100,6 +1112,7 @@ fn type_navigation(
 fn member_target(
     registry: &crate::native_functions::project_provider::ProjectRegistry,
     file: FileId,
+    text: &str,
     offset: usize,
     queries: &mut dyn luanalysis_engine::TypeQueries,
 ) -> Option<(String, Span, Vec<Site>)> {
@@ -1128,17 +1141,7 @@ fn member_target(
         }
     }
     let mut found = None;
-    crate::module_requests::visit_expressions(&syntax.statements, &mut |expression: &Expr| match &expression.kind {
-        ExprKind::Field { base, name } | ExprKind::MethodCall { receiver: base, name, .. } if contains(name.span) => {
-            found = Some((base.span, name.clone()));
-        }
-        ExprKind::Table(fields) => for field in fields {
-            if let luanalysis_syntax::TableFieldKind::Named(name) = &field.kind && contains(name.span) {
-                found = Some((expression.span, name.clone()));
-            }
-        },
-        _ => {}
-    });
+    member_uses(syntax, text, &mut |receiver, name| if contains(name.span) { found = Some((receiver, name)); });
     let (receiver, name) = found?;
     let receiver = expression_type(registry, file, receiver, queries)?;
     let receiver = queries.exclude_type(&receiver, &Type::Nil);
@@ -1214,8 +1217,9 @@ fn member_occurrences(
     name: &str,
     sites: &[Site],
     navigation: &mut Navigation,
+    rename: Option<&str>,
     queries: &mut dyn luanalysis_engine::TypeQueries,
-) {
+) -> Result<(), String> {
     let declares = |file: FileId, span: Span| sites.iter().any(|&(site_file, site, _)| site_file == file && site.start <= span.start && span.end <= site.end);
     for other in &project.files {
         let Some(source) = registry.source(other.id) else { continue };
@@ -1246,17 +1250,7 @@ fn member_occurrences(
             }
         }
         let mut candidates = Vec::new();
-        crate::module_requests::visit_expressions(&syntax.statements, &mut |expression: &Expr| match &expression.kind {
-            ExprKind::Field { base, name: member } | ExprKind::MethodCall { receiver: base, name: member, .. } if member.text == name => {
-                candidates.push((base.span, member.span));
-            }
-            ExprKind::Table(fields) => for field in fields {
-                if let luanalysis_syntax::TableFieldKind::Named(member) = &field.kind && member.text == name {
-                    candidates.push((expression.span, member.span));
-                }
-            },
-            _ => {}
-        });
+        member_uses(syntax, &other.source, &mut |receiver, member| if member.text == name { candidates.push((receiver, member.span)); });
         // Receivers without a type of their own, such as a callback's parameters or a method's
         // `self`, have their types in the frames they are checked in: one check of the file
         // probes them all.
@@ -1266,14 +1260,14 @@ fn member_occurrences(
             let mut alone = source.source_check_expression(source.expression_key_for_span(receiver), None, NativeCheckMode::empty(), queries);
             // A name's declared type, such as a method's `self`'s or an annotated parameter's,
             // needs no check.
-            if matches!(alone, Type::Any | Type::Unknown)
+            if untyped(&alone, queries)
                 && let Some(occurrence) = source.bound().occurrence_at(receiver.start).filter(|occurrence| occurrence.span == receiver)
                 && let Some(binding) = occurrence.binding.and_then(|binding| source.resolve_binding(binding, queries))
-                && !matches!(binding.constraint, Type::Any | Type::Unknown)
+                && !untyped(&binding.constraint, queries)
             {
                 alone = binding.constraint;
             }
-            if matches!(alone, Type::Any | Type::Unknown) {
+            if untyped(&alone, queries) {
                 source.probe_expression(receiver);
                 probed = true;
             }
@@ -1281,18 +1275,204 @@ fn member_occurrences(
         }
         if probed { registry.check_owned_roots(queries, &[other.id]); }
         for (receiver, span, alone) in typed {
-            let receiver = match alone {
-                Type::Any | Type::Unknown => source.probed_types(receiver).into_iter().next().unwrap_or(alone),
-                alone => alone,
+            let receiver = match untyped(&alone, queries) {
+                true => source.probed_types(receiver).into_iter().next().unwrap_or(alone),
+                false => alone,
             };
             let receiver = queries.exclude_type(&receiver, &Type::Nil);
             let found = member_sites(registry, &receiver, name, queries);
             if found.iter().any(|site| sites.contains(site)) {
                 add_occurrence(navigation, &other.path, &other.source, span, declares(other.id, span));
+                let Some(rename) = rename else { continue };
+                let (line, column) = crate::symbols::line_column(&other.source, span.start);
+                let at = format!("{}:{line}:{column}", other.path.display());
+                // A use that may be another member of the same name too would be renamed for one
+                // and not the other.
+                if found.iter().any(|site| !sites.contains(site)) {
+                    return Err(format!("the {name} at {at} may be another table's {name} too, so renaming it is not safe"));
+                }
+                if !member_sites(registry, &receiver, rename, queries).is_empty() {
+                    return Err(format!("the value at {at} already has a member named {rename}"));
+                }
             }
         }
     }
+    Ok(())
 }
+
+/// Each member name written in `syntax`, with the span of the value it is a member of: in
+/// `receiver.name`, `receiver:name(...)`, `receiver["name"]`, and a table constructor's
+/// `name = value` and `["name"] = value`.
+fn member_uses(syntax: &luanalysis_syntax::File, text: &str, visit: &mut dyn FnMut(Span, Name)) {
+    crate::module_requests::visit_expressions(&syntax.statements, &mut |expression: &Expr| match &expression.kind {
+        ExprKind::Field { base, name } | ExprKind::MethodCall { receiver: base, name, .. } => visit(base.span, name.clone()),
+        ExprKind::Index { base, index } => if let Some(name) = string_key(text, index) { visit(base.span, name) },
+        ExprKind::Table(fields) => for field in fields {
+            match &field.kind {
+                luanalysis_syntax::TableFieldKind::Named(name) => visit(expression.span, name.clone()),
+                luanalysis_syntax::TableFieldKind::Keyed(key) => if let Some(name) = string_key(text, key) { visit(expression.span, name) },
+                luanalysis_syntax::TableFieldKind::Sequence { .. } => {}
+            }
+        },
+        _ => {}
+    });
+}
+
+/// A constant string key that is a Lua name, `"name"` or `'name'`, as the name inside its quotes.
+fn string_key(text: &str, key: &Expr) -> Option<Name> {
+    let ExprKind::String(bytes) = &key.kind else { return None };
+    let written = text.get(key.span.start..key.span.end)?;
+    let inner = written.strip_prefix('"').and_then(|rest| rest.strip_suffix('"'))
+        .or_else(|| written.strip_prefix('\'').and_then(|rest| rest.strip_suffix('\'')))?;
+    (inner.as_bytes() == bytes.as_slice() && crate::symbols::is_name(inner))
+        .then(|| Name { text: inner.to_owned(), span: Span::new(key.span.start + 1, key.span.end - 1) })
+}
+
+/// The member or type name at `offset` in `file`, and with `name`, every occurrence renaming it
+/// to `name` edits; or why it cannot be renamed. A library's names, such as a host API's, are
+/// not the project's to rename, and a rename must not merge two members or types, nor make a
+/// use refer to something else.
+pub fn rename(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    offset: usize,
+    name: Option<String>,
+    deliver: impl FnOnce(Result<Option<Navigation>, String>) + Send,
+) {
+    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
+        deliver(renaming(project, registry, file, offset, name.as_deref(), queries));
+    });
+}
+
+fn renaming(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    offset: usize,
+    name: Option<&str>,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Result<Option<Navigation>, String> {
+    let (Some(source), Some(text)) = (registry.source(file), project.file(file)) else { return Ok(None) };
+    let text = &text.source;
+    let names = luanalysis_syntax::type_names(source.syntax(), text);
+    if let Some(at) = names.iter().find(|type_name| type_name.span.start <= offset && offset <= type_name.span.end) {
+        let Some(navigation) = type_navigation(project, registry, file, at, &names, name.is_some()) else { return Ok(None) };
+        owned_by_library(project, &navigation)?;
+        if let Some(name) = name.filter(|name| *name != at.name) { type_rename_conflict(project, registry, file, at, &names, &navigation, name)?; }
+        return Ok(Some(navigation));
+    }
+    registry.prepare_documentation_members(queries);
+    let Some((member, span, sites)) = member_target(registry, file, text, offset, queries) else { return Ok(None) };
+    let mut navigation = Navigation { name: member.clone(), span, ..Navigation::default() };
+    for &(site_file, site, _) in &sites {
+        let Some(site_text) = project.file(site_file) else { continue };
+        add_occurrence(&mut navigation, &site_text.path, &site_text.source, word_in(&site_text.source, site, &member).unwrap_or(site), true);
+    }
+    owned_by_library(project, &navigation)?;
+    let Some(name) = name else { return Ok(Some(navigation)) };
+    if !crate::symbols::is_name(name) { return Err(format!("{name:?} is not a Lua name")); }
+    let rename = (name != member).then_some(name);
+    member_occurrences(project, registry, &member, &sites, &mut navigation, rename, queries)?;
+    owned_by_library(project, &navigation)?;
+    // A declaring tag's type, such as a `---@field`'s class, must not already have the name.
+    if let Some(name) = rename {
+        for &(site_file, site, tag) in &sites {
+            let Some(owner) = tag.then(|| registry.source(site_file)).flatten().and_then(|source| tag_owner(source.syntax(), site)) else { continue };
+            if project.files.iter().any(|other| registry.source(other.id).is_some_and(|source| tag_declares(source.syntax(), &owner, name))) {
+                return Err(format!("{owner} already has a member named {name}"));
+            }
+        }
+    }
+    Ok(Some(navigation))
+}
+
+/// Refuses a rename with an occurrence in a library, such as a `--library` declaration file
+/// or the standard library, which the project does not own.
+fn owned_by_library(project: &Project, navigation: &Navigation) -> Result<(), String> {
+    let library = |path: &std::path::PathBuf| project.file_by_path(path).is_some_and(|file| {
+        file.role == luanalysis_project::SourceRole::Declaration || !matches!(file.origin, luanalysis_project::SourceOrigin::Filesystem)
+    });
+    match navigation.occurrences.iter().any(|(path, ..)| library(path)) {
+        true => Err(format!("{} is declared by a library and cannot be renamed", navigation.name)),
+        false => Ok(()),
+    }
+}
+
+/// The name of the type whose member the `---@field` or `---@function` at `site` declares.
+fn tag_owner(syntax: &luanalysis_syntax::File, site: Span) -> Option<String> {
+    for declaration in &syntax.type_declarations {
+        if let luanalysis_syntax::NamedTypeDeclarationKind::Record { fields, .. } = &declaration.kind
+            && fields.iter().any(|field| field.span == site)
+        {
+            return Some(declaration.name.text.clone());
+        }
+    }
+    if let Some(extension) = syntax.type_extensions.iter().find(|extension| extension.fields.iter().any(|field| field.span == site)) {
+        return Some(extension.owner.text.clone());
+    }
+    let declaration = syntax.function_declarations.iter().find(|declaration| declaration.span == site)?;
+    match declaration.owner.as_ref()? {
+        luanalysis_syntax::DocFunctionOwner::Explicit(owner) => Some(owner.text.clone()),
+        luanalysis_syntax::DocFunctionOwner::Contextual(id) => syntax.type_declarations.iter().find(|declaration| declaration.id == *id).map(|declaration| declaration.name.text.clone()),
+    }
+}
+
+/// Whether `syntax` declares a member `name` of type `owner` with a `---@field` or `---@function`.
+fn tag_declares(syntax: &luanalysis_syntax::File, owner: &str, name: &str) -> bool {
+    let named = |key: &luanalysis_syntax::TypeFieldKey| matches!(key, luanalysis_syntax::TypeFieldKey::Named(field) if field.text == name);
+    syntax.type_declarations.iter().any(|declaration| declaration.name.text == owner && matches!(&declaration.kind,
+        luanalysis_syntax::NamedTypeDeclarationKind::Record { fields, .. } if fields.iter().any(|field| named(&field.key))))
+        || syntax.type_extensions.iter().any(|extension| extension.owner.text == owner && extension.fields.iter().any(|field| named(&field.key)))
+        || syntax.function_declarations.iter().any(|declaration| declaration.name.text == name && match &declaration.owner {
+            Some(luanalysis_syntax::DocFunctionOwner::Explicit(explicit)) => explicit.text == owner,
+            Some(luanalysis_syntax::DocFunctionOwner::Contextual(id)) => syntax.type_declarations.iter().any(|declaration| declaration.id == *id && declaration.name.text == owner),
+            None => false,
+        })
+}
+
+/// Why renaming type name `at` of `file` (whose type names are `names`) to `name` would change
+/// what a type name refers to: the name is built in or already a type's, a `---@generic` of the
+/// name would capture a renamed use, or a renamed `---@generic`'s block already uses the name.
+fn type_rename_conflict(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    at: &luanalysis_syntax::TypeName,
+    names: &[luanalysis_syntax::TypeName],
+    navigation: &Navigation,
+    name: &str,
+) -> Result<(), String> {
+    use luanalysis_syntax::TypeNameKind;
+    const BUILT_IN: [&str; 12] = ["any", "unknown", "never", "nil", "boolean", "number", "integer", "string", "table", "function", "void", "self"];
+    if !name.split('.').all(crate::symbols::is_name) { return Err(format!("{name:?} is not a type name")); }
+    if BUILT_IN.contains(&name) { return Err(format!("{name} is a built-in type")); }
+    // A `---@generic` and its uses are its documentation block's alone.
+    let generic = names.iter().any(|other| other.kind == TypeNameKind::Generic && other.block == at.block && other.name == at.name);
+    for other in project.files.iter().filter(|other| !generic || other.id == file) {
+        let Some(syntax) = registry.source(other.id).map(|source| source.syntax()) else { continue };
+        let names = luanalysis_syntax::type_names(syntax, &other.source);
+        let generic_in = |block: Span| names.iter().any(|type_name| type_name.kind == TypeNameKind::Generic && type_name.block == block && type_name.name == name);
+        let renamed = |type_name: &luanalysis_syntax::TypeName| navigation.occurrences.iter().any(|(path, span, _)| *path == other.path && *span == type_name.span);
+        let conflict = names.iter().find(|type_name| match () {
+            _ if generic => type_name.block == at.block && type_name.name == name,
+            _ if renamed(type_name) => generic_in(type_name.block),
+            _ => type_name.name == name && !generic_in(type_name.block),
+        });
+        if let Some(conflict) = conflict {
+            let (line, column) = crate::symbols::line_column(&other.source, conflict.span.start);
+            let at = format!("{}:{line}:{column}", other.path.display());
+            return Err(match conflict.kind {
+                TypeNameKind::Declaration if !generic => format!("a type named {name} is already declared at {at}"),
+                _ => format!("renaming to {name} would change what the type name at {at} refers to"),
+            });
+        }
+    }
+    Ok(())
+}
+
 
 /// What a document symbol is, as the outline shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -469,6 +469,17 @@ impl NativeRegistry {
     }
     /// Where a member is declared, for the language service: its span, and whether that is a
     /// documentation tag (`---@field`, `---@function`) rather than a statement.
+    /// Where the constructor of runtime table `key` declares its field `name`: the key of
+    /// `name = value` or `["name"] = value`.
+    pub(crate) fn runtime_table_field_site(&self, key: NativeTypeDeclarationKey, name: &str) -> Option<Span> {
+        self.runtime_tables.schema(key)?.fields.iter().find_map(|field| match &field.kind {
+            luanalysis_syntax::TableFieldKind::Named(field) => (field.text == name).then_some(field.span),
+            luanalysis_syntax::TableFieldKind::Keyed(key) => {
+                matches!(&key.kind, luanalysis_syntax::ExprKind::String(bytes) if bytes == name.as_bytes()).then_some(key.span)
+            }
+            luanalysis_syntax::TableFieldKind::Sequence { .. } => None,
+        })
+    }
     pub(crate) fn member_site(&self, key: NativeTypeMemberKey) -> Option<(Span, bool)> {
         if let Some(store) = self.runtime_tables.member(key) { return Some((store.span, false)); }
         if let Some(source) = self.doc_members.get(key) { return Some((source.signature_span, true)); }

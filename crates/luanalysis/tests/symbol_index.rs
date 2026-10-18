@@ -81,5 +81,27 @@ fn a_global_is_every_files_and_a_local_its_own() {
     let file = index.file(&receiver.0.join("method.lua")).unwrap();
     let text = "local Point = {}\nfunction Point:move() return self end\nprint(Point)\n";
     assert_eq!(index.prepare_rename(file, text.find("self").unwrap()).map(|_| ()), Err(RenameError::ImplicitReceiver));
-    assert_eq!(index.prepare_rename(file, text.find("print").unwrap()).map(|_| ()), Err(RenameError::StandardLibrary("print".into())));
+    assert_eq!(index.prepare_rename(file, text.find("print").unwrap()).map(|_| ()), Err(RenameError::Library("print".into())));
+}
+
+#[test]
+fn a_rename_keeps_every_name_referring_to_what_it_did() {
+    let text = "local first = 1\nlocal second = 2\nprint(first, second)\nlocal later = 3\nprint(later)\nlocal later2 = 4\nprint(later2)\nGlobal = 1\nlocal function f()\n    local inner = 1\n    return Global + inner\nend\n";
+    let fixture = Fixture::new(&[("main.lua", text)]);
+    let index = fixture.index(&["main.lua"]);
+    let file = index.file(&fixture.0.join("main.lua")).unwrap();
+    let at = |needle: &str| text.find(needle).unwrap();
+    let captured = |result: Result<Vec<_>, RenameError>| matches!(result, Err(RenameError::Capture { .. }));
+    // `print(first, second)` would read the second declaration.
+    assert!(captured(index.rename(file, at("first"), "second")));
+    // A local renamed to a global its scope reads would capture the global.
+    assert!(captured(index.rename(file, at("inner"), "Global")));
+    // A global renamed to a local's name would be captured where the local is in scope.
+    assert!(captured(index.rename(file, at("Global"), "inner")));
+    // A global renamed to another's name would merge them.
+    assert_eq!(index.rename(file, at("Global"), "print"), Err(RenameError::Exists("print".into())));
+    // Shadowing that every name survives is a valid rename: each `later` still refers to its
+    // own declaration.
+    assert_eq!(index.rename(file, at("later2"), "later").unwrap().len(), 2);
+    assert_eq!(index.rename(file, at("first"), "initial").unwrap().len(), 2);
 }

@@ -535,6 +535,11 @@ impl ProjectRegistry {
             }))
             .collect()
     }
+    /// Where the constructor of runtime table `key` declares its field `name`.
+    pub(crate) fn runtime_table_field_site(&self, key: NativeTypeDeclarationKey, name: &str) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
+        let file = &self.files[*self.snapshots.get(&key.snapshot)?];
+        Some((file.id, file.source.runtime_table_field_site(key, name)?, false))
+    }
     /// Where a member is declared: its file, its span, and whether that is a documentation tag.
     pub(crate) fn member_site(&self, key: NativeTypeMemberKey) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];
