@@ -33,6 +33,24 @@ type Output = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct LanguageServer {
     connection: Connection,
     server: Option<std::thread::JoinHandle<i32>>,
+    /// How many checking and query threads are running.
+    running: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Counts a checking or query thread as running until it ends.
+struct Running(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Running {
+    fn start(running: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(Arc::clone(running))
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Delivers the client's messages to a `LanguageServer`, from any thread.
@@ -66,11 +84,19 @@ impl LanguageServer {
         let (events, received) = mpsc::channel();
         let server_events = events.clone();
         let output: Output = Arc::new(output);
+        let running = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let workers = Arc::clone(&running);
         let server = std::thread::Builder::new()
             .name("luanalysis-lsp".into())
-            .spawn(move || Server::new(inputs, options, server_events, output).serve(received))
+            .spawn(move || Server::new(inputs, options, server_events, output, workers).serve(received))
             .expect("start the language server's thread");
-        Self { connection: Connection { events }, server: Some(server) }
+        Self { connection: Connection { events }, server: Some(server), running }
+    }
+
+    /// How many of the server's checking and query threads are running: none once it has stopped.
+    #[doc(hidden)]
+    pub fn running_workers(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        Arc::clone(&self.running)
     }
 
     /// The connection delivering the client's messages.
@@ -339,6 +365,13 @@ struct Server {
     output: Output,
     jobs: Option<mpsc::Sender<Job>>,
     queries: Option<mpsc::Sender<Query>>,
+    /// Stops the current checking and query threads' work, when they are replaced or the server
+    /// stops.
+    cancellation: crate::project_check::Cancellation,
+    /// Every checking and query thread started, which the server joins when it stops.
+    workers: Vec<std::thread::JoinHandle<()>>,
+    /// How many of them are running.
+    running: Arc<std::sync::atomic::AtomicUsize>,
     encoding: Encoding,
     /// Whether the client inserts completion snippets.
     snippets: bool,
@@ -376,14 +409,17 @@ struct Server {
 }
 
 impl Server {
-    fn new(inputs: CheckInputs, options: ProjectCheckOptions, events: mpsc::Sender<Event>, output: Output) -> Self {
+    fn new(inputs: CheckInputs, options: ProjectCheckOptions, events: mpsc::Sender<Event>, output: Output, running: Arc<std::sync::atomic::AtomicUsize>) -> Self {
         Self {
+            running,
             inputs: Some(inputs),
             options,
             events,
             output,
             jobs: None,
             queries: None,
+            cancellation: crate::project_check::Cancellation::default(),
+            workers: Vec::new(),
             encoding: Encoding::Utf16,
             snippets: false,
             resolves_details: false,
@@ -408,7 +444,18 @@ impl Server {
         }
     }
 
+    /// Serves the client until it is closed, then stops every thread the server started: a check
+    /// in progress is cancelled, and the server ends only when they have.
     fn serve(&mut self, received: mpsc::Receiver<Event>) -> i32 {
+        let code = self.serve_messages(received);
+        self.cancellation.cancel();
+        self.jobs = None;
+        self.queries = None;
+        for worker in std::mem::take(&mut self.workers) { let _ = worker.join(); }
+        code
+    }
+
+    fn serve_messages(&mut self, received: mpsc::Receiver<Event>) -> i32 {
         while let Ok(event) = received.recv() {
             let mut next = Some(event);
             // Handle everything already queued before deciding whether to check.
@@ -659,22 +706,29 @@ impl Server {
 
     /// Starts the threads that check and answer queries, ending any running with older settings.
     fn start_workers(&mut self, inputs: CheckInputs, options: ProjectCheckOptions) {
+        // The threads with older settings stop what they are doing.
+        self.cancellation.cancel();
+        self.cancellation = crate::project_check::Cancellation::default();
+        let options = ProjectCheckOptions { cancellation: self.cancellation.clone(), ..options };
+        self.workers.retain(|worker| !worker.is_finished());
         let (queries, received) = mpsc::channel();
         let events = self.events.clone();
         let query_options = options.clone();
         let query_inputs = inputs.clone();
         let cancelled = Arc::clone(&self.cancelled);
-        std::thread::Builder::new()
+        let running = Running::start(&self.running);
+        self.workers.push(std::thread::Builder::new()
             .name("luanalysis-lsp-query".into())
-            .spawn(move || answer_queries(query_inputs, query_options, received, events, cancelled))
-            .expect("start the language server's query thread");
+            .spawn(move || { let _running = running; answer_queries(query_inputs, query_options, received, events, cancelled) })
+            .expect("start the language server's query thread"));
         self.queries = Some(queries);
         let (jobs, received) = mpsc::channel();
         let events = self.events.clone();
-        std::thread::Builder::new()
+        let running = Running::start(&self.running);
+        self.workers.push(std::thread::Builder::new()
             .name("luanalysis-lsp-check".into())
-            .spawn(move || check_jobs(inputs, options, received, events))
-            .expect("start the language server's checking thread");
+            .spawn(move || { let _running = running; check_jobs(inputs, options, received, events) })
+            .expect("start the language server's checking thread"));
         self.jobs = Some(jobs);
         // A new checker checks everything again, and a new query thread loads the project again.
         self.requested = None;
@@ -1367,7 +1421,10 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
     while let Ok(mut job) = jobs.recv() {
         // Only the latest revision is worth checking.
         while let Ok(newer) = jobs.try_recv() { job = newer; }
+        if options.cancellation.is_cancelled() { return; }
         let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&inputs, options.clone(), &mut workspace, &job)));
+        // A cancelled check is incomplete: newer settings or a stopping server have replaced it.
+        if options.cancellation.is_cancelled() { return; }
         let snapshot = match checked {
             Ok(Ok(report)) => Snapshot::of(&report),
             Ok(Err(error)) => Snapshot::failed(error),
@@ -1386,6 +1443,14 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
     while let Ok(first) = queries.recv() {
         let mut pending = vec![first];
         while let Ok(newer) = queries.try_recv() { pending.push(newer); }
+        // Newer settings or a stopping server replaced this thread: what is left is answered
+        // unanswered, without loading anything.
+        if options.cancellation.is_cancelled() {
+            for query in pending.into_iter().filter(|query| !matches!(query.site, Site::Warm(_))) {
+                if events.send(Event::Answered(query.id.clone(), query.unanswered())).is_err() { return; }
+            }
+            continue;
+        }
         // Only the latest query of each kind is worth answering; one superseded by a newer one
         // of its kind is answered unchecked.
         // Any other query warms the project as well as a warm-up would.

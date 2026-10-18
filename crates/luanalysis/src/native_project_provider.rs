@@ -202,6 +202,8 @@ pub(crate) struct ProjectRegistry {
     describe_types: bool,
     /// The global names each source's flow recipes were seeded with.
     global_names: Vec<Vec<u8>>,
+    /// Stops a check in progress: files not yet begun are skipped.
+    cancellation: crate::project_check::Cancellation,
 }
 
 impl ProjectRegistry {
@@ -216,6 +218,10 @@ impl ProjectRegistry {
     pub(crate) fn set_describe_types(&mut self, describe: bool) { self.describe_types = describe; }
     pub(crate) fn set_inspections(&mut self, enabled: bool) {
         for file in &mut self.files { file.source.set_inspections(enabled); }
+    }
+    pub(crate) fn set_cancellation(&mut self, cancellation: &crate::project_check::Cancellation) {
+        self.cancellation = cancellation.clone();
+        for file in &mut self.files { file.source.set_cancellation(cancellation); }
     }
     pub(crate) fn set_standard_environment_assumptions(&mut self, enabled: bool) {
         self.standard_environment.assume_unknown_effects &= enabled;
@@ -440,6 +446,7 @@ impl ProjectRegistry {
             header_metadata: RefCell::new(super::named_provider::SourceHeaderMetadata::default()),
             describe_types: true,
             global_names: original_names,
+            cancellation: crate::project_check::Cancellation::default(),
         }
     }
 
@@ -611,7 +618,7 @@ impl ProjectRegistry {
         let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
         loop {
             for (index, file) in self.files.iter().enumerate() {
-                if !selected(file.id) || !checked.insert(index) {
+                if !selected(file.id) || self.cancellation.is_cancelled() || !checked.insert(index) {
                     continue;
                 }
                 let started = profile.then(std::time::Instant::now);
@@ -675,7 +682,8 @@ impl ProjectRegistry {
                     || !report.report.pending_types.is_empty();
                 report.report.render(queries);
             }
-            let unchecked = self.files.iter().enumerate().any(|(index, file)| {
+            // A cancelled check has nothing left to check: it only settles what it began.
+            let unchecked = !self.cancellation.is_cancelled() && self.files.iter().enumerate().any(|(index, file)| {
                 !checked.contains(&index) && selected(file.id)
             });
             if !published && !unchecked {

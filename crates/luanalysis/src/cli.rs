@@ -168,6 +168,7 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
         jobs,
         describe_types: dump,
         inspections: false,
+        cancellation: Default::default(),
     };
     Ok(Parsed::Run(Arguments { dump, watch, inputs, options }))
 }

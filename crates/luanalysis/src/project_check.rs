@@ -37,6 +37,23 @@ pub struct ProjectCheckOptions {
     /// true or false and comparisons that cannot be equal, and suggestions for unreachable code,
     /// unused locals and parameters without a type. Off for `check`; none is an error.
     pub inspections: bool,
+    /// Stops a check in progress when cancelled, as a language server's are when it stops.
+    pub cancellation: Cancellation,
+}
+
+/// Asks a check in progress to stop. It skips the files and function bodies it has not begun,
+/// and what it reports is incomplete, for its caller to discard.
+#[derive(Clone, Debug, Default)]
+pub struct Cancellation(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Cancellation {
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 impl Default for ProjectCheckOptions {
     fn default() -> Self {
@@ -50,6 +67,7 @@ impl Default for ProjectCheckOptions {
             assume_unknown_standard_effects: true,
             describe_types: true,
             inspections: false,
+            cancellation: Cancellation::default(),
         }
     }
 }
@@ -243,6 +261,7 @@ pub(crate) fn with_project_session<R: Send>(
             registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
             registry.set_describe_types(options.describe_types);
             registry.set_inspections(options.inspections);
+            registry.set_cancellation(&options.cancellation);
             registry
         },
         |registry, queries| {
@@ -300,6 +319,7 @@ pub(crate) fn check_project_with_workspace(
         registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
         registry.set_describe_types(options.describe_types);
         registry.set_inspections(options.inspections);
+        registry.set_cancellation(&options.cancellation);
         if let Some(started) = started {
             factory_nanos.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
             factories.fetch_add(1, Ordering::Relaxed);

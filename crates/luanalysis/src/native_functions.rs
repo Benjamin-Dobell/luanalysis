@@ -76,6 +76,8 @@ pub(super) struct NativeRegistry {
     no_implicit_any: bool,
     /// Report inspections (`ProjectCheckOptions::inspections`).
     inspections: bool,
+    /// Stops a check in progress: function bodies not yet begun are skipped.
+    cancellation: crate::project_check::Cancellation,
     legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy,
     file: std::sync::Arc<File>,
     bound: std::sync::Arc<BoundFile>,
@@ -350,6 +352,7 @@ impl NativeRegistry {
             overload_mode: crate::OverloadMode::default(),
             no_implicit_any: false,
             inspections: false,
+            cancellation: crate::project_check::Cancellation::default(),
             legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy::Disabled,
             file,
             bound,
@@ -476,6 +479,7 @@ impl NativeRegistry {
     pub(crate) fn set_no_implicit_any(&mut self, enabled: bool) { self.no_implicit_any = enabled; }
     pub(crate) fn inspections(&self) -> bool { self.inspections }
     pub(crate) fn set_inspections(&mut self, enabled: bool) { self.inspections = enabled; }
+    pub(crate) fn set_cancellation(&mut self, cancellation: &crate::project_check::Cancellation) { self.cancellation = cancellation.clone(); }
     pub(crate) fn set_overload_mode(&mut self, mode: crate::OverloadMode) {
         self.overload_mode = mode;
     }
@@ -1900,6 +1904,7 @@ impl NativeRegistry {
 
     fn check_bodies(&self, queries: &mut dyn TypeQueries, selected_only: bool) {
         for index in 0..self.functions.len() {
+            if self.cancellation.is_cancelled() { return; }
             let key = self.key(index as u32);
             if selected_only && self.expressions.final_facets(key).is_empty() { continue; }
             for parameter in self.types.own_parameters(key) {
