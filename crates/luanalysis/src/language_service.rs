@@ -52,6 +52,9 @@ pub struct CompletionSite {
     pub statement: bool,
     /// Whether a parameter list already follows the word.
     pub parameters_follow: bool,
+    /// Whether the word is a value that may have an expected type: an argument, an assigned
+    /// value, a table constructor's field or a returned value.
+    pub value: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,8 +66,19 @@ pub enum CompletionKind {
     Keyword,
     Class,
     TypeParameter,
-    /// A function implementation of a host's callback.
+    /// A function implementation, of a host's callback or of an expected function value.
     Snippet,
+    /// A literal value the expected type allows.
+    Value,
+}
+
+/// A function's implementation, which a completion inserts with an empty body: what precedes its
+/// parameter list (`function onSave`, the name after a written `function`, or `function` for a
+/// function value), and its parameters' names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Implementation {
+    pub head: String,
+    pub parameters: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,9 +92,8 @@ pub struct CompletionItem {
     /// A callable's required parameters, which a call snippet fills in, and whether it takes
     /// more (optional or variadic ones) after them.
     pub parameters: Option<(Vec<String>, bool)>,
-    /// A callback's implementation: its parameters' names, and whether `function` is inserted
-    /// before its name.
-    pub implementation: Option<(Vec<String>, bool)>,
+    /// A function's implementation, which the completion inserts.
+    pub implementation: Option<Implementation>,
     /// Whether its declaration is `---@deprecated`.
     pub deprecated: bool,
 }
@@ -98,7 +111,7 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
     if bytes.get(start).is_some_and(u8::is_ascii_digit) { return None; }
     let tokens = luanalysis_syntax::lex(text).tokens;
     if let Some(context) = annotation_context(text, &tokens, start, offset) {
-        return Some(CompletionSite { context, text: text.to_owned(), placeholder: Span { start, end: start }, word: start..end, statement: false, parameters_follow: false });
+        return Some(CompletionSite { context, text: text.to_owned(), placeholder: Span { start, end: start }, word: start..end, statement: false, parameters_follow: false, value: false });
     }
     for token in &tokens {
         let inside = match &token.kind {
@@ -129,6 +142,11 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
         Some(TokenKind::Keyword(keyword)) if keyword == "local" || keyword == "for" => return None,
         _ => CompletionContext::Name,
     };
+    let value = context == CompletionContext::Name && match previous.map(|token| &token.kind) {
+        Some(TokenKind::Symbol(symbol)) => matches!(symbol.as_str(), "=" | "(" | "," | "{" | ";"),
+        Some(TokenKind::Keyword(keyword)) => keyword == "return",
+        _ => false,
+    };
     let head = &text[..start];
     let tail = &text[end..];
     let line_head = &head[head.rfind('\n').map_or(0, |newline| newline + 1)..];
@@ -154,6 +172,7 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
         word: start..end,
         statement,
         parameters_follow,
+        value,
     })
 }
 
@@ -360,6 +379,8 @@ fn completions(
             }
             // A statement of its own may begin a callback's implementation.
             if site.statement { items.extend(callback_implementations(project, registry, file, site, true, queries)); }
+            // A value may be expected to be a function or one of some literals.
+            if site.value { items.splice(0..0, expected_values(registry, file, site, queries)); }
             items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false }));
         }
     }
@@ -396,7 +417,8 @@ fn callback_implementations(
             .filter(|documentation| !documentation.is_empty())
             .map(|documentation| documentation_markdown(&documentation, true));
         // With a parameter list already written, only the name is completed.
-        let implementation = (!site.parameters_follow).then(|| (names.clone(), keyword));
+        let head = if keyword { format!("function {name}") } else { name.clone() };
+        let implementation = (!site.parameters_follow).then(|| Implementation { head, parameters: names.clone() });
         let kind = if implementation.is_some() { CompletionKind::Snippet } else { CompletionKind::Function };
         items.push(CompletionItem {
             detail: Some(format!("Implement {name}({})", names.join(", "))),
@@ -409,6 +431,137 @@ fn callback_implementations(
         });
     }
     items
+}
+
+/// The values the type expected at `site` allows: a function implementing each signature it has,
+/// with an empty body, and each literal it may be. `callback_function = ` given
+/// `nil | fun(object: tts__Object)` completes `function(object) end`.
+fn expected_values(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    site: &CompletionSite,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Vec<CompletionItem> {
+    let Some(source) = registry.source(file) else { return Vec::new() };
+    source.probe_expected(site.placeholder);
+    registry.check_owned_roots(queries, &[file]);
+    let mut pending = source.probed_expected(site.placeholder);
+    // An argument's parameter and an assigned field's type are expected too, though checking
+    // types an argument the call cannot take yet, or a store to a table it infers, without them.
+    pending.extend(written_expected(registry, file, site, queries));
+    pending.reverse();
+    let mut seen = Vec::new();
+    let mut items: Vec<CompletionItem> = Vec::new();
+    let mut add = |item: CompletionItem| if !items.iter().any(|other| other.label == item.label) { items.push(item) };
+    while let Some(ty) = pending.pop() {
+        if seen.len() > 64 || seen.contains(&ty) { continue; }
+        seen.push(ty.clone());
+        let literal = |label: String| CompletionItem { label, kind: CompletionKind::Value, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false };
+        let any_function = match queries.inspect_type(&ty) {
+            Type::Union(parts) => { pending.extend(parts.into_iter().rev()); continue; }
+            Type::StringLiteral(bytes) => { add(literal(lua_string(&bytes))); continue; }
+            Type::NumberLiteral(value) => { add(literal(if value.fract() == 0.0 && value.abs() < 1e15 { format!("{}", value as i64) } else { value.to_string() })); continue; }
+            inspected => inspected == Type::RuntimeFunction,
+        };
+        for head in queries.call_signature_types(&ty) {
+            let Some((parameters, _)) = crate::describe_signature(&head, queries) else { continue };
+            let names: Vec<String> = parameters.iter().map(|parameter| parameter.split(':').next().unwrap_or_default().trim_end_matches('?').trim().to_owned()).collect();
+            // Any function at all (`function`) takes whatever it is given.
+            let detail = if any_function { "function".to_owned() } else { describe_native(&head, queries, &mut Vec::new()) };
+            add(CompletionItem {
+                label: format!("function({})", names.join(", ")),
+                kind: CompletionKind::Snippet,
+                detail: Some(detail),
+                documentation: None,
+                parameters: None,
+                implementation: Some(Implementation { head: "function".to_owned(), parameters: names }),
+                deprecated: false,
+            });
+        }
+    }
+    items
+}
+
+/// The types the value at `site` is expected to have as what it is written as: an argument, the
+/// type of the parameter it is passed to in each signature of the call; a value assigned to a
+/// field, the field's type.
+fn written_expected(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    site: &CompletionSite,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Vec<Type> {
+    let Some(source) = registry.source(file) else { return Vec::new() };
+    let mut call = None;
+    crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| match &expression.kind {
+        ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => {
+            if let Some(index) = args.iter().position(|argument| argument.span == site.placeholder) { call = Some((expression.clone(), index)); }
+        }
+        _ => {}
+    });
+    if let Some((call, index)) = call {
+        // A method call passes its receiver as the first argument.
+        let (callee, position) = match &call.kind {
+            ExprKind::Call { callee, .. } => (expression_type(registry, file, callee.span, queries), index),
+            ExprKind::MethodCall { receiver, name, .. } => {
+                let member = expression_type(registry, file, receiver.span, queries).and_then(|receiver| {
+                    let receiver = queries.exclude_type(&receiver, &Type::Nil);
+                    queries.type_members(&receiver).into_iter().find(|(member, _)| *member == name.text).map(|(_, value)| value)
+                });
+                (member, index + 1)
+            }
+            _ => return Vec::new(),
+        };
+        let Some(callee) = callee else { return Vec::new() };
+        let mut expected = Vec::new();
+        for head in queries.call_signature_types(&callee) {
+            let Some(signature) = queries.function_signature(&head) else { continue };
+            match signature.params.get(position) {
+                Some(parameter) => expected.push(parameter.ty.clone()),
+                None => if let Some(rest) = queries.signature_rest_pack(&head) {
+                    expected.push(queries.pack_slot(&rest, position - signature.params.len()));
+                },
+            }
+        }
+        return expected;
+    }
+    // `receiver.name = |`: the field just before the `=`.
+    let assigned = |end: usize| site.text.get(end..site.placeholder.start).is_some_and(|between| between.trim() == "=");
+    let mut field = None;
+    crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| {
+        if let ExprKind::Field { base, name } = &expression.kind && assigned(expression.span.end) {
+            field = Some((base.span, name.text.clone()));
+        }
+    });
+    let Some((base, name)) = field else { return Vec::new() };
+    let Some(receiver) = expression_type(registry, file, base, queries) else { return Vec::new() };
+    let receiver = queries.exclude_type(&receiver, &Type::Nil);
+    queries.type_members(&receiver).into_iter().filter(|(member, _)| *member == name).map(|(_, value)| value).collect()
+}
+
+/// `bytes` as a Lua string literal: UTF-8 text as it is, other bytes and control characters
+/// escaped.
+fn lua_string(bytes: &[u8]) -> String {
+    let mut literal = String::from("\"");
+    let escape = |literal: &mut String, character: char| match character {
+        '"' => literal.push_str("\\\""),
+        '\\' => literal.push_str("\\\\"),
+        '\n' => literal.push_str("\\n"),
+        '\r' => literal.push_str("\\r"),
+        '\t' => literal.push_str("\\t"),
+        character if character.is_control() => {
+            for byte in character.to_string().bytes() { literal.push_str(&format!("\\{byte:03}")) }
+        }
+        character => literal.push(character),
+    };
+    match std::str::from_utf8(bytes) {
+        Ok(text) => for character in text.chars() { escape(&mut literal, character) },
+        Err(_) => for &byte in bytes {
+            if byte.is_ascii() { escape(&mut literal, byte as char) } else { literal.push_str(&format!("\\{byte:03}")) }
+        },
+    }
+    literal.push('"');
+    literal
 }
 
 /// The globals the workspace's scripts implement at the top level of their main chunks

@@ -192,6 +192,8 @@ struct Query {
     encoding: Encoding,
     /// Whether the client inserts completion snippets.
     snippets: bool,
+    /// Whether a callable completes its call, with its parameters as placeholders.
+    call_snippets: bool,
     /// How the client marks deprecated completions.
     deprecation: Deprecation,
 }
@@ -1200,7 +1202,7 @@ impl Server {
     fn query(&mut self, id: Json, path: PathBuf, site: Site, lines: LineIndex) {
         let mut overlays: HashMap<PathBuf, String> = self.documents.iter()
             .map(|(path, document)| (path.clone(), document.text.clone())).collect();
-        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets && self.preferences.call_snippets, deprecation: self.deprecation };
+        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets, call_snippets: self.snippets && self.preferences.call_snippets, deprecation: self.deprecation };
         overlays.insert(path, query.text().to_owned());
         let query = Query { overlays, ..query };
         let unanswered = query.unanswered();
@@ -1428,7 +1430,7 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
     let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
     let range = query.lines.range(site.word.start, site.word.end, query.encoding);
     let called = query.lines.text[site.word.end..].trim_start_matches([' ', '\t']).starts_with(['(', '"', '\'', '{']);
-    language_service::complete(project, options, workspace, file, site, |items| answer(Json::object([("isIncomplete", Json::from(false)), ("items", Json::Array(items.into_iter().map(|item| {
+    language_service::complete(project, options, workspace, file, site, |items| answer(Json::object([("isIncomplete", Json::from(false)), ("items", Json::Array(items.into_iter().enumerate().map(|(index, item)| {
         let mut fields = vec![
             ("label".to_owned(), Json::from(item.label.as_str())),
             ("kind".to_owned(), Json::from(match item.kind {
@@ -1440,12 +1442,13 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
                 CompletionKind::Class => 7,
                 CompletionKind::TypeParameter => 25,
                 CompletionKind::Snippet => 15,
+                CompletionKind::Value => 12,
             })),
             ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(item.label.as_str()))])),
         ];
         // A callable inserts a call with its required parameters as placeholders, unless a call
         // already follows.
-        if let Some((parameters, more)) = item.parameters.filter(|_| query.snippets && !called) {
+        if let Some((parameters, more)) = item.parameters.filter(|_| query.call_snippets && !called) {
             let arguments: Vec<String> = parameters.iter().enumerate()
                 .map(|(index, name)| format!("${{{}:{}}}", index + 1, name.replace(['$', '}', '\\'], "")))
                 .collect();
@@ -1459,15 +1462,19 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
             fields[2] = ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(snippet))]));
             fields.push(("insertTextFormat".to_owned(), Json::from(2usize)));
         }
-        // A callback's implementation: its name, parameters, an empty body and `end`, with the
-        // caret in the body when the client takes snippets, and plain text otherwise.
-        if let Some((parameters, keyword)) = &item.implementation {
-            let header = format!("{}{}({})", if *keyword { "function " } else { "" }, item.label, parameters.join(", "));
+        // A function's implementation: its head, parameters, an empty body and `end`, with the
+        // caret in the body when the client takes snippets, and plain text otherwise. It and the
+        // values an expected type allows come first.
+        if let Some(implementation) = &item.implementation {
+            let header = format!("{}({})", implementation.head, implementation.parameters.join(", "));
             let body = if query.snippets { "$0" } else { "" };
             let text = if query.snippets { header.replace('\\', "\\\\").replace('$', "\\$").replace('}', "\\}") } else { header };
             fields[2] = ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(format!("{text}\n\t{body}\nend")))]));
             fields.push(("filterText".to_owned(), Json::from(item.label.as_str())));
             if query.snippets { fields.push(("insertTextFormat".to_owned(), Json::from(2usize))); }
+        }
+        if matches!(item.kind, CompletionKind::Snippet | CompletionKind::Value) {
+            fields.push(("sortText".to_owned(), Json::from(format!("0{index:04}"))));
         }
         if let Some(detail) = item.detail { fields.push(("detail".to_owned(), Json::from(detail))); }
         if item.deprecated {

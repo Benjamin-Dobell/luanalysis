@@ -849,7 +849,7 @@ fn host_callbacks_complete_as_implementations() {
     };
     // After `function`, a callback's implementation.
     let response = complete(&mut server, &format!("function onObjectDr\n{initial}"), 0, 19);
-    assert!(response.contains(r#""label":"onObjectDrop","kind":15,"textEdit":{"range":{"start":{"line":0,"character":9},"end":{"line":0,"character":19}},"newText":"onObjectDrop(player_color, object)\n\t$0\nend"},"filterText":"onObjectDrop","insertTextFormat":2,"detail":"Implement onObjectDrop(player_color, object)""#), "{response}");
+    assert!(response.contains(r#""label":"onObjectDrop","kind":15,"textEdit":{"range":{"start":{"line":0,"character":9},"end":{"line":0,"character":19}},"newText":"onObjectDrop(player_color, object)\n\t$0\nend"},"filterText":"onObjectDrop","insertTextFormat":2,"sortText":"00000","detail":"Implement onObjectDrop(player_color, object)""#), "{response}");
     assert!(response.contains("Called after an object is dropped."), "{response}");
     // Not for a callback already implemented, nor for a library function.
     assert!(!response.contains(r#""label":"onSave""#) && !response.contains(r#""label":"print2""#), "{response}");
@@ -1020,6 +1020,64 @@ fn library_declarations_are_navigable_but_not_renamed() {
     // A local that shadows a library's name is the project's own.
     let renamed = server.rename(30, &main, position(text, "getObjectFromGUID = 1", 0), "found");
     assert_eq!(renamed.matches(r#""newText":"found""#).count(), 2, "{renamed}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn expected_values_complete_function_implementations_and_literals() {
+    let root = fixture();
+    let library = root.join("api.def.lua");
+    fs::write(&library, concat!(
+        "---@class tts__Object\n\n",
+        "---@shape tts__Callback<T>\n---@field callback_function nil | T\n\n",
+        "---@alias tts__ObjectCallbackFunction fun(object: tts__Object): void\n\n",
+        "---@shape tts__SpawnObjectDataParams : tts__Callback<tts__ObjectCallbackFunction>\n---@field data table\n\n",
+        "---@param params tts__SpawnObjectDataParams\n---@return tts__Object\nfunction spawnObjectData(params) end\n\n",
+        "---@class tts__Timer\n---@field onTick nil | fun(elapsed: number, timer: tts__Timer): boolean\n\n",
+        "---@alias Colour \"Red\" | \"Blue\" | \"Light Grey\"\n\n",
+        "---@param colour Colour\n---@param callback fun(id: number)\n---@param delay number\nfunction schedule(colour, callback, delay) end\n",
+    )).unwrap();
+    let main = root.join("main.lua");
+    fs::write(&main, "").unwrap();
+    let library_argument = library.to_str().unwrap().to_owned();
+    let mut server = Server::start(&["--lua-version", "5.2", "--library", &library_argument]);
+    // Call snippets are turned off; implementations still place the caret in their body.
+    server.send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":"{}","capabilities":{{"textDocument":{{"completion":{{"completionItem":{{"snippetSupport":true}}}}}}}},"initializationOptions":{{"completion":{{"callSnippets":false}}}}}}}}"#, uri(&root)));
+    server.wait(|message| message.contains(r#""id":1"#));
+    server.send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
+    server.open(&main, "");
+    server.diagnostics(&main, |_| true);
+    let mut version = 1;
+    let mut complete = |server: &mut Server, text: &str, needle: &str| {
+        version += 1;
+        server.change(&main, version, text);
+        let (line, character) = position(text, needle, 0);
+        server.request(version + 10, "textDocument/completion", &main, line, character + needle.encode_utf16().count() as u32)
+    };
+    let implements = |response: &str, label: &str, detail: &str| {
+        response.contains(&format!(r#""label":"{label}","kind":15"#))
+            && response.contains(&format!(r#""newText":"{label}\n\t$0\nend"}},"filterText":"{label}","insertTextFormat":2,"sortText":"0"#))
+            && response.contains(&format!(r#""detail":"{detail}"#))
+    };
+    // A table field's function type, inherited from a generic shape through an alias.
+    let response = complete(&mut server, "local object = spawnObjectData({\n    data = {\n        Name = \"rpg_BEAR\",\n    },\n    callback_function = \n})\n", "callback_function = ");
+    assert!(implements(&response, "function(object)", "fun(object: tts__Object): void"), "{response}");
+    // A field assigned: a class's, and a table's inferred one.
+    let response = complete(&mut server, "---@type tts__Timer\nlocal timer\ntimer.onTick = \n", "onTick = ");
+    assert!(implements(&response, "function(elapsed, timer)", "fun(elapsed: number, timer: tts__Timer): boolean"), "{response}");
+    let response = complete(&mut server, "local t = { onTick = function(elapsed) return elapsed end }\nt.onTick = \n", "t.onTick = ");
+    assert!(response.contains(r#""label":"function(elapsed)""#), "{response}");
+    // An argument the call cannot take yet: its parameter's function type, or its literals, first.
+    let response = complete(&mut server, "schedule(\"Red\", \n", "\"Red\", ");
+    assert!(implements(&response, "function(id)", "fun(id: number)"), "{response}");
+    let response = complete(&mut server, "schedule(\n", "schedule(");
+    for literal in ["Red", "Blue", "Light Grey"] {
+        assert!(response.contains(&format!(r#""label":"\"{literal}\"","kind":12,"textEdit":{{"range":{{"start":{{"line":0,"character":9}},"end":{{"line":0,"character":9}}}},"newText":"\"{literal}\""}},"sortText":"0000"#)), "{response}");
+    }
+    // Nothing for a value expected to be a number.
+    let response = complete(&mut server, "schedule(\"Red\", function() end, \n", "end, ");
+    assert!(!response.contains(r#""kind":15"#) && !response.contains(r#""kind":12"#), "{response}");
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }

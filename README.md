@@ -377,7 +377,10 @@ options of `check`, and without paths it checks the editor's workspace. It provi
 * Hover, with a name's type and what its doc comments say, for values and for type names in
   annotations.
 * Completion of names, members, and in annotations, tags and types, with documentation. A function
-  inserts its call with its required parameters as placeholders.
+  inserts its call with its required parameters as placeholders. Where a function is expected (an
+  argument, a field, an assigned or returned value), its implementation is offered with an empty
+  body, as are the literals an expected type allows, and a host's callbacks complete as their
+  implementations.
 * Signature help, which highlights the parameter being typed and selects the overload that the
   arguments typed so far resolve to.
 * Go to definition and type definition, find references, highlights and rename, for locals,

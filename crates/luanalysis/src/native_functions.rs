@@ -125,9 +125,11 @@ pub(super) struct NativeRegistry {
     /// lexical parent's own canonical frame (declaration space outside any function). Captures
     /// and contextual instances are interned by content, so this does not depend on order.
     canonical_frames: RefCell<HashMap<NativeFunctionKey, (Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
-    /// A language-service request's expression and the types it was checked to have.
     /// The expressions the language service asked the types of, and the types checking gave them.
     completion_probe: RefCell<HashMap<(usize, usize), Vec<Type>>>,
+    /// The expressions the language service asked the expected types of, and the types checking
+    /// expected them to have: a parameter's for an argument, a field's for its value.
+    expected_probe: RefCell<HashMap<(usize, usize), Vec<Type>>>,
     pending_contextual_owners: RefCell<HashSet<(NativeFunctionKey, NativeFlowKey)>>,
     pending_owner_observations: Cell<u64>,
     pending_owner_bodies: RefCell<HashSet<(NativeFunctionKey, Option<ContextualFunctionContext>, Option<CapturedFunctionContext>)>>,
@@ -356,6 +358,7 @@ impl NativeRegistry {
             bodies_checked: RefCell::new(HashSet::default()),
             canonical_frames: RefCell::new(HashMap::default()),
             completion_probe: RefCell::new(HashMap::default()),
+            expected_probe: RefCell::new(HashMap::default()),
             pending_contextual_owners: RefCell::new(HashSet::default()),
             pending_owner_observations: Cell::new(0),
             pending_owner_bodies: RefCell::new(HashSet::default()),
@@ -1078,6 +1081,27 @@ impl NativeRegistry {
     /// The types checking gave the probed expression at `span`, which is probed no longer.
     pub(crate) fn probed_types(&self, span: Span) -> Vec<Type> {
         self.completion_probe.borrow_mut().remove(&(span.start, span.end)).unwrap_or_default()
+    }
+
+    /// Collects the types checking expects the expression at `span` to have.
+    pub(crate) fn probe_expected(&self, span: Span) {
+        self.expected_probe.borrow_mut().insert((span.start, span.end), Vec::new());
+    }
+
+    /// The types checking expected the probed expression at `span` to have, which is probed no
+    /// longer.
+    pub(crate) fn probed_expected(&self, span: Span) -> Vec<Type> {
+        self.expected_probe.borrow_mut().remove(&(span.start, span.end)).unwrap_or_default()
+    }
+
+    pub(super) fn record_expected_type(&self, span: Span, ty: &Type) {
+        let mut probes = self.expected_probe.borrow_mut();
+        if !probes.is_empty()
+            && let Some(types) = probes.get_mut(&(span.start, span.end))
+            && !types.contains(ty)
+        {
+            types.push(ty.clone());
+        }
     }
 
     pub(super) fn record_probed_type(&self, span: Span, ty: &Type) {
