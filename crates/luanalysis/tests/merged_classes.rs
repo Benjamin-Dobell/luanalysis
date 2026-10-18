@@ -257,3 +257,30 @@ fn a_member_no_alternative_has_does_not_narrow_its_table_to_never() {
     // A member one alternative has still selects it.
     assert!(report.contains("main.lua:10:23: onlyA: { [\"kind\"]: \"a\"; [\"x\"]: 1 }"), "{report}");
 }
+
+#[test]
+fn a_class_chain_declared_in_two_files_reads_inherited_fields_once_per_base() {
+    // Each file names every class's base; a read through the merged chain followed both
+    // listings at every level, doubling with each class.
+    let mut chain = String::from("---@class C0\n---@field x number\nlocal C0 = {}\n");
+    for i in 1..=24 {
+        chain += &format!("---@class C{i} : C{}\nlocal C{i} = {{}}\n", i - 1);
+    }
+    let main = format!("require 'copy'\n{chain}---@param c C24\nlocal function read(c) local x = c.x; local y = c.y end\n");
+    let fixture = Fixture::new(&[("copy.lua", &format!("{chain}return {{}}\n")), ("main.lua", &main)]);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_luanalysis")).current_dir(&fixture.0)
+        .args(["check", "--lua-version", "5.4", "--module-root", ".", "--dump-types", "main.lua"])
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let started = std::time::Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if started.elapsed() > std::time::Duration::from_secs(20) {
+            child.kill().unwrap();
+            panic!("checking the merged chain did not finish in 20 s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let report = text(&child.wait_with_output().unwrap());
+    assert!(report.contains(": x: number"), "{report}");
+    assert!(report.contains("error[TS2339]: Property 'y' does not exist on type 'C24'"), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+}

@@ -918,7 +918,10 @@ impl NativeTypeProvider for ProjectRegistry {
     fn type_declaration_bases(&self, key: NativeTypeDeclarationKey, queries: &mut dyn TypeQueries) -> Vec<Type> {
         let mut bases = self.owner(key.snapshot).type_declaration_bases(key, queries);
         for &merged in self.names.merged_into(key) {
-            bases.extend(self.owner(merged.snapshot).type_declaration_bases(merged, queries));
+            // A class declared in several files names its base in each: it is one base.
+            for base in self.owner(merged.snapshot).type_declaration_bases(merged, queries) {
+                if !bases.contains(&base) { bases.push(base); }
+            }
         }
         bases
     }
