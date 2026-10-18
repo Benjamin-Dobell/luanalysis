@@ -13,7 +13,7 @@ use crate::project_check::ProjectCheckOptions;
 use crate::{bind, describe_native};
 use luanalysis_engine::{NativeCheckMode, Type};
 use luanalysis_project::{FileId, Project};
-use luanalysis_syntax::{CommentKind, Documentation, Expr, ExprKind, Span, TokenKind};
+use luanalysis_syntax::{CommentKind, Documentation, Expr, ExprKind, Name, Span, TokenKind};
 use std::ops::Range;
 
 /// The name that stands for the word being completed.
@@ -1714,6 +1714,105 @@ pub fn semantic_tokens(text: &str) -> Vec<SemanticToken> {
         if kept.last().is_none_or(|last| last.span.end <= token.span.start) { kept.push(token); }
     }
     kept
+}
+
+/// A quick fix: replace `span` with `replacement` to resolve diagnostic number `diagnostic`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fix {
+    pub title: String,
+    pub diagnostic: usize,
+    pub span: Span,
+    pub replacement: String,
+}
+
+/// Spelling fixes for the diagnostics given as (code, span): a missing property (TS2339) is
+/// changed to its receiver's nearest member, and an unknown name (TS2304) to the nearest local
+/// in scope or global.
+pub fn spelling_fixes(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    diagnostics: Vec<(String, Span)>,
+    deliver: impl FnOnce(Vec<Fix>) + Send,
+) {
+    let options = ProjectCheckOptions { jobs: 1, describe_types: true, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
+        deliver(spellings(registry, file, &diagnostics, queries));
+    });
+}
+
+fn spellings(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    diagnostics: &[(String, Span)],
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Vec<Fix> {
+    let Some(source) = registry.source(file) else { return Vec::new() };
+    let mut fixes = Vec::new();
+    for (index, (code, span)) in diagnostics.iter().enumerate() {
+        let overlaps = |other: Span| other.start < span.end && span.start < other.end;
+        let (word, candidates): (Name, Vec<String>) = match code.as_str() {
+            "TS2339" => {
+                let mut found = None;
+                crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| match &expression.kind {
+                    ExprKind::Field { base, name } | ExprKind::MethodCall { receiver: base, name, .. } if overlaps(name.span) => found = Some((base.span, name.clone())),
+                    _ => {}
+                });
+                let Some((receiver, name)) = found else { continue };
+                let Some(receiver) = expression_type(registry, file, receiver, queries) else { continue };
+                let receiver = queries.exclude_type(&receiver, &Type::Nil);
+                (name, queries.type_members(&receiver).into_iter().map(|(member, _)| member).collect())
+            }
+            "TS2304" => {
+                let mut found = None;
+                crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| {
+                    if let ExprKind::Name(name) = &expression.kind && overlaps(expression.span) { found = Some(name.clone()); }
+                });
+                let Some(name) = found else { continue };
+                let bound = source.bound();
+                let mut candidates: Vec<String> = visible_bindings(bound, name.span.start).into_iter().map(|binding| bound.declaration(binding).name.clone()).collect();
+                if let Some(environment) = source.global_environment()
+                    && let Ok(environment) = queries.global_environment_type(environment)
+                {
+                    candidates.extend(queries.type_members(&environment).into_iter().map(|(member, _)| member));
+                }
+                (name, candidates)
+            }
+            _ => continue,
+        };
+        if let Some(best) = nearest(&word.text, &candidates) {
+            fixes.push(Fix { title: format!("Change to '{best}'"), diagnostic: index, span: word.span, replacement: best });
+        }
+    }
+    fixes
+}
+
+/// The candidate nearest `word` by edit distance, ignoring case, when it is near enough to be a
+/// misspelling: within a third of its length. Swapping two adjacent letters is one edit.
+fn nearest(word: &str, candidates: &[String]) -> Option<String> {
+    let distance = |a: &str, b: &str| {
+        let (a, b): (Vec<char>, Vec<char>) = (a.to_lowercase().chars().collect(), b.to_lowercase().chars().collect());
+        let mut table = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+        for (i, row) in table.iter_mut().enumerate() { row[0] = i; }
+        for j in 0..=b.len() { table[0][j] = j; }
+        for i in 1..=a.len() {
+            for j in 1..=b.len() {
+                let substitution = table[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]);
+                let mut best = substitution.min(table[i - 1][j] + 1).min(table[i][j - 1] + 1);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] { best = best.min(table[i - 2][j - 2] + 1); }
+                table[i][j] = best;
+            }
+        }
+        table[a.len()][b.len()]
+    };
+    let limit = (word.chars().count() / 3).max(1);
+    candidates.iter()
+        .filter(|candidate| candidate.as_str() != word && is_identifier(candidate))
+        .map(|candidate| (distance(word, candidate), candidate))
+        .filter(|(distance, _)| *distance <= limit)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, candidate)| candidate.clone())
 }
 
 #[cfg(test)]

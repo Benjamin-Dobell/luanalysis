@@ -190,11 +190,20 @@ struct Query {
 }
 
 enum Site {
+    Actions(ActionSite),
     Completion(CompletionSite),
     Signature(SignatureSite),
     Hover(HoverSite),
     Navigate(NavigateSite),
     Hints(HintSite),
+}
+
+/// Quick fixes for a document's diagnostics: those known without checking, and the
+/// diagnostics (with their codes and spans) whose spelling fixes need a check.
+struct ActionSite {
+    text: String,
+    actions: Vec<Json>,
+    diagnostics: Vec<(Json, String, luanalysis_syntax::Span)>,
 }
 
 /// Inlay hints for a range of a document: the type hints the last check gives, to which the
@@ -240,6 +249,7 @@ impl Query {
             Site::Hover(site) => &site.text,
             Site::Navigate(site) => &site.text,
             Site::Hints(site) => &site.text,
+            Site::Actions(site) => &site.text,
         }
     }
 
@@ -249,6 +259,7 @@ impl Query {
             Site::Completion(_) => Json::object([("isIncomplete", Json::from(true)), ("items", Json::Array(Vec::new()))]),
             Site::Signature(_) | Site::Navigate(_) => Json::Null,
             Site::Hints(site) => Json::Array(site.types.clone()),
+            Site::Actions(site) => Json::Array(site.actions.clone()),
             // Without documentation, a hover still has the last check's type.
             Site::Hover(site) => match &site.ty {
                 None => Json::Null,
@@ -412,6 +423,7 @@ impl Server {
                 self.respond(id, result);
             }
             "textDocument/inlayHint" => self.inlay_hints(id, params),
+            "textDocument/codeAction" => self.code_actions(id, params),
             "textDocument/semanticTokens/full" => {
                 let result = self.semantic_tokens(params);
                 self.respond(id, result);
@@ -550,6 +562,7 @@ impl Server {
                 ("workspaceSymbolProvider", Json::from(true)),
                 ("foldingRangeProvider", Json::from(true)),
                 ("inlayHintProvider", Json::from(true)),
+                ("codeActionProvider", Json::object([("codeActionKinds", Json::Array(vec![Json::from("quickfix")]))])),
                 ("semanticTokensProvider", Json::object([
                     ("legend", Json::object([
                         ("tokenTypes", Json::Array(["class", "interface", "type", "typeParameter", "parameter", "variable", "property", "function", "method"].into_iter().map(Json::from).collect())),
@@ -810,6 +823,42 @@ impl Server {
             }
         }
         self.query(id, path, Site::Hints(HintSite { text, range, types }), lines);
+    }
+
+    /// Quick fixes for the diagnostics the editor gives: an unused name (TS6133) is prefixed with
+    /// `_`, and a misspelled member or name is changed to the nearest one.
+    fn code_actions(&mut self, id: Json, params: &Json) {
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else {
+            return self.respond(id, Json::Null);
+        };
+        let Some(text) = self.file_text(&path) else { return self.respond(id, Json::Null) };
+        let lines = LineIndex::new(text.clone());
+        let uri = path_to_uri(&path);
+        let offset = |position: Option<&Json>| {
+            let line = position.and_then(|position| position.get("line")).and_then(Json::as_u64).unwrap_or(0) as usize;
+            let character = position.and_then(|position| position.get("character")).and_then(Json::as_u64).unwrap_or(0) as usize;
+            lines.offset(line, character, self.encoding)
+        };
+        let mut actions = Vec::new();
+        let mut diagnostics = Vec::new();
+        for diagnostic in params.path(&["context", "diagnostics"]).and_then(Json::as_array).unwrap_or(&[]) {
+            let code = diagnostic.get("code").and_then(Json::as_str).unwrap_or_default().to_owned();
+            let span = luanalysis_syntax::Span {
+                start: offset(diagnostic.path(&["range", "start"])),
+                end: offset(diagnostic.path(&["range", "end"])),
+            };
+            let name = &text[span.start.min(text.len())..span.end.min(text.len())];
+            match code.as_str() {
+                "TS6133" if name.starts_with(|ch: char| ch.is_alphabetic()) && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_') => {
+                    actions.push(quick_fix(format!("Prefix '{name}' with '_' to mark it unused"), diagnostic, &uri,
+                        lines.range(span.start, span.start, self.encoding), "_".to_owned()));
+                }
+                "TS2339" | "TS2304" => diagnostics.push((diagnostic.clone(), code, span)),
+                _ => {}
+            }
+        }
+        if diagnostics.is_empty() { return self.respond(id, Json::Array(actions)); }
+        self.query(id, path, Site::Actions(ActionSite { text, actions, diagnostics }), lines);
     }
 
     /// A document's semantic tokens, relative to one another as LSP encodes them.
@@ -1112,6 +1161,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 Site::Hover(site) => hover(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Navigate(site) => navigate(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Hints(site) => hints(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
+                Site::Actions(site) => actions(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
             }));
             if completed.is_err() {
                 workspace = ProjectWorkspace::new();
@@ -1308,6 +1358,30 @@ fn hints(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut Pro
             ("paddingRight", Json::from(true)),
         ])));
         answer(Json::Array(hints));
+    });
+}
+
+/// A quick fix that replaces `range` of the document at `uri`, resolving `diagnostic`.
+fn quick_fix(title: String, diagnostic: &Json, uri: &str, range: Json, text: String) -> Json {
+    Json::object([
+        ("title", Json::from(title)),
+        ("kind", Json::from("quickfix")),
+        ("diagnostics", Json::Array(vec![diagnostic.clone()])),
+        ("isPreferred", Json::from(true)),
+        ("edit", Json::object([("changes", Json::Object(vec![(uri.to_owned(), Json::Array(vec![Json::object([("range", range), ("newText", Json::from(text))])]))]))])),
+    ])
+}
+
+fn actions(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &ActionSite, answer: &mut (dyn FnMut(Json) + Send)) {
+    let Some(project) = load(inputs, workspace, loaded, query) else { return };
+    let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
+    let requested = site.diagnostics.iter().map(|(_, code, span)| (code.clone(), *span)).collect();
+    let uri = path_to_uri(&query.path);
+    language_service::spelling_fixes(project, options, workspace, file, requested, |fixes| {
+        let mut actions = site.actions.clone();
+        actions.extend(fixes.into_iter().map(|fix| quick_fix(fix.title, &site.diagnostics[fix.diagnostic].0, &uri,
+            query.lines.range(fix.span.start, fix.span.end, query.encoding), fix.replacement)));
+        answer(Json::Array(actions));
     });
 }
 

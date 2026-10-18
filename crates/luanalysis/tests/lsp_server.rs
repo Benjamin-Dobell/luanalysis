@@ -669,3 +669,30 @@ fn semantic_tokens_are_encoded_relative_to_one_another() {
     assert!(response.contains(r#""data":[0,6,5,5,1,1,0,5,7,12,0,6,5,5,0]"#), "{response}");
     server.finish();
 }
+
+#[test]
+fn quick_fixes_correct_misspellings_and_mark_unused_names() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "local config = { port = 8080 }\nlocal count = 1\nprint(config.prot, cuont)\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    let published = server.diagnostics(&main, |message| message.contains("TS2339"));
+    assert!(published.contains("TS2304"), "{published}");
+    let diagnostic = |code: &str, character: u32, length: u32| format!(
+        r#"{{"range":{{"start":{{"line":2,"character":{character}}},"end":{{"line":2,"character":{}}}}},"code":"{code}","message":""}}"#,
+        character + length,
+    );
+    let unused = r#"{"range":{"start":{"line":1,"character":6},"end":{"line":1,"character":11}},"code":"TS6133","message":""}"#;
+    server.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":3,"method":"textDocument/codeAction","params":{{"textDocument":{{"uri":"{}"}},"range":{{"start":{{"line":2,"character":0}},"end":{{"line":2,"character":0}}}},"context":{{"diagnostics":[{},{},{unused}]}}}}}}"#,
+        uri(&main), diagnostic("TS2339", 13, 4), diagnostic("TS2304", 19, 5),
+    ));
+    let response = server.wait(|message| message.contains(r#""id":3,"#));
+    assert!(response.contains(r#""title":"Change to 'port'""#) && response.contains(r#""newText":"port""#), "{response}");
+    assert!(response.contains(r#""title":"Change to 'count'""#), "{response}");
+    assert!(response.contains(r#""title":"Prefix 'count' with '_' to mark it unused""#) && response.contains(r#""newText":"_""#), "{response}");
+    server.finish();
+}
