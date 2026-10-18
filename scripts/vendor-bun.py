@@ -611,6 +611,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Apply a store through a fixed path below a member to the table that member holds in a runtime table's or definition's flow view, through kernel 2146387.",
 } for path in ["native_flow.rs", "native_named.rs"])
 
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-written-assignment-overrides.patch",
+    "reason": "Let an assignment member whose type is written declare the member despite an existing contract, so it overrides an inherited member as v1 indexes it, through kernel 20942e3.",
+})
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

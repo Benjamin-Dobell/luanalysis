@@ -2430,6 +2430,12 @@
       "patch": "vendor/patches/bun-sema-nested-member-writes.patch",
       "reason": "Apply a store through a fixed path below a member to the table that member holds in a runtime table's or definition's flow view, through kernel 2146387.",
       "patch_sha256": "e9722b39c5a00da633a782884224db76732cba002f1e9fe8939e7f4efab454c5"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-written-assignment-overrides.patch",
+      "reason": "Let an assignment member whose type is written declare the member despite an existing contract, so it overrides an inherited member as v1 indexes it, through kernel 20942e3.",
+      "patch_sha256": "100a244cb4f0b6ae31472a8497f6bf577729c6f65af3f845b98a6a4bf510346a"
     }
   ],
   "source_additions": {
@@ -2466,7 +2472,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "66c046a660ebc571a6b20f1772b76f87b0e0d7446acfa2aa0d81c6474a9d3172",
+      "extracted_sha256": "077747a458b048c009ed2f1adbe6bbb375bab19813b9aa1b7f4cf1d896fd7250",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
