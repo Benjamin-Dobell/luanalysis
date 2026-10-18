@@ -1156,41 +1156,7 @@ impl Parser<'_> {
     fn expr_binding_power(&mut self, min_precedence: u8) -> (Expr, usize) {
         let mut assertions = Vec::new();
         let mut function_annotations = FunctionAnnotations::default();
-        let mut group = None;
-        loop {
-            self.expression_trivia();
-            let TokenKind::Comment(comment) = self.current().kind.clone() else {
-                break;
-            };
-            if comment.kind != CommentKind::Documentation {
-                break;
-            }
-            self.pos += 1;
-            let (mut documentation, diagnostics) = types::annotations(&comment);
-            self.diagnostics.extend(diagnostics);
-            if let Some(annotation) = documentation.functions.type_annotation.take() {
-                assertions.push((
-                    crate::ExpressionAssertionKind::Type,
-                    annotation,
-                    comment.span,
-                ));
-            }
-            for annotation in documentation.exclusions {
-                assertions.push((
-                    crate::ExpressionAssertionKind::Not,
-                    annotation,
-                    comment.span,
-                ));
-            }
-            self.record_expression_overloads(comment.span,documentation.declarations,&mut documentation.functions,"an inline expression");
-            let contiguous = self.documentation_run(&mut group, comment.span, &function_annotations);
-            types::merge_annotations(
-                &mut function_annotations,
-                documentation.functions,
-                contiguous,
-                &mut self.diagnostics,
-            );
-        }
+        self.leading_documentation(&mut assertions, &mut function_annotations);
         let start = self.current().span;
         if self.depth + self.block_depth >= 128 {
             self.error("expression nesting exceeds 128");
@@ -1263,6 +1229,50 @@ impl Parser<'_> {
         }
         (expr, built_depth)
     }
+    /// The documentation comments before an expression: casts of it, and annotations of the
+    /// function it may be. Kept out of the recursive expression parser's frame.
+    #[inline(never)]
+    fn leading_documentation(
+        &mut self,
+        assertions: &mut Vec<(crate::ExpressionAssertionKind, TypeAnnotation, Span)>,
+        function_annotations: &mut FunctionAnnotations,
+    ) {
+        let mut group = None;
+        loop {
+            self.expression_trivia();
+            let TokenKind::Comment(comment) = self.current().kind.clone() else {
+                break;
+            };
+            if comment.kind != CommentKind::Documentation {
+                break;
+            }
+            self.pos += 1;
+            let (mut documentation, diagnostics) = types::annotations(&comment);
+            self.diagnostics.extend(diagnostics);
+            if let Some(annotation) = documentation.functions.type_annotation.take() {
+                assertions.push((
+                    crate::ExpressionAssertionKind::Type,
+                    annotation,
+                    comment.span,
+                ));
+            }
+            for annotation in documentation.exclusions {
+                assertions.push((
+                    crate::ExpressionAssertionKind::Not,
+                    annotation,
+                    comment.span,
+                ));
+            }
+            self.record_expression_overloads(comment.span,documentation.declarations,&mut documentation.functions,"an inline expression");
+            let contiguous = self.documentation_run(&mut group, comment.span, function_annotations);
+            types::merge_annotations(
+                function_annotations,
+                documentation.functions,
+                contiguous,
+                &mut self.diagnostics,
+            );
+        }
+    }
     /// LuaLS `---@cast x T` types `x` from here on, as `x = x` cast to `T` would. The value's
     /// name spans the `@cast` tag, so the two names are distinct expressions. Kept out of the
     /// recursive statement parser's frame.
@@ -1305,150 +1315,168 @@ impl Parser<'_> {
         }
     }
     fn prefix_with_suffix(&mut self) -> (Expr, usize) {
+        let (expr, built_depth, suffix_eligible) = self.prefix();
+        let (expr, built_depth) = if suffix_eligible { self.suffixes(expr, built_depth) } else { (expr, built_depth) };
+        self.postfix_as_cast(&expr);
+        (expr, built_depth)
+    }
+    /// An expression before its suffixes, and whether it may take them. Each form's temporaries
+    /// stay out of the frames of the recursive expression parser that table constructors,
+    /// parentheses and suffixes nest in.
+    #[inline(never)]
+    fn prefix(&mut self) -> (Expr, usize, bool) {
+        if unary_operator(&self.current().kind).is_some() {
+            let (expr, built_depth) = self.unary_chain();
+            return (expr, built_depth, false);
+        }
         let start = self.current().span;
         let mut built_depth = 1;
         let mut suffix_eligible = false;
-        let mut expr = if unary_operator(&self.current().kind).is_some() {
-            // A prefix chain is right-nested but can be collected without
-            // recursive parser frames. This also bounds adversarial `not` runs.
-            let mut operators = Vec::new();
-            while let Some(op) = unary_operator(&self.current().kind) {
-                operators.push((op, self.current().span));
+        let expr = match self.current().kind.clone() {
+            TokenKind::Identifier(text) => {
                 self.pos += 1;
-                self.expression_trivia();
+                suffix_eligible = true;
+                Expr {
+                    kind: ExprKind::Name(Name { text, span: start }),
+                    span: start,
+                }
             }
-            // Lua exponentiation binds more tightly than unary operators.
-            let (mut value, mut value_depth) = self.expr_binding_power(13);
-            let mut unary_exceeded = false;
-            for (op, op_span) in operators.into_iter().rev() {
-                let span = op_span.join(value.span);
-                if unary_exceeded || value_depth >= 128 {
-                    if !unary_exceeded {
-                        self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, op_span, "unary expression nesting exceeds 128");
-                    }
-                    value = Expr {
+            TokenKind::Number(spelling) => {
+                self.pos += 1;
+                Expr {
+                    kind: ExprKind::Number(spelling),
+                    span: start,
+                }
+            }
+            TokenKind::String(value) => {
+                self.pos += 1;
+                Expr {
+                    kind: ExprKind::String(value),
+                    span: start,
+                }
+            }
+            TokenKind::Keyword(keyword) if keyword == "nil" => {
+                self.pos += 1;
+                Expr {
+                    kind: ExprKind::Nil,
+                    span: start,
+                }
+            }
+            TokenKind::Keyword(keyword) if keyword == "true" || keyword == "false" => {
+                self.pos += 1;
+                Expr {
+                    kind: ExprKind::Boolean(keyword == "true"),
+                    span: start,
+                }
+            }
+            TokenKind::Keyword(keyword) if keyword == "function" => {
+                self.pos += 1;
+                let (function, function_depth) =
+                    self.function_body(start, FunctionAnnotations::default());
+                built_depth = function_depth;
+                let span = function.span;
+                Expr {
+                    kind: ExprKind::Function(Box::new(function)),
+                    span,
+                }
+            }
+            TokenKind::Symbol(symbol) if symbol == "..." => {
+                self.pos += 1;
+                if !self.vararg_allowed {
+                    self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, start, "'...' is outside a variadic Lua function");
+                }
+                Expr {
+                    kind: ExprKind::Vararg,
+                    span: start,
+                }
+            }
+            TokenKind::Symbol(symbol) if symbol == "(" => {
+                self.pos += 1;
+                suffix_eligible = true;
+                let (inner, inner_depth) = self.expr_with_depth();
+                let end = self.expect(")");
+                let span = start.join(end);
+                if inner_depth >= 128 {
+                    self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, span, "expression nesting exceeds 128");
+                    Expr {
                         kind: ExprKind::Error,
                         span,
-                    };
-                    value_depth = 1;
-                    unary_exceeded = true;
+                    }
                 } else {
-                    value = Expr {
-                        kind: ExprKind::Unary {
-                            op,
-                            op_span,
-                            value: Box::new(value),
-                        },
+                    built_depth = inner_depth + 1;
+                    Expr {
+                        kind: ExprKind::Parenthesized(Box::new(inner)),
                         span,
-                    };
-                    value_depth += 1;
+                    }
                 }
             }
-            built_depth = value_depth;
-            value
-        } else {
-            match self.current().kind.clone() {
-                TokenKind::Identifier(text) => {
+            TokenKind::Symbol(symbol) if symbol == "{" => {
+                let (table, table_depth) = self.table();
+                built_depth = table_depth;
+                table
+            }
+            _ => {
+                self.error(
+                "expected an expression; this Lua expression form is unsupported in this slice",
+            );
+                if !self.expression_boundary() {
                     self.pos += 1;
-                    suffix_eligible = true;
-                    Expr {
-                        kind: ExprKind::Name(Name { text, span: start }),
-                        span: start,
-                    }
                 }
-                TokenKind::Number(spelling) => {
-                    self.pos += 1;
-                    Expr {
-                        kind: ExprKind::Number(spelling),
-                        span: start,
-                    }
-                }
-                TokenKind::String(value) => {
-                    self.pos += 1;
-                    Expr {
-                        kind: ExprKind::String(value),
-                        span: start,
-                    }
-                }
-                TokenKind::Keyword(keyword) if keyword == "nil" => {
-                    self.pos += 1;
-                    Expr {
-                        kind: ExprKind::Nil,
-                        span: start,
-                    }
-                }
-                TokenKind::Keyword(keyword) if keyword == "true" || keyword == "false" => {
-                    self.pos += 1;
-                    Expr {
-                        kind: ExprKind::Boolean(keyword == "true"),
-                        span: start,
-                    }
-                }
-                TokenKind::Keyword(keyword) if keyword == "function" => {
-                    self.pos += 1;
-                    let (function, function_depth) =
-                        self.function_body(start, FunctionAnnotations::default());
-                    built_depth = function_depth;
-                    let span = function.span;
-                    Expr {
-                        kind: ExprKind::Function(Box::new(function)),
-                        span,
-                    }
-                }
-                TokenKind::Symbol(symbol) if symbol == "..." => {
-                    self.pos += 1;
-                    if !self.vararg_allowed {
-                        self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, start, "'...' is outside a variadic Lua function");
-                    }
-                    Expr {
-                        kind: ExprKind::Vararg,
-                        span: start,
-                    }
-                }
-                TokenKind::Symbol(symbol) if symbol == "(" => {
-                    self.pos += 1;
-                    suffix_eligible = true;
-                    let (inner, inner_depth) = self.expr_with_depth();
-                    let end = self.expect(")");
-                    let span = start.join(end);
-                    if inner_depth >= 128 {
-                        self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, span, "expression nesting exceeds 128");
-                        Expr {
-                            kind: ExprKind::Error,
-                            span,
-                        }
-                    } else {
-                        built_depth = inner_depth + 1;
-                        Expr {
-                            kind: ExprKind::Parenthesized(Box::new(inner)),
-                            span,
-                        }
-                    }
-                }
-                TokenKind::Symbol(symbol) if symbol == "{" => {
-                    let (table, table_depth) = self.table();
-                    built_depth = table_depth;
-                    table
-                }
-                _ => {
-                    self.error(
-                    "expected an expression; this Lua expression form is unsupported in this slice",
-                );
-                    if !self.expression_boundary() {
-                        self.pos += 1;
-                    }
-                    Expr {
-                        kind: ExprKind::Error,
-                        span: start,
-                    }
+                Expr {
+                    kind: ExprKind::Error,
+                    span: start,
                 }
             }
         };
+        (expr, built_depth, suffix_eligible)
+    }
+    #[inline(never)]
+    fn unary_chain(&mut self) -> (Expr, usize) {
+        // A prefix chain is right-nested but can be collected without
+        // recursive parser frames. This also bounds adversarial `not` runs.
+        let mut operators = Vec::new();
+        while let Some(op) = unary_operator(&self.current().kind) {
+            operators.push((op, self.current().span));
+            self.pos += 1;
+            self.expression_trivia();
+        }
+        // Lua exponentiation binds more tightly than unary operators.
+        let (mut value, mut value_depth) = self.expr_binding_power(13);
+        let mut unary_exceeded = false;
+        for (op, op_span) in operators.into_iter().rev() {
+            let span = op_span.join(value.span);
+            if unary_exceeded || value_depth >= 128 {
+                if !unary_exceeded {
+                    self.diagnostic_at(crate::DiagnosticOrigin::LuaSyntax, op_span, "unary expression nesting exceeds 128");
+                }
+                value = Expr {
+                    kind: ExprKind::Error,
+                    span,
+                };
+                value_depth = 1;
+                unary_exceeded = true;
+            } else {
+                value = Expr {
+                    kind: ExprKind::Unary {
+                        op,
+                        op_span,
+                        value: Box::new(value),
+                    },
+                    span,
+                };
+                value_depth += 1;
+            }
+        }
+        (value, value_depth)
+    }
+    /// The field, index, call and method call suffixes of `expr`.
+    #[inline(never)]
+    fn suffixes(&mut self, mut expr: Expr, mut built_depth: usize) -> (Expr, usize) {
         let mut postfix_exceeded = false;
-        while suffix_eligible && (self.significant_symbol(".")
+        while self.significant_symbol(".")
             || self.significant_call_arguments()
             || self.significant_symbol("[")
-            || self.significant_symbol(":"))
+            || self.significant_symbol(":")
         {
             let documentation = self.suffix_documentation();
             let postfix_start = self.current().span;
@@ -1572,7 +1600,6 @@ impl Parser<'_> {
             };
             built_depth += 1;
         }
-        self.postfix_as_cast(&expr);
         (expr, built_depth)
     }
     fn expression_boundary(&self) -> bool {
@@ -1652,6 +1679,31 @@ impl Parser<'_> {
         let end = self.expect(")");
         (args, start.join(end), built_depth)
     }
+    /// The documentation comments before a table field. Kept out of the recursive table
+    /// constructor parser's frame.
+    #[inline(never)]
+    fn table_field_documentation(&mut self) -> FunctionAnnotations {
+        let mut function_annotations = FunctionAnnotations::default();
+        while let TokenKind::Comment(comment) = self.current().kind.clone() {
+            if expression_assertion_comment(&comment)
+                && !self.table_field_declaration_ahead(&comment)
+            {
+                break;
+            }
+            self.pos += 1;
+            let (mut documentation, diagnostics) = types::annotations(&comment);
+            self.diagnostics.extend(diagnostics);
+            self.record_expression_overloads(comment.span,documentation.declarations,&mut documentation.functions,"a table field");
+            types::merge_annotations(
+                &mut function_annotations,
+                documentation.functions,
+                true,
+                &mut self.diagnostics,
+            );
+            self.expression_trivia();
+        }
+        function_annotations
+    }
     fn table(&mut self) -> (Expr, usize) {
         let start = self.expect("{");
         let mut fields = Vec::new();
@@ -1662,25 +1714,7 @@ impl Parser<'_> {
             if self.eof() || self.symbol("}") {
                 break;
             }
-            let mut function_annotations = FunctionAnnotations::default();
-            while let TokenKind::Comment(comment) = self.current().kind.clone() {
-                if expression_assertion_comment(&comment)
-                    && !self.table_field_declaration_ahead(&comment)
-                {
-                    break;
-                }
-                self.pos += 1;
-                let (mut documentation, diagnostics) = types::annotations(&comment);
-                self.diagnostics.extend(diagnostics);
-                self.record_expression_overloads(comment.span,documentation.declarations,&mut documentation.functions,"a table field");
-                types::merge_annotations(
-                    &mut function_annotations,
-                    documentation.functions,
-                    true,
-                    &mut self.diagnostics,
-                );
-                self.expression_trivia();
-            }
+            let mut function_annotations = self.table_field_documentation();
             let before = self.pos;
             let field_start = self.current().span;
             let kind = if self.take_symbol("[").is_some() {
