@@ -2797,7 +2797,7 @@ fn types_related(
                 match &ty.kind {
                     luanalysis_syntax::TypeExprKind::Named(name) => bases.push(name.clone()),
                     luanalysis_syntax::TypeExprKind::Generic { base, .. } => bases.push(base.text.clone()),
-                    luanalysis_syntax::TypeExprKind::Union(types) => pending.extend(types),
+                    luanalysis_syntax::TypeExprKind::Union(types) | luanalysis_syntax::TypeExprKind::Intersection(types) => pending.extend(types),
                     luanalysis_syntax::TypeExprKind::Parenthesized(inner) => pending.push(inner),
                     _ => {}
                 }

@@ -129,7 +129,7 @@ fn visit_type(ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, TypeNameKind)) {
             visit(&base.text, base.span, TypeNameKind::Reference);
             for arg in args { visit_type(arg, visit); }
         }
-        TypeExprKind::Union(types) => for ty in types { visit_type(ty, visit); },
+        TypeExprKind::Union(types) | TypeExprKind::Intersection(types) => for ty in types { visit_type(ty, visit); },
         TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element) => visit_type(element, visit),
         TypeExprKind::Record(fields) => for field in fields { visit_field(&field.key, &field.ty, visit); },
         TypeExprKind::Function(function) => visit_function(function, visit),

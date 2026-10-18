@@ -59,6 +59,31 @@ turn("north")
 turn("up") -- error: '"up"' is not assignable to '"east" | "north" | "south" | "west"'
 ```
 
+### Intersections
+
+`A & B` is a value that is each of its types at once; `&` binds more tightly than `|`. As in
+TypeScript, a member that one of its types declares has that declaration's type, and only other
+names fall to an index signature. So a namespace whose lookup falls back for unknown names
+keeps each known member's own type, which one type's index signature cannot, as it must admit
+every member's type. In a declaration file:
+
+```lua
+---@class ColorStatics
+---@field Red ColorValue
+---@function ColorStatics.fromString(value: string): ColorValue
+
+---@alias ColorNamespace ColorStatics & { [string]: ColorValue | nil }
+
+---@type ColorNamespace
+Color = nil
+```
+
+```lua
+local red = Color.Red                -- ColorValue
+local parse = Color.fromString       -- fun(value: string): ColorValue
+local named = Color[playerColor]     -- ColorValue | nil
+```
+
 ### Shapes and classes
 
 A `@shape` is structural: any table with compatible fields is one. This suits data, such as

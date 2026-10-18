@@ -551,7 +551,7 @@ fn type_depth(root: &TypeExpr) -> usize {
             TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. } => {
                 pending.push((element, current + 1))
             }
-            TypeExprKind::Union(types) | TypeExprKind::Generic { args: types, .. } => {
+            TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. } => {
                 pending.extend(types.iter().map(|ty| (ty, current + 1)));
             }
             TypeExprKind::Record(fields) => {
@@ -1240,11 +1240,12 @@ impl TypeParser {
         })
     }
     fn return_scalar_union(&mut self, first: TypeExpr) -> (TypeExpr, Option<ParsedReturnPack>) {
+        let first = self.intersected(first);
         let mut types = vec![first];
         let mut pending = None;
         while self.take("|").is_some() {
             match self.return_unit() {
-                ReturnUnit::Scalar(ty) => types.push(ty),
+                ReturnUnit::Scalar(ty) => types.push(self.intersected(ty)),
                 ReturnUnit::Pack(pack) => {
                     pending = Some(pack);
                     break;
@@ -1300,13 +1301,13 @@ impl TypeParser {
     fn union(&mut self) -> TypeExpr {
         // A leading `|`, as a union split over lines begins (`---| "a"`).
         self.take("|");
-        let first = self.primary();
+        let first = self.intersection();
         if self.take("|").is_none() {
             return first;
         }
         let mut types = vec![first];
         loop {
-            types.push(self.primary());
+            types.push(self.intersection());
             if self.take("|").is_none() {
                 break;
             }
@@ -1314,6 +1315,25 @@ impl TypeParser {
         let span = types.first().unwrap().span.join(types.last().unwrap().span);
         TypeExpr {
             kind: TypeExprKind::Union(types),
+            span,
+        }
+    }
+    /// Types joined by `&`, which binds more tightly than `|`, as in TypeScript.
+    fn intersection(&mut self) -> TypeExpr {
+        let first = self.primary();
+        self.intersected(first)
+    }
+    fn intersected(&mut self, first: TypeExpr) -> TypeExpr {
+        if !self.symbol("&") {
+            return first;
+        }
+        let mut types = vec![first];
+        while self.take("&").is_some() {
+            types.push(self.primary());
+        }
+        let span = types.first().unwrap().span.join(types.last().unwrap().span);
+        TypeExpr {
+            kind: TypeExprKind::Intersection(types),
             span,
         }
     }

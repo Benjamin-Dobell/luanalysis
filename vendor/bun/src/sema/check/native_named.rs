@@ -1306,6 +1306,16 @@ impl<'p, 's> Checker<'p, 's> {
         }).collect()
     }
 
+    /// Whether a named object declares the member `key`, its own or inherited, rather than
+    /// admitting it by an index signature.
+    pub(super) fn native_object_declares(&mut self, reference: NativeObjectReference, key: NativeTableKey) -> bool {
+        let Ok(members) = self.native_object_members(reference) else { return false };
+        members.into_iter().any(|member| {
+            let Ok(provider) = self.native_named_provider(member.owner.declaration) else { return false };
+            matches!(provider.type_member_header(self, member.member).key, NativeTypeMemberKey::Fixed(fixed) if fixed.normalize() == Ok(key))
+        })
+    }
+
     /// The members named `name` that member lookup applies to `ty`, a named object: its own
     /// first, then each base's, with each callable member's further overloads. For the language
     /// service's origins and documentation, which must not take a same-spelled member of

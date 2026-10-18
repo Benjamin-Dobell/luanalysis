@@ -639,7 +639,7 @@ impl NativeNamed {
                     }
                 }
                 match &ty.kind {
-                    TypeExprKind::Union(types) | TypeExprKind::Generic { args: types, .. } => {
+                    TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. } => {
                         pending.extend(types.iter().rev())
                     }
                     TypeExprKind::Record(fields) => {

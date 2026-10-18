@@ -787,6 +787,7 @@ impl Checker<'_> {
                     Type::Union(lowered)
                 }
             }
+            TypeExprKind::Intersection(types) => Type::Intersection(types.iter().map(|ty| self.annotation(ty)).collect()),
             TypeExprKind::CompletionHint(_) => Type::Never,
             TypeExprKind::Literal(literal) => {
                 let value = match literal {

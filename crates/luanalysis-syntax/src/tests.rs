@@ -82,6 +82,19 @@ fn preserves_repeated_local_declarations_and_initializer_name() {
 }
 
 #[test]
+fn an_intersection_binds_more_tightly_than_a_union() {
+    let source = "---@type A & B | C\nlocal value\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let (_, _, annotation) = locals(&file, 0);
+    let TypeExprKind::Union(types) = &annotation.unwrap().types[0].kind else { panic!("expected union") };
+    let TypeExprKind::Intersection(parts) = &types[0].kind else { panic!("expected intersection") };
+    assert_eq!(parts.len(), 2);
+    assert_eq!(&source[types[0].span.start..types[0].span.end], "A & B");
+    assert!(matches!(&types[1].kind, TypeExprKind::Named(name) if name == "C"));
+}
+
+#[test]
 fn unicode_crlf_offsets_are_utf8_bytes_in_original_source() {
     let source = "-- café\r\n---@type string | nil\r\nlocal 日本語 = \"é\"\r\n日本語 = nil\r\n";
     let file = parse(source);

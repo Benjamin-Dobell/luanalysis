@@ -571,6 +571,8 @@ pub enum TypeExprKind {
     /// Suggested editor text; it contributes no values to its union type.
     CompletionHint(String),
     Union(Vec<TypeExpr>),
+    /// `A & B`: what is each of its types at once. It binds more tightly than `|`.
+    Intersection(Vec<TypeExpr>),
     Record(Vec<TypeField>),
     Parenthesized(Box<TypeExpr>),
     Function(FunctionType),

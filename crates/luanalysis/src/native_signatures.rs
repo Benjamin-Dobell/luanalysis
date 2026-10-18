@@ -1029,7 +1029,7 @@ impl NativeSignatures {
                     signature.span,
                 );
             }
-            TypeExprKind::Union(types) | TypeExprKind::Generic { args: types, .. } => {
+            TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. } => {
                 for ty in types {
                     self.visit_type(owner, context, parent, ty)
                 }
