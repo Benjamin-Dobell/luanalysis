@@ -101,16 +101,18 @@ pub(super) struct NativeRegistry {
     expression_assertion_index: std::cell::OnceCell<HashMap<(usize, usize), Vec<usize>>>,
     class_definitions: class_definitions::NativeClassDefinitions,
     shape_attachments: std::cell::OnceCell<shape_attachment::ShapeAttachmentIndex>,
-    methods: methods::NativeMethods,
-    metatables: metatables::NativeMetatables,
+    methods: std::sync::Arc<methods::NativeMethods>,
+    metatables: std::sync::Arc<metatables::NativeMetatables>,
     project_names: Option<std::rc::Rc<project_provider::ProjectNamedIndex>>,
-    globals: globals::NativeGlobals,
+    globals: std::sync::Arc<globals::NativeGlobals>,
     project_globals: Option<std::rc::Rc<globals::ProjectGlobalIndex>>,
     project_modules: Option<std::rc::Rc<modules::ProjectModuleIndex>>,
     pub(super) signatures: super::native_signatures::NativeSignatures,
     expressions: NativeExpressions,
-    packs: NativePacks,
+    packs: std::sync::Arc<NativePacks>,
     flow: NativeFlowSources,
+    /// The recipes derived from this revision's, kept for the next registry of it.
+    derived: std::sync::Arc<std::sync::OnceLock<DerivedRecipes>>,
     completed_bindings: RefCell<HashMap<BindingId, Binding>>,
     /// Only completion of body diagnostics is cached here. Return-type cache,
     /// query recursion and cycle decisions belong entirely to the native core.
@@ -153,6 +155,20 @@ pub(crate) struct SourceRecipes {
     named: std::sync::Arc<NativeNamed>,
     expressions: std::sync::Arc<super::native_expressions::ExpressionRecipes>,
     flow: std::sync::Arc<super::native_flow::NativeFlowRecipes>,
+    /// What a registry derives from these recipes alone, built by the first registry of this
+    /// revision and shared by the later ones.
+    derived: std::sync::Arc<std::sync::OnceLock<DerivedRecipes>>,
+}
+
+/// What a source's registry derives from its text alone: its metatables, methods, packs, table
+/// constructors and stores, and globals. Rebuilding them took a third of every
+/// language-service query's start in Prototype Inertia.
+struct DerivedRecipes {
+    metatables: std::sync::Arc<metatables::NativeMetatables>,
+    methods: std::sync::Arc<methods::NativeMethods>,
+    packs: std::sync::Arc<NativePacks>,
+    runtime_tables: std::sync::Arc<super::native_runtime_tables::RuntimeTableRecipes>,
+    globals: std::sync::Arc<globals::NativeGlobals>,
 }
 
 impl SourceRecipes {
@@ -204,6 +220,7 @@ impl SourceRecipes {
             named: std::sync::Arc::new(named),
             expressions: std::sync::Arc::new(expressions),
             flow,
+            derived: std::sync::Arc::default(),
         }
     }
 
@@ -262,7 +279,7 @@ impl NativeRegistry {
         let snapshot = identity.source;
         let source = prepared.unwrap_or_else(|| SourceRecipes::new(&file, &bound, identity));
         assert_eq!(source.snapshot, snapshot, "prepared recipes belong to their original source identity");
-        let SourceRecipes { functions, function_names, declaration_functions, function_spans, declarations, named, expressions, flow, .. } = source;
+        let SourceRecipes { functions, function_names, declaration_functions, function_spans, declarations, named, expressions, flow, derived, .. } = source;
         let class_definitions = class_definitions::NativeClassDefinitions::new(snapshot, &named);
         let signatures=super::native_signatures::NativeSignatures::new(snapshot,&file,&functions,&named);
         let mut types = NativeTypes::new_with_named(
@@ -288,19 +305,33 @@ impl NativeRegistry {
             }
         }
         let expressions = NativeExpressions::from_recipes(expressions);
-        let metatables = metatables::NativeMetatables::new(&expressions, &functions, &bound, &named);
-        let methods = methods::NativeMethods::new(snapshot, &file, &functions, &function_spans, &bound, &named, &types, &metatables);
+        let flow = NativeFlowSources::from_shared_recipes(flow);
+        assert_eq!(flow.program.snapshot, identity.flow, "prepared flow belongs to its original source recipe");
+        let derived_recipes = derived.get_or_init(|| {
+            let metatables = metatables::NativeMetatables::new(&expressions, &functions, &bound, &named);
+            let methods = methods::NativeMethods::new(snapshot, &file, &functions, &function_spans, &bound, &named, &types, &metatables);
+            let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
+                expressions.key_for_span(expression.span)
+            });
+            let runtime_tables = super::native_runtime_tables::NativeRuntimeTables::new(&file, &expressions, &flow).recipes();
+            let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
+            DerivedRecipes {
+                metatables: std::sync::Arc::new(metatables),
+                methods: std::sync::Arc::new(methods),
+                packs: std::sync::Arc::new(packs),
+                runtime_tables,
+                globals: std::sync::Arc::new(globals),
+            }
+        });
+        let metatables = std::sync::Arc::clone(&derived_recipes.metatables);
+        let methods = std::sync::Arc::clone(&derived_recipes.methods);
         for method in methods.sources() {
             if method.contextual_owner.is_none() && method.owner_application.is_none()
                 && let Some(owner) = method.class_owner { types.attach_method_scope(method.function, owner); }
         }
-        let packs = NativePacks::new(snapshot, &file, &function_spans, &|expression| {
-            expressions.key_for_span(expression.span)
-        });
-        let flow = NativeFlowSources::from_shared_recipes(flow);
-        assert_eq!(flow.program.snapshot, identity.flow, "prepared flow belongs to its original source recipe");
-        let runtime_tables=super::native_runtime_tables::NativeRuntimeTables::new(&file,&expressions,&flow);
-        let globals = globals::NativeGlobals::new(snapshot, &file, &bound, &function_spans, &expressions, named.next_member_index());
+        let packs = std::sync::Arc::clone(&derived_recipes.packs);
+        let runtime_tables = super::native_runtime_tables::NativeRuntimeTables::from_recipes(std::sync::Arc::clone(&derived_recipes.runtime_tables));
+        let globals = std::sync::Arc::clone(&derived_recipes.globals);
         let members = super::native_members::NativeMembers::new(snapshot, &named, Vec::new(), globals.member_namespace_end(named.next_member_index()));
         let doc_members = super::native_doc_members::NativeDocMembers::new(snapshot,&file,&named,members.namespace_end(),|name|named.candidates(name).iter().map(|key|luanalysis_engine::NativeTypeDeclarationKey {snapshot:key.snapshot,index:key.index}).collect());
         let mut report = CheckReport::default();
@@ -348,6 +379,7 @@ impl NativeRegistry {
             expressions,
             packs,
             flow,
+            derived,
             completed_bindings: RefCell::new(HashMap::default()),
             checked_bodies: RefCell::new(HashSet::default()),
             checked_contextual_bodies: RefCell::new(HashSet::default()),
@@ -415,6 +447,7 @@ impl NativeRegistry {
             named: std::sync::Arc::clone(&self.named),
             expressions: self.expressions.recipes(),
             flow: self.flow.shared_recipes(),
+            derived: std::sync::Arc::clone(&self.derived),
         }
     }
     pub(crate) fn binding_function_owner(&self,binding:BindingId)->Option<NativeFunctionKey> {self.flow.binding_function_owner(binding)}

@@ -64,12 +64,18 @@ pub(super) struct RuntimeTableStore {
     pub annotation: Option<(TypeAnnotation, usize)>,
 }
 
-pub(super) struct NativeRuntimeTables {
+/// A source's table constructors and stores, which depend on its text alone: built once per
+/// revision and shared by every registry of it.
+pub(super) struct RuntimeTableRecipes {
     constructors: Vec<RuntimeTableConstructor>,
     constructor_indices: HashMap<NativeExpressionKey, usize>,
     stores: Vec<RuntimeTableStore>,
     store_indices: HashMap<NativeFlowKey, usize>,
     target_stores: HashMap<(usize, usize), usize>,
+}
+
+pub(super) struct NativeRuntimeTables {
+    recipes: std::sync::Arc<RuntimeTableRecipes>,
     schema_keys: Vec<(NativeTypeDeclarationKey, NativeExpressionKey)>,
     schema_indices: HashMap<NativeExpressionKey, usize>,
     member_keys: Vec<NativeTypeMemberKey>,
@@ -255,25 +261,34 @@ impl NativeRuntimeTables {
                 });
             }
         }
-        Self {
+        Self::from_recipes(std::sync::Arc::new(RuntimeTableRecipes {
             constructors,
             constructor_indices,
             stores,
             store_indices,
             target_stores,
+        }))
+    }
+    pub(super) fn from_recipes(recipes: std::sync::Arc<RuntimeTableRecipes>) -> Self {
+        Self {
+            recipes,
             schema_keys: Vec::new(),
             schema_indices: HashMap::default(),
             member_keys: Vec::new(),
             bases: None,
         }
     }
+    pub(super) fn recipes(&self) -> std::sync::Arc<RuntimeTableRecipes> {
+        std::sync::Arc::clone(&self.recipes)
+    }
     #[cfg(test)]
     pub(super) fn constructors(&self) -> &[RuntimeTableConstructor] {
-        &self.constructors
+        &self.recipes.constructors
     }
     pub(super) fn register_keys(&mut self, snapshot: u64, declaration_base: u32, member_base: u32) {
         self.bases = Some((snapshot, declaration_base, member_base));
         self.schema_keys = self
+            .recipes
             .constructors
             .iter()
             .filter(|source| source.is_lexically_uncontracted())
@@ -292,6 +307,7 @@ impl NativeRuntimeTables {
             .collect();
         self.schema_indices = self.schema_keys.iter().enumerate().map(|(index, (_, constructor))| (*constructor, index)).collect();
         self.member_keys = self
+            .recipes
             .stores
             .iter()
             .enumerate()
@@ -320,7 +336,7 @@ impl NativeRuntimeTables {
         self.schema_indices.get(&constructor).map(|&index| self.schema_keys[index].0)
     }
     pub(super) fn member(&self, key: NativeTypeMemberKey) -> Option<&RuntimeTableStore> {
-        self.member_store_index(key).map(|index| &self.stores[index])
+        self.member_store_index(key).map(|index| &self.recipes.stores[index])
     }
     pub(super) fn member_store_index(&self, key: NativeTypeMemberKey) -> Option<usize> {
         let (snapshot, _, base) = self.bases?;
@@ -333,29 +349,29 @@ impl NativeRuntimeTables {
         self.member_keys.iter().copied().enumerate().map(|(index, key)| (key, index))
     }
     pub(super) fn constructor(&self, key: NativeExpressionKey) -> Option<&RuntimeTableConstructor> {
-        self.constructor_indices
+        self.recipes.constructor_indices
             .get(&key)
-            .map(|&index| &self.constructors[index])
+            .map(|&index| &self.recipes.constructors[index])
     }
     pub(super) fn stores(&self) -> &[RuntimeTableStore] {
-        &self.stores
+        &self.recipes.stores
     }
     pub(super) fn store_for_target(&self, span: Span) -> Option<&RuntimeTableStore> {
-        self.target_stores.get(&(span.start, span.end)).map(|&index| &self.stores[index])
+        self.recipes.target_stores.get(&(span.start, span.end)).map(|&index| &self.recipes.stores[index])
     }
     /// Recipes use context zero. Contextual/captured instances retain these
     /// same original nodes and acquire their native query context separately.
     pub(super) fn store(&self, key: NativeFlowKey) -> Option<&RuntimeTableStore> {
         let mut original = key;
         original.graph.context = 0;
-        self.store_indices
+        self.recipes.store_indices
             .get(&original)
-            .map(|&index| &self.stores[index])
+            .map(|&index| &self.recipes.stores[index])
     }
     pub(super) fn store_index(&self, key: NativeFlowKey) -> Option<usize> {
         let mut original = key;
         original.graph.context = 0;
-        self.store_indices.get(&original).copied()
+        self.recipes.store_indices.get(&original).copied()
     }
 }
 fn constructor(mut expression: &Expr) -> Option<&Expr> {
