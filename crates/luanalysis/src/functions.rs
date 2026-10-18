@@ -170,7 +170,9 @@ impl Checker<'_> {
                 .call_native_arguments_in_frame(&callee_type, call, &arguments, &[], expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
+        let checked = result.errors.is_empty();
         let pack = self.pack_call_result(result, &callee_type, &origins, callee.span, span);
+        if checked && let Some(pack) = self.standard_pattern_call(callee, args) { return pack }
         let first = self.engine.pack_slot(&pack, 0);
         // A class definition's table is the class's, not a runtime table's.
         let defines_class = self.native.is_some_and(|native| native.is_class_definition_initializer(span));
@@ -638,9 +640,49 @@ impl Checker<'_> {
                 .call_native_arguments_scalar_in_frame(&callee_type, call, &arguments, &[], expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
         let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
+        let checked = result.errors.is_empty();
         let ty = self.call_result(result, &callee_type, &origins, callee.span, span);
+        if checked && let Some(pack) = self.standard_pattern_call(callee, args) { return self.engine.pack_slot(&pack, 0) }
         if self.native.is_some_and(|native| native.is_class_definition_initializer(span)) { return ty }
         self.setmetatable_result(callee, args, ty)
+    }
+
+    /// The result of a standard pattern function, `match`, `gmatch` or `find`, called with a
+    /// literal pattern: what it matches is a string, and an empty capture, `()`, a position.
+    /// `None` leaves the declared result: the pattern is not literal or `find` may be plain.
+    pub(super) fn pattern_function_result(&mut self, function: &str, pattern: Option<&Expr>, plain: Option<&Expr>) -> Option<ValuePack> {
+        use luanalysis_engine::{PackAlternative, PackSlot};
+        let mut pattern = pattern?;
+        while let ExprKind::Parenthesized(inner) = &pattern.kind { pattern = inner; }
+        let ExprKind::String(bytes) = &pattern.kind else { return None };
+        let plain = match plain.map(|plain| &plain.kind) {
+            None | Some(ExprKind::Nil | ExprKind::Boolean(false)) => false,
+            Some(ExprKind::Boolean(true)) if function == "find" => true,
+            Some(_) => return None,
+        };
+        let captures = if plain { Vec::new() } else { crate::pattern_captures::captures(bytes)? };
+        let captured: Vec<Type> = captures.iter().map(|capture| match capture {
+            crate::pattern_captures::Capture::String => Type::String,
+            crate::pattern_captures::Capture::Position => Type::Number,
+        }).collect();
+        let row = |types: Vec<Type>| PackAlternative { fixed: types.into_iter().map(PackSlot::required).collect(), tail: None };
+        let matched = if captured.is_empty() { vec![Type::String] } else { captured.clone() };
+        Some(match function {
+            "match" => ValuePack::Alternatives(vec![row(vec![Type::Nil]), row(matched)]),
+            "find" => ValuePack::Alternatives(vec![row(vec![Type::Nil]), row([Type::Number, Type::Number].into_iter().chain(captured).collect())]),
+            "gmatch" => ValuePack::single(self.engine.pack_function(&PackFunctionType {
+                params: Vec::new(), rest: None, type_parameters: Vec::new(), returns: ValuePack::Alternatives(vec![row(matched)]),
+            })),
+            _ => return None,
+        })
+    }
+
+    /// `string.match(s, pattern)` and the like through the standard `string` global.
+    fn standard_pattern_call(&mut self, callee: &Expr, args: &[Expr]) -> Option<ValuePack> {
+        let ExprKind::Field { base, name } = &callee.kind else { return None };
+        let ExprKind::Name(library) = &base.kind else { return None };
+        if library.text != "string" || self.bound.binding_at(library.span.start).is_some() { return None }
+        self.pattern_function_result(&name.text, args.get(1), args.get(3))
     }
 
     /// Lua's `setmetatable` returns the table it is given. A table that a constructor names keeps

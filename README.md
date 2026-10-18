@@ -301,6 +301,14 @@ luanalysis check --lua-version 5.2 --stdlib basic,string,table,math,coroutine,bi
 `--no-stdlib` declares none of it, for a host that declares its own with `--library`. `type`,
 `assert` and `setmetatable` are always declared: without them, it would not be Lua.
 
+A literal pattern types what `string.match`, `string.gmatch` and `string.find` return: each
+capture is a string, and an empty capture, `()`, is a position.
+
+```lua
+local key, value = line:match("(%w+)=(%w+)") -- nil | string, nil | string
+for word in text:gmatch("%a+") do end      -- word: string
+```
+
 ## Projects and modules
 
 Luanalysis checks a project as a whole. `require` calls are resolved through module roots and

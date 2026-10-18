@@ -324,7 +324,12 @@ impl Checker<'_> {
             self.engine
                 .call_native_arguments_scalar_in_frame(&callee, call, &arguments, &[], expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
-        self.call_result(result, &callee, &origins, name.span, span)
+        let checked = result.errors.is_empty();
+        let ty = self.call_result(result, &callee, &origins, name.span, span);
+        match checked.then(|| self.string_pattern_method(&arguments, name, args)).flatten() {
+            Some(pack) => self.engine.pack_slot(&pack, 0),
+            None => ty,
+        }
     }
 
     pub(super) fn method_call_pack(
@@ -343,7 +348,16 @@ impl Checker<'_> {
             .engine
             .call_native_arguments_in_frame(&callee, call, &arguments, &[], expected,
                 luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
-        self.pack_call_result(result, &callee, &origins, name.span, span)
+        let checked = result.errors.is_empty();
+        let pack = self.pack_call_result(result, &callee, &origins, name.span, span);
+        checked.then(|| self.string_pattern_method(&arguments, name, args)).flatten().unwrap_or(pack)
+    }
+
+    /// `text:match(pattern)` and the like: a string's methods are the standard string library's.
+    fn string_pattern_method(&mut self, arguments: &[PackArgument], name: &Name, args: &[Expr]) -> Option<ValuePack> {
+        let Some(PackArgument::Resolved(receiver)) = arguments.first() else { return None };
+        if matches!(receiver, Type::Any | Type::Never) || !self.engine.is_assignable(receiver, &Type::String) { return None }
+        self.pattern_function_result(&name.text, args.first(), args.get(2))
     }
 
     fn method_call_arguments(

@@ -44,6 +44,7 @@ mod native_return_annotations;
 mod native_tables;
 mod native_types;
 mod operators;
+mod pattern_captures;
 
 use bind::{BindingId, BoundFile};
 use luanalysis_engine::{
