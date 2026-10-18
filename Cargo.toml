@@ -32,3 +32,11 @@ incremental = false
 [profile.test]
 debug = "line-tables-only"
 incremental = false
+
+# Released archives: whole-program optimisation, which also leaves a static library that links
+# without dead-code stripping, and no symbol table. `release` keeps symbols for profiling.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true

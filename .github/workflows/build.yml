@@ -4,6 +4,8 @@ name: Build
 # and Windows, on x86-64 and ARM64, each built and smoke-tested on its own architecture. Linux
 # tools are static musl executables; Linux libraries are built in manylinux_2_28 containers, so
 # any process with glibc 2.28 or later can load them. macOS archives are universal (lipo).
+# Archives are built with the `dist` profile (whole-program optimisation, no symbol table). Each
+# static library is linked by path in a smoke test, with the system libraries rustc reports.
 
 on:
   push:
@@ -60,15 +62,19 @@ jobs:
           "$HOME/.cargo/bin/rustup" toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" \
             --profile minimal --target ${{ matrix.arch }}-unknown-linux-musl
       - name: Command line tool (static musl)
-        run: cargo build --locked --release -p luanalysis --target ${{ matrix.arch }}-unknown-linux-musl
+        run: cargo build --locked --profile dist -p luanalysis --target ${{ matrix.arch }}-unknown-linux-musl
       - name: Libraries
-        run: cargo build --locked --release -p luanalysis-ffi
+        run: |
+          cargo rustc --locked --profile dist -p luanalysis-ffi --lib -- --print native-static-libs 2> libraries.log \
+            || { cat libraries.log; exit 1; }
+          cat libraries.log
+          sed -n 's/^note: native-static-libs: //p' libraries.log > target/dist/native-static-libs.txt
       - name: Package
         run: |
           out=luanalysis-linux-${{ matrix.arch }}
           mkdir -p $out/bin $out/lib $out/include
-          cp target/${{ matrix.arch }}-unknown-linux-musl/release/luanalysis $out/bin/
-          cp target/release/libluanalysis.so target/release/libluanalysis.a $out/lib/
+          cp target/${{ matrix.arch }}-unknown-linux-musl/dist/luanalysis $out/bin/
+          cp target/dist/libluanalysis.so target/dist/libluanalysis.a $out/lib/
           cp crates/luanalysis-ffi/include/luanalysis.h $out/include/
           cp README.md LICENSE $out/
           tar czf $out.tar.gz $out
@@ -80,6 +86,9 @@ jobs:
           $out/bin/luanalysis check --lua-version 5.4 smoke.lua
           cc -I$out/include crates/luanalysis-ffi/examples/smoke.c -L$out/lib -lluanalysis -Wl,-rpath,'$ORIGIN/'$out/lib -o smoke
           ./smoke smoke.lua
+          cc -I$out/include crates/luanalysis-ffi/examples/smoke.c $out/lib/libluanalysis.a $(cat target/dist/native-static-libs.txt) \
+            -o smoke-static
+          ./smoke-static smoke.lua
           echo "Newest glibc symbol the library needs:"
           objdump -T $out/lib/libluanalysis.so | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
       - uses: actions/upload-artifact@v7
@@ -104,22 +113,32 @@ jobs:
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --locked --release -p luanalysis -p luanalysis-ffi
+        run: |
+          cargo build --locked --profile dist -p luanalysis
+          cargo rustc --locked --profile dist -p luanalysis-ffi --lib -- --print native-static-libs 2> libraries.log \
+            || { cat libraries.log; exit 1; }
+          cat libraries.log
+          # clang links libSystem itself; naming it again makes ld warn about a duplicate.
+          sed -n 's/^note: native-static-libs: //p' libraries.log | sed 's/ *-lSystem//' > target/dist/native-static-libs.txt
       - name: Smoke test
         run: |
           printf 'local x = 1\n' > smoke.lua
-          target/release/luanalysis --version
-          target/release/luanalysis check --lua-version 5.4 smoke.lua
-          cc -Icrates/luanalysis-ffi/include crates/luanalysis-ffi/examples/smoke.c -Ltarget/release -lluanalysis \
-            -Wl,-rpath,@executable_path/target/release -o smoke
+          target/dist/luanalysis --version
+          target/dist/luanalysis check --lua-version 5.4 smoke.lua
+          cc -Icrates/luanalysis-ffi/include crates/luanalysis-ffi/examples/smoke.c -Ltarget/dist -lluanalysis \
+            -Wl,-rpath,@executable_path/target/dist -o smoke
           ./smoke smoke.lua
+          cc -Icrates/luanalysis-ffi/include crates/luanalysis-ffi/examples/smoke.c target/dist/libluanalysis.a \
+            $(cat target/dist/native-static-libs.txt) -o smoke-static
+          ./smoke-static smoke.lua
       - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ matrix.arch }}
           path: |
-            target/release/luanalysis
-            target/release/libluanalysis.dylib
-            target/release/libluanalysis.a
+            target/dist/luanalysis
+            target/dist/libluanalysis.dylib
+            target/dist/libluanalysis.a
+            target/dist/native-static-libs.txt
 
   macos-universal:
     name: macOS universal
@@ -158,6 +177,9 @@ jobs:
           cc -I$out/include crates/luanalysis-ffi/examples/smoke.c -L$out/lib -lluanalysis \
             -Wl,-rpath,@executable_path/$out/lib -o smoke
           ./smoke smoke.lua
+          cc -I$out/include crates/luanalysis-ffi/examples/smoke.c $out/lib/libluanalysis.a \
+            $(cat aarch64/native-static-libs.txt) -o smoke-static
+          ./smoke-static smoke.lua
       - uses: actions/upload-artifact@v7
         with:
           name: luanalysis-macos-universal
@@ -183,13 +205,18 @@ jobs:
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
       - uses: Swatinem/rust-cache@v2
       - name: Build
-        run: cargo build --locked --release -p luanalysis -p luanalysis-ffi
+        run: |
+          cargo build --locked --profile dist -p luanalysis
+          cargo rustc --locked --profile dist -p luanalysis-ffi --lib -- --print native-static-libs 2> libraries.log \
+            || { cat libraries.log; exit 1; }
+          cat libraries.log
+          sed -n 's/^note: native-static-libs: //p' libraries.log > target/dist/native-static-libs.txt
       - name: Package
         run: |
           out=luanalysis-windows-${{ matrix.arch }}
           mkdir -p $out/bin $out/lib $out/include
-          cp target/release/luanalysis.exe target/release/luanalysis.dll $out/bin/
-          cp target/release/luanalysis.dll.lib target/release/luanalysis.lib $out/lib/
+          cp target/dist/luanalysis.exe target/dist/luanalysis.dll $out/bin/
+          cp target/dist/luanalysis.dll.lib target/dist/luanalysis.lib $out/lib/
           cp crates/luanalysis-ffi/include/luanalysis.h $out/include/
           cp README.md LICENSE $out/
           7z a $out.zip $out
@@ -205,6 +232,9 @@ jobs:
           cl /nologo /I%out%\include crates\luanalysis-ffi\examples\smoke.c /link %out%\lib\luanalysis.dll.lib /OUT:smoke.exe || exit /b 1
           copy %out%\bin\luanalysis.dll . || exit /b 1
           smoke.exe smoke.lua || exit /b 1
+          set /p nativelibs=<target\dist\native-static-libs.txt
+          cl /nologo /MT /I%out%\include /Fosmoke-static.obj crates\luanalysis-ffi\examples\smoke.c /link %out%\lib\luanalysis.lib %nativelibs% /OUT:smoke-static.exe || exit /b 1
+          smoke-static.exe smoke.lua || exit /b 1
       - uses: actions/upload-artifact@v7
         with:
           name: luanalysis-windows-${{ matrix.arch }}
