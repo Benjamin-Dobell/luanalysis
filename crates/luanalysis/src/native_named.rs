@@ -882,7 +882,7 @@ fn runtime_attachment(
             _ => false,
         },
         local_values: match &statement.kind {
-            StmtKind::Local { values, .. } => values.iter().map(|value| {
+            StmtKind::Local { values, .. } | StmtKind::Assign { values, .. } => values.iter().map(|value| {
                 let mut literal = value;
                 while let ExprKind::Parenthesized(inner) = &literal.kind {
                     literal = inner;

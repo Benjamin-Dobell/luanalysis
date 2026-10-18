@@ -62,7 +62,6 @@ fn unsupported_class_definition_forms_remain_explicitly_gated() {
     clean("---@class C\nlocal C={}\n");
     for source in [
         "---@class C\n---@type C\nlocal C={}\n",
-        "---@class C\nnamespace.C={}\n",
     ] {
         let report = check(source);
         let diagnostic = report

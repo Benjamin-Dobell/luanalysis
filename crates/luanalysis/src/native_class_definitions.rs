@@ -37,7 +37,9 @@ impl NativeClassDefinitions {
 pub(crate) struct ClassDefinitionDirective {
     pub key: NativeClassDefinitionKey,
     pub declaration: NativeTypeDeclarationKey,
-    pub binding: BindingId,
+    /// The local the class table is stored in; None for a global or a field (`X = {}`,
+    /// `M.X = {}`), whose class owner is its spelling.
+    pub binding: Option<BindingId>,
     pub initializer: Span,
     pub declaration_span: Span,
 }
@@ -100,11 +102,24 @@ impl NativeRegistry {
                 "combined class definition and explicit @type ownership is not implemented",
             );
         }
-        let RuntimeAttachmentKind::Local { bindings } = &attachment.kind else {
-            return Err("only a single local checked class definition is implemented");
-        };
-        let [binding] = bindings.as_slice() else {
-            return Err("multiple local definition destinations");
+        let binding = match &attachment.kind {
+            RuntimeAttachmentKind::Local { bindings } => {
+                let [binding] = bindings.as_slice() else {
+                    return Err("multiple local definition destinations");
+                };
+                Some(*binding)
+            }
+            // `---@class X` above `X = {}` or `M.X = {}`, as v1 and LuaLS read it.
+            RuntimeAttachmentKind::Assignment { targets } => {
+                let [target] = targets.as_slice() else {
+                    return Err("multiple definition destinations");
+                };
+                if super::methods::class_path(target, &self.bound).is_none() {
+                    return Err("a class table is stored in a local, a global or a field");
+                }
+                None
+            }
+            _ => return Err("a class table is stored in a local, a global or a field"),
         };
         let [value] = attachment.local_values.as_slice() else {
             return Err("class definition needs one initializer");
@@ -125,7 +140,7 @@ impl NativeRegistry {
                 snapshot: source.key.snapshot,
                 index: source.key.index,
             }),
-            binding: *binding,
+            binding,
             initializer: value.span,
             declaration_span: source.syntax.name.span,
         }))
@@ -143,7 +158,7 @@ impl NativeRegistry {
             self.class_definition_directive(self.named.declaration(key)?)
                 .ok()
                 .flatten()
-                .filter(|directive| directive.binding == binding)
+                .filter(|directive| directive.binding == Some(binding))
         })
     }
     /// Whether the expression at `span` initializes a class definition.

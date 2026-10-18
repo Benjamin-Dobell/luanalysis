@@ -32,6 +32,43 @@ pub(super) struct NativeMethods {
     sources: Vec<Option<MethodSource>>,
     fields: Vec<AssignmentFieldSource>,
     owner_applications: HashMap<BindingId, OriginalOwnerApplication>,
+    /// Classes defined on a global or a field (`---@class X` above `X = {}` or `M.X = {}`),
+    /// by that spelling.
+    path_owners: HashMap<ClassPath, Vec<NativeNamedKey>>,
+}
+
+/// Where a class table defined by an assignment is stored: a local or global root and the
+/// fields under it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ClassPath {
+    root: ClassPathRoot,
+    fields: Vec<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ClassPathRoot {
+    Local(BindingId),
+    Global(String),
+}
+
+/// The spelling `target` stores into, when it is a name or a chain of named fields.
+pub(crate) fn class_path(target: &Expr, bound: &BoundFile) -> Option<ClassPath> {
+    match &target.kind {
+        ExprKind::Name(name) => Some(ClassPath {
+            root: match bound.binding_at(name.span.start) {
+                Some(binding) => ClassPathRoot::Local(binding),
+                None if !matches!(name.text.as_str(), "_G" | "_ENV") => ClassPathRoot::Global(name.text.clone()),
+                None => return None,
+            },
+            fields: Vec::new(),
+        }),
+        ExprKind::Field { base, name } => {
+            let mut path = class_path(base, bound)?;
+            path.fields.push(name.text.clone());
+            Some(path)
+        }
+        ExprKind::Parenthesized(inner) => class_path(inner, bound),
+        _ => None,
+    }
 }
 struct AssignmentFieldSource {
     owner: NativeNamedKey,
@@ -114,11 +151,23 @@ impl NativeMethods {
             });
             collect_written_local_owners(&function.body, Some(context), &assertions, bound, named, types, metatables, &mut owners, &mut contextual_owners, &mut owner_applications);
         }
+        let mut path_owners: HashMap<ClassPath, Vec<NativeNamedKey>> = HashMap::default();
+        for declaration in named.declarations() {
+            if !matches!(declaration.syntax.kind, NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. }) { continue; }
+            let Some(attachment) = declaration.syntax.attachment.and_then(|span| named.attachment(span)) else { continue };
+            if let RuntimeAttachmentKind::Assignment { targets } = &attachment.kind
+                && let [target] = targets.as_slice()
+                && let Some(path) = class_path(target, bound)
+            {
+                path_owners.entry(path).or_default().push(declaration.key);
+            }
+        }
         let mut methods = Self {
             snapshot,
             sources: vec![None; functions.len()],
             fields: Vec::new(),
             owner_applications,
+            path_owners,
         };
         methods.statements(&file.statements, spans, bound, &owners, &declaration_owners, &contextual_owners);
         // A method's `self` is an instance of its class, so `self.x = v` in its body assigns a
@@ -198,7 +247,7 @@ impl NativeMethods {
                         if let Some(function) = function_literal(value) {
                             self.record(target, function, None, false, spans, bound, owners, declaration_owners, contextual_owners);
                         } else if let Some((receiver, key)) = fixed_member_target(target)
-                            && let Some(owner) = local_class_owner(receiver, bound, owners)
+                            && let Some(owner) = self.class_owner(receiver, bound, owners)
                         {
                             self.fields.push(AssignmentFieldSource {
                                 owner, contextual_owner: receiver_binding(receiver, bound).and_then(|binding| contextual_owners.get(&binding).copied()), key, target: target.span, value: value.span,
@@ -248,7 +297,7 @@ impl NativeMethods {
             snapshot: self.snapshot,
             index,
         };
-        let class_owner = local_class_owner(receiver, bound, owners);
+        let class_owner = self.class_owner(receiver, bound, owners);
         let declaration_owner = match &receiver.kind {
             ExprKind::Name(name) if bound.binding_at(name.span.start).is_none() =>
                 declaration_owners.get(&name.text).and_then(|owners| match owners.as_slice() {
@@ -346,6 +395,16 @@ fn fixed_member_target(target: &Expr) -> Option<(&Expr, LuaKey)> {
         ExprKind::Field { base, name } => Some((base, LuaKey::String(name.text.as_bytes().to_vec()))),
         ExprKind::Index { base, index } => Some((base, crate::native_tables::literal_key(index)?)),
         _ => None,
+    }
+}
+impl NativeMethods {
+    /// The class whose table `receiver` names: a local class definition's, or one defined on
+    /// the global or field `receiver` spells.
+    fn class_owner(&self, receiver: &Expr, bound: &BoundFile, owners: &HashMap<BindingId, Vec<NativeNamedKey>>) -> Option<NativeNamedKey> {
+        local_class_owner(receiver, bound, owners).or_else(|| {
+            let [owner] = self.path_owners.get(&class_path(receiver, bound)?)?.as_slice() else { return None };
+            Some(*owner)
+        })
     }
 }
 fn local_class_owner(receiver: &Expr, bound: &BoundFile, owners: &HashMap<BindingId, Vec<NativeNamedKey>>) -> Option<NativeNamedKey> {

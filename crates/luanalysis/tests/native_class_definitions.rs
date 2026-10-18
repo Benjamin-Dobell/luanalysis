@@ -257,7 +257,6 @@ fn explicit_type_generic_multiple_and_nonlocal_definition_forms_stay_gated() {
         "---@class C\n---@type C\nlocal value={}",
         "---@class C<T>\n---@field value T\nlocal value={}",
         "---@class C\nlocal a,b={},{}",
-        "---@class C\nnamespace.value={}",
     ] {
         let report = rejects(source, "LUA2031");
         assert!(
@@ -270,6 +269,15 @@ fn explicit_type_generic_multiple_and_nonlocal_definition_forms_stay_gated() {
             report.diagnostics
         );
     }
+}
+
+#[test]
+fn a_class_table_may_be_stored_in_a_global_or_a_field() {
+    // As v1 and LuaLS read `---@class X` above `X = {}` and `M.X = {}`: its constructor fields
+    // and the functions stored on it are members of the class.
+    let report = clean("---@class GlobalThing\n---@field n number\nGlobalThing = { base = 1 }\nfunction GlobalThing.hello() return 1 end\nlocal g = GlobalThing.hello()\nlocal M = {}\n---@class Resolve\nM.Resolve = { base = 1 }\n---@param n number\nfunction M.Resolve.hand(n) return n end\nlocal h = M.Resolve.hand(1)\n---@param r Resolve\nlocal function use(r) return r.hand(2) + r.base end\nuse(M.Resolve)\nreturn M\n");
+    assert_eq!(ty(&report, "g"), "number");
+    assert_eq!(ty(&report, "h"), "number");
 }
 
 #[test]
