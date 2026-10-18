@@ -1,0 +1,104 @@
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index d515230..808c71c 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -532,6 +532,18 @@ fn numeric_first_entry(
+ }
+ 
+ impl NativeDomain<'_> {
++    /// A store at a computed key whose type is one literal (`t[K.NAME] = v` with `K.NAME` the
++    /// string 'name') stores that field, as TypeScript reads a late-bound assignment.
++    fn literal_store_key(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey, target: NativeReferenceKey) -> Option<NativeTableKey> {
++        let (key, input) = self.provider.write_index_value(walk.reference, target, at)?;
++        let (ty, completed) = checker.run_memoizable(|checker| checker.native_flow_value(self.provider, key, input));
++        completed?;
++        // Numeric keys keep the sparse numeric inference that builds sequences.
++        match checker.native_table_access(super::native_tables::NativeTableAccessKey::Type(ty)) {
++            Ok(super::native_tables::NativeTableAccessKey::Literal(key @ NativeTableKey::String(_))) => Some(key),
++            _ => None,
++        }
++    }
+     fn numeric_store_transfer(&self, checker: &mut Checker<'_, '_>, walk: &NativeWalk, at: NativeFlowKey, target: NativeReferenceKey, value: NativeValueKey, input: NativeFlowKey, previous: FlowType) -> Option<FlowType> {
+         if !checker.native_has_runtime_table(previous.ty) { return None; }
+         let (key, key_input) = self.provider.write_index_value(walk.reference, target, at)?;
+@@ -931,6 +943,11 @@ impl FlowDomain for NativeDomain<'_> {
+                             && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
+                             let value = checker.native_flow_value(self.provider, value, input);
+                             checker.native_definition_flow_write(previous.ty, key, value)
++                        } else if checker.native_definition_flow_target(previous.ty)
++                            && let Some(key) = self.literal_store_key(checker, walk, at, target) {
++                            // The literal key is this field: the store is exact.
++                            let value = checker.native_flow_value(self.provider, value, input);
++                            return FlowType::new(checker.native_definition_flow_write(previous.ty, key, value), previous.incomplete);
+                         } else if let Some(result) = self.numeric_store_transfer(checker, walk, at, target, value, input, previous) {
+                             // Every numeric slot remains sparse, which already
+                             // includes the unaffected continuation of this
+@@ -946,7 +963,8 @@ impl FlowDomain for NativeDomain<'_> {
+             NativeTransfer::IncompleteCall => unreachable!(),
+             NativeTransfer::DefinitionWrite { at, target, value, input } => {
+                 if checker.native_definition_flow_target(previous.ty)
+-                    && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker) {
++                    && let Some(key) = self.provider.write_member_key(walk.reference, target, at, checker)
++                        .or_else(|| self.literal_store_key(checker, walk, at, target)) {
+                     let value = checker.native_flow_value(self.provider, value, input);
+                     checker.native_definition_flow_write(previous.ty, key, value)
+                 } else if let Some(result) = self.numeric_store_transfer(checker, walk, at, target, value, input, previous) {
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+index 8a599bd..edc281f 100644
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -1638,10 +1638,18 @@ impl<'p, 's> Checker<'p, 's> {
+             if let NativeTableAccessKey::Literal(literal) = key {
+                 let members = self.native_object_members(reference).map_err(|error| error.table_error(object))?;
+                 let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(object))?;
+-                let selected: Vec<_> = members.into_iter().filter(|origin| match provider.type_member_header(self, origin.member).key {
+-                    NativeTypeMemberKey::Fixed(member_key) => member_key.normalize() == Ok(literal),
+-                    NativeTypeMemberKey::Indexer { .. } => provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared,
+-                }).collect();
++                let mut selected = Vec::new();
++                for origin in members {
++                    let keep = match provider.type_member_header(self, origin.member).key {
++                        NativeTypeMemberKey::Fixed(member_key) => member_key.normalize() == Ok(literal),
++                        NativeTypeMemberKey::Indexer { .. } if provider.type_member_origin(origin.member) == crate::types::NativeTableFieldOrigin::Declared => true,
++                        // A store at a computed key of this one literal type stores this field.
++                        NativeTypeMemberKey::Indexer { .. } => self.native_runtime_member_demand(reference, origin.member, true).ok()
++                            .map(|raw| self.native_member_type(raw, origin.owner))
++                            .is_some_and(|key| matches!(self.native_table_access(NativeTableAccessKey::Type(key)), Ok(NativeTableAccessKey::Literal(other @ NativeTableKey::String(_))) if other == literal)),
++                    };
++                    if keep { selected.push(origin); }
++                }
+                 let table = self.native_runtime_schema_resolved(reference, &selected).map_err(|error| error.table_error(object))?;
+                 return self.native_table_read(table, key);
+             }
+diff --git a/src/sema/check/native_runtime_tables.rs b/src/sema/check/native_runtime_tables.rs
+index 79ba703..3d61975 100644
+--- a/src/sema/check/native_runtime_tables.rs
++++ b/src/sema/check/native_runtime_tables.rs
+@@ -71,7 +71,7 @@ impl<'p, 's> Checker<'p, 's> {
+         result
+     }
+ 
+-    fn native_runtime_member_demand(&mut self, reference: NativeObjectReference, member: NativeTypeMemberId, indexer: bool) -> Result<TypeId, NativeNamedTypeError> {
++    pub(super) fn native_runtime_member_demand(&mut self, reference: NativeObjectReference, member: NativeTypeMemberId, indexer: bool) -> Result<TypeId, NativeNamedTypeError> {
+         let provider = self.native_type_declaration_provider.ok_or(NativeNamedTypeError::InvalidMember(member))?;
+         let object = self.intern(TypeData::NativeObject(reference));
+         let native_query = NativeTypeDeclarationQuery::RuntimeTableMember(object, member, indexer);
+@@ -137,8 +137,16 @@ impl<'p, 's> Checker<'p, 's> {
+             let metadata = provider.type_member_header(self, origin.member);
+             let declared = provider.type_member_origin(origin.member) == NativeTableFieldOrigin::Declared;
+             // A computed store does not declare an open index signature. As
+-            // with TS checking JS expandos, that key domain must be written.
+-            if !declared && matches!(metadata.key, NativeTypeMemberKey::Indexer { .. }) { continue }
++            // with TS checking JS expandos, that key domain must be written. A
++            // key of one literal type stores that field, as TypeScript reads a
++            // late-bound assignment.
++            let mut metadata = metadata;
++            if !declared && matches!(metadata.key, NativeTypeMemberKey::Indexer { .. }) {
++                let raw = self.native_runtime_member_demand(reference, origin.member, true)?;
++                let key = self.native_member_type(raw, origin.owner);
++                let Ok(NativeTableAccessKey::Literal(key @ NativeTableKey::String(_))) = self.native_table_access(NativeTableAccessKey::Type(key)) else { continue };
++                metadata.key = NativeTypeMemberKey::Fixed(key);
++            }
+             if let NativeTypeMemberKey::Fixed(key) = metadata.key {
+                 let key = key.normalize().map_err(|error| NativeNamedTypeError::Table { declaration, error })?;
+                 if let Some(previous) = fields.iter_mut().find(|field| field.key == key)

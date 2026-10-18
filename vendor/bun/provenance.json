@@ -2388,6 +2388,24 @@
       "patch": "vendor/patches/bun-sema-class-table-as-class.patch",
       "reason": "Read a member a class definition table has not been given yet as the class member, and relate the table as its class, as v1 types a class table, through kernel b3bfd0b.",
       "patch_sha256": "ed4794249f62f8b7decafd4b7e02a5cab55be5336d08b3b9ba12d06d5f05013c"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-literal-computed-keys.patch",
+      "reason": "Store the field a computed key of one string-literal type names, in a runtime table's schema, its literal reads and its flow, as TypeScript reads a late-bound assignment, through kernel 905e017.",
+      "patch_sha256": "d1143a2d20027eb3fadc7bcb9098552a49da0f5ca9b139612d17f782f088a76a"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-literal-computed-keys.patch",
+      "reason": "Store the field a computed key of one string-literal type names, in a runtime table's schema, its literal reads and its flow, as TypeScript reads a late-bound assignment, through kernel 905e017.",
+      "patch_sha256": "d1143a2d20027eb3fadc7bcb9098552a49da0f5ca9b139612d17f782f088a76a"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-literal-computed-keys.patch",
+      "reason": "Store the field a computed key of one string-literal type names, in a runtime table's schema, its literal reads and its flow, as TypeScript reads a late-bound assignment, through kernel 905e017.",
+      "patch_sha256": "d1143a2d20027eb3fadc7bcb9098552a49da0f5ca9b139612d17f782f088a76a"
     }
   ],
   "source_additions": {
@@ -2408,7 +2426,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "ecd81dfd57547876e95c2e136f098fba6f1a7753dc1123d5694b76e7dac3b598",
+      "extracted_sha256": "76fab4469aa2a398977852e95d4334c226db7da4f939806ec1c14e0ad918a4e0",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
@@ -2424,7 +2442,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "b420406e957c7d975428db4dc22dd1abed56645244746bbc78759e6719d6e7da",
+      "extracted_sha256": "49cf4e663cd3e9ac91b86d650e99a304fbbca43b5ab1f356271f4b1b04d3aacd",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_packs.rs": {
@@ -2444,7 +2462,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "440325ffe05143a2cd260fe1ef7abd82d9c3b5df638703284d8993981409fdb4",
+      "extracted_sha256": "2f4fd051d530a1596f9ea01d0299add9f8ef59ba8356b92104350de18b4f451b",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {

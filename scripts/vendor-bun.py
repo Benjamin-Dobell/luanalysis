@@ -587,6 +587,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Read a member a class definition table has not been given yet as the class member, and relate the table as its class, as v1 types a class table, through kernel b3bfd0b.",
 } for path in ["native_named.rs", "relate.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-literal-computed-keys.patch",
+    "reason": "Store the field a computed key of one string-literal type names, in a runtime table's schema, its literal reads and its flow, as TypeScript reads a late-bound assignment, through kernel 905e017.",
+} for path in ["native_flow.rs", "native_named.rs", "native_runtime_tables.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
