@@ -142,7 +142,7 @@ impl NativeRegistry {
             })
             .count()
             != 1
-            || self.named.candidates(&source.syntax.name.text).len() != 1
+            || self.named.sole_owner(&source.syntax.name.text).is_none()
         {
             return Err("multiple named declaration owners");
         }

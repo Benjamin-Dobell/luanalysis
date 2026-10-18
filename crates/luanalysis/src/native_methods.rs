@@ -113,7 +113,7 @@ impl NativeMethods {
                 continue;
             };
             if attachment.declarations.len() == 1
-                && named.candidates(&declaration.syntax.name.text).len() == 1
+                && named.sole_owner(&declaration.syntax.name.text).is_some()
             {
                 match &attachment.kind {
                     RuntimeAttachmentKind::Local { bindings } => {
@@ -368,8 +368,8 @@ fn collect_written_local_owners(
                         continue;
                     }
                     if types.resolve_name_in_context(context, type_name) != crate::native_types::TypeNameResolution::Missing { continue; }
-                    let [owner] = named.candidates(type_name) else { continue };
-                    let Some(declaration) = named.declaration(*owner) else { continue };
+                    let Some(owner) = named.sole_owner(type_name) else { continue };
+                    let Some(declaration) = named.declaration(owner) else { continue };
                     let alias = matches!(declaration.syntax.kind, NamedTypeDeclarationKind::Alias { .. });
                     // An alias of a union or another composite names no single owner, so
                     // stores through it are ordinary checked writes.
@@ -385,7 +385,7 @@ fn collect_written_local_owners(
                     ) { continue; }
                     let binding = bound.binding_at(name.span.start).expect("original annotated local");
                     let candidates = owners.entry(binding).or_default();
-                    if !candidates.contains(owner) { candidates.push(*owner); }
+                    if !candidates.contains(&owner) { candidates.push(owner); }
                     if applied || alias {
                         owner_applications.insert(binding, OriginalOwnerApplication { annotation: written.clone(), context, binding });
                     }

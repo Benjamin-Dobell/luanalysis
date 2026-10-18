@@ -698,6 +698,18 @@ impl NativeNamed {
     pub(super) fn candidates(&self, name: &str) -> &[NativeNamedKey] {
         self.names.get(name).map_or(&[], Vec::as_slice)
     }
+    /// The one declaration `name` names: its only one, or the first of several `---@class`
+    /// declarations, which are one class, as LuaLS reads a class declared again.
+    pub(super) fn sole_owner(&self, name: &str) -> Option<NativeNamedKey> {
+        match self.candidates(name) {
+            [owner] => Some(*owner),
+            owners @ [first, ..] if owners.iter().all(|&owner| self.declaration(owner).is_some_and(|source| matches!(
+                source.syntax.kind,
+                NamedTypeDeclarationKind::Record { flavor: luanalysis_syntax::NamedRecordKind::Class, .. }
+            ))) => Some(*first),
+            _ => None,
+        }
+    }
     pub(super) fn documentation_contexts(&self, group: Span) -> Vec<NativeNamedKey> {
         self.declarations
             .iter()

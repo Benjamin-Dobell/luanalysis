@@ -151,17 +151,15 @@ fn candidate_class(named: &NativeNamed, ty: &TypeExpr) -> Option<NativeNamedKey>
     let TypeExprKind::Named(name) = &ty.kind else {
         return None;
     };
-    let [owner] = named.candidates(name) else {
-        return None;
-    };
+    let owner = named.sole_owner(name)?;
     matches!(
-        named.declaration(*owner)?.syntax.kind,
+        named.declaration(owner)?.syntax.kind,
         NamedTypeDeclarationKind::Record {
             flavor: NamedRecordKind::Class,
             ..
         }
     )
-    .then_some(*owner)
+    .then_some(owner)
 }
 
 impl NativeRegistry {

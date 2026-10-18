@@ -177,6 +177,17 @@ impl NativeRegistry {
             let root = self.expressions().get(self.expressions().key_for_span(directive.initializer));
             let mut constructor: &luanalysis_syntax::Expr = &root.expression;
             while let ExprKind::Parenthesized(inner) = &constructor.kind { constructor = inner; }
+            // `setmetatable({ ... }, mt)` makes an object of the table it is given, so its fields
+            // are the class's, as LuaLS reads them.
+            if let ExprKind::Call { callee, args } = &constructor.kind
+                && let ExprKind::Name(name) = &callee.kind
+                && name.text == "setmetatable"
+                && self.bound().binding_at(name.span.start).is_none()
+                && let Some(table) = args.first()
+            {
+                constructor = table;
+                while let ExprKind::Parenthesized(inner) = &constructor.kind { constructor = inner; }
+            }
             let ExprKind::Table(fields) = &constructor.kind else { continue };
             for field in fields {
                 let key = match &field.kind {

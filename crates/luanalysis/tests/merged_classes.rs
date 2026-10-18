@@ -284,3 +284,16 @@ fn a_class_chain_declared_in_two_files_reads_inherited_fields_once_per_base() {
     assert!(report.contains("error[TS2339]: Property 'y' does not exist on type 'C24'"), "{report}");
     assert_eq!(report.matches("error[").count(), 1, "{report}");
 }
+
+#[test]
+fn a_class_declared_again_in_one_file_is_one_class_with_its_setmetatable_tables_fields() {
+    // As LuaLS reads it: the class table, then an object of the class made by setmetatable.
+    let fixture = Fixture::new(&[
+        ("main.lua", "---@class Builder\nlocal builder = { kind = 'b' }\n\nfunction builder:get()\n    return self.cache\nend\n\nlocal function make()\n    ---@class Builder\n    local b = setmetatable({ cache = {} }, { __index = builder })\n    return b:get(), b.kind, b.missing\nend\n"),
+    ]);
+    let output = fixture.check();
+    let report = text(&output);
+    assert!(!report.contains("LUA2031"), "{report}");
+    assert!(report.contains("Property 'missing' does not exist on type 'Builder'"), "{report}");
+    assert_eq!(report.matches("error[").count(), 1, "{report}");
+}
