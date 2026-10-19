@@ -37,7 +37,8 @@ pub struct ProjectCheckOptions {
     pub describe_types: bool,
     /// Report inspections, as an editor shows them: warnings for conditions that are always
     /// true or false, comparisons that cannot be equal and shadowed locals, and suggestions for unreachable code,
-    /// unused locals and parameters without a type. Off for `check`; none is an error.
+    /// unused locals, parameters without a type and definite assignment result-count
+    /// mismatches. Off for `check`; none is an error.
     pub inspections: bool,
     /// Stops a check in progress when cancelled, as a language server's are when it stops.
     pub cancellation: Cancellation,

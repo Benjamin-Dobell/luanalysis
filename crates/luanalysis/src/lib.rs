@@ -109,7 +109,7 @@ impl Diagnostic {
     pub fn category(&self) -> DiagnosticCategory {
         match self.code {
             "TS2367" | "LUA2872" | "LUA2873" | "LUA4001" => DiagnosticCategory::Warning,
-            "TS6133" | "TS7027" | "TS7044" | "TS7047" => DiagnosticCategory::Suggestion,
+            "TS6133" | "TS7027" | "TS7044" | "TS7047" | "LUA4002" | "LUA4003" => DiagnosticCategory::Suggestion,
             _ => DiagnosticCategory::Error,
         }
     }
@@ -1072,7 +1072,7 @@ impl Checker<'_> {
             .collect();
         let values = self.adjusted_list_values(
             values,
-            names.len(),
+            names.iter().map(|name| name.span),
             expected.as_ref(),
             names.first().map_or(Span::default(), |name| name.span),
         );
@@ -1154,7 +1154,7 @@ impl Checker<'_> {
             }]);
         let mut adjusted = self.adjusted_list_values(
             values,
-            targets.len(),
+            targets.iter().map(|target| target.span),
             Some(&expected_pack),
             targets
                 .first()

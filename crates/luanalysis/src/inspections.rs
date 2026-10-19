@@ -4,12 +4,40 @@
 use crate::bind::{DeclarationKind, OccurrenceKind};
 use crate::native_functions::NativeRegistry;
 use crate::{CheckReport, Checker, Diagnostic};
-use luanalysis_engine::Type;
+use luanalysis_engine::{PackInspection, Type, ValuePack};
 use luanalysis_syntax::{Expr, ExprKind, Span, Stmt};
 
 impl Checker<'_> {
     fn inspecting(&self) -> bool {
         !self.incomplete_flow && self.native.is_some_and(NativeRegistry::inspections)
+    }
+
+    /// Lua adjusts a completed RHS list to the destination count. Inspect only its already
+    /// computed physical rows: uncertainty about a tail or optional result is not evidence
+    /// that a value is discarded or a destination is always padded.
+    pub(crate) fn inspect_assignment_result_count(&mut self, expressions: &[Expr], destinations: &[Span], pack: &ValuePack) {
+        if !self.inspecting() || expressions.is_empty() || destinations.is_empty()
+            || !crate::native_expressions::publishes(self.check_mode | self.engine.native_type_query_mode())
+        { return; }
+        let PackInspection::Alternatives(mut rows) = self.engine.inspect_pack_view(pack) else { return };
+        // A scalar never in a required prefix prevents the list from completing,
+        // even when concatenation retains that impossible row structurally.
+        rows.retain(|row| !row.fixed.iter().any(|slot| !slot.optional && matches!(&slot.ty, Type::Never)));
+        if rows.is_empty() { return; }
+        let minimum = rows.iter().map(|row| row.fixed.iter().filter(|slot| !slot.optional).count()).min().unwrap();
+        let maximum = rows.iter().try_fold(0usize, |maximum, row| row.tail.is_none().then_some(maximum.max(row.fixed.len())));
+        if minimum > destinations.len() {
+            let discarded = minimum - destinations.len();
+            let origin = expressions.get(destinations.len()).unwrap_or_else(|| expressions.last().unwrap()).span;
+            let message = if discarded == 1 { "This assignment discards at least one result.".to_owned() }
+                else { format!("This assignment discards at least {discarded} results.") };
+            self.error("LUA4002", origin, message);
+        }
+        if let Some(maximum) = maximum {
+            for &destination in destinations.iter().skip(maximum) {
+                self.error("LUA4003", destination, "This destination has no corresponding result; Lua pads it with nil.");
+            }
+        }
     }
 
     /// A condition whose type is never nil or false always takes its branch; one that is always

@@ -302,6 +302,30 @@ fn inspections_are_published_as_warnings_and_faded_hints() {
 }
 
 #[test]
+fn result_count_inspections_are_unfaded_hints_and_clear_after_matching_the_destinations() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let prefix = "---@return number, string\nlocal function pair() return 1, 'text' end\n";
+    let source = format!("{prefix}local value = pair()\nprint(value)\n");
+    fs::write(&main, &source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, &source);
+    let published = server.diagnostics(&main, |message| message.contains("LUA4002"));
+    assert!(published.contains(r#""range":{"start":{"line":2,"character":14},"end":{"line":2,"character":20}},"severity":4,"code":"LUA4002""#), "{published}");
+    assert!(!published.contains(r#""tags":[1]"#) && !published.contains(r#""severity":1"#), "{published}");
+    let missing = format!("{prefix}local first, second, missing = pair()\nprint(first, second, missing)\n");
+    server.change(&main, 2, &missing);
+    let published = server.diagnostics(&main, |message| message.contains("LUA4003"));
+    assert!(published.contains(r#""severity":4,"code":"LUA4003""#), "{published}");
+    assert!(!published.contains(r#""tags":[1]"#) && !published.contains(r#""severity":1"#), "{published}");
+    let corrected = format!("{prefix}local first, second = pair()\nprint(first, second)\n");
+    server.change(&main, 3, &corrected);
+    server.diagnostics(&main, |message| message.contains(r#""diagnostics":[]"#));
+    server.finish();
+}
+
+#[test]
 fn an_open_document_with_no_file_on_disk_is_checked() {
     let root = fixture();
     // A host such as a game may serve a script it keeps in memory, outside the workspace.

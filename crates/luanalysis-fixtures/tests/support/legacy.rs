@@ -123,7 +123,7 @@ fn options(case: &Case) -> ProjectCheckOptions {
         strict_nil: case.strict_nil,
         overload_mode: OverloadMode::LegacyExposeImplementation,
         describe_types: false,
-        inspections: case.id == "LocalNameShadowedTest/testLocalNameHidesPrevious",
+        inspections: matches!(case.id, "LocalNameShadowedTest/testLocalNameHidesPrevious" | "TypeSafetyTest/testFunctionMultipleReturns"),
         ..Default::default()
     }
 }
@@ -187,14 +187,18 @@ fn semantic_code(description: Option<&str>, code: &str) -> bool {
                 | "TS2684"
         );
     }
-    if description.starts_with("Incorrect number of values")
-        || description.starts_with("Too many assignees")
-    {
+    if description.starts_with("Too many assignees") {
+        return matches!(code, "LUA4003" | "TS2322" | "TS2554" | "TS2555");
+    }
+    if description.starts_with("Incorrect number of values") {
         return matches!(code, "TS2322" | "TS2554" | "TS2555");
     }
-    if description.starts_with("Insufficient assignees") || description.contains("excess argument")
-    {
-        // No native discarded-result inspection yet. This cannot silently pass.
+    if description.starts_with("Insufficient assignees") {
+        return code == "LUA4002";
+    }
+    if description.contains("excess argument") {
+        // Strict public call arity remains a checker error, independent of
+        // assignment-result hints. Do not let one substitute for the other.
         return false;
     }
     // Bare markers mean any *language* diagnostic in the original test. Do not
@@ -218,7 +222,13 @@ pub fn matches(expected: &luanalysis_fixtures::ExpectedDiagnostic, actual: &Diag
     };
     // Undeclared variables became checker errors. Keep the warning's exact name
     // range and TS2304 semantic identity while adapting that explicit severity.
-    let expected_severity = if expected
+    let expected_severity = if actual.code == "LUA4003" && expected.description.as_deref()
+        .is_some_and(|description| description.starts_with("Too many assignees"))
+    {
+        // Count inspection is intentionally a nonfatal hint; nil-to-required
+        // type errors still have to match their own original error markers.
+        Severity::WeakWarning
+    } else if expected
         .description
         .as_deref()
         .is_some_and(|d| d.starts_with("Undeclared variable"))
@@ -590,12 +600,15 @@ pub fn run_with_sources(
             .expect("entry not checked")
             .report
             .diagnostics;
-        // The original harness enabled only LocalNameShadowed for this case.
-        // Keep checker errors visible; other optional inspections were not selected.
+        // Reproduce the original selected optional inspection family while
+        // keeping every checker error visible.
         let selected;
-        let actual = if case.id == "LocalNameShadowedTest/testLocalNameHidesPrevious" {
+        let actual = if matches!(case.id, "LocalNameShadowedTest/testLocalNameHidesPrevious" | "TypeSafetyTest/testFunctionMultipleReturns") {
             selected = actual.iter().filter(|diagnostic| {
-                diagnostic.category() == DiagnosticCategory::Error || diagnostic.code == "LUA4001"
+                diagnostic.category() == DiagnosticCategory::Error || match case.id {
+                    "LocalNameShadowedTest/testLocalNameHidesPrevious" => diagnostic.code == "LUA4001",
+                    _ => matches!(diagnostic.code, "LUA4002" | "LUA4003"),
+                }
             }).cloned().collect::<Vec<_>>();
             &selected
         } else { actual };

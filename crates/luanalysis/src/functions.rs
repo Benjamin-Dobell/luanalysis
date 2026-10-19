@@ -83,11 +83,19 @@ impl Checker<'_> {
     pub(super) fn adjusted_list_values(
         &mut self,
         expressions: &[Expr],
-        count: usize,
+        destinations: impl ExactSizeIterator<Item = Span>,
         expected: Option<&ValuePack>,
         missing_origin: Span,
     ) -> Vec<(Type, Span)> {
+        let count = destinations.len();
+        let first_diagnostic = self.report.diagnostics.len();
         let pack = self.expression_list_pack(expressions, expected);
+        if self.native.is_some_and(|native| native.inspections())
+            && !self.report.diagnostics.iter().skip(first_diagnostic)
+                .any(|diagnostic| diagnostic.category() == crate::DiagnosticCategory::Error)
+        {
+            self.inspect_assignment_result_count(expressions, &destinations.collect::<Vec<_>>(), &pack);
+        }
         let adjusted = match self.engine.adjust_pack(&pack, count) {
             Ok(pack) => pack,
             Err(error) => {

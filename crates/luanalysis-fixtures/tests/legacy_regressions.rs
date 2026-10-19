@@ -479,6 +479,62 @@ fn member_and_index_range_translations_keep_the_exact_key_identity() {
 }
 
 #[test]
+fn result_count_markers_require_the_correct_hint_family_and_severity() {
+    let discarded = import("<weak_warning descr=\"Insufficient assignees, values will be discarded.\">pair()</weak_warning>").unwrap();
+    assert_eq!(legacy::compare(&discarded, &[observed("LUA4002", 0, 6)], true), (vec![], vec![]));
+    for code in ["LUA4003", "TS6133", "TS2554", "LUA1001", "LUA2031"] {
+        assert_eq!(legacy::compare(&discarded, &[observed(code, 0, 6)], true), (vec![0], vec![0]));
+    }
+    let missing = import("<error descr=\"Too many assignees, will be assigned nil.\">value</error>").unwrap();
+    assert_eq!(legacy::compare(&missing, &[observed("LUA4003", 0, 5)], true), (vec![], vec![]));
+    for code in ["LUA4002", "TS6133", "LUA1001", "LUA2031"] {
+        assert_eq!(legacy::compare(&missing, &[observed(code, 0, 5)], true), (vec![0], vec![0]));
+    }
+    let required_type = import("<error descr=\"Type mismatch. Required: 'string' Found: 'nil'\">value</error>").unwrap();
+    assert_eq!(legacy::compare(&required_type, &[observed("LUA4003", 0, 5)], true), (vec![0], vec![0]));
+}
+
+#[test]
+fn original_multiple_returns_count_hints_use_unchanged_markers_and_preserve_other_errors() {
+    use luanalysis::project_check::{ProjectCheckOptions, check_project_with_options, static_require_requests};
+    use luanalysis::standard_environment::StandardEnvironmentProfile;
+    use luanalysis_project::{Project, ProjectConfig, Resolver};
+    let case = legacy::cases().into_iter().find(|case| case.id == "TypeSafetyTest/testFunctionMultipleReturns").unwrap();
+    let fixture = import(&fs::read_to_string(legacy::root().join(case.inputs[0])).unwrap()).unwrap();
+    let directory = legacy::Temp::new();
+    let main = directory.0.join("main.lua");
+    fs::write(&main, &fixture.source).unwrap();
+    let project = Project::load(&Resolver::new(ProjectConfig::new([directory.0.clone()])).unwrap(), [main], static_require_requests);
+    let entry = project.entries[0];
+    let report = check_project_with_options(project, ProjectCheckOptions {
+        inspections: true, jobs: 1, environment: StandardEnvironmentProfile::Lua53,
+        strict_nil: case.strict_nil, overload_mode: luanalysis::OverloadMode::LegacyExposeImplementation,
+        describe_types: false, ..Default::default()
+    });
+    let actual = &report.file(entry).unwrap().report.diagnostics;
+    let discarded = fixture.diagnostics.iter().filter(|expected| expected.description.as_deref()
+        .is_some_and(|description| description.starts_with("Insufficient assignees"))).collect::<Vec<_>>();
+    assert_eq!(discarded.len(), 4);
+    for expected in discarded.iter().take(3) {
+        assert_eq!(actual.iter().filter(|diagnostic| diagnostic.code == "LUA4002" && legacy::matches(expected, diagnostic)).count(), 1, "{expected:?}\n{actual:#?}");
+    }
+    // The current public overload produces at most one result at the fourth
+    // marker; a count hint must follow the selected pack rather than v1's guess.
+    assert!(!actual.iter().any(|diagnostic| diagnostic.code == "LUA4002" && legacy::matches(discarded[3], diagnostic)), "{actual:#?}");
+    let missing = fixture.diagnostics.iter().filter(|expected| expected.description.as_deref()
+        .is_some_and(|description| description.starts_with("Too many assignees"))).collect::<Vec<_>>();
+    assert_eq!(missing.len(), 2);
+    for expected in missing {
+        assert_eq!(actual.iter().filter(|diagnostic| diagnostic.code == "LUA4003" && legacy::matches(expected, diagnostic)).count(), 1, "{expected:?}\n{actual:#?}");
+    }
+    assert!(report.has_errors());
+    assert!(actual.iter().any(|diagnostic| diagnostic.code == "TS2322"));
+    assert!(actual.iter().any(|diagnostic| diagnostic.code == "TS2554"));
+    assert!(actual.iter().filter(|diagnostic| matches!(diagnostic.code, "LUA4002" | "LUA4003"))
+        .all(|diagnostic| diagnostic.category() == DiagnosticCategory::Suggestion && !diagnostic.is_unnecessary()));
+}
+
+#[test]
 fn an_outline_with_the_right_flat_labels_cannot_satisfy_the_old_hierarchy() {
     use luanalysis::language_service::{DocumentSymbol, SymbolKind};
     let span = luanalysis_syntax::Span { start: 0, end: 6 };
