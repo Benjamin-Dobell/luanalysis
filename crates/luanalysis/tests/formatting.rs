@@ -48,7 +48,7 @@ fn splits_legacy_multiple_statements_and_honours_keep_option() {
 fn formats_nested_lua_control_flow_and_operators() {
     let source = "local function f ( a,b ) if a>b then return - a+ b elseif a==b then return not false else local t={a=1,b=2}; return t.a end end";
     let result = formatted(source, &FormattingOptions::default());
-    assert_eq!(result, "local function f(a, b)\n    if a > b then\n        return -a + b\n    elseif a == b then\n        return not false\n    else\n        local t = { a = 1, b = 2 };\n        return t.a\n    end\nend");
+    assert_eq!(result, "local function f(a, b)\n    if a > b then\n        return -a + b\n    elseif a == b then\n        return not false\n    else\n        local t = {a = 1, b = 2};\n        return t.a\n    end\nend");
     assert_eq!(token_spellings(source), token_spellings(&result));
 }
 

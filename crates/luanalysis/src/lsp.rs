@@ -1285,6 +1285,8 @@ impl Server {
             insert_final_newline: flag("insertFinalNewline"),
             trim_final_newlines: flag("trimFinalNewlines"),
             keep_multiple_statements_in_one_line: flag("keepMultipleStatementsInOneLine").unwrap_or(false),
+            max_line_length: options.get("maxLineLength").and_then(Json::as_u64)
+                .and_then(|width| usize::try_from(width).ok()).unwrap_or(120),
             newline: match options.get("newline").and_then(Json::as_str) {
                 Some("lf") => Some(Newline::Lf),
                 Some("crlf") => Some(Newline::CrLf),

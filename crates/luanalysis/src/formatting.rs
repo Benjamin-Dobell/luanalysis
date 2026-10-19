@@ -1,9 +1,11 @@
 //! Source-preserving Lua formatting shared by every editor adapter.
 //!
-//! Only whitespace between native lexer tokens is changed. In particular, strings,
-//! comments, annotations, casts, delimiters, and semicolons retain their exact spelling.
+//! Executable tokens and literals retain their exact spelling. Standalone long
+//! comments may wrap after verifying their content and native annotation structure.
 
-use std::collections::BTreeSet;
+mod comments;
+
+use std::collections::{BTreeMap, BTreeSet};
 use luanalysis_syntax::{Expr, ExprKind, Function, Span, Stmt, StmtKind, TableFieldKind, Token, TokenKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,6 +27,8 @@ pub struct FormattingOptions {
     pub insert_spaces: bool,
     /// Legacy formatter option; existing line breaks are always retained.
     pub keep_multiple_statements_in_one_line: bool,
+    /// Width for standalone prose/annotation wrapping; zero disables wrapping.
+    pub max_line_length: usize,
     pub trim_trailing_whitespace: Option<bool>,
     pub insert_final_newline: Option<bool>,
     pub trim_final_newlines: Option<bool>,
@@ -38,6 +42,7 @@ impl Default for FormattingOptions {
             tab_size: 4,
             insert_spaces: true,
             keep_multiple_statements_in_one_line: false,
+            max_line_length: 120,
             trim_trailing_whitespace: None,
             insert_final_newline: None,
             trim_final_newlines: None,
@@ -53,7 +58,7 @@ pub struct FormatEdit {
 }
 
 /// Format a complete, syntactically valid Lua buffer. Annotation errors are harmless:
-/// annotation tokens are retained verbatim. A range bounds every edit strictly; it does
+/// comments remain unchanged unless equivalent wrapping is proved. A range bounds every edit strictly; it does
 /// not expand to surrounding statements or lines. `None` means unsafe/invalid input.
 ///
 /// Returned edits are ordered, non-overlapping, and use original UTF-8 byte offsets.
@@ -73,6 +78,7 @@ pub fn format(source: &str, options: &FormattingOptions, range: Option<Span>) ->
     if file.has_lua_syntax_errors() { return None; }
     let tokens: Vec<_> = lexed.tokens.iter().filter(|token| significant(token)).collect();
     let mut layout = Layout {
+        source,
         keep_multiple: options.keep_multiple_statements_in_one_line,
         ..Layout::default()
     };
@@ -90,7 +96,10 @@ pub fn format(source: &str, options: &FormattingOptions, range: Option<Span>) ->
         let indent = layout.indent_at(token.span.start);
         let protected_inline_doc = !has_newline(gap)
             && (documentation(token) || previous.is_some_and(documentation));
-        let required_break = !protected_inline_doc && previous.is_some()
+        let leading_semicolon = previous.is_some_and(|left| spelling(source, left) == ";"
+            && spelling(source, token) == "("
+            && source[source[..left.span.start].rfind(['\r', '\n']).map_or(0, |at| at + 1)..left.span.start].trim().is_empty());
+        let required_break = !protected_inline_doc && !leading_semicolon && previous.is_some()
             && (layout.break_before.contains(&token.span.start)
                 || previous.is_some_and(line_comment));
         let replacement = if has_newline(gap) || required_break {
@@ -109,14 +118,24 @@ pub fn format(source: &str, options: &FormattingOptions, range: Option<Span>) ->
     if !tail.chars().all(char::is_whitespace) { return None; }
     let replacement = final_gap(tail, newline, options);
     push_edit(&mut edits, source, Span::new(tail_start, source.len()), replacement, bounds);
+    edits.extend(comments::edits(source, &tokens, options, bounds, newline,
+        |at| indentation(layout.indent_at(at), options)));
+    edits.sort_by_key(|edit| (edit.span.start, edit.span.end));
     // Lexical equivalence is checked after applying the actual bounded edits, not just
     // against the proposed full formatting. This catches token fusion at range edges.
     let formatted = apply_edits(source, &edits);
     let after = luanalysis_syntax::lex(&formatted);
     let after_tokens: Vec<_> = after.tokens.iter().filter(|token| significant(token)).collect();
     if !after.diagnostics.is_empty() || tokens.len() != after_tokens.len()
-        || tokens.iter().zip(after_tokens.iter()).any(|(before, after)|
-            source[before.span.start..before.span.end] != formatted[after.span.start..after.span.end])
+        || tokens.iter().zip(after_tokens.iter()).any(|(before, after)| {
+            if source[before.span.start..before.span.end] == formatted[after.span.start..after.span.end] {
+                return false;
+            }
+            match (&before.kind, &after.kind) {
+                (TokenKind::Comment(before), TokenKind::Comment(after)) => !comments::equivalent(before, after),
+                _ => true,
+            }
+        })
         || luanalysis_syntax::parse(&formatted).has_lua_syntax_errors()
     {
         return None;
@@ -147,7 +166,7 @@ pub fn on_type(source: &str, offset: usize, trigger: &str, options: &FormattingO
     }
     let file = luanalysis_syntax::parse(source);
     let depth = if !file.has_lua_syntax_errors() {
-        let mut layout = Layout::default();
+        let mut layout = Layout { source, ..Layout::default() };
         layout.statements(&file.statements, false);
         layout.delimiters(source, &tokens);
         layout.indent_at(end)
@@ -178,23 +197,26 @@ fn spelling<'a>(source: &'a str, token: &Token) -> &'a str {
     &source[token.span.start..token.span.end]
 }
 
-fn spaced(source: &str, left: &Token, right: &Token, layout: &Layout) -> bool {
+fn spaced(source: &str, left: &Token, right: &Token, layout: &Layout<'_>) -> bool {
     let a = spelling(source, left);
     let b = spelling(source, right);
-    if matches!(left.kind, TokenKind::Comment(_)) || matches!(right.kind, TokenKind::Comment(_)) { return true; }
+    if layout.space_before.contains(&right.span.start) { return true; }
     if a == "<" && layout.attributes.contains(&right.span.start)
         || b == ">" && layout.attributes.contains(&left.span.start)
     { return false; }
     if a == "::" || b == "::" { return false; }
     if b == "," || b == ";" || b == ")" || b == "]" { return false; }
-    if a == "," || a == ";" { return true; }
+    if a == "," || a == ";" { return a != ";" || b != "("; }
     if a == "(" { return false; }
-    if a == "{" { return b != "}"; }
+    // Authored Lua uses both {x = 1} and { x = 1 }. Preserve each existing
+    // interior edge while normalising the operators/fields within the table.
+    if a == "{" { return !source[left.span.end..right.span.start].is_empty(); }
     // `[ [=[x]=] ]` must not become a different long-string delimiter.
     if a == "[" { return b.starts_with('['); }
     if b == "[" { return false; }
     if a == "." || b == "." || a == ":" || b == ":" { return false; }
-    if b == "}" { return a != "{"; }
+    if b == "}" { return !source[left.span.end..right.span.start].is_empty(); }
+    if matches!(left.kind, TokenKind::Comment(_)) || matches!(right.kind, TokenKind::Comment(_)) { return true; }
     if layout.unary.contains(&left.span.start) {
         return a == "not" || a == "-" && b.starts_with('-');
     }
@@ -214,40 +236,78 @@ fn spaced(source: &str, left: &Token, right: &Token, layout: &Layout) -> bool {
 }
 
 #[derive(Default)]
-struct Layout {
+struct Layout<'a> {
+    source: &'a str,
     keep_multiple: bool,
     blocks: Vec<Span>,
     continuations: Vec<Span>,
+    function_ends: BTreeMap<usize, usize>,
     indent_starts: Vec<usize>,
     indent_ends: Vec<usize>,
     break_before: BTreeSet<usize>,
+    space_before: BTreeSet<usize>,
     unary: BTreeSet<usize>,
     binary: BTreeSet<usize>,
     attributes: BTreeSet<usize>,
 }
 
-impl Layout {
+impl Layout<'_> {
     fn indent_at(&self, offset: usize) -> usize {
         self.indent_starts.partition_point(|start| *start <= offset)
             .saturating_sub(self.indent_ends.partition_point(|end| *end <= offset))
     }
 
     fn delimiters(&mut self, source: &str, tokens: &[&Token]) {
-        let mut stack: Vec<(&str, usize)> = Vec::new();
-        for token in tokens {
+        let mut stack: Vec<usize> = Vec::new();
+        let mut closes = BTreeMap::new();
+        for (index, token) in tokens.iter().enumerate() {
             if !matches!(token.kind, TokenKind::Symbol(_)) { continue; }
-            let text = spelling(source, token);
-            match text {
-                "(" | "[" | "{" => stack.push((text, token.span.end)),
+            match spelling(source, token) {
+                "(" | "[" | "{" => stack.push(index),
                 ")" | "]" | "}" => {
-                    if let Some((open, start)) = stack.pop() {
-                        if matches!((open, text), ("(", ")") | ("[", "]") | ("{", "}"))
-                            && (has_newline(&source[start..token.span.start])
-                                || self.break_before.range(start..token.span.start).next().is_some())
-                        { self.continuations.push(Span::new(start, token.span.start)); }
-                    }
+                    if let Some(open) = stack.pop() { closes.insert(open, index); }
                 }
                 _ => {}
+            }
+        }
+        for (&open, &close) in &closes {
+            let left = tokens[open];
+            let right = tokens[close];
+            if spelling(source, left) == "{" {
+                // A table owns its fields' indentation. A surrounding call such as
+                // `setmetatable(value, { ... })` must not add another level.
+                self.continuations.push(Span::new(left.span.end, right.span.start));
+                continue;
+            }
+            let mut continuation = None;
+            if let Some(next) = tokens.get(open + 1).filter(|_| open + 1 < close) {
+                if has_newline(&source[left.span.end..next.span.start]) {
+                    continuation = Some(left.span.end);
+                }
+            }
+            // Further arguments beginning on their own line also form a list.
+            // Ignore delimiters and function bodies within an argument; their own
+            // structural layout is responsible for those internal line breaks.
+            let mut index = open + 1;
+            while index < close {
+                let token = tokens[index];
+                if let Some(end) = self.function_ends.get(&token.span.start) {
+                    index = tokens.partition_point(|token| token.span.start < *end);
+                    continue;
+                }
+                if let Some(nested_close) = closes.get(&index) {
+                    index = *nested_close + 1;
+                    continue;
+                }
+                if matches!(spelling(source, token), "," | ";") && index + 1 < close
+                    && has_newline(&source[token.span.end..tokens[index + 1].span.start])
+                {
+                    continuation = Some(continuation.map_or(token.span.end, |start: usize| start.min(token.span.end)));
+                }
+                index += 1;
+            }
+            if let Some(start) = continuation {
+                self.continuations.push(Span::new(start, right.span.start));
             }
         }
         // A file can contain thousands of unrelated blocks. Prefix counts keep
@@ -273,8 +333,18 @@ impl Layout {
         }
     }
 
-    fn function(&mut self, function: &Function) {
-        self.body(&function.body, function.body_span);
+    fn function(&mut self, function: &Function, anonymous: bool) {
+        self.function_ends.insert(function.span.start, function.span.end);
+        // Short callbacks and dispatch functions are intentional authored layout.
+        // Named functions and compound bodies still receive normal block layout.
+        let compact = anonymous && !has_newline(&self.source[function.span.start..function.span.end])
+            && function.body.len() <= 1 && function.body.iter().all(simple_statement);
+        if compact {
+            if let Some(first) = function.body.first() { self.space_before.insert(first.span.start); }
+            self.statements(&function.body, false);
+        } else {
+            self.body(&function.body, function.body_span);
+        }
     }
 
     fn statement(&mut self, statement: &Stmt) {
@@ -286,8 +356,8 @@ impl Layout {
             StmtKind::Assign { targets, values, .. } => {
                 for expression in targets.iter().chain(values) { self.expr(expression); }
             }
-            StmtKind::LocalFunction { function, .. } => self.function(function),
-            StmtKind::FunctionDeclaration { target, function, .. } => { self.expr(target); self.function(function); }
+            StmtKind::LocalFunction { function, .. } => self.function(function, false),
+            StmtKind::FunctionDeclaration { target, function, .. } => { self.expr(target); self.function(function, false); }
             StmtKind::Block { body, body_span } => self.body(body, *body_span),
             StmtKind::Return(values) => { for value in values { self.expr(value); } }
             StmtKind::Call(expression) => self.expr(expression),
@@ -323,28 +393,98 @@ impl Layout {
     fn expr(&mut self, expression: &Expr) {
         match &expression.kind {
             ExprKind::Unary { op_span, value, .. } => { self.unary.insert(op_span.start); self.expr(value); }
-            ExprKind::Binary { op_span, left, right, .. } => {
-                self.binary.insert(op_span.start); self.expr(left); self.expr(right);
+            ExprKind::Binary { .. } => {
+                let mut start = None;
+                self.binary_chain(expression, &mut start);
+                if let Some(start) = start { self.continuations.push(Span::new(start, expression.span.end)); }
             }
             ExprKind::Parenthesized(value) => self.expr(value),
-            ExprKind::Field { base, .. } => self.expr(base),
-            ExprKind::Index { base, index } => { self.expr(base); self.expr(index); }
-            ExprKind::Function(function) => self.function(function),
+            ExprKind::Field { .. } | ExprKind::Index { .. }
+            | ExprKind::Call { .. } | ExprKind::MethodCall { .. } => {
+                let mut start = None;
+                self.postfix_chain(expression, &mut start);
+                if let Some(start) = start { self.continuations.push(Span::new(start, expression.span.end)); }
+            }
+            ExprKind::Function(function) => self.function(function, true),
             ExprKind::Table(fields) => {
                 for field in fields {
                     if let TableFieldKind::Keyed(key) = &field.kind { self.expr(key); }
                     self.expr(&field.value);
                 }
             }
-            ExprKind::Call { callee, args } => {
-                self.expr(callee); for arg in args { self.expr(arg); }
-            }
-            ExprKind::MethodCall { receiver, args, .. } => {
-                self.expr(receiver); for arg in args { self.expr(arg); }
-            }
             ExprKind::Nil | ExprKind::Boolean(_) | ExprKind::Number(_) | ExprKind::String(_)
             | ExprKind::Name(_) | ExprKind::Vararg | ExprKind::Error => {}
         }
+    }
+
+    fn postfix_chain(&mut self, expression: &Expr, continuation: &mut Option<usize>) {
+        match &expression.kind {
+            ExprKind::Field { base, name } => {
+                if has_newline(&self.source[base.span.end..name.span.start]) {
+                    *continuation = Some(continuation.map_or(base.span.end, |old| old.min(base.span.end)));
+                }
+                self.postfix_chain(base, continuation);
+            }
+            ExprKind::MethodCall { receiver, name, args } => {
+                if has_newline(&self.source[receiver.span.end..name.span.start]) {
+                    *continuation = Some(continuation.map_or(receiver.span.end, |old| old.min(receiver.span.end)));
+                }
+                self.postfix_chain(receiver, continuation);
+                for arg in args { self.expr(arg); }
+            }
+            ExprKind::Call { callee, args } => {
+                self.postfix_chain(callee, continuation);
+                for arg in args { self.expr(arg); }
+            }
+            ExprKind::Index { base, index } => {
+                self.postfix_chain(base, continuation);
+                self.expr(index);
+            }
+            _ => self.expr(expression),
+        }
+    }
+
+    fn binary_chain(&mut self, expression: &Expr, continuation: &mut Option<usize>) {
+        if let ExprKind::Binary { op_span, left, right, .. } = &expression.kind {
+            self.binary.insert(op_span.start);
+            for (gap, start) in [(Span::new(left.span.end, op_span.start), left.span.end),
+                (Span::new(op_span.end, right.span.start), op_span.end)]
+            {
+                if has_newline(&self.source[gap.start..gap.end]) {
+                    *continuation = Some(continuation.map_or(start, |old| old.min(start)));
+                }
+            }
+            self.binary_chain(left, continuation);
+            self.binary_chain(right, continuation);
+        } else {
+            self.expr(expression);
+        }
+    }
+}
+
+fn simple_statement(statement: &Stmt) -> bool {
+    match &statement.kind {
+        StmtKind::Return(values) | StmtKind::Local { values, .. } => values.iter().all(simple_expression),
+        StmtKind::Assign { targets, values, .. } => targets.iter().chain(values).all(simple_expression),
+        StmtKind::Call(expression) => simple_expression(expression),
+        _ => false,
+    }
+}
+
+fn simple_expression(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::Function(_) | ExprKind::Error => false,
+        ExprKind::Parenthesized(value) | ExprKind::Unary { value, .. } => simple_expression(value),
+        ExprKind::Binary { left, right, .. } => simple_expression(left) && simple_expression(right),
+        ExprKind::Field { base, .. } => simple_expression(base),
+        ExprKind::Index { base, index } => simple_expression(base) && simple_expression(index),
+        ExprKind::Call { callee, args } => simple_expression(callee) && args.iter().all(simple_expression),
+        ExprKind::MethodCall { receiver, args, .. } => simple_expression(receiver) && args.iter().all(simple_expression),
+        ExprKind::Table(fields) => fields.iter().all(|field| {
+            (!matches!(&field.kind, TableFieldKind::Keyed(key) if !simple_expression(key)))
+                && simple_expression(&field.value)
+        }),
+        _ => true,
     }
 }
 
@@ -454,21 +594,60 @@ fn incomplete_indent(source: &str, tokens: &[&Token], line_start: usize) -> usiz
     let mut depth = 0usize;
     let mut pending_do = 0usize;
     let mut pending_then = 0usize;
-    for token in tokens.iter().copied().filter(|token| token.span.start < line_start) {
+    let mut pending_function_params = false;
+    let mut block_depth = 0usize;
+    // A comma belongs to this delimiter only while still in the block where
+    // it opened. Commas in an inline callback's local/return statements must
+    // not activate the caller's argument-list continuation.
+    let mut delimiters: Vec<(&str, bool, usize)> = Vec::new();
+    for (index, token) in tokens.iter().copied().enumerate().filter(|(_, token)| token.span.start < line_start) {
+        let gap_end = tokens.get(index + 1).map_or(line_start, |next| next.span.start.min(line_start));
+        let next_line = has_newline(&source[token.span.end..gap_end]);
         match spelling(source, token) {
-            "function" | "repeat" => depth += 1,
-            "for" | "while" => { depth += 1; pending_do += 1; }
-            "if" => { depth += 1; pending_then += 1; }
+            "function" => {
+                // Parameters are a list, not yet the function's body. Enter its
+                // scope for comma ownership, but activate body indentation only
+                // after the matching parameter ')' has closed.
+                block_depth += 1;
+                pending_function_params = true;
+            }
+            "repeat" => { depth += 1; block_depth += 1; }
+            "for" | "while" => { depth += 1; block_depth += 1; pending_do += 1; }
+            "if" => { depth += 1; block_depth += 1; pending_then += 1; }
             "then" if pending_then > 0 => pending_then -= 1,
             "do" if pending_do > 0 => pending_do -= 1,
-            "do" | "(" | "[" | "{" => depth += 1,
-            "end" | "until" | ")" | "]" | "}" => depth = depth.saturating_sub(1),
+            "do" => { depth += 1; block_depth += 1; }
+            "(" | "[" | "{" => {
+                let text = spelling(source, token);
+                let parameters = text == "(" && pending_function_params;
+                if parameters { pending_function_params = false; }
+                let indent = text == "{" || next_line;
+                delimiters.push((if parameters { "params" } else { text }, indent, block_depth));
+                depth += usize::from(indent);
+            }
+            "," | ";" if next_line => {
+                if let Some((_, indent, owner)) = delimiters.last_mut() {
+                    if *owner == block_depth && !*indent { *indent = true; depth += 1; }
+                }
+            }
+            ")" | "]" | "}" => {
+                if let Some((kind, indent, _)) = delimiters.pop() {
+                    depth = depth.saturating_sub(usize::from(indent));
+                    if kind == "params" && spelling(source, token) == ")" { depth += 1; }
+                }
+            }
+            "end" | "until" => {
+                depth = depth.saturating_sub(1);
+                block_depth = block_depth.saturating_sub(1);
+            }
             _ => {}
         }
     }
     if let Some(next) = tokens.iter().copied().find(|token| token.span.start >= line_start) {
-        if matches!(spelling(source, next), "end" | "until" | "else" | "elseif" | ")" | "]" | "}") {
+        if matches!(spelling(source, next), "end" | "until" | "else" | "elseif") {
             depth = depth.saturating_sub(1);
+        } else if matches!(spelling(source, next), ")" | "]" | "}") {
+            depth = depth.saturating_sub(usize::from(delimiters.last().is_some_and(|(_, indent, _)| *indent)));
         }
     }
     depth

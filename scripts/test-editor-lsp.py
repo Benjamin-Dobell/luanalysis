@@ -430,6 +430,11 @@ def formatting(client):
     edits = client.request('textDocument/onTypeFormatting', dict(client.at(incomplete, '', len(incomplete.text)), ch='\n', options=options))
     result = apply_edits(incomplete.text, edits, client.encoding)
     check(result == 'if true then\n  ', f'on-type incomplete block indentation failed or inserted end: {result!r}')
+    for index, source in enumerate(('local function header(\n', 'run(function(\n', 'local function header(first,\n')):
+        header = client.open(f'format-on-type-header-{index}.lua', source)
+        edits = client.request('textDocument/onTypeFormatting', dict(client.at(header, '', len(source)), ch='\n', options=options))
+        result = apply_edits(source, edits, client.encoding)
+        check(result == source + '  ', f'on-type parameter list counted the function body twice: {result!r}')
     long_literal = client.open('format-on-type-string.lua', 'local text=[=[first\n  keep me\nlast]=]\n')
     edits = client.request('textDocument/onTypeFormatting', dict(client.at(long_literal, '  keep me'), ch='\n', options=options))
     check(not edits, f'on-type formatting touched a multiline literal: {edits!r}')
@@ -450,6 +455,44 @@ def formatting(client):
         client.change(version_doc, result)
         check(not client.request('textDocument/formatting', {'textDocument': {'uri': version_doc.uri}, 'options': options}), f'Lua {version} formatting is not idempotent')
     client.configure(luaVersion='5.4')
+    formatting_comments(client)
+
+
+def formatting_comments(client):
+    source = (
+        '-- This 😀 ordinary prose comment explains that every callback receives the current value and must preserve its original meaning when this long sentence is wrapped across several readable lines.\r\n'
+        '---@alias FormatRecord { firstValue: number, secondValue: number, thirdValue: number, fourthValue: number, fifthValue: number, sixthValue: number }\r\n'
+        '---@param value FormatRecord\r\n'
+        '---@return number\r\n'
+        'local function measure(value)\r\n'
+        '    return value.firstValue + value.secondValue\r\n'
+        'end\r\n'
+        'local result = measure({firstValue = 1, secondValue = 2, thirdValue = 3, fourthValue = 4, fifthValue = 5, sixthValue = 6})\r\n'
+        'return result\r\n')
+    doc = client.open('format-comments.ttslua', source)
+    check(not client.checked(doc), 'comment wrapping fixture has diagnostics before formatting')
+    before = client.request('textDocument/hover', client.at(doc, 'value.firstValue'))
+    options = {'tabSize': 4, 'insertSpaces': True, 'maxLineLength': 72}
+    # Selecting only part of a comment must not rewrite the surrounding token.
+    start = source.index('firstValue')
+    stop = source.index('sixthValue')
+    edits = client.request('textDocument/rangeFormatting', dict(client.range(doc, start, stop), options=options))
+    check(not edits, f'partial comment range was reflowed: {edits!r}')
+    disabled = dict(options, maxLineLength=0)
+    edits = client.request('textDocument/formatting', {'textDocument': {'uri': doc.uri}, 'options': disabled})
+    check(apply_edits(source, edits, client.encoding) == source, 'maxLineLength=0 did not preserve comments')
+    edits = client.request('textDocument/formatting', {'textDocument': {'uri': doc.uri}, 'options': options})
+    result = apply_edits(source, edits, client.encoding)
+    check(result != source and '\r\n---' in result, 'long annotation was not wrapped')
+    check('--[[' in result or '--[=[' in result, 'long ordinary prose was not made multiline')
+    check('\n' not in result.replace('\r\n', ''), 'comment wrapping changed CRLF convention')
+    check(all(len(line) <= 72 for line in result.splitlines() if line.startswith('---')), 'wrapped annotation exceeds configured width')
+    check('    return value.firstValue + value.secondValue\r\n' in result, 'wrapping changed function body')
+    client.change(doc, result)
+    check(not client.checked(doc), 'wrapped annotation introduced diagnostics')
+    after = client.request('textDocument/hover', client.at(doc, 'value.firstValue'))
+    check(before and after and before['contents'] == after['contents'], f'wrapping changed native inferred type: {before!r} -> {after!r}')
+    check(not client.request('textDocument/formatting', {'textDocument': {'uri': doc.uri}, 'options': options}), 'comment wrapping is not idempotent')
 
 
 def signature(client):

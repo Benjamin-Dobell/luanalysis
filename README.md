@@ -482,12 +482,20 @@ results; these three default to false. Explicit annotations and redundant hints 
 Every workspace folder is checked, and a check in progress is shown as work-done progress.
 
 Formatting reads current unsaved text and respects negotiated UTF-8/UTF-16 positions. It changes
-whitespace between native lexer tokens, preserving strings, comments, annotations, casts and
-semicolons. Full/range formatting declines invalid Lua; range edits stay within the selection.
+whitespace between native lexer tokens, preserving executable tokens, strings and casts.
+Defaults follow authored `ge_tts` style: four spaces, one level for table fields and callback
+bodies, compact simple anonymous functions, and existing table interior spacing. Standalone
+long prose comments become Lua block comments; long documentation and type annotations wrap
+onto `---` continuation lines. Wrapping preserves words, quoted contents, native annotation
+structure and attachment, and leaves inline casts, directives and structured comments intact.
+Full/range formatting declines invalid Lua; range edits stay within the selection, and wrapping
+requires the complete comment token to be selected.
 It supports `tabSize` (1–32), `insertSpaces`, `trimTrailingWhitespace`, `insertFinalNewline` and
 `trimFinalNewlines`. Extensions in the request's formatting options are `newline: "lf"` or
 `"crlf"` (otherwise retain the first line ending) and `keepMultipleStatementsInOneLine: true`
-(default false). Whitespace inside strings/comments stays intact even when trimming is enabled.
+(default false), plus `maxLineLength` (default 120; 0 disables comment wrapping). Width applies
+to comments and annotations; unbreakable quoted contents can exceed it. Whitespace inside
+strings and existing long comments stays intact even when trimming is enabled.
 Only `\n` is advertised for on-type formatting; it changes line indentation, including in
 unfinished blocks, and inserts no block-closing tokens. Editors must opt into that trigger.
 
