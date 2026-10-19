@@ -334,6 +334,104 @@ mod tests {
     }
     impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
 
+
+    // Consume the original imported inputs and byte-for-byte expected files.
+    // Do not duplicate their content here: import verification owns that oracle.
+    macro_rules! legacy_file {
+        ($path:literal) => {
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../luanalysis-fixtures/tests/legacy/", $path))
+        };
+    }
+
+    fn replay_legacy_file_operation(before: &[(&str, &str)], after: &[(&str, &str)], old: &str, new: &str, after_module: &str) {
+        let fixture = Fixture::new(before);
+        let resolver = fixture.resolver(&[""]);
+        let check_all = |files: &[(&str, &str)]| {
+            let mut workspace = ProjectWorkspace::new();
+            let plan = ProjectLoadPlan::new(files.iter().map(|(path, _)| fixture.0.join(path)));
+            let project = Project::load_plan(&resolver, plan, |source| workspace.static_require_requests(source));
+            workspace.check_project(project, ProjectCheckOptions {
+                jobs: 1, environment: StandardEnvironmentProfile::Lua54, ..ProjectCheckOptions::default()
+            })
+        };
+        let assert_dependency = |report: &ProjectCheckReport, target: &str, module: &str| {
+            assert!(!report.has_errors(), "legacy file-operation check failed: {report:#?}");
+            assert_eq!(report.project.dependencies.len(), 1, "the original fixtures have one require");
+            let dependency = &report.project.dependencies[0];
+            assert_eq!(dependency.request.module, module);
+            let source = report.project.file(dependency.from).unwrap();
+            assert_eq!(source.path, fs::canonicalize(fixture.0.join("B.lua")).unwrap());
+            let DependencyOutcome::Resolved(target_id) = dependency.outcome else {
+                panic!("original require did not resolve: {dependency:?}");
+            };
+            assert_eq!(report.project.file(target_id).unwrap().path, fs::canonicalize(fixture.0.join(target)).unwrap());
+            // A syntactically collected dependency alone is insufficient: the
+            // native checker must prove that this is the standard Lua loader.
+            let imports = &report.file(dependency.from).unwrap().report.imports;
+            assert!(imports.iter().any(|span| span.start == dependency.request.span.start && span.end == dependency.request.span.end));
+        };
+        let report = check_all(before);
+        assert_dependency(&report, old, "A");
+        let rename = fixture.rename(old, new);
+        let edits = rename_edits(&report, &resolver, std::slice::from_ref(&rename)).unwrap();
+        assert_eq!(edits.len(), 1, "the original operation changes only B.lua's require");
+        assert_eq!(edits[0].path, fixture.0.join("B.lua"));
+        let mut changed = std::collections::BTreeMap::new();
+        // Spans index the original buffers. Apply each document's edits in
+        // reverse byte order before performing the actual filesystem operation.
+        for edit in edits.iter().rev() {
+            let text = changed.entry(edit.path.clone()).or_insert_with(|| fs::read_to_string(&edit.path).unwrap());
+            text.replace_range(edit.span.start..edit.span.end, &edit.replacement);
+        }
+        for (path, text) in changed { fs::write(path, text).unwrap(); }
+        fs::create_dir_all(rename.new_path.parent().unwrap()).unwrap();
+        fs::rename(&rename.old_path, &rename.new_path).unwrap();
+        assert!(!rename.old_path.exists(), "the old file must disappear after the operation");
+        for (path, expected) in after {
+            assert_eq!(fs::read(fixture.0.join(path)).unwrap().as_slice(), expected.as_bytes(), "original after-file differs: {path}");
+        }
+        let mut actual_paths = Vec::new();
+        let mut pending = vec![fixture.0.clone()];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() { pending.push(entry.path()); }
+                else { actual_paths.push(entry.path().strip_prefix(&fixture.0).unwrap().to_path_buf()); }
+            }
+        }
+        let mut expected_paths: Vec<_> = after.iter().map(|(path, _)| PathBuf::from(*path)).collect();
+        actual_paths.sort();
+        expected_paths.sort();
+        assert_eq!(actual_paths, expected_paths, "the complete original after-file set must match");
+        let moved_report = check_all(after);
+        assert_dependency(&moved_report, new, after_module);
+        assert_eq!(fs::canonicalize(&rename.new_path).unwrap(), resolver.resolve(after_module).unwrap().path);
+    }
+
+    #[test]
+    fn original_legacy_move_file_fixture_is_applied_and_resolved() {
+        replay_legacy_file_operation(&[
+            ("A.lua", legacy_file!("resources/refactoring/moveFile/before/A.lua")),
+            ("B.lua", legacy_file!("resources/refactoring/moveFile/before/B.lua")),
+            ("to/C.lua", legacy_file!("resources/refactoring/moveFile/before/to/C.lua")),
+        ], &[
+            ("B.lua", legacy_file!("resources/refactoring/moveFile/after/B.lua")),
+            ("to/A.lua", legacy_file!("resources/refactoring/moveFile/after/to/A.lua")),
+            ("to/C.lua", legacy_file!("resources/refactoring/moveFile/after/to/C.lua")),
+        ], "A.lua", "to/A.lua", "to.A");
+    }
+
+    #[test]
+    fn original_legacy_rename_file_fixture_is_applied_and_resolved() {
+        replay_legacy_file_operation(&[
+            ("A.lua", legacy_file!("embedded/RenameTest/test_rename_file_before/A.lua")),
+            ("B.lua", legacy_file!("embedded/RenameTest/test_rename_file_before/B.lua")),
+        ], &[
+            ("B.lua", legacy_file!("embedded/RenameTest/test_rename_file_after/B.lua")),
+            ("C.lua", legacy_file!("embedded/RenameTest/test_rename_file_after/C.lua")),
+        ], "A.lua", "C.lua", "C");
+    }
+
     #[test]
     fn overlay_references_follow_original_standard_loader_and_preserve_literal_style() {
         let fixture = Fixture::new(&[("old.lua", "return 1\n"), ("main.lua", "return require('old')\n")]);

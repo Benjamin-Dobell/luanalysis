@@ -49,3 +49,12 @@ reductions remain in `../fixtures/` and are not credited as complete imports.
 
 See `README.txt`, `AUDIT.tsv`, and `RESULTS.txt` for commands, investigation and
 observed results. `RESULTS.txt` is a report, never an accepted-output oracle.
+
+The native editor-feature regressions also replay the original CodeStyleTest
+before/after buffers in `embedded/CodeStyleTest/`, the original RenameTest
+before/after files in `embedded/RenameTest/`, and the file-move resource tree.
+Their input bytes and expected output bytes are preserved, including empty files
+and absent final newlines. `NOTICE.txt` retains the extraction attribution;
+`crates/luanalysis/tests/formatting.rs` and the `file_operations` unit tests apply
+actual native edits and verify the original outcomes. These do not count the
+original IDE actions as runnable cases in the 99-case audit driver.

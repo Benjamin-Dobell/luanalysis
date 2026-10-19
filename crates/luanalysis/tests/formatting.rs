@@ -36,10 +36,12 @@ fn token_spellings(source: &str) -> Vec<String> {
 
 #[test]
 fn splits_legacy_multiple_statements_and_honours_keep_option() {
-    let input = "local a = 1 local b = 2";
-    assert_eq!(formatted(input, &FormattingOptions::default()), "local a = 1\nlocal b = 2");
+    let input = include_str!("../../luanalysis-fixtures/tests/legacy/embedded/CodeStyleTest/test_format_multiple_statements_in_one_lines_before/main.lua");
+    let expected = include_str!("../../luanalysis-fixtures/tests/legacy/embedded/CodeStyleTest/test_format_multiple_statements_in_one_lines_after/main.lua");
+    assert_eq!(formatted(input, &FormattingOptions::default()), expected);
+    let keep_input = include_str!("../../luanalysis-fixtures/tests/legacy/embedded/CodeStyleTest/test_keep_multiple_statements_in_one_line_before/main.lua");
     let options = FormattingOptions { keep_multiple_statements_in_one_line: true, ..FormattingOptions::default() };
-    assert_eq!(formatted(input, &options), input);
+    assert_eq!(formatted(keep_input, &options), keep_input);
 }
 
 #[test]

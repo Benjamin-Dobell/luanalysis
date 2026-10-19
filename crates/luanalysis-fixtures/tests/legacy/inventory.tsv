@@ -24,8 +24,8 @@ src/test/kotlin/com/tang/intellij/test/completion/TestPrimitiveLiteral.kt:34#tes
 src/test/kotlin/com/tang/intellij/test/completion/TestPrimitiveLiteral.kt:48#test boolean literals	completion	TestPrimitiveLiteral/test_boolean_literals	
 src/test/kotlin/com/tang/intellij/test/completion/TestSelf.kt:20#test self	completion	TestSelf/test_self	
 src/test/kotlin/com/tang/intellij/test/completion/TestSnippet.kt:20#test snippet	completion	TestSnippet/test_snippet	
-src/test/kotlin/com/tang/intellij/test/format/CodeStyleTest.kt:54#test format multiple statements in one lines	ide-only		IntelliJ formatter settings/editor Enter action; no native formatter or editor action implementation.
-src/test/kotlin/com/tang/intellij/test/format/CodeStyleTest.kt:61#test keep multiple statements in one line	ide-only		IntelliJ formatter settings/editor Enter action; no native formatter or editor action implementation.
+src/test/kotlin/com/tang/intellij/test/format/CodeStyleTest.kt:54#test format multiple statements in one lines	ide-only		Original IDE Reformat Code action/settings are not executed by this audit driver; the original before/after cases run in native formatting tests.
+src/test/kotlin/com/tang/intellij/test/format/CodeStyleTest.kt:61#test keep multiple statements in one line	ide-only		Original IDE Reformat Code action/settings are not executed by this audit driver; the original before/after cases run in native formatting tests.
 src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:23#test generic 1	completion	GenericTest/test_generic_1	
 src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:42#test generic 2	completion	GenericTest/test_generic_2	
 src/test/kotlin/com/tang/intellij/test/generic/GenericTest.kt:61#test generic 3	completion	GenericTest/test_generic_3	
@@ -90,15 +90,15 @@ src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:265#testUnk
 src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:273#testUnknownStrict	diagnostics	TypeSafetyTest/testUnknownStrict	
 src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:277#testVarargs	diagnostics	TypeSafetyTest/testVarargs	
 src/test/kotlin/com/tang/intellij/test/inspections/TypeSafetyTest.kt:281#testVarreturn	diagnostics	TypeSafetyTest/testVarreturn	
-src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:49#test54	ide-only		IntelliJ formatter settings/editor Enter action; no native formatter or editor action implementation.
+src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:49#test54	ide-only		Editor Enter/smart-close behavior belongs to the client adapter; it is not a server-formatting operation.
 src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:78#test81	diagnostics	Issues/test81	
 src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:92#test82	diagnostics	Issues/test82	
 src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:106#test84	diagnostics	Issues/test84	
 src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:132#test85	diagnostics	Issues/test85	
 src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:146#test87	diagnostics	Issues/test87	
 src/test/kotlin/com/tang/intellij/test/issues/Issues.kt:157#test148	diagnostics	Issues/test148	
-src/test/kotlin/com/tang/intellij/test/refactoring/MoveFileTest.kt:32#testMoveFile	unsupported		File rename/move with require edits needs workspace/willRenameFiles; native symbol Rename is a separate operation.
-src/test/kotlin/com/tang/intellij/test/refactoring/RenameTest.kt:22#test rename file	unsupported		File rename/move with require edits needs workspace/willRenameFiles; native symbol Rename is a separate operation.
+src/test/kotlin/com/tang/intellij/test/refactoring/MoveFileTest.kt:32#testMoveFile	unsupported		Original IDE file-operation action is unavailable in this audit driver; native calculation and original before/after files are covered by file_operations tests.
+src/test/kotlin/com/tang/intellij/test/refactoring/RenameTest.kt:22#test rename file	unsupported		Original IDE file-operation action is unavailable in this audit driver; native calculation and original before/after files are covered by file_operations tests.
 src/test/kotlin/com/tang/intellij/test/structure/StructureViewTest.kt:26#testStructureViewBase	document-symbols	StructureViewTest/testStructureViewBase	
 src/test/kotlin/com/tang/intellij/test/vararg/VarargTest.kt:22#test vararg 1	completion	VarargTest/test_vararg_1	
 src/test/kotlin/com/tang/intellij/test/vararg/VarargTest.kt:44#test vararg 2	completion	VarargTest/test_vararg_2	

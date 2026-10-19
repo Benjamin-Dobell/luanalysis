@@ -349,6 +349,10 @@ regression!(issues_test84, "Issues/test84");
 regression!(issues_test85, "Issues/test85");
 regression!(issues_test87, "Issues/test87");
 regression!(issues_test148, "Issues/test148");
+regression!(
+    structureviewtest_test_structure_view_base,
+    "StructureViewTest/testStructureViewBase"
+);
 regression!(varargtest_test_vararg_1, "VarargTest/test_vararg_1");
 regression!(varargtest_test_vararg_2, "VarargTest/test_vararg_2");
 regression!(illegal_alias, "IllegalAliasTest/testIllegalAlias");

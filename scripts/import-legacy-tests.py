@@ -170,10 +170,18 @@ for original in sorted(k for k in outputs if k.endswith('.kt')):
             ids.append(case(base,kind,embedded(path,slug,code),origin,required=['A','method']))
         elif path.stem in ('RenameTest','MoveFileTest'):
             kind='unsupported'
-            note='File rename/move with require edits needs workspace/willRenameFiles; native symbol Rename is a separate operation.'
+            note='Original IDE file-operation action is unavailable in this audit driver; native calculation and original before/after files are covered by file_operations tests.'
+            if path.stem == 'RenameTest':
+                raw = re.findall(r'"""(.*?)"""', block, re.S)
+                embedded(path, slug + '_before', raw[0], tree=True)
+                embedded(path, slug + '_after', raw[1], tree=True)
         elif path.stem=='CodeStyleTest' or (path.stem=='Issues' and name=='test54'):
             kind='ide-only'
-            note='IntelliJ formatter settings/editor Enter action; no native formatter or editor action implementation.'
+            note='Original IDE Reformat Code action/settings are not executed by this audit driver; the original before/after cases run in native formatting tests.' if path.stem == 'CodeStyleTest' else 'Editor Enter/smart-close behavior belongs to the client adapter; it is not a server-formatting operation.'
+            if path.stem == 'CodeStyleTest':
+                embedded(path, slug + '_before', json.loads(re.search(r'\bdo(?:Default)?(?:Formatted|Unformatted)\(("(?:[^"\\]|\\.)*")', block)[1]), trim=False)
+                if name == 'test format multiple statements in one lines':
+                    embedded(path, slug + '_after', re.search(r'"""(.*?)"""', block, re.S)[1])
         else:
             raise AssertionError(origin)
         inventory.append([origin,kind,'|'.join(ids),note])
@@ -187,7 +195,7 @@ used=set(f for c in cases for f in c[8].split('|'))
 unused=[]
 for file in sorted(k for k in outputs if k.startswith('resources/')):
     if file not in used:
-        reason = ('before/after file move fixture; operation unavailable' if '/refactoring/' in file else
+        reason = ('before/after file move fixture; exercised by native file_operations regressions' if '/refactoring/' in file else
                   'unreferenced by baseline automated harness; preserved without invented assertions')
         unused.append(file+'\t'+reason)
 outputs['unused-resources.tsv']=('# file\treason\n'+'\n'.join(unused)+'\n').encode()
