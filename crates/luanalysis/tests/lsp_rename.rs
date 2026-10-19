@@ -92,12 +92,17 @@ struct Server {
     server: Option<LanguageServer>,
     messages: mpsc::Receiver<String>,
     gate: Arc<Mutex<Option<DiagnosticGate>>>,
+    utf8: bool,
 }
 
 impl Server {
     fn start(root: &Path) -> Self {
+        Self::start_with_options(root, &[], None)
+    }
+
+    fn start_with_options(root: &Path, libraries: &[PathBuf], encoding: Option<&str>) -> Self {
         let inputs = CheckInputs {
-            files: vec![root.to_path_buf()], libraries: Vec::new(), module_roots: Vec::new(),
+            files: vec![root.to_path_buf()], libraries: libraries.to_vec(), module_roots: Vec::new(),
             package_path: None, module_map: None,
         };
         let gate = Arc::new(Mutex::new(None::<DiagnosticGate>));
@@ -115,8 +120,11 @@ impl Server {
             let _ = sender.send(message.to_owned());
             if let Some(resume) = resume { let _ = resume.recv(); }
         });
-        let server = Self { server: Some(server), messages, gate };
-        server.send(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"rootUri":null,"capabilities":{}}}"#);
+        let server = Self { server: Some(server), messages, gate, utf8: encoding == Some("utf-8") };
+        let capabilities = encoding.map_or_else(|| "{}".to_owned(), |encoding| {
+            format!(r#"{{"general":{{"positionEncodings":["{encoding}"]}}}}"#)
+        });
+        server.send(&format!(r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"rootUri":null,"capabilities":{capabilities}}}}}"#));
         let initialized = server.response(1);
         assert!(initialized.contains(r#""renameProvider":{"prepareProvider":true}"#), "{initialized}");
         server.send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
@@ -150,26 +158,50 @@ impl Server {
     }
 
     fn change(&self, path: &Path, version: u32, text: &str) {
+        self.change_uri(&uri(path), version, text);
+    }
+
+    fn change_uri(&self, uri: &str, version: u32, text: &str) {
         self.send(&format!(
             r#"{{"jsonrpc":"2.0","method":"textDocument/didChange","params":{{"textDocument":{{"uri":"{}","version":{version}}},"contentChanges":[{{"text":"{}"}}]}}}}"#,
-            uri(path), escape(text),
+            uri, escape(text),
         ));
     }
 
     fn rename(&self, id: u32, path: &Path, text: &str, name: &str, nth: usize, new_name: &str) {
+        self.rename_uri(id, &uri(path), text, name, nth, new_name);
+    }
+
+    fn position(&self, text: &str, name: &str, nth: usize) -> (usize, usize) {
         let offset = text.match_indices(name).nth(nth).unwrap().0;
         let line = text[..offset].matches('\n').count();
         let start = text[..offset].rfind('\n').map_or(0, |newline| newline + 1);
-        let character = text[start..offset].encode_utf16().count();
+        let character = if self.utf8 { offset - start } else { text[start..offset].encode_utf16().count() };
+        (line, character)
+    }
+
+    fn rename_uri(&self, id: u32, uri: &str, text: &str, name: &str, nth: usize, new_name: &str) {
+        let (line, character) = self.position(text, name, nth);
         self.send(&format!(
             r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/rename","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":{line},"character":{character}}},"newName":"{}"}}}}"#,
-            uri(path), escape(new_name),
+            uri, escape(new_name),
+        ));
+    }
+
+    fn prepare_rename(&self, id: u32, path: &Path, text: &str, name: &str, nth: usize) {
+        let (line, character) = self.position(text, name, nth);
+        self.send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"textDocument/prepareRename","params":{{"textDocument":{{"uri":"{}"}},"position":{{"line":{line},"character":{character}}}}}}}"#,
+            uri(path),
         ));
     }
 
     fn diagnostics(&self, path: &Path, version: u32) -> String {
-        let uri = uri(path);
-        self.wait(|message| diagnostics_match(message, &uri, version))
+        self.diagnostics_uri(&uri(path), version)
+    }
+
+    fn diagnostics_uri(&self, uri: &str, version: u32) -> String {
+        self.wait(|message| diagnostics_match(message, uri, version))
     }
 
     /// Stop inside publication of the given check's diagnostics. Once they arrive, the client
@@ -177,10 +209,14 @@ impl Server {
     /// snapshot and drains those queued messages before scheduling another check, so these
     /// regressions cannot accidentally pass because the checker won a scheduling race.
     fn hold_diagnostics(&self, path: &Path, version: u32) -> Resume {
+        self.hold_diagnostics_uri(&uri(path), version)
+    }
+
+    fn hold_diagnostics_uri(&self, uri: &str, version: u32) -> Resume {
         let (resume, wait) = mpsc::channel();
         let mut gate = self.gate.lock().unwrap();
         assert!(gate.is_none());
-        *gate = Some(DiagnosticGate { uri: uri(path), version, resume: wait });
+        *gate = Some(DiagnosticGate { uri: uri.to_owned(), version, resume: wait });
         Resume(resume)
     }
 
@@ -258,6 +294,184 @@ fn check_renamed(server: &Server, path: &Path, version: u32, text: &str) {
 fn assert_clean_diagnostics(server: &Server, path: &Path, version: u32) {
     let diagnostics = server.diagnostics(path, version);
     assert!(diagnostics.contains(r#""diagnostics":[]"#), "{diagnostics}");
+}
+
+fn assert_rename_error(response: &str, reason: &str) {
+    assert!(response.contains(r#""code":-32803"#), "{response}");
+    let data = response.split_once(r#""data":"#).expect(response).1;
+    assert!(data.contains(r#""kind":"rename""#), "{response}");
+    assert!(data.contains(&format!(r#""reason":"{reason}""#)), "{response}");
+}
+
+fn assert_related_location(response: &str, uri: &str, line: u32, start: u32, end: u32, kind: &str, role: &str) {
+    let location = format!(
+        r#""location":{{"uri":"{uri}","range":{{"start":{{"line":{line},"character":{start}}},"end":{{"line":{line},"character":{end}}}}}}}"#,
+    );
+    assert!(response.contains(&location), "{response}");
+    assert_eq!(response.matches(r#""location":{"uri":"#).count(), 1, "{response}");
+    assert!(response.contains(r#""origin":{"#), "{response}");
+    assert!(response.contains(&format!(r#""kind":"{kind}""#)), "{response}");
+    assert!(response.contains(&format!(r#""role":"{role}""#)), "{response}");
+}
+
+#[test]
+fn checked_rename_capture_error_locates_the_original_affected_read() {
+    let fixture = Fixture::new();
+    let text = "print(1)\nlocal total = 1\nlocal occupied = 2\nprint(total, occupied)\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+    server.rename(2, &main, text, "total", 0, "occupied");
+
+    let refused = server.response(2);
+    assert!(refused.contains("would change what the name at"), "{refused}");
+    assert_rename_error(&refused, "capture");
+    // The conflict is the original five-character total, before the longer replacement.
+    assert_related_location(&refused, &uri(&main), 3, 6, 11, "filesystem", "implementation");
+    server.finish();
+}
+
+fn dirty_capture_location(encoding: Option<&str>, start: u32, end: u32) {
+    let fixture = Fixture::new();
+    let text = "print(1)\r\nlocal total = 1\r\nlocal occupied = 2\r\nprint(total, occupied)\r\n";
+    let main = fixture.file("main.lua", text);
+    let alias = uri(&main).replace("main.lua", "%6dain.lua");
+    let server = Server::start_with_options(&fixture.0, &[], encoding);
+    let resume = server.hold_diagnostics_uri(&alias, 1);
+    server.open_uri(&alias, text);
+    let diagnostics = server.diagnostics_uri(&alias, 1);
+    assert!(diagnostics.contains(r#""diagnostics":[]"#), "{diagnostics}");
+    let edited = "-- unsaved\r\nprint(1)\r\nlocal café = 1\r\nlocal occupied = 2\r\nprint(\"😀\", café, occupied)\r\n";
+    server.change_uri(&alias, 2, edited);
+    server.rename_uri(2, &alias, edited, "café", 0, "occupied");
+    drop(resume);
+
+    let refused = server.response(2);
+    assert!(refused.contains("would change what the name at"), "{refused}");
+    assert_rename_error(&refused, "capture");
+    assert_related_location(&refused, &alias, 4, start, end, "filesystem", "implementation");
+    // A refused rename must leave the current overlay usable for the next request.
+    server.rename_uri(3, &alias, edited, "café", 1, "résultat");
+    let renamed = server.response(3);
+    assert!(!renamed.contains(r#""error""#), "{renamed}");
+    assert!(renamed.contains(&alias), "{renamed}");
+    assert_eq!(renamed.matches(r#""newText":"résultat""#).count(), 2, "{renamed}");
+    server.finish();
+}
+
+#[test]
+fn dirty_rename_capture_error_preserves_alias_uri_and_utf16_crlf_positions() {
+    dirty_capture_location(None, 12, 16);
+}
+
+#[test]
+fn dirty_rename_capture_error_uses_negotiated_utf8_positions() {
+    dirty_capture_location(Some("utf-8"), 14, 19);
+}
+
+#[test]
+fn dirty_cross_file_global_conflict_error_locates_the_unsaved_target_definition() {
+    let fixture = Fixture::new();
+    let definition = "Shared = 1\nreturn Shared\n";
+    let util = fixture.file("util.lua", definition);
+    let text = "require('util')\nreturn Shared\n";
+    let main = fixture.file("main.lua", text);
+    let alias = uri(&util).replace("util.lua", "%75til.lua");
+    let server = Server::start(&fixture.0);
+    let resume = server.hold_diagnostics(&main, 1);
+    server.open_uri(&alias, definition);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+    let edited = "-- unsaved\r\nShared = 1\r\nprint(\"😀\"); 目标 = 2\r\nreturn Shared + 目标\r\n";
+    server.change_uri(&alias, 2, edited);
+    server.rename(2, &main, text, "Shared", 0, "目标");
+    drop(resume);
+
+    let refused = server.response(2);
+    assert!(refused.contains("a global named 目标 already exists"), "{refused}");
+    assert_rename_error(&refused, "nameConflict");
+    assert_related_location(&refused, &alias, 2, 13, 15, "filesystem", "implementation");
+    server.finish();
+}
+
+#[test]
+fn native_member_and_type_conflict_errors_locate_original_source_sites() {
+    let fixture = Fixture::new();
+    let text = "local record = { café = 1, 数量 = 2 }\nprint(record.café)\n\n---@class Box\n---@field width number\n---@field height number\n\n---@class Crate\n\n---@param box Box\nlocal function read(box) return box end\nreturn read\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+    server.rename(2, &main, text, "café", 1, "数量");
+    let refused = server.response(2);
+    assert!(refused.contains("already has a member named 数量"), "{refused}");
+    assert_rename_error(&refused, "memberConflict");
+    // An inferred table conflict identifies the original receiver/member declaration.
+    assert_related_location(&refused, &uri(&main), 0, 17, 21, "filesystem", "implementation");
+
+    server.rename(3, &main, text, "width", 0, "height");
+    let refused = server.response(3);
+    assert!(refused.contains("Box already has a member named height"), "{refused}");
+    assert_rename_error(&refused, "memberConflict");
+    assert_related_location(&refused, &uri(&main), 5, 10, 16, "filesystem", "implementation");
+
+    server.rename(4, &main, text, "Box", 0, "Crate");
+    let refused = server.response(4);
+    assert!(refused.contains("a type named Crate is already declared"), "{refused}");
+    assert_rename_error(&refused, "typeConflict");
+    assert_related_location(&refused, &uri(&main), 7, 10, 15, "filesystem", "implementation");
+    server.finish();
+}
+
+#[test]
+fn prepare_and_rename_library_errors_preserve_original_declaration_provenance() {
+    let fixture = Fixture::new();
+    let library = fixture.file("api.def.lua", "---@param value number\n---@return number\nfunction external(value) end\n");
+    let text = "print(1)\nreturn external(1)\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start_with_options(&fixture.0, &[library.clone()], None);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+
+    for id in [2, 3] {
+        if id == 2 { server.prepare_rename(id, &main, text, "external", 0); }
+        else { server.rename(id, &main, text, "external", 0, "callExternal"); }
+        let refused = server.response(id);
+        assert!(refused.contains("declared by a library"), "{refused}");
+        assert_rename_error(&refused, "libraryOwned");
+        assert_related_location(&refused, &uri(&library), 2, 9, 17, "filesystem", "declaration");
+    }
+
+    for id in [4, 5] {
+        if id == 4 { server.prepare_rename(id, &main, text, "print", 0); }
+        else { server.rename(id, &main, text, "print", 0, "output"); }
+        let refused = server.response(id);
+        assert!(refused.contains("declared by a library"), "{refused}");
+        assert_rename_error(&refused, "libraryOwned");
+        assert_related_location(&refused, &uri(Path::new("stdlib/Lua54/global.def.lua")), 218, 9, 14, "declarationLibrary", "declaration");
+        assert!(refused.contains(&format!(r#""identity":"luanalysis.std.Lua54.global@{}""#, env!("CARGO_PKG_VERSION"))), "{refused}");
+    }
+    server.finish();
+}
+
+#[test]
+fn invalid_rename_error_has_no_invented_location_and_allows_a_valid_retry() {
+    let fixture = Fixture::new();
+    let text = "local total = 1\nreturn total\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+    server.rename(2, &main, text, "total", 0, "bad-name");
+    let refused = server.response(2);
+    assert!(refused.contains("is not a Lua name"), "{refused}");
+    assert_rename_error(&refused, "invalidName");
+    assert!(refused.contains(r#""relatedInformation":[]"#), "{refused}");
+    server.rename(3, &main, text, "total", 1, "quantity");
+    let renamed = apply_rename(&server.response(3), &main, text, "total", "quantity");
+    check_renamed(&server, &main, 2, &renamed);
+    server.finish();
 }
 
 #[test]
@@ -627,5 +841,7 @@ fn current_overlay_rename_refuses_lua_keywords() {
 
     let refused = server.response(2);
     assert!(refused.contains("-32803") && refused.contains("is not a Lua name"), "{refused}");
+    assert_rename_error(&refused, "invalidName");
+    assert!(refused.contains(r#""relatedInformation":[]"#), "{refused}");
     server.finish();
 }

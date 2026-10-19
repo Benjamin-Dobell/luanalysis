@@ -11,6 +11,7 @@
 use crate::bind::{BoundFile, DeclarationKind, OccurrenceKind};
 use crate::collections::HashMap;
 use crate::project_check::ProjectCheckReport;
+use crate::rename_failure::RenameRelatedInformation;
 use luanalysis_project::{FileId, SourceFile, SourceOrigin, SourceRole};
 use luanalysis_syntax::Span;
 use std::path::{Path, PathBuf};
@@ -68,6 +69,19 @@ impl std::fmt::Display for RenameError {
     }
 }
 
+/// The public error with its original source locations, before a client chooses an encoding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SymbolRenameFailure {
+    pub error: RenameError,
+    pub related: Vec<RenameRelatedInformation>,
+}
+
+impl From<RenameError> for SymbolRenameFailure {
+    fn from(error: RenameError) -> Self {
+        Self { error, related: Vec::new() }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Key {
     /// The declaration span of a local of the entry's file.
@@ -89,6 +103,8 @@ struct Entry {
 struct FileSymbols {
     path: PathBuf,
     text: String,
+    origin: SourceOrigin,
+    role: SourceRole,
     /// A declaration the checker carries, such as the standard library: not a file to edit.
     bundled: bool,
     /// A library's declarations, bundled or a `--library` file: not the project's to rename.
@@ -133,7 +149,10 @@ impl SymbolIndex {
                     index.global_occurrences[global].push((source.id, position));
                 }
             }
-            index.files.insert(source.id, FileSymbols { path: source.path.clone(), text: source.source.clone(), bundled, library, entries });
+            index.files.insert(source.id, FileSymbols {
+                path: source.path.clone(), text: source.source.clone(),
+                origin: source.origin.clone(), role: source.role, bundled, library, entries,
+            });
         }
         index
     }
@@ -220,13 +239,24 @@ impl SymbolIndex {
     /// The occurrence a rename at `offset` would rename, after checking it can be renamed: not
     /// `self`, and not a library's name, which a rename could not edit everywhere it occurs.
     pub fn prepare_rename(&self, file: FileId, offset: usize) -> Result<(Symbol, Span), RenameError> {
+        self.prepare_rename_detailed(file, offset).map_err(|failure| failure.error)
+    }
+
+    pub(crate) fn prepare_rename_detailed(&self, file: FileId, offset: usize) -> Result<(Symbol, Span), SymbolRenameFailure> {
         let (entry, symbols) = self.entry_at(file, offset).ok_or(RenameError::NoSymbol)?;
         if entry.receiver {
-            return Err(RenameError::ImplicitReceiver);
+            return Err(RenameError::ImplicitReceiver.into());
         }
         let symbol = self.symbol(file, entry);
-        if self.occurrences(&symbol).iter().any(|occurrence| self.files[&occurrence.file].library) {
-            return Err(RenameError::Library(symbols.text[entry.span.start..entry.span.end].to_owned()));
+        // Prefer the actual declaration, then choose deterministically among equivalent sites.
+        let library = self.occurrences(&symbol).into_iter()
+            .filter(|occurrence| self.files[&occurrence.file].library)
+            .min_by(|a, b| b.definition.cmp(&a.definition).then(a.path.cmp(&b.path)).then(a.span.start.cmp(&b.span.start)));
+        if let Some(library) = library {
+            return Err(SymbolRenameFailure {
+                error: RenameError::Library(symbols.text[entry.span.start..entry.span.end].to_owned()),
+                related: vec![self.related(library.file, library.span)],
+            });
         }
         Ok((symbol, entry.span))
     }
@@ -235,18 +265,30 @@ impl SymbolIndex {
     /// must leave every name referring to what it did: the renamed name to its own declaration
     /// (or global), and every other name to its own.
     pub fn rename(&self, file: FileId, offset: usize, name: &str) -> Result<Vec<SymbolOccurrence>, RenameError> {
+        self.rename_detailed(file, offset, name).map_err(|failure| failure.error)
+    }
+
+    pub(crate) fn rename_detailed(&self, file: FileId, offset: usize, name: &str) -> Result<Vec<SymbolOccurrence>, SymbolRenameFailure> {
         if !is_name(name) {
-            return Err(RenameError::InvalidName(name.to_owned()));
+            return Err(RenameError::InvalidName(name.to_owned()).into());
         }
-        let (symbol, span) = self.prepare_rename(file, offset)?;
+        let (symbol, span) = self.prepare_rename_detailed(file, offset)?;
         let occurrences = self.occurrences(&symbol);
         if self.files[&file].text[span.start..span.end] == *name {
             return Ok(occurrences);
         }
-        if matches!(symbol, Symbol::Global { .. })
-            && self.global_ids.get(name).is_some_and(|&global| !self.global_occurrences[global].is_empty())
-        {
-            return Err(RenameError::Exists(name.to_owned()));
+        if matches!(symbol, Symbol::Global { .. }) && let Some(&global) = self.global_ids.get(name) {
+            let conflict = self.global_occurrences[global].iter().min_by(|&&(a_file, a_position), &&(b_file, b_position)| {
+                let (a, b) = (&self.files[&a_file], &self.files[&b_file]);
+                let (a_entry, b_entry) = (&a.entries[a_position], &b.entries[b_position]);
+                b_entry.definition.cmp(&a_entry.definition).then(a.path.cmp(&b.path)).then(a_entry.span.start.cmp(&b_entry.span.start))
+            });
+            if let Some(&(conflict_file, position)) = conflict {
+                return Err(SymbolRenameFailure {
+                    error: RenameError::Exists(name.to_owned()),
+                    related: vec![self.related(conflict_file, self.files[&conflict_file].entries[position].span)],
+                });
+            }
         }
         let mut files: Vec<FileId> = occurrences.iter().map(|occurrence| occurrence.file).collect();
         files.dedup();
@@ -259,7 +301,7 @@ impl SymbolIndex {
 
     /// Whether renaming `symbol`'s occurrences `edits` in `file` to `name` leaves every name of
     /// the file referring to what it did.
-    fn verify_rename(&self, file: FileId, symbol: &Symbol, edits: &[Span], name: &str) -> Result<(), RenameError> {
+    fn verify_rename(&self, file: FileId, symbol: &Symbol, edits: &[Span], name: &str) -> Result<(), SymbolRenameFailure> {
         let symbols = &self.files[&file];
         let mut text = String::with_capacity(symbols.text.len());
         let mut last = 0;
@@ -288,10 +330,21 @@ impl SymbolIndex {
             };
             if renamed.get(&shift(entry.span.start)) != Some(&expected) {
                 let (line, column) = line_column(&symbols.text, entry.span.start);
-                return Err(RenameError::Capture { name: name.to_owned(), path: symbols.path.clone(), line, column });
+                return Err(SymbolRenameFailure {
+                    error: RenameError::Capture { name: name.to_owned(), path: symbols.path.clone(), line, column },
+                    related: vec![self.related(file, entry.span)],
+                });
             }
         }
         Ok(())
+    }
+
+    fn related(&self, file: FileId, span: Span) -> RenameRelatedInformation {
+        let symbols = &self.files[&file];
+        RenameRelatedInformation {
+            path: symbols.path.clone(), span, text: symbols.text.clone(),
+            origin: symbols.origin.clone(), role: symbols.role,
+        }
     }
 }
 

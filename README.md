@@ -458,7 +458,9 @@ options of `check`, and without paths it checks the editor's workspace. It provi
   writes, `t["name"]` and modules), and type names in annotations, across files. Renames
   accept Unicode identifiers using the same rules as Lua source, including UTF-16 editor
   ranges and unsaved buffers. A rename that would change what a name refers to, merge two
-  names, or edit a library's declarations is refused, with why.
+  names, or edit a library's declarations is refused, with why. Rename errors include structured
+  reasons and related source locations, so embedded editors can map them to authored files;
+  see the [rename error protocol](docs/RENAME-ERRORS.md).
 * Full-document and range formatting, and newline-triggered indentation, for Lua and `.ttslua`.
 * The document outline, with class members and nested functions/locals, workspace symbol search,
   call and type hierarchies, native inferred-type and parameter-name inlays, semantic

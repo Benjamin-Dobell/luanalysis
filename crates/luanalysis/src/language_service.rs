@@ -10,6 +10,7 @@
 
 use crate::incremental::ProjectWorkspace;
 use crate::project_check::ProjectCheckOptions;
+use crate::rename_failure::{RenameFailure, RenameReason};
 use crate::{bind, describe_native};
 use luanalysis_engine::{NativeCheckMode, Type};
 use luanalysis_project::{FileId, Project};
@@ -1733,7 +1734,7 @@ fn member_occurrences(
     navigation: &mut Navigation,
     rename: Option<&str>,
     queries: &mut dyn luanalysis_engine::TypeQueries,
-) -> Result<(), String> {
+) -> Result<(), RenameFailure> {
     let declares = |file: FileId, span: Span| sites.iter().any(|&(site_file, site, _)| site_file == file && site.start <= span.start && span.end <= site.end);
     for other in &project.files {
         let Some(source) = registry.source(other.id) else { continue };
@@ -1803,10 +1804,14 @@ fn member_occurrences(
                 // A use that may be another member of the same name too would be renamed for one
                 // and not the other.
                 if found.iter().any(|site| !sites.contains(site)) {
-                    return Err(format!("the {name} at {at} may be another table's {name} too, so renaming it is not safe"));
+                    return Err(RenameFailure::new(RenameReason::AmbiguousMember,
+                        format!("the {name} at {at} may be another table's {name} too, so renaming it is not safe"))
+                        .with_related(other, span));
                 }
                 if !member_sites(registry, &receiver, rename, queries).is_empty() {
-                    return Err(format!("the value at {at} already has a member named {rename}"));
+                    return Err(RenameFailure::new(RenameReason::MemberConflict,
+                        format!("the value at {at} already has a member named {rename}"))
+                        .with_related(other, span));
                 }
             }
         }
@@ -1855,6 +1860,20 @@ pub fn rename(
     name: Option<String>,
     deliver: impl FnOnce(Result<Option<Navigation>, String>) + Send,
 ) {
+    rename_detailed(project, options, workspace, file, offset, name,
+        move |result| deliver(result.map_err(|failure| failure.message)));
+}
+
+/// Rename with the original source locations and machine-readable reasons for rejections.
+pub(crate) fn rename_detailed(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    offset: usize,
+    name: Option<String>,
+    deliver: impl FnOnce(Result<Option<Navigation>, RenameFailure>) + Send,
+) {
     let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
         deliver(renaming(project, registry, file, offset, name.as_deref(), queries));
@@ -1868,7 +1887,7 @@ fn renaming(
     offset: usize,
     name: Option<&str>,
     queries: &mut dyn luanalysis_engine::TypeQueries,
-) -> Result<Option<Navigation>, String> {
+) -> Result<Option<Navigation>, RenameFailure> {
     let (Some(source), Some(text)) = (registry.source(file), project.file(file)) else { return Ok(None) };
     let text = &text.source;
     let symbols = crate::symbols::SymbolIndex::from_bound_sources(project.files.iter().filter_map(|file| {
@@ -1876,9 +1895,9 @@ fn renaming(
     }));
     if let Some((_, span)) = symbols.symbol_at(file, offset) {
         let occurrences = match name {
-            Some(name) => symbols.rename(file, offset, name),
-            None => symbols.prepare_rename(file, offset).map(|_| Vec::new()),
-        }.map_err(|error| error.to_string())?;
+            Some(name) => symbols.rename_detailed(file, offset, name),
+            None => symbols.prepare_rename_detailed(file, offset).map(|_| Vec::new()),
+        }.map_err(RenameFailure::from)?;
         let mut navigation = Navigation { name: text[span.start..span.end].to_owned(), span, ..Navigation::default() };
         for occurrence in occurrences {
             let Some(source) = project.file(occurrence.file) else { continue };
@@ -1902,7 +1921,7 @@ fn renaming(
     }
     owned_by_library(project, &navigation)?;
     let Some(name) = name else { return Ok(Some(navigation)) };
-    if !crate::symbols::is_name(name) { return Err(format!("{name:?} is not a Lua name")); }
+    if !crate::symbols::is_name(name) { return Err(RenameFailure::new(RenameReason::InvalidName, format!("{name:?} is not a Lua name"))); }
     let rename = (name != member).then_some(name);
     member_occurrences(project, registry, &member, &sites, &mut navigation, rename, queries)?;
     owned_by_library(project, &navigation)?;
@@ -1910,8 +1929,13 @@ fn renaming(
     if let Some(name) = rename {
         for &(site_file, site, tag) in &sites {
             let Some(owner) = tag.then(|| registry.source(site_file)).flatten().and_then(|source| tag_owner(source.syntax(), site)) else { continue };
-            if project.files.iter().any(|other| registry.source(other.id).is_some_and(|source| tag_declares(source.syntax(), &owner, name))) {
-                return Err(format!("{owner} already has a member named {name}"));
+            let conflict = project.files.iter().find_map(|other| {
+                let span = tag_declares(registry.source(other.id)?.syntax(), &owner, name)?;
+                Some((other, span))
+            });
+            if let Some((other, span)) = conflict {
+                return Err(RenameFailure::new(RenameReason::MemberConflict, format!("{owner} already has a member named {name}"))
+                    .with_related(other, span));
             }
         }
     }
@@ -1920,13 +1944,16 @@ fn renaming(
 
 /// Refuses a rename with an occurrence in a library, such as a `--library` declaration file
 /// or the standard library, which the project does not own.
-fn owned_by_library(project: &Project, navigation: &Navigation) -> Result<(), String> {
-    let library = |path: &std::path::PathBuf| project.file_by_path(path).is_some_and(|file| {
-        file.role == luanalysis_project::SourceRole::Declaration || !matches!(file.origin, luanalysis_project::SourceOrigin::Filesystem)
-    });
-    match navigation.occurrences.iter().any(|(path, ..)| library(path)) {
-        true => Err(format!("{} is declared by a library and cannot be renamed", navigation.name)),
-        false => Ok(()),
+fn owned_by_library(project: &Project, navigation: &Navigation) -> Result<(), RenameFailure> {
+    let library = navigation.occurrences.iter().filter_map(|(path, span, definition)| {
+        let source = project.file_by_path(path)?;
+        (source.role == luanalysis_project::SourceRole::Declaration || !matches!(source.origin, luanalysis_project::SourceOrigin::Filesystem))
+            .then_some((source, *span, *definition))
+    }).min_by(|a, b| b.2.cmp(&a.2).then(a.0.path.cmp(&b.0.path)).then(a.1.start.cmp(&b.1.start)));
+    match library {
+        Some((source, span, _)) => Err(RenameFailure::new(RenameReason::LibraryOwned,
+            format!("{} is declared by a library and cannot be renamed", navigation.name)).with_related(source, span)),
+        None => Ok(()),
     }
 }
 
@@ -1949,17 +1976,30 @@ fn tag_owner(syntax: &luanalysis_syntax::File, site: Span) -> Option<String> {
     }
 }
 
-/// Whether `syntax` declares a member `name` of type `owner` with a `---@field` or `---@function`.
-fn tag_declares(syntax: &luanalysis_syntax::File, owner: &str, name: &str) -> bool {
-    let named = |key: &luanalysis_syntax::TypeFieldKey| matches!(key, luanalysis_syntax::TypeFieldKey::Named(field) if field.text == name);
-    syntax.type_declarations.iter().any(|declaration| declaration.name.text == owner && matches!(&declaration.kind,
-        luanalysis_syntax::NamedTypeDeclarationKind::Record { fields, .. } if fields.iter().any(|field| named(&field.key))))
-        || syntax.type_extensions.iter().any(|extension| extension.owner.text == owner && extension.fields.iter().any(|field| named(&field.key)))
-        || syntax.function_declarations.iter().any(|declaration| declaration.name.text == name && match &declaration.owner {
-            Some(luanalysis_syntax::DocFunctionOwner::Explicit(explicit)) => explicit.text == owner,
-            Some(luanalysis_syntax::DocFunctionOwner::Contextual(id)) => syntax.type_declarations.iter().any(|declaration| declaration.id == *id && declaration.name.text == owner),
-            None => false,
-        })
+/// The span of a member name `syntax` declares for `owner` with a `---@field` or `---@function`.
+fn tag_declares(syntax: &luanalysis_syntax::File, owner: &str, name: &str) -> Option<Span> {
+    let named = |key: &luanalysis_syntax::TypeFieldKey| match key {
+        luanalysis_syntax::TypeFieldKey::Named(field) if field.text == name => Some(field.span),
+        _ => None,
+    };
+    for declaration in &syntax.type_declarations {
+        if declaration.name.text == owner
+            && let luanalysis_syntax::NamedTypeDeclarationKind::Record { fields, .. } = &declaration.kind
+            && let Some(span) = fields.iter().find_map(|field| named(&field.key))
+        {
+            return Some(span);
+        }
+    }
+    for extension in &syntax.type_extensions {
+        if extension.owner.text == owner && let Some(span) = extension.fields.iter().find_map(|field| named(&field.key)) {
+            return Some(span);
+        }
+    }
+    syntax.function_declarations.iter().find(|declaration| declaration.name.text == name && match &declaration.owner {
+        Some(luanalysis_syntax::DocFunctionOwner::Explicit(explicit)) => explicit.text == owner,
+        Some(luanalysis_syntax::DocFunctionOwner::Contextual(id)) => syntax.type_declarations.iter().any(|declaration| declaration.id == *id && declaration.name.text == owner),
+        None => false,
+    }).map(|declaration| declaration.name.span)
 }
 
 /// Why renaming type name `at` of `file` (whose type names are `names`) to `name` would change
@@ -1973,11 +2013,11 @@ fn type_rename_conflict(
     names: &[luanalysis_syntax::TypeName],
     navigation: &Navigation,
     name: &str,
-) -> Result<(), String> {
+) -> Result<(), RenameFailure> {
     use luanalysis_syntax::TypeNameKind;
     const BUILT_IN: [&str; 12] = ["any", "unknown", "never", "nil", "boolean", "number", "integer", "string", "table", "function", "void", "self"];
-    if !name.split('.').all(crate::symbols::is_name) { return Err(format!("{name:?} is not a type name")); }
-    if BUILT_IN.contains(&name) { return Err(format!("{name} is a built-in type")); }
+    if !name.split('.').all(crate::symbols::is_name) { return Err(RenameFailure::new(RenameReason::InvalidName, format!("{name:?} is not a type name"))); }
+    if BUILT_IN.contains(&name) { return Err(RenameFailure::new(RenameReason::BuiltInType, format!("{name} is a built-in type"))); }
     // A `---@generic` and its uses are its documentation block's alone.
     let generic = names.iter().any(|other| other.kind == TypeNameKind::Generic && other.block == at.block && other.name == at.name);
     for other in project.files.iter().filter(|other| !generic || other.id == file) {
@@ -1993,10 +2033,11 @@ fn type_rename_conflict(
         if let Some(conflict) = conflict {
             let (line, column) = crate::symbols::line_column(&other.source, conflict.span.start);
             let at = format!("{}:{line}:{column}", other.path.display());
-            return Err(match conflict.kind {
+            let message = match conflict.kind {
                 TypeNameKind::Declaration if !generic => format!("a type named {name} is already declared at {at}"),
                 _ => format!("renaming to {name} would change what the type name at {at} refers to"),
-            });
+            };
+            return Err(RenameFailure::new(RenameReason::TypeConflict, message).with_related(other, conflict.span));
         }
     }
     Ok(())

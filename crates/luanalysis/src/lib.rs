@@ -26,6 +26,7 @@ pub mod lsp;
 mod file_operations;
 pub mod semantic_actions;
 pub mod report;
+mod rename_failure;
 pub mod project_check;
 mod project_cost;
 pub mod standard_environment;

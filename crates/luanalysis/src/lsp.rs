@@ -11,6 +11,7 @@ use crate::incremental::ProjectWorkspace;
 use crate::json::Json;
 use crate::language_service::{self, CompletionKind, CompletionSite, SignatureSite};
 use crate::project_check::{ProjectCheckOptions, ProjectCheckReport};
+use crate::rename_failure::{RenameFailure, RenameReason};
 use crate::symbols::{SymbolIndex, SymbolOccurrence};
 use luanalysis_project::{DependencyOutcome, Project, ProjectLoadPlan, SourceOrigin};
 use std::collections::{HashMap, HashSet};
@@ -203,9 +204,48 @@ enum Event {
     Answered(Json, Json),
     RevisionAnswer(Json, Json, u64),
     /// A request refused off the main thread, with why.
-    Refused(Json, String),
+    Refused(Json, RequestError),
     /// A request the client cancelled before it was answered.
     Cancelled(Json),
+}
+
+/// A failed request can carry machine-readable source locations as well as its message.
+struct RequestError {
+    message: String,
+    data: Option<Json>,
+}
+
+impl RequestError {
+    fn plain(message: String) -> Self { Self { message, data: None } }
+
+    fn rename(failure: RenameFailure, encoding: Encoding, uri: impl Fn(&Path) -> String) -> Self {
+        let related = failure.related.into_iter().map(|related| {
+            let mut origin = vec![
+                ("kind".into(), Json::from(match &related.origin {
+                    SourceOrigin::Filesystem => "filesystem",
+                    SourceOrigin::DeclarationLibrary { .. } => "declarationLibrary",
+                })),
+                ("role".into(), Json::from(related.role.to_string())),
+            ];
+            if let SourceOrigin::DeclarationLibrary { identity } = related.origin {
+                origin.push(("identity".into(), Json::from(identity)));
+            }
+            let lines = LineIndex::new(related.text);
+            Json::object([
+                ("location", Json::object([
+                    ("uri", Json::from(uri(&related.path))),
+                    ("range", lines.range(related.span.start, related.span.end, encoding)),
+                ])),
+                ("message", Json::from(failure.message.as_str())),
+                ("origin", Json::Object(origin)),
+            ])
+        }).collect();
+        Self { message: failure.message, data: Some(Json::object([
+            ("kind", Json::from("rename")),
+            ("reason", Json::from(failure.reason.as_str())),
+            ("relatedInformation", Json::Array(related)),
+        ])) }
+    }
 }
 
 struct Job {
@@ -512,7 +552,7 @@ impl Server {
                         if self.revision == revision { self.respond(id, result) }
                         else { self.respond_error(id, -32801, "document contents changed while computing edits") }
                     }
-                    Event::Refused(id, error) => self.respond_error(id, REQUEST_FAILED, &error),
+                    Event::Refused(id, error) => self.respond_request_error(id, error),
                     Event::Cancelled(id) => self.respond_error(id, REQUEST_CANCELLED, "the request was cancelled"),
                     Event::Malformed(error) => self.respond_error(Json::Null, PARSE_ERROR, &format!("a message that is not JSON: {error}")),
                 }
@@ -637,16 +677,21 @@ impl Server {
             "textDocument/prepareRename" if !self.documents_are_checked() || self.symbol_at(params).is_none() => self.navigate(id, params, Navigate::PrepareRename),
             "textDocument/prepareRename" => match self.prepare_rename(params) {
                 Ok(result) => self.respond(id, result),
-                Err(error) => self.respond_error(id, REQUEST_FAILED, &error),
+                Err(error) => self.respond_request_error(id, error),
             },
             "textDocument/rename" if !self.documents_are_checked() || self.symbol_at(params).is_none() => {
                 let name = params.get("newName").and_then(Json::as_str).unwrap_or_default().to_owned();
                 let valid = name.split('.').all(crate::symbols::is_name);
-                if valid { self.navigate(id, params, Navigate::Rename(name)) } else { self.respond_error(id, REQUEST_FAILED, &format!("{name:?} is not a Lua name")) }
+                if valid { self.navigate(id, params, Navigate::Rename(name)) } else {
+                    self.respond_request_error(id, RequestError::rename(
+                        RenameFailure::new(RenameReason::InvalidName, format!("{name:?} is not a Lua name")),
+                        self.encoding, |path| self.uri(path),
+                    ));
+                }
             }
             "textDocument/rename" => match self.rename(params) {
                 Ok(result) => self.respond(id, result),
-                Err(error) => self.respond_error(id, REQUEST_FAILED, &error),
+                Err(error) => self.respond_request_error(id, error),
             },
             _ => self.respond_error(id, METHOD_NOT_FOUND, &format!("unsupported request {method}")),
         }
@@ -1568,11 +1613,12 @@ impl Server {
             .collect())
     }
 
-    fn prepare_rename(&self, params: &Json) -> Result<Json, String> {
+    fn prepare_rename(&self, params: &Json) -> Result<Json, RequestError> {
         let Some((path, file, offset)) = self.file_at(params) else { return Ok(Json::Null) };
         let index = &self.snapshot.as_ref().expect("a checked file has a snapshot").symbols;
         let Some(id) = index.file(path) else { return Ok(Json::Null) };
-        let (_, span) = index.prepare_rename(id, offset).map_err(|error| error.to_string())?;
+        let (_, span) = index.prepare_rename_detailed(id, offset)
+            .map_err(|error| RequestError::rename(error.into(), self.encoding, |path| self.uri(path)))?;
         Ok(Json::object([
             ("range", file.range(span.start, span.end, self.encoding)),
             ("placeholder", Json::from(&file.lines.text[span.start..span.end])),
@@ -1580,17 +1626,19 @@ impl Server {
     }
 
     /// The snapshot fast path for renaming a local or global when open buffers match the check.
-    fn rename(&self, params: &Json) -> Result<Json, String> {
+    fn rename(&self, params: &Json) -> Result<Json, RequestError> {
         let Some((path, _, offset)) = self.file_at(params) else { return Ok(Json::Null) };
         let name = params.get("newName").and_then(Json::as_str).unwrap_or_default();
         let snapshot = self.snapshot.as_ref().expect("a checked file has a snapshot");
         let Some(id) = snapshot.symbols.file(path) else { return Ok(Json::Null) };
-        let occurrences = snapshot.symbols.rename(id, offset, name).map_err(|error| error.to_string())?;
+        let occurrences = snapshot.symbols.rename_detailed(id, offset, name)
+            .map_err(|error| RequestError::rename(error.into(), self.encoding, |path| self.uri(path)))?;
         let mut changes: Vec<(String, Json)> = Vec::new();
         for occurrence in occurrences {
             let Some(file) = snapshot.files.get(&occurrence.path) else { continue };
             if self.documents.get(&occurrence.path).is_some_and(|document| document.text != file.lines.text) {
-                return Err("the project is being checked; rename again when it has been".into());
+                return Err(RequestError::rename(RenameFailure::new(RenameReason::Unavailable,
+                    "the project is being checked; rename again when it has been"), self.encoding, |path| self.uri(path)));
             }
             let edit = Json::object([
                 ("range", file.range(occurrence.span.start, occurrence.span.end, self.encoding)),
@@ -1614,6 +1662,17 @@ impl Server {
             ("jsonrpc", Json::from("2.0")),
             ("id", id),
             ("error", Json::object([("code", Json::from(code)), ("message", Json::from(message))])),
+        ]));
+    }
+
+    fn respond_request_error(&self, id: Json, error: RequestError) {
+        let mut fields = vec![
+            ("code".into(), Json::from(REQUEST_FAILED)),
+            ("message".into(), Json::from(error.message)),
+        ];
+        if let Some(data) = error.data { fields.push(("data".into(), data)); }
+        self.write(&Json::object([
+            ("jsonrpc", Json::from("2.0")), ("id", id), ("error", Json::Object(fields)),
         ]));
     }
 
@@ -1688,7 +1747,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
             let started = std::time::Instant::now();
             let mut answered = false;
             // The answer is sent as soon as it is known, before the session's state is dropped.
-            let mut answer = |result: Result<Json, String>| {
+            let mut answer = |result: Result<Json, RequestError>| {
                 answered = true;
                 if std::env::var_os("LUANALYSIS_PROFILE").is_some() {
                     eprintln!("luanalysis profile: query={:.6}s", started.elapsed().as_secs_f64());
@@ -1712,7 +1771,8 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 Site::Navigate(site) => navigate(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Hints(site) => hints(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
                 Site::Actions(site) => actions(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
-                Site::FileRename(site) => file_rename(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
+                Site::FileRename(site) => file_rename(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site,
+                    &mut |result| answer(result.map_err(RequestError::plain))),
                 Site::Hierarchy(site) => hierarchy(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
             }));
             if completed.is_err() {
@@ -1885,16 +1945,16 @@ fn signatures(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mu
     }));
 }
 
-fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &NavigateSite, answer: &mut (dyn FnMut(Result<Json, String>) + Send)) {
+fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &NavigateSite, answer: &mut (dyn FnMut(Result<Json, RequestError>) + Send)) {
     let Some(project) = load(inputs, workspace, loaded, query) else { return };
     let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
     let references = !matches!(site.request, Navigate::Definition | Navigate::TypeDefinition | Navigate::PrepareRename);
     let encoding = query.encoding;
-    let mut respond = |navigation: Result<Option<language_service::Navigation>, String>| {
+    let mut respond = |navigation: Result<Option<language_service::Navigation>, RenameFailure>| {
         let navigation = match navigation {
             Ok(Some(navigation)) => navigation,
             Ok(None) => return answer(Ok(Json::Null)),
-            Err(error) => return answer(Err(error)),
+            Err(error) => return answer(Err(RequestError::rename(error, encoding, |path| query.uri(path)))),
         };
         let lines: HashMap<&PathBuf, LineIndex> = navigation.texts.iter().map(|(path, text)| (path, LineIndex::new(text.clone()))).collect();
         let range = |path: &PathBuf, span: luanalysis_syntax::Span| lines.get(path).map(|lines| lines.range(span.start, span.end, encoding));
@@ -1931,8 +1991,8 @@ fn navigate(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
     };
     match &site.request {
         Navigate::TypeDefinition => language_service::type_definition(project, options, workspace, file, site.offset, move |navigation| respond(Ok(navigation))),
-        Navigate::PrepareRename => language_service::rename(project, options, workspace, file, site.offset, None, respond),
-        Navigate::Rename(name) => language_service::rename(project, options, workspace, file, site.offset, Some(name.clone()), respond),
+        Navigate::PrepareRename => language_service::rename_detailed(project, options, workspace, file, site.offset, None, respond),
+        Navigate::Rename(name) => language_service::rename_detailed(project, options, workspace, file, site.offset, Some(name.clone()), respond),
         _ => language_service::navigate(project, options, workspace, file, site.offset, references, move |navigation| respond(Ok(navigation))),
     }
 }

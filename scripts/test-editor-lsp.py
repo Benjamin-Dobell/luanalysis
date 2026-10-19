@@ -638,6 +638,18 @@ def file_operations(client):
     shadow_edit = client.request('workspace/willRenameFiles', {'files': [{'oldUri': shadow.as_uri(), 'newUri': (shadow.parent / 'shadow-moved.lua').as_uri()}]})
     check(not shadow_edit or not any(shadow_edit.get(key) for key in ('changes', 'documentChanges')), f'shadowed module rename edited unrelated require: {shadow_edit!r}')
 
+    # This refusal comes from the file-operation worker. It must keep its own
+    # error contract when symbol renames gain structured rename-error data.
+    client.next_id += 1
+    refused_id = client.next_id
+    client.send({'jsonrpc': '2.0', 'id': refused_id, 'method': 'workspace/willRenameFiles',
+                 'params': {'files': [{'oldUri': old.as_uri(), 'newUri': shadow.as_uri()}]}})
+    refusal = client.wait(lambda message: message.get('id') == refused_id, 'occupied file rename destination')
+    error = refusal.get('error', {})
+    check(error.get('code') == -32803 and error.get('message') == f'rename destination already exists: {shadow.resolve()}',
+          f'file rename refusal changed: {refusal!r}')
+    check('data' not in error, f'file rename received symbol-rename metadata: {refusal!r}')
+
     params = {'files': [{'oldUri': old.as_uri(), 'newUri': new.as_uri()}]}
     edit = client.request('workspace/willRenameFiles', params)
     outputs = client.workspace_edit(edit)
