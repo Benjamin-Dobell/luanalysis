@@ -415,6 +415,20 @@ regression!(
     "TypeSafetyTest/testGenericClassFields"
 );
 
+regression!(argument_history, "TestArgHistory/test_arg_history_1");
+regression!(cross_file_global_completion, "TestCompletion/testGlobalCompletion1");
+regression!(implicit_self_completion, "TestCompletion/testSelfCompletion");
+regression!(snippet, "TestSnippet/test_snippet");
+regression!(disallow_lua53_features, "LanguageLevelTest/testDisallowLua53Features");
+regression!(disallow_lua54_features, "LanguageLevelTest/testDisallowLua54Features");
+regression!(class, "TypeSafetyTest/testClass");
+regression!(class_from_another_file, "TypeSafetyTest/testClassFromAnotherFile");
+regression!(generic_class_constraints, "TypeSafetyTest/testGenericClassConstraints");
+regression!(generic_self, "TypeSafetyTest/testGenericSelf");
+regression!(global_definitions, "TypeSafetyTest/testGlobalDefinitions");
+regression!(global_usage, "TypeSafetyTest/testGlobalUsage");
+regression!(non_strict_nil, "TypeSafetyTest/testNonStrictNil");
+
 #[test]
 fn member_and_index_range_translations_keep_the_exact_key_identity() {
     let fixture = import(

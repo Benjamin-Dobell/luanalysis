@@ -736,6 +736,20 @@ SOURCE_ADAPTATIONS.extend({
 } for path in ["native_tables.rs", "native_runtime_tables.rs"])
 
 
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-generic-storage-variance.patch",
+    "reason": "Require invariant mapped native class arguments when observable through writable storage, preserving phantom parameters, readonly and callable contracts with finite demand-local profiles and fail-closed incomplete proofs.",
+} for path in ["native_named.rs", "relate.rs"])
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_generic_storage.rs",
+    "patch": "vendor/patches/bun-sema-native-generic-storage-variance.patch",
+    "reason": "Analyze native generic writable storage through original mapped declarations, captured parameters and finite recursive observability profiles without publishing provisional variance masks.",
+    "added": True,
+})
+
+
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])
 

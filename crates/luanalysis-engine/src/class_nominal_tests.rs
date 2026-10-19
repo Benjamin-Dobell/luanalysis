@@ -5,6 +5,8 @@ use std::cell::RefCell;
 
 #[path = "class_definition_tests.rs"]
 mod definitions;
+#[path = "native_generic_storage_tests.rs"]
+mod generic_storage;
 
 fn key(index: u32) -> NativeTypeDeclarationKey {
     NativeTypeDeclarationKey {

@@ -627,7 +627,11 @@ impl NativeRegistry {
             .find(|scope| {
                 scope.kind == crate::bind::ScopeKind::Function && scope.span == function.span
             })
-            .map(|scope| scope.captures.clone())
+            .map(|scope| scope.captures.iter().copied()
+                // Recursion uses this declaration's own signature capability;
+                // it does not capture an external binding-cell constraint.
+                .filter(|binding| self.binding_function_key(*binding) != Some(key))
+                .collect::<Vec<_>>())
             .unwrap_or_default();
         if bindings.is_empty() && lexical_parent.is_none() {
             return Type::NativeFunction(key);
@@ -637,12 +641,6 @@ impl NativeRegistry {
         }
         let mut environment = Vec::with_capacity(bindings.len());
         for binding in bindings {
-            // A recursive declaration refers to this signature itself. It is
-            // resolved by the native captured-function capability in the body,
-            // rather than recursively constructing another frozen environment.
-            if self.binding_function_key(binding) == Some(key) {
-                continue;
-            }
             let source = self.source_binding_key(binding);
             let value = captured.and_then(|context| queries.captured_binding(&context, source));
             let value = match value {

@@ -1,0 +1,439 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -30,6 +30,8 @@
+ use crate::util::FxHashMap;
+ #[path = "native_runtime_tables.rs"]
+ mod runtime_tables;
++#[path = "native_generic_storage.rs"]
++mod generic_storage;
+ 
+ /// Original named declaration, or an anonymous object annotation head registered by the source.
+ /// File-local syntax ids must be mapped explicitly into this provider-owned namespace.
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -5360,6 +5360,21 @@
+     /// The `default` case of the second `switch` of `structuredTypeRelatedToWorker`. `sd`, `td`:
+     /// the `TypeData` of `source` and `target`.
+     fn objects_related_to<const REPORT: bool>(
++        &mut self,
++        r: &mut Relater,
++        source: TypeId,
++        sd: &'p TypeData<'p>,
++        target: TypeId,
++        td: &'p TypeData<'p>,
++        state: u8,
++        shared: &mut WorkerState,
++    ) -> Ternary {
++        let storage = self.native_generic_storage_related::<REPORT>(r, source, target, state);
++        if !storage.holds() { return storage }
++        storage & self.objects_related_to_worker::<REPORT>(r, source, sd, target, td, state, shared)
++    }
++
++    fn objects_related_to_worker<const REPORT: bool>(
+         &mut self,
+         r: &mut Relater,
+         source: TypeId,
+diff --git a/src/sema/check/native_generic_storage.rs b/src/sema/check/native_generic_storage.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/native_generic_storage.rs
+@@ -0,0 +1,397 @@
++//! Demand-local observability of native generic writable storage. This is not a
++//! replacement for callable variance or nominal ancestry. The enclosing relation
++//! still checks every ordinary member after selected arguments prove invariant.
++use super::*;
++use super::super::relate::{INDEPENDENT, INVARIANT, Ternary};
++use crate::types::{NativeObjectReference, NativeBindingId, PropFlags, ElemFlags, NativeResultPack};
++use crate::util::FxHashSet;
++
++const OBSERVED: u8 = 1;
++const MUTABLE: u8 = 2;
++type Environment = Vec<(NativeTypeParamId, u8)>;
++
++#[derive(Clone, PartialEq, Eq, Hash)]
++enum StorageCallable { Signature(NativeSignatureId), Function(NativeFunctionId) }
++#[derive(Clone, PartialEq, Eq, Hash)]
++enum StorageState {
++    Named(NativeTypeDeclarationId, Option<(u8, u8)>, Vec<u8>),
++    Type(TypeId, Environment),
++    Pack(TypeId, Environment),
++    Signature(StorageCallable, Vec<(NativeTypeParamId, u8)>, Vec<(NativeBindingId, u8)>, Option<u8>, Option<u8>),
++}
++#[derive(Default)]
++struct StorageWalk {
++    facts: FxHashMap<StorageState, u8>,
++    visited: FxHashSet<StorageState>,
++    changed: bool,
++    unresolved: bool,
++    wrappers: FxHashSet<StorageState>,
++}
++impl StorageWalk {
++    fn begin(&mut self, key: &StorageState) -> Option<u8> {
++        let known = self.facts.get(key).copied().unwrap_or(0);
++        if !self.visited.insert(key.clone()) { return Some(known) }
++        if !self.facts.contains_key(key) {
++            self.facts.insert(key.clone(), 0);
++            self.changed = true;
++        }
++        None
++    }
++    fn finish(&mut self, key: StorageState, facts: u8) -> u8 {
++        let stored = self.facts.get_mut(&key).expect("begun storage state");
++        let combined = *stored | facts;
++        self.changed |= combined != *stored;
++        *stored = combined;
++        combined
++    }
++}
++
++impl<'p, 's> Checker<'p, 's> {
++    /// Run inside objects_related_to, with the existing relation recursion state.
++    /// An unfinished member query fails closed and taints memo publication;
++    /// public assignment booleans must not mistake UNKNOWN for a proof.
++    pub(in crate::check) fn native_generic_storage_related<const REPORT: bool>(
++        &mut self, r: &mut Relater, source: TypeId, target: TypeId, state: u8,
++    ) -> Ternary {
++        if matches!(r.relation, Relation::Identity | Relation::Comparable) { return Ternary::TRUE }
++        let (Some(source), Some(target)) = (self.native_nominal_origin(source), self.native_nominal_origin(target)) else {
++            return Ternary::TRUE;
++        };
++        let (result, completed) = self.run_memoizable(|checker| {
++            checker.native_generic_storage_arguments(source, target)
++        });
++        let Some((sources, targets, variances)) = result.ok().flatten().filter(|_| completed.is_some()) else {
++            self.mark_tainted_from(0);
++            return Ternary::FALSE;
++        };
++        self.type_arguments_related_to::<REPORT>(r, &sources, &targets, &variances, state)
++    }
++
++    fn native_generic_storage_arguments(
++        &mut self, source: NativeObjectReference, target: NativeObjectReference,
++    ) -> Result<Option<(Vec<TypeId>, Vec<TypeId>, Vec<u8>)>, NativeNamedTypeError> {
++        let provider = self.native_named_provider(target.declaration)?;
++        let header = provider.type_declaration_header(self, target.declaration);
++        let parameters: Vec<_> = header.outer_parameters.iter().chain(&header.parameters).copied().collect();
++        if parameters.is_empty() { return Ok(Some((Vec::new(), Vec::new(), Vec::new()))) }
++        let Some(source) = self.native_storage_ancestor(source, target.declaration)? else {
++            // The ordinary ancestry gate rejects this pair before object members.
++            return Ok(Some((Vec::new(), Vec::new(), Vec::new())));
++        };
++        let formals: Vec<_> = parameters.iter().map(|&parameter| self.native_type_parameter(parameter)
++            .ok_or(NativeNamedTypeError::InvalidTypeParameter(parameter))).collect::<Result<_, _>>()?;
++        let sources: Vec<_> = formals.iter().map(|&formal| self.instantiate(formal, source.mapper)).collect();
++        let targets: Vec<_> = formals.iter().map(|&formal| self.instantiate(formal, target.mapper)).collect();
++        let mut variances = vec![INDEPENDENT; parameters.len()];
++        for (index, &parameter) in parameters.iter().enumerate() {
++            if sources[index] == targets[index] { continue }
++            let environment: Environment = parameters.iter().map(|&id| (id, if id == parameter { OBSERVED } else { 0 })).collect();
++            let mut walk = StorageWalk::default();
++            loop {
++                walk.changed = false;
++                walk.visited.clear();
++                let facts = self.native_storage_named_template(target, &environment, &mut walk)?;
++                if walk.unresolved {
++                    self.mark_tainted_from(0);
++                    return Ok(None);
++                }
++                if facts & MUTABLE != 0 { variances[index] = INVARIANT; }
++                if !walk.changed { break }
++            }
++        }
++        Ok(Some((sources, targets, variances)))
++    }
++
++    fn native_storage_ancestor(&mut self, source: NativeObjectReference, target: NativeTypeDeclarationId) -> Result<Option<NativeObjectReference>, NativeNamedTypeError> {
++        if source.declaration == target { return Ok(Some(source)) }
++        for base in self.native_object_bases(source)? {
++            let TypeData::NativeObject(base) = *self.data(base) else { continue };
++            if let Some(found) = self.native_storage_ancestor(base, target)? { return Ok(Some(found)) }
++        }
++        Ok(None)
++    }
++
++    fn native_storage_named_template(&mut self, reference: NativeObjectReference, environment: &Environment, walk: &mut StorageWalk) -> Result<u8, NativeNamedTypeError> {
++        let head = self.native_declared_head(reference.declaration)?;
++        let TypeData::NativeObject(mut template) = *self.data(head) else { return Ok(0) };
++        template.runtime_context = reference.runtime_context;
++        self.native_storage_named(template, environment, walk)
++    }
++
++    fn native_storage_named(&mut self, reference: NativeObjectReference, environment: &Environment, walk: &mut StorageWalk) -> Result<u8, NativeNamedTypeError> {
++        let provider = self.native_named_provider(reference.declaration)?;
++        let header = provider.type_declaration_header(self, reference.declaration);
++        let parameters: Vec<_> = header.outer_parameters.iter().chain(&header.parameters).copied().collect();
++        let mut applied = Vec::with_capacity(parameters.len());
++        for &parameter in &parameters {
++            let formal = self.native_type_parameter(parameter).ok_or(NativeNamedTypeError::InvalidTypeParameter(parameter))?;
++            let actual = self.instantiate(formal, reference.mapper);
++            applied.push(self.native_storage_type(actual, environment, walk)?);
++        }
++        let context = if let Some(context) = reference.runtime_context {
++            let contextual = if let Some(contextual) = context.contextual {
++                self.native_storage_signature(contextual.expected, environment, walk)?
++            } else { 0 };
++            let captured = if let Some(captured) = context.captured {
++                self.native_storage_signature(captured.signature, environment, walk)?
++            } else { 0 };
++            Some((contextual, captured))
++        } else { None };
++        let key = StorageState::Named(reference.declaration, context, applied.clone());
++        if let Some(known) = walk.begin(&key) { return Ok(known) }
++        let environment = parameters.into_iter().zip(applied).collect();
++        let head = self.native_declared_head(reference.declaration)?;
++        let TypeData::NativeObject(mut template) = *self.data(head) else { unreachable!() };
++        template.runtime_context = reference.runtime_context;
++        let mut facts = 0;
++        for origin in self.native_object_members(template)? {
++            let metadata = provider.type_member_header(self, origin.member);
++            let Some(raw) = self.native_object_member_demand(&origin)? else { continue };
++            let value = self.native_member_type(raw, origin.owner);
++            let child = self.native_storage_type(value, &environment, walk)?;
++            facts |= child & OBSERVED;
++            facts |= if metadata.readonly { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };
++            if matches!(metadata.key, NativeTypeMemberKey::Indexer { .. }) {
++                let Some(capture) = self.native_member_capture_mapper(origin.owner, origin.member)? else { continue };
++                let raw = self.native_named_member_demand(origin.member, true)?;
++                let raw = self.instantiate(raw, capture);
++                let value = self.native_member_type(raw, origin.owner);
++                let child = self.native_storage_type(value, &environment, walk)?;
++                facts |= child & OBSERVED;
++                facts |= if metadata.readonly { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };
++            }
++        }
++        let object = self.intern(TypeData::NativeObject(template));
++        let mut signatures = self.native_object_call_heads(object);
++        for operator in [NativeOperator::Add, NativeOperator::Subtract, NativeOperator::Multiply, NativeOperator::Divide, NativeOperator::FloorDivide, NativeOperator::Modulo, NativeOperator::Power, NativeOperator::Concat, NativeOperator::BitwiseAnd, NativeOperator::BitwiseOr, NativeOperator::BitwiseXor, NativeOperator::ShiftLeft, NativeOperator::ShiftRight, NativeOperator::Negate, NativeOperator::BitwiseNot, NativeOperator::Length, NativeOperator::Less, NativeOperator::LessEqual] {
++            signatures.extend(self.native_object_operator_heads(object, operator));
++        }
++        for signature in signatures { facts |= self.native_storage_signature(signature, &environment, walk)?; }
++        Ok(walk.finish(key, facts))
++    }
++
++    fn native_storage_type(&mut self, ty: TypeId, environment: &Environment, walk: &mut StorageWalk) -> Result<u8, NativeNamedTypeError> {
++        if ty == TypeId::UNRESOLVED || self.is_stack_low() {
++            walk.unresolved = true;
++            return Ok(0);
++        }
++        let key = StorageState::Type(ty, environment.clone());
++        if let Some(known) = walk.begin(&key) { return Ok(known) }
++        let mut facts = 0;
++        match self.data(ty) {
++            TypeData::NativeTypeParam { declaration, .. } => facts = environment.iter().find(|pair| pair.0 == *declaration).map_or(0, |pair| pair.1),
++            TypeData::Union(parts) | TypeData::Intersection(parts) => for &part in parts { facts |= self.native_storage_type(part, environment, walk)?; },
++            TypeData::NativePackParameter(inner) | TypeData::NativePackElement(inner) | TypeData::NativeRuntimeTop { carrier: inner, .. } => facts = self.native_storage_type(*inner, environment, walk)?,
++            TypeData::NativeArray { element, readonly } => {
++                let child = self.native_storage_type(*element, environment, walk)?;
++                facts = child & OBSERVED | if *readonly { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };
++            }
++            TypeData::Tuple { readonly, .. } => {
++                let readonly = *readonly;
++                for &element in self.type_arguments(ty) {
++                    let child = self.native_storage_type(element, environment, walk)?;
++                    facts |= child & OBSERVED | if readonly { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };
++                }
++            }
++            TypeData::NativeObject(reference) => facts = self.native_storage_named(*reference, environment, walk)?,
++            TypeData::NativeDefinition(reference) => facts = self.native_storage_named(reference.class, environment, walk)?,
++            TypeData::NativeRuntimeTable(reference) => facts = self.native_storage_type(reference.bounds.unwrap_or(reference.view), environment, walk)?,
++            TypeData::NativeTable(table) => {
++                if let Some(reference) = table.nominal_origin {
++                    facts = self.native_storage_named(reference, environment, walk)?;
++                } else {
++                    for field in &table.fields {
++                        let child = self.native_storage_type(field.value, environment, walk)?;
++                        facts |= child & OBSERVED | if field.readonly { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };
++                    }
++                    for indexer in &table.indexers {
++                        for ty in [indexer.key, indexer.value] {
++                            let child = self.native_storage_type(ty, environment, walk)?;
++                            facts |= child & OBSERVED | if indexer.readonly { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };
++                        }
++                    }
++                    for tail in &table.sequence_tails {
++                        let child = self.native_storage_type(tail.value, environment, walk)?;
++                        facts |= child & OBSERVED | if tail.readonly { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };
++                    }
++                }
++            }
++            TypeData::Synth(_) | TypeData::Fns { .. } | TypeData::Anon { .. } | TypeData::Ref { .. } => {
++                let Some(members) = self.members(ty) else {
++                    walk.unresolved = true;
++                    return Ok(walk.finish(key, 0));
++                };
++                let members = self.structured(members);
++                for property in &members.shape().props {
++                    let value = self.type_of_prop(property, members.mapper);
++                    let child = self.native_storage_type(value, environment, walk)?;
++                    facts |= child & OBSERVED | if property.flags.contains(PropFlags::READONLY) { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };
++                }
++                for indexer in members.index_infos() {
++                    for value in [indexer.key, indexer.value] {
++                        let child = self.native_storage_type(value, environment, walk)?;
++                        facts |= child & OBSERVED | if indexer.readonly { child & MUTABLE } else if child & OBSERVED != 0 { MUTABLE } else { 0 };
++                    }
++                }
++                for signature in members.call_signatures().iter().chain(members.construct_signatures()) {
++                    facts |= self.native_storage_signature(*signature, environment, walk)?;
++                }
++            }
++            // A type whose structure still depends on a deferred operation is
++            // not evidence that the class parameter is unused. Ordinary
++            // literal/intrinsic/error recovery remains independent.
++            TypeData::TypeParam(..) | TypeData::ThisParam(_) | TypeData::IndexedAccess { .. }
++            | TypeData::Keyof(_) | TypeData::Cond { .. } | TypeData::Substitution { .. }
++            | TypeData::ReverseMapped { .. } | TypeData::StringMapping { .. }
++            | TypeData::Template { .. } => walk.unresolved = true,
++            _ => {}
++        }
++        Ok(walk.finish(key, facts))
++    }
++
++    /// Physical result/rest carriers are sequences, not mutable Lua heap
++    /// tables. Only their actual value types can expose writable storage.
++    fn native_storage_pack(&mut self, pack: NativeResultPack, environment: &Environment, walk: &mut StorageWalk) -> Result<u8, NativeNamedTypeError> {
++        let key = StorageState::Pack(pack.ty, environment.clone());
++        if let Some(known) = walk.begin(&key) { return Ok(known) }
++        let mut facts = 0;
++        if let Some(rows) = self.native_pack_alternatives(pack) {
++            for row in rows {
++                for slot in row.fixed { facts |= self.native_storage_type(slot.ty, environment, walk)?; }
++                if let Some(tail) = row.tail { facts |= self.native_storage_type(tail, environment, walk)?; }
++            }
++        } else {
++            match self.data(pack.ty) {
++                TypeData::NativePackParameter(parameter) => facts |= self.native_storage_type(*parameter, environment, walk)?,
++                TypeData::Union(parts) => for &part in parts {
++                    facts |= self.native_storage_pack(NativeResultPack { ty: part }, environment, walk)?;
++                },
++                TypeData::Tuple { flags, .. } => {
++                    let flags = flags.to_vec();
++                    let values = self.type_arguments(pack.ty).to_vec();
++                    for (value, flag) in values.into_iter().zip(flags) {
++                        facts |= if flag.contains(ElemFlags::VARIADIC) {
++                            self.native_storage_pack(NativeResultPack { ty: value }, environment, walk)?
++                        } else { self.native_storage_type(value, environment, walk)? };
++                    }
++                }
++                // Whole gradual/unknown packs do not mention a tracked formal.
++                TypeData::Intrinsic(_) if self.is_any(pack.ty) || pack.ty == TypeId::UNKNOWN => {},
++                _ => walk.unresolved = true,
++            }
++        }
++        Ok(walk.finish(key, facts))
++    }
++
++    fn native_storage_signature(&mut self, signature: SigId, environment: &Environment, walk: &mut StorageWalk) -> Result<u8, NativeNamedTypeError> {
++        // Recursive annotation aliases preserve their original native signature
++        // identity while their concrete mapper arguments may grow forever.
++        let mut underlying = signature;
++        let mut wrapped = false;
++        while let SigData::WithReturn { sig, .. } | SigData::WithNativeResultPack { sig, .. } = *self.types().sig(underlying) {
++            wrapped = true;
++            underlying = sig;
++        }
++        let (origin, mapper, formals, instances, captures, expected, parent) = match self.types().sig(underlying) {
++            SigData::NativeDeclarationSignature { declaration, mapper, .. } => {
++                let (declaration, mapper) = (*declaration, *mapper);
++                let provider = self.native_signature_provider_for(declaration);
++                let mut formals = provider.signature_type_parameters(self, declaration);
++                for parameter in provider.signature_outer_type_parameters(declaration) {
++                    formals.push(self.native_type_parameter(parameter).ok_or(NativeNamedTypeError::InvalidTypeParameter(parameter))?);
++                }
++                (Some(StorageCallable::Signature(declaration)), mapper, formals,
++                    provider.signature_outer_type_parameter_instances(self, declaration), Vec::new(), None, None)
++            }
++            SigData::Native { declaration, mapper }
++            | SigData::NativeCaptured { declaration, mapper, .. }
++            | SigData::NativeContextual { declaration, mapper, .. } => {
++                let (declaration, mapper) = (*declaration, *mapper);
++                let provider = self.native_provider_for(declaration);
++                let mut formals = provider.type_parameters(self, declaration);
++                for parameter in provider.outer_type_parameters(declaration) {
++                    formals.push(self.native_type_parameter(parameter).ok_or(NativeNamedTypeError::InvalidTypeParameter(parameter))?);
++                }
++                let (captures, expected, parent) = match self.types().sig(underlying) {
++                    SigData::NativeCaptured { environment, lexical_parent, .. } => (environment.to_vec(), None, *lexical_parent),
++                    SigData::NativeContextual { environment, context, lexical_parent, .. } => (environment.to_vec(), Some(context.expected), *lexical_parent),
++                    _ => (Vec::new(), None, None),
++                };
++                (Some(StorageCallable::Function(declaration)), mapper, formals,
++                    provider.outer_type_parameter_instances(self, declaration), captures, expected, parent)
++            }
++            _ => (None, MapperId::IDENTITY, Vec::new(), Vec::new(), Vec::new(), None, None),
++        };
++        let key = if let Some(origin) = origin {
++            let mut arguments: FxHashMap<NativeTypeParamId, u8> = FxHashMap::default();
++            for formal in formals.into_iter().chain(instances) {
++                if let Some((parameter, _)) = self.native_type_parameter_decl(formal) {
++                    let actual = self.instantiate(formal, mapper);
++                    let facts = self.native_storage_type(actual, environment, walk)?;
++                    *arguments.entry(parameter).or_default() |= facts;
++                }
++            }
++            // Semantic self and physical pack facets may be additional exact
++            // mapper bindings, independent of declaration-header formals.
++            for &(formal, actual) in self.types().mapping(mapper) {
++                let formal = match *self.data(formal) { TypeData::NativePackParameter(inner) => inner, _ => formal };
++                if let Some((parameter, _)) = self.native_type_parameter_decl(formal) {
++                    let facts = self.native_storage_type(actual, environment, walk)?;
++                    *arguments.entry(parameter).or_default() |= facts;
++                }
++            }
++            let mut arguments: Vec<_> = arguments.into_iter().collect();
++            arguments.sort_by_key(|(id, _)| (id.snapshot, id.index));
++            let mut captured = Vec::with_capacity(captures.len());
++            for capture in captures {
++                captured.push((capture.declaration, self.native_storage_type(capture.ty, environment, walk)?));
++            }
++            captured.sort_by_key(|(id, _)| (id.snapshot, id.index));
++            let expected = if let Some(expected) = expected { Some(self.native_storage_signature(expected, environment, walk)?) } else { None };
++            let parent = if let Some(parent) = parent { Some(self.native_storage_signature(parent, environment, walk)?) } else { None };
++            let key = StorageState::Signature(origin, arguments, captured, expected, parent);
++            if wrapped {
++                // Return overrides can differ despite identical declaration
++                // arguments. Never reuse an underlying summary as their result.
++                // Reentering a growing wrapped origin is an unsupported proof,
++                // not evidence that a recursive override erased its parameter.
++                if !walk.wrappers.insert(key.clone()) {
++                    walk.unresolved = true;
++                    return Ok(0);
++                }
++            } else if let Some(known) = walk.begin(&key) { return Ok(known) }
++            Some(key)
++        } else { None };
++        // Readonly callable access can still expose mutable heap storage in
++        // outputs or receive mutable inputs. Preserve those capabilities;
++        // scalar inputs/outputs remain ordinary contravariant/covariant leaves.
++        let mut facts = 0;
++        for parameter in self.sig_params(signature).iter() {
++            let ty = self.get_type_of_parameter(parameter);
++            facts |= if parameter.rest {
++                self.native_storage_pack(NativeResultPack { ty }, environment, walk)?
++            } else { self.native_storage_type(ty, environment, walk)? };
++        }
++        if self.sig_has_native_result_pack(signature) {
++            let returned = self.sig_result_pack(signature);
++            facts |= self.native_storage_pack(returned, environment, walk)?;
++        } else {
++            let returned = self.signature_return_type(signature);
++            facts |= self.native_storage_type(returned, environment, walk)?;
++        }
++        if let Some(this) = self.sig_this_type(signature) { facts |= self.native_storage_type(this, environment, walk)?; }
++        // Predicate targets expose type information separately from the
++        // boolean return value, including any mutable storage they reveal.
++        if let Some(predicate) = self.sig_predicate(signature)
++            && let Some(target) = predicate.ty {
++            facts |= self.native_storage_type(target, environment, walk)?;
++        }
++        for &parameter in self.sig_type_params(signature).iter() {
++            if let Some(constraint) = self.constraint_of_type_param(parameter) { facts |= self.native_storage_type(constraint, environment, walk)?; }
++            if let Some(default) = self.default_of_type_param(parameter) { facts |= self.native_storage_type(default, environment, walk)?; }
++        }
++        Ok(if let Some(key) = key {
++            if wrapped { walk.wrappers.remove(&key); facts } else { walk.finish(key, facts) }
++        } else { facts })
++    }
++}

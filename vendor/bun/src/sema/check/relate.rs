@@ -5363,6 +5363,21 @@ impl<'p, 's> Checker<'p, 's> {
         &mut self,
         r: &mut Relater,
         source: TypeId,
+        sd: &'p TypeData<'p>,
+        target: TypeId,
+        td: &'p TypeData<'p>,
+        state: u8,
+        shared: &mut WorkerState,
+    ) -> Ternary {
+        let storage = self.native_generic_storage_related::<REPORT>(r, source, target, state);
+        if !storage.holds() { return storage }
+        storage & self.objects_related_to_worker::<REPORT>(r, source, sd, target, td, state, shared)
+    }
+
+    fn objects_related_to_worker<const REPORT: bool>(
+        &mut self,
+        r: &mut Relater,
+        source: TypeId,
         _sd: &'p TypeData<'p>,
         target: TypeId,
         _td: &'p TypeData<'p>,

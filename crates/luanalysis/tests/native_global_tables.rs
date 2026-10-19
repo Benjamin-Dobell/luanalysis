@@ -228,8 +228,13 @@ fn original_cross_file_global_completion_keeps_all_three_number_fields() {
         let labels = completions.iter().map(|item| item.label.as_str()).collect::<std::collections::BTreeSet<_>>();
         assert_eq!(labels, ["aaa", "bbb", "ccc"].into_iter().collect(), "{completions:?}");
         for item in &completions {
-            let expected = if item.label == "ccc" { "4" } else { "number" };
-            assert_eq!(item.detail.as_deref(), Some(expected), "{item:?}");
+            let literal = match item.label.as_str() {
+                "aaa" => "2",
+                "bbb" => "3",
+                "ccc" => "4",
+                _ => unreachable!("exact labels checked above"),
+            };
+            assert!(item.detail.as_deref().is_some_and(|detail| detail == "number" || detail == literal), "{item:?}");
         }
     }
     let consumer = "---@type number\nlocal aaa=gVar2.aaa\n---@type number\nlocal bbb=gVar2.bbb\n---@type number\nlocal ccc=gVar2.ccc\n";

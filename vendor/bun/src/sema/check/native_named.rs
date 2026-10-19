@@ -30,6 +30,8 @@ use super::task::Stored;
 use crate::util::FxHashMap;
 #[path = "native_runtime_tables.rs"]
 mod runtime_tables;
+#[path = "native_generic_storage.rs"]
+mod generic_storage;
 
 /// Original named declaration, or an anonymous object annotation head registered by the source.
 /// File-local syntax ids must be mapped explicitly into this provider-owned namespace.

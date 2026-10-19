@@ -2567,19 +2567,19 @@
       "path": "src/sema/check/native_named.rs",
       "patch": "vendor/patches/bun-sema-native-table-contracts.patch",
       "reason": "Reject unrelated dictionary domains and opaque table impostors while preserving partial indexer views, every shared value contract, exact-field precedence and sound dynamic intersection reads and writes.",
-      "patch_sha256": "45cec44ffbc99fe26d44ed42f3fdcea9732af7cb905a31b327436400a3590f79"
+      "patch_sha256": "b6c03f5316d324e3ddca9169a207b7fffbdd9457df970780fbc23ae0080ad123"
     },
     {
       "path": "src/sema/check/native_runtime.rs",
       "patch": "vendor/patches/bun-sema-native-table-contracts.patch",
       "reason": "Reject unrelated dictionary domains and opaque table impostors while preserving partial indexer views, every shared value contract, exact-field precedence and sound dynamic intersection reads and writes.",
-      "patch_sha256": "45cec44ffbc99fe26d44ed42f3fdcea9732af7cb905a31b327436400a3590f79"
+      "patch_sha256": "b6c03f5316d324e3ddca9169a207b7fffbdd9457df970780fbc23ae0080ad123"
     },
     {
       "path": "src/sema/check/native_tables.rs",
       "patch": "vendor/patches/bun-sema-native-table-contracts.patch",
       "reason": "Reject unrelated dictionary domains and opaque table impostors while preserving partial indexer views, every shared value contract, exact-field precedence and sound dynamic intersection reads and writes.",
-      "patch_sha256": "45cec44ffbc99fe26d44ed42f3fdcea9732af7cb905a31b327436400a3590f79"
+      "patch_sha256": "b6c03f5316d324e3ddca9169a207b7fffbdd9457df970780fbc23ae0080ad123"
     },
     {
       "path": "src/sema/types.rs",
@@ -2761,6 +2761,25 @@
       "patch": "vendor/patches/bun-sema-native-runtime-completion-seed.patch",
       "reason": "Enumerate original constructor keys together with later store metadata when a cross-file runtime allocation is published as its declaration schema, preserving ordinary checked member reads and lazy function values.",
       "patch_sha256": "cdda8264c408bced5df758ac96644a0a4efefdf5337eddd5c66989d7b7554b76"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-storage-variance.patch",
+      "reason": "Require invariant mapped native class arguments when observable through writable storage, preserving phantom parameters, readonly and callable contracts with finite demand-local profiles and fail-closed incomplete proofs.",
+      "patch_sha256": "2d30a507c0095ba83518b9cb7a15d0a97e4ff6fa6a330f81b6eb5eee2606be6c"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-storage-variance.patch",
+      "reason": "Require invariant mapped native class arguments when observable through writable storage, preserving phantom parameters, readonly and callable contracts with finite demand-local profiles and fail-closed incomplete proofs.",
+      "patch_sha256": "2d30a507c0095ba83518b9cb7a15d0a97e4ff6fa6a330f81b6eb5eee2606be6c"
+    },
+    {
+      "path": "src/sema/check/native_generic_storage.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-storage-variance.patch",
+      "reason": "Analyze native generic writable storage through original mapped declarations, captured parameters and finite recursive observability profiles without publishing provisional variance masks.",
+      "added": true,
+      "patch_sha256": "2d30a507c0095ba83518b9cb7a15d0a97e4ff6fa6a330f81b6eb5eee2606be6c"
     }
   ],
   "source_additions": {
@@ -2784,6 +2803,10 @@
       "extracted_sha256": "fbf3039b403324df34015f8bfb7ddbfecfba0b5d698ca065e6f7b7e2a697916f",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
+    "src/sema/check/native_generic_storage.rs": {
+      "extracted_sha256": "6de13adba5c10d65d11461decebf13e0ab907a6989f8ce9c3fe0c6fcbf176886",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-generic-storage-variance.patch"
+    },
     "src/sema/check/native_globals.rs": {
       "extracted_sha256": "c5011ebfefd110ca321d24d64c89d7ba21ed136edaffa615d4e7b5a5c79c430e",
       "introduced_by_patch": "vendor/patches/bun-sema-native-global-declarations.patch"
@@ -2797,7 +2820,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "9608a90616280bd3fb89eea7a6bc95837aea635bd923ad08d9a0a0c2c50d897a",
+      "extracted_sha256": "d0e04ba7b96c2353c8caee793574ae597229dd46be051a480cdcc53596090483",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_nil.rs": {
@@ -2833,7 +2856,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "d232f18e4cf87b4569f21353329cf88146df78f87ee4e20cd76217480872ea97",
+      "extracted_sha256": "24b6e89b995452e39aa52f1e20ac1feebb8b5743e233ef2e8defe0ec3dae25d1",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -3816,7 +3839,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "c2dc81532e526b295345d974facd30552ca05e5adc0a7af4ba740fd8de9891df"
+      "extracted_sha256": "d2cfabfdf556c81b67478f3dd04bdb54c46fd41ba92ab343a154e82a7c2fdb33"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",

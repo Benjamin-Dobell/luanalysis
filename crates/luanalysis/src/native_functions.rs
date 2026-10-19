@@ -3715,6 +3715,48 @@ mod generic_scope_tests {
     use luanalysis_engine::Engine;
 
     #[test]
+    fn self_recursion_does_not_capture_an_unrelated_active_function_frame() {
+        let source = "---@generic T\n---@param value T\nlocal function make(value)\n return function() return make(value) end\nend\nlocal function unrelated() end\n";
+        let file = luanalysis_syntax::parse(source);
+        assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
+        let bound = bind::bind(&file);
+        Engine::new().with_native_provider(
+            move || NativeRegistry::new(file, bound),
+            |provider, queries| {
+                let make = provider.key(0);
+                let inner = provider.key(1);
+                let unrelated = provider.key(2);
+                let captures = &provider.bound().scopes.iter().find(|scope| {
+                    scope.kind == bind::ScopeKind::Function && scope.span == provider.function(make).span
+                }).unwrap().captures;
+                assert_eq!(captures.len(), 1, "the recursive binding is the only source capture");
+                assert_eq!(provider.binding_function_key(captures[0]), Some(make));
+
+                let ambient = queries.function_capture_context(&Type::NativeFunction(unrelated)).unwrap();
+                queries.with_captured_function(&ambient, &mut |queries| {
+                    let value = provider.source_function_value(provider.function(make), NativeCheckMode::empty(), queries);
+                    assert_eq!(value, Type::NativeFunction(make));
+                });
+                assert_eq!(
+                    provider.source_function_value(provider.function(make), NativeCheckMode::empty(), queries),
+                    Type::NativeFunction(make),
+                );
+
+                let parent = queries.function_capture_context(&Type::NativeFunction(make)).unwrap();
+                queries.with_captured_function(&parent, &mut |queries| {
+                    let value = provider.source_function_value(provider.function(inner), NativeCheckMode::empty(), queries);
+                    let capture = queries.function_capture_context(&value).unwrap();
+                    assert_eq!(queries.captured_function_parent(&capture), Some(parent));
+                    let binding = provider.bound().binding_at(provider.function(make).params[0].span.start).unwrap();
+                    let value = queries.captured_binding(&capture, provider.source_binding_key(binding)).unwrap();
+                    let parameter = provider.function_type_parameters(make, queries)[0];
+                    assert_eq!(value, Type::NativeTypeParameter(parameter));
+                });
+            },
+        );
+    }
+
+    #[test]
     fn ambient_type_visibility_does_not_create_unneeded_closure_mapper_parameters() {
         let source = "---@generic T\n---@param value T\nlocal function outer(value)\nlocal function constant() return 1 end\nlocal function captured() return value end\nreturn constant\nend";
         let file = luanalysis_syntax::parse(source);
