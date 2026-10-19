@@ -1091,11 +1091,6 @@ fn signatures(
         }
         _ => value_documentation(project, registry, &callee, queries),
     }.unwrap_or_default();
-    let described = {
-        let mut summary = documentation.clone();
-        summary.params.clear();
-        Some(documentation_markdown(&summary, true)).filter(|markdown| !markdown.is_empty())
-    };
     // A method call passes its receiver as the first argument, which the signatures leave out.
     let hidden = usize::from(receiver.is_some());
     let name = if name.len() > 80 { "function" } else { name };
@@ -1103,6 +1098,13 @@ fn signatures(
     let mut shapes = Vec::new();
     for head in &heads {
         let Some((parameters, returns)) = crate::describe_signature(head, queries) else { continue };
+        let documentation = value_documentation(project, registry, head, queries)
+            .unwrap_or_else(|| documentation.clone());
+        let described = {
+            let mut summary = documentation.clone();
+            summary.params.clear();
+            Some(documentation_markdown(&summary, true)).filter(|markdown| !markdown.is_empty())
+        };
         let shown = parameters.get(hidden..).unwrap_or_default();
         let mut label = format!("{name}(");
         let mut ranges = Vec::new();
@@ -1120,7 +1122,7 @@ fn signatures(
             documentation.param(name).map(str::to_owned)
         }).collect();
         shapes.push((head.clone(), shown.len(), rest));
-        signatures.push(SignatureInformation { label, parameters: ranges, active_parameter, documentation: described.clone(), parameter_documentation });
+        signatures.push(SignatureInformation { label, parameters: ranges, active_parameter, documentation: described, parameter_documentation });
     }
     if signatures.is_empty() { return None; }
     // The overload that the complete arguments before the cursor's select: the first whose
@@ -1194,12 +1196,11 @@ fn value_documentation(
     value: &Type,
     queries: &mut dyn luanalysis_engine::TypeQueries,
 ) -> Option<Documentation> {
-    let (file, span, inside) = if let Some(key) = queries.native_function_key(value) {
+    let (file, span, inside) = if let Some(key) = queries.native_signature_key(value) {
+        registry.signature_site(key)?
+    } else if let Some(key) = queries.native_function_key(value) {
         let (file, span) = registry.function_site(key)?;
         (file, span, false)
-    } else if let Type::NativeSignature(key) = value {
-        let (file, span) = registry.signature_site(*key)?;
-        (file, span, true)
     } else {
         return None;
     };
@@ -1342,11 +1343,61 @@ pub fn hover_documentation(
     let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
         let markdown = type_name_hover(project, registry, file, offset).or_else(|| {
-            documentation_at_offset(project, registry, file, offset, queries)
-                .map(|documentation| documentation_markdown(&documentation, true))
+            overload_hover_documentation(project, registry, file, offset, queries).or_else(|| {
+                documentation_at_offset(project, registry, file, offset, queries)
+                    .map(|documentation| documentation_markdown(&documentation, true))
+            })
         });
         deliver(markdown.filter(|markdown| !markdown.is_empty()));
     });
+}
+
+/// Distinct overload documentation belongs beside its own head. A shared documentation block
+/// keeps the ordinary concise hover, while an undocumented head uses the callee's description.
+fn overload_hover_documentation(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    offset: usize,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<String> {
+    let source = registry.source(file)?;
+    let text = &project.file(file)?.source;
+    registry.prepare_documentation_members(queries);
+    let contains = |span: Span| span.start <= offset && offset <= span.end;
+    let mut member = None;
+    let mut name = None;
+    crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| match &expression.kind {
+        ExprKind::Field { base, name: field } | ExprKind::MethodCall { receiver: base, name: field, .. } if contains(field.span) => {
+            member = Some((base.span, field.text.clone()));
+        }
+        ExprKind::Index { base, index } => if let Some(field) = string_key(text, index) && contains(field.span) {
+            member = Some((base.span, field.text));
+        },
+        ExprKind::Name(_) if contains(expression.span) => name = Some(expression.span),
+        _ => {}
+    });
+    let value = if let Some((receiver, field)) = member {
+        let receiver = expression_type(registry, file, receiver, queries)?;
+        let receiver = queries.exclude_type(&receiver, &Type::Nil);
+        queries.type_members(&receiver).into_iter().find(|(member, _)| *member == field)?.1
+    } else {
+        expression_type(registry, file, name?, queries)?
+    };
+    let heads = queries.call_signature_types(&value);
+    if heads.len() < 2 { return None; }
+    let fallback = documentation_at_offset(project, registry, file, offset, queries).unwrap_or_default();
+    let documented: Vec<_> = heads.iter().map(|head| {
+        value_documentation(project, registry, head, queries).unwrap_or_else(|| fallback.clone())
+    }).collect();
+    if documented.windows(2).all(|pair| pair[0] == pair[1]) { return None; }
+    let sections: Vec<_> = heads.iter().zip(documented).filter_map(|(head, documentation)| {
+        let (parameters, returns) = crate::describe_signature(head, queries)?;
+        let label = format!("fun({}): {returns}", parameters.join(", "));
+        let markdown = documentation_markdown(&documentation, true);
+        Some(if markdown.is_empty() { format!("```lua\n{label}\n```") } else { format!("```lua\n{label}\n```\n\n{markdown}") })
+    }).collect();
+    (!sections.is_empty()).then(|| sections.join("\n\n---\n\n"))
 }
 
 /// A hover on a type name in an annotation: the tag that declares the type, and what its
@@ -1381,6 +1432,7 @@ fn documentation_at_offset(
     queries: &mut dyn luanalysis_engine::TypeQueries,
 ) -> Option<Documentation> {
     let source = registry.source(file)?;
+    let text = &project.file(file)?.source;
     registry.prepare_documentation_members(queries);
     let contains = |span: Span| span.start <= offset && offset <= span.end;
     let mut member = None;
@@ -1389,6 +1441,9 @@ fn documentation_at_offset(
         ExprKind::Field { base, name: field } | ExprKind::MethodCall { receiver: base, name: field, .. } if contains(field.span) => {
             member = Some((base.span, field.text.clone()));
         }
+        ExprKind::Index { base, index } => if let Some(field) = string_key(text, index) && contains(field.span) {
+            member = Some((base.span, field.text));
+        },
         ExprKind::Name(_) if contains(expression.span) => name = Some(expression.span),
         _ => {}
     });

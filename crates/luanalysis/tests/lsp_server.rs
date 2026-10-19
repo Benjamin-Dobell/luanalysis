@@ -890,9 +890,9 @@ fn a_members_origins_and_documentation_are_its_owners() {
 fn signature_help_documents_bodyless_global_and_member_functions() {
     let root = fixture();
     let library = root.join("api.def.lua");
-    fs::write(&library, "---@class Methods\n\n--- Moves a member.\n---@function Methods.move(distance: number): boolean\n---@param distance number The spaces to move.\n\n--- Moves a global.\n---@param distance number The spaces it moves.\n---@function compact(distance: number): boolean\n\n---@type Methods\nMethods = nil\n").unwrap();
+    fs::write(&library, "---@class Methods\n\n--- Moves a member.\n---@function Methods.move(distance: number): boolean\n---@param distance number The spaces to move.\n\n--- Moves a global.\n---@param distance number The spaces it moves.\n---@function compact(distance: number): boolean\n\n---@type Methods\nMethods = nil\n\n--- Moves an ambient function.\n---@param distance number The ambient distance.\n---@return boolean Whether it moved.\nfunction ambientMove(distance) end\n").unwrap();
     let main = root.join("main.lua");
-    let text = "Methods.move(1)\ncompact(1)\n";
+    let text = "Methods.move(1)\ncompact(1)\nambientMove(1)\n";
     fs::write(&main, text).unwrap();
     let library_argument = library.to_str().unwrap().to_owned();
     let mut server = Server::start(&["--lua-version", "5.2", "--library", &library_argument]);
@@ -905,6 +905,87 @@ fn signature_help_documents_bodyless_global_and_member_functions() {
     assert!(member.contains("Moves a member.") && member.contains("The spaces to move."), "{member}");
     let global = server.request(3, "textDocument/signatureHelp", &main, 1, 8);
     assert!(global.contains("Moves a global.") && global.contains("The spaces it moves."), "{global}");
+    let ambient = server.request(4, "textDocument/signatureHelp", &main, 2, 12);
+    assert!(ambient.contains("Moves an ambient function.") && ambient.contains("The ambient distance.") && ambient.contains("Whether it moved."), "{ambient}");
+    let hover = server.request(5, "textDocument/hover", &main, 2, 1);
+    assert!(hover.contains("Moves an ambient function.") && hover.contains("The ambient distance."), "{hover}");
+    assert!(!hover.contains("fun(distance:"), "{hover}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn signature_help_and_hover_keep_each_global_overloads_documentation() {
+    let root = fixture();
+    let library = root.join("api.def.lua");
+    fs::write(&library, "--- Looks up a label.\n---@param value string The textual label.\n---@function auditPick(value: string): string\n\n--- Looks up a numeric count and label.\n---@param count number The numeric count.\n---@param label string The count label.\n---@function auditPick(count: number, label: string): number\n\n--- Shared fallback description.\n---@param value string The fallback value.\n---@function fallback(value: string): string\n\n---@function fallback(count: number): number\n").unwrap();
+    let main = root.join("main.lua");
+    let text = "auditPick(1, \"x\")\nlocal alias = auditPick\nalias(1, \"x\")\nfallback(1)\n";
+    fs::write(&main, text).unwrap();
+    let library_argument = library.to_str().unwrap().to_owned();
+    let mut server = Server::start(&["--lua-version", "5.2", "--library", &library_argument]);
+    server.initialize(&root);
+    server.open(&main, text);
+    let diagnostics = server.diagnostics(&main, |_| true);
+    assert!(diagnostics.contains(r#""diagnostics":[]"#), "{diagnostics}");
+    for (id, row, name) in [(2, 0, "auditPick"), (3, 2, "alias")] {
+        let response = server.request(id, "textDocument/signatureHelp", &main, row, name.len() as u32 + 3);
+        let heads: Vec<_> = response.split(r#"{"label":""#).skip(1).collect();
+        assert_eq!(heads.len(), 2, "{response}");
+        assert!(heads[0].starts_with(&format!("{name}(value: string): string")), "{response}");
+        assert!(heads[0].contains("Looks up a label.") && heads[0].contains("The textual label."), "{response}");
+        assert!(!heads[0].contains("numeric count") && !heads[0].contains("The count label."), "{response}");
+        assert!(heads[1].starts_with(&format!("{name}(count: number, label: string): number")), "{response}");
+        assert!(heads[1].contains("Looks up a numeric count and label.") && heads[1].contains("The numeric count.") && heads[1].contains("The count label."), "{response}");
+        assert!(!heads[1].contains("The textual label.") && !heads[1].contains("Looks up a label."), "{response}");
+        assert!(response.contains(r#""activeSignature":1,"activeParameter":1"#), "{response}");
+    }
+    let hover = server.request(4, "textDocument/hover", &main, 0, 1);
+    assert!(hover.contains("Looks up a label.") && hover.contains("Looks up a numeric count and label."), "{hover}");
+    assert!(hover.contains("The textual label.") && hover.contains("The numeric count.") && hover.contains("The count label."), "{hover}");
+    assert!(hover.contains("fun(value: string): string") && hover.contains("fun(count: number, label: string): number"), "{hover}");
+    // A declaration without prose uses the callable's documented description, while parameter
+    // descriptions still match by name instead of leaking into a different parameter.
+    let fallback = server.request(5, "textDocument/signatureHelp", &main, 3, 9);
+    let heads: Vec<_> = fallback.split(r#"{"label":""#).skip(1).collect();
+    assert_eq!(heads.len(), 2, "{fallback}");
+    assert!(heads.iter().all(|head| head.contains("Shared fallback description.")), "{fallback}");
+    assert!(heads[0].contains("The fallback value.") && !heads[1].contains("The fallback value."), "{fallback}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn inherited_generic_member_overloads_keep_their_documentation_through_aliases() {
+    let root = fixture();
+    let library = root.join("api.def.lua");
+    fs::write(&library, "---@class Box<T>\n\n--- Reads one stored value.\n---@param value T The stored value.\n---@function Box:pick(value: T): T\n\n--- Reads by count and label.\n---@param count number The member count.\n---@param label string The member label.\n---@function Box:pick(count: number, label: string): T\n\n---@class Derived: Box<string>\n\n---@alias Alias Derived\n").unwrap();
+    let main = root.join("main.lua");
+    let text = "---@param box Alias\nlocal function use(box)\n    box:pick(1, \"x\")\n    box[\"pick\"](box, 1, \"x\")\nend\n";
+    fs::write(&main, text).unwrap();
+    let library_argument = library.to_str().unwrap().to_owned();
+    let mut server = Server::start(&["--lua-version", "5.2", "--library", &library_argument]);
+    server.initialize(&root);
+    server.open(&main, text);
+    let diagnostics = server.diagnostics(&main, |_| true);
+    assert!(diagnostics.contains(r#""diagnostics":[]"#), "{diagnostics}");
+    let response = server.request(2, "textDocument/signatureHelp", &main, 2, 16);
+    let heads: Vec<_> = response.split(r#"{"label":""#).skip(1).collect();
+    assert_eq!(heads.len(), 2, "{response}");
+    assert!(heads[0].starts_with("box:pick(value: string): string"), "{response}");
+    assert!(heads[0].contains("Reads one stored value.") && heads[0].contains("The stored value."), "{response}");
+    assert!(!heads[0].contains("The member count."), "{response}");
+    assert!(heads[1].starts_with("box:pick(count: number, label: string): string"), "{response}");
+    assert!(heads[1].contains("Reads by count and label.") && heads[1].contains("The member count.") && heads[1].contains("The member label."), "{response}");
+    assert!(!heads[1].contains("The stored value."), "{response}");
+    assert!(response.contains(r#""activeSignature":1,"activeParameter":1"#), "{response}");
+    let hover = server.request(3, "textDocument/hover", &main, 2, 10);
+    assert!(hover.contains("Reads one stored value.") && hover.contains("Reads by count and label."), "{hover}");
+    assert!(hover.contains("The stored value.") && hover.contains("The member count.") && hover.contains("The member label."), "{hover}");
+    let indexed = server.request(4, "textDocument/hover", &main, 3, 10);
+    assert!(indexed.contains("Reads one stored value.") && indexed.contains("Reads by count and label."), "{indexed}");
+    let signature = server.request(5, "textDocument/signatureHelp", &main, 3, 24);
+    assert!(signature.contains("The stored value.") && signature.contains("The member count.") && signature.contains("The member label."), "{signature}");
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }

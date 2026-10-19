@@ -508,10 +508,12 @@ impl ProjectRegistry {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];
         Some((file.id, file.source.function(key).span))
     }
-    /// Where a signature (`---@function`, `---@overload`) is written.
-    pub(crate) fn signature_site(&self, key: luanalysis_engine::NativeSignatureKey) -> Option<(FileId, luanalysis_syntax::Span)> {
+    /// Where a signature is written, and whether its site is inside a documentation tag rather
+    /// than an ambient function statement.
+    pub(crate) fn signature_site(&self, key: luanalysis_engine::NativeSignatureKey) -> Option<(FileId, luanalysis_syntax::Span, bool)> {
         let file = &self.files[*self.snapshots.get(&key.snapshot)?];
-        Some((file.id, file.source.signatures.get(key).span))
+        let signature = file.source.signatures.get(key);
+        Some((file.id, signature.span, signature.ambient_function.is_none()))
     }
     /// Where a named type's name is declared: in its own declaration and those merged into it.
     pub(crate) fn type_declaration_sites(&self, key: NativeTypeDeclarationKey) -> Vec<(FileId, luanalysis_syntax::Span)> {

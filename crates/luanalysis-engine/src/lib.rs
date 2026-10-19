@@ -1045,6 +1045,9 @@ pub trait TypeQueries {
     fn captured_function_context(&mut self, context: &CapturedFunctionContext)
     -> Option<ContextualFunctionContext>;
     fn native_function_key(&mut self, function: &Type) -> Option<NativeFunctionKey>;
+    /// Original written declaration of a single callable head, retaining its identity through
+    /// generic mapping and result wrappers.
+    fn native_signature_key(&mut self, function: &Type) -> Option<NativeSignatureKey>;
     fn contextual_type_owner(&mut self, scope: NativeFunctionKey, input: NativeFlowKey) -> ContextualTypeOwner;
     fn contextual_owner_self_type(&mut self, owner: &Type) -> Option<Type>;
     fn instantiate_in_function(&mut self, function: &Type, declaration_type: &Type)
@@ -1717,6 +1720,13 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         self.checker
             .sig_native_decl(signature)
             .map(|(key, _)| source_key(key))
+    }
+    fn native_signature_key(&mut self, function: &Type) -> Option<NativeSignatureKey> {
+        let function = import_type(self.checker, self.handles, function);
+        let signatures = self.checker.signatures(function, false);
+        if signatures.len() != 1 { return None; }
+        self.checker.sig_native_signature_decl(signatures[0])
+            .map(|(key, _)| source_signature_key(key))
     }
     fn contextual_type_owner(&mut self, scope: NativeFunctionKey, input: NativeFlowKey) -> ContextualTypeOwner {
         use bun_sema::check::native_named::NativeContextualTypeOwner as Core;

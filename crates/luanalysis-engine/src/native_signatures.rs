@@ -662,6 +662,7 @@ mod tests {
         let provider = Provider::new(vec![head(Type::Number, Type::String)]);
         with_provider(provider.clone(), |_provider, queries| {
             let annotation = queries.signature_type(Provider::key(0));
+            assert_eq!(queries.native_signature_key(&annotation), Some(Provider::key(0)));
             assert_eq!(_provider.parameter_reads.get(), 0);
             assert_eq!(_provider.return_reads.get(), 0);
             assert_eq!(queries.native_function_key(&annotation), None);
@@ -1097,7 +1098,8 @@ mod tests {
                 .return_type;
             let public = queries.call_signature_types(&closure);
             assert_eq!(public.len(), 2);
-            for (head, parameter) in public.iter().zip([Type::Number, Type::String]) {
+            for ((head, parameter), index) in public.iter().zip([Type::Number, Type::String]).zip(0..) {
+                assert_eq!(queries.native_signature_key(head), Some(Provider::key(index)));
                 let signature = queries.function_signature(head).unwrap();
                 assert_eq!(signature.params[0].ty, parameter);
                 assert_eq!(signature.returns.as_ref(), &Type::Boolean);
@@ -1296,6 +1298,7 @@ mod tests {
             ]),
             |provider, queries| {
                 let callable = queries.signature_group_type(&[Provider::key(0), Provider::key(1)]);
+                assert_eq!(queries.native_signature_key(&callable), None);
                 assert_eq!(provider.parameter_reads.get(), 0);
                 assert_eq!(provider.return_reads.get(), 0);
                 assert_eq!(queries.native_function_key(&callable), None);
@@ -1310,7 +1313,8 @@ mod tests {
                 assert!(!queries.call(&callable, &[Type::Boolean]).errors.is_empty());
                 let public = queries.call_signature_types(&callable);
                 assert_eq!(public.len(), 2);
-                for signature in public {
+                for (index, signature) in public.into_iter().enumerate() {
+                    assert_eq!(queries.native_signature_key(&signature), Some(Provider::key(index as u32)));
                     assert_eq!(queries.native_function_key(&signature), None);
                     assert_eq!(queries.function_implementation_type(&signature), None);
                 }
