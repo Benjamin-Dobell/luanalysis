@@ -566,16 +566,33 @@ synchronization.lib legacy_stdio_definitions.lib`, compiling with `/MT` and defi
 Luanalysis's checker is built on Bun's Rust port of the TypeScript compiler's checker, and it
 checks a project's files in parallel.
 
-Checking the 434 Lua files of [lua-language-server](https://github.com/LuaLS/lua-language-server)
-3.19.2's own repository, on an Apple M1 Max:
+Checking 434 Lua files of
+[lua-language-server](https://github.com/LuaLS/lua-language-server) 3.19.2's own repository,
+using Lua 5.4 on an Apple M1 Max (19 October 2026):
 
 | Checker | Wall time | CPU time |
 | --- | --- | --- |
-| lua-language-server 3.19.2 `--check` | 40.2 s | 39.3 s |
-| Luanalysis, one thread | 2.9 s | 2.6 s |
-| Luanalysis, ten threads | 1.6 s | 4.9 s |
+| lua-language-server 3.19.2 `--check` | 18.4 s | 17.9 s |
+| Luanalysis, one thread | 2.9 s | 2.9 s |
+| Luanalysis, ten threads | 1.4 s | 4.7 s |
 
-In the language server, completions typically answer in under 75 ms.
+These are medians of five fresh-process runs after one warmup, using release builds;
+CPU time includes user and system time. Both checkers receive `script/`, `test/`, `tools/`
+and the four root Lua files. LuaLS uses its repository configuration with Lua 5.4 and
+`lua/` (a symlink to `script/`) and `make/` excluded, so it checks those same 434 files.
+The checkers report different diagnostics. Other development work was running on the machine.
+
+Member completions in a 1,546-line Prototype Inertia file, with the buffer changed before
+every request and background checking active:
+
+| Completion item details | Median | 95th percentile |
+| --- | --- | --- |
+| Included in the list | 31 ms | 69 ms |
+| Resolved separately by the client | 32 ms | 80 ms |
+
+Each row measures 100 requests across five language-server sessions, excluding each session's
+first request. Times include sending the changed buffer and receiving the completion list
+over stdio; separately resolved item details are excluded.
 
 ## Compatibility
 
