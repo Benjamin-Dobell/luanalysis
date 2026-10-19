@@ -899,8 +899,7 @@ fn signature_help_documents_bodyless_global_and_member_functions() {
     server.initialize(&root);
     server.open(&main, text);
     server.diagnostics(&main, |_| true);
-    // A bodyless function's value has no declaration to read its documentation from; its name
-    // has, as a hover on it shows.
+    // Written heads and ambient function statements both retain their own documentation.
     let member = server.request(2, "textDocument/signatureHelp", &main, 0, 13);
     assert!(member.contains("Moves a member.") && member.contains("The spaces to move."), "{member}");
     let global = server.request(3, "textDocument/signatureHelp", &main, 1, 8);
@@ -909,7 +908,7 @@ fn signature_help_documents_bodyless_global_and_member_functions() {
     assert!(ambient.contains("Moves an ambient function.") && ambient.contains("The ambient distance.") && ambient.contains("Whether it moved."), "{ambient}");
     let hover = server.request(5, "textDocument/hover", &main, 2, 1);
     assert!(hover.contains("Moves an ambient function.") && hover.contains("The ambient distance."), "{hover}");
-    assert!(!hover.contains("fun(distance:"), "{hover}");
+    assert_eq!(hover.matches("fun(distance: number): boolean").count(), 1, "{hover}");
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }
@@ -961,7 +960,7 @@ fn inherited_generic_member_overloads_keep_their_documentation_through_aliases()
     let library = root.join("api.def.lua");
     fs::write(&library, "---@class Box<T>\n\n--- Reads one stored value.\n---@param value T The stored value.\n---@function Box:pick(value: T): T\n\n--- Reads by count and label.\n---@param count number The member count.\n---@param label string The member label.\n---@function Box:pick(count: number, label: string): T\n\n---@class Derived: Box<string>\n\n---@alias Alias Derived\n").unwrap();
     let main = root.join("main.lua");
-    let text = "---@param box Alias\nlocal function use(box)\n    box:pick(1, \"x\")\n    box[\"pick\"](box, 1, \"x\")\nend\n";
+    let text = "---@param box Alias\nlocal function use(box)\n    box:pick(1, \"x\")\n    box[\"pick\"](box, 1, \"x\")\nend\nreturn use\n";
     fs::write(&main, text).unwrap();
     let library_argument = library.to_str().unwrap().to_owned();
     let mut server = Server::start(&["--lua-version", "5.2", "--library", &library_argument]);

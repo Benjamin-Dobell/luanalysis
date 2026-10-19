@@ -1083,8 +1083,7 @@ fn signatures(
     if heads.is_empty() { return None; }
     let documentation = match (&call.kind, &receiver) {
         (ExprKind::MethodCall { name, .. }, Some(receiver)) => member_documentation(project, registry, receiver, &name.text, &callee, queries),
-        // A named callee's, as a hover on its name finds it: a bodyless `---@function`'s value
-        // has no declaration of its own to read it from.
+        // Keep the callee's description as a fallback for an undocumented head.
         (ExprKind::Call { callee: written, .. }, _) if matches!(written.kind, ExprKind::Name(_) | ExprKind::Field { .. }) => {
             documentation_at_offset(project, registry, file, written.span.end, queries)
                 .or_else(|| value_documentation(project, registry, &callee, queries))

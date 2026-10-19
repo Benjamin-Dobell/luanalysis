@@ -450,7 +450,8 @@ options of `check`, and without paths it checks the editor's workspace. It provi
   body, as are the literals an expected type allows, and a host's callbacks complete as their
   implementations.
 * Signature help, which highlights the parameter being typed and selects the overload that the
-  arguments typed so far resolve to.
+  arguments typed so far resolve to. Each overload retains its own description and parameter
+  documentation; hover shows distinct documentation beside the corresponding overload.
 * Go to definition and type definition, find references, highlights and rename, for locals,
   globals (including `_G.name`), fields and methods (through the receiver's type, its bases and
   each alternative of a union, and a table's fields from its constructor's keys through aliases,
