@@ -1204,10 +1204,7 @@ impl Server {
                     let new_uri = file.get("newUri")?.as_str()?;
                     let old_path = uri_to_path(old_uri)?;
                     let suffix = path.strip_prefix(&old_path).ok()?;
-                    let uri = if suffix.as_os_str().is_empty() { new_uri.to_owned() }
-                        else if let Some(suffix) = document.uri.strip_prefix(old_uri.trim_end_matches('/')) {
-                            format!("{}{suffix}", new_uri.trim_end_matches('/'))
-                        } else { path_to_uri(&target) };
+                    let uri = moved_document_uri(&document.uri, old_uri, new_uri, suffix);
                     Some((old_path.components().count(), uri))
                 }).max_by_key(|(depth, _)| *depth).map_or_else(|| path_to_uri(&target), |(_, uri)| uri);
             }
@@ -2351,6 +2348,23 @@ impl LineIndex {
     }
 }
 
+/// Keep the destination URI supplied by the client even when an open document
+/// and its containing directory use equivalent authorities or symlink spellings.
+fn moved_document_uri(document_uri: &str, old_uri: &str, new_uri: &str, suffix: &Path) -> String {
+    if suffix.as_os_str().is_empty() { return new_uri.to_owned(); }
+    let relative = match document_uri.strip_prefix(old_uri.trim_end_matches('/'))
+        .and_then(|suffix| suffix.strip_prefix('/'))
+    {
+        Some(relative) => relative.to_owned(),
+        None => {
+            let encoded = path_to_uri(suffix);
+            encoded.strip_prefix("file://").unwrap_or(&encoded).to_owned()
+        }
+    };
+    let separator = if new_uri.ends_with('/') { "" } else { "/" };
+    format!("{new_uri}{separator}{relative}")
+}
+
 fn uri_to_path(uri: &str) -> Option<PathBuf> {
     let path = uri_to_lexical_path(uri)?;
     Some(std::fs::canonicalize(&path).unwrap_or(path))
@@ -2421,6 +2435,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn file_move_uris_preserve_client_authorities_and_path_boundaries() {
+        assert_eq!(moved_document_uri("file:///repo/pkg/child%20%ce%bb.lua", "file:///repo/pkg",
+            "file://localhost/next", Path::new("child λ.lua")), "file://localhost/next/child%20%ce%bb.lua");
+        assert_eq!(moved_document_uri("file:///repo/pkg/child%20%CE%BB.lua", "file://localhost/repo/pkg",
+            "file://localhost/next%20root/", Path::new("child λ.lua")), "file://localhost/next%20root/child%20%CE%BB.lua");
+        assert_eq!(moved_document_uri("file:///repo/pkg_alias/child.lua", "file:///repo/pkg",
+            "file:///next", Path::new("child.lua")), "file:///next/child.lua");
+        assert_eq!(moved_document_uri("file:///repo/pkg/child.lua", "file://localhost/repo/pkg",
+            "file:///", Path::new("child.lua")), "file:///child.lua");
+        assert_eq!(moved_document_uri("file:///repo/old.lua", "file://localhost/repo/old.lua",
+            "file://localhost/repo/new%20name.lua", Path::new("")), "file://localhost/repo/new%20name.lua");
     }
 
     #[test]

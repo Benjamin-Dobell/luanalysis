@@ -658,6 +658,29 @@ def file_operations(client):
     check(hover and ('unsaved' in json.dumps(hover) or 'string' in json.dumps(hover)), f'renamed open module lost unsaved contents: {hover!r}')
 
 
+    # The folder operation and open document can use equivalent authorities.
+    # Preserve the exact destination authority and the unsaved moved overlay.
+    moved_folder = new.parent.with_name('moved 😀 folder')
+    folder_old_uri = 'file://localhost' + new.parent.as_uri().removeprefix('file://')
+    folder_new_uri = 'file://localhost' + moved_folder.as_uri().removeprefix('file://')
+    folder_operation = {'files': [{'oldUri': folder_old_uri, 'newUri': folder_new_uri}]}
+    client.workspace_edit(client.request('workspace/willRenameFiles', folder_operation))
+    new.parent.rename(moved_folder)
+    client.notify('workspace/didRenameFiles', folder_operation)
+    del client.documents[module.uri]
+    module.uri = folder_new_uri + '/' + new.name
+    client.documents[module.uri] = module
+    definition = client.request('textDocument/definition', client.at(doc, 'value', last=True))
+    locations = definition if isinstance(definition, list) else [definition] if definition else []
+    check(any(item.get('uri', item.get('targetUri')) == module.uri for item in locations),
+          f'directory rename lost client destination URI: {definition!r}; expected {module.uri!r}')
+    # Hover types use the last completed check; wait for this moved buffer's
+    # actual versioned diagnostics before checking its inferred overlay type.
+    client.checked(module)
+    hover = client.request('textDocument/hover', client.at(doc, 'value', last=True))
+    check(hover and ('unsaved' in json.dumps(hover) or 'string' in json.dumps(hover)),
+          f'directory rename lost the unsaved module: {hover!r}')
+
     # Legacy clients receive no opted-in file-operation registration and can still
     # make an explicit standard request using the WorkspaceEdit.changes fallback.
     fallback_root = client.root / 'legacy-client'
