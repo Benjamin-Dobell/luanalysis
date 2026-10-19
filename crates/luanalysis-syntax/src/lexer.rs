@@ -480,11 +480,22 @@ impl Lexer<'_> {
     }
 }
 
-fn identifier_start(ch: char) -> bool {
+/// Whether a character starts an identifier in the Lua source grammar.
+pub fn identifier_start(ch: char) -> bool {
     ch == '_' || ch.is_alphabetic() || ch >= '\u{00ff}'
 }
-fn identifier_continue(ch: char) -> bool {
+/// Whether a character continues an identifier in the Lua source grammar.
+pub fn identifier_continue(ch: char) -> bool {
     identifier_start(ch) || ch.is_ascii_digit()
+}
+
+/// An entire source identifier, excluding Lua keywords. Editor operations use
+/// the same grammar as lexing, without normalizing the original spelling.
+pub fn is_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(identifier_start)
+        && chars.all(identifier_continue)
+        && !keyword(value)
 }
 fn keyword(value: &str) -> bool {
     matches!(
@@ -512,6 +523,28 @@ fn keyword(value: &str) -> bool {
             | "until"
             | "while"
     )
+}
+
+#[cfg(test)]
+mod identifier_tests {
+    use super::*;
+
+    #[test]
+    fn rename_identifiers_match_entire_lexer_tokens_without_normalization() {
+        for (name, valid) in [
+            ("name", true), ("_", true), ("café", true), ("中文", true),
+            ("e\u{0301}", true), ("😀", true), ("_é2", true),
+            ("", false), ("2name", false), ("name.part", false), ("a-b", false),
+            ("name ", false), ("×", false), ("end", false), ("local", false),
+        ] {
+            let lexed = lex(name);
+            let token = matches!(lexed.tokens.as_slice(),
+                [Token { kind: TokenKind::Identifier(spelling), span }, Token { kind: TokenKind::Eof, .. }]
+                    if spelling == name && *span == Span::new(0, name.len()));
+            assert_eq!(is_identifier(name), valid, "{name:?}");
+            assert_eq!(token && lexed.diagnostics.is_empty(), valid, "{name:?}");
+        }
+    }
 }
 
 #[cfg(test)]

@@ -454,9 +454,10 @@ options of `check`, and without paths it checks the editor's workspace. It provi
 * Go to definition and type definition, find references, highlights and rename, for locals,
   globals (including `_G.name`), fields and methods (through the receiver's type, its bases and
   each alternative of a union, and a table's fields from its constructor's keys through aliases,
-  writes, `t["name"]` and modules), and type names in annotations, across files. A rename that
-  would change what a name refers to, merge two names, or edit a library's declarations is
-  refused, with why.
+  writes, `t["name"]` and modules), and type names in annotations, across files. Renames
+  accept Unicode identifiers using the same rules as Lua source, including UTF-16 editor
+  ranges and unsaved buffers. A rename that would change what a name refers to, merge two
+  names, or edit a library's declarations is refused, with why.
 * The document outline and workspace symbol search, call and type hierarchies, inlay hints for
   inferred types and literal arguments' parameters, semantic highlighting, folding (including
   `--region`), selection ranges, links for `require`d modules (calls the check takes as the

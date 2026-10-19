@@ -907,10 +907,14 @@ fn environment_member(target: &Expr, bound: &BoundFile) -> Option<Name> {
         ExprKind::Field { base, name } => (base, name.clone()),
         ExprKind::Index { base, index } => match &index.kind {
             // A quoted name: its span is inside the quotes.
-            ExprKind::String(bytes) if index.span.end - index.span.start == bytes.len() + 2
-                && bytes.first().is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
-                && bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_') =>
-                (base, Name { text: String::from_utf8_lossy(bytes).into_owned(), span: Span::new(index.span.start + 1, index.span.end - 1) }),
+            ExprKind::String(bytes) if index.span.end - index.span.start == bytes.len() + 2 => {
+                let text = std::str::from_utf8(bytes).ok()?;
+                let mut chars = text.chars();
+                if !chars.next().is_some_and(luanalysis_syntax::identifier_start)
+                    || !chars.all(luanalysis_syntax::identifier_continue)
+                { return None; }
+                (base, Name { text: text.to_owned(), span: Span::new(index.span.start + 1, index.span.end - 1) })
+            },
             _ => return None,
         },
         _ => return None,

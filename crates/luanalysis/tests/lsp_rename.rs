@@ -193,6 +193,292 @@ impl Server {
     }
 }
 
+/// Apply the ranges returned by the server, translating LSP UTF-16 positions back to byte
+/// offsets. In particular, a range after an emoji must not count either UTF-8 bytes or scalars.
+fn apply_rename(response: &str, path: &Path, text: &str, old: &str, new: &str) -> String {
+    apply_rename_to(response, path, text, old, new, &text.replace(old, new))
+}
+
+fn apply_rename_to(response: &str, path: &Path, text: &str, old: &str, new: &str, expected: &str) -> String {
+    assert!(!response.contains(r#""error""#), "{response}");
+    let key = format!(r#""{}":["#, uri(path));
+    let file_edits = response.split_once(&key).expect(response).1.split(']').next().unwrap();
+    let replacements = file_edits.matches(&format!(r#""newText":"{}""#, escape(new))).count();
+    assert!(replacements > 0, "{response}");
+
+    fn number(rest: &mut &str) -> usize {
+        let length = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let value = rest[..length].parse().unwrap();
+        *rest = &rest[length..];
+        value
+    }
+    fn position(text: &str, line: usize, character: usize) -> usize {
+        let start = if line == 0 { 0 } else { text.match_indices('\n').nth(line - 1).unwrap().0 + 1 };
+        let contents = text[start..].split('\n').next().unwrap();
+        let mut units = 0;
+        for (offset, ch) in contents.char_indices() {
+            if units == character { return start + offset; }
+            units += ch.len_utf16();
+        }
+        assert_eq!(units, character, "invalid UTF-16 position {line}:{character}");
+        start + contents.len()
+    }
+
+    let mut edits = Vec::new();
+    for mut rest in file_edits.split(r#""range":{"start":{"line":"#).skip(1) {
+        let start_line = number(&mut rest);
+        // JSON here is emitted by the server in this fixed range shape.
+        rest = rest.strip_prefix(r#","character":"#).unwrap();
+        let start_character = number(&mut rest);
+        rest = rest.strip_prefix(r#"},"end":{"line":"#).unwrap();
+        let end_line = number(&mut rest);
+        rest = rest.strip_prefix(r#","character":"#).unwrap();
+        let end_character = number(&mut rest);
+        let start = position(text, start_line, start_character);
+        let end = position(text, end_line, end_character);
+        assert_eq!(&text[start..end], old, "{response}");
+        edits.push((start, end));
+    }
+    assert_eq!(edits.len(), replacements, "{response}");
+    edits.sort_unstable();
+    assert!(edits.windows(2).all(|pair| pair[0].1 <= pair[1].0), "{response}");
+    let mut renamed = text.to_owned();
+    for (start, end) in edits.into_iter().rev() { renamed.replace_range(start..end, new); }
+    assert_eq!(renamed, expected);
+    let parsed = luanalysis_syntax::parse(&renamed);
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    renamed
+}
+
+fn check_renamed(server: &Server, path: &Path, version: u32, text: &str) {
+    server.change(path, version, text);
+    assert_clean_diagnostics(server, path, version);
+}
+
+fn assert_clean_diagnostics(server: &Server, path: &Path, version: u32) {
+    let diagnostics = server.diagnostics(path, version);
+    assert!(diagnostics.contains(r#""diagnostics":[]"#), "{diagnostics}");
+}
+
+#[test]
+fn checked_unicode_local_rename_preserves_utf16_ranges_in_both_directions() {
+    let fixture = Fixture::new();
+    let text = "local café = 1\nlocal marker = \"😀\"; print(marker); return café + café\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+
+    // More UTF-8 bytes but fewer UTF-16 units, followed by the reverse transformation.
+    server.rename(2, &main, text, "café", 1, "总计");
+    let renamed = apply_rename(&server.response(2), &main, text, "café", "总计");
+    check_renamed(&server, &main, 2, &renamed);
+    server.rename(3, &main, &renamed, "总计", 2, "café");
+    let restored = apply_rename(&server.response(3), &main, &renamed, "总计", "café");
+    assert_eq!(restored, text);
+    check_renamed(&server, &main, 3, &restored);
+    server.finish();
+}
+
+#[test]
+fn current_overlay_unicode_rename_uses_the_unsaved_tokens_and_utf16_positions() {
+    let fixture = Fixture::new();
+    let text = "local first = 1\nreturn first\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    let resume = server.hold_diagnostics(&main, 1);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+    let edited = "-- unsaved line\nlocal 数量 = 1\nlocal marker = \"😀\"; print(marker); return 数量 + 数量\n";
+    server.change(&main, 2, edited);
+    server.rename(2, &main, edited, "数量", 1, "résultat");
+    drop(resume);
+
+    let renamed = apply_rename(&server.response(2), &main, edited, "数量", "résultat");
+    check_renamed(&server, &main, 3, &renamed);
+    server.rename(3, &main, &renamed, "résultat", 0, "数量");
+    let restored = apply_rename(&server.response(3), &main, &renamed, "résultat", "数量");
+    assert_eq!(restored, edited);
+    check_renamed(&server, &main, 4, &restored);
+    server.finish();
+}
+
+#[test]
+fn current_overlay_unicode_global_rename_moves_cross_file_ranges_and_preserves_shadows() {
+    let fixture = Fixture::new();
+    let definition = "总量 = 1\nreturn 总量\n";
+    let util = fixture.file("util.lua", definition);
+    let text = "require('util')\nlocal function shadow()\n    local 总量 = 2\n    return 总量\nend\nlocal marker = \"😀\"; print(marker, shadow()); return 总量 + _G.总量\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    let resume = server.hold_diagnostics(&main, 1);
+    server.open(&util, definition);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+    let edited_util = format!("-- unsaved definition\n{definition}");
+    let edited_main = format!("-- unsaved caller\n{text}");
+    server.change(&util, 2, &edited_util);
+    server.change(&main, 2, &edited_main);
+    server.rename(2, &main, &edited_main, "总量", 2, "café");
+    drop(resume);
+
+    let response = server.response(2);
+    assert_eq!(response.matches(r#""newText":"café""#).count(), 4, "{response}");
+    apply_rename(&response, &util, &edited_util, "总量", "café");
+    let expected = edited_main.replace("return 总量 + _G.总量", "return café + _G.café");
+    let renamed = apply_rename_to(&response, &main, &edited_main, "总量", "café", &expected);
+    assert_eq!(renamed.matches("总量").count(), 2, "the local declaration and its read must stay unchanged");
+    server.finish();
+}
+
+#[test]
+fn unicode_global_rename_includes_dot_and_quoted_environment_members() {
+    let fixture = Fixture::new();
+    let text = "_G[\"总量\"] = 1\nlocal marker = \"😀\"; print(marker, _G.总量, _G[\"总量\"], _ENV.总量)\nreturn 总量 + 1\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+
+    server.rename(2, &main, text, "总量", 4, "café");
+    let renamed = apply_rename(&server.response(2), &main, text, "总量", "café");
+    // A renamed bracket write must still declare the numeric global, so the bare read and
+    // every environment spelling remain valid after applying the edits.
+    check_renamed(&server, &main, 2, &renamed);
+    server.rename(3, &main, &renamed, "café", 1, "合計");
+    let renamed = apply_rename(&server.response(3), &main, &renamed, "café", "合計");
+    check_renamed(&server, &main, 3, &renamed);
+    server.finish();
+}
+
+#[test]
+fn unicode_table_member_rename_keeps_dot_and_string_index_ranges() {
+    let fixture = Fixture::new();
+    let text = "local record = { café = 1, 別名 = 2 }\nlocal marker = \"😀\"; print(marker); return record.café + record[\"café\"]\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+
+    server.rename(2, &main, text, "café", 1, "別名");
+    let refused = server.response(2);
+    assert!(refused.contains("-32803") && refused.contains("already has a member named 別名"), "{refused}");
+    server.rename(3, &main, text, "café", 1, "数量");
+    let renamed = apply_rename(&server.response(3), &main, text, "café", "数量");
+    check_renamed(&server, &main, 2, &renamed);
+    server.rename(4, &main, &renamed, "数量", 2, "étendue");
+    let renamed = apply_rename(&server.response(4), &main, &renamed, "数量", "étendue");
+    check_renamed(&server, &main, 3, &renamed);
+    server.finish();
+}
+
+#[test]
+fn unicode_class_and_declared_member_renames_keep_annotation_and_value_uses() {
+    let fixture = Fixture::new();
+    let text = "---@class Point\n---@field width number\n\n---@param point Point\nlocal function read(point)\n    local marker = \"😀\"; print(marker); return point.width\nend\nreturn read\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+
+    server.rename(2, &main, text, "Point", 1, "幾何.位置");
+    let renamed = apply_rename(&server.response(2), &main, text, "Point", "幾何.位置");
+    check_renamed(&server, &main, 2, &renamed);
+    server.rename(3, &main, &renamed, "width", 1, "幅");
+    let renamed = apply_rename(&server.response(3), &main, &renamed, "width", "幅");
+    check_renamed(&server, &main, 3, &renamed);
+    server.rename(4, &main, &renamed, "幾何.位置", 0, "Vector");
+    let renamed = apply_rename(&server.response(4), &main, &renamed, "幾何.位置", "Vector");
+    check_renamed(&server, &main, 4, &renamed);
+    server.rename(5, &main, &renamed, "幅", 0, "largeur");
+    let renamed = apply_rename(&server.response(5), &main, &renamed, "幅", "largeur");
+    check_renamed(&server, &main, 5, &renamed);
+    server.finish();
+}
+
+#[test]
+fn unicode_parameter_rename_updates_param_and_type_predicate_subject() {
+    let fixture = Fixture::new();
+    let text = "---@param value unknown\n---@return value is string\nlocal function isString(value)\n    return type(value) == 'string'\nend\nreturn isString\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+
+    // Start at the predicate's subject, then rename the Unicode parameter from its body.
+    server.rename(2, &main, text, "value", 1, "数据");
+    let response = server.response(2);
+    assert_eq!(response.matches(r#""newText":"数据""#).count(), 4, "{response}");
+    let renamed = apply_rename(&response, &main, text, "value", "数据");
+    check_renamed(&server, &main, 2, &renamed);
+    server.rename(3, &main, &renamed, "数据", 3, "entrée");
+    let renamed = apply_rename(&server.response(3), &main, &renamed, "数据", "entrée");
+    check_renamed(&server, &main, 3, &renamed);
+    server.finish();
+}
+
+#[test]
+fn unicode_rename_preserves_distinct_normalization_forms_and_rejects_capture() {
+    let fixture = Fixture::new();
+    let text = "local café = 1\nlocal cafe\u{0301} = 2\nreturn café + cafe\u{0301}\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+
+    server.rename(2, &main, text, "café", 0, "数量");
+    let renamed = apply_rename(&server.response(2), &main, text, "café", "数量");
+    assert_eq!(renamed.matches("cafe\u{0301}").count(), 2);
+    check_renamed(&server, &main, 2, &renamed);
+    server.rename(3, &main, &renamed, "数量", 0, "cafe\u{0301}");
+    let refused = server.response(3);
+    assert!(refused.contains("-32803") && refused.contains("would change what the name at"), "{refused}");
+    server.rename(4, &main, &renamed, "cafe\u{0301}", 0, "résultat");
+    let renamed = apply_rename(&server.response(4), &main, &renamed, "cafe\u{0301}", "résultat");
+    check_renamed(&server, &main, 3, &renamed);
+    server.finish();
+}
+
+#[test]
+fn current_overlay_unicode_rename_rejects_new_capture() {
+    let fixture = Fixture::new();
+    let text = "local first = 1\nreturn first\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    let resume = server.hold_diagnostics(&main, 1);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+    let edited = "local first = 1\nlocal 数量 = 2\nreturn first + 数量\n";
+    server.change(&main, 2, edited);
+    server.rename(2, &main, edited, "first", 0, "数量");
+    drop(resume);
+
+    let refused = server.response(2);
+    assert!(refused.contains("-32803") && refused.contains("would change what the name at"), "{refused}");
+    server.finish();
+}
+
+#[test]
+fn unicode_rename_rejects_existing_globals_and_invalid_names() {
+    let fixture = Fixture::new();
+    let text = "源 = 1\n目标 = 2\nreturn 源 + 目标\n";
+    let main = fixture.file("main.lua", text);
+    let server = Server::start(&fixture.0);
+    server.open(&main, text);
+    assert_clean_diagnostics(&server, &main, 1);
+    server.rename(2, &main, text, "源", 0, "目标");
+    let refused = server.response(2);
+    assert!(refused.contains("-32803") && refused.contains("a global named 目标 already exists"), "{refused}");
+
+    for (index, name) in ["", "end", "has space", "bad-name", "1st", "café.field", "数量!"].into_iter().enumerate() {
+        let id = index as u32 + 3;
+        server.rename(id, &main, text, "源", 0, name);
+        let refused = server.response(id);
+        assert!(refused.contains("-32803") && refused.contains("is not a Lua name"), "{name:?}: {refused}");
+    }
+    server.finish();
+}
+
 #[test]
 fn inline_preview_restoration_can_be_renamed_before_its_check() {
     let fixture = Fixture::new();

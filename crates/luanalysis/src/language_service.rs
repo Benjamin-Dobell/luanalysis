@@ -1485,11 +1485,11 @@ fn add_occurrence(navigation: &mut Navigation, path: &std::path::Path, text: &st
 /// The first occurrence of `word` as a whole word in `span` of `text`.
 fn word_in(text: &str, span: Span, word: &str) -> Option<Span> {
     let region = text.get(span.start..span.end)?;
-    let is_word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
     region.match_indices(word).find(|&(index, _)| {
-        let before = index.checked_sub(1).map(|index| region.as_bytes()[index]);
-        let after = region.as_bytes().get(index + word.len()).copied();
-        !before.is_some_and(is_word) && !after.is_some_and(is_word)
+        let before = region[..index].chars().next_back();
+        let after = region[index + word.len()..].chars().next();
+        !before.is_some_and(luanalysis_syntax::identifier_continue)
+            && !after.is_some_and(luanalysis_syntax::identifier_continue)
     }).map(|(index, _)| Span { start: span.start + index, end: span.start + index + word.len() })
 }
 
@@ -2847,6 +2847,15 @@ fn types_related(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rename_member_words_respect_unicode_identifier_boundaries() {
+        for (text, word) in [("名name name名 name", "name"), ("a变量 变量b 变量", "变量")] {
+            let at = text.rfind(word).unwrap();
+            assert_eq!(super::word_in(text, luanalysis_syntax::Span::new(0, text.len()), word),
+                Some(luanalysis_syntax::Span::new(at, at + word.len())));
+        }
+    }
+
     use super::*;
 
     /// Calls the same current-buffer query as the LSP worker, with no background check that

@@ -602,12 +602,8 @@ impl Server {
             },
             "textDocument/rename" if !self.documents_are_checked() || self.symbol_at(params).is_none() => {
                 let name = params.get("newName").and_then(Json::as_str).unwrap_or_default().to_owned();
-                let valid = name.split('.').all(|part| {
-                    let mut bytes = part.bytes();
-                    bytes.next().is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
-                        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-                });
-                if valid { self.navigate(id, params, Navigate::Rename(name)) } else { self.respond_error(id, REQUEST_FAILED, &format!("{name:?} is not a name")) }
+                let valid = name.split('.').all(crate::symbols::is_name);
+                if valid { self.navigate(id, params, Navigate::Rename(name)) } else { self.respond_error(id, REQUEST_FAILED, &format!("{name:?} is not a Lua name")) }
             }
             "textDocument/rename" => match self.rename(params) {
                 Ok(result) => self.respond(id, result),

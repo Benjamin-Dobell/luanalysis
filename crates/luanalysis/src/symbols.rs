@@ -15,11 +15,6 @@ use luanalysis_project::{FileId, SourceFile, SourceOrigin, SourceRole};
 use luanalysis_syntax::Span;
 use std::path::{Path, PathBuf};
 
-const KEYWORDS: [&str; 22] = [
-    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
-    "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
-];
-
 /// What a name refers to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Symbol {
@@ -349,13 +344,9 @@ fn occurrence(file: FileId, symbols: &FileSymbols, entry: &Entry) -> SymbolOccur
     SymbolOccurrence { file, path: symbols.path.clone(), span: entry.span, definition: entry.definition }
 }
 
-/// Whether `name` is a Lua name: not a keyword, a letter or underscore and then letters, digits
-/// and underscores.
+/// Whether `name` is a source identifier, using the lexer's Unicode and keyword rules.
 pub fn is_name(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    bytes.next().is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
-        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        && !KEYWORDS.contains(&name)
+    luanalysis_syntax::is_identifier(name)
 }
 
 /// The field after an environment table read at `table`: the name of `_G.name` or of
@@ -370,7 +361,8 @@ fn environment_field(text: &str, table: Span) -> Option<(Span, &str, bool)> {
     let (span, after) = match bytes.get(at)? {
         b'.' if bytes.get(at + 1) != Some(&b'.') => {
             let start = skip(at + 1);
-            let end = start + bytes[start..].iter().take_while(|byte| byte.is_ascii_alphanumeric() || **byte == b'_').count();
+            let end = start + text[start..].chars().take_while(|&ch| luanalysis_syntax::identifier_continue(ch))
+                .map(char::len_utf8).sum::<usize>();
             (Span::new(start, end), end)
         }
         b'[' => {
@@ -392,6 +384,6 @@ fn environment_field(text: &str, table: Span) -> Option<(Span, &str, bool)> {
     let next = skip(after);
     let assigned = bytes.get(next) == Some(&b'=') && bytes.get(next + 1) != Some(&b'=');
     let declared = text[..table.start].trim_end().strip_suffix("function")
-        .is_some_and(|before| !before.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_'));
+        .is_some_and(|before| !before.ends_with(luanalysis_syntax::identifier_continue));
     Some((span, name, assigned || declared))
 }
