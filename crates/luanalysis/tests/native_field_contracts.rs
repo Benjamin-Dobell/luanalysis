@@ -350,3 +350,18 @@ fn cli_checks_an_alias_node_update_and_its_wrong_length_correction() {
     assert!(output.status.success(), "{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn written_post_constructor_assignments_preserve_narrowed_inherited_member_contracts() {
+    let source = "---@class Base\n---@field value number\nlocal Base={}\n---@class Child:Base\nlocal Child={}\n---@type 1\nChild.value=1\n---@type Child\nlocal instance\n---@type number\nlocal broad\ninstance.value=broad\n";
+    let report = luanalysis::check(source);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "broad");
+    let corrected = source.replace("instance.value=broad", "instance.value=1");
+    assert!(luanalysis::check(&corrected).diagnostics.is_empty());
+    let implicit = source.replace("---@type 1\nChild.value=1", "Child.value=1");
+    // An ordinary store under an existing broad field contract does not
+    // redeclare that inherited field as a literal-only member.
+    assert!(luanalysis::check(&implicit).diagnostics.is_empty());
+}

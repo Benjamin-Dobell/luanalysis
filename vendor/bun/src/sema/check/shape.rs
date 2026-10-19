@@ -6640,6 +6640,8 @@ impl<'p, 's> Checker<'p, 's> {
         let may_have_one = match data {
             TypeData::TypeParam(..)
             | TypeData::NativeTypeParam { .. }
+            | TypeData::NativePackParameter(_)
+            | TypeData::NativePackElement(_)
             | TypeData::ThisParam(_)
             | TypeData::Marker(_)
             | TypeData::IndexedAccess { .. }
@@ -6794,7 +6796,7 @@ impl<'p, 's> Checker<'p, 's> {
         match self.data(t) {
             // `isThisType`
             TypeData::ThisParam(_) => self.constraint_from_type_param(t),
-            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::Marker(_) => {
+            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::NativePackParameter(_) | TypeData::NativePackElement(_) | TypeData::Marker(_) => {
                 let constraint = self.constraint_from_type_param(t)?;
                 self.next_base_constraint(constraint)
             }

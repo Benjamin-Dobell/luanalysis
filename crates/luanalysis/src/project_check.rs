@@ -27,6 +27,8 @@ pub struct ProjectCheckOptions {
     /// Opt-in missing parameter/rest contract diagnostics; ordinary analysis
     /// preserves v1's acceptance of unannotated runtime functions.
     pub no_implicit_any: bool,
+    /// False selects v1's permissive nil assignments; runtime nil remains represented.
+    pub strict_nil: bool,
     /// Ordinary analysis preserves reached standard bindings across unknown
     /// effects. False requests the stricter runtime-effect certificates.
     pub assume_unknown_standard_effects: bool,
@@ -85,6 +87,7 @@ impl Default for ProjectCheckOptions {
             standard_library: None,
             overload_mode: crate::OverloadMode::default(),
             no_implicit_any: false,
+            strict_nil: true,
             assume_unknown_standard_effects: true,
             describe_types: true,
             inspections: false,
@@ -192,6 +195,7 @@ struct PreparedProgram {
     environment_errors: Vec<DeclarationSourceError>,
     /// The sources with syntax errors, which report only those.
     unparsed: HashSet<FileId>,
+    version_diagnostics: HashMap<FileId, Vec<Diagnostic>>,
 }
 
 fn prepare_program(
@@ -216,9 +220,15 @@ fn prepare_program(
     // A source with syntax errors is checked from the tree its parser recovers, for what depends
     // on it, but reports only its syntax errors, as tsc reports no semantic errors with them.
     let mut unparsed = HashSet::default();
+    let mut version_diagnostics = HashMap::default();
     for source in workspace.prepare_registered_sources(project).sources {
         let parsed = source.snapshot.syntax();
         if parsed.has_lua_syntax_errors() { unparsed.insert(source.id); }
+        let diagnostics = crate::language_version::diagnostics(parsed, source.snapshot.source(), options.environment);
+        if !diagnostics.is_empty() {
+            unparsed.insert(source.id);
+            version_diagnostics.insert(source.id, diagnostics);
+        }
         if source.snapshot.bound().is_some() {
             source_costs.insert(
                 source.id,
@@ -262,7 +272,7 @@ fn prepare_program(
         selection.profile,
         options.overload_mode,
     ).with_no_implicit_any(options.no_implicit_any).with_prepared_sources(prepared);
-    PreparedProgram { snapshot, revisions, files, source_costs, standard_library_files, environment_errors, unparsed }
+    PreparedProgram { snapshot, revisions, files, source_costs, standard_library_files, environment_errors, unparsed, version_diagnostics }
 }
 
 /// Runs `query` in one native session over the project, as one checking task runs, for the
@@ -277,7 +287,7 @@ pub(crate) fn with_project_session<R: Send>(
     let prepared = prepare_program(&mut project, &options, workspace);
     let snapshot = &prepared.snapshot;
     let project = &project;
-    let (result, flows) = Engine::new().with_native_provider(
+    let (result, flows) = Engine::new().with_strict_nil(options.strict_nil).with_native_provider(
         || {
             options.cancellation.enter();
             let mut registry = snapshot.worker_registry();
@@ -304,7 +314,7 @@ pub(crate) fn check_project_with_workspace(
     let profile = std::env::var_os("LUANALYSIS_PROFILE").is_some();
     let started = Instant::now();
     options.cancellation.enter();
-    let PreparedProgram { mut snapshot, revisions, mut files, source_costs, standard_library_files, environment_errors, unparsed } =
+    let PreparedProgram { mut snapshot, revisions, mut files, source_costs, standard_library_files, environment_errors, unparsed, mut version_diagnostics } =
         prepare_program(&mut project, &options, workspace);
     // As in Bun, the program is every file the load reached: explicit inputs and
     // the targets of their syntactic require calls. Each is checked once, by one
@@ -356,7 +366,7 @@ pub(crate) fn check_project_with_workspace(
     }
     let checking_started = Instant::now();
     let (checked, execution) = if workers == 1 {
-        let (checked, flows) = Engine::new().with_native_provider(
+        let (checked, flows) = Engine::new().with_strict_nil(options.strict_nil).with_native_provider(
             || make_registry(0),
             |registry, queries| {
                 let flows = registry.source_recipes();
@@ -375,7 +385,7 @@ pub(crate) fn check_project_with_workspace(
             .map(|batch| batch.iter().map(|file| source_costs[file]).sum())
             .collect();
         let steps = vec![(0..batches.len()).collect::<Vec<_>>()];
-        let run = Engine::new().with_native_task_plan_by_cost_report(
+        let run = Engine::new().with_strict_nil(options.strict_nil).with_native_task_plan_by_cost_report(
             NonZeroUsize::new(workers).unwrap(),
             &steps,
             |job| batch_costs[job],
@@ -403,6 +413,10 @@ pub(crate) fn check_project_with_workspace(
     files.extend(checked);
     for file in files.iter_mut().filter(|file| unparsed.contains(&file.file)) {
         file.report.diagnostics.retain(|diagnostic| diagnostic.code == "LUA1001");
+        if let Some(diagnostics) = version_diagnostics.remove(&file.file) {
+            file.report.diagnostics.extend(diagnostics);
+            file.report.diagnostics.sort_by_key(|diagnostic| (diagnostic.span.start, diagnostic.span.end));
+        }
     }
     files.sort_by_key(|file| file.file.index);
     ProjectCheckReport {

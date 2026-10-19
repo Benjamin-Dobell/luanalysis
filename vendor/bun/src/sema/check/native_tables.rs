@@ -710,6 +710,16 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_table_inference_key_matches(source, target)
     }
 
+    /// Assignment needs evidence of a shared domain; an unresolved target
+    /// parameter is a possible overlap for inference, not evidence of one.
+    fn native_table_known_key_domains_overlap(&mut self, source: TypeId, target: TypeId) -> bool {
+        let source = self.base_constraint_or_type(source);
+        let target = self.base_constraint_or_type(target);
+        if self.is_union(source) { return self.parts(source).iter().any(|&part| self.native_table_known_key_domains_overlap(part, target)) }
+        if self.is_union(target) { return self.parts(target).iter().any(|&part| self.native_table_known_key_domains_overlap(source, part)) }
+        self.is_assignable(source, target) || self.is_assignable(target, source)
+    }
+
     fn native_table_access_type(&self, key: NativeTableAccessKey) -> TypeId {
         match key {
             NativeTableAccessKey::Literal(key) => self.native_table_key_type(key),
@@ -786,7 +796,17 @@ impl<'p, 's> Checker<'p, 's> {
             return;
         }
         match self.data(ty) {
-            TypeData::NativeObject(reference) => names.extend(self.native_object_member_names(*reference)),
+            TypeData::NativeObject(reference) => {
+                let reference = *reference;
+                names.extend(self.native_object_member_names(reference));
+                // A published allocation schema retains its constructor keys as
+                // well as later stores. The seed belongs to this exact original
+                // runtime declaration; resolving the full schema here would
+                // unnecessarily demand every prospective stored value.
+                if self.native_runtime_table_schema(ty).is_some()
+                    && let Ok(seed) = self.native_runtime_table_seed(reference)
+                { self.native_completion_names(seed, names, depth + 1); }
+            }
             TypeData::NativeTable(data) => {
                 if let Some(environment) = data.environment_origin {
                     names.extend(self.native_global_environment_properties(environment).into_iter().map(|(name, _)| name));
@@ -887,13 +907,18 @@ impl<'p, 's> Checker<'p, 's> {
                 values.push(self.optional(tail.value));
             }
         }
-        if !values.is_empty() && (!data.sequence_tails.is_empty() || data.collision_candidates)
-            && let NativeTableAccessKey::Type(_) = key {
+        if !values.is_empty() && let NativeTableAccessKey::Type(_) = key {
+            let fallback = if data.collision_candidates || !data.sequence_tails.is_empty() {
+                self.union_reduced(&values)
+            } else { self.intersection(&values) };
+            values.clear();
+            values.push(fallback);
             for field in &data.fields {
-                if self.is_assignable(self.native_table_key_type(field.key), key_type) {
+                if self.native_table_key_domains_overlap(self.native_table_key_type(field.key), key_type) {
                     values.push(if field.optional { self.optional(field.value) } else { field.value });
                 }
             }
+            return Ok(self.union_reduced(&values));
         }
         if values.is_empty() {
             if !data.indexers.is_empty() {
@@ -922,14 +947,66 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let mut values = Vec::new();
         let mut failure = None;
-        for part in parts {
+        for &part in &parts {
             match self.native_table_read(part, key) {
                 Ok(value) => values.push(value),
                 Err(error) => { failure.get_or_insert(error); }
             }
         }
         if values.is_empty() { return Err(failure.unwrap_or(NativeTableError::MissingKey { key })) }
-        Ok(self.intersection(&values))
+        let fallback = self.intersection(&values);
+        if let NativeTableAccessKey::Type(key_type) = key {
+            let mut values = vec![fallback];
+            for literal in self.native_intersection_possible_fields(&parts, key_type) {
+                values.push(self.native_intersection_read(table, NativeTableAccessKey::Literal(literal))?);
+            }
+            return Ok(self.union_reduced(&values));
+        }
+        Ok(fallback)
+    }
+
+    fn native_intersection_possible_fields(&mut self, parts: &[TypeId], key: TypeId) -> Vec<NativeTableKey> {
+        let mut keys = Vec::new();
+        for &part in parts {
+            let part = self.base_constraint_or_type(part);
+            let Some(table) = self.native_table_object_description(part) else { continue };
+            for field in &table.fields {
+                if !keys.contains(&field.key)
+                    && self.native_table_key_domains_overlap(self.native_table_key_type(field.key), key)
+                { keys.push(field.key); }
+            }
+        }
+        keys
+    }
+
+    fn native_intersection_write(&mut self, table: TypeId, key: NativeTableAccessKey, value: TypeId) -> Result<(), NativeTableError> {
+        let parts = self.constituents(table).to_vec();
+        if let NativeTableAccessKey::Literal(literal) = key {
+            let mut declared = false;
+            for &part in &parts {
+                if self.native_declares_member(part, literal) {
+                    self.native_table_write(part, key, value)?;
+                    declared = true;
+                }
+            }
+            if declared { return Ok(()) }
+        }
+        let mut matched = false;
+        let mut failure = None;
+        for &part in &parts {
+            match self.native_table_write(part, key, value) {
+                Ok(()) => matched = true,
+                Err(error @ (NativeTableError::MissingKey { .. } | NativeTableError::KeyType { .. })) => { failure.get_or_insert(error); },
+                Err(error) => return Err(error),
+            }
+        }
+        if !matched { return Err(failure.unwrap_or(NativeTableError::MissingKey { key })) }
+        if let NativeTableAccessKey::Type(key_type) = key {
+            for literal in self.native_intersection_possible_fields(&parts, key_type) {
+                self.native_intersection_write(table, NativeTableAccessKey::Literal(literal), value)?;
+            }
+        }
+        Ok(())
     }
 
     /// Whether `ty` declares the member `key` itself, rather than admitting it by an index
@@ -1021,6 +1098,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let base = self.base_constraint_or_type(table);
         if base != table { let base = self.type_with_this_argument(base, table); return self.native_table_write(base, key, value) }
+        if self.is_intersection(table) { return self.native_intersection_write(table, key, value) }
         if self.is_array_or_tuple(table) { return Err(NativeTableError::NotTable { ty: table }) }
         let TypeData::NativeTable(data) = self.data(table) else {
             if let NativeTableAccessKey::Literal(NativeTableKey::String(name)) = key
@@ -1043,7 +1121,8 @@ impl<'p, 's> Checker<'p, 's> {
             && let Some(field) = data.fields.iter().find(|field| field.key == literal)
         {
             if field.readonly { return Err(NativeTableError::ReadOnly { key }) }
-            if self.contains_undefined(value) && !field.optional && !self.contains_undefined(field.value) {
+            if self.contains_undefined(value) && !field.optional && !self.contains_undefined(field.value)
+                && (self.native_strict_nil || !self.is_assignable(TypeId::UNDEFINED, field.value)) {
                 return Err(NativeTableError::RequiredDeletion { key: literal });
             }
             let present = self.without_undefined(value);
@@ -1068,12 +1147,13 @@ impl<'p, 's> Checker<'p, 's> {
                 return Err(NativeTableError::ValueType { value, expected: tail.value });
             }
         }
-        if !data.sequence_tails.is_empty() && let NativeTableAccessKey::Type(_) = key {
+        if matched && let NativeTableAccessKey::Type(_) = key {
             for field in &data.fields {
-                if !self.is_assignable(self.native_table_key_type(field.key), key_type) { continue }
+                if !self.native_table_key_domains_overlap(self.native_table_key_type(field.key), key_type) { continue }
                 matched = true;
                 if field.readonly { return Err(NativeTableError::ReadOnly { key }) }
-                if self.contains_undefined(value) && !field.optional && !self.contains_undefined(field.value) {
+                if self.contains_undefined(value) && !field.optional && !self.contains_undefined(field.value)
+                    && (self.native_strict_nil || !self.is_assignable(TypeId::UNDEFINED, field.value)) {
                     return Err(NativeTableError::RequiredDeletion { key: field.key });
                 }
                 let present = self.without_undefined(value);
@@ -1123,6 +1203,10 @@ impl<'p, 's> Checker<'p, 's> {
                 && !(r.relation == Relation::Comparable && self.native_array_source_has_numeric_overlap(source)) {
             return Ternary::FALSE;
         }
+        if r.relation == Relation::Comparable && source.is_array
+            && !self.native_array_source_is_sequence(target)
+            && !self.native_array_source_has_numeric_overlap(target)
+        { return Ternary::FALSE }
         if let Some(target_origin) = target.nominal_origin {
             if source.nominal_origin.is_none_or(|source_origin| !self.native_nominal_reference_compatible(source_origin, target_origin, identity)) {
                 return Ternary::FALSE;
@@ -1139,9 +1223,47 @@ impl<'p, 's> Checker<'p, 's> {
         {
             return Ternary::FALSE;
         }
+        if !target.indexers.is_empty() {
+            // Dictionary contracts are partial key-domain views. A nonempty
+            // source must provide a compatible domain, rather than satisfy an
+            // unrelated indexer vacuously. Other domains retain record width.
+            // Opaque instances can expose members without becoming iterable tables.
+            if source.nominal_origin.is_some_and(|origin| self.native_opaque_runtime_object(origin))
+                && !target.nominal_origin.is_some_and(|origin| self.native_opaque_runtime_object(origin))
+            { return Ternary::FALSE }
+            if !identity {
+                let mut keys = target.indexers.iter().map(|indexer| indexer.key).collect::<Vec<_>>();
+                keys.extend(target.fields.iter().map(|field| self.native_table_key_type(field.key)));
+                let domain = self.union(&keys);
+                let mut present = false;
+                let mut compatible = false;
+                for field in &source.fields {
+                    if field.value.is_never() { continue }
+                    present = true;
+                    let key = self.native_table_key_type(field.key);
+                    compatible |= if r.relation == Relation::Comparable {
+                        self.native_table_key_domains_overlap(key, domain)
+                    } else { self.native_table_known_key_domains_overlap(key, domain) };
+                }
+                for indexer in &source.indexers {
+                    if indexer.value.is_never() { continue }
+                    present = true;
+                    compatible |= if r.relation == Relation::Comparable {
+                        self.native_table_key_domains_overlap(indexer.key, domain)
+                    } else { self.native_table_known_key_domains_overlap(indexer.key, domain) };
+                }
+                for tail in &source.sequence_tails {
+                    if tail.value.is_never() { continue }
+                    present = true;
+                    compatible |= self.native_sequence_type_overlaps(tail.start, domain);
+                }
+                if present && !compatible { return Ternary::FALSE }
+            }
+        }
         // Lua structural contracts permit additional source keys, including on a
-        // constructor. Freshness still controls contextual literal widening and
-        // constructor collisions; target members and indexer values are checked below.
+        // constructor. Each requested dictionary domain checks its shared values.
+        // Freshness controls contextual literal widening and constructor collisions;
+        // target members and indexer values are checked below.
         let mut result = Ternary::TRUE;
         if target.is_array && let Some(pack) = source.constructor_sequence {
             let expected = self.native_result_pack(&[NativePackAlternative { fixed: Vec::new(), tail: Some(target.indexers[0].value) }]);
@@ -1160,6 +1282,12 @@ impl<'p, 's> Checker<'p, 's> {
             }
             let Some(actual) = source.fields.iter().find(|actual| actual.key == field.key) else {
                 let mut values = Vec::new();
+                if !identity && (field.optional || self.contains_undefined(field.value)) {
+                    let key = self.native_table_key_type(field.key);
+                    for indexer in &source.indexers {
+                        if self.native_table_key_domains_overlap(key, indexer.key) { values.push(self.optional(indexer.value)); }
+                    }
+                }
                 for tail in &source.sequence_tails {
                     if Self::native_sequence_contains(tail.start, field.key) { values.push(self.optional(tail.value)); }
                 }
@@ -1186,15 +1314,12 @@ impl<'p, 's> Checker<'p, 's> {
         for indexer in &target.indexers {
             let expected = indexer.value;
             let mut matched = false;
-            let mut covering_domain = false;
             for actual in &source.indexers {
                 let matches = if identity {
                     actual.readonly == indexer.readonly && actual.sparse == indexer.sparse
                         && self.is_related_to_ex::<REPORT>(r, actual.key, indexer.key, REC_BOTH, state).holds()
-                } else if r.relation == Relation::Comparable {
-                    self.native_table_key_domains_overlap(actual.key, indexer.key)
                 } else {
-                    self.is_assignable(actual.key, indexer.key) || self.is_assignable(indexer.key, actual.key)
+                    self.native_table_key_domains_overlap(actual.key, indexer.key)
                 };
                 if !matches { continue }
                 matched = true;
@@ -1204,20 +1329,20 @@ impl<'p, 's> Checker<'p, 's> {
                 let related = self.is_related_to_ex::<REPORT>(r, value, expected, REC_BOTH, state);
                 if !related.holds() { return Ternary::FALSE }
                 result &= related;
-                covering_domain |= self.is_assignable(indexer.key, actual.key);
             }
             if identity && !matched { return Ternary::FALSE }
-            // TypeScript's typeRelatedToIndexInfo uses an applicable explicit
-            // source index signature before inferring an index from properties.
-            // A covering Lua domain follows that same rule; merely overlapping
-            // domains still need their individual field/tail checks below.
-            // Array assertion overlap also checks fixed numeric contradictions.
-            if !identity && covering_domain
-                && !(r.relation == Relation::Comparable && target.is_array) { continue }
+            // An explicitly open any contract is the existing gradual escape;
+            // it controls this indexer view without refining it from fixed keys.
+            if !identity && source.indexers.iter().any(|actual| {
+                actual.origin == NativeTableFieldOrigin::Declared
+                    && self.is_any(actual.key) && self.is_any(actual.value)
+            }) { continue }
             for actual in &source.fields {
                 let key = self.native_table_key_type(actual.key);
-                if !self.is_assignable(key, indexer.key) { continue }
-                matched = true;
+                if !self.native_table_key_domains_overlap(key, indexer.key) { continue }
+                // The target's exact contract was checked above. Its fallback
+                // applies only to keys with no explicit target field.
+                if target.fields.iter().any(|field| field.key == actual.key) { continue }
                 let value = if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value };
                 let related = self.is_related_to_ex::<REPORT>(r, value, expected, REC_BOTH, state);
                 if !related.holds() { return Ternary::FALSE }
@@ -1226,17 +1351,12 @@ impl<'p, 's> Checker<'p, 's> {
             if !identity {
                 for actual in &source.sequence_tails {
                     if !self.native_sequence_type_overlaps(actual.start, indexer.key) { continue }
-                    matched = true;
                     let value = if source.collision_candidates { self.without_undefined(actual.value) } else { actual.value };
                     let related = self.is_related_to_ex::<REPORT>(r, value, expected, REC_BOTH, state);
                     if !related.holds() { return related }
                     result &= related;
                 }
             }
-            // Closed shapes have an inferable index, as ordinary TS object shapes do. A dictionary
-            // with exclusively different domains does not acquire a new domain from its shape.
-            if !matched && (source.indexers.iter().any(|indexer| !indexer.value.is_never())
-                || source.sequence_tails.iter().any(|tail| !tail.value.is_never())) { return Ternary::FALSE }
         }
         for tail in &target.sequence_tails {
             for actual in &source.sequence_tails {

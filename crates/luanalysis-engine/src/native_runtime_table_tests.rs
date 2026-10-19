@@ -84,6 +84,7 @@ struct Provider {
     seed: TableType,
     seed_calls: Cell<usize>,
     forbid_seed: bool,
+    forbid_function_body: bool,
     member_calls: Cell<usize>,
     receiver_calls: RefCell<Vec<u32>>,
     forbidden_receivers: Vec<u32>,
@@ -105,6 +106,7 @@ impl Provider {
             seed: TableType::default(),
             seed_calls: Cell::new(0),
             forbid_seed: false,
+            forbid_function_body: false,
             member_calls: Cell::new(0),
             receiver_calls: RefCell::new(Vec::new()),
             forbidden_receivers: vec![],
@@ -193,6 +195,7 @@ impl NativeTypeProvider for Provider {
         original: NativeFunctionKey,
         queries: &mut dyn TypeQueries,
     ) -> Type {
+        assert!(!self.forbid_function_body, "completion must not infer a stored function body");
         assert_ne!(
             original.index, 2,
             "declared recursive method head must not run its body"
@@ -630,6 +633,26 @@ fn written_constructor_flow_and_rhs_context_do_not_demand_the_seed() {
             assert_eq!(queries.table_value_context(&reached.ty, &access("value")), Some(value));
         },
     );
+}
+
+#[test]
+fn an_allocation_initializes_only_its_own_schema_without_proving_future_presence() {
+    Engine::new().with_native_provider(Provider::new, |provider, queries| {
+        let original = provider.allocation(queries);
+        let schema = queries.runtime_table_schema(&original).unwrap();
+        assert!(queries.is_assignable(&original, &schema));
+        assert_eq!(queries.table_lookup(&original, &access("value")), Ok(Type::Nil));
+        assert_eq!(queries.table_lookup(&schema, &access("value")), Ok(Type::Number));
+
+        let empty = Provider::empty(queries);
+        let unrelated = queries.runtime_table_value(declaration(1), &empty).unwrap();
+        assert!(!queries.is_assignable(&unrelated, &schema));
+        let structural = Type::Shape(vec![Property {
+            name: "value".into(), ty: Type::Number, optional: false, readonly: false,
+        }]);
+        assert!(!queries.is_assignable(&original, &structural));
+        assert_ne!(queries.exclude_type(&original, &schema), Type::Never);
+    });
 }
 
 #[test]
@@ -1275,5 +1298,39 @@ fn exact_replacement_keeps_the_new_constructor_schema_and_old_alias_view_separat
             queries.table_lookup(&original, &access("value")),
             Ok(Type::Number)
         );
+    });
+}
+
+#[test]
+fn published_runtime_completion_keeps_constructor_keys_and_later_store_types() {
+    Engine::new().with_native_provider(|| {
+        let mut provider = Provider::new();
+        provider.seed.fields = vec![
+            TableField::new(key("aaa"), Type::NumberLiteral(2.0)),
+            TableField::new(key("bbb"), Type::NumberLiteral(3.0)),
+        ];
+        provider.members[0].name = "ccc";
+        provider.members[0].ty = Type::NumberLiteral(4.0);
+        provider.members.push(Member {
+            name: "lazy", ty: Type::NativeFunction(function(0)),
+            origin: TableFieldOrigin::Inferred, indexer: None,
+        });
+        provider.forbid_function_body = true;
+        provider
+    }, |provider, queries| {
+        let allocation = provider.allocation(queries);
+        let schema = queries.runtime_table_schema(&allocation).unwrap();
+        let members = queries.type_members(&schema).into_iter().collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(members.len(), 4, "{members:?}");
+        for name in ["aaa", "bbb", "ccc"] {
+            assert_eq!(members.get(name), Some(&Type::Number), "{members:?}");
+            assert!(queries.table_write(&schema, &access(name), &Type::String).is_err());
+            assert!(queries.table_write(&schema, &access(name), &Type::Number).is_ok());
+        }
+        assert!(members.contains_key("lazy"));
+        // The allocation's reached view remains empty: publishing the schema
+        // and discovering its constructor keys never installs future values.
+        assert_eq!(queries.table_lookup(&allocation, &access("ccc")), Ok(Type::Nil));
+        assert_eq!(provider.seed_calls.get(), 1);
     });
 }

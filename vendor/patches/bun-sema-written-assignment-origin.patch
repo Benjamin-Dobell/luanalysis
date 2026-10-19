@@ -1,0 +1,13 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -929,7 +929,8 @@
+         for member in std::iter::once(origin.member).chain(origin.overloads.iter().copied()) {
+             if !self.native_named_member_active(member)? { continue }
+             let metadata = self.native_named_member_effective_metadata(member)?;
+-            if metadata.is_assignment && self.native_named_member_context(member)?.is_some() { continue }
++            if metadata.is_assignment && metadata.origin != Declared
++                && self.native_named_member_context(member)?.is_some() { continue }
+             effective = Some(if metadata.origin == Declared || effective == Some(Declared) { Declared } else { Inferred });
+         }
+         Ok(effective)

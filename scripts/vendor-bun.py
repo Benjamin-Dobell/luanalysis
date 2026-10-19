@@ -619,6 +619,12 @@ SOURCE_ADAPTATIONS.append({
 
 SOURCE_ADAPTATIONS.append({
     "path": "src/sema/check/native_named.rs",
+    "patch": "vendor/patches/bun-sema-written-assignment-origin.patch",
+    "reason": "Keep an explicitly written assignment's declared origin when it overrides an inherited contract, matching the existing written-assignment demand policy; otherwise its own narrowed member silently disappears.",
+})
+
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_named.rs",
     "patch": "vendor/patches/bun-sema-usable-invalid-overrides.patch",
     "reason": "Report an incompatible override or base once and keep the class's declared shape for its uses, while its validation still fails, as TypeScript keeps such a class, through kernel 3bf26e1.",
 })
@@ -676,6 +682,58 @@ SOURCE_ADAPTATIONS.extend({
     "patch": "vendor/patches/bun-sema-native-predicate-environment-references.patch",
     "reason": "Canonicalize native predicate references at frozen receiver inputs through a flow-only typed provider demand, with a pure presence gate, guarded epoch cache and incomplete-query propagation; preserve structural reachability without receiver type demands.",
 } for path in ["mod.rs", "native_flow.rs", "sink.rs"])
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-table-contracts.patch",
+    "reason": "Reject unrelated dictionary domains and opaque table impostors while preserving partial indexer views, every shared value contract, exact-field precedence and sound dynamic intersection reads and writes.",
+} for path in ["native_named.rs", "native_runtime.rs", "native_tables.rs"])
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+    "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+} for path in ["types.rs", "check/call.rs", "check/decl.rs", "check/infer.rs", "check/instantiate.rs", "check/mod.rs", "check/native_packs.rs", "check/print.rs", "check/relate.rs", "check/shape.rs"])
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-nil-compatibility.patch",
+    "reason": "Provide explicit non-strict nil assignment compatibility while preserving strict defaults, physical nil flow, required member presence, never, and separate strict physical relation caches.",
+} for path in ["mod.rs", "relate.rs", "native_tables.rs", "native_assertions.rs", "native_flow.rs", "flow.rs"])
+
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/native_nil.rs",
+    "patch": "vendor/patches/bun-sema-native-nil-compatibility.patch",
+    "reason": "Keep nil representation strict and implement only the requested compatibility relation; physical exclusions and narrowing use a distinct recursively strict relation.",
+    "added": True,
+})
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-runtime-schema-initialization.patch",
+    "reason": "Allow an original allocation to initialize only its own prospective runtime schema without asserting future field presence, retaining structural checks against every unrelated target.",
+} for path in ["native_named.rs", "relate.rs"])
+
+
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/instantiate.rs",
+    "patch": "vendor/patches/bun-sema-native-generic-pack-alias-substitution.patch",
+    "reason": "Preserve an aliased producer's symbolic result facet only when its mapped generic destination is itself a producer pack; scalar generic aliases keep their original single-value contract.",
+})
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/" + path,
+    "patch": "vendor/patches/bun-sema-native-generic-pack-repetition.patch",
+    "reason": "Represent repeated generic producer results with a rigid physical-element facet, preserving first-slot types, nullable repetition cardinality, full source packs and checked fixed prefixes without widening arbitrary generic-body values.",
+} for path in ["types.rs", "check/decl.rs", "check/infer.rs", "check/instantiate.rs", "check/native_packs.rs", "check/print.rs", "check/relate.rs", "check/shape.rs"])
+
+
+
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-runtime-completion-seed.patch",
+    "reason": "Enumerate original constructor keys together with later store metadata when a cross-file runtime allocation is published as its declaration schema, preserving ordinary checked member reads and lazy function values.",
+} for path in ["native_tables.rs", "native_runtime_tables.rs"])
 
 
 def git(source, *args):

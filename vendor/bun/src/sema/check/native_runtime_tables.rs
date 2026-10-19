@@ -54,7 +54,7 @@ impl<'p, 's> Checker<'p, 's> {
         Ok(self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view, bounds })))
     }
 
-    fn native_runtime_table_seed(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {
+    pub(in crate::check) fn native_runtime_table_seed(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {
         let declaration = reference.declaration;
         let object = self.intern(TypeData::NativeObject(reference));
         let native_query = NativeTypeDeclarationQuery::RuntimeTableSeed(object);

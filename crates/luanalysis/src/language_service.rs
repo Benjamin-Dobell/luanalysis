@@ -37,6 +37,10 @@ pub enum CompletionContext {
     AnnotationType,
     /// The name of a global function being defined: `function onObjectDr`.
     FunctionName,
+    /// The contents of a quoted string passed as an argument.
+    StringArgument { quote: char },
+    /// A Lua 5.4 local attribute, after `local name <`.
+    LocalAttribute { closed: bool },
 }
 
 /// Where a completion was requested, and the text to check in its place.
@@ -108,6 +112,8 @@ pub struct Implementation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionItem {
     pub label: String,
+    /// Plain text to insert when the displayed label differs from the replacement.
+    pub insert_text: Option<String>,
     pub kind: CompletionKind,
     /// The item's type, when known.
     pub detail: Option<String>,
@@ -123,7 +129,7 @@ pub struct CompletionItem {
 }
 
 /// The completion site at a byte offset of `text`, or `None` where nothing is completed: inside
-/// a comment, a string or a number, at a name being declared, or where no repair parses.
+/// a comment, a non-argument string or a number, at a name being declared, or where no repair parses.
 pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
     let offset = floor_char_boundary(text, offset);
     let bytes = text.as_bytes();
@@ -144,6 +150,12 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
     if let Some(context) = annotation_context(text, &tokens, start, offset) {
         return Some(CompletionSite { context, text: text.to_owned(), placeholder: Span { start, end: start }, word: start..end, statement: false, parameters_follow: false, value: false, details: Details::All });
     }
+    if let Some(token) = tokens.iter().find(|token| matches!(token.kind, TokenKind::String(_))
+        && token.span.start < offset && offset <= token.span.end)
+        && let Some(site) = string_argument_site(text, token.span, offset)
+    {
+        return Some(site);
+    }
     for token in &tokens {
         let inside = match &token.kind {
             TokenKind::Comment(comment) => token.span.start < offset
@@ -157,6 +169,15 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
     let previous = tokens.iter()
         .filter(|token| token.span.end <= start && !matches!(token.kind, TokenKind::Newline | TokenKind::Comment(_) | TokenKind::Eof))
         .next_back();
+    if matches!(previous.map(|token| &token.kind), Some(TokenKind::Symbol(symbol)) if symbol == "<") {
+        let closed = text[end..].trim_start().starts_with('>');
+        let candidate = format!("{}{PLACEHOLDER}{}{}", &text[..start], if closed { "" } else { ">" }, &text[end..]);
+        if has_local_attribute(&luanalysis_syntax::parse(&candidate).statements, start) {
+            return Some(CompletionSite { context: CompletionContext::LocalAttribute { closed }, text: candidate,
+                placeholder: Span { start, end: start + PLACEHOLDER.len() }, word: start..end,
+                statement: false, parameters_follow: false, value: false, details: Details::All });
+        }
+    }
     let context = match previous.map(|token| &token.kind) {
         Some(TokenKind::Symbol(symbol)) if symbol == "." => CompletionContext::Member { method: false },
         Some(TokenKind::Symbol(symbol)) if symbol == ":" => CompletionContext::Member { method: true },
@@ -206,6 +227,46 @@ pub fn completion_site(text: &str, offset: usize) -> Option<CompletionSite> {
         value,
         details: Details::All,
     })
+}
+
+/// Strings keep their quotes; replacing their full contents also handles escapes and a cursor
+/// in the middle of a word. Only argument strings opt into completion, so ordinary strings
+/// retain the editor's existing behavior.
+fn string_argument_site(text: &str, span: Span, offset: usize) -> Option<CompletionSite> {
+    let quote = *text.as_bytes().get(span.start)?;
+    if !matches!(quote, b'\'' | b'"') { return None; }
+    let closed = span.end - span.start > 1 && text.as_bytes().get(span.end.checked_sub(1)?) == Some(&quote)
+        && !luanalysis_syntax::lex(&text[span.start..span.end]).diagnostics.iter().any(|diagnostic| diagnostic.message.starts_with("unterminated string"));
+    let end = span.end - usize::from(closed);
+    if offset > end { return None; }
+    let replacement = format!("{}{quote}{PLACEHOLDER}{quote}{}", &text[..span.start], &text[span.end..], quote = quote as char);
+    let completed = replacement.clone() + &closers(&replacement);
+    let placeholder = Span { start: span.start, end: span.start + PLACEHOLDER.len() + 2 };
+    let repaired = repaired(vec![replacement, completed], |syntax| argument_context(syntax, placeholder).is_some())?;
+    if argument_context(&luanalysis_syntax::parse(&repaired), placeholder).is_none() { return None; }
+    Some(CompletionSite { context: CompletionContext::StringArgument { quote: quote as char }, text: repaired,
+        placeholder, word: span.start + 1..end, statement: false, parameters_follow: false, value: true, details: Details::All })
+}
+
+/// The parser owns whether `<name>` is a local attribute or a comparison. An unknown temporary
+/// attribute is retained as a node even while its spelling is incomplete.
+fn has_local_attribute(body: &[luanalysis_syntax::Stmt], start: usize) -> bool {
+    use luanalysis_syntax::StmtKind;
+    body.iter().any(|statement| match &statement.kind {
+        StmtKind::Local { attributes, .. } => attributes.iter().flatten().any(|attribute| attribute.span.start == start),
+        StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
+        | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => has_local_attribute(body, start),
+        StmtKind::LocalFunction { function, .. } | StmtKind::FunctionDeclaration { function, .. } => has_local_attribute(&function.body, start),
+        StmtKind::If { branches, else_branch } => branches.iter().any(|branch| has_local_attribute(&branch.body, start))
+            || else_branch.as_ref().is_some_and(|branch| has_local_attribute(&branch.body, start)),
+        _ => false,
+    }) || {
+        let mut found = false;
+        crate::module_requests::visit_expressions(body, &mut |expression| {
+            if let ExprKind::Function(function) = &expression.kind { found |= has_local_attribute(&function.body, start); }
+        });
+        found
+    }
 }
 
 /// The first of `candidates` that parses. In a file with syntax errors elsewhere, such as another
@@ -337,6 +398,17 @@ pub fn complete(
     site: &CompletionSite,
     deliver: impl FnOnce(Vec<CompletionItem>) + Send,
 ) {
+    if let CompletionContext::LocalAttribute { closed } = site.context {
+        use crate::standard_environment::StandardEnvironmentProfile;
+        let lua54 = options.environment == StandardEnvironmentProfile::Lua54
+            || matches!(options.environment, StandardEnvironmentProfile::LegacyMinimal | StandardEnvironmentProfile::None)
+                && options.loader_policy == luanalysis_engine::NativeLoaderPolicy::Lua54StandardFile;
+        deliver(if lua54 { ["const", "close"].into_iter().map(|name| CompletionItem { insert_text: (!closed).then(|| format!("{name}>")),
+            label: name.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None,
+            parameters: None, implementation: None, deprecated: false,
+        }).collect() } else { Vec::new() });
+        return;
+    }
     let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
         deliver(completions(project, registry, file, site, queries));
@@ -354,6 +426,24 @@ fn completions(
     registry.prepare_documentation_members(queries);
     let mut items = Vec::new();
     match site.context {
+        CompletionContext::LocalAttribute { .. } => {}
+        CompletionContext::StringArgument { quote } => {
+            items.extend(argument_history(project, registry, file, site, quote, queries));
+            let mut pending = contextual_types(registry, file, site.placeholder, queries, 0);
+            let mut seen = Vec::new();
+            while let Some(ty) = pending.pop() {
+                if seen.len() > 64 || seen.contains(&ty) { continue; }
+                seen.push(ty.clone());
+                match queries.inspect_type(&ty) {
+                    Type::Union(parts) => pending.extend(parts),
+                    Type::StringLiteral(bytes) => {
+                        let item = string_completion(&bytes, quote);
+                        if !items.iter().any(|other| other.label == item.label) { items.push(item); }
+                    }
+                    _ => {}
+                }
+            }
+        }
         CompletionContext::Member { method } => {
             let mut receiver = None;
             crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| match &expression.kind {
@@ -380,13 +470,13 @@ fn completions(
                 let documentation = documentation.filter(|_| shown).map(|documentation| documentation_markdown(&documentation, true));
                 let parameters = callable.then(|| required_parameters(&value, usize::from(method), queries)).flatten();
                 let detail = shown.then(|| describe_native(&value, queries, &mut Vec::new()));
-                items.push(CompletionItem { label: name, kind, detail, documentation, parameters, implementation: None, deprecated });
+                items.push(CompletionItem { insert_text: None, label: name, kind, detail, documentation, parameters, implementation: None, deprecated });
             }
         }
         CompletionContext::FunctionName => items.extend(callback_implementations(project, registry, file, site, false, queries)),
         CompletionContext::Tag => {
             for tag in ["param", "return", "type", "class", "shape", "field", "alias", "generic", "overload", "vararg", "function", "operator", "not", "see", "module", "enum", "cast", "as"] {
-                items.push(CompletionItem { label: tag.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false });
+                items.push(CompletionItem { insert_text: None, label: tag.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false });
             }
         }
         CompletionContext::AnnotationType => {
@@ -404,12 +494,12 @@ fn completions(
                     let documentation = (kind == CompletionKind::Class).then(|| luanalysis_syntax::documentation_at(syntax, &other.source, name.span.start))
                         .map(|documentation| { let mut summary = documentation; summary.fields.clear(); documentation_markdown(&summary, false) })
                         .filter(|markdown| !markdown.is_empty());
-                    items.push(CompletionItem { label: name.name, kind, detail: None, documentation, parameters: None, implementation: None, deprecated: false });
+                    items.push(CompletionItem { insert_text: None, label: name.name, kind, detail: None, documentation, parameters: None, implementation: None, deprecated: false });
                 }
             }
             for builtin in ["nil", "boolean", "number", "integer", "string", "table", "function", "userdata", "thread", "any", "unknown", "never", "void", "self", "fun"] {
                 if !items.iter().any(|item| item.label == builtin) {
-                    items.push(CompletionItem { label: builtin.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false });
+                    items.push(CompletionItem { insert_text: None, label: builtin.to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false });
                 }
             }
         }
@@ -433,7 +523,7 @@ fn completions(
                 let documentation = documentation.filter(|_| shown).map(|documentation| documentation_markdown(&documentation, true));
                 let parameters = value.filter(|_| kind == CompletionKind::Function)
                     .and_then(|value| required_parameters(&value, 0, queries));
-                items.push(CompletionItem { label: declaration.name.clone(), kind, detail, documentation, parameters, implementation: None, deprecated });
+                items.push(CompletionItem { insert_text: None, label: declaration.name.clone(), kind, detail, documentation, parameters, implementation: None, deprecated });
             }
             // Listing globals for an editor that resolves their details needs no global's value:
             // their kinds and calls come from their declarations. Typing every global would
@@ -443,7 +533,7 @@ fn completions(
                     if !is_identifier(&name) || items.iter().any(|item| item.label == name) { continue; }
                     let kind = if parameters.is_some() { CompletionKind::Function } else { CompletionKind::Variable };
                     let deprecated = global_documentation(project, registry, &name).is_some_and(|documentation| documentation.deprecated.is_some());
-                    items.push(CompletionItem { label: name, kind, detail: None, documentation: None, parameters, implementation: None, deprecated });
+                    items.push(CompletionItem { insert_text: None, label: name, kind, detail: None, documentation: None, parameters, implementation: None, deprecated });
                 }
             } else if let Some(environment) = source.global_environment()
                 && let Ok(environment) = queries.global_environment_type(environment)
@@ -464,16 +554,17 @@ fn completions(
                     let documentation = documentation.filter(|_| shown).map(|documentation| documentation_markdown(&documentation, true));
                     let parameters = (kind == CompletionKind::Function).then(|| required_parameters(&value, 0, queries)).flatten();
                     let detail = shown.then(|| describe_native(&value, queries, &mut Vec::new()));
-                    items.push(CompletionItem { label: name, kind, detail, documentation, parameters, implementation: None, deprecated });
+                    items.push(CompletionItem { insert_text: None, label: name, kind, detail, documentation, parameters, implementation: None, deprecated });
                 }
             }
             // Resolving one name's details needs none of what follows.
+            items.extend(implicit_receiver_methods(project, registry, file, site, queries));
             if let Details::Only(_) = site.details { return items; }
             // A statement of its own may begin a callback's implementation.
             if site.statement { items.extend(callback_implementations(project, registry, file, site, true, queries)); }
             // A value may be expected to be a function or one of some literals.
             if site.value { items.splice(0..0, expected_values(registry, file, site, queries)); }
-            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false }));
+            items.extend(KEYWORDS.iter().map(|keyword| CompletionItem { insert_text: None, label: (*keyword).to_owned(), kind: CompletionKind::Keyword, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false }));
         }
     }
     items
@@ -512,7 +603,7 @@ fn callback_implementations(
         let head = if keyword { format!("function {name}") } else { name.clone() };
         let implementation = (!site.parameters_follow).then(|| Implementation { head, parameters: names.clone() });
         let kind = if implementation.is_some() { CompletionKind::Snippet } else { CompletionKind::Function };
-        items.push(CompletionItem {
+        items.push(CompletionItem { insert_text: None,
             detail: Some(format!("Implement {name}({})", names.join(", "))),
             label: name,
             kind,
@@ -523,6 +614,190 @@ fn callback_implementations(
         });
     }
     items
+}
+
+fn value_completion(label: String) -> CompletionItem {
+    CompletionItem { insert_text: None, label, kind: CompletionKind::Value, detail: None, documentation: None,
+        parameters: None, implementation: None, deprecated: false }
+}
+
+fn string_completion(bytes: &[u8], quote: char) -> CompletionItem {
+    let escaped = string_contents(bytes, quote);
+    let label = String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| escaped.clone());
+    CompletionItem { insert_text: Some(escaped), ..value_completion(label) }
+}
+
+/// A visible implicit receiver is a real lexical binding. Enumerating its type also respects
+/// inheritance and generic receivers; a local or explicit parameter named `self` hides it.
+fn implicit_receiver_methods(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    site: &CompletionSite,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Vec<CompletionItem> {
+    let Some(source) = registry.source(file) else { return Vec::new() };
+    let bound = source.bound();
+    let receiver = visible_bindings(bound, site.placeholder.start).into_iter()
+        .find(|binding| bound.declaration(*binding).name == "self")
+        .filter(|binding| bound.declaration(*binding).kind == bind::DeclarationKind::ImplicitReceiver);
+    let Some(receiver) = receiver.and_then(|binding| source.resolve_binding(binding, queries)) else { return Vec::new() };
+    let receiver = queries.exclude_type(&receiver.constraint, &Type::Nil);
+    let mut items = Vec::new();
+    for (name, value) in queries.type_members(&receiver) {
+        if !is_identifier(&name) || queries.call_signature_types(&value).is_empty() { continue; }
+        let label = format!("self:{name}");
+        let shown = site.details.shown(&label);
+        let documentation = member_documentation(project, registry, &receiver, &name, &value, queries);
+        let deprecated = documentation.as_ref().is_some_and(|documentation| documentation.deprecated.is_some());
+        items.push(CompletionItem { insert_text: None, label, kind: CompletionKind::Method,
+            detail: shown.then(|| describe_native(&value, queries, &mut Vec::new())),
+            documentation: documentation.filter(|_| shown).map(|documentation| documentation_markdown(&documentation, true)),
+            parameters: required_parameters(&value, 1, queries), implementation: None, deprecated });
+    }
+    items
+}
+
+/// History belongs to the selected function value and its physical argument slot. Names alone
+/// would combine unrelated shadowed functions, while physical slots let dot and colon calls
+/// contribute to the same method parameter.
+fn argument_history(
+    project: &Project,
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    site: &CompletionSite,
+    quote: char,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Vec<CompletionItem> {
+    let Some(source) = registry.source(file) else { return Vec::new() };
+    let Some((callee, index)) = argument_context(source.syntax(), site.placeholder) else { return Vec::new() };
+    let Some((callee, index)) = callee_type(registry, file, &callee, index, queries) else { return Vec::new() };
+    if untyped(&callee, queries) { return Vec::new(); }
+    let key = queries.native_function_key(&callee);
+    let heads = queries.call_signature_types(&callee);
+    let signature_keys: Option<Vec<_>> = heads.iter().map(|head| queries.native_signature_key(head)).collect();
+    if key.is_none() && signature_keys.as_ref().is_none_or(Vec::is_empty) { return Vec::new(); }
+    let mut items: Vec<CompletionItem> = Vec::new();
+    for other in &project.files {
+        let Some(source) = registry.source(other.id) else { continue };
+        let mut candidates = Vec::new();
+        crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression| {
+            let (callee, args) = match &expression.kind {
+                ExprKind::Call { callee, args } => (Callee::Function(callee.span), args),
+                ExprKind::MethodCall { receiver, name, args } => (Callee::Method { receiver: receiver.span, name: name.text.clone() }, args),
+                _ => return,
+            };
+            let written = index.checked_sub(usize::from(matches!(callee, Callee::Method { .. })));
+            if let Some(argument) = written.and_then(|index| args.get(index))
+                && !(other.id == file && argument.span == site.placeholder)
+                && let ExprKind::String(bytes) = &argument.kind
+            {
+                candidates.push((callee, bytes.clone()));
+            }
+        });
+        for (candidate, bytes) in candidates {
+            let Some((candidate, _)) = callee_type(registry, other.id, &candidate, 0, queries) else { continue };
+            let same = match key {
+                Some(key) => queries.native_function_key(&candidate) == Some(key),
+                None => {
+                    let candidate_heads = queries.call_signature_types(&candidate);
+                    let candidate_keys: Option<Vec<_>> = candidate_heads.iter().map(|head| queries.native_signature_key(head)).collect();
+                    candidate_keys == signature_keys
+                }
+            };
+            if !same { continue; }
+            let item = string_completion(&bytes, quote);
+            if !items.iter().any(|other| other.label == item.label) { items.push(item); }
+        }
+    }
+    items
+}
+
+fn argument_context(syntax: &luanalysis_syntax::File, mut span: Span) -> Option<(Callee, usize)> {
+    loop {
+        match value_context(syntax, span)? {
+            Context::Through(parent) => span = parent,
+            Context::Argument { callee, index } => return Some((callee, index)),
+            _ => return None,
+        }
+    }
+}
+
+fn callee_type(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    callee: &Callee,
+    index: usize,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Option<(Type, usize)> {
+    match callee {
+        Callee::Function(span) => expression_type(registry, file, *span, queries).map(|callee| (callee, index)),
+        Callee::Method { receiver, name } => member_type(registry, file, *receiver, name, queries).map(|callee| (callee, index + 1)),
+    }
+}
+
+/// Type lowering deliberately erases editor-only hints. Follow the resolved callable back to
+/// its original annotation rather than interpreting the suggested text as a Lua expression.
+fn argument_metadata_hints(
+    registry: &crate::native_functions::project_provider::ProjectRegistry,
+    file: FileId,
+    span: Span,
+    queries: &mut dyn luanalysis_engine::TypeQueries,
+) -> Vec<String> {
+    let Some(source) = registry.source(file) else { return Vec::new() };
+    let Some((callee, index)) = argument_context(source.syntax(), span) else { return Vec::new() };
+    let Some((callee, index)) = callee_type(registry, file, &callee, index, queries) else { return Vec::new() };
+    let mut hints = Vec::new();
+    for head in queries.call_signature_types(&callee) {
+        let signature = queries.native_signature_key(&head);
+        if signature.is_none() && let Some(key) = queries.native_function_key(&head) {
+            let Some((file, _)) = registry.function_site(key) else { continue };
+            let Some(source) = registry.source(file) else { continue };
+            function_parameter_hints(source, key, index, &mut hints);
+        }
+        if let Some(key) = signature {
+            let Some((file, _, _)) = registry.signature_site(key) else { continue };
+            let Some(source) = registry.source(file) else { continue };
+            let recipe = source.signatures.get(key);
+            if let Some(function) = recipe.ambient_function {
+                function_parameter_hints(source, function, index, &mut hints);
+                continue;
+            }
+            let Some(signature) = &recipe.signature else { continue };
+            let documentation = recipe.documentation.and_then(|id| source.documentation_function(id));
+            let hidden = usize::from(luanalysis_engine::NativeTypeProvider::signature_is_method(source, key));
+            let Some(index) = index.checked_sub(hidden) else { continue };
+            if let Some(parameter) = signature.params.get(index) {
+                let ty = parameter.ty.as_ref().or_else(|| documentation.and_then(|doc| doc.annotations.params.iter().find(|annotation| annotation.name.text == parameter.name.text)).map(|annotation| &annotation.ty));
+                if let Some(ty) = ty { completion_hints(ty, &mut hints); }
+            } else if let Some(annotation) = signature.vararg.as_ref().or_else(|| documentation.and_then(|doc| doc.annotations.vararg.as_ref())) {
+                completion_hints(&annotation.ty, &mut hints);
+            }
+        }
+    }
+    hints
+}
+
+fn function_parameter_hints(source: &crate::native_functions::NativeRegistry, key: luanalysis_engine::NativeFunctionKey, index: usize, hints: &mut Vec<String>) {
+    let function = source.function(key);
+    let Some(index) = index.checked_sub(usize::from(source.implicit_receiver(function).is_some())) else { return };
+    if let Some(parameter) = function.params.get(index)
+        && let Some(annotation) = function.annotations.params.iter().find(|annotation| annotation.name.text == parameter.text)
+    {
+        completion_hints(&annotation.ty, hints);
+    } else if index >= function.params.len() && let Some(annotation) = &function.annotations.vararg {
+        completion_hints(&annotation.ty, hints);
+    }
+}
+
+fn completion_hints(ty: &luanalysis_syntax::TypeExpr, hints: &mut Vec<String>) {
+    use luanalysis_syntax::TypeExprKind;
+    match &ty.kind {
+        TypeExprKind::CompletionHint(text) => if !hints.contains(text) { hints.push(text.clone()); },
+        TypeExprKind::Union(parts) => for part in parts { completion_hints(part, hints); },
+        TypeExprKind::Parenthesized(inner) => completion_hints(inner, hints),
+        _ => {}
+    }
 }
 
 /// The values the type expected at `site` allows: a function implementing each signature it has,
@@ -537,12 +812,13 @@ fn expected_values(
     let mut pending = contextual_types(registry, file, site.placeholder, queries, 0);
     pending.reverse();
     let mut seen = Vec::new();
-    let mut items: Vec<CompletionItem> = Vec::new();
+    let mut items: Vec<CompletionItem> = argument_metadata_hints(registry, file, site.placeholder, queries)
+        .into_iter().map(|label| CompletionItem { insert_text: None, kind: CompletionKind::Snippet, ..value_completion(label) }).collect();
     let mut add = |item: CompletionItem| if !items.iter().any(|other| other.label == item.label) { items.push(item) };
     while let Some(ty) = pending.pop() {
         if seen.len() > 64 || seen.contains(&ty) { continue; }
         seen.push(ty.clone());
-        let literal = |label: String| CompletionItem { label, kind: CompletionKind::Value, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false };
+        let literal = |label: String| CompletionItem { insert_text: None, label, kind: CompletionKind::Value, detail: None, documentation: None, parameters: None, implementation: None, deprecated: false };
         let any_function = match queries.inspect_type(&ty) {
             Type::Union(parts) => { pending.extend(parts.into_iter().rev()); continue; }
             Type::StringLiteral(bytes) => { add(literal(lua_string(&bytes))); continue; }
@@ -554,7 +830,7 @@ fn expected_values(
             let names: Vec<String> = parameters.iter().map(|parameter| parameter.split(':').next().unwrap_or_default().trim_end_matches('?').trim().to_owned()).collect();
             // Any function at all (`function`) takes whatever it is given.
             let detail = if any_function { "function".to_owned() } else { describe_native(&head, queries, &mut Vec::new()) };
-            add(CompletionItem {
+            add(CompletionItem { insert_text: None,
                 label: format!("function({})", names.join(", ")),
                 kind: CompletionKind::Snippet,
                 detail: Some(detail),
@@ -586,6 +862,7 @@ enum Context {
     Return { owner: Option<Owner>, index: usize },
 }
 
+#[derive(Clone)]
 enum Callee {
     Function(Span),
     Method { receiver: Span, name: String },
@@ -795,9 +1072,18 @@ fn declares_results(function: &luanalysis_syntax::Function) -> bool {
 /// `bytes` as a Lua string literal: UTF-8 text as it is, other bytes and control characters
 /// escaped.
 fn lua_string(bytes: &[u8]) -> String {
-    let mut literal = String::from("\"");
+    lua_string_delimited(bytes, '"')
+}
+
+fn string_contents(bytes: &[u8], quote: char) -> String {
+    let literal = lua_string_delimited(bytes, quote);
+    literal[1..literal.len() - 1].to_owned()
+}
+
+fn lua_string_delimited(bytes: &[u8], quote: char) -> String {
+    let mut literal = quote.to_string();
     let escape = |literal: &mut String, character: char| match character {
-        '"' => literal.push_str("\\\""),
+        character if character == quote => { literal.push('\\'); literal.push(character); }
         '\\' => literal.push_str("\\\\"),
         '\n' => literal.push_str("\\n"),
         '\r' => literal.push_str("\\r"),
@@ -813,7 +1099,7 @@ fn lua_string(bytes: &[u8]) -> String {
             if byte.is_ascii() { escape(&mut literal, byte as char) } else { literal.push_str(&format!("\\{byte:03}")) }
         },
     }
-    literal.push('"');
+    literal.push(quote);
     literal
 }
 
@@ -3434,6 +3720,119 @@ mod tests {
         let offset = text.find('|').expect("a cursor");
         let text = text.replacen('|', "", 1);
         completion_site(&text, offset)
+    }
+
+    fn completion_buffer(text: &str, environment: crate::standard_environment::StandardEnvironmentProfile) -> (String, CompletionSite, Vec<CompletionItem>) {
+        use luanalysis_project::{ProjectConfig, ProjectLoadPlan, Resolver};
+        let marker = "--[[caret]]";
+        let offset = text.find(marker).expect("a completion cursor");
+        let original = text.replacen(marker, "", 1);
+        let site = completion_site(&original, offset).expect("a completion site");
+        let root = std::env::temp_dir().join(format!("luanalysis completion buffers {}", std::process::id()));
+        let path = root.join("main.lua");
+        let overlays = std::collections::HashMap::from([(path.clone(), site.text.clone())]);
+        let resolver = Resolver::new(ProjectConfig::new([root])).unwrap();
+        let mut workspace = ProjectWorkspace::new();
+        let project = Project::load_plan_with_overlays(&resolver, ProjectLoadPlan { entries: vec![path.clone()], libraries: Vec::new() },
+            &overlays, |source| workspace.static_require_requests(source));
+        let file = project.file_by_path(&path).unwrap().id;
+        let mut items = Vec::new();
+        complete(project, ProjectCheckOptions { environment, ..ProjectCheckOptions::default() }, &mut workspace, file, &site, |found| items = found);
+        (original, site, items)
+    }
+
+    #[test]
+    fn string_argument_history_tracks_function_identity_slot_and_original_quote() {
+        use crate::standard_environment::StandardEnvironmentProfile::None;
+        let text = "local function take(first, second) end\ntake('his1', 'other-slot')\nlocal alias = take\nalias('his2')\ntake('his1')\ndo local function take(first) end take('shadowed') end\ntake('h--[[caret]]istory', 'preserved')\n";
+        let (original, site, items) = completion_buffer(text, None);
+        assert_eq!(site.context, CompletionContext::StringArgument { quote: '\'' });
+        assert_eq!(&original[site.word.clone()], "history");
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, ["his1", "his2"]);
+        let completed = format!("{}{}{}", &original[..site.word.start], items[1].insert_text.as_deref().unwrap(), &original[site.word.end..]);
+        assert!(completed.ends_with("take('his2', 'preserved')\n"), "{completed}");
+        assert!(!luanalysis_syntax::parse(&completed).has_lua_syntax_errors());
+
+        let (_, _, items) = completion_buffer("local object={}\nfunction object:take(value) end\nobject.take(object, 'dot')\nobject:take('colon')\nobject:take('--[[caret]]')", None);
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, ["dot", "colon"]);
+    }
+
+    #[test]
+    fn string_argument_insertions_escape_contents_without_replacing_quotes() {
+        use crate::standard_environment::StandardEnvironmentProfile::None;
+        let (original, site, items) = completion_buffer("local function take(value) end\ntake(\"a'b\\\\c\")\ntake('--[[caret]]')\n", None);
+        let item = items.iter().find(|item| item.label == "a'b\\c").unwrap();
+        assert_eq!(item.insert_text.as_deref(), Some("a\\'b\\\\c"));
+        let completed = format!("{}{}{}", &original[..site.word.start], item.insert_text.as_deref().unwrap(), &original[site.word.end..]);
+        assert!(!luanalysis_syntax::parse(&completed).has_lua_syntax_errors(), "{completed}");
+        let site = self::site("take('unclosed|").unwrap();
+        assert_eq!(site.context, CompletionContext::StringArgument { quote: '\'' });
+        assert!(!luanalysis_syntax::parse(&site.text).has_lua_syntax_errors());
+    }
+
+    #[test]
+    fn implicit_self_methods_are_composite_calls_and_respect_shadowing() {
+        use crate::standard_environment::StandardEnvironmentProfile::None;
+        let text = "local s = {}\n---@param value number\nfunction s:aaa(value) end\nfunction s:abb() end\ns.count = 1\nfunction s:ccc()\n sa--[[caret]]\nend";
+        let (_, _, items) = completion_buffer(text, None);
+        let aaa = items.iter().find(|item| item.label == "self:aaa").expect("the receiver's method");
+        assert_eq!(aaa.kind, CompletionKind::Method);
+        assert_eq!(aaa.parameters.as_ref().map(|(parameters, _)| parameters.as_slice()), Some(["value".to_owned()].as_slice()));
+        assert!(items.iter().any(|item| item.label == "self:abb"));
+        assert!(!items.iter().any(|item| item.label == "self:count"));
+        let untyped = text.replace("---@param value number\n", "");
+        let (_, _, items) = completion_buffer(&untyped, None);
+        let aaa = items.iter().find(|item| item.label == "self:aaa").unwrap();
+        assert_eq!(aaa.parameters, Some((Vec::new(), true)));
+        let shadowed = text.replace(" sa", " local self = {}\n sa");
+        let (_, _, items) = completion_buffer(&shadowed, None);
+        assert!(!items.iter().any(|item| item.label.starts_with("self:")));
+    }
+
+    #[test]
+    fn local_attributes_follow_the_ast_version_and_existing_closing_delimiter() {
+        use crate::standard_environment::StandardEnvironmentProfile::{Lua53, Lua54};
+        let (original, site, items) = completion_buffer("local first <const>, second <cl--[[caret]]ose> = 1, nil", Lua54);
+        assert_eq!(site.context, CompletionContext::LocalAttribute { closed: true });
+        assert_eq!(&original[site.word.clone()], "close");
+        assert_eq!(items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(), ["const", "close"]);
+        assert!(items.iter().all(|item| item.insert_text.is_none()));
+        let (original, site, items) = completion_buffer("local value <--[[caret]]", Lua54);
+        let item = items.iter().find(|item| item.label == "const").unwrap();
+        assert_eq!(item.insert_text.as_deref(), Some("const>"));
+        let completed = format!("{}{}{}", &original[..site.word.start], item.insert_text.as_deref().unwrap(), &original[site.word.end..]);
+        assert!(!luanalysis_syntax::parse(&completed).has_lua_syntax_errors());
+        assert!(completion_buffer("local value <--[[caret]]", Lua53).2.is_empty());
+        assert_ne!(self::site("local result = left <co|").unwrap().context, CompletionContext::LocalAttribute { closed: false });
+    }
+
+    #[test]
+    fn argument_completion_publishes_backtick_hints_from_the_selected_parameter() {
+        use crate::standard_environment::StandardEnvironmentProfile::None;
+        let text = "---@param event string\n---@param callback function | `function(event) end`\nlocal function listen(event, callback) end\nlisten('someEvent', --[[caret]]";
+        let (original, site, items) = completion_buffer(text, None);
+        let item = items.iter().find(|item| item.label == "function(event) end").expect("the original snippet text");
+        assert_eq!(item.kind, CompletionKind::Snippet);
+        assert!(item.implementation.is_none());
+        let completed = format!("{}{})", &original[..site.word.start], item.label);
+        assert!(!luanalysis_syntax::parse(&completed).has_lua_syntax_errors());
+        let (_, _, items) = completion_buffer(&text.replace("listen('someEvent', --[[caret]]", "listen(--[[caret]]"), None);
+        assert!(!items.iter().any(|item| item.label == "function(event) end"));
+
+        let text = "---@overload fun(value:number | `Suggested.NUMBER`):number\n---@param value any\nlocal function choose(value) return value end\nchoose(--[[caret]]";
+        let (_, _, items) = completion_buffer(text, None);
+        assert!(items.iter().any(|item| item.label == "Suggested.NUMBER"));
+
+        let text = "---@param value any | `Private.IMPLEMENTATION`\n---@overload fun(value:number | `Suggested.PUBLIC`):number\nlocal function choose(value) return value end\nchoose(--[[caret]]";
+        let (_, _, items) = completion_buffer(text, None);
+        assert!(items.iter().any(|item| item.label == "Suggested.PUBLIC"));
+        assert!(!items.iter().any(|item| item.label == "Private.IMPLEMENTATION"));
+
+        let text = "---@param callback function | `function(event) end`\n---@function listen(callback)\nlisten(--[[caret]]";
+        let (_, _, items) = completion_buffer(text, None);
+        assert!(items.iter().any(|item| item.label == "function(event) end"));
     }
 
     #[test]

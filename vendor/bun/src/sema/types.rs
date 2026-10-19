@@ -474,6 +474,12 @@ pub enum TypeData<'s> {
         declaration: NativeTypeParamId,
         mapper: MapperId,
     },
+    /// A Lua generic in final return position has a scalar first value and a
+    /// separate, correlated physical result sequence. This is the sequence facet.
+    NativePackParameter(TypeId),
+    /// The scalar domain of physically present values in a native result sequence.
+    /// It remains rigid until the sequence facet is instantiated.
+    NativePackElement(TypeId),
     /// The `this` type of a class or an interface.
     ThisParam(Sym),
     Marker(Marker),
@@ -2308,6 +2314,8 @@ impl<'p, 's> Types<'p, 's> {
             } => tf::ENUM_LITERAL | tf::NUMBER_LITERAL,
             TypeData::Enum { .. } => tf::ENUM,
             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+            | TypeData::NativePackParameter(_)
+            | TypeData::NativePackElement(_)
             | TypeData::ThisParam(_) | TypeData::Marker(_) => {
                 tf::TYPE_PARAMETER
             }
@@ -2364,7 +2372,9 @@ impl<'p, 's> Types<'p, 's> {
                 ObjectFlags::COULD_CONTAIN_TYPE_VARIABLES
                     | (self.mapper_record(*around).1 & ObjectFlags::HAS_UNRESOLVED)
             }
-            TypeData::ThisParam(_)
+            TypeData::NativePackParameter(_)
+            | TypeData::NativePackElement(_)
+            | TypeData::ThisParam(_)
             | TypeData::Marker(
                 Marker::Restrictive(_) | Marker::TupleElement(_) | Marker::TupleThis,
             ) => ObjectFlags::COULD_CONTAIN_TYPE_VARIABLES,
@@ -3453,6 +3463,8 @@ follow_enum!(TypeData<'_> {
     TypeData::UniqueSymbol { symbol, name } => (symbol, name),
     TypeData::TypeParam(a, b, c) => (a, b, c),
     TypeData::NativeTypeParam { declaration, mapper } => (declaration, mapper),
+    TypeData::NativePackParameter(parameter) => (parameter),
+    TypeData::NativePackElement(pack) => (pack),
     TypeData::ThisParam(a) => (a),
     TypeData::Marker(a) => (a),
     TypeData::Union(a) => (a),
@@ -3783,6 +3795,8 @@ clone_in_enum!(TypeData {
     UniqueSymbol { symbol, name },
     TypeParam(a, b, c),
     NativeTypeParam { declaration, mapper },
+    NativePackParameter(parameter),
+    NativePackElement(pack),
     ThisParam(a),
     Marker(a),
     Union(a),

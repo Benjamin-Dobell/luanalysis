@@ -24,6 +24,9 @@ pub(super) enum Relation {
     StrictSubtype = 1,
     /// The two types may share a value. Used for `===` and type assertions.
     Comparable = 2,
+    /// Assignability for physical Lua exclusion/narrowing, including nested
+    /// members, with a distinct cache from permissive nil contracts.
+    NativeStrictAssignable = 3,
     Subtype = 4,
     Identity = 5,
 }
@@ -31,7 +34,7 @@ pub(super) enum Relation {
 impl Relation {
     /// `relation == assignableRelation || relation == comparableRelation`
     pub(super) fn is_lenient(self) -> bool {
-        matches!(self, Relation::Assignable | Relation::Comparable)
+        matches!(self, Relation::Assignable | Relation::Comparable | Relation::NativeStrictAssignable)
     }
 
     pub(super) fn is_subtype(self) -> bool {
@@ -359,6 +362,8 @@ fn is_type_param_kind(data: &TypeData) -> bool {
     matches!(
         data,
         TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+        | TypeData::NativePackParameter(_)
+        | TypeData::NativePackElement(_)
         | TypeData::ThisParam(_) | TypeData::Marker(_)
     )
 }
@@ -375,6 +380,8 @@ fn is_instantiable_kind(data: &TypeData) -> bool {
         data,
         TypeData::TypeParam(..)
             | TypeData::NativeTypeParam { .. }
+            | TypeData::NativePackParameter(_)
+            | TypeData::NativePackElement(_)
             | TypeData::ThisParam(_)
             | TypeData::Marker(_)
             | TypeData::IndexedAccess { .. }
@@ -543,6 +550,8 @@ impl<'p, 's> Checker<'p, 's> {
         matches!(
             self.data(ty),
             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+            | TypeData::NativePackParameter(_)
+            | TypeData::NativePackElement(_)
             | TypeData::ThisParam(_) | TypeData::Marker(_)
         )
     }
@@ -1011,6 +1020,7 @@ impl<'p, 's> Checker<'p, 's> {
         if source == target {
             return true;
         }
+        if self.native_nil_assignment_compatible(source, target, relation) { return true }
         if !self.native_runtime_types_compatible(source, target) { return false }
         if !self.native_nominal_objects_compatible(source, target, relation) { return false }
         // A relation check made while a type is being simplified does not go through `enter`.
@@ -1689,6 +1699,8 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn constraint_of(&mut self, t: TypeId) -> Option<TypeId> {
         match *self.data(t) {
             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+            | TypeData::NativePackParameter(_)
+            | TypeData::NativePackElement(_)
             | TypeData::ThisParam(_) | TypeData::Marker(_) => {
                 self.constraint_of_type_param(t)
             }
@@ -2642,6 +2654,7 @@ impl<'p, 's> Checker<'p, 's> {
         if original_source == original_target {
             return Ternary::TRUE;
         }
+        if self.native_nil_assignment_compatible(original_source, original_target, r.relation) { return Ternary::TRUE }
         if !self.native_runtime_types_compatible(original_source, original_target) { return Ternary::FALSE }
         let head = if REPORT { r.head_message.take() } else { None };
         if !self.native_nominal_objects_compatible(original_source, original_target, r.relation) {
@@ -4830,9 +4843,23 @@ impl<'p, 's> Checker<'p, 's> {
             }
         }
 
+        // A physical sequence is covariant in its element domain. This proves
+        // only a homogeneous array tail; fixed tuple positions and cardinality
+        // continue through the ordinary tuple relation below.
+        if relation != Relation::Identity
+            && matches!(sd, TypeData::NativePackParameter(_))
+            && let Some(target_element) = self.array_element(target)
+        {
+            let source_element = self.native_pack_element_domain(crate::types::NativeResultPack { ty: source });
+            let related = self.is_related_to_ex::<REPORT>(r, source_element, target_element, REC_BOTH, state);
+            if related.holds() { return related; }
+        }
+
         // ── by kind of target ──
         match *td {
             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+            | TypeData::NativePackParameter(_)
+            | TypeData::NativePackElement(_)
             | TypeData::ThisParam(_) | TypeData::Marker(_) => {
                 // `{ [P in Q]: X }` is related to `T` if `keyof T` is related to `Q` and `X` is
                 // related to `T[Q]`.
@@ -5125,6 +5152,8 @@ impl<'p, 's> Checker<'p, 's> {
         match *sd {
             TypeData::TypeParam(..)
             | TypeData::NativeTypeParam { .. }
+            | TypeData::NativePackParameter(_)
+            | TypeData::NativePackElement(_)
             | TypeData::ThisParam(_)
             | TypeData::Marker(_)
             | TypeData::IndexedAccess { .. } => {
@@ -5340,6 +5369,12 @@ impl<'p, 's> Checker<'p, 's> {
         state: u8,
         shared: &mut WorkerState,
     ) -> Ternary {
+        // A constructor initializes its own prospective allocation schema.
+        // This is assignment compatibility only: physical narrowing, subtype
+        // reduction and identity still compare the reached runtime view.
+        if r.relation == Relation::Assignable && self.native_runtime_schema_initialization(source, target) {
+            return Ternary::TRUE;
+        }
         // A class's definition table is a value of its class, as v1 types the class table, even
         // where it has not yet been given every member.
         let source = match self.native_definition_ref(source) {

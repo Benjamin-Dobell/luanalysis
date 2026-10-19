@@ -1,0 +1,17 @@
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -692,9 +692,11 @@
+                 let parameter = *parameter;
+                 let value = self.instantiate(parameter, mapper);
+                 if value == parameter { return ty; }
+-                if self.native_type_parameter_decl(value).is_some() {
++                if self.native_type_parameter_is_result_pack(value) {
+                     self.intern(TypeData::NativePackParameter(value))
+                 } else {
+-                    self.native_scalar_pack(value).ty
++                    let pack = self.native_scalar_pack(value);
++                    let pack = self.native_declared_result_pack(pack);
++                    self.native_pack_with_implicit_empty(pack).ty
+                 }
+             }

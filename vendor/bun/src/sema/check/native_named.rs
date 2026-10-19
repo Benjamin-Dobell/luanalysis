@@ -929,7 +929,8 @@ impl<'p, 's> Checker<'p, 's> {
         for member in std::iter::once(origin.member).chain(origin.overloads.iter().copied()) {
             if !self.native_named_member_active(member)? { continue }
             let metadata = self.native_named_member_effective_metadata(member)?;
-            if metadata.is_assignment && self.native_named_member_context(member)?.is_some() { continue }
+            if metadata.is_assignment && metadata.origin != Declared
+                && self.native_named_member_context(member)?.is_some() { continue }
             effective = Some(if metadata.origin == Declared || effective == Some(Declared) { Declared } else { Inferred });
         }
         Ok(effective)
@@ -1466,6 +1467,14 @@ impl<'p, 's> Checker<'p, 's> {
             .unwrap_or(TypeId::UNRESOLVED)
     }
 
+    /// Publishing an allocation's declaration schema must not require its
+    /// constructor to contain stores that occur later. This only recognizes
+    /// that exact allocation/context; other schemas retain structural checks.
+    pub(super) fn native_runtime_schema_initialization(&self, source: TypeId, target: TypeId) -> bool {
+        let Some(source) = self.native_runtime_table_ref(source) else { return false };
+        matches!(*self.data(target), TypeData::NativeObject(target) if source.schema == target)
+    }
+
     /// Callable named objects keep their original signature view in recursive
     /// relations; exact Lua fields/keys still use the resolved table view.
     pub(super) fn native_object_relation_view(&mut self, ty: TypeId) -> Result<TypeId, NativeNamedTypeError> {
@@ -1652,6 +1661,9 @@ impl<'p, 's> Checker<'p, 's> {
                 if let Some((_, base)) = field_origin.via && origin.via.is_none() && !self.is_assignable(field.value, indexer.value) {
                     return Err(NativeNamedTypeError::IncompatibleOverride { declaration, member: origin.member, base, expected: indexer.value, actual: field.value });
                 }
+                // An exact field declared beside an indexer overrides its fallback.
+                // Inherited contracts above remain substitutability obligations.
+                if origin.via.is_none() && field_origin.via.is_none() { continue }
                 if !self.is_assignable(field.value, indexer.value) {
                     if let Some((index, base)) = origin.via.or(field_origin.via) {
                         return Err(NativeNamedTypeError::IncompatibleBase { declaration, index, base, expected: indexer.value, actual: field.value });

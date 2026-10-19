@@ -1847,7 +1847,7 @@ fn complete(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut 
                 CompletionKind::Snippet => 15,
                 CompletionKind::Value => 12,
             })),
-            ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(item.label.as_str()))])),
+            ("textEdit".to_owned(), Json::object([("range", range.clone()), ("newText", Json::from(item.insert_text.as_deref().unwrap_or(&item.label)))])),
         ];
         // A callable inserts a call with its required parameters as placeholders, unless a call
         // already follows.
@@ -2189,7 +2189,7 @@ impl Default for Preferences {
 
 /// The checked paths and options with the client's settings applied, as the command line's
 /// options would apply them: `luaVersion`, `libraries`, `moduleRoots`, `packagePath`, `stdlib`,
-/// `noStdlib` and `noImplicitAny`; and the editor preferences `inlayHints.types`,
+/// `noStdlib`, `noImplicitAny` and `strictNil`; and the editor preferences `inlayHints.types`,
 /// `inlayHints.parameterNames` and `completion.callSnippets`. A relative path is the workspace's.
 fn apply_settings(mut inputs: CheckInputs, mut options: ProjectCheckOptions, settings: &Json) -> Result<(CheckInputs, ProjectCheckOptions, Preferences), String> {
     let root = inputs.files.iter().find(|file| file.is_dir()).cloned();
@@ -2225,6 +2225,7 @@ fn apply_settings(mut inputs: CheckInputs, mut options: ProjectCheckOptions, set
     if let Some(list) = &options.standard_library { list.validate(options.environment).map_err(|error| format!("stdlib: {error}"))?; }
     options.loader_policy = crate::cli::loader_policy(options.environment);
     if let Some(enabled) = flag(&["noImplicitAny"]) { options.no_implicit_any = enabled; }
+    if let Some(enabled) = flag(&["strictNil"]) { options.strict_nil = enabled; }
     let preferences = Preferences {
         type_hints: flag(&["inlayHints", "types"]).unwrap_or(true),
         parameter_hints: flag(&["inlayHints", "parameterNames"]).unwrap_or(true),

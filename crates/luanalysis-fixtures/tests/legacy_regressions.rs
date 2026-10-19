@@ -44,6 +44,29 @@ fn matching_checks_semantic_codes_exact_ranges_multiplicity_and_positive_cases()
 }
 
 #[test]
+fn language_version_markers_require_the_exact_feature_instead_of_an_arbitrary_parse_error() {
+    let fixture = import(r#"local value=1 <error descr="The binary operator '&' only available in Lua 5.3 and above">&</error> 1"#).unwrap();
+    let span = fixture.diagnostics[0].span;
+    let mut actual = observed("LUA1001", span.start, span.end);
+    actual.message = fixture.diagnostics[0].description.clone().unwrap();
+    assert_eq!(legacy::compare(&fixture, &[actual.clone()], false), (vec![], vec![]));
+    actual.message = "Expected an expression.".into();
+    assert_eq!(legacy::compare(&fixture, &[actual], false), (vec![0], vec![0]));
+    for attribute in ["const", "close"] {
+        let fixture = import(&format!("local value <error><{attribute}></error>=1")).unwrap();
+        let span = fixture.diagnostics[0].span;
+        let mut actual = observed("LUA1001", span.start, span.end);
+        actual.message = format!("The local variable attribute '<{attribute}>' is only available in Lua 5.4 and above");
+        assert_eq!(legacy::compare(&fixture, &[actual.clone()], false), (vec![], vec![]));
+        actual.code = "TS2322";
+        assert_eq!(legacy::compare(&fixture, &[actual.clone()], false), (vec![0], vec![0]));
+        actual.code = "LUA1001";
+        actual.message = "Expected an expression.".into();
+        assert_eq!(legacy::compare(&fixture, &[actual], false), (vec![0], vec![0]));
+    }
+}
+
+#[test]
 fn undeclared_variable_warnings_translate_only_to_exact_name_errors() {
     let fixture =
         import("local value = <warning descr=\"Undeclared variable 'missing'.\">missing</warning>")
@@ -178,7 +201,7 @@ fn manifest_accounts_for_every_method_resource_group_and_original_option() {
     assert!(raw.starts_with("\n        ---@return string"));
     let ledger = include_str!("legacy/SHA256SUMS.tsv");
     let files: Vec<_> = ledger.lines().filter(|l| !l.starts_with('#')).collect();
-    assert_eq!(files.len(), 97);
+    assert_eq!(files.len(), 70);
     let mut lua = 0;
     for row in files {
         let original = row
@@ -194,6 +217,35 @@ fn manifest_accounts_for_every_method_resource_group_and_original_option() {
         }
     }
     assert_eq!(lua, 70);
+    let kotlin_sources = include_str!("legacy/UPSTREAM-SOURCES.tsv");
+    assert_eq!(
+        kotlin_sources
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .count(),
+        27
+    );
+    assert!(!legacy::root().join("kotlin").exists());
+    let ide_inputs = include_str!("legacy/IDE-INPUTS.tsv");
+    let ide_rows: Vec<_> = ide_inputs
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .collect();
+    assert_eq!(ide_rows.len(), 6);
+    for row in ide_rows {
+        let fields: Vec<_> = row.split('\t').collect();
+        assert_eq!(fields.len(), 4);
+        for file in fields[1..3]
+            .iter()
+            .flat_map(|files| files.split('|'))
+            .filter(|file| !file.is_empty())
+        {
+            assert!(
+                legacy::root().join(file).is_file(),
+                "unextracted editor/refactoring input: {file}"
+            );
+        }
+    }
 }
 
 fn run(id: &str) {

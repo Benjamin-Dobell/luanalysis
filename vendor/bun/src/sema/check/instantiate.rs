@@ -686,6 +686,23 @@ impl<'p, 's> Checker<'p, 's> {
             return self.instantiate_deferred_type_reference(ty, mapper, None);
         }
         match self.data(ty) {
+            TypeData::NativePackElement(pack) => {
+                let pack = self.instantiate(*pack, mapper);
+                self.native_pack_element_domain(NativeResultPack { ty: pack })
+            }
+            TypeData::NativePackParameter(parameter) => {
+                if let Some(pack) = self.types().map(mapper, ty) { return pack; }
+                let parameter = *parameter;
+                let value = self.instantiate(parameter, mapper);
+                if value == parameter { return ty; }
+                if self.native_type_parameter_is_result_pack(value) {
+                    self.intern(TypeData::NativePackParameter(value))
+                } else {
+                    let pack = self.native_scalar_pack(value);
+                    let pack = self.native_declared_result_pack(pack);
+                    self.native_pack_with_implicit_empty(pack).ty
+                }
+            }
             TypeData::NativeRuntimeTable(reference) => {
                 let reference = *reference;
                 let schema = NativeObjectReference { mapper: self.compose(reference.schema.mapper, mapper), self_argument: reference.schema.self_argument.map(|ty| self.instantiate(ty, mapper)), ..reference.schema };
@@ -1007,6 +1024,8 @@ impl<'p, 's> Checker<'p, 's> {
             let waits = match self.data(elem) {
                 TypeData::TypeParam(..)
                 | TypeData::NativeTypeParam { .. }
+                | TypeData::NativePackParameter(_)
+                | TypeData::NativePackElement(_)
                 | TypeData::ThisParam(_)
                 | TypeData::Marker(_)
                 | TypeData::IndexedAccess { .. }
@@ -1483,6 +1502,21 @@ impl<'p, 's> Checker<'p, 's> {
                         pairs.push((param, actual));
                     }
                 }
+            }
+        }
+        // A result facet is keyed independently from its scalar parameter. Keep
+        // it when projecting the inference mapper onto an original native head,
+        // including free parameters of nested callback declarations.
+        for (parameter, _) in pairs.clone() {
+            if self.native_type_parameter_decl(parameter).is_none() { continue; }
+            let open = self.types().map(own, parameter).unwrap_or(parameter);
+            let source = self.intern(TypeData::NativePackParameter(open));
+            let Some(pack) = self.types().map(second, source) else { continue };
+            let facet = self.intern(TypeData::NativePackParameter(parameter));
+            if let Some(pair) = pairs.iter_mut().find(|pair| pair.0 == facet) {
+                pair.1 = pack;
+            } else {
+                pairs.push((facet, pack));
             }
         }
         self.types().mapper_of(&pairs)

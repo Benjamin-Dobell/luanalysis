@@ -355,7 +355,7 @@ impl NativeRegistry {
             .filter(|key| used.contains(key))
             .collect()
     }
-    pub(super) fn named_declaration_header(
+    pub(crate) fn named_declaration_header(
         &self,
         key: NativeTypeDeclarationKey,
     ) -> TypeDeclarationHeader {

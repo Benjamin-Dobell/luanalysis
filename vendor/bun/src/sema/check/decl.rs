@@ -1777,6 +1777,12 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_type_parameter_provider_for(declaration).type_parameter_order(declaration)
     }
 
+    pub(super) fn native_type_parameter_is_result_pack(&self, parameter: TypeId) -> bool {
+        self.native_type_parameter_decl(parameter).is_some_and(|(declaration, _)| {
+            self.native_type_parameter_provider_for(declaration).type_parameter_is_result_pack(declaration)
+        })
+    }
+
     pub(super) fn native_type_parameter_has_constraint(&self, declaration: NativeTypeParamId) -> bool {
         self.native_type_parameter_provider_for(declaration).has_type_parameter_constraint(declaration)
     }
@@ -1895,6 +1901,21 @@ impl<'p, 's> Checker<'p, 's> {
     pub(super) fn constraint_from_type_param(&mut self, param: TypeId) -> Option<TypeId> {
         if !self.unresolved_renamed_params.is_empty() {
             self.unresolved_renamed_params.remove(&param);
+        }
+        if matches!(self.data(param), TypeData::NativePackElement(_)) {
+            // An element facet is an unknown scalar in source position, but a
+            // rigid generic target: its constraint cannot admit arbitrary values.
+            return Some(TypeId::UNKNOWN);
+        }
+        if let TypeData::NativePackParameter(parameter) = *self.data(param) {
+            // The first scalar establishes a required first value whenever
+            // its scalar domain excludes nil/void. Later physical values remain
+            // unrelated, and nullable scalar domains may arise from zero results.
+            let optional = self.native_pack_parameter_first_is_optional(parameter);
+            return Some(self.native_result_pack(&[super::native_packs::NativePackAlternative {
+                fixed: vec![super::native_packs::NativePackSlot { ty: parameter, optional }],
+                tail: Some(TypeId::UNKNOWN),
+            }]).ty);
         }
         if let TypeData::NativeTypeParam { declaration, mapper } = *self.data(param) {
             if let Some(Some(kept)) = self.p.type_param_constraints.get(&self.task, &param) {

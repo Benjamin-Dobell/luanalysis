@@ -1,0 +1,353 @@
+diff --git a/src/sema/check/decl.rs b/src/sema/check/decl.rs
+--- a/src/sema/check/decl.rs
++++ b/src/sema/check/decl.rs
+@@ -1902,12 +1902,18 @@
+         if !self.unresolved_renamed_params.is_empty() {
+             self.unresolved_renamed_params.remove(&param);
+         }
++        if matches!(self.data(param), TypeData::NativePackElement(_)) {
++            // An element facet is an unknown scalar in source position, but a
++            // rigid generic target: its constraint cannot admit arbitrary values.
++            return Some(TypeId::UNKNOWN);
++        }
+         if let TypeData::NativePackParameter(parameter) = *self.data(param) {
+-            // The first scalar does not establish the result-list length. A
+-            // producer can return later values of unrelated types, or no values
+-            // when its scalar first result is nil.
++            // The first scalar establishes a required first value whenever
++            // its scalar domain excludes nil/void. Later physical values remain
++            // unrelated, and nullable scalar domains may arise from zero results.
++            let optional = self.native_pack_parameter_first_is_optional(parameter);
+             return Some(self.native_result_pack(&[super::native_packs::NativePackAlternative {
+-                fixed: vec![super::native_packs::NativePackSlot { ty: parameter, optional: true }],
++                fixed: vec![super::native_packs::NativePackSlot { ty: parameter, optional }],
+                 tail: Some(TypeId::UNKNOWN),
+             }]).ty);
+         }
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -3188,15 +3188,31 @@
+         for (facet, _, candidates) in &n.native_result_packs {
+             let TypeData::NativePackParameter(parameter) = *self.data(*facet) else { unreachable!("result facet") };
+             let Some(scalar) = pairs.iter().find(|pair| pair.0 == parameter).map(|pair| pair.1) else { continue };
++            let required_first = !self.native_pack_parameter_first_is_optional(parameter)
++                || !self.native_pack_parameter_first_is_optional(scalar);
++            let mut missing_required_first = false;
+             let packs: Vec<_> = candidates.iter().copied().filter(|&ty| {
+-                let first = self.native_pack_slot(crate::types::NativeResultPack { ty }, 0);
++                let pack = crate::types::NativeResultPack { ty };
++                if required_first && !self.native_pack_has_required_first(pack) {
++                    missing_required_first = true;
++                    return false;
++                }
++                let first = self.native_pack_slot(pack, 0);
+                 self.is_assignable(first, scalar)
+             }).collect();
+             // A contextual result row may have suggested a conflicting first
+             // value before an argument supplied the stronger scalar inference.
+             // Keep compatible physical rows without dropping the producer's
+             // genuine later slots merely because that weaker guess was wrong.
+-            if !packs.is_empty() { pairs.push((*facet, self.union(&packs))); }
++            if !packs.is_empty() {
++                pairs.push((*facet, self.union(&packs)));
++            } else if missing_required_first {
++                // A permissive scalar inference may be nil even though T's
++                // physical contract requires a first result. Keep that arity in
++                // the applicability target; a zero-result producer must not be
++                // admitted again by the scalar facet's implicit-empty fallback.
++                pairs.push((*facet, self.native_scalar_pack(scalar).ty));
++            }
+         }
+     }
+ 
+@@ -3350,7 +3366,7 @@
+                 },
+                 TypeData::Template { types, .. } => left.extend_from_slice(types),
+                 TypeData::NativeArray { element, .. } => left.push(*element),
+-                TypeData::NativePackParameter(parameter) => left.push(*parameter),
++                TypeData::NativePackParameter(parameter) | TypeData::NativePackElement(parameter) => left.push(*parameter),
+                 TypeData::NativeObject(reference) => {
+                     left.extend(values(reference.mapper));
+                     left.extend(reference.self_argument);
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -686,6 +686,10 @@
+             return self.instantiate_deferred_type_reference(ty, mapper, None);
+         }
+         match self.data(ty) {
++            TypeData::NativePackElement(pack) => {
++                let pack = self.instantiate(*pack, mapper);
++                self.native_pack_element_domain(NativeResultPack { ty: pack })
++            }
+             TypeData::NativePackParameter(parameter) => {
+                 if let Some(pack) = self.types().map(mapper, ty) { return pack; }
+                 let parameter = *parameter;
+@@ -1021,6 +1025,7 @@
+                 TypeData::TypeParam(..)
+                 | TypeData::NativeTypeParam { .. }
+                 | TypeData::NativePackParameter(_)
++                | TypeData::NativePackElement(_)
+                 | TypeData::ThisParam(_)
+                 | TypeData::Marker(_)
+                 | TypeData::IndexedAccess { .. }
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+--- a/src/sema/check/native_packs.rs
++++ b/src/sema/check/native_packs.rs
+@@ -322,6 +322,77 @@
+             });
+         }
+         Some(alternatives)
++    }
++
++    /// The domain of values physically present in a result list. Absence is
++    /// represented by the pack's cardinality, never by inventing a nil element.
++    pub(super) fn native_pack_element_domain(&mut self, pack: NativeResultPack) -> TypeId {
++        if self.is_any(pack.ty) { return pack.ty; }
++        let Some(rows) = self.native_pack_alternatives(pack) else {
++            return self.intern(TypeData::NativePackElement(pack.ty));
++        };
++        let mut values = Vec::new();
++        for row in rows {
++            values.extend(row.fixed.into_iter().map(|slot| slot.ty));
++            values.extend(row.tail);
++        }
++        self.union(&values)
++    }
++
++    pub(super) fn native_pack_parameter_first_is_optional(&mut self, parameter: TypeId) -> bool {
++        let scalar = self.base_constraint(parameter);
++        self.native_contains_nil(scalar)
++            || self.allows_implicit_return_without_explicit_return(scalar)
++    }
++
++    /// Physical arity is independent of permissive nil value assignments. An
++    /// unreachable sequence vacuously meets the first-result requirement.
++    pub(super) fn native_pack_has_required_first(&mut self, pack: NativeResultPack) -> bool {
++        if pack.ty.is_never() { return true; }
++        let bound = self.native_pack_covariant_bound(pack.ty);
++        self.native_pack_count_bounds(NativeResultPack { ty: bound }).0 != 0
++    }
++
++    /// A sound covariant envelope for an opaque physical sequence. Keep this
++    /// separate from the sequence used by inference and published call results:
++    /// the envelope forgets later-slot correlation and is only a relation proof.
++    fn native_pack_covariant_bound(&mut self, ty: TypeId) -> TypeId {
++        match self.data(ty) {
++            TypeData::NativePackParameter(parameter) => {
++                let parameter = *parameter;
++                let optional = self.native_pack_parameter_first_is_optional(parameter);
++                let element = self.native_pack_element_domain(NativeResultPack { ty });
++                let mut rows = vec![NativePackAlternative {
++                    fixed: vec![NativePackSlot { ty: parameter, optional: false }],
++                    tail: Some(element),
++                }];
++                if optional {
++                    // Zero results have no physical nil element. An optional
++                    // tuple slot would introduce a missing-value marker when
++                    // this sequence starts inside a homogeneous target tail.
++                    rows.push(NativePackAlternative { fixed: Vec::new(), tail: None });
++                }
++                self.native_result_pack(&rows).ty
++            }
++            TypeData::Tuple { flags, readonly, .. } => {
++                let flags = flags.to_vec();
++                let readonly = *readonly;
++                let original = self.type_arguments(ty).to_vec();
++                let mut elems = original.clone();
++                for (element, flag) in elems.iter_mut().zip(&flags) {
++                    if flag.contains(ElemFlags::VARIADIC) {
++                        *element = self.native_pack_covariant_bound(*element);
++                    }
++                }
++                if elems == original { ty } else { self.normalized_tuple(&elems, &flags, readonly) }
++            }
++            TypeData::Union(parts) => {
++                let parts = parts.to_vec();
++                let bounded: Vec<_> = parts.iter().map(|&part| self.native_pack_covariant_bound(part)).collect();
++                if bounded == parts { ty } else { self.union(&bounded) }
++            }
++            _ => ty,
++        }
+     }
+ 
+     /// Lua scalar adjustment: an absent slot is nil, including the first slot of zero results.
+@@ -498,7 +569,19 @@
+         }
+         let mut expanded = Vec::with_capacity(rows.len());
+         for mut row in rows {
+-            if row.tail.is_none()
++            if let Some(parameter) = row.tail
++                && self.native_type_parameter_is_result_pack(parameter)
++            {
++                // A producer's first scalar retains T. Repeating its result
++                // sequence can place any of that sequence's physical values in
++                // later slots, while every repeated slot may be absent.
++                let facet = self.intern(TypeData::NativePackParameter(parameter));
++                let element = self.native_pack_element_domain(NativeResultPack { ty: facet });
++                let domain = self.union(&[parameter, element]);
++                row.fixed.push(NativePackSlot { ty: parameter, optional: true });
++                row.tail = Some(domain);
++                expanded.push(self.native_result_pack(&[row]));
++            } else if row.tail.is_none()
+                 && let Some(last) = row.fixed.last()
+                 && !last.optional
+                 && self.native_type_parameter_is_result_pack(last.ty)
+@@ -640,7 +723,12 @@
+ 
+     /// Written return contracts keep required lengths and whole alternative correlations.
+     pub fn native_pack_assignable(&mut self, actual: NativeResultPack, declared: NativeResultPack) -> bool {
+-        self.is_assignable(actual.ty, declared.ty)
++        if self.is_assignable(actual.ty, declared.ty) { return true; }
++        // A variadic opaque source can straddle an optional first slot and a
++        // homogeneous tail. Prove that its covariant envelope fits, without
++        // changing the original source or discarding any target prefix/length.
++        let bounded = self.native_pack_covariant_bound(actual.ty);
++        bounded != actual.ty && self.is_assignable(bounded, declared.ty)
+     }
+ 
+     /// Callable targets with no observed results have TypeScript's void-return
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1960,6 +1960,7 @@
+                 self.type_parameter_to_node(ty)
+             }
+             TypeData::NativePackParameter(parameter) => self.type_to_node(*parameter),
++            TypeData::NativePackElement(pack) => self.type_to_node(*pack),
+             TypeData::Marker(Marker::Restrictive(of)) => self.type_to_node(*of),
+             TypeData::Marker(marker) => Node::simple(self.name_of_marker(*marker)),
+             TypeData::Union(_) => self.union_to_node(ty),
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -363,6 +363,7 @@
+         data,
+         TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+         | TypeData::NativePackParameter(_)
++        | TypeData::NativePackElement(_)
+         | TypeData::ThisParam(_) | TypeData::Marker(_)
+     )
+ }
+@@ -380,6 +381,7 @@
+         TypeData::TypeParam(..)
+             | TypeData::NativeTypeParam { .. }
+             | TypeData::NativePackParameter(_)
++            | TypeData::NativePackElement(_)
+             | TypeData::ThisParam(_)
+             | TypeData::Marker(_)
+             | TypeData::IndexedAccess { .. }
+@@ -549,6 +551,7 @@
+             self.data(ty),
+             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+             | TypeData::NativePackParameter(_)
++            | TypeData::NativePackElement(_)
+             | TypeData::ThisParam(_) | TypeData::Marker(_)
+         )
+     }
+@@ -1697,6 +1700,7 @@
+         match *self.data(t) {
+             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+             | TypeData::NativePackParameter(_)
++            | TypeData::NativePackElement(_)
+             | TypeData::ThisParam(_) | TypeData::Marker(_) => {
+                 self.constraint_of_type_param(t)
+             }
+@@ -4839,10 +4843,23 @@
+             }
+         }
+ 
++        // A physical sequence is covariant in its element domain. This proves
++        // only a homogeneous array tail; fixed tuple positions and cardinality
++        // continue through the ordinary tuple relation below.
++        if relation != Relation::Identity
++            && matches!(sd, TypeData::NativePackParameter(_))
++            && let Some(target_element) = self.array_element(target)
++        {
++            let source_element = self.native_pack_element_domain(crate::types::NativeResultPack { ty: source });
++            let related = self.is_related_to_ex::<REPORT>(r, source_element, target_element, REC_BOTH, state);
++            if related.holds() { return related; }
++        }
++
+         // ── by kind of target ──
+         match *td {
+             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+             | TypeData::NativePackParameter(_)
++            | TypeData::NativePackElement(_)
+             | TypeData::ThisParam(_) | TypeData::Marker(_) => {
+                 // `{ [P in Q]: X }` is related to `T` if `keyof T` is related to `Q` and `X` is
+                 // related to `T[Q]`.
+@@ -5136,6 +5153,7 @@
+             TypeData::TypeParam(..)
+             | TypeData::NativeTypeParam { .. }
+             | TypeData::NativePackParameter(_)
++            | TypeData::NativePackElement(_)
+             | TypeData::ThisParam(_)
+             | TypeData::Marker(_)
+             | TypeData::IndexedAccess { .. } => {
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -6641,6 +6641,7 @@
+             TypeData::TypeParam(..)
+             | TypeData::NativeTypeParam { .. }
+             | TypeData::NativePackParameter(_)
++            | TypeData::NativePackElement(_)
+             | TypeData::ThisParam(_)
+             | TypeData::Marker(_)
+             | TypeData::IndexedAccess { .. }
+@@ -6795,7 +6796,7 @@
+         match self.data(t) {
+             // `isThisType`
+             TypeData::ThisParam(_) => self.constraint_from_type_param(t),
+-            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::NativePackParameter(_) | TypeData::Marker(_) => {
++            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::NativePackParameter(_) | TypeData::NativePackElement(_) | TypeData::Marker(_) => {
+                 let constraint = self.constraint_from_type_param(t)?;
+                 self.next_base_constraint(constraint)
+             }
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -477,6 +477,9 @@
+     /// A Lua generic in final return position has a scalar first value and a
+     /// separate, correlated physical result sequence. This is the sequence facet.
+     NativePackParameter(TypeId),
++    /// The scalar domain of physically present values in a native result sequence.
++    /// It remains rigid until the sequence facet is instantiated.
++    NativePackElement(TypeId),
+     /// The `this` type of a class or an interface.
+     ThisParam(Sym),
+     Marker(Marker),
+@@ -2312,6 +2315,7 @@
+             TypeData::Enum { .. } => tf::ENUM,
+             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
+             | TypeData::NativePackParameter(_)
++            | TypeData::NativePackElement(_)
+             | TypeData::ThisParam(_) | TypeData::Marker(_) => {
+                 tf::TYPE_PARAMETER
+             }
+@@ -2369,6 +2373,7 @@
+                     | (self.mapper_record(*around).1 & ObjectFlags::HAS_UNRESOLVED)
+             }
+             TypeData::NativePackParameter(_)
++            | TypeData::NativePackElement(_)
+             | TypeData::ThisParam(_)
+             | TypeData::Marker(
+                 Marker::Restrictive(_) | Marker::TupleElement(_) | Marker::TupleThis,
+@@ -3459,6 +3464,7 @@
+     TypeData::TypeParam(a, b, c) => (a, b, c),
+     TypeData::NativeTypeParam { declaration, mapper } => (declaration, mapper),
+     TypeData::NativePackParameter(parameter) => (parameter),
++    TypeData::NativePackElement(pack) => (pack),
+     TypeData::ThisParam(a) => (a),
+     TypeData::Marker(a) => (a),
+     TypeData::Union(a) => (a),
+@@ -3790,6 +3796,7 @@
+     TypeParam(a, b, c),
+     NativeTypeParam { declaration, mapper },
+     NativePackParameter(parameter),
++    NativePackElement(pack),
+     ThisParam(a),
+     Marker(a),
+     Union(a),

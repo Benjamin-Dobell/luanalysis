@@ -120,6 +120,7 @@ fn options(case: &Case) -> ProjectCheckOptions {
     ProjectCheckOptions {
         jobs: 1,
         environment,
+        strict_nil: case.strict_nil,
         overload_mode: OverloadMode::LegacyExposeImplementation,
         describe_types: false,
         ..Default::default()
@@ -200,6 +201,14 @@ fn semantic_code(description: Option<&str>, code: &str) -> bool {
     description.is_empty() && code.starts_with("TS")
 }
 
+fn language_level_description(description: &str) -> bool {
+    (description.starts_with("The binary operator '")
+        || description.starts_with("The unary operator '")
+        || description.starts_with("The local variable attribute '"))
+        && (description.ends_with("only available in Lua 5.3 and above")
+            || description.ends_with("only available in Lua 5.4 and above"))
+}
+
 pub fn matches(expected: &luanalysis_fixtures::ExpectedDiagnostic, actual: &Diagnostic) -> bool {
     let severity = match actual.category() {
         DiagnosticCategory::Error => Severity::Error,
@@ -223,7 +232,15 @@ pub fn matches(expected: &luanalysis_fixtures::ExpectedDiagnostic, actual: &Diag
             end: actual.span.end,
         })
         && expected_severity == severity
-        && semantic_code(expected.description.as_deref(), actual.code)
+        && if let Some(description) = expected.description.as_deref()
+            && language_level_description(description)
+        {
+            // LUA1001 also identifies parser errors. A version requirement must
+            // match the exact original feature, never an arbitrary parse error.
+            actual.code == "LUA1001" && actual.message == description
+        } else {
+            semantic_code(expected.description.as_deref(), actual.code)
+        }
 }
 
 /// Translate only documented PSI display ranges to exact native syntax ranges.
@@ -233,6 +250,16 @@ pub fn translated_expectations(fixture: &Fixture) -> Vec<luanalysis_fixtures::Ex
     let syntax = luanalysis_syntax::parse(&fixture.source);
     let mut expected = fixture.diagnostics.clone();
     for diagnostic in &mut expected {
+        // The Lua54 test uses bare markers on these two attribute tokens.
+        // Derive their feature identity from the unchanged marked input.
+        if diagnostic.description.is_none() {
+            let snippet = &fixture.source[diagnostic.span.start..diagnostic.span.end];
+            if matches!(snippet, "<const>" | "<close>") {
+                diagnostic.description = Some(format!(
+                    "The local variable attribute '{snippet}' is only available in Lua 5.4 and above"
+                ));
+            }
+        }
         let description = diagnostic.description.as_deref().unwrap_or("");
         if description.starts_with("Alias '")
             || description.starts_with("Illegal inheritance")
@@ -443,12 +470,22 @@ pub fn symbol_hierarchy_matches(
 }
 
 pub fn run(case: &Case, directory: &Path) -> Result {
+    run_with_sources(case, directory, |_, source| source)
+}
+
+/// Controlled counterfactual inputs for investigating a difference. The normal
+/// runner always reads the stored case unchanged through `run` above.
+pub fn run_with_sources(
+    case: &Case,
+    directory: &Path,
+    replace: impl Fn(&str, String) -> String,
+) -> Result {
     let mut result = Result::new();
     let mut fixtures = Vec::new();
     let mut entries = Vec::new();
     let mut caret = None;
     for input in &case.inputs {
-        let marked = fs::read_to_string(root().join(input)).unwrap();
+        let marked = replace(input, fs::read_to_string(root().join(input)).unwrap());
         let mut fixture = import(&marked).unwrap_or_else(|e| panic!("{input}: {e}"));
         for marker in ["<caret>", "--[[caret]]"] {
             if let Some(offset) = fixture.source.find(marker) {
@@ -569,11 +606,8 @@ pub fn run(case: &Case, directory: &Path) -> Result {
             report.environment_errors, report.project.entry_errors, report.project.library_errors
         ));
     }
-    // These configurations have no equivalent native switches. Still execute
-    // the input above and retain every observed diagnostic in the report.
-    if case.id == "TypeSafetyTest/testNonStrictNil" {
-        result.fail("  UNSUPPORTED SETTING: non-strict nil assignability");
-    }
+    // The legacy unknown-call/index policy has no equivalent native switch.
+    // Retain the actual diagnostics as well as that unsupported configuration.
     if case.id == "TypeSafetyTest/testUnknown" {
         result.fail("  UNSUPPORTED SETTING: permissive unknown calls and indexing");
     }

@@ -59,11 +59,11 @@ fn accepted(source: &str) {
 }
 
 #[test]
-fn a_wrong_second_result_renders_both_full_packs_at_the_existing_first_operand() {
-    let diagnostic = failure(SECOND_SLOT, "first");
-    let start = SECOND_SLOT.rfind("return first,second").unwrap() + "return ".len();
+fn a_wrong_second_result_renders_both_full_packs_at_the_first_incompatible_value() {
+    let diagnostic = failure(SECOND_SLOT, "second");
+    let start = SECOND_SLOT.rfind("return first,second").unwrap() + "return first,".len();
     assert_eq!(diagnostic.span.start, start);
-    assert_eq!(diagnostic.span.end, start + "first".len());
+    assert_eq!(diagnostic.span.end, start + "second".len());
     assert_eq!(diagnostic.message, SECOND_SLOT_MESSAGE);
     accepted(&SECOND_SLOT.replace("---@return number, string", "---@return number, boolean"));
 }
@@ -88,7 +88,7 @@ fn omitted_results_are_not_diagnosed_as_nil_padded_physical_rows() {
 #[test]
 fn nullable_result_slots_keep_lua_nil_in_the_expected_pack() {
     let source = "---@param first number\n---@param second boolean\n---@return number, string|nil\nlocal function wrong(first,second) return first,second end\n";
-    let diagnostic = failure(source, "first");
+    let diagnostic = failure(source, "second");
     let (actual, expected) = operands(&diagnostic.message);
     assert_eq!(actual, "(number, boolean)");
     assert!(
@@ -121,9 +121,9 @@ fn correlated_alternative_rows_are_not_flattened_into_independent_slot_unions() 
 }
 
 #[test]
-fn a_variadic_return_diagnostic_keeps_the_guaranteed_prefix_and_tail_type() {
+fn a_variadic_return_diagnostic_identifies_the_wrong_tail_and_keeps_the_guaranteed_prefix() {
     let source = "---@vararg boolean\n---@return number, string...\nlocal function wrong(...) return 1,... end\n";
-    let diagnostic = failure(source, "1");
+    let diagnostic = failure(source, "...");
     let (actual, expected) = operands(&diagnostic.message);
     assert_eq!(actual, "(1, boolean...)");
     assert_eq!(expected, "(number, string...)");
@@ -133,7 +133,7 @@ fn a_variadic_return_diagnostic_keeps_the_guaranteed_prefix_and_tail_type() {
 #[test]
 fn named_records_and_original_generic_names_survive_late_pack_rendering() {
     let named = "---@class Receipt\n---@field id number\nlocal Receipt={id=1}\n---@param value Receipt\n---@return boolean, {label:string}\nlocal function wrong(value) return true,value end\n";
-    let diagnostic = failure(named, "true");
+    let diagnostic = failure(named, "value");
     let (actual, expected) = operands(&diagnostic.message);
     assert!(actual.contains("Receipt"), "{actual}");
     assert!(
@@ -143,7 +143,7 @@ fn named_records_and_original_generic_names_survive_late_pack_rendering() {
     accepted(&named.replace("return true,value", "return true,{label='word'}"));
 
     let generic = "---@generic T\n---@param value T\n---@return number, string\nlocal function wrong(value) return 1,value end\n";
-    let diagnostic = failure(generic, "1");
+    let diagnostic = failure(generic, "value");
     let (actual, expected) = operands(&diagnostic.message);
     assert_eq!(actual, "(1, T)");
     assert_eq!(expected, "(number, string)");
@@ -180,7 +180,7 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn text_cli_reports_typed_return_packs_at_the_original_unicode_crlf_position() {
+fn text_cli_reports_typed_return_packs_at_the_wrong_slots_original_unicode_crlf_position() {
     let fixture = Fixture::new();
     fixture.write(SECOND_SLOT);
     let invalid = fixture.run("text");
@@ -188,7 +188,7 @@ fn text_cli_reports_typed_return_packs_at_the_original_unicode_crlf_position() {
     assert_eq!(invalid.status.code(), Some(1), "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "input.lua:6:12: error[TS2322]: {SECOND_SLOT_MESSAGE}"
+            "input.lua:6:18: error[TS2322]: {SECOND_SLOT_MESSAGE}"
         )),
         "{stderr}"
     );
@@ -204,7 +204,7 @@ fn text_cli_reports_typed_return_packs_at_the_original_unicode_crlf_position() {
 }
 
 #[test]
-fn json_cli_keeps_typed_pack_messages_codes_and_original_utf8_byte_ranges() {
+fn json_cli_keeps_typed_pack_messages_codes_and_the_wrong_slots_original_utf8_byte_ranges() {
     let fixture = Fixture::new();
     fixture.write(SECOND_SLOT);
     let invalid = fixture.run("json");
@@ -216,16 +216,16 @@ fn json_cli_keeps_typed_pack_messages_codes_and_original_utf8_byte_ranges() {
         stdout.contains(&format!("\"message\":\"{SECOND_SLOT_MESSAGE}\"")),
         "{stdout}"
     );
-    let start = SECOND_SLOT.rfind("return first,second").unwrap() + "return ".len();
+    let start = SECOND_SLOT.rfind("return first,second").unwrap() + "return first,".len();
     assert!(
         stdout.contains(&format!(
             "\"range\":{{\"start\":{start},\"end\":{}}}",
-            start + "first".len()
+            start + "second".len()
         )),
         "{stdout}"
     );
     assert!(
-        stdout.contains("\"position\":{\"line\":6,\"column\":12}"),
+        stdout.contains("\"position\":{\"line\":6,\"column\":18}"),
         "{stdout}"
     );
     assert!(

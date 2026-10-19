@@ -40,6 +40,7 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
     let mut no_stdlib = false;
     let mut overload_mode = crate::OverloadMode::default();
     let mut no_implicit_any = false;
+    let mut strict_nil = true;
     let mut assume_unknown_standard_effects = true;
     let mut positional = false;
     while let Some(arg) = args.next() {
@@ -74,6 +75,10 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
         }
         if !positional && arg == "--no-implicit-any" {
             no_implicit_any = true;
+            continue;
+        }
+        if !positional && arg == "--no-strict-nil" {
+            strict_nil = false;
             continue;
         }
         if !positional && arg == "--strict-standard-effects" {
@@ -174,6 +179,7 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
         standard_library,
         overload_mode,
         no_implicit_any,
+        strict_nil,
         loader_policy,
         assume_unknown_standard_effects,
         jobs,
@@ -367,6 +373,7 @@ pub fn help() {
     println!(
         "Selected standard profiles preserve reached builtin/environment bindings across unknown calls and property effects; known assignments still apply.\n--strict-standard-effects requires runtime-effect preservation proofs instead."
     );
+    println!("--no-strict-nil permits nil assignments as in Luanalysis v1; nil remains represented for runtime flow and table presence.");
     println!(
         "\nluanalysis lsp [check options] [<file.lua|directory>...]\n\nA language server over stdio: diagnostics, hover and go-to-definition. It accepts the options of check; without paths it checks the editor's workspace root. Each revision of the editor's buffers is checked as one project."
     );

@@ -10,7 +10,6 @@ import json
 from pathlib import Path
 import re
 import subprocess
-import textwrap
 
 REVISION = 'd796bb67d5135d152b9f627b69e57377c83d1a66'
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,15 +23,23 @@ def git(*arguments):
     return subprocess.check_output(['git', '-C', str(args.repository), *arguments])
 
 outputs = {}
+sources = {}
 ledger = []
+kotlin_ledger = []
 for source in git('ls-tree', '-r', '--name-only', REVISION, 'src/test').decode().splitlines():
     data = git('show', f'{REVISION}:{source}')
     path = source.removeprefix('src/test/')
-    outputs[path] = data
-    ledger.append((source, hashlib.sha256(data).hexdigest()))
+    sources[path] = data
+    record = (source, hashlib.sha256(data).hexdigest())
+    if path.endswith('.kt'):
+        kotlin_ledger.append(record)
+    else:
+        outputs[path] = data
+        ledger.append(record)
 
 cases = []
 inventory = []
+ide_inputs = []
 
 def case(identifier, kind, inputs, origin, *, version='5.3', strict=True,
          unknown=False, weak=False, required=(), forbidden=(), notes=''):
@@ -47,22 +54,32 @@ def case(identifier, kind, inputs, origin, *, version='5.3', strict=True,
     return identifier
 
 
+def trim_indent(code):
+    # Kotlin trimIndent drops the first/last blank line, then removes the
+    # minimum nonblank indentation without erasing extra spaces on blank lines.
+    lines = code.split('\n')
+    widths = [len(line) - len(line.lstrip()) for line in lines if line.strip()]
+    width = min(widths, default=0)
+    return '\n'.join(line[width:] for i, line in enumerate(lines)
+                     if not (i in (0, len(lines)-1) and not line.strip()))
+
+
 def embedded(path, index, code, tree=False, trim=True):
     # Apply Kotlin trimIndent only where the original harness applies it.
     # Raw checkByText strings keep whitespace; FileTree trims each file.
     # No Lua token or IntelliJ marker is rewritten.
     if trim:
-        code = textwrap.dedent(code).strip('\n')
+        code = trim_indent(code)
     if tree:
         parts = re.split(r'^\s*--- (\S+\.lua)\s*$', code, flags=re.M)
         assert not parts[0].strip(), (path, index, parts[0])
-        files = [(parts[i], textwrap.dedent(parts[i+1]).strip('\n')) for i in range(1, len(parts), 2)]
+        files = [(parts[i], trim_indent(parts[i+1])) for i in range(1, len(parts), 2)]
     else:
         files = [('main.lua', code)]
     inputs = []
     for name, source in files:
         dest = f'embedded/{path.stem}/{index}/{name}'
-        # Attribution is kept in ORIGIN.md and original Kotlin. Adding a Lua
+        # Attribution is kept in ORIGIN.md; the original Kotlin stays in Git history. Adding a Lua
         # comment here would shift the original ranges, so retain source only.
         outputs[dest] = source.encode()
         inputs.append(dest)
@@ -73,9 +90,9 @@ def strings(text):
     return [json.loads(m.group()) for m in re.finditer(r'"(?:[^"\\]|\\.)*"', text)]
 
 ktbase = 'kotlin/com/tang/intellij/test/'
-for original in sorted(k for k in outputs if k.endswith('.kt')):
+for original in sorted(k for k in sources if k.endswith('.kt')):
     path = Path(original.removeprefix(ktbase))
-    text = outputs[original].decode()
+    text = sources[original].decode()
     methods = list(re.finditer(r'^    fun (`test[^`]+`|test\w+)\(', text, re.M))
     for index, method in enumerate(methods):
         name = method[1].strip('`')
@@ -146,6 +163,8 @@ for original in sorted(k for k in outputs if k.endswith('.kt')):
                 elif name == 'test table member non-completion':
                     kind = 'ide-only'
                     note = 'Asserts IntelliJ lookup element class and word-completion fallback; no LSP equivalent identity.'
+                    inputs = embedded(path, slug, re.search(r'"""(.*?)"""', block, re.S)[1], tree=True)
+                    ide_inputs.append([origin, '|'.join(inputs), '', 'exactly one dontComplete lookup; not LuaLookupElement'])
             if not ids and kind != 'ide-only':
                 code = re.search(r'"""(.*?)"""', block, re.S)
                 assert code, origin
@@ -172,22 +191,48 @@ for original in sorted(k for k in outputs if k.endswith('.kt')):
             kind='unsupported'
             note='Original IDE file-operation action is unavailable in this audit driver; native calculation and original before/after files are covered by file_operations tests.'
             if path.stem == 'RenameTest':
-                raw = re.findall(r'"""(.*?)"""', block, re.S)
-                embedded(path, slug + '_before', raw[0], tree=True)
-                embedded(path, slug + '_after', raw[1], tree=True)
+                strings_raw = re.findall(r'"""(.*?)"""', block, re.S)
+                before = embedded(path, slug + '_before', strings_raw[0], tree=True)
+                after = embedded(path, slug + '_after', strings_raw[1], tree=True)
+                ide_inputs.append([origin, '|'.join(before), '|'.join(after), 'rename A.lua to C.lua; rewrite require A to C'])
+            else:
+                before = ['resources/refactoring/moveFile/before/A.lua', 'resources/refactoring/moveFile/before/B.lua', 'resources/refactoring/moveFile/before/to/C.lua']
+                after = ['resources/refactoring/moveFile/after/to/A.lua', 'resources/refactoring/moveFile/after/B.lua', 'resources/refactoring/moveFile/after/to/C.lua']
+                ide_inputs.append([origin, '|'.join(before), '|'.join(after), 'move A.lua into to/; rewrite importing require paths'])
         elif path.stem=='CodeStyleTest' or (path.stem=='Issues' and name=='test54'):
             kind='ide-only'
             note='Original IDE Reformat Code action/settings are not executed by this audit driver; the original before/after cases run in native formatting tests.' if path.stem == 'CodeStyleTest' else 'Editor Enter/smart-close behavior belongs to the client adapter; it is not a server-formatting operation.'
-            if path.stem == 'CodeStyleTest':
-                embedded(path, slug + '_before', json.loads(re.search(r'\bdo(?:Default)?(?:Formatted|Unformatted)\(("(?:[^"\\]|\\.)*")', block)[1]), trim=False)
+            if path.stem == 'Issues':
+                raw = re.findall(r'"""(.*?)"""', block, re.S)
+                before = embedded(path, slug + '_before', raw[0])
+                after = embedded(path, slug + '_after', raw[1])
+                action = 'editor Enter at caret; smart close-end enabled'
+            else:
+                before = embedded(path, slug + '_before', json.loads(re.search(r'\bdo(?:Default)?(?:Formatted|Unformatted)\(("(?:[^"\\]|\\.)*")', block)[1]), trim=False)
                 if name == 'test format multiple statements in one lines':
-                    embedded(path, slug + '_after', re.search(r'"""(.*?)"""', block, re.S)[1])
+                    raw = re.search(r'"""(.*?)"""', block, re.S)[1]
+                    after = embedded(path, slug + '_after', raw)
+                    action = 'reformat with default settings'
+                else:
+                    after = before
+                    action = 'reformat with KEEP_MULTIPLE_STATEMENTS_IN_ONE_LINE=true'
+            ide_inputs.append([origin, '|'.join(before), '|'.join(after), action])
         else:
             raise AssertionError(origin)
         inventory.append([origin,kind,'|'.join(ids),note])
 
+notices = []
+for name, data in sources.items():
+    if name.endswith('.kt'):
+        for notice in re.findall(r'/\*.*?\*/', data.decode(), re.S):
+            if ('Copyright' in notice or 'license' in notice.lower()) and notice not in notices:
+                notices.append(notice)
+outputs['NOTICE.txt'] = ('Attribution for Lua tests extracted from the pinned upstream Kotlin tests.\nThe original source remains in Git history; no Kotlin code is copied here.\n\n' + '\n\n'.join(notices) + '\n').encode()
+
+outputs['IDE-INPUTS.tsv'] = ('# origin\tbefore/input files\tafter files\taction/assertions\n'+'\n'.join('\t'.join(row) for row in ide_inputs)+'\n').encode()
 outputs['cases.tsv'] = ('# id\tkind\tlua\tstrict_nil\tunknown_callable_and_indexable\tweak_warnings\trequired_labels\tnot_all_labels\tinputs\torigin\tnotes\n'+ '\n'.join('\t'.join(r) for r in cases)+'\n').encode()
 outputs['inventory.tsv'] = ('# origin\tkind\tcases\tnotes\n'+'\n'.join('\t'.join(r) for r in inventory)+'\n').encode()
+outputs['UPSTREAM-SOURCES.tsv'] = ('# Kotlin extraction source (read from Git history, not copied)\tsha256 at '+REVISION+'\n'+'\n'.join('\t'.join(r) for r in kotlin_ledger)+'\n').encode()
 outputs['SHA256SUMS.tsv'] = ('# source path\tsha256 (original bytes at '+REVISION+')\n'+'\n'.join('\t'.join(r) for r in ledger)+'\n').encode()
 # Resources unused by any old automated test remain inventoried, not promoted
 # to tests with invented expectations (typeSafety.lua has prose comments only).
@@ -199,6 +244,20 @@ for file in sorted(k for k in outputs if k.startswith('resources/')):
                   'unreferenced by baseline automated harness; preserved without invented assertions')
         unused.append(file+'\t'+reason)
 outputs['unused-resources.tsv']=('# file\treason\n'+'\n'.join(unused)+'\n').encode()
+snapshots = list(DEST.rglob('*.kt'))
+if snapshots:
+    raise SystemExit('Copied Kotlin source retained: ' + str(snapshots[0]))
+snapshot_directory = DEST / 'kotlin'
+if snapshot_directory.exists():
+    if args.verify:
+        raise SystemExit('Stale Kotlin directory retained; rerun the importer without --verify to remove empty directories')
+    # Git does not retain empty directories, but an existing checkout can still
+    # have the old snapshot hierarchy after its files are deleted. Remove only
+    # empty directories; never discard unexpected files or source snapshots.
+    for directory in sorted(snapshot_directory.rglob('*'), key=lambda path: len(path.parts), reverse=True):
+        if directory.is_dir():
+            directory.rmdir()
+    snapshot_directory.rmdir()
 for name,data in sorted(outputs.items()):
     destination=DEST/name
     if args.verify:
@@ -207,4 +266,4 @@ for name,data in sorted(outputs.items()):
     else:
         destination.parent.mkdir(parents=True,exist_ok=True)
         destination.write_bytes(data)
-print(f'{"Verified" if args.verify else "Exported"} {len(ledger)} original files, {len(inventory)} test methods, {len(cases)} runnable cases; {len(unused)} unused/unsupported resource files.')
+print(f'{"Verified" if args.verify else "Exported"} {len(ledger)} Lua resource files, extracted {len(kotlin_ledger)} Kotlin sources from Git history, {len(inventory)} test methods, {len(cases)} runnable cases; {len(unused)} unused/unsupported resource files.')

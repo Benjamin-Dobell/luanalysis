@@ -102,6 +102,10 @@ impl<'p, 's> Checker<'p, 's> {
         self.native_opaque_runtime_declaration(reference.declaration)
     }
 
+    pub(super) fn native_opaque_runtime_object(&mut self, reference: crate::types::NativeObjectReference) -> bool {
+        matches!(self.native_opaque_runtime_declaration(reference.declaration), Ok(Complete(Some(_))))
+    }
+
     pub(super) fn native_narrow_opaque_runtime_kind(&mut self, ty: TypeId, kind: NativeOpaqueRuntimeKind, sense: bool) -> TypeId {
         let Some(root) = self.native_opaque_runtime_root(kind) else { return ty };
         let Ok(root) = self.native_type_reference(root, &[]) else { return ty };
@@ -180,7 +184,8 @@ impl<'p, 's> Checker<'p, 's> {
             && matches!(self.data(target), TypeData::NativeDefinition(_) | TypeData::NativeRuntimeTable(_))
         { return false }
         if source_domain.is_some()
-            && matches!(self.data(target), TypeData::NativeTable(table) if table.definition_origin.is_some())
+            && matches!(self.data(target), TypeData::NativeTable(table) if table.definition_origin.is_some()
+                || target_domain.is_none() && !table.indexers.is_empty())
         { return false }
         let (source_top, target_top) = match (self.data(source), self.data(target)) {
             (TypeData::NativeRuntimeTop { kind: s, .. }, TypeData::NativeRuntimeTop { kind: t, .. }) => return s == t,

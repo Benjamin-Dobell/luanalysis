@@ -33,7 +33,7 @@ impl Checker<'_> {
         if !self.inspecting() { return; }
         // As in TypeScript, a written literal is compared as its literal type.
         let (left_type, right_type) = (&literal_type(left).unwrap_or_else(|| left_type.clone()), &literal_type(right).unwrap_or_else(|| right_type.clone()));
-        if [left_type, right_type].into_iter().any(|ty| matches!(ty, Type::Never) || self.engine.is_assignable(&Type::Nil, ty)) { return; }
+        if [left_type, right_type].into_iter().any(|ty| matches!(ty, Type::Never) || self.engine.contains_nil(ty)) { return; }
         if self.engine.types_comparable(left_type, right_type) { return; }
         self.error_types(
             "TS2367",

@@ -15,7 +15,191 @@ use luanalysis_syntax::{
     DocFunctionDeclarationId, DocFunctionOwner, File, Function, FunctionType, NamedTypeDeclarationKind, Span, Stmt, StmtKind, TypeExpr,
     TypeExprKind, TypeFieldKey,
 };
-use crate::collections::HashMap;
+use crate::collections::{HashMap, HashSet};
+
+/// Immutable annotation edges contain original parameter identities, rather
+/// than expanded types or names substituted into another declaration's scope.
+#[derive(Clone)]
+pub(super) struct ResultPackAliasRecipe {
+    parameters: Vec<NativeTypeParameterKey>,
+    target: ResultPackSourceType,
+}
+
+#[derive(Clone)]
+enum ResultPackSourceType {
+    Parameter(NativeTypeParameterKey),
+    Alias {
+        name: String,
+        arguments: Vec<Self>,
+    },
+    Callable {
+        constraints: Vec<Self>,
+        parameters: Vec<Self>,
+        returns: Vec<Self>,
+        scalar_row: bool,
+        homogeneous_last: bool,
+    },
+    Parts(Vec<Self>),
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+struct ResultPackProducer {
+    inputs: HashSet<NativeTypeParameterKey>,
+    scalar_row: bool,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(super) struct ResultPackSourceSummary {
+    identity: Option<NativeTypeParameterKey>,
+    dependencies: HashSet<NativeTypeParameterKey>,
+    producers: HashMap<NativeTypeParameterKey, ResultPackProducer>,
+}
+
+impl ResultPackSourceSummary {
+    fn absorb(&mut self, other: &Self) {
+        self.dependencies.extend(other.dependencies.iter().copied());
+        for (&key, producer) in &other.producers {
+            let merged = self.producers.entry(key).or_default();
+            merged.inputs.extend(producer.inputs.iter().copied());
+            merged.scalar_row |= producer.scalar_row;
+        }
+    }
+}
+
+struct ResultPackSourceAnalysis<'a> {
+    aliases: &'a HashMap<NativeTypeDeclarationKey, ResultPackAliasRecipe>,
+    registry: &'a NativeRegistry,
+}
+
+impl ResultPackSourceAnalysis<'_> {
+    /// Every summary grows over a finite set of original parameter keys.
+    /// Recursive alias edges therefore converge without expanding an AST or
+    /// assuming a cycle denotes its written generic argument.
+    fn alias_summaries(&self) -> HashMap<NativeTypeDeclarationKey, ResultPackSourceSummary> {
+        let mut summaries = HashMap::default();
+        loop {
+            let mut changed = false;
+            for (&key, recipe) in self.aliases {
+                let next = self.summarize(&recipe.target, &summaries);
+                if summaries.get(&key) != Some(&next) {
+                    summaries.insert(key, next);
+                    changed = true;
+                }
+            }
+            if !changed {
+                return summaries;
+            }
+        }
+    }
+
+    fn summarize(
+        &self,
+        source: &ResultPackSourceType,
+        aliases: &HashMap<NativeTypeDeclarationKey, ResultPackSourceSummary>,
+    ) -> ResultPackSourceSummary {
+        let mut summary = ResultPackSourceSummary::default();
+        match source {
+            ResultPackSourceType::Parameter(key) => {
+                summary.identity = Some(*key);
+                summary.dependencies.insert(*key);
+            }
+            ResultPackSourceType::Parts(parts) => {
+                for part in parts {
+                    summary.absorb(&self.summarize(part, aliases));
+                }
+            }
+            ResultPackSourceType::Callable {
+                constraints,
+                parameters,
+                returns,
+                scalar_row,
+                homogeneous_last,
+            } => {
+                let mut inputs = HashSet::default();
+                for parameter in parameters {
+                    let parameter = self.summarize(parameter, aliases);
+                    inputs.extend(parameter.dependencies.iter().copied());
+                    summary.absorb(&parameter);
+                }
+                for constraint in constraints {
+                    summary.absorb(&self.summarize(constraint, aliases));
+                }
+                let returns: Vec<_> = returns
+                    .iter()
+                    .map(|ty| self.summarize(ty, aliases))
+                    .collect();
+                for result in &returns {
+                    summary.absorb(result);
+                }
+                if !homogeneous_last
+                    && let Some(key) = returns.last().and_then(|result| result.identity)
+                {
+                    let producer = summary.producers.entry(key).or_default();
+                    producer.inputs.extend(inputs);
+                    producer.scalar_row |= *scalar_row;
+                }
+            }
+            ResultPackSourceType::Alias { name, arguments } => {
+                let arguments: Vec<_> = arguments
+                    .iter()
+                    .map(|ty| self.summarize(ty, aliases))
+                    .collect();
+                let candidates = self.registry.named_candidates(name);
+                let [key] = candidates.as_slice() else {
+                    for argument in &arguments {
+                        summary
+                            .dependencies
+                            .extend(argument.dependencies.iter().copied());
+                    }
+                    return summary;
+                };
+                let Some(recipe) = self.aliases.get(key) else {
+                    // Named records keep their written type arguments. Alias
+                    // arguments below contribute only through used formals.
+                    for argument in &arguments {
+                        summary.absorb(argument);
+                    }
+                    return summary;
+                };
+                let Some(target) = aliases.get(key) else {
+                    return summary;
+                };
+                let identity =
+                    |key| match recipe.parameters.iter().position(|&formal| formal == key) {
+                        Some(index) => arguments.get(index).and_then(|argument| argument.identity),
+                        None => Some(key),
+                    };
+                let dependencies =
+                    |key| match recipe.parameters.iter().position(|&formal| formal == key) {
+                        Some(index) => arguments
+                            .get(index)
+                            .map_or_else(HashSet::default, |argument| {
+                                argument.dependencies.clone()
+                            }),
+                        None => HashSet::from_iter([key]),
+                    };
+                summary.identity = target.identity.and_then(identity);
+                for &key in &target.dependencies {
+                    summary.dependencies.extend(dependencies(key));
+                    if let Some(index) = recipe.parameters.iter().position(|&formal| formal == key)
+                        && let Some(argument) = arguments.get(index)
+                    {
+                        summary.absorb(argument);
+                    }
+                }
+                for (&key, producer) in &target.producers {
+                    let Some(key) = identity(key) else { continue };
+                    let mapped = summary.producers.entry(key).or_default();
+                    for &input in &producer.inputs {
+                        mapped.inputs.extend(dependencies(input));
+                    }
+                    mapped.scalar_row |= producer.scalar_row;
+                }
+            }
+        }
+        summary
+    }
+}
 
 impl super::Checker<'_> {
     fn declared_type_predicate(
@@ -47,6 +231,300 @@ impl super::Checker<'_> {
 }
 
 impl NativeRegistry {
+    /// Retain source binding identities while following callable aliases. The
+    /// native core still owns type expansion, constraints and pack inference.
+    pub(super) fn source_result_pack_alias_recipes(
+        &self,
+    ) -> HashMap<NativeTypeDeclarationKey, ResultPackAliasRecipe> {
+        self.named_metadata()
+            .declarations()
+            .iter()
+            .filter_map(|source| {
+                let NamedTypeDeclarationKind::Alias { target } = &source.syntax.kind else {
+                    return None;
+                };
+                let context = NativeTypeContext::NamedType(source.key);
+                Some((
+                    NativeTypeDeclarationKey {
+                        snapshot: source.key.snapshot,
+                        index: source.key.index,
+                    },
+                    ResultPackAliasRecipe {
+                        parameters: self.types.own_parameters_in_context(context),
+                        target: self.result_pack_source_type(Some(context), target),
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    fn result_pack_source_type(
+        &self,
+        context: Option<NativeTypeContext>,
+        ty: &TypeExpr,
+    ) -> ResultPackSourceType {
+        let ty = ty.value_syntax();
+        match &ty.kind {
+            TypeExprKind::Named(name)
+                if matches!(
+                    name.as_str(),
+                    "any"
+                        | "unknown"
+                        | "never"
+                        | "nil"
+                        | "boolean"
+                        | "number"
+                        | "integer"
+                        | "string"
+                        | "void"
+                        | "table"
+                        | "function"
+                ) =>
+            {
+                ResultPackSourceType::Parts(Vec::new())
+            }
+            TypeExprKind::Named(name) => match self.types.resolve_name_in_context(context, name) {
+                super::native_types::TypeNameResolution::Parameter(key) => {
+                    ResultPackSourceType::Parameter(key)
+                }
+                _ => ResultPackSourceType::Alias {
+                    name: name.clone(),
+                    arguments: Vec::new(),
+                },
+            },
+            TypeExprKind::Generic { base, args, .. } => {
+                let arguments: Vec<_> = args
+                    .iter()
+                    .map(|ty| self.result_pack_source_type(context, ty))
+                    .collect();
+                if base.text == "table" {
+                    return ResultPackSourceType::Parts(arguments);
+                }
+                match self.types.resolve_name_in_context(context, &base.text) {
+                    super::native_types::TypeNameResolution::Parameter(key) => {
+                        let mut parts = vec![ResultPackSourceType::Parameter(key)];
+                        parts.extend(arguments);
+                        ResultPackSourceType::Parts(parts)
+                    }
+                    _ => ResultPackSourceType::Alias {
+                        name: base.text.clone(),
+                        arguments,
+                    },
+                }
+            }
+            TypeExprKind::Parenthesized(inner) => self.result_pack_source_type(context, inner),
+            TypeExprKind::Function(function) => {
+                let context = self
+                    .signature_key_for(function.span)
+                    .map(NativeTypeContext::Signature)
+                    .or(context);
+                ResultPackSourceType::Callable {
+                    constraints: function
+                        .generics
+                        .iter()
+                        .filter_map(|parameter| parameter.constraint.as_ref())
+                        .map(|ty| self.result_pack_source_type(context, ty))
+                        .collect(),
+                    parameters: function
+                        .params
+                        .iter()
+                        .filter_map(|parameter| parameter.ty.as_ref())
+                        .chain(function.vararg.iter().map(|parameter| &parameter.ty))
+                        .map(|ty| self.result_pack_source_type(context, ty))
+                        .collect(),
+                    returns: function
+                        .returns
+                        .iter()
+                        .map(|ty| self.result_pack_source_type(context, ty))
+                        .collect(),
+                    scalar_row: function.returns.len() != 1
+                        || function
+                            .packs
+                            .as_ref()
+                            .is_some_and(|packs| packs.alternatives.len() != 1),
+                    homogeneous_last: function.packs.as_ref().is_some_and(|packs| {
+                        packs.alternatives.iter().any(|row| {
+                            row.variadic
+                                .is_some_and(|tail| tail.type_index + 1 == function.returns.len())
+                        })
+                    }),
+                }
+            }
+            TypeExprKind::Union(types) | TypeExprKind::Intersection(types) => {
+                ResultPackSourceType::Parts(
+                    types
+                        .iter()
+                        .map(|ty| self.result_pack_source_type(context, ty))
+                        .collect(),
+                )
+            }
+            TypeExprKind::Array { element, .. }
+            | TypeExprKind::TypePredicate { ty: element, .. } => {
+                ResultPackSourceType::Parts(vec![self.result_pack_source_type(context, element)])
+            }
+            TypeExprKind::Record(fields) => {
+                let mut parts = Vec::new();
+                for field in fields {
+                    parts.push(self.result_pack_source_type(context, &field.ty));
+                    if let TypeFieldKey::Indexed(key) = &field.key {
+                        parts.push(self.result_pack_source_type(context, key));
+                    }
+                }
+                ResultPackSourceType::Parts(parts)
+            }
+            TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {
+                ResultPackSourceType::Parts(Vec::new())
+            }
+        }
+    }
+
+    /// A free producer introduces a physical result sequence. Scalar
+    /// transformers and written tuple members retain their scalar contracts.
+    pub(super) fn source_type_parameter_is_result_pack(
+        &self,
+        parameter: NativeTypeParameterKey,
+    ) -> bool {
+        let source = self.types.parameter(parameter);
+        let project_metadata = self.project_result_pack_alias_metadata();
+        let local_aliases;
+        let aliases = if let Some((aliases, _)) = project_metadata {
+            aliases
+        } else {
+            local_aliases = self.source_result_pack_alias_recipes();
+            &local_aliases
+        };
+        let analysis = ResultPackSourceAnalysis {
+            aliases,
+            registry: self,
+        };
+        let local_summaries;
+        let aliases = if let Some((_, summaries)) = project_metadata {
+            summaries.get_or_init(|| analysis.alias_summaries())
+        } else {
+            local_summaries = analysis.alias_summaries();
+            &local_summaries
+        };
+        let owner_output = match source.owner {
+            NativeTypeContext::Function(function) => {
+                let annotations = &self.function(function).annotations;
+                if let Some(annotation) = &annotations.returns {
+                    Some((
+                        annotation.types.as_slice(),
+                        annotation.packs.as_deref(),
+                        source.owner,
+                    ))
+                } else {
+                    self.implementation_annotation_signature(function)
+                        .and_then(|key| {
+                            let signature = self.signatures.get(key).signature.as_ref()?;
+                            Some((
+                                signature.returns.as_slice(),
+                                signature.packs.as_deref(),
+                                NativeTypeContext::Signature(key),
+                            ))
+                        })
+                }
+            }
+            NativeTypeContext::Signature(owner) => self
+                .signatures
+                .get(owner)
+                .signature
+                .as_ref()
+                .map(|signature| {
+                    if signature.returns_span.is_none()
+                        && let Some(annotation) = self
+                            .documentation_signature(owner)
+                            .and_then(|doc| doc.annotations.returns.as_ref())
+                    {
+                        (
+                            annotation.types.as_slice(),
+                            annotation.packs.as_deref(),
+                            source.owner,
+                        )
+                    } else {
+                        (
+                            signature.returns.as_slice(),
+                            signature.packs.as_deref(),
+                            source.owner,
+                        )
+                    }
+                }),
+            NativeTypeContext::NamedType(_) => None,
+        };
+        // An explicit correlated result row promises each of its fixed
+        // members. Expanding its T into a possibly empty producer sequence
+        // would invent a success-only row in `(true,T)|(false,any)`. A single
+        // flat `boolean,T` forwarding row still carries the whole sequence.
+        if let Some((types, Some(packs), context)) = owner_output
+            && packs.alternatives.len() > 1
+            && packs.alternatives.iter().any(|row| {
+                row.fixed.len() > 1
+                    && row.fixed.clone().any(|index| {
+                        analysis
+                            .summarize(
+                                &self.result_pack_source_type(Some(context), &types[index]),
+                                aliases,
+                            )
+                            .identity
+                            == Some(parameter)
+                    })
+            })
+        {
+            return false;
+        }
+        let input_types: Vec<_> = match source.owner {
+            NativeTypeContext::Function(function) => {
+                let function = self.function(function);
+                function
+                    .annotations
+                    .params
+                    .iter()
+                    .map(|parameter| &parameter.ty)
+                    .chain(
+                        function
+                            .annotations
+                            .vararg
+                            .iter()
+                            .map(|parameter| &parameter.ty),
+                    )
+                    .collect()
+            }
+            NativeTypeContext::Signature(owner) => self
+                .signatures
+                .get(owner)
+                .signature
+                .as_ref()
+                .map_or_else(Vec::new, |signature| {
+                    signature
+                        .params
+                        .iter()
+                        .filter_map(|parameter| parameter.ty.as_ref())
+                        .chain(signature.vararg.iter().map(|parameter| &parameter.ty))
+                        .collect()
+                }),
+            NativeTypeContext::NamedType(owner) => match &self
+                .named_metadata()
+                .declaration(owner)
+                .expect("original generic owner")
+                .syntax
+                .kind
+            {
+                NamedTypeDeclarationKind::Alias { target } => vec![target],
+                NamedTypeDeclarationKind::Record { .. } => Vec::new(),
+            },
+        };
+        let mut summary = ResultPackSourceSummary::default();
+        for ty in input_types {
+            summary.absorb(&analysis.summarize(
+                &self.result_pack_source_type(Some(source.owner), ty),
+                &aliases,
+            ));
+        }
+        summary
+            .producers
+            .get(&parameter)
+            .is_some_and(|producer| !producer.scalar_row && !producer.inputs.contains(&parameter))
+    }
     pub(super) fn source_function_may_have_type_predicate(&self, key: NativeFunctionKey) -> bool {
         let function = self.function(key);
         if let Some(annotation) = &function.annotations.returns {

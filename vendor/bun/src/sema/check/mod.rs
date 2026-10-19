@@ -60,6 +60,7 @@ pub mod native_aliases;
 pub mod native_iterators;
 pub mod native_packs;
 pub mod native_assertions;
+mod native_nil;
 pub mod native_signatures;
 pub mod native_intrinsics;
 pub mod native_runtime;
@@ -206,6 +207,7 @@ pub trait NativeFunctionProvider {
     fn circular_return_type(&self, declaration: NativeFunctionId);
     fn return_type_too_deep(&self, declaration: NativeFunctionId);
     fn contains_type_parameter(&self, _: NativeTypeParamId) -> bool { false }
+    fn type_parameter_is_result_pack(&self, _: NativeTypeParamId) -> bool { false }
     fn type_parameter_name(&self, _: &Checker<'_, '_>, _: NativeTypeParamId) -> Atom { Atom::NONE }
     fn has_type_parameter_constraint(&self, _: NativeTypeParamId) -> bool { false }
     fn type_parameter_constraint(&self, _: &mut Checker<'_, '_>, _: NativeTypeParamId) -> Option<TypeId> { None }
@@ -814,6 +816,7 @@ impl<'s> Program<'s> {
             native_project_cache: NativeProjectCache::default(),
             native_runtime_tops: [None; 2],
             native_arrays: false,
+            native_strict_nil: true,
             native_function_contexts: Vec::new(),
             native_capture_contexts: Vec::new(),
             native_type_query_depth: 0,
@@ -1370,6 +1373,7 @@ pub struct Checker<'p, 's> {
     native_project_cache: NativeProjectCache,
     native_runtime_tops: [Option<TypeId>; 2],
     native_arrays: bool,
+    native_strict_nil: bool,
     native_function_contexts: Vec<NativeFunctionContext>,
     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
     /// Nested metadata demands propagate TYPE_ONLY to every native argument

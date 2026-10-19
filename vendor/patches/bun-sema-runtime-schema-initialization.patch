@@ -1,0 +1,34 @@
+diff --git a/src/sema/check/native_named.rs b/src/sema/check/native_named.rs
+--- a/src/sema/check/native_named.rs
++++ b/src/sema/check/native_named.rs
+@@ -1465,6 +1465,14 @@
+         }
+         self.native_table_with_context_and_sequence_policy(&fields, &[], &[], NativeTableFlavor::Declared, false, None)
+             .unwrap_or(TypeId::UNRESOLVED)
++    }
++
++    /// Publishing an allocation's declaration schema must not require its
++    /// constructor to contain stores that occur later. This only recognizes
++    /// that exact allocation/context; other schemas retain structural checks.
++    pub(super) fn native_runtime_schema_initialization(&self, source: TypeId, target: TypeId) -> bool {
++        let Some(source) = self.native_runtime_table_ref(source) else { return false };
++        matches!(*self.data(target), TypeData::NativeObject(target) if source.schema == target)
+     }
+ 
+     /// Callable named objects keep their original signature view in recursive
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -5351,6 +5351,12 @@
+         state: u8,
+         shared: &mut WorkerState,
+     ) -> Ternary {
++        // A constructor initializes its own prospective allocation schema.
++        // This is assignment compatibility only: physical narrowing, subtype
++        // reduction and identity still compare the reached runtime view.
++        if r.relation == Relation::Assignable && self.native_runtime_schema_initialization(source, target) {
++            return Ternary::TRUE;
++        }
+         // A class's definition table is a value of its class, as v1 types the class table, even
+         // where it has not yet been given every member.
+         let source = match self.native_definition_ref(source) {

@@ -324,3 +324,21 @@ fn colon_call_inserts_receiver_and_preserves_each_argument_origin() {
         "item"
     );
 }
+
+#[test]
+fn unary_negation_coerces_lua_numeral_strings_and_preserves_literal_results() {
+    for (literal, expected) in [("1", "-1"), (" 1 ", "-1"), ("-1", "1"), ("0x1", "-1"),
+        ("-0x1", "1"), ("+0x1", "-1"), ("0x1.8p1", "-3")] {
+        let source = format!("---@type {expected}\nlocal result=-{literal:?}\n");
+        let report = check(&source);
+        assert!(report.diagnostics.is_empty(), "{source}: {:#?}", report.diagnostics);
+        let wrong = source.replacen(&format!("---@type {expected}"), "---@type 42", 1);
+        assert!(check(&wrong).diagnostics.iter().any(|d| d.code == "TS2322"));
+    }
+    for literal in ["- -1", "nan", "inf", "1x", "1\0", "\u{2003}1", "\u{ff}1"] {
+        let escaped = literal.replace('\\', "\\\\").replace('\0', "\\000");
+        let source = format!("local result=-\"{escaped}\"\n");
+        let report = check(&source);
+        assert!(report.diagnostics.iter().any(|d| d.code == "TS2356"), "{source}: {:#?}", report.diagnostics);
+    }
+}

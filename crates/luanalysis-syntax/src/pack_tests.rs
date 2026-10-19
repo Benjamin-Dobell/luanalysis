@@ -451,3 +451,135 @@ fn malformed_vararg_and_pack_annotations_are_diagnosed_and_recover() {
     let missing = parse("---@vararg\nlocal function bad(...) end\n");
     assert!(!missing.diagnostics.is_empty());
 }
+
+
+#[test]
+fn v1_bare_callback_results_take_precedence_over_untyped_outer_parameters() {
+    for (ty, outer_params, outer_returns) in [
+        ("fun<T, RK, RV>(arr: T[], callback: fun(obj: T, i: number): RK, RV): table<RK, RV>", 2, 1),
+        ("fun<A, B>(func: fun(): A, B): A, B", 1, 2),
+    ] {
+        let file = parse(&format!("---@type {ty}\nlocal apply\n"));
+        assert!(file.diagnostics.is_empty(), "{ty}: {:?}", file.diagnostics);
+        let TypeExprKind::Function(apply) = &annotation(&file).types[0].kind else {
+            panic!("expected outer function")
+        };
+        assert_eq!(apply.params.len(), outer_params, "{ty}");
+        assert_eq!(apply.returns.len(), outer_returns, "{ty}");
+        let TypeExprKind::Function(callback) = &apply.params.last().unwrap().ty.as_ref().unwrap().kind else {
+            panic!("expected callback")
+        };
+        assert_eq!(callback.returns.len(), 2, "{ty}");
+    }
+    let file = parse("---@type fun(callback: (fun(): number), untyped): string\nlocal apply\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let TypeExprKind::Function(apply) = &annotation(&file).types[0].kind else {
+        panic!("expected outer function")
+    };
+    assert_eq!(apply.params.len(), 2);
+    assert_eq!(apply.params[1].name.text, "untyped");
+    assert!(apply.params[1].ty.is_none());
+}
+
+#[test]
+fn bare_callback_results_stop_at_named_outer_parameters_and_varargs() {
+    for (tail, outer_params, has_vararg) in [
+        ("count: number", 2, false),
+        ("count?: number", 2, false),
+        ("...: number", 1, true),
+        ("...", 1, true),
+        ("vararg number", 1, true),
+    ] {
+        let source = format!("---@type fun(callback: fun(): number, string, {tail}): boolean\nlocal apply\n");
+        let file = parse(&source);
+        assert!(file.diagnostics.is_empty(), "{tail}: {:?}", file.diagnostics);
+        let TypeExprKind::Function(apply) = &annotation(&file).types[0].kind else {
+            panic!("expected outer function")
+        };
+        assert_eq!(apply.params.len(), outer_params, "{tail}");
+        assert_eq!(apply.vararg.is_some(), has_vararg, "{tail}");
+        assert_eq!(apply.returns.len(), 1, "{tail}");
+        let TypeExprKind::Function(callback) = &apply.params[0].ty.as_ref().unwrap().kind else {
+            panic!("expected callback")
+        };
+        assert_eq!(callback.returns.len(), 2, "{tail}");
+    }
+}
+
+#[test]
+fn callback_parameter_compatibility_does_not_capture_nested_container_commas() {
+    for ty in [
+        "fun(callback: {fun(): number, string}): boolean",
+        "fun(callback: Pair<fun(): number, string>): boolean",
+        "fun(callback: [fun(): number, string]): boolean",
+        "fun(callback: ({fun(): number, string})): boolean",
+        "fun(callback: fun<T: fun(): number, U>(): boolean): string",
+    ] {
+        let file = parse(&format!("---@type {ty}\nlocal apply\n"));
+        assert!(file.diagnostics.is_empty(), "{ty}: {:?}", file.diagnostics);
+        let TypeExprKind::Function(apply) = &annotation(&file).types[0].kind else {
+            panic!("expected outer function")
+        };
+        assert_eq!(apply.params.len(), 1, "{ty}");
+        let mut inner = apply.params[0].ty.as_ref().unwrap();
+        if let TypeExprKind::Parenthesized(value) = &inner.kind {
+            inner = value;
+        }
+        let callback = match &inner.kind {
+            TypeExprKind::Record(fields) => {
+                assert_eq!(fields.len(), 2, "{ty}");
+                &fields[0].ty
+            }
+            TypeExprKind::Generic { args, .. } => {
+                assert_eq!(args.len(), 2, "{ty}");
+                &args[0]
+            }
+            TypeExprKind::Function(callback) => {
+                assert_eq!(callback.generics.len(), 2, "{ty}");
+                callback.generics[0].constraint.as_ref().unwrap()
+            }
+            other => panic!("unexpected container: {other:?}"),
+        };
+        let TypeExprKind::Function(callback) = &callback.kind else {
+            panic!("expected nested callback")
+        };
+        assert_eq!(callback.returns.len(), 1, "{ty}");
+    }
+}
+
+#[test]
+fn v1_nested_returned_function_keeps_its_own_bare_result_list() {
+    let file = parse("---@type fun(callback: fun(): fun(): number, string): boolean\nlocal apply\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let TypeExprKind::Function(apply) = &annotation(&file).types[0].kind else {
+        panic!("expected outer function")
+    };
+    assert_eq!(apply.params.len(), 1);
+    let TypeExprKind::Function(callback) = &apply.params[0].ty.as_ref().unwrap().kind else {
+        panic!("expected callback")
+    };
+    assert_eq!(callback.returns.len(), 1);
+    let TypeExprKind::Function(returned) = &callback.returns[0].kind else {
+        panic!("expected returned function")
+    };
+    assert_eq!(returned.returns.len(), 2);
+}
+
+
+#[test]
+fn callback_type_predicates_remain_single_results_with_named_outer_parameters() {
+    let valid = parse("---@type fun(callback: fun(value: unknown): value is number, count: number): void\nlocal apply\n");
+    assert!(valid.diagnostics.is_empty(), "{:?}", valid.diagnostics);
+    let TypeExprKind::Function(apply) = &annotation(&valid).types[0].kind else {
+        panic!("expected outer function")
+    };
+    assert_eq!(apply.params.len(), 2);
+    let TypeExprKind::Function(callback) = &apply.params[0].ty.as_ref().unwrap().kind else {
+        panic!("expected callback")
+    };
+    assert_eq!(callback.returns.len(), 1);
+    assert!(matches!(callback.returns[0].kind, TypeExprKind::TypePredicate { .. }));
+    let invalid = parse("---@type fun(callback: fun(value: unknown): value is number, string): void\nlocal apply\n");
+    assert_eq!(invalid.diagnostics.len(), 1, "{:?}", invalid.diagnostics);
+    assert_eq!(invalid.diagnostics[0].message, "a type predicate must be the sole function return type");
+}

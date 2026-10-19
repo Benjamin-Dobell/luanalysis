@@ -22,10 +22,19 @@ pub(super) enum OriginalMemberValue {
     Function(NativeFunctionKey),
 }
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct OriginalOwnerApplication {
-    pub annotation: TypeExpr,
-    pub context: Option<NativeTypeContext>,
-    pub binding: crate::bind::BindingId,
+pub(super) enum OriginalOwnerApplication {
+    Written {
+        annotation: TypeExpr,
+        context: Option<NativeTypeContext>,
+        binding: crate::bind::BindingId,
+    },
+    Declared(NativeNamedKey),
+    /// A top-level method's original receiver at its frozen pre-write input.
+    Receiver(NativeExpressionKey),
+    /// A class-valued written member of an original class owner. The source
+    /// recipe supplies candidates; native lookup decides key applicability and
+    /// substitutes the receiver's type arguments.
+    Member { receiver: Box<OriginalOwnerApplication>, key: LuaKey },
 }
 #[derive(Clone, Debug)]
 pub(super) struct OriginalMemberInput {
@@ -34,6 +43,9 @@ pub(super) struct OriginalMemberInput {
     /// This is only a candidate owner until the original metatable call is
     /// proved to invoke the selected standard function at its creation point.
     pub contextual_owner: Option<NativeFunctionKey>,
+    /// A foreign class is only a candidate until this original receiver is
+    /// proved to have that exact owner in its original environment.
+    pub receiver_owner: Option<NativeExpressionKey>,
     pub key: OriginalMemberKey,
     pub origin: OriginalMemberOrigin,
     pub value: OriginalMemberValue,
@@ -45,7 +57,7 @@ pub(super) struct OriginalMemberInput {
 pub(super) struct OriginalMemberSource {
     pub key: NativeTypeMemberKey,
     /// Original declaration groups occur in source order, identified by their
-    /// contextual-owner guard. Duplicate constructor stores within a group
+    /// contextual/receiver-owner guard. Duplicate constructor stores within a group
     /// retain Lua collision handling; later writes do not redefine its contract.
     pub candidates: Vec<OriginalMemberInput>,
 }
@@ -61,7 +73,11 @@ impl NativeMembers {
         inputs.sort_by_key(|input| (input.span.start, input.span.end));
         let mut result = Self { snapshot, base, sources: Vec::new(), inputs: inputs.clone() };
         for input in inputs {
-            assert_eq!(input.owner.snapshot, snapshot);
+            if let OriginalMemberOrigin::Method(function) = input.origin {
+                assert_eq!(function.snapshot, snapshot);
+            } else {
+                assert_eq!(input.owner.snapshot, snapshot);
+            }
             let doc_priority = named.declaration(input.owner).is_some_and(|owner| {
                 owner.members.iter().any(|&key| {
                     let field = &named.member(key).expect("original written member").field;
@@ -76,14 +92,16 @@ impl NativeMembers {
             if doc_priority { continue; }
             if let Some(previous) = result.sources.iter_mut().find(|source| {
                 source.candidates[0].owner == input.owner && source.candidates[0].key == input.key
-                    && source.candidates[0].owner_application == input.owner_application
+                    && (source.candidates[0].owner_application == input.owner_application
+                        || matches!((&source.candidates[0].owner_application, &input.owner_application),
+                            (Some(OriginalOwnerApplication::Receiver(_)), Some(OriginalOwnerApplication::Receiver(_)))))
             }) {
                 // An inactive earlier constructor scope must not erase a
                 // later declaration. Within the same scope, the first store
                 // still defines the contract and later methods are checked
                 // writes rather than additional overloads or union members.
                 let group = previous.candidates.iter().find(|candidate| {
-                    candidate.contextual_owner == input.contextual_owner
+                    candidate.contextual_owner == input.contextual_owner && candidate.receiver_owner == input.receiver_owner
                 });
                 if group.is_none_or(|first| {
                     matches!(input.origin, OriginalMemberOrigin::ConstructorField(_))
@@ -136,7 +154,7 @@ impl NativeRegistry {
         let source = self.members.get(key)?;
         let mut visited = HashSet::default();
         for input in &source.candidates {
-            if !visited.insert(input.contextual_owner) { continue; }
+            if !visited.insert((input.contextual_owner, input.receiver_owner)) { continue; }
             if let Some(scope) = input.contextual_owner {
                 match self.contextual_owner_at_creation(scope, queries) {
                     ContextualTypeOwner::Pending => return Some((TypeMemberActivation::Pending, Vec::new())),
@@ -148,8 +166,14 @@ impl NativeRegistry {
                     }
                 }
             }
+            if let Some(receiver) = input.receiver_owner {
+                let (receiver, incomplete) = self.original_member_expression_result(receiver, queries);
+                if incomplete { return Some((TypeMemberActivation::Pending, Vec::new())); }
+                let expected = self.canonical_declaration(luanalysis_engine::NativeTypeDeclarationKey { snapshot: input.owner.snapshot, index: input.owner.index });
+                if queries.named_object_declaration(&receiver).map(|owner| self.canonical_declaration(owner)) != Some(expected) { continue; }
+            }
             let selected = source.candidates.iter().filter(|candidate| {
-                candidate.contextual_owner == input.contextual_owner
+                candidate.contextual_owner == input.contextual_owner && candidate.receiver_owner == input.receiver_owner
             }).collect();
             return Some((TypeMemberActivation::Active, selected));
         }
@@ -203,7 +227,7 @@ impl NativeRegistry {
                     OriginalMemberValue::Function(function)
                 } else { OriginalMemberValue::Expression(expression) };
                 inputs.push(OriginalMemberInput {
-                    owner: source.key, owner_application: None, contextual_owner: None, key,
+                    owner: source.key, owner_application: None, contextual_owner: None, receiver_owner: None, key,
                     origin: OriginalMemberOrigin::ConstructorField(field.span),
                     value, span: field.span,
                     lexical_context: root.owner.map(NativeTypeContext::Function),
@@ -231,11 +255,50 @@ impl NativeRegistry {
         } else { TableFieldOrigin::Inferred })
     }
     pub(super) fn original_member_owner_application(&self, key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::MemberOwnerApplication> {
-        let application = self.members.get(key)?.candidates[0].owner_application.as_ref()?;
-        Some(luanalysis_engine::MemberOwnerApplication {
-            reference: self.named_annotation(application.context, &[], &application.annotation, queries),
-            parameters: self.named_outer_parameters(application.context, &application.annotation),
-        })
+        let source = self.members.get(key)?;
+        let mut input = &source.candidates[0];
+        if input.receiver_owner.is_some() {
+            let (activation, selected) = self.selected_original_member_candidates(key, queries)?;
+            match activation {
+                luanalysis_engine::TypeMemberActivation::Active => input = selected[0],
+                luanalysis_engine::TypeMemberActivation::Inactive => {
+                    // An inactive receiver contributes no member type. Keep
+                    // its candidate header well formed while the native
+                    // activation query excludes it from the actual schema.
+                    return Some(self.original_owner_application(&OriginalOwnerApplication::Declared(input.owner), queries));
+                },
+                luanalysis_engine::TypeMemberActivation::Pending => return Some(luanalysis_engine::MemberOwnerApplication { reference: queries.error_type(), parameters: Vec::new() }),
+            }
+        }
+        let application = input.owner_application.as_ref()?;
+        Some(self.original_owner_application(application, queries))
+    }
+    pub(super) fn original_owner_application(&self, application: &OriginalOwnerApplication, queries: &mut dyn TypeQueries) -> luanalysis_engine::MemberOwnerApplication {
+        use luanalysis_engine::MemberOwnerApplication;
+        match application {
+            OriginalOwnerApplication::Written { annotation, context, .. } => MemberOwnerApplication {
+                reference: self.named_annotation(*context, &[], annotation, queries),
+                parameters: self.named_outer_parameters(*context, annotation),
+            },
+            OriginalOwnerApplication::Declared(owner) => {
+                let declaration = luanalysis_engine::NativeTypeDeclarationKey { snapshot: owner.snapshot, index: owner.index };
+                let parameters = if self.named_metadata().declaration(*owner).is_some() {
+                    let header = self.named_declaration_header(declaration);
+                    header.parameters.into_iter().chain(header.outer_parameters).collect()
+                } else { Vec::new() };
+                let reference = queries.named_declared_type(declaration).unwrap_or_else(|_| queries.error_type());
+                MemberOwnerApplication { reference, parameters }
+            },
+            OriginalOwnerApplication::Receiver(receiver) => MemberOwnerApplication {
+                reference: self.original_member_expression_type(*receiver, queries), parameters: Vec::new(),
+            },
+            OriginalOwnerApplication::Member { receiver, key } => {
+                let receiver = self.original_owner_application(receiver, queries);
+                let reference = queries.table_lookup(&receiver.reference, &TableKey::Literal(key.clone()))
+                    .unwrap_or_else(|_| queries.error_type());
+                MemberOwnerApplication { reference, parameters: receiver.parameters }
+            },
+        }
     }
     pub(crate) fn original_member_effective_metadata(&self, key: NativeTypeMemberKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypeMemberEffectiveMetadata> {
         let (_, candidates) = self.selected_original_member_candidates(key, queries)?;
@@ -247,6 +310,9 @@ impl NativeRegistry {
         })
     }
     fn original_member_expression_type(&self, key: NativeExpressionKey, queries: &mut dyn TypeQueries) -> Type {
+        self.original_member_expression_result(key, queries).0
+    }
+    fn original_member_expression_result(&self, key: NativeExpressionKey, queries: &mut dyn TypeQueries) -> (Type, bool) {
         let expression = &self.expressions().get(key).expression;
         // A member's type belongs to its declaration, not to whichever
         // function's contextual or captured frame demanded it (a union
@@ -261,7 +327,7 @@ impl NativeRegistry {
         });
         let (ty, report, incomplete) = result.expect("declaration-space member evaluation runs");
         if !incomplete { self.merge_report(report); }
-        ty
+        (ty, incomplete)
     }
     fn original_member_candidate_type(&self, member: NativeTypeMemberKey, input: &OriginalMemberInput, queries: &mut dyn TypeQueries) -> Type {
         match &input.value {
@@ -293,6 +359,10 @@ impl NativeRegistry {
                 // class from inside its own definition.
                 if let Some(class) = self.own_definition_value(*key, queries) { return class }
                 let ty = self.original_member_expression_type(*key, queries);
+                // Publish the complete declaration contract of an owned
+                // nested table. Its constructor-time value view omits later
+                // stores; ordinary flow reads still use that reached view.
+                let ty = queries.runtime_table_schema(&ty).unwrap_or(ty);
                 // Original inferred Lua fields retain their literal contract.
                 // This leaves functions, generics and written contexts alone;
                 // it does not impose const/readonly semantics on the member.

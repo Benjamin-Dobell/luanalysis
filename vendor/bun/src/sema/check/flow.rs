@@ -4042,9 +4042,9 @@ impl<'p, 's> Checker<'p, 's> {
             narrowed
         } else if self.is_subtype(candidate, ty) {
             candidate
-        } else if self.is_assignable(ty, candidate) {
+        } else if self.native_is_assignable_with_strict_nil(ty, candidate) {
             ty
-        } else if self.is_assignable(candidate, ty) {
+        } else if self.native_is_assignable_with_strict_nil(candidate, ty) {
             candidate
         } else {
             self.intersection(&[ty, candidate])
@@ -6801,8 +6801,13 @@ impl<'p, 's> Checker<'p, 's> {
             matches!(*self.data(assigned), TypeData::BoolLit { fresh: true, .. });
         let assigned = self.regular(assigned);
         let reduced = self.filter(declared, |c, m| {
-            c.parts(assigned).iter().any(|&a| c.is_assignable(a, m))
+            c.parts(assigned).iter().any(|&a| c.native_is_assignable_with_strict_nil(a, m))
         });
+        // Compatibility accepts nil stores without changing what the runtime
+        // actually stored or selecting every non-nil arm of the written type.
+        let reduced = if !self.native_strict_nil && self.contains_undefined(assigned)
+            && self.is_assignable(TypeId::UNDEFINED, declared)
+        { self.union(&[reduced, TypeId::UNDEFINED]) } else { reduced };
         if !self.is_assignable(assigned, reduced) {
             return declared;
         }

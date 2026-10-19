@@ -344,8 +344,16 @@ impl NativeRegistry {
             }
         }
         if owner.is_none() {
-            let target = &self.expressions.get(source.target).expression;
-            let value = checker.expression(target);
+            // The exact attached class binding already has a nominal owner.
+            // Reading its runtime initializer here demands every prospective
+            // member, including the contextual-self members whose activation
+            // this query is establishing. Reuse its original declaration
+            // contract; the initializer and subsequent writes are checked
+            // independently against that same class.
+            let value = self.own_definition_value(source.target, checker.engine).unwrap_or_else(|| {
+                let target = &self.expressions.get(source.target).expression;
+                checker.expression(target)
+            });
             if checker.engine.contextual_owner_self_type(&value).is_some() {
                 owner = Some(value);
             }

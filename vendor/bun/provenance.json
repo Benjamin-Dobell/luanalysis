@@ -2439,6 +2439,12 @@
     },
     {
       "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-written-assignment-origin.patch",
+      "reason": "Keep an explicitly written assignment's declared origin when it overrides an inherited contract, matching the existing written-assignment demand policy; otherwise its own narrowed member silently disappears.",
+      "patch_sha256": "dbed0a2a88dfeb917529a735339c77261f824cd29e91c33b3164e30f883da905"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
       "patch": "vendor/patches/bun-sema-usable-invalid-overrides.patch",
       "reason": "Report an incompatible override or base once and keep the class's declared shape for its uses, while its validation still fails, as TypeScript keeps such a class, through kernel 3bf26e1.",
       "patch_sha256": "f23683c9e1a8fddf4e8921ea9b0c6730a38ea60e4e06ccf1177d8bd08c7e5894"
@@ -2556,6 +2562,205 @@
       "patch": "vendor/patches/bun-sema-native-predicate-environment-references.patch",
       "reason": "Canonicalize native predicate references at frozen receiver inputs through a flow-only typed provider demand, with a pure presence gate, guarded epoch cache and incomplete-query propagation; preserve structural reachability without receiver type demands.",
       "patch_sha256": "f93c0879eb3668206b0c7855b5893eb5edb9505227aba2c083a2a1dfa62a509b"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-table-contracts.patch",
+      "reason": "Reject unrelated dictionary domains and opaque table impostors while preserving partial indexer views, every shared value contract, exact-field precedence and sound dynamic intersection reads and writes.",
+      "patch_sha256": "45cec44ffbc99fe26d44ed42f3fdcea9732af7cb905a31b327436400a3590f79"
+    },
+    {
+      "path": "src/sema/check/native_runtime.rs",
+      "patch": "vendor/patches/bun-sema-native-table-contracts.patch",
+      "reason": "Reject unrelated dictionary domains and opaque table impostors while preserving partial indexer views, every shared value contract, exact-field precedence and sound dynamic intersection reads and writes.",
+      "patch_sha256": "45cec44ffbc99fe26d44ed42f3fdcea9732af7cb905a31b327436400a3590f79"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-table-contracts.patch",
+      "reason": "Reject unrelated dictionary domains and opaque table impostors while preserving partial indexer views, every shared value contract, exact-field precedence and sound dynamic intersection reads and writes.",
+      "patch_sha256": "45cec44ffbc99fe26d44ed42f3fdcea9732af7cb905a31b327436400a3590f79"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+      "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+      "patch_sha256": "eb3de5dae61c975e35210f69e4066e0547a053f28ebd414b7ec4696e3c59685c"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+      "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+      "patch_sha256": "eb3de5dae61c975e35210f69e4066e0547a053f28ebd414b7ec4696e3c59685c"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+      "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+      "patch_sha256": "eb3de5dae61c975e35210f69e4066e0547a053f28ebd414b7ec4696e3c59685c"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+      "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+      "patch_sha256": "eb3de5dae61c975e35210f69e4066e0547a053f28ebd414b7ec4696e3c59685c"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+      "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+      "patch_sha256": "eb3de5dae61c975e35210f69e4066e0547a053f28ebd414b7ec4696e3c59685c"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+      "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+      "patch_sha256": "eb3de5dae61c975e35210f69e4066e0547a053f28ebd414b7ec4696e3c59685c"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+      "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+      "patch_sha256": "eb3de5dae61c975e35210f69e4066e0547a053f28ebd414b7ec4696e3c59685c"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+      "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+      "patch_sha256": "eb3de5dae61c975e35210f69e4066e0547a053f28ebd414b7ec4696e3c59685c"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+      "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+      "patch_sha256": "eb3de5dae61c975e35210f69e4066e0547a053f28ebd414b7ec4696e3c59685c"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-result-packs.patch",
+      "reason": "Infer and instantiate the complete physical producer result pack independently of its first scalar value when a native generic parameter is declared in callable result position.",
+      "patch_sha256": "eb3de5dae61c975e35210f69e4066e0547a053f28ebd414b7ec4696e3c59685c"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-nil-compatibility.patch",
+      "reason": "Provide explicit non-strict nil assignment compatibility while preserving strict defaults, physical nil flow, required member presence, never, and separate strict physical relation caches.",
+      "patch_sha256": "c542916ebc9ecd2f1ee4a301bc6292728914c47bed9860b9e2ad3809318b14ad"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-nil-compatibility.patch",
+      "reason": "Provide explicit non-strict nil assignment compatibility while preserving strict defaults, physical nil flow, required member presence, never, and separate strict physical relation caches.",
+      "patch_sha256": "c542916ebc9ecd2f1ee4a301bc6292728914c47bed9860b9e2ad3809318b14ad"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-nil-compatibility.patch",
+      "reason": "Provide explicit non-strict nil assignment compatibility while preserving strict defaults, physical nil flow, required member presence, never, and separate strict physical relation caches.",
+      "patch_sha256": "c542916ebc9ecd2f1ee4a301bc6292728914c47bed9860b9e2ad3809318b14ad"
+    },
+    {
+      "path": "src/sema/check/native_assertions.rs",
+      "patch": "vendor/patches/bun-sema-native-nil-compatibility.patch",
+      "reason": "Provide explicit non-strict nil assignment compatibility while preserving strict defaults, physical nil flow, required member presence, never, and separate strict physical relation caches.",
+      "patch_sha256": "c542916ebc9ecd2f1ee4a301bc6292728914c47bed9860b9e2ad3809318b14ad"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-nil-compatibility.patch",
+      "reason": "Provide explicit non-strict nil assignment compatibility while preserving strict defaults, physical nil flow, required member presence, never, and separate strict physical relation caches.",
+      "patch_sha256": "c542916ebc9ecd2f1ee4a301bc6292728914c47bed9860b9e2ad3809318b14ad"
+    },
+    {
+      "path": "src/sema/check/flow.rs",
+      "patch": "vendor/patches/bun-sema-native-nil-compatibility.patch",
+      "reason": "Provide explicit non-strict nil assignment compatibility while preserving strict defaults, physical nil flow, required member presence, never, and separate strict physical relation caches.",
+      "patch_sha256": "c542916ebc9ecd2f1ee4a301bc6292728914c47bed9860b9e2ad3809318b14ad"
+    },
+    {
+      "path": "src/sema/check/native_nil.rs",
+      "patch": "vendor/patches/bun-sema-native-nil-compatibility.patch",
+      "reason": "Keep nil representation strict and implement only the requested compatibility relation; physical exclusions and narrowing use a distinct recursively strict relation.",
+      "added": true,
+      "patch_sha256": "c542916ebc9ecd2f1ee4a301bc6292728914c47bed9860b9e2ad3809318b14ad"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-runtime-schema-initialization.patch",
+      "reason": "Allow an original allocation to initialize only its own prospective runtime schema without asserting future field presence, retaining structural checks against every unrelated target.",
+      "patch_sha256": "cfd4726e8b22f0fbf5b2857fe0d2e4d8cf6b3cea9d1fe49dbab933aad26d4423"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-runtime-schema-initialization.patch",
+      "reason": "Allow an original allocation to initialize only its own prospective runtime schema without asserting future field presence, retaining structural checks against every unrelated target.",
+      "patch_sha256": "cfd4726e8b22f0fbf5b2857fe0d2e4d8cf6b3cea9d1fe49dbab933aad26d4423"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-pack-alias-substitution.patch",
+      "reason": "Preserve an aliased producer's symbolic result facet only when its mapped generic destination is itself a producer pack; scalar generic aliases keep their original single-value contract.",
+      "patch_sha256": "f546e4cb483707dace72574cf15a05fa62ac5b4a23eba15aa0e69f18e30a7cf6"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-pack-repetition.patch",
+      "reason": "Represent repeated generic producer results with a rigid physical-element facet, preserving first-slot types, nullable repetition cardinality, full source packs and checked fixed prefixes without widening arbitrary generic-body values.",
+      "patch_sha256": "aef68e493ecc6131f7eab091f44c61bcb71d8602ac15c472df63de009ead1643"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-pack-repetition.patch",
+      "reason": "Represent repeated generic producer results with a rigid physical-element facet, preserving first-slot types, nullable repetition cardinality, full source packs and checked fixed prefixes without widening arbitrary generic-body values.",
+      "patch_sha256": "aef68e493ecc6131f7eab091f44c61bcb71d8602ac15c472df63de009ead1643"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-pack-repetition.patch",
+      "reason": "Represent repeated generic producer results with a rigid physical-element facet, preserving first-slot types, nullable repetition cardinality, full source packs and checked fixed prefixes without widening arbitrary generic-body values.",
+      "patch_sha256": "aef68e493ecc6131f7eab091f44c61bcb71d8602ac15c472df63de009ead1643"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-pack-repetition.patch",
+      "reason": "Represent repeated generic producer results with a rigid physical-element facet, preserving first-slot types, nullable repetition cardinality, full source packs and checked fixed prefixes without widening arbitrary generic-body values.",
+      "patch_sha256": "aef68e493ecc6131f7eab091f44c61bcb71d8602ac15c472df63de009ead1643"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-pack-repetition.patch",
+      "reason": "Represent repeated generic producer results with a rigid physical-element facet, preserving first-slot types, nullable repetition cardinality, full source packs and checked fixed prefixes without widening arbitrary generic-body values.",
+      "patch_sha256": "aef68e493ecc6131f7eab091f44c61bcb71d8602ac15c472df63de009ead1643"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-pack-repetition.patch",
+      "reason": "Represent repeated generic producer results with a rigid physical-element facet, preserving first-slot types, nullable repetition cardinality, full source packs and checked fixed prefixes without widening arbitrary generic-body values.",
+      "patch_sha256": "aef68e493ecc6131f7eab091f44c61bcb71d8602ac15c472df63de009ead1643"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-pack-repetition.patch",
+      "reason": "Represent repeated generic producer results with a rigid physical-element facet, preserving first-slot types, nullable repetition cardinality, full source packs and checked fixed prefixes without widening arbitrary generic-body values.",
+      "patch_sha256": "aef68e493ecc6131f7eab091f44c61bcb71d8602ac15c472df63de009ead1643"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-generic-pack-repetition.patch",
+      "reason": "Represent repeated generic producer results with a rigid physical-element facet, preserving first-slot types, nullable repetition cardinality, full source packs and checked fixed prefixes without widening arbitrary generic-body values.",
+      "patch_sha256": "aef68e493ecc6131f7eab091f44c61bcb71d8602ac15c472df63de009ead1643"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-completion-seed.patch",
+      "reason": "Enumerate original constructor keys together with later store metadata when a cross-file runtime allocation is published as its declaration schema, preserving ordinary checked member reads and lazy function values.",
+      "patch_sha256": "cdda8264c408bced5df758ac96644a0a4efefdf5337eddd5c66989d7b7554b76"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-runtime-completion-seed.patch",
+      "reason": "Enumerate original constructor keys together with later store metadata when a cross-file runtime allocation is published as its declaration schema, preserving ordinary checked member reads and lazy function values.",
+      "patch_sha256": "cdda8264c408bced5df758ac96644a0a4efefdf5337eddd5c66989d7b7554b76"
     }
   ],
   "source_additions": {
@@ -2572,11 +2777,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_assertions.rs": {
-      "extracted_sha256": "11861085142542f1964d9cec8283910132fea857038e1451644b5cfa95c8bb08",
+      "extracted_sha256": "83fc7041e78984db91fb4a46f8e6bb85edf849591097e7c5b8cc57e7049e507c",
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "611651811ea85fe0b607337a93a31cec3c0cc205f1bf5210caa8dde83469f423",
+      "extracted_sha256": "fbf3039b403324df34015f8bfb7ddbfecfba0b5d698ca065e6f7b7e2a697916f",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
@@ -2592,11 +2797,15 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "b23446955278b0ea18c45cc077b9cb685338eb3c37bf83450a9b0e3e27b63bc5",
+      "extracted_sha256": "9608a90616280bd3fb89eea7a6bc95837aea635bd923ad08d9a0a0c2c50d897a",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
+    "src/sema/check/native_nil.rs": {
+      "extracted_sha256": "ca55099e1d0bd4417ba9cb501cff0d3939d7f0c182f884508c09186a73e5d15c",
+      "introduced_by_patch": "vendor/patches/bun-sema-native-nil-compatibility.patch"
+    },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "b6ea332729c90b195c2e57d1605c98c85d6ee0060e3dabc5376a1042f7349d30",
+      "extracted_sha256": "6cbd57643881f93993d95e518a307a3e290392c963304d1b3634f7d0c86479e7",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
@@ -2608,11 +2817,11 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-query-completion-lua-nil-keys.patch"
     },
     "src/sema/check/native_runtime.rs": {
-      "extracted_sha256": "15faa6979f1ee5ce48e219860fe019b9c8d5e294a721086832cbfbddf98f41c4",
+      "extracted_sha256": "f75a3486ce08266d832e15a4ab50a890f2c3214a939ea2d6012cfd3661aa33b9",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "4eef1549f07bfeedcfa701bf27f3e8ab0a42b7667ffc76f0aaaa7b4935c5dad8",
+      "extracted_sha256": "b2452e9fe34c67f3a3c856fca23cc51de9d0910b3e7aecb940ac179c3aacdf31",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -2624,7 +2833,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "952bb61a47df2c3794cc2bf2991a7d28a87f5949e8997bf10a141426766858ba",
+      "extracted_sha256": "d232f18e4cf87b4569f21353329cf88146df78f87ee4e20cd76217480872ea97",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -3322,7 +3531,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "bb1e7bead23d965597ff463dc3549b0436baa4905232b6ca8729d970a337ca12"
+      "extracted_sha256": "b00fede2290076bee3e217d971c09e98a472d6c69a144c685cf9b27eee4afaad"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -3337,7 +3546,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "773e48bbf7308a01a0fac1640ca725dd8f34b939914a710f4659268819bc97b6"
+      "extracted_sha256": "8076294e0f8ece195b7aaeb14361c767f2d68d255d6575b86afabeab71e59f87"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -3537,7 +3746,7 @@
     "src/sema/check/flow.rs": {
       "upstream": "src/sema/check/flow.rs",
       "sha256": "eca4c6e84d836502b89074917574c1f0623497ab0b0f11b06b729296b4d2c467",
-      "extracted_sha256": "9c9e36c5ecce3a884121127e1b82dffa7cf1688224b9714555759e8309101224"
+      "extracted_sha256": "82a405bb73a901b9db78e4f496c48892cc244205f91238dffedab2710c682682"
     },
     "src/sema/check/grammarchecks.rs": {
       "upstream": "src/sema/check/grammarchecks.rs",
@@ -3547,12 +3756,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "52734f4023023ae60c695a68e3380b0bcaf0de06f700a6bb177312cd1b56367d"
+      "extracted_sha256": "36518eadaff57fd9a22dae159529a9aa654d72c9eb50a7cb2ae103fbb5b25af9"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "cad1c3aacf136565172acbf95923080a7aec65bd9a26641130052c7976528ad2"
+      "extracted_sha256": "ecf0fde7cb45cd09149201523884e419271e3ff349b17c38bafaa372944e0f4c"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -3582,7 +3791,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "4fb3e0d135d8c837989a81dc4ed44960bd6c5afc027b490c485f1ccb3a058433"
+      "extracted_sha256": "a7c74d5a90f4059c25d10eb1ff8dfdf5e7a44879dc9113614f8c88b04a387654"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -3592,7 +3801,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "f6f73b73db5e1d886934c3c2eb3f634fcecf63bc4191e54e65ad9707c7e77f3c"
+      "extracted_sha256": "eceff423092a1b9c963b966ec6994b09a2960c391b4844c010b05e403dcae249"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -3607,7 +3816,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "990fb367d0f4fc736e979a265dfdb1aa382e6ef9a624a46f08a4bb1d00f31f6d"
+      "extracted_sha256": "c2dc81532e526b295345d974facd30552ca05e5adc0a7af4ba740fd8de9891df"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -3662,7 +3871,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "7b90647b093ab177ba66589d66d80dcaed07598b4fc68d105b4de7f97b217fda"
+      "extracted_sha256": "d96ac20faef652ced9543c898191e3ff282ca9ca82e11cd4054e408e02097acb"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -3787,7 +3996,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "af0f65978898c780a609f12c6564a7752490a2c3f110e545da7f03980df54e0c"
+      "extracted_sha256": "d6d6cdee294cb324ee7c9a799e0caca50ab5e6f030a605e89f48cba9bcb574aa"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

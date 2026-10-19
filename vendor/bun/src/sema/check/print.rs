@@ -1959,6 +1959,8 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } => {
                 self.type_parameter_to_node(ty)
             }
+            TypeData::NativePackParameter(parameter) => self.type_to_node(*parameter),
+            TypeData::NativePackElement(pack) => self.type_to_node(*pack),
             TypeData::Marker(Marker::Restrictive(of)) => self.type_to_node(*of),
             TypeData::Marker(marker) => Node::simple(self.name_of_marker(*marker)),
             TypeData::Union(_) => self.union_to_node(ty),

@@ -116,7 +116,7 @@ fn cli_rejects_unrelated_class_return_and_accepts_same_origin_correction() {
 }
 
 #[test]
-fn uninitialized_class_locals_declare_types_without_constructing_runtime_templates() {
+fn class_locals_keep_nominal_relations_with_or_without_initializers() {
     // The complete legacy generic_class_covariance.lua uses these uninitialized
     // declaration owners. There is no runtime class initializer to reject.
     let source = "---@class Parent<T>\n---@field value T\nlocal Parent\n---@class Child<T>:Parent<T>\nlocal Child\n---@type Parent<string>\nlocal parent\n---@type Child<string>\nlocal child\nparent=child\nchild=parent\n";
@@ -125,7 +125,24 @@ fn uninitialized_class_locals_declare_types_without_constructing_runtime_templat
     assert_eq!(report.diagnostics[0].code, "TS2322");
     assert_eq!(&source[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "parent");
     clean(&source.replace("child=parent", "child=child"));
-    // Actual initialized generic class tables still require runtime templates.
-    let initialized = source.replace("local Parent\n", "local Parent={}\n");
-    assert!(check(&initialized).diagnostics.iter().any(|d| d.code == "LUA2031"));
+    let initialized = source
+        .replace("local Parent\n", "local Parent={}\n")
+        .replace("local Child\n", "local Child={}\n");
+    let report = check(&initialized);
+    assert_eq!(report.diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(report.diagnostics[0].code, "TS2322");
+    assert_eq!(&initialized[report.diagnostics[0].span.start..report.diagnostics[0].span.end], "parent");
+    clean(&initialized.replace("child=parent", "child=child"));
+
+    let bounded = initialized
+        .replace("class Parent<T>", "class Parent<T:number>")
+        .replace("class Child<T>", "class Child<T:number>")
+        .replace("<string>", "<number>")
+        .replace("child=parent", "child=child");
+    clean(&bounded);
+    let wrong = bounded.replace("---@type Parent<number>", "---@type Parent<string>");
+    let report = check(&wrong);
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2344"
+        && &wrong[error.span.start..error.span.end] == "string"), "{:#?}", report.diagnostics);
+    assert!(!report.diagnostics.iter().any(|error| error.code == "LUA2031"), "{:#?}", report.diagnostics);
 }

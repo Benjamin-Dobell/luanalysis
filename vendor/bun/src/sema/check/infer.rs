@@ -107,6 +107,9 @@ pub(super) struct Inference {
     /// each alternative's candidates. A Lua call distributes over them, so `fun<T>(a: T[]): T[]`
     /// given `string[] | number[]` returns `string[] | number[]`.
     pub(super) distributions: Vec<SmallVec<[SmallVec<[(usize, TypeId); 2]>; 4]>>,
+    /// Whole physical return sequences inferred through the result facet of a
+    /// native parameter. Its ordinary candidate still denotes the first value.
+    pub(super) native_result_packs: Vec<(TypeId, u32, Vec<TypeId>)>,
 }
 
 impl Inference {
@@ -146,6 +149,7 @@ impl Inference {
             inferred_type_params: Vec::new(),
             intra_expression_inference_sites: Vec::new(),
             distributions: Vec::new(),
+            native_result_packs: Vec::new(),
         }
     }
 
@@ -261,6 +265,29 @@ impl<'p, 's> Checker<'p, 's> {
         // The contextual return type may contain unresolved parts where the enclosing calls have no
         // inferences yet.
         if source == TypeId::UNRESOLVED && n.priority & PRIORITY_RETURN != 0 {
+            return;
+        }
+        if let TypeData::NativePackParameter(parameter) = *self.data(target) {
+            // Keep the scalar and result-list meanings of T independent. A
+            // callback returning (string, number) infers scalar T=string and
+            // sequence T=(string, number), never a scalar tuple value.
+            if n.index_of(parameter).is_some() {
+                let first = self.native_pack_slot(crate::types::NativeResultPack { ty: source }, 0);
+                // Match ordinary scalar inference: provisional callback results
+                // are not candidates, and a weaker contextual row must not
+                // absorb a later argument's precise physical return sequence.
+                if self.is_non_inferrable(first) || first == TypeId::NON_INFERRABLE_ANY { return; }
+                if let Some((_, priority, candidates)) = n.native_result_packs.iter_mut().find(|(key, _, _)| *key == target) {
+                    if n.priority < *priority {
+                        *priority = n.priority;
+                        candidates.clear();
+                    }
+                    if n.priority == *priority && !candidates.contains(&source) { candidates.push(source); }
+                } else {
+                    n.native_result_packs.push((target, n.priority, vec![source]));
+                }
+                self.infer_types(n, first, parameter);
+            }
             return;
         }
         n.calls += 1;
@@ -2018,7 +2045,12 @@ impl<'p, 's> Checker<'p, 's> {
         if !self.could_contain_type_variables(t) {
             return None;
         }
-        let s = if packed { self.sig_result_pack(source).ty } else { self.sig_return(source) };
+        let s = if packed {
+            // Callback relations use the producer's written row, including an
+            // open variadic tail. Infer that same row rather than an incidental
+            // body-cardinality refinement which the original contract outgrows.
+            self.sig_declared_result_pack_contract(source).unwrap_or_else(|| self.sig_result_pack(source)).ty
+        } else { self.sig_return(source) };
         Some(ReturnTypePair { s, t })
     }
 
@@ -3051,6 +3083,7 @@ impl<'p, 's> Checker<'p, 's> {
         if pairs.is_empty() {
             return self.mapper_of_context_not_mentioned_in(ty);
         }
+        self.native_result_pack_inference_pairs(n, &mut pairs);
         self.types().mapper(pairs)
     }
 
@@ -3108,6 +3141,7 @@ impl<'p, 's> Checker<'p, 's> {
         if pairs.is_empty() {
             return self.mapper_of_context_not_mentioned_in(ty);
         }
+        self.native_result_pack_inference_pairs(n, &mut pairs);
         self.types().mapper(pairs)
     }
 
@@ -3145,7 +3179,41 @@ impl<'p, 's> Checker<'p, 's> {
         let types: SmallVec<[TypeId; 4]> = (0..n.params.len())
             .map(|i| self.get_inferred_type_comparing(n, i, false, compare))
             .collect();
-        self.mapper_from(&n.params, &types)
+        let mut pairs: Vec<_> = n.params.iter().copied().zip(types.iter().copied()).collect();
+        self.native_result_pack_inference_pairs(n, &mut pairs);
+        self.types().mapper(pairs)
+    }
+
+    fn native_result_pack_inference_pairs(&mut self, n: &Inference, pairs: &mut Vec<(TypeId, TypeId)>) {
+        for (facet, _, candidates) in &n.native_result_packs {
+            let TypeData::NativePackParameter(parameter) = *self.data(*facet) else { unreachable!("result facet") };
+            let Some(scalar) = pairs.iter().find(|pair| pair.0 == parameter).map(|pair| pair.1) else { continue };
+            let required_first = !self.native_pack_parameter_first_is_optional(parameter)
+                || !self.native_pack_parameter_first_is_optional(scalar);
+            let mut missing_required_first = false;
+            let packs: Vec<_> = candidates.iter().copied().filter(|&ty| {
+                let pack = crate::types::NativeResultPack { ty };
+                if required_first && !self.native_pack_has_required_first(pack) {
+                    missing_required_first = true;
+                    return false;
+                }
+                let first = self.native_pack_slot(pack, 0);
+                self.is_assignable(first, scalar)
+            }).collect();
+            // A contextual result row may have suggested a conflicting first
+            // value before an argument supplied the stronger scalar inference.
+            // Keep compatible physical rows without dropping the producer's
+            // genuine later slots merely because that weaker guess was wrong.
+            if !packs.is_empty() {
+                pairs.push((*facet, self.union(&packs)));
+            } else if missing_required_first {
+                // A permissive scalar inference may be nil even though T's
+                // physical contract requires a first result. Keep that arity in
+                // the applicability target; a zero-result producer must not be
+                // admitted again by the scalar facet's implicit-empty fallback.
+                pairs.push((*facet, self.native_scalar_pack(scalar).ty));
+            }
+        }
     }
 
     /// Whether `param` occurs in `ty`, as far as can be told without resolving members.
@@ -3298,6 +3366,7 @@ impl<'p, 's> Checker<'p, 's> {
                 },
                 TypeData::Template { types, .. } => left.extend_from_slice(types),
                 TypeData::NativeArray { element, .. } => left.push(*element),
+                TypeData::NativePackParameter(parameter) | TypeData::NativePackElement(parameter) => left.push(*parameter),
                 TypeData::NativeObject(reference) => {
                     left.extend(values(reference.mapper));
                     left.extend(reference.self_argument);

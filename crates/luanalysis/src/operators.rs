@@ -47,6 +47,16 @@ impl Checker<'_> {
                 }
             }
             UnaryOperator::Negate | UnaryOperator::BitwiseNot => {
+                // Lua arithmetic coerces numeral strings. Check the literal's
+                // Lua spelling before parsing its value; Rust accepts nan/inf,
+                // and Unicode trimming would admit whitespace Lua rejects.
+                if op == UnaryOperator::Negate {
+                    if let Type::StringLiteral(bytes) = self.engine.inspect_type(&value_type) {
+                        if let Some(number) = numeric_string(&bytes) {
+                            return Type::NumberLiteral(-number);
+                        }
+                    }
+                }
                 if self.engine.is_assignable(&value_type, &Type::Number) {
                     // Preserve a literal negative number. Integer precision and
                     // bitwise ranges are not encoded by the TS number domain.
@@ -472,4 +482,17 @@ fn binary_spelling(op: BinaryOperator) -> &'static str {
         BinaryOperator::And => "and",
         BinaryOperator::Or => "or",
     }
+}
+
+/// The finite numeral syntax Lua accepts for arithmetic string coercion.
+fn numeric_string(bytes: &[u8]) -> Option<f64> {
+    let text = std::str::from_utf8(bytes).ok()?.trim_matches(|ch: char| ch.is_ascii_whitespace());
+    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+    let lexed = luanalysis_syntax::lex(unsigned);
+    if !lexed.diagnostics.is_empty() { return None; }
+    let [number, eof] = lexed.tokens.as_slice() else { return None };
+    if !matches!(number.kind, luanalysis_syntax::TokenKind::Number(_))
+        || number.span.start != 0 || number.span.end != unsigned.len()
+        || !matches!(eof.kind, luanalysis_syntax::TokenKind::Eof) { return None; }
+    super::number(text.strip_prefix('+').unwrap_or(text))
 }

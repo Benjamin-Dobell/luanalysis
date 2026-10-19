@@ -252,10 +252,9 @@ fn generic_constructor_collisions_retain_value_and_deletion_candidates() {
 }
 
 #[test]
-fn explicit_type_generic_multiple_and_nonlocal_definition_forms_stay_gated() {
+fn explicit_type_and_multiple_definition_destinations_stay_gated() {
     for source in [
         "---@class C\n---@type C\nlocal value={}",
-        "---@class C<T>\n---@field value T\nlocal value={}",
         "---@class C\nlocal a,b={},{}",
     ] {
         let report = rejects(source, "LUA2031");
@@ -269,6 +268,14 @@ fn explicit_type_generic_multiple_and_nonlocal_definition_forms_stay_gated() {
             report.diagnostics
         );
     }
+
+    let generic = "---@class C<T:number>\n---@field value T\nlocal value={}\n---@type C<number>\nlocal valid\n";
+    clean(generic);
+    let wrong = generic.replace("---@type C<number>", "---@type C<string>");
+    let report = rejects(&wrong, "TS2344");
+    assert!(report.diagnostics.iter().any(|error| error.code == "TS2344"
+        && &wrong[error.span.start..error.span.end] == "string"), "{:#?}", report.diagnostics);
+    assert!(!report.diagnostics.iter().any(|error| error.code == "LUA2031"), "{:#?}", report.diagnostics);
 }
 
 #[test]

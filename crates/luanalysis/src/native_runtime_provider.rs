@@ -82,17 +82,21 @@ impl NativeRegistry {
                 args.first().and_then(|table| self.syntactic_table_owner(table, region, depth + 1, memo))
             }
             ExprKind::Call { .. } => None,
-            ExprKind::Name(name) => self.bound().binding_at(name.span.start).and_then(|binding| {
+            ExprKind::Name(name) => if let Some(binding) = self.bound().binding_at(name.span.start) {
                 if self.bound().declaration(binding).kind == DeclarationKind::ImplicitReceiver {
                     return self.method_receiver_for(binding).and_then(|receiver| self.syntactic_table_owner(receiver, None, depth + 1, memo));
                 }
                 let sources = self.iterator_sources();
                 let initializer = region.and_then(|region| sources.latest_binding_write_before(binding, region, expression.span.start))
-                    .or_else(|| sources.declaration_initializer(binding))?;
-                let region = Some(initializer.input.graph);
-                let initializer = &sources.program.expression(initializer.expression).expression;
-                self.syntactic_table_owner(initializer, region, depth + 1, memo)
-            }),
+                    .or_else(|| sources.declaration_initializer(binding));
+                initializer.and_then(|initializer| {
+                    let region = Some(initializer.input.graph);
+                    let initializer = &sources.program.expression(initializer.expression).expression;
+                    self.syntactic_table_owner(initializer, region, depth + 1, memo)
+                })
+            } else {
+                self.syntactic_global_owner(&name.text, name.span.start, region, depth + 1, memo)
+            },
             ExprKind::Field { base, name } => self.syntactic_member_owner(base, region, expression.span.start, &LuaKey::String(name.text.as_bytes().to_vec()), depth, memo),
             ExprKind::Index { base, index } => crate::native_tables::literal_key(index)
                 .and_then(|key| self.syntactic_member_owner(base, region, expression.span.start, &key, depth, memo)),
@@ -100,6 +104,36 @@ impl NativeRegistry {
         };
         memo.insert((expression.span.start, expression.span.end), owner);
         owner
+    }
+
+    /// Global declarations carry the same original initializer recipes as local
+    /// declarations. Follow those recipes without querying the global's type:
+    /// its type includes these very stores. A lexical `_ENV` keeps an unbound
+    /// name in that environment rather than the file's global allocation.
+    fn syntactic_global_owner(&self, name: &str, position: usize, region: Option<u32>, depth: u32, memo: &mut HashMap<(usize, usize), Option<NativeExpressionKey>>) -> Option<NativeExpressionKey> {
+        let sources = self.iterator_sources();
+        if let Some(environment) = self.bound().environment_binding_at(position) {
+            let initializer = region.and_then(|region| sources.latest_binding_write_before(environment, region, position))
+                .or_else(|| sources.declaration_initializer(environment))?;
+            let initializer = &sources.program.expression(initializer.expression).expression;
+            return self.syntactic_member_owner(initializer, region, position, &LuaKey::String(name.as_bytes().to_vec()), depth, memo);
+        }
+        let mut first = None;
+        let mut reaching = None;
+        for (global, statement, initializer) in self.original_global_initializers() {
+            if global != name { continue; }
+            let source = self.expressions().get(initializer);
+            let graph = source.owner.and_then(|owner| sources.graph_for_function(owner, None))
+                .map_or(0, |graph| graph.region);
+            if region == Some(graph) && statement.end <= position
+                && reaching.is_none_or(|(end, _, _)| statement.end > end)
+            { reaching = Some((statement.end, initializer, graph)); }
+            if first.is_none_or(|(start, _, _)| statement.start < start) {
+                first = Some((statement.start, initializer, graph));
+            }
+        }
+        let (_, initializer, graph) = reaching.or(first)?;
+        self.syntactic_table_owner(&self.expressions().get(initializer).expression, Some(graph), depth + 1, memo)
     }
 
     /// A nested table under an owned table: the owned store `base.key = {...}`

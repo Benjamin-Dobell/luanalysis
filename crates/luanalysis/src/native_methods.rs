@@ -18,7 +18,8 @@ pub(super) struct MethodSource {
     /// Named member declaration syntax, distinct from assigning a function value.
     pub declaration: bool,
     pub implicit_receiver: Option<BindingId>,
-    /// Exact original attached class binding, never a matching runtime name.
+    /// Original attached class or unambiguous written class-valued member head,
+    /// never a matching runtime variable name.
     pub class_owner: Option<NativeNamedKey>,
     pub owner_application: Option<OriginalOwnerApplication>,
     pub contextual_owner: Option<NativeFunctionKey>,
@@ -34,8 +35,35 @@ pub(super) struct NativeMethods {
     /// Classes defined on a global or a field (`---@class X` above `X = {}` or `M.X = {}`),
     /// by that spelling.
     path_owners: HashMap<ClassPath, Vec<NativeNamedKey>>,
+    /// Candidate heads reached through original written fields/indexers. This
+    /// does not select a field's type or decide whether its key accepts a read.
+    /// Those operations belong to the native owner-application query.
+    member_owners: HashMap<NativeNamedKey, Vec<(OwnerMemberKey, NativeNamedKey, bool)>>,
     /// Inline `@type` casts by the span of the expression they cast.
     casts: HashMap<(usize, usize), TypeExpr>,
+}
+
+enum OwnerMemberKey {
+    Fixed(LuaKey),
+    Domain(TypeExpr),
+}
+impl OwnerMemberKey {
+    fn is_exact(&self, key: &LuaKey) -> bool {
+        matches!(self, Self::Fixed(candidate) if candidate == key)
+    }
+    fn may_accept(&self, key: &LuaKey) -> bool {
+        let Self::Domain(ty) = self else { return self.is_exact(key) };
+        // This only prunes disjoint primitive source domains. Aliases and
+        // composite keys stay candidates until native lookup checks them.
+        let mut ty = ty.value_syntax();
+        while let luanalysis_syntax::TypeExprKind::Parenthesized(inner) = &ty.kind { ty = inner.value_syntax(); }
+        match &ty.kind {
+            luanalysis_syntax::TypeExprKind::Named(name) if name == "string" => matches!(key, LuaKey::String(_)),
+            luanalysis_syntax::TypeExprKind::Named(name) if matches!(name.as_str(), "number" | "integer") => matches!(key, LuaKey::Integer(_) | LuaKey::Number(_)),
+            luanalysis_syntax::TypeExprKind::Named(name) if name == "boolean" => matches!(key, LuaKey::Boolean(_)),
+            _ => true,
+        }
+    }
 }
 
 /// Where a class table defined by an assignment is stored: a local or global root and the
@@ -163,12 +191,39 @@ impl NativeMethods {
                 path_owners.entry(path).or_default().push(declaration.key);
             }
         }
+        let mut member_owners: HashMap<_, Vec<_>> = HashMap::default();
+        for declaration in named.declarations() {
+            for &member in &declaration.members {
+                let field = &named.member(member).expect("original written member").field;
+                let mut ty = field.ty.value_syntax();
+                while let luanalysis_syntax::TypeExprKind::Parenthesized(inner) = &ty.kind { ty = inner.value_syntax(); }
+                let name = match &ty.kind {
+                    luanalysis_syntax::TypeExprKind::Named(name) => name.as_str(),
+                    luanalysis_syntax::TypeExprKind::Generic { base, .. } => base.text.as_str(),
+                    _ => continue,
+                };
+                if types.resolve_name_in_context(Some(crate::native_named::NativeTypeContext::NamedType(declaration.key)), name)
+                    != crate::native_types::TypeNameResolution::Missing { continue; }
+                let Some(owner) = named.sole_owner(name) else { continue };
+                if !matches!(named.declaration(owner).expect("original member owner").syntax.kind,
+                    NamedTypeDeclarationKind::Record { flavor: NamedRecordKind::Class, .. } | NamedTypeDeclarationKind::Alias { .. }) { continue; }
+                let key = match &field.key {
+                    luanalysis_syntax::TypeFieldKey::Named(name) => OwnerMemberKey::Fixed(LuaKey::String(name.text.as_bytes().to_vec())),
+                    luanalysis_syntax::TypeFieldKey::Indexed(ty) => crate::native_tables::literal_type_key(ty).map_or_else(|| OwnerMemberKey::Domain((**ty).clone()), OwnerMemberKey::Fixed),
+                    luanalysis_syntax::TypeFieldKey::Sequence { index } => OwnerMemberKey::Fixed(LuaKey::Integer((*index).try_into().expect("original source index"))),
+                };
+                let identity = matches!(ty.kind, luanalysis_syntax::TypeExprKind::Named(_))
+                    && named.declaration(owner).is_some_and(|owner| owner.syntax.generics.is_empty() && owner.generic_scope.parent.is_none());
+                member_owners.entry(declaration.key).or_default().push((key, owner, identity));
+            }
+        }
         let mut methods = Self {
             snapshot,
             sources: vec![None; functions.len()],
             fields: Vec::new(),
             owner_applications,
             path_owners,
+            member_owners,
             casts: assertions.iter().map(|(&span, &ty)| (span, ty.clone())).collect(),
         };
         methods.statements(&file.statements, spans, bound, &owners, &declaration_owners, &contextual_owners);
@@ -203,6 +258,7 @@ impl NativeMethods {
                 owner,
                 owner_application: method.owner_application.clone(),
                 contextual_owner: method.contextual_owner,
+                receiver_owner: None,
                 key: OriginalMemberKey::Fixed(method.member.clone()),
                 origin: OriginalMemberOrigin::Method(method.function),
                 value: OriginalMemberValue::Function(method.function),
@@ -216,7 +272,7 @@ impl NativeMethods {
         self.fields.iter().map(|field| {
             let expression = expressions.key_for_span(field.value);
             OriginalMemberInput {
-                owner: field.owner, owner_application: field.owner_application.clone(), contextual_owner: field.contextual_owner,
+                owner: field.owner, owner_application: field.owner_application.clone(), contextual_owner: field.contextual_owner, receiver_owner: None,
                 key: OriginalMemberKey::Fixed(field.key.clone()),
                 origin: OriginalMemberOrigin::AssignmentField(field.target),
                 value: field.annotation.as_ref().map_or(OriginalMemberValue::Expression(expression), |ty| OriginalMemberValue::Written(ty.clone())),
@@ -249,11 +305,11 @@ impl NativeMethods {
                         if let Some(function) = function_literal(value) {
                             self.record(target, function, false, spans, bound, owners, declaration_owners, contextual_owners);
                         } else if let Some((receiver, key)) = fixed_member_target(target)
-                            && let Some(owner) = self.class_owner(receiver, bound, owners)
+                            && let Some((owner, owner_application)) = self.class_owner(receiver, bound, owners)
                         {
                             self.fields.push(AssignmentFieldSource {
                                 owner, contextual_owner: receiver_binding(receiver, bound).and_then(|binding| contextual_owners.get(&binding).copied()), key, target: target.span, value: value.span,
-                                owner_application: receiver_binding(receiver, bound).and_then(|binding| self.owner_applications.get(&binding).cloned()),
+                                owner_application,
                                 // A cast value, as v1 reads it, writes the member with that type:
                                 // `self.get = --[[---@type fun(): Dead]] self.get` overrides it.
                                 annotation: annotation.as_ref().and_then(|annotation| annotation.types.get(index)).cloned()
@@ -301,7 +357,8 @@ impl NativeMethods {
             snapshot: self.snapshot,
             index,
         };
-        let class_owner = self.class_owner(receiver, bound, owners);
+        let (class_owner, owner_application) = self.class_owner(receiver, bound, owners)
+            .map_or((None, None), |(owner, application)| (Some(owner), application));
         let declaration_owner = match &receiver.kind {
             ExprKind::Name(name) if bound.binding_at(name.span.start).is_none() =>
                 declaration_owners.get(&name.text).and_then(|owners| match owners.as_slice() {
@@ -317,7 +374,7 @@ impl NativeMethods {
             declaration,
             implicit_receiver: bound.implicit_receiver(function.span),
             class_owner,
-            owner_application: receiver_binding(receiver, bound).and_then(|binding| self.owner_applications.get(&binding).cloned()),
+            owner_application,
             contextual_owner: receiver_binding(receiver, bound).and_then(|binding| contextual_owners.get(&binding).copied()),
             declaration_owner,
         });
@@ -387,7 +444,7 @@ fn collect_written_local_owners(
                     let candidates = owners.entry(binding).or_default();
                     if !candidates.contains(&owner) { candidates.push(owner); }
                     if applied || alias {
-                        owner_applications.insert(binding, OriginalOwnerApplication { annotation: written.clone(), context, binding });
+                        owner_applications.insert(binding, OriginalOwnerApplication::Written { annotation: written.clone(), context, binding });
                     }
                 }
             }
@@ -412,11 +469,41 @@ fn fixed_member_target(target: &Expr) -> Option<(&Expr, LuaKey)> {
 impl NativeMethods {
     /// The class whose table `receiver` names: a local class definition's, or one defined on
     /// the global or field `receiver` spells.
-    fn class_owner(&self, receiver: &Expr, bound: &BoundFile, owners: &HashMap<BindingId, Vec<NativeNamedKey>>) -> Option<NativeNamedKey> {
-        local_class_owner(receiver, bound, owners).or_else(|| {
-            let [owner] = self.path_owners.get(&class_path(receiver, bound)?)?.as_slice() else { return None };
-            Some(*owner)
-        })
+    fn class_owner(&self, receiver: &Expr, bound: &BoundFile, owners: &HashMap<BindingId, Vec<NativeNamedKey>>) -> Option<(NativeNamedKey, Option<OriginalOwnerApplication>)> {
+        if let ExprKind::Parenthesized(inner) = &receiver.kind { return self.class_owner(inner, bound, owners); }
+        if let Some(owner) = local_class_owner(receiver, bound, owners) {
+            return Some((owner, receiver_binding(receiver, bound).and_then(|binding| self.owner_applications.get(&binding).cloned())));
+        }
+        if let Some(path) = class_path(receiver, bound)
+            && let Some(owners) = self.path_owners.get(&path)
+            && let [owner] = owners.as_slice()
+        { return Some((*owner, None)); }
+        let (base, key) = fixed_member_target(receiver)?;
+        let (base_owner, application) = self.class_owner(base, bound, owners)?;
+        let candidates = self.member_owners.get(&base_owner)?;
+        // An exact written key takes precedence over indexers. If more than
+        // one distinct candidate remains, source spelling cannot select its
+        // nominal owner and the ordinary receiver check remains in charge.
+        let exact = candidates.iter().any(|(candidate, _, _)| candidate.is_exact(&key));
+        let mut candidates = candidates.iter().filter(|(candidate, _, _)| if exact {
+            candidate.is_exact(&key)
+        } else { candidate.may_accept(&key) });
+        let (_, owner, mut identity) = *candidates.next()?;
+        for (_, candidate, candidate_identity) in candidates {
+            if *candidate != owner { return None; }
+            identity &= *candidate_identity;
+        }
+        if owner == base_owner {
+            // An unapplied written C -> C edge already identifies the exact
+            // owner. Looking up C's schema here would demand this same member
+            // while deciding whether to publish it. The ordinary receiver
+            // check still validates the key and the actual write.
+            if identity { return Some((owner, Some(OriginalOwnerApplication::Declared(owner)))); }
+            return None;
+        }
+        Some((owner, Some(OriginalOwnerApplication::Member {
+            receiver: Box::new(application.unwrap_or(OriginalOwnerApplication::Declared(base_owner))), key,
+        })))
     }
 }
 fn local_class_owner(receiver: &Expr, bound: &BoundFile, owners: &HashMap<BindingId, Vec<NativeNamedKey>>) -> Option<NativeNamedKey> {
@@ -436,13 +523,54 @@ fn function_literal(value: &Expr) -> Option<&Function> {
 }
 
 impl super::NativeRegistry {
+    fn external_method_owner(&self, method: &MethodSource) -> Option<NativeNamedKey> {
+        if self.source_role() != luanalysis_project::SourceRole::Implementation
+            || method.class_owner.is_some() || method.contextual_owner.is_some()
+        { return None; }
+        let ExprKind::Name(name) = &method.receiver.kind else { return None };
+        if self.bound.binding_at(name.span.start).is_some() { return None; }
+        let receiver = self.expression_key(&method.receiver);
+        // A caller-specific captured receiver cannot become a process-wide
+        // class fact. This route only publishes top-level original stores.
+        if self.expressions().get(receiver).owner.is_some() { return None; }
+        let globals = self.project_globals.as_ref()?;
+        let binding = globals.binding(&name.text)?;
+        if globals.declares_member(binding, &method.member) { return None; }
+        let mut owners = globals.named_owners(binding).iter().map(|&owner| self.canonical_declaration(owner));
+        let owner = owners.next()?;
+        if owners.any(|candidate| candidate != owner) { return None; }
+        Some(NativeNamedKey { snapshot: owner.snapshot, index: owner.index })
+    }
+    pub(super) fn original_external_method_inputs(&self) -> Vec<OriginalMemberInput> {
+        self.methods.sources().filter_map(|method| {
+            let owner = self.external_method_owner(method)?;
+            let receiver = self.expression_key(&method.receiver);
+            Some(OriginalMemberInput {
+                owner, owner_application: Some(OriginalOwnerApplication::Receiver(receiver)),
+                contextual_owner: None, receiver_owner: Some(receiver),
+                key: OriginalMemberKey::Fixed(method.member.clone()),
+                origin: OriginalMemberOrigin::Method(method.function),
+                value: OriginalMemberValue::Function(method.function), span: method.target.span,
+                lexical_context: Some(crate::native_named::NativeTypeContext::Function(method.function)),
+                documentation_contexts: vec![owner],
+            })
+        }).collect()
+    }
     pub(crate) fn applied_method_self_type(&self, key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<Type> {
-        let application = self.methods.get(key)?.owner_application.as_ref()?;
-        let owner = self.named_annotation(application.context, &[], &application.annotation, queries);
-        queries.contextual_owner_self_type(&owner)
+        let method = self.methods.get(key)?;
+        if let Some(application) = method.owner_application.as_ref() {
+            let owner = self.original_owner_application(application, queries);
+            return queries.contextual_owner_self_type(&owner.reference);
+        }
+        let expected = self.external_method_owner(method)?;
+        let owner = self.original_owner_application(&OriginalOwnerApplication::Receiver(self.expression_key(&method.receiver)), queries);
+        if queries.named_object_declaration(&owner.reference).map(|owner| self.canonical_declaration(owner))
+            != Some(self.canonical_declaration(luanalysis_engine::NativeTypeDeclarationKey { snapshot: expected.snapshot, index: expected.index }))
+        { return None; }
+        queries.contextual_owner_self_type(&owner.reference)
     }
     pub(crate) fn has_polymorphic_method_owner(&self, key: NativeFunctionKey) -> bool {
-        self.method_owner(key).is_some() || self.methods.get(key).is_some_and(|method| method.contextual_owner.is_some())
+        self.method_owner(key).is_some() || self.methods.get(key).is_some_and(|method| method.contextual_owner.is_some() || self.external_method_owner(method).is_some())
     }
     pub(crate) fn original_method_target(&self, key: NativeFunctionKey) -> Option<&Expr> {
         Some(&self.methods.get(key)?.target)

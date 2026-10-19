@@ -117,7 +117,7 @@ impl Engine {
             };
         }
         let workers = workers.get().min(steps.iter().map(Vec::len).max().unwrap());
-        with_program(|program, _coordinator_handles| run(program, workers, steps, task_cost, &factory, &work))
+        with_program(|program, _coordinator_handles| run(program, workers, steps, task_cost, &factory, &work, self.strict_nil))
     }
 }
 
@@ -128,6 +128,7 @@ fn run<'s, P: NativeTypeProvider, R: Send>(
     task_cost: Option<&(dyn Fn(usize) -> usize + Sync)>,
     factory: &(impl Fn(usize) -> P + Sync),
     work: &(impl Fn(usize, &P, &mut dyn super::TypeQueries) -> R + Sync),
+    strict_nil: bool,
 ) -> NativeTaskRun<R> {
     std::thread::scope(|scope| {
         let (commands, receive_commands) = mpsc::channel::<Command>();
@@ -169,6 +170,7 @@ fn run<'s, P: NativeTypeProvider, R: Send>(
                                 checker.set_native_globals_provider(&adapter);
                                 checker.set_native_project_provider(&adapter);
                                 checker.enable_native_arrays();
+                                checker.set_native_strict_nil(strict_nil);
                                 // No native IDs may be created before this resets the task stores.
                                 checker.begin_task(command.step, command.index, true);
                                 let result = work(
@@ -280,6 +282,7 @@ fn run<'s, P: NativeTypeProvider, R: Send>(
                     let mut metadata_checker =
                         program.checker_with_native_provider(&metadata_adapter);
                     metadata_checker.enable_native_arrays();
+                    metadata_checker.set_native_strict_nil(strict_nil);
                     metadata_checker.set_native_type_declaration_provider(&metadata_adapter);
                     metadata_checker.set_native_globals_provider(&metadata_adapter);
                     metadata_checker.set_native_project_provider(&metadata_adapter);

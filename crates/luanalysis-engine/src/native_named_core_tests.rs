@@ -522,22 +522,42 @@ fn native_generic_members_use_existing_mapper_once_and_constraints_defaults() {
 }
 
 #[test]
-fn own_fixed_members_must_satisfy_overlapping_declared_indexers() {
+fn own_fixed_members_override_the_fallback_while_inherited_contracts_remain_checked() {
     Engine::new().with_native_provider(
-        || Provider {
-            declarations: vec![Declaration::record(0, vec![0, 1])],
-            members: vec![
-                Member::field(0, LuaKey::String(b"value".to_vec()), Type::Number),
-                Member::indexer(0, Type::String, Type::Boolean),
-            ],
-            ..Provider::default()
+        || {
+            let mut child = Declaration::record(1, vec![2]);
+            child.bases = vec![reference(0, vec![])];
+            Provider {
+                declarations: vec![Declaration::record(0, vec![0, 1]), child],
+                members: vec![
+                    Member::field(0, LuaKey::String(b"value".to_vec()), Type::Number),
+                    Member::indexer(0, Type::String, Type::Boolean),
+                    Member::field(1, LuaKey::String(b"extra".to_vec()), Type::Number),
+                ],
+                ..Provider::default()
+            }
         },
         |_, q| {
+            assert!(q.validate_named_declaration(declaration(0)).is_ok());
+            let table = q.named_type_reference(declaration(0), &[]).unwrap();
+            let value = TableKey::Literal(LuaKey::String(b"value".to_vec()));
+            let other = TableKey::Literal(LuaKey::String(b"other".to_vec()));
+            assert_eq!(q.table_lookup(&table, &value), Ok(Type::Number));
+            assert_eq!(q.table_lookup(&table, &other), Ok(Type::Boolean));
+            assert!(q.table_write(&table, &value, &Type::Number).is_ok());
+            assert!(q.table_write(&table, &other, &Type::Boolean).is_ok());
             assert!(matches!(
-                q.validate_named_declaration(declaration(0)),
-                Err(NamedTypeError::Table {
-                    declaration: NativeTypeDeclarationKey { snapshot: 777, index: 0 },
-                    error: TableError::ValueType { value: Type::Number, expected: Type::Boolean },
+                q.table_write(&table, &value, &Type::Boolean),
+                Err(TableError::ValueType { expected: Type::Number, .. })
+            ));
+            assert!(matches!(
+                q.table_write(&table, &other, &Type::Number),
+                Err(TableError::ValueType { expected: Type::Boolean, .. })
+            ));
+            assert!(matches!(
+                q.validate_named_declaration(declaration(1)),
+                Err(NamedTypeError::IncompatibleOverride {
+                    expected: Type::Boolean, actual: Type::Number, ..
                 })
             ));
         },

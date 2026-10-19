@@ -712,6 +712,7 @@ pub trait NativeTypeProvider {
     fn contains_type_parameter(&self, _: NativeTypeParameterKey) -> bool {
         false
     }
+    fn type_parameter_is_result_pack(&self, _: NativeTypeParameterKey) -> bool { false }
     fn type_parameter_name(&self, _: NativeTypeParameterKey) -> String {
         String::new()
     }
@@ -1175,6 +1176,8 @@ pub trait TypeQueries {
         expected_return: Option<&Type>,
     ) -> CallResult;
     fn is_assignable(&mut self, source: &Type, target: &Type) -> bool;
+    /// Physical nil membership, independent of optional nil assignment compatibility.
+    fn contains_nil(&mut self, ty: &Type) -> bool;
     fn compare(&mut self, source: &Type, target: &Type) -> Relation;
     fn widen(&mut self, ty: &Type) -> Type;
     /// Native literal-kind metadata only; does not request signatures or members.
@@ -1245,12 +1248,24 @@ pub trait TypeQueries {
     fn validate_named_member(&mut self, member: NativeTypeMemberKey) -> Result<Type, NamedTypeError>;
 }
 
-#[derive(Default)]
-pub struct Engine;
+pub struct Engine {
+    strict_nil: bool,
+}
+
+impl Default for Engine {
+    fn default() -> Self { Self::new() }
+}
 
 impl Engine {
     pub fn new() -> Self {
-        Self
+        Self { strict_nil: true }
+    }
+
+    /// Luanalysis v1 compatibility: nil satisfies assignment contracts. Physical
+    /// nil types, runtime presence, narrowing and arity remain independent facts.
+    pub fn with_strict_nil(mut self, strict: bool) -> Self {
+        self.strict_nil = strict;
+        self
     }
 
     /// Runs a complete check with one worker, arena, program, and checker task.
@@ -1262,6 +1277,7 @@ impl Engine {
                 crate::CHECKER_STACK_BUDGET,
             );
             checker.enable_native_arrays();
+            checker.set_native_strict_nil(self.strict_nil);
             work(&mut SessionQueries {
                 checker: &mut checker,
                 handles,
@@ -1290,6 +1306,7 @@ impl Engine {
             checker.set_native_globals_provider(&adapter);
             checker.set_native_project_provider(&adapter);
             checker.enable_native_arrays();
+            checker.set_native_strict_nil(self.strict_nil);
             work(
                 &provider,
                 &mut SessionQueries {
@@ -2129,6 +2146,11 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let source = import_type(self.checker, self.handles, source);
         let target = import_type(self.checker, self.handles, target);
         self.checker.is_assignable(source, target)
+    }
+
+    fn contains_nil(&mut self, ty: &Type) -> bool {
+        let ty = import_type(self.checker, self.handles, ty);
+        self.checker.native_contains_nil(ty)
     }
 
     fn compare(&mut self, source: &Type, target: &Type) -> Relation {
@@ -3085,6 +3107,9 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     fn contains_type_parameter(&self, key: NativeTypeParamId) -> bool {
         self.provider
             .contains_type_parameter(source_parameter_key(key))
+    }
+    fn type_parameter_is_result_pack(&self, key: NativeTypeParamId) -> bool {
+        self.provider.type_parameter_is_result_pack(source_parameter_key(key))
     }
     fn type_parameter_name(
         &self,

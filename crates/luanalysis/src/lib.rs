@@ -21,6 +21,7 @@ pub mod formatting;
 pub mod cli;
 pub mod incremental;
 mod json;
+mod language_version;
 pub mod language_service;
 pub mod lsp;
 mod file_operations;
@@ -71,12 +72,21 @@ pub enum OverloadMode {
 }
 
 /// Source declaration policy independent of overload visibility and type relations.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CheckOptions {
     pub overload_mode: OverloadMode,
     /// Require written or contextual parameter types, including runtime varargs.
     /// Ordinary Luanalysis analysis permits missing contracts as in v1.
     pub no_implicit_any: bool,
+    /// Require nil to appear in assignment contracts. False selects v1's
+    /// permissive nil assignments without erasing physical runtime nil types.
+    pub strict_nil: bool,
+}
+
+impl Default for CheckOptions {
+    fn default() -> Self {
+        Self { overload_mode: OverloadMode::default(), no_implicit_any: false, strict_nil: true }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -364,7 +374,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
         };
     }
     let bound = bind::bind(&file);
-    Engine::new().with_native_provider(
+    Engine::new().with_strict_nil(options.strict_nil).with_native_provider(
         move || {
             let mut registry = NativeRegistry::new(file, bound);
             registry.set_overload_mode(options.overload_mode);

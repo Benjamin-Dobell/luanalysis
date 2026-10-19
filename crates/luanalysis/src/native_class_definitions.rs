@@ -152,9 +152,10 @@ impl NativeRegistry {
         {
             return Ok(None);
         }
-        if !source.syntax.generics.is_empty() {
-            return Err("generic runtime class templates are not implemented");
-        }
+        // Generic definitions use the declared head's own/outer identity
+        // mapper. The checked definition transaction validates supplied fields
+        // against those rigid parameters; native instantiation maps both the
+        // class reference and its partial value view at each actual use.
         if attachment.has_explicit_type_annotation {
             return Err(
                 "combined class definition and explicit @type ownership is not implemented",

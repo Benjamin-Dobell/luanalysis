@@ -219,6 +219,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     diagnostics: Vec::new(),
                     depth: 0,
                     comma_ends_type: 0,
+                    function_parameter_comma_depth: None,
                 };
                 let annotation_span = Span::new(tag_offset, types_offset + types.len());
                 let mut group = FunctionAnnotations::default();
@@ -725,6 +726,9 @@ struct TypeParser {
     // A comma outside a return pack delimits its surrounding record field or
     // function parameter. Parenthesized return packs remove that ambiguity.
     comma_ends_type: usize,
+    // At this depth, a nested callback may retain v1's bare result list.
+    // Nested records, generic arguments and constraints still own their commas.
+    function_parameter_comma_depth: Option<usize>,
 }
 
 struct ParsedReturnPack {
@@ -1176,7 +1180,7 @@ impl TypeParser {
         // callback parameter or generic argument still owns its comma.
         let ty = self.union();
         let mut span = parameter.span.join(ty.span);
-        let kind = if self.symbol("...") || (self.comma_ends_type == 0 && self.symbol(",")) {
+        let kind = if self.symbol("...") || self.return_comma() {
             self.error("a type predicate must be the sole function return type".to_owned());
             if self.take("...").is_some() {
                 span = span.join(self.tokens[self.pos - 1].span);
@@ -1193,6 +1197,27 @@ impl TypeParser {
         self.depth -= 1;
         (vec![TypeExpr { kind, span }], None)
     }
+    fn return_comma(&self) -> bool {
+        if !self.symbol(",") {
+            return false;
+        }
+        if self.comma_ends_type == 0 {
+            return true;
+        }
+        if self.function_parameter_comma_depth != Some(self.comma_ends_type) {
+            return false;
+        }
+        // v1 gives a callback's trailing bare types to its result list, as in
+        // fun(callback: fun(): A, B). An explicitly named next parameter keeps
+        // the surrounding signature's comma; parenthesize a scalar callback
+        // when an untyped outer parameter would otherwise be ambiguous.
+        !self.symbol_at(self.pos + 1, ")")
+            && !self.symbol_at(self.pos + 1, "...")
+            && !self.word_at(self.pos + 1, "vararg")
+            && !self.symbol_at(self.pos + 2, ":")
+            && !(self.symbol_at(self.pos + 2, "?")
+                && self.symbol_at(self.pos + 3, ":"))
+    }
     fn return_pack(&mut self) -> (ParsedReturnPack, Option<ParsedReturnPack>) {
         let first = match self.return_unit() {
             ReturnUnit::Pack(pack) => return (pack, None),
@@ -1202,8 +1227,9 @@ impl TypeParser {
         let (first, mut pending) = self.return_scalar_union(first);
         let mut types = vec![first];
         let mut bare_tail = None;
-        if pending.is_none() && self.comma_ends_type == 0 {
-            while self.take(",").is_some() {
+        if pending.is_none() {
+            while self.return_comma() {
+                self.pos += 1;
                 // `A, ...` (LuaLS): any number of further values of any type.
                 if self.symbol("...") {
                     let ReturnUnit::Pack(mut pack) = self.bare_variadic_return() else { unreachable!() };
@@ -1319,16 +1345,19 @@ impl TypeParser {
         }
         let start = self.take("(").unwrap();
         let surrounding_comma_mode = self.comma_ends_type;
+        let surrounding_parameter_depth = self.function_parameter_comma_depth;
         // Parse the contents before deciding whether parentheses enclose a
         // scalar type or a result pack. Commas in a callback's own return list
         // must remain owned by that callback, even at this group's depth.
         self.comma_ends_type = 0;
+        self.function_parameter_comma_depth = None;
         self.depth += 1;
         let mut types = self.result_list();
         let ellipsis_span = self.take("...");
         let end = self.expect(")");
         self.depth -= 1;
         self.comma_ends_type = surrounding_comma_mode;
+        self.function_parameter_comma_depth = surrounding_parameter_depth;
         let span = start.join(end);
         if types.len() == 1 && ellipsis_span.is_none() {
             let ty = TypeExpr {
@@ -1464,9 +1493,12 @@ impl TypeParser {
                 // generic argument comma cannot split a callback's returns
                 // inside this original parenthesized type.
                 let surrounding_comma_mode = self.comma_ends_type;
+                let surrounding_parameter_depth = self.function_parameter_comma_depth;
                 self.comma_ends_type = 0;
+                self.function_parameter_comma_depth = None;
                 let inner = self.union();
                 self.comma_ends_type = surrounding_comma_mode;
+                self.function_parameter_comma_depth = surrounding_parameter_depth;
                 let end = self.expect(")");
                 TypeExpr {
                     kind: TypeExprKind::Parenthesized(Box::new(inner)),
@@ -1715,7 +1747,10 @@ impl TypeParser {
                 let optional = self.take("?").is_some();
                 let ty = if self.take(":").is_some() {
                     self.comma_ends_type += 1;
+                    let surrounding_parameter_depth = self.function_parameter_comma_depth;
+                    self.function_parameter_comma_depth = Some(self.comma_ends_type);
                     let ty = self.union();
+                    self.function_parameter_comma_depth = surrounding_parameter_depth;
                     self.comma_ends_type -= 1;
                     Some(ty)
                 } else {
@@ -1897,7 +1932,7 @@ fn alias_continuation(lines: &[&str], mut offset: usize, alias: Span, diagnostic
             token.span.end += start;
             token
         }).collect();
-        let mut parser = TypeParser { tokens, pos: 0, diagnostics: Vec::new(), depth: 0, comma_ends_type: 0 };
+        let mut parser = TypeParser { tokens, pos: 0, diagnostics: Vec::new(), depth: 0, comma_ends_type: 0, function_parameter_comma_depth: None };
         members.push(parser.union());
         diagnostics.extend(parser.diagnostics);
         offset += line.len();

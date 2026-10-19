@@ -33,6 +33,28 @@ impl Checker<'_> {
             .return_annotation(statement)
             .map(|annotation| annotation.span)
     }
+    pub(super) fn return_pack_error_origin<E: std::borrow::Borrow<Expr>>(
+        &mut self,
+        values: &[E],
+        statement: Span,
+        actual: &ValuePack,
+        expected: &ValuePack,
+    ) -> Span {
+        let Some(last) = values.last() else { return statement };
+        // Compare complete prefixes rather than independent slot unions: the
+        // first failing prefix also identifies a mismatch between correlated
+        // alternatives. Only the last expression can supply further results.
+        for (index, value) in values.iter().enumerate().take(values.len() - 1) {
+            let (Ok(actual), Ok(expected)) = (
+                self.engine.adjust_pack(actual, index + 1),
+                self.engine.adjust_pack(expected, index + 1),
+            ) else { break };
+            if !self.engine.pack_assignable(&actual, &expected) {
+                return value.borrow().span;
+            }
+        }
+        last.borrow().span
+    }
     pub(super) fn return_expression_pack<E: std::borrow::Borrow<Expr>>(
         &mut self,
         values: &[E],
@@ -47,9 +69,10 @@ impl Checker<'_> {
         let allowed = self.engine.pack_with_implicit_empty(&declared);
         let actual = self.expression_list_pack(values, Some(&allowed));
         if !self.engine.pack_assignable(&actual, &allowed) {
+            let origin = self.return_pack_error_origin(values, statement, &actual, &allowed);
             self.error(
                 "TS2322",
-                values.first().map_or(statement, |value| value.borrow().span),
+                origin,
                 "Lua result pack is not assignable to the written return-list type.",
             );
         }

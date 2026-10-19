@@ -2560,6 +2560,7 @@ impl<'p, 's> Checker<'p, 's> {
     fn clone_inference_context(n: &Inference, no_default: bool) -> Inference {
         let mut clone = Inference::for_params(&n.params, n.sig);
         clone.candidates.clone_from(&n.candidates);
+        clone.native_result_packs.clone_from(&n.native_result_packs);
         clone.any_default = n.any_default;
         clone.no_default = n.no_default || no_default;
         clone
@@ -2576,6 +2577,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let mut part = Inference::for_params(&params, n.sig);
         part.candidates = inferences.map(|(_, c)| c.clone()).collect();
+        part.native_result_packs.clone_from(&n.native_result_packs);
         part.any_default = n.any_default;
         part.no_default = n.no_default;
         Some(Box::new(part))

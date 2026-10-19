@@ -617,6 +617,41 @@ fn documents_and_the_workspace_list_their_symbols() {
 }
 
 #[test]
+fn completion_edits_preserve_string_quotes_close_attributes_and_insert_metadata_text() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    fs::write(&main, "").unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, "");
+    server.diagnostics(&main, |_| true);
+
+    server.change(&main, 2, "local value <");
+    let response = server.request(2, "textDocument/completion", &main, 0, 13);
+    assert!(response.contains(r#""label":"const","kind":14,"textEdit":{"range":{"start":{"line":0,"character":13},"end":{"line":0,"character":13}},"newText":"const>"}"#), "{response}");
+    assert!(response.contains(r#""label":"close""#), "{response}");
+    server.change(&main, 3, "local value <const> = 1\nreturn value\n");
+    server.diagnostics(&main, |message| message.contains(r#""diagnostics":[]"#));
+
+    let prefix = "---@param value string\nlocal function take(value) return value end\ntake(\"a'b\\\\c\")\n";
+    server.change(&main, 4, &format!("{prefix}take('hi')\n"));
+    let response = server.request(3, "textDocument/completion", &main, 3, 7);
+    assert!(response.contains(r#""label":"a'b\\c","kind":12,"textEdit":{"range":{"start":{"line":3,"character":6},"end":{"line":3,"character":8}},"newText":"a\\'b\\\\c"}"#), "{response}");
+    server.change(&main, 5, &format!("{prefix}take('a\\'b\\\\c')\n"));
+    server.diagnostics(&main, |message| message.contains(r#""diagnostics":[]"#));
+
+    let prefix = "---@param callback (fun(event:string):string) | `function(event) return event end`\nlocal function listen(callback) return callback('event') end\n";
+    server.change(&main, 6, &format!("{prefix}listen()\n"));
+    let response = server.request(4, "textDocument/completion", &main, 2, 7);
+    assert!(response.contains(r#""label":"function(event) return event end","kind":15,"textEdit":{"range":{"start":{"line":2,"character":7},"end":{"line":2,"character":7}},"newText":"function(event) return event end"}"#), "{response}");
+    server.change(&main, 7, &format!("{prefix}listen(function(event) return event end)\n"));
+    server.diagnostics(&main, |message| message.contains(r#""diagnostics":[]"#));
+
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn requires_link_and_documents_fold_and_select() {
     let root = fixture();
     fs::write(root.join("shapes.lua"), "return {}\n").unwrap();
@@ -794,6 +829,24 @@ fn settings_change_what_is_checked() {
     let published = server.diagnostics(&main, |message| message.contains("TS2304"));
     assert!(published.contains("Cannot find name 'unpack'"), "{published}");
     server.finish();
+}
+
+#[test]
+fn strict_nil_settings_recheck_unchanged_open_buffers() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "---@type number\nlocal value = nil\nreturn value\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&[]);
+    server.initialize(&root);
+    server.open(&main, source);
+    server.diagnostics(&main, |message| message.contains("TS2322"));
+    server.send(r#"{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"luanalysis":{"strictNil":false}}}}"#);
+    server.diagnostics(&main, |message| message.contains(r#""diagnostics":[]"#));
+    server.send(r#"{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"luanalysis":{"strictNil":true}}}}"#);
+    server.diagnostics(&main, |message| message.contains("TS2322"));
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

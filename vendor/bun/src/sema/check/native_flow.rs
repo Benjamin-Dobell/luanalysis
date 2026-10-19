@@ -1497,7 +1497,7 @@ impl<'s, 'p> Checker<'s, 'p> {
                 // what relates to it: nil is not a possible `R`, as TypeScript does not compare
                 // undefined with an unconstrained type parameter.
                 let possible = if checker.could_contain_type_variables(part) || checker.could_contain_type_variables(projected) {
-                    checker.is_assignable(part, projected) || checker.is_assignable(projected, part)
+                    checker.native_is_assignable_with_strict_nil(part, projected) || checker.native_is_assignable_with_strict_nil(projected, part)
                 } else { checker.are_comparable(part, projected) };
                 if possible { part } else { TypeId::NEVER }
             })

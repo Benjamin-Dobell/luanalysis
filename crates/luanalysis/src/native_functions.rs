@@ -553,6 +553,7 @@ impl NativeRegistry {
         inputs.extend(self.methods.original_members());
         if self.source_role() == luanalysis_project::SourceRole::Implementation {
             inputs.extend(self.methods.original_assignment_members(&self.expressions));
+            inputs.extend(self.original_external_method_inputs());
         }
         self.members = super::native_members::NativeMembers::new(self.snapshot, &self.named, inputs, self.globals.member_namespace_end(self.named.next_member_index()));
         self.rebuild_documentation_members();
@@ -729,7 +730,9 @@ impl NativeRegistry {
         // Inferring it again would make recursive calls depend on callback bodies
         // that the contract was meant to separate. check_all_bodies independently
         // validates the implementation, including its return expressions.
-        if queries.return_pack_has_fixed_cardinality(&declared) {
+        if queries.return_pack_has_fixed_cardinality(&declared)
+            || matches!(queries.inspect_pack_view(&declared), luanalysis_engine::PackInspection::Symbolic(_))
+        {
             return Some(declared);
         }
         let actual = self.inferred_return_pack_with_context(key, queries, contextual, captured);
@@ -859,6 +862,12 @@ impl NativeRegistry {
         self.key(index)
     }
     pub(super) fn named_metadata(&self) -> &NativeNamed { &self.named }
+    pub(super) fn project_result_pack_alias_metadata(&self) -> Option<(
+        &HashMap<luanalysis_engine::NativeTypeDeclarationKey, crate::native_signatures::ResultPackAliasRecipe>,
+        &std::cell::OnceCell<HashMap<luanalysis_engine::NativeTypeDeclarationKey, crate::native_signatures::ResultPackSourceSummary>>,
+    )> {
+        self.project_names.as_ref().map(|names| (&names.result_pack_aliases, &names.result_pack_alias_summaries))
+    }
     pub(crate) fn documentation_function(&self,id:luanalysis_syntax::DocFunctionDeclarationId)->Option<&luanalysis_syntax::DocFunctionDeclaration> { self.file.function_declarations.iter().find(|source|source.id==id) }
 
     fn key(&self, index: u32) -> NativeFunctionKey {
@@ -1243,11 +1252,19 @@ impl NativeRegistry {
             .insert(binding, captured);
     }
 
-    /// An automatic local is declared nil, unless a nested function assigns it. Its declaring
-    /// function cannot see that write, so a read there that no assignment of its own reaches
-    /// cannot be determined, and is `any` as in TypeScript, reported under `--no-implicit-any`.
+    /// A missing initializer preserves a written nonnullable declaration contract. This is
+    /// distinct from an explicit nil expression, which remains a physical store in either nil
+    /// policy. Nullable declarations and automatic locals start nil. A nested write to an
+    /// automatic local remains indeterminate in its declaring function.
     fn automatic_declaration_value(&self, binding: BindingId, queries: &mut dyn TypeQueries) -> Type {
-        if self.binding_is_automatic(binding) && self.bound.written_in_nested_function(binding) {
+        let automatic = self.binding_is_automatic(binding);
+        if (!automatic || self.has_shape_attachment(binding))
+            && let Some(declared) = self.resolve_binding(binding, queries)
+            && !queries.contains_nil(&declared.constraint)
+        {
+            return declared.constraint;
+        }
+        if automatic && self.bound.written_in_nested_function(binding) {
             queries.auto_variable_constraint()
         } else {
             Type::Nil
@@ -3205,6 +3222,10 @@ impl NativeTypeProvider for NativeRegistry {
 
     fn contains_type_parameter(&self, key: NativeTypeParameterKey) -> bool {
         self.types.contains(key)
+    }
+
+    fn type_parameter_is_result_pack(&self, key: NativeTypeParameterKey) -> bool {
+        self.source_type_parameter_is_result_pack(key)
     }
 
     fn type_parameter_name(&self, key: NativeTypeParameterKey) -> String {

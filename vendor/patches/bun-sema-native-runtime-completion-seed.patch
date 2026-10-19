@@ -1,0 +1,34 @@
+diff --git a/src/sema/check/native_runtime_tables.rs b/src/sema/check/native_runtime_tables.rs
+--- a/src/sema/check/native_runtime_tables.rs
++++ b/src/sema/check/native_runtime_tables.rs
+@@ -54,7 +54,7 @@
+         Ok(self.intern(TypeData::NativeRuntimeTable(NativeRuntimeTableRef { schema, view, bounds })))
+     }
+ 
+-    fn native_runtime_table_seed(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {
++    pub(in crate::check) fn native_runtime_table_seed(&mut self, reference: NativeObjectReference) -> Result<TypeId, NativeNamedTypeError> {
+         let declaration = reference.declaration;
+         let object = self.intern(TypeData::NativeObject(reference));
+         let native_query = NativeTypeDeclarationQuery::RuntimeTableSeed(object);
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -796,7 +796,17 @@
+             return;
+         }
+         match self.data(ty) {
+-            TypeData::NativeObject(reference) => names.extend(self.native_object_member_names(*reference)),
++            TypeData::NativeObject(reference) => {
++                let reference = *reference;
++                names.extend(self.native_object_member_names(reference));
++                // A published allocation schema retains its constructor keys as
++                // well as later stores. The seed belongs to this exact original
++                // runtime declaration; resolving the full schema here would
++                // unnecessarily demand every prospective stored value.
++                if self.native_runtime_table_schema(ty).is_some()
++                    && let Ok(seed) = self.native_runtime_table_seed(reference)
++                { self.native_completion_names(seed, names, depth + 1); }
++            }
+             TypeData::NativeTable(data) => {
+                 if let Some(environment) = data.environment_origin {
+                     names.extend(self.native_global_environment_properties(environment).into_iter().map(|(name, _)| name));

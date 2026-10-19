@@ -324,6 +324,77 @@ impl<'p, 's> Checker<'p, 's> {
         Some(alternatives)
     }
 
+    /// The domain of values physically present in a result list. Absence is
+    /// represented by the pack's cardinality, never by inventing a nil element.
+    pub(super) fn native_pack_element_domain(&mut self, pack: NativeResultPack) -> TypeId {
+        if self.is_any(pack.ty) { return pack.ty; }
+        let Some(rows) = self.native_pack_alternatives(pack) else {
+            return self.intern(TypeData::NativePackElement(pack.ty));
+        };
+        let mut values = Vec::new();
+        for row in rows {
+            values.extend(row.fixed.into_iter().map(|slot| slot.ty));
+            values.extend(row.tail);
+        }
+        self.union(&values)
+    }
+
+    pub(super) fn native_pack_parameter_first_is_optional(&mut self, parameter: TypeId) -> bool {
+        let scalar = self.base_constraint(parameter);
+        self.native_contains_nil(scalar)
+            || self.allows_implicit_return_without_explicit_return(scalar)
+    }
+
+    /// Physical arity is independent of permissive nil value assignments. An
+    /// unreachable sequence vacuously meets the first-result requirement.
+    pub(super) fn native_pack_has_required_first(&mut self, pack: NativeResultPack) -> bool {
+        if pack.ty.is_never() { return true; }
+        let bound = self.native_pack_covariant_bound(pack.ty);
+        self.native_pack_count_bounds(NativeResultPack { ty: bound }).0 != 0
+    }
+
+    /// A sound covariant envelope for an opaque physical sequence. Keep this
+    /// separate from the sequence used by inference and published call results:
+    /// the envelope forgets later-slot correlation and is only a relation proof.
+    fn native_pack_covariant_bound(&mut self, ty: TypeId) -> TypeId {
+        match self.data(ty) {
+            TypeData::NativePackParameter(parameter) => {
+                let parameter = *parameter;
+                let optional = self.native_pack_parameter_first_is_optional(parameter);
+                let element = self.native_pack_element_domain(NativeResultPack { ty });
+                let mut rows = vec![NativePackAlternative {
+                    fixed: vec![NativePackSlot { ty: parameter, optional: false }],
+                    tail: Some(element),
+                }];
+                if optional {
+                    // Zero results have no physical nil element. An optional
+                    // tuple slot would introduce a missing-value marker when
+                    // this sequence starts inside a homogeneous target tail.
+                    rows.push(NativePackAlternative { fixed: Vec::new(), tail: None });
+                }
+                self.native_result_pack(&rows).ty
+            }
+            TypeData::Tuple { flags, readonly, .. } => {
+                let flags = flags.to_vec();
+                let readonly = *readonly;
+                let original = self.type_arguments(ty).to_vec();
+                let mut elems = original.clone();
+                for (element, flag) in elems.iter_mut().zip(&flags) {
+                    if flag.contains(ElemFlags::VARIADIC) {
+                        *element = self.native_pack_covariant_bound(*element);
+                    }
+                }
+                if elems == original { ty } else { self.normalized_tuple(&elems, &flags, readonly) }
+            }
+            TypeData::Union(parts) => {
+                let parts = parts.to_vec();
+                let bounded: Vec<_> = parts.iter().map(|&part| self.native_pack_covariant_bound(part)).collect();
+                if bounded == parts { ty } else { self.union(&bounded) }
+            }
+            _ => ty,
+        }
+    }
+
     /// Lua scalar adjustment: an absent slot is nil, including the first slot of zero results.
     pub fn native_pack_slot(&mut self, pack: NativeResultPack, index: usize) -> TypeId {
         if pack.ty.is_never() || self.is_any(pack.ty) {
@@ -332,7 +403,12 @@ impl<'p, 's> Checker<'p, 's> {
         let parts = self.parts(pack.ty).to_vec();
         let mut slots = Vec::with_capacity(parts.len());
         for part in parts {
-            let slot = if let Some(element) = self.array_element(part) {
+            let slot = if let TypeData::NativePackParameter(parameter) = *self.data(part) {
+                if index == 0 { parameter } else {
+                    let index = self.number_literal(index as f64, false);
+                    self.intern(TypeData::IndexedAccess { obj: part, index, undefined: true })
+                }
+            } else if let Some(element) = self.array_element(part) {
                 self.union(&[element, TypeId::UNDEFINED])
             } else if let TypeData::Tuple { flags, .. } = self.data(part) {
                 let elems = self.type_arguments(part);
@@ -343,8 +419,15 @@ impl<'p, 's> Checker<'p, 's> {
                         self.union(&[ty, TypeId::UNDEFINED])
                     } else { ty }
                 } else if fixed < flags.len() {
-                    let ty = self.rest_element_type(part, index);
-                    self.union(&[ty, TypeId::UNDEFINED])
+                    let rest = elems[fixed];
+                    if flags[fixed].contains(ElemFlags::VARIADIC)
+                        && matches!(self.data(rest), TypeData::NativePackParameter(_))
+                    {
+                        self.native_pack_slot(NativeResultPack { ty: rest }, index - fixed)
+                    } else {
+                        let ty = self.rest_element_type(part, index);
+                        self.union(&[ty, TypeId::UNDEFINED])
+                    }
                 } else { TypeId::UNDEFINED }
             } else { TypeId::ERROR };
             slots.push(slot);
@@ -384,6 +467,15 @@ impl<'p, 's> Checker<'p, 's> {
                 return Ok(self.native_result_pack(&[NativePackAlternative {
                     fixed: vec![NativePackSlot { ty: pack.ty, optional: false }; count], tail: None,
                 }]));
+            }
+            if self.any_type_in(pack.ty, false, |ty| matches!(self.data(ty), TypeData::NativePackParameter(_))) {
+                if count >= 10_000 {
+                    return Err(NativePackAdjustmentError::TooComplex { count, alternatives: 1 });
+                }
+                let fixed = (0..count).map(|index| NativePackSlot {
+                    ty: self.native_pack_slot(pack, index), optional: false,
+                }).collect();
+                return Ok(self.native_result_pack(&[NativePackAlternative { fixed, tail: None }]));
             }
             return Err(NativePackAdjustmentError::Unresolved);
         };
@@ -475,7 +567,34 @@ impl<'p, 's> Checker<'p, 's> {
             }
             rows.push(alternative);
         }
-        self.native_result_pack(&rows)
+        let mut expanded = Vec::with_capacity(rows.len());
+        for mut row in rows {
+            if let Some(parameter) = row.tail
+                && self.native_type_parameter_is_result_pack(parameter)
+            {
+                // A producer's first scalar retains T. Repeating its result
+                // sequence can place any of that sequence's physical values in
+                // later slots, while every repeated slot may be absent.
+                let facet = self.intern(TypeData::NativePackParameter(parameter));
+                let element = self.native_pack_element_domain(NativeResultPack { ty: facet });
+                let domain = self.union(&[parameter, element]);
+                row.fixed.push(NativePackSlot { ty: parameter, optional: true });
+                row.tail = Some(domain);
+                expanded.push(self.native_result_pack(&[row]));
+            } else if row.tail.is_none()
+                && let Some(last) = row.fixed.last()
+                && !last.optional
+                && self.native_type_parameter_is_result_pack(last.ty)
+            {
+                let parameter = row.fixed.pop().unwrap().ty;
+                let prefix: Vec<_> = row.fixed.iter().map(|slot| slot.ty).collect();
+                let tail = NativeResultPack { ty: self.intern(TypeData::NativePackParameter(parameter)) };
+                expanded.push(self.native_concat_pack(&prefix, tail));
+            } else {
+                expanded.push(self.native_result_pack(&[row]));
+            }
+        }
+        self.native_join_packs(&expanded)
     }
 
     /// A single required physical row cannot be refined by inspecting an implementation.
@@ -604,7 +723,12 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// Written return contracts keep required lengths and whole alternative correlations.
     pub fn native_pack_assignable(&mut self, actual: NativeResultPack, declared: NativeResultPack) -> bool {
-        self.is_assignable(actual.ty, declared.ty)
+        if self.is_assignable(actual.ty, declared.ty) { return true; }
+        // A variadic opaque source can straddle an optional first slot and a
+        // homogeneous tail. Prove that its covariant envelope fits, without
+        // changing the original source or discarding any target prefix/length.
+        let bounded = self.native_pack_covariant_bound(actual.ty);
+        bounded != actual.ty && self.is_assignable(bounded, declared.ty)
     }
 
     /// Callable targets with no observed results have TypeScript's void-return

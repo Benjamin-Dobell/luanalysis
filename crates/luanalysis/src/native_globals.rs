@@ -4,7 +4,7 @@ use super::NativeRegistry;
 use crate::bind::{BindingId, BoundFile, OccurrenceKind};
 use crate::{Checker, Diagnostic};
 use luanalysis_engine::{
-    GlobalQuery, GlobalQueryError, GlobalSourceRole, GlobalValueKind, NativeEnvironmentKey,
+    GlobalQuery, GlobalQueryError, GlobalSourceRole, GlobalValueKind, LuaKey, NativeEnvironmentKey,
     NativeExpressionKey, NativeFunctionKey, NativeGlobalBindingKey, NativeTypeDeclarationKey,
     NativeTypeProvider, NativeValueDeclarationKey, NativeSignatureKey, PackFunctionType, Type, TypeQueries,
     ValueDeclarationHeader, ValuePack,
@@ -275,6 +275,11 @@ pub(crate) struct ProjectGlobalIndex {
     pub environment: NativeEnvironmentKey,
     names: BTreeMap<String, NativeGlobalBindingKey>,
     declarations: Vec<Vec<NativeValueDeclarationKey>>,
+    /// Original class heads attached to declaration-library global roots.
+    /// These are finite augmentation candidates, never proof of the reached
+    /// receiver's class or environment identity.
+    named_owners: Vec<Vec<NativeTypeDeclarationKey>>,
+    declared_members: Vec<Vec<LuaKey>>,
     declaration_owners: HashSet<NativeValueDeclarationKey>,
     /// Standard names some implementation source may replace (`bind::STANDARD_NAMES`
     /// bits). Declaration files only describe the initial library.
@@ -286,6 +291,8 @@ pub(crate) struct ProjectGlobalIndex {
 impl ProjectGlobalIndex {
     pub(super) fn new(environment: NativeEnvironmentKey, sources: &[&NativeRegistry]) -> Self {
         let mut by_name = BTreeMap::<String, Vec<NativeValueDeclarationKey>>::new();
+        let mut named_by_name = BTreeMap::<String, Vec<NativeTypeDeclarationKey>>::new();
+        let mut members_by_name = BTreeMap::<String, Vec<LuaKey>>::new();
         let mut replaced_standard_names = 0;
         let mut loader_mutated = false;
         let mut declaration_owners = HashSet::default();
@@ -315,6 +322,32 @@ impl ProjectGlobalIndex {
                 if source.source_role() == SourceRole::Declaration || declaration.documentation_function.is_some() {
                     declaration_owners.insert(declaration.key);
                 }
+                if source.source_role() == SourceRole::Declaration
+                    && let Some(owner) = source.global_attached_type(declaration)
+                    && let Some(named) = source.named.declarations().iter().find(|named| {
+                        named.key.snapshot == owner.snapshot && named.key.index == owner.index
+                            && matches!(named.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record {
+                                flavor: luanalysis_syntax::NamedRecordKind::Class, ..
+                            })
+                    })
+                {
+                    named_by_name.entry(declaration.name.text.clone()).or_default().push(owner);
+                    let members = members_by_name.entry(declaration.name.text.clone()).or_default();
+                    for &member in &named.members {
+                        let field = &source.named.member(member).expect("original declared field").field;
+                        let key = match &field.key {
+                            luanalysis_syntax::TypeFieldKey::Named(name) => Some(LuaKey::String(name.text.as_bytes().to_vec())),
+                            luanalysis_syntax::TypeFieldKey::Indexed(ty) => crate::native_tables::literal_type_key(ty),
+                            luanalysis_syntax::TypeFieldKey::Sequence { index } => Some(LuaKey::Integer((*index).try_into().expect("source field index fits i64"))),
+                        };
+                        if let Some(key) = key { members.push(key); }
+                    }
+                    members.extend(source.globals.declarations.iter().filter_map(|member| {
+                        let target = member.namespace.as_ref()?;
+                        (target.root.text == declaration.name.text && target.path.len() == 1)
+                            .then(|| LuaKey::String(member.name.text.as_bytes().to_vec()))
+                    }));
+                }
                 by_name
                     .entry(declaration.name.text.clone())
                     .or_default()
@@ -323,8 +356,14 @@ impl ProjectGlobalIndex {
         }
         let mut names = BTreeMap::new();
         let mut declarations = Vec::new();
+        let mut named_owners = Vec::new();
+        let mut declared_members = Vec::new();
         for (name, mut owners) in by_name {
             owners.sort_by_key(|key| (key.snapshot, key.index));
+            let mut named = named_by_name.remove(&name).unwrap_or_default();
+            named.sort_by_key(|key| (key.snapshot, key.index));
+            named.dedup();
+            declared_members.push(members_by_name.remove(&name).unwrap_or_default());
             names.insert(
                 name,
                 NativeGlobalBindingKey {
@@ -333,11 +372,14 @@ impl ProjectGlobalIndex {
                 },
             );
             declarations.push(owners);
+            named_owners.push(named);
         }
         Self {
             environment,
             names,
             declarations,
+            named_owners,
+            declared_members,
             declaration_owners,
             replaced_standard_names,
             loader_mutated,
@@ -346,6 +388,13 @@ impl ProjectGlobalIndex {
 
     pub(super) fn binding(&self, name: &str) -> Option<NativeGlobalBindingKey> {
         self.names.get(name).copied()
+    }
+    pub(super) fn named_owners(&self, binding: NativeGlobalBindingKey) -> &[NativeTypeDeclarationKey] {
+        if !self.contains(binding) { return &[]; }
+        &self.named_owners[binding.index as usize]
+    }
+    pub(super) fn declares_member(&self, binding: NativeGlobalBindingKey, member: &LuaKey) -> bool {
+        self.contains(binding) && self.declared_members[binding.index as usize].contains(member)
     }
     pub(super) fn replaced_standard_names(&self) -> u8 {
         self.replaced_standard_names
@@ -403,6 +452,14 @@ impl NativeRegistry {
     }
     pub(super) fn global_binding(&self, name: &str) -> Option<NativeGlobalBindingKey> {
         self.project_globals.as_ref()?.binding(name)
+    }
+    /// The original assignments that can own an implementation global table.
+    /// This exposes source identities without demanding its inferred type.
+    pub(crate) fn original_global_initializers(&self) -> impl Iterator<Item = (&str, Span, NativeExpressionKey)> {
+        self.globals.declarations.iter().filter_map(|source| {
+            if source.namespace.is_some() { return None; }
+            Some((source.name.text.as_str(), source.statement, source.initializer?))
+        })
     }
     pub(super) fn contains_global_declaration(&self, key: NativeValueDeclarationKey) -> bool {
         self.globals.declaration(key).is_some()
@@ -596,7 +653,11 @@ impl NativeRegistry {
         );
         let ty = checker.expression(&self.expressions.get(expression).expression);
         self.merge_report(checker.report);
-        ty
+        // This query publishes a declaration to other chunks; they have no
+        // continuation through this chunk's actual allocation stores. Publish
+        // its original schema, while checking the initializer and same-chunk
+        // reads still use the allocation carrier's reached value view.
+        queries.runtime_table_schema(&ty).unwrap_or(ty)
     }
     pub(super) fn global_error(&self, key: NativeValueDeclarationKey, error: &GlobalQueryError) {
         let Some(source) = self.globals.declaration(key) else {
@@ -849,7 +910,16 @@ impl Checker<'_> {
                     // This view cannot certify physical aliases or environment identity.
                     return Some(written);
                 }
-                if let Some(reference) = native.flow.environment_member_reference(at.graph, &expression) {
+                // A source allocation's descendants belong to its frozen Lua
+                // address. Keep that full reference so later member stores
+                // update its actual view; the canonical environment-global
+                // reference only tracks replacement of the global itself.
+                let reference = if self.engine.runtime_table_schema(&initial).is_some() {
+                    native.flow.expression_reference(&expression, at.graph)
+                } else {
+                    native.flow.environment_member_reference(at.graph, &expression)
+                };
+                if let Some(reference) = reference {
                     // Unknown is the native reset type for a value capability:
                     // a computed write may replace it even if the declaration's
                     // callable shape remains valid. Ordinary globals keep TS's

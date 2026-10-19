@@ -1,0 +1,442 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+index b444346..5ad33f7 100644
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -2560,6 +2560,7 @@ impl<'p, 's> Checker<'p, 's> {
+     fn clone_inference_context(n: &Inference, no_default: bool) -> Inference {
+         let mut clone = Inference::for_params(&n.params, n.sig);
+         clone.candidates.clone_from(&n.candidates);
++        clone.native_result_packs.clone_from(&n.native_result_packs);
+         clone.any_default = n.any_default;
+         clone.no_default = n.no_default || no_default;
+         clone
+@@ -2576,6 +2577,7 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+         let mut part = Inference::for_params(&params, n.sig);
+         part.candidates = inferences.map(|(_, c)| c.clone()).collect();
++        part.native_result_packs.clone_from(&n.native_result_packs);
+         part.any_default = n.any_default;
+         part.no_default = n.no_default;
+         Some(Box::new(part))
+diff --git a/src/sema/check/decl.rs b/src/sema/check/decl.rs
+index 6342615..194a3ac 100644
+--- a/src/sema/check/decl.rs
++++ b/src/sema/check/decl.rs
+@@ -1777,6 +1777,12 @@ impl<'p, 's> Checker<'p, 's> {
+         self.native_type_parameter_provider_for(declaration).type_parameter_order(declaration)
+     }
+ 
++    pub(super) fn native_type_parameter_is_result_pack(&self, parameter: TypeId) -> bool {
++        self.native_type_parameter_decl(parameter).is_some_and(|(declaration, _)| {
++            self.native_type_parameter_provider_for(declaration).type_parameter_is_result_pack(declaration)
++        })
++    }
++
+     pub(super) fn native_type_parameter_has_constraint(&self, declaration: NativeTypeParamId) -> bool {
+         self.native_type_parameter_provider_for(declaration).has_type_parameter_constraint(declaration)
+     }
+@@ -1896,6 +1902,15 @@ impl<'p, 's> Checker<'p, 's> {
+         if !self.unresolved_renamed_params.is_empty() {
+             self.unresolved_renamed_params.remove(&param);
+         }
++        if let TypeData::NativePackParameter(parameter) = *self.data(param) {
++            // The first scalar does not establish the result-list length. A
++            // producer can return later values of unrelated types, or no values
++            // when its scalar first result is nil.
++            return Some(self.native_result_pack(&[super::native_packs::NativePackAlternative {
++                fixed: vec![super::native_packs::NativePackSlot { ty: parameter, optional: true }],
++                tail: Some(TypeId::UNKNOWN),
++            }]).ty);
++        }
+         if let TypeData::NativeTypeParam { declaration, mapper } = *self.data(param) {
+             if let Some(Some(kept)) = self.p.type_param_constraints.get(&self.task, &param) {
+                 return Some(kept);
+diff --git a/src/sema/check/infer.rs b/src/sema/check/infer.rs
+index 8fb7070..2d00ec5 100644
+--- a/src/sema/check/infer.rs
++++ b/src/sema/check/infer.rs
+@@ -107,6 +107,9 @@ pub(super) struct Inference {
+     /// each alternative's candidates. A Lua call distributes over them, so `fun<T>(a: T[]): T[]`
+     /// given `string[] | number[]` returns `string[] | number[]`.
+     pub(super) distributions: Vec<SmallVec<[SmallVec<[(usize, TypeId); 2]>; 4]>>,
++    /// Whole physical return sequences inferred through the result facet of a
++    /// native parameter. Its ordinary candidate still denotes the first value.
++    pub(super) native_result_packs: Vec<(TypeId, u32, Vec<TypeId>)>,
+ }
+ 
+ impl Inference {
+@@ -146,6 +149,7 @@ impl Inference {
+             inferred_type_params: Vec::new(),
+             intra_expression_inference_sites: Vec::new(),
+             distributions: Vec::new(),
++            native_result_packs: Vec::new(),
+         }
+     }
+ 
+@@ -263,6 +267,29 @@ impl<'p, 's> Checker<'p, 's> {
+         if source == TypeId::UNRESOLVED && n.priority & PRIORITY_RETURN != 0 {
+             return;
+         }
++        if let TypeData::NativePackParameter(parameter) = *self.data(target) {
++            // Keep the scalar and result-list meanings of T independent. A
++            // callback returning (string, number) infers scalar T=string and
++            // sequence T=(string, number), never a scalar tuple value.
++            if n.index_of(parameter).is_some() {
++                let first = self.native_pack_slot(crate::types::NativeResultPack { ty: source }, 0);
++                // Match ordinary scalar inference: provisional callback results
++                // are not candidates, and a weaker contextual row must not
++                // absorb a later argument's precise physical return sequence.
++                if self.is_non_inferrable(first) || first == TypeId::NON_INFERRABLE_ANY { return; }
++                if let Some((_, priority, candidates)) = n.native_result_packs.iter_mut().find(|(key, _, _)| *key == target) {
++                    if n.priority < *priority {
++                        *priority = n.priority;
++                        candidates.clear();
++                    }
++                    if n.priority == *priority && !candidates.contains(&source) { candidates.push(source); }
++                } else {
++                    n.native_result_packs.push((target, n.priority, vec![source]));
++                }
++                self.infer_types(n, first, parameter);
++            }
++            return;
++        }
+         n.calls += 1;
+         if n.calls > 200_000 || self.is_stack_low() {
+             return;
+@@ -2018,7 +2045,12 @@ impl<'p, 's> Checker<'p, 's> {
+         if !self.could_contain_type_variables(t) {
+             return None;
+         }
+-        let s = if packed { self.sig_result_pack(source).ty } else { self.sig_return(source) };
++        let s = if packed {
++            // Callback relations use the producer's written row, including an
++            // open variadic tail. Infer that same row rather than an incidental
++            // body-cardinality refinement which the original contract outgrows.
++            self.sig_declared_result_pack_contract(source).unwrap_or_else(|| self.sig_result_pack(source)).ty
++        } else { self.sig_return(source) };
+         Some(ReturnTypePair { s, t })
+     }
+ 
+@@ -3051,6 +3083,7 @@ impl<'p, 's> Checker<'p, 's> {
+         if pairs.is_empty() {
+             return self.mapper_of_context_not_mentioned_in(ty);
+         }
++        self.native_result_pack_inference_pairs(n, &mut pairs);
+         self.types().mapper(pairs)
+     }
+ 
+@@ -3108,6 +3141,7 @@ impl<'p, 's> Checker<'p, 's> {
+         if pairs.is_empty() {
+             return self.mapper_of_context_not_mentioned_in(ty);
+         }
++        self.native_result_pack_inference_pairs(n, &mut pairs);
+         self.types().mapper(pairs)
+     }
+ 
+@@ -3145,7 +3179,25 @@ impl<'p, 's> Checker<'p, 's> {
+         let types: SmallVec<[TypeId; 4]> = (0..n.params.len())
+             .map(|i| self.get_inferred_type_comparing(n, i, false, compare))
+             .collect();
+-        self.mapper_from(&n.params, &types)
++        let mut pairs: Vec<_> = n.params.iter().copied().zip(types.iter().copied()).collect();
++        self.native_result_pack_inference_pairs(n, &mut pairs);
++        self.types().mapper(pairs)
++    }
++
++    fn native_result_pack_inference_pairs(&mut self, n: &Inference, pairs: &mut Vec<(TypeId, TypeId)>) {
++        for (facet, _, candidates) in &n.native_result_packs {
++            let TypeData::NativePackParameter(parameter) = *self.data(*facet) else { unreachable!("result facet") };
++            let Some(scalar) = pairs.iter().find(|pair| pair.0 == parameter).map(|pair| pair.1) else { continue };
++            let packs: Vec<_> = candidates.iter().copied().filter(|&ty| {
++                let first = self.native_pack_slot(crate::types::NativeResultPack { ty }, 0);
++                self.is_assignable(first, scalar)
++            }).collect();
++            // A contextual result row may have suggested a conflicting first
++            // value before an argument supplied the stronger scalar inference.
++            // Keep compatible physical rows without dropping the producer's
++            // genuine later slots merely because that weaker guess was wrong.
++            if !packs.is_empty() { pairs.push((*facet, self.union(&packs))); }
++        }
+     }
+ 
+     /// Whether `param` occurs in `ty`, as far as can be told without resolving members.
+@@ -3298,6 +3350,7 @@ impl<'p, 's> Checker<'p, 's> {
+                 },
+                 TypeData::Template { types, .. } => left.extend_from_slice(types),
+                 TypeData::NativeArray { element, .. } => left.push(*element),
++                TypeData::NativePackParameter(parameter) => left.push(*parameter),
+                 TypeData::NativeObject(reference) => {
+                     left.extend(values(reference.mapper));
+                     left.extend(reference.self_argument);
+diff --git a/src/sema/check/instantiate.rs b/src/sema/check/instantiate.rs
+index 44826b3..c31b7c4 100644
+--- a/src/sema/check/instantiate.rs
++++ b/src/sema/check/instantiate.rs
+@@ -686,6 +686,17 @@ impl<'p, 's> Checker<'p, 's> {
+             return self.instantiate_deferred_type_reference(ty, mapper, None);
+         }
+         match self.data(ty) {
++            TypeData::NativePackParameter(parameter) => {
++                if let Some(pack) = self.types().map(mapper, ty) { return pack; }
++                let parameter = *parameter;
++                let value = self.instantiate(parameter, mapper);
++                if value == parameter { return ty; }
++                if self.native_type_parameter_decl(value).is_some() {
++                    self.intern(TypeData::NativePackParameter(value))
++                } else {
++                    self.native_scalar_pack(value).ty
++                }
++            }
+             TypeData::NativeRuntimeTable(reference) => {
+                 let reference = *reference;
+                 let schema = NativeObjectReference { mapper: self.compose(reference.schema.mapper, mapper), self_argument: reference.schema.self_argument.map(|ty| self.instantiate(ty, mapper)), ..reference.schema };
+@@ -1007,6 +1018,7 @@ impl<'p, 's> Checker<'p, 's> {
+             let waits = match self.data(elem) {
+                 TypeData::TypeParam(..)
+                 | TypeData::NativeTypeParam { .. }
++                | TypeData::NativePackParameter(_)
+                 | TypeData::ThisParam(_)
+                 | TypeData::Marker(_)
+                 | TypeData::IndexedAccess { .. }
+@@ -1485,6 +1497,21 @@ impl<'p, 's> Checker<'p, 's> {
+                 }
+             }
+         }
++        // A result facet is keyed independently from its scalar parameter. Keep
++        // it when projecting the inference mapper onto an original native head,
++        // including free parameters of nested callback declarations.
++        for (parameter, _) in pairs.clone() {
++            if self.native_type_parameter_decl(parameter).is_none() { continue; }
++            let open = self.types().map(own, parameter).unwrap_or(parameter);
++            let source = self.intern(TypeData::NativePackParameter(open));
++            let Some(pack) = self.types().map(second, source) else { continue };
++            let facet = self.intern(TypeData::NativePackParameter(parameter));
++            if let Some(pair) = pairs.iter_mut().find(|pair| pair.0 == facet) {
++                pair.1 = pack;
++            } else {
++                pairs.push((facet, pack));
++            }
++        }
+         self.types().mapper_of(&pairs)
+     }
+ 
+diff --git a/src/sema/check/native_packs.rs b/src/sema/check/native_packs.rs
+index 01e5643..b867feb 100644
+--- a/src/sema/check/native_packs.rs
++++ b/src/sema/check/native_packs.rs
+@@ -332,7 +332,12 @@ impl<'p, 's> Checker<'p, 's> {
+         let parts = self.parts(pack.ty).to_vec();
+         let mut slots = Vec::with_capacity(parts.len());
+         for part in parts {
+-            let slot = if let Some(element) = self.array_element(part) {
++            let slot = if let TypeData::NativePackParameter(parameter) = *self.data(part) {
++                if index == 0 { parameter } else {
++                    let index = self.number_literal(index as f64, false);
++                    self.intern(TypeData::IndexedAccess { obj: part, index, undefined: true })
++                }
++            } else if let Some(element) = self.array_element(part) {
+                 self.union(&[element, TypeId::UNDEFINED])
+             } else if let TypeData::Tuple { flags, .. } = self.data(part) {
+                 let elems = self.type_arguments(part);
+@@ -343,8 +348,15 @@ impl<'p, 's> Checker<'p, 's> {
+                         self.union(&[ty, TypeId::UNDEFINED])
+                     } else { ty }
+                 } else if fixed < flags.len() {
+-                    let ty = self.rest_element_type(part, index);
+-                    self.union(&[ty, TypeId::UNDEFINED])
++                    let rest = elems[fixed];
++                    if flags[fixed].contains(ElemFlags::VARIADIC)
++                        && matches!(self.data(rest), TypeData::NativePackParameter(_))
++                    {
++                        self.native_pack_slot(NativeResultPack { ty: rest }, index - fixed)
++                    } else {
++                        let ty = self.rest_element_type(part, index);
++                        self.union(&[ty, TypeId::UNDEFINED])
++                    }
+                 } else { TypeId::UNDEFINED }
+             } else { TypeId::ERROR };
+             slots.push(slot);
+@@ -385,6 +397,15 @@ impl<'p, 's> Checker<'p, 's> {
+                     fixed: vec![NativePackSlot { ty: pack.ty, optional: false }; count], tail: None,
+                 }]));
+             }
++            if self.any_type_in(pack.ty, false, |ty| matches!(self.data(ty), TypeData::NativePackParameter(_))) {
++                if count >= 10_000 {
++                    return Err(NativePackAdjustmentError::TooComplex { count, alternatives: 1 });
++                }
++                let fixed = (0..count).map(|index| NativePackSlot {
++                    ty: self.native_pack_slot(pack, index), optional: false,
++                }).collect();
++                return Ok(self.native_result_pack(&[NativePackAlternative { fixed, tail: None }]));
++            }
+             return Err(NativePackAdjustmentError::Unresolved);
+         };
+         let rows = alternatives.iter().try_fold(0usize, |total, alternative| {
+@@ -475,7 +496,22 @@ impl<'p, 's> Checker<'p, 's> {
+             }
+             rows.push(alternative);
+         }
+-        self.native_result_pack(&rows)
++        let mut expanded = Vec::with_capacity(rows.len());
++        for mut row in rows {
++            if row.tail.is_none()
++                && let Some(last) = row.fixed.last()
++                && !last.optional
++                && self.native_type_parameter_is_result_pack(last.ty)
++            {
++                let parameter = row.fixed.pop().unwrap().ty;
++                let prefix: Vec<_> = row.fixed.iter().map(|slot| slot.ty).collect();
++                let tail = NativeResultPack { ty: self.intern(TypeData::NativePackParameter(parameter)) };
++                expanded.push(self.native_concat_pack(&prefix, tail));
++            } else {
++                expanded.push(self.native_result_pack(&[row]));
++            }
++        }
++        self.native_join_packs(&expanded)
+     }
+ 
+     /// A single required physical row cannot be refined by inspecting an implementation.
+diff --git a/src/sema/check/print.rs b/src/sema/check/print.rs
+index 7146b74..e3fd2dd 100644
+--- a/src/sema/check/print.rs
++++ b/src/sema/check/print.rs
+@@ -1959,6 +1959,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
+             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } => {
+                 self.type_parameter_to_node(ty)
+             }
++            TypeData::NativePackParameter(parameter) => self.type_to_node(*parameter),
+             TypeData::Marker(Marker::Restrictive(of)) => self.type_to_node(*of),
+             TypeData::Marker(marker) => Node::simple(self.name_of_marker(*marker)),
+             TypeData::Union(_) => self.union_to_node(ty),
+diff --git a/src/sema/check/shape.rs b/src/sema/check/shape.rs
+index 23181ea..91addde 100644
+--- a/src/sema/check/shape.rs
++++ b/src/sema/check/shape.rs
+@@ -6640,6 +6640,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let may_have_one = match data {
+             TypeData::TypeParam(..)
+             | TypeData::NativeTypeParam { .. }
++            | TypeData::NativePackParameter(_)
+             | TypeData::ThisParam(_)
+             | TypeData::Marker(_)
+             | TypeData::IndexedAccess { .. }
+@@ -6794,7 +6795,7 @@ impl<'p, 's> Checker<'p, 's> {
+         match self.data(t) {
+             // `isThisType`
+             TypeData::ThisParam(_) => self.constraint_from_type_param(t),
+-            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::Marker(_) => {
++            TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::NativePackParameter(_) | TypeData::Marker(_) => {
+                 let constraint = self.constraint_from_type_param(t)?;
+                 self.next_base_constraint(constraint)
+             }
+diff --git a/src/sema/types.rs b/src/sema/types.rs
+index 5ab4d29..c02c76d 100644
+--- a/src/sema/types.rs
++++ b/src/sema/types.rs
+@@ -474,6 +474,9 @@ pub enum TypeData<'s> {
+         declaration: NativeTypeParamId,
+         mapper: MapperId,
+     },
++    /// A Lua generic in final return position has a scalar first value and a
++    /// separate, correlated physical result sequence. This is the sequence facet.
++    NativePackParameter(TypeId),
+     /// The `this` type of a class or an interface.
+     ThisParam(Sym),
+     Marker(Marker),
+@@ -2308,6 +2311,7 @@ impl<'p, 's> Types<'p, 's> {
+             } => tf::ENUM_LITERAL | tf::NUMBER_LITERAL,
+             TypeData::Enum { .. } => tf::ENUM,
+             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
++            | TypeData::NativePackParameter(_)
+             | TypeData::ThisParam(_) | TypeData::Marker(_) => {
+                 tf::TYPE_PARAMETER
+             }
+@@ -2364,7 +2368,8 @@ impl<'p, 's> Types<'p, 's> {
+                 ObjectFlags::COULD_CONTAIN_TYPE_VARIABLES
+                     | (self.mapper_record(*around).1 & ObjectFlags::HAS_UNRESOLVED)
+             }
+-            TypeData::ThisParam(_)
++            TypeData::NativePackParameter(_)
++            | TypeData::ThisParam(_)
+             | TypeData::Marker(
+                 Marker::Restrictive(_) | Marker::TupleElement(_) | Marker::TupleThis,
+             ) => ObjectFlags::COULD_CONTAIN_TYPE_VARIABLES,
+@@ -3453,6 +3458,7 @@ follow_enum!(TypeData<'_> {
+     TypeData::UniqueSymbol { symbol, name } => (symbol, name),
+     TypeData::TypeParam(a, b, c) => (a, b, c),
+     TypeData::NativeTypeParam { declaration, mapper } => (declaration, mapper),
++    TypeData::NativePackParameter(parameter) => (parameter),
+     TypeData::ThisParam(a) => (a),
+     TypeData::Marker(a) => (a),
+     TypeData::Union(a) => (a),
+@@ -3783,6 +3789,7 @@ clone_in_enum!(TypeData {
+     UniqueSymbol { symbol, name },
+     TypeParam(a, b, c),
+     NativeTypeParam { declaration, mapper },
++    NativePackParameter(parameter),
+     ThisParam(a),
+     Marker(a),
+     Union(a),
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -206,6 +206,7 @@
+     fn circular_return_type(&self, declaration: NativeFunctionId);
+     fn return_type_too_deep(&self, declaration: NativeFunctionId);
+     fn contains_type_parameter(&self, _: NativeTypeParamId) -> bool { false }
++    fn type_parameter_is_result_pack(&self, _: NativeTypeParamId) -> bool { false }
+     fn type_parameter_name(&self, _: &Checker<'_, '_>, _: NativeTypeParamId) -> Atom { Atom::NONE }
+     fn has_type_parameter_constraint(&self, _: NativeTypeParamId) -> bool { false }
+     fn type_parameter_constraint(&self, _: &mut Checker<'_, '_>, _: NativeTypeParamId) -> Option<TypeId> { None }
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+index 6fa8bfe..4fa7922 100644
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -359,6 +362,7 @@ fn is_type_param_kind(data: &TypeData) -> bool {
+     matches!(
+         data,
+         TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
++        | TypeData::NativePackParameter(_)
+         | TypeData::ThisParam(_) | TypeData::Marker(_)
+     )
+ }
+@@ -375,6 +379,7 @@ fn is_instantiable_kind(data: &TypeData) -> bool {
+         data,
+         TypeData::TypeParam(..)
+             | TypeData::NativeTypeParam { .. }
++            | TypeData::NativePackParameter(_)
+             | TypeData::ThisParam(_)
+             | TypeData::Marker(_)
+             | TypeData::IndexedAccess { .. }
+@@ -543,6 +548,7 @@ impl<'p, 's> Checker<'p, 's> {
+         matches!(
+             self.data(ty),
+             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
++            | TypeData::NativePackParameter(_)
+             | TypeData::ThisParam(_) | TypeData::Marker(_)
+         )
+     }
+@@ -1689,6 +1696,7 @@ impl<'p, 's> Checker<'p, 's> {
+     pub(super) fn constraint_of(&mut self, t: TypeId) -> Option<TypeId> {
+         match *self.data(t) {
+             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
++            | TypeData::NativePackParameter(_)
+             | TypeData::ThisParam(_) | TypeData::Marker(_) => {
+                 self.constraint_of_type_param(t)
+             }
+@@ -4833,6 +4842,7 @@ impl<'p, 's> Checker<'p, 's> {
+         // ── by kind of target ──
+         match *td {
+             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. }
++            | TypeData::NativePackParameter(_)
+             | TypeData::ThisParam(_) | TypeData::Marker(_) => {
+                 // `{ [P in Q]: X }` is related to `T` if `keyof T` is related to `Q` and `X` is
+                 // related to `T[Q]`.
+@@ -5125,6 +5135,7 @@ impl<'p, 's> Checker<'p, 's> {
+         match *sd {
+             TypeData::TypeParam(..)
+             | TypeData::NativeTypeParam { .. }
++            | TypeData::NativePackParameter(_)
+             | TypeData::ThisParam(_)
+             | TypeData::Marker(_)
+             | TypeData::IndexedAccess { .. } => {

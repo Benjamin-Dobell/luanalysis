@@ -412,6 +412,7 @@ Directories are searched for `.lua` and `.ttslua` files.
 | `--jobs <n>` | Worker threads; by default, one per core. |
 | `--watch` | Check again whenever sources or declarations change. |
 | `--no-implicit-any` | Require types for parameters and for locals whose type cannot be inferred. |
+| `--no-strict-nil` | Permit nil assignments for v1 compatibility; preserve runtime nil flow and physical result counts. |
 | `--format text\|json` | Report format. JSON reports include exact source ranges. |
 
 A host whose modules are not files that `package.path` finds, such as a game's scripts, can
@@ -474,7 +475,7 @@ options of `check`, and without paths it checks the editor's workspace. It provi
 
 Editors' settings, in `initializationOptions` or `workspace/didChangeConfiguration` (directly or
 under `luanalysis`), apply on top of the command line's options: `luaVersion`, `libraries`,
-`moduleRoots`, `packagePath`, `stdlib`, `noStdlib` and `noImplicitAny`, and
+`moduleRoots`, `packagePath`, `stdlib`, `noStdlib`, `noImplicitAny` and `strictNil` (default true), and
 `inlayHints.types`, `inlayHints.parameterNames` and `completion.callSnippets` to turn those off.
 `inlayHints.expressionParameterNames`, `inlayHints.parameterTypes` and `inlayHints.returnTypes`
 opt into wider expression argument names, contextual parameter types and inferred function

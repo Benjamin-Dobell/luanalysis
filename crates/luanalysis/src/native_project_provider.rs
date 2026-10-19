@@ -145,6 +145,10 @@ impl ProjectRegistrySnapshot {
 #[derive(Default)]
 pub(crate) struct ProjectNamedIndex {
     names: HashMap<String, Vec<NativeTypeDeclarationKey>>,
+    /// Immutable original alias bindings shared by every source classifier.
+    pub(super) result_pack_aliases: HashMap<NativeTypeDeclarationKey, crate::native_signatures::ResultPackAliasRecipe>,
+    /// Source-only fixed point over the immutable alias graph, shared per project.
+    pub(super) result_pack_alias_summaries: std::cell::OnceCell<HashMap<NativeTypeDeclarationKey, crate::native_signatures::ResultPackSourceSummary>>,
     /// Classes declared more than once are one class, as LuaLS reads repeated
     /// `---@class X` and TypeScript merges interface declarations: each later
     /// declaration is merged into the first.
@@ -311,11 +315,12 @@ impl ProjectRegistry {
             })
             .collect();
         names.merge_classes(&classes, &declared);
-        let names = Rc::new(names);
         // Every source sees every other's scopes, merged once for all of them.
         let original_scopes: Vec<_> = files.iter().map(|file| file.source.types.original_scopes()).collect();
         let shared = Rc::new(crate::native_types::OriginalTypeScopes::merge(&original_scopes));
         for file in &mut files { file.source.types.share_original_scopes(Rc::clone(&shared)); }
+        for file in &files { names.result_pack_aliases.extend(file.source.source_result_pack_alias_recipes()); }
+        let names = Rc::new(names);
         for file in &mut files {
             file.source.set_project_names(Rc::clone(&names));
             file.source.attach_documentation_signature_owners();
@@ -391,7 +396,12 @@ impl ProjectRegistry {
         };
         // Every original registry receives the shared selected namespace before
         // immutable capability ownership is inspected.
-        for file in &mut files { file.source.project_globals = Some(Rc::clone(&globals)); }
+        for file in &mut files {
+            file.source.project_globals = Some(Rc::clone(&globals));
+            // Library-global augmentation candidates are available only once
+            // every original declaration has joined the selected namespace.
+            file.source.rebuild_original_members();
+        }
         let standard_environment = super::standard::ProjectStandardEnvironment::new(
             environment_profile,
             files.iter().filter_map(|file| file.standard_library.map(|kind| (kind, &file.source))),
@@ -1162,6 +1172,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn function_type_parameters(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Vec<NativeTypeParameterKey>;
         fn function_outer_type_parameters(key: NativeFunctionKey) -> Vec<NativeTypeParameterKey>;
         fn function_outer_type_parameter_instances(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Vec<Type>;
+        fn type_parameter_is_result_pack(key: NativeTypeParameterKey) -> bool;
         fn type_parameter_name(key: NativeTypeParameterKey) -> String;
         fn has_type_parameter_constraint(key: NativeTypeParameterKey) -> bool;
         fn type_parameter_constraint(key: NativeTypeParameterKey, queries: &mut dyn TypeQueries) -> Option<Type>;

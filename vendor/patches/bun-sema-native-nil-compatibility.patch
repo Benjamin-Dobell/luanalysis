@@ -1,0 +1,198 @@
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -60,6 +60,7 @@
+ pub mod native_iterators;
+ pub mod native_packs;
+ pub mod native_assertions;
++mod native_nil;
+ pub mod native_signatures;
+ pub mod native_intrinsics;
+ pub mod native_runtime;
+@@ -815,6 +816,7 @@
+             native_project_cache: NativeProjectCache::default(),
+             native_runtime_tops: [None; 2],
+             native_arrays: false,
++            native_strict_nil: true,
+             native_function_contexts: Vec::new(),
+             native_capture_contexts: Vec::new(),
+             native_type_query_depth: 0,
+@@ -1371,6 +1373,7 @@
+     native_project_cache: NativeProjectCache,
+     native_runtime_tops: [Option<TypeId>; 2],
+     native_arrays: bool,
++    native_strict_nil: bool,
+     native_function_contexts: Vec<NativeFunctionContext>,
+     native_capture_contexts: Vec<NativeCapturedFunctionContext>,
+     /// Nested metadata demands propagate TYPE_ONLY to every native argument
+diff --git a/src/sema/check/relate.rs b/src/sema/check/relate.rs
+--- a/src/sema/check/relate.rs
++++ b/src/sema/check/relate.rs
+@@ -24,6 +24,9 @@
+     StrictSubtype = 1,
+     /// The two types may share a value. Used for `===` and type assertions.
+     Comparable = 2,
++    /// Assignability for physical Lua exclusion/narrowing, including nested
++    /// members, with a distinct cache from permissive nil contracts.
++    NativeStrictAssignable = 3,
+     Subtype = 4,
+     Identity = 5,
+ }
+@@ -31,7 +34,7 @@
+ impl Relation {
+     /// `relation == assignableRelation || relation == comparableRelation`
+     pub(super) fn is_lenient(self) -> bool {
+-        matches!(self, Relation::Assignable | Relation::Comparable)
++        matches!(self, Relation::Assignable | Relation::Comparable | Relation::NativeStrictAssignable)
+     }
+ 
+     pub(super) fn is_subtype(self) -> bool {
+@@ -1014,6 +1017,7 @@
+         if source == target {
+             return true;
+         }
++        if self.native_nil_assignment_compatible(source, target, relation) { return true }
+         if !self.native_runtime_types_compatible(source, target) { return false }
+         if !self.native_nominal_objects_compatible(source, target, relation) { return false }
+         // A relation check made while a type is being simplified does not go through `enter`.
+@@ -2646,6 +2650,7 @@
+         if original_source == original_target {
+             return Ternary::TRUE;
+         }
++        if self.native_nil_assignment_compatible(original_source, original_target, r.relation) { return Ternary::TRUE }
+         if !self.native_runtime_types_compatible(original_source, original_target) { return Ternary::FALSE }
+         let head = if REPORT { r.head_message.take() } else { None };
+         if !self.native_nominal_objects_compatible(original_source, original_target, r.relation) {
+diff --git a/src/sema/check/native_tables.rs b/src/sema/check/native_tables.rs
+--- a/src/sema/check/native_tables.rs
++++ b/src/sema/check/native_tables.rs
+@@ -1101,7 +1101,8 @@
+             && let Some(field) = data.fields.iter().find(|field| field.key == literal)
+         {
+             if field.readonly { return Err(NativeTableError::ReadOnly { key }) }
+-            if self.contains_undefined(value) && !field.optional && !self.contains_undefined(field.value) {
++            if self.contains_undefined(value) && !field.optional && !self.contains_undefined(field.value)
++                && (self.native_strict_nil || !self.is_assignable(TypeId::UNDEFINED, field.value)) {
+                 return Err(NativeTableError::RequiredDeletion { key: literal });
+             }
+             let present = self.without_undefined(value);
+@@ -1131,7 +1132,8 @@
+                 if !self.native_table_key_domains_overlap(self.native_table_key_type(field.key), key_type) { continue }
+                 matched = true;
+                 if field.readonly { return Err(NativeTableError::ReadOnly { key }) }
+-                if self.contains_undefined(value) && !field.optional && !self.contains_undefined(field.value) {
++                if self.contains_undefined(value) && !field.optional && !self.contains_undefined(field.value)
++                    && (self.native_strict_nil || !self.is_assignable(TypeId::UNDEFINED, field.value)) {
+                     return Err(NativeTableError::RequiredDeletion { key: field.key });
+                 }
+                 let present = self.without_undefined(value);
+diff --git a/src/sema/check/native_assertions.rs b/src/sema/check/native_assertions.rs
+--- a/src/sema/check/native_assertions.rs
++++ b/src/sema/check/native_assertions.rs
+@@ -12,25 +12,25 @@
+     pub fn native_exclude_type(&mut self, source: TypeId, excluded: TypeId) -> TypeId {
+         if self.is_any(source) && !self.is_any(excluded) && excluded != TypeId::UNKNOWN { return source; }
+         if excluded.is_undefined() { return self.non_nullable(source); }
+-        self.filter(source, |checker, part| !checker.is_assignable(part, excluded))
++        self.filter(source, |checker, part| !checker.native_is_assignable_with_strict_nil(part, excluded))
+     }
+     pub fn native_exclude_pack(&mut self, source: NativeResultPack, fixed: &[TypeId], tail: Option<TypeId>) -> NativeResultPack {
+         let Some(rows) = self.native_pack_alternatives(source) else { return source; };
+         let mut result = Vec::new();
+         for mut row in rows {
+-            if row.tail.is_none() && fixed.iter().enumerate().skip(row.fixed.len()).any(|(_, &excluded)| self.is_assignable(TypeId::UNDEFINED, excluded)) { continue; }
++            if row.tail.is_none() && fixed.iter().enumerate().skip(row.fixed.len()).any(|(_, &excluded)| self.native_contains_nil(excluded)) { continue; }
+             let original_tail = row.tail;
+             for (index, slot) in row.fixed.iter_mut().enumerate() {
+                 if let Some(excluded) = fixed.get(index).copied().or(tail) {
+                     slot.ty = self.native_exclude_type(slot.ty, excluded);
+-                    if index < fixed.len() && self.is_assignable(TypeId::UNDEFINED, excluded) { slot.optional = false; }
++                    if index < fixed.len() && self.native_contains_nil(excluded) { slot.optional = false; }
+                 }
+             }
+             if row.fixed.iter().any(|slot| !slot.optional && slot.ty.is_never()) { continue; }
+             if let Some(original) = original_tail {
+                 while row.fixed.len() < fixed.len() {
+                     let index = row.fixed.len();
+-                    row.fixed.push(NativePackSlot { ty: self.native_exclude_type(original, fixed[index]), optional: !self.is_assignable(TypeId::UNDEFINED, fixed[index]) });
++                    row.fixed.push(NativePackSlot { ty: self.native_exclude_type(original, fixed[index]), optional: !self.native_contains_nil(fixed[index]) });
+                 }
+                 if let Some(excluded) = tail { row.tail = Some(self.native_exclude_type(original, excluded)); }
+             }
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -1497,7 +1497,7 @@
+                 // what relates to it: nil is not a possible `R`, as TypeScript does not compare
+                 // undefined with an unconstrained type parameter.
+                 let possible = if checker.could_contain_type_variables(part) || checker.could_contain_type_variables(projected) {
+-                    checker.is_assignable(part, projected) || checker.is_assignable(projected, part)
++                    checker.native_is_assignable_with_strict_nil(part, projected) || checker.native_is_assignable_with_strict_nil(projected, part)
+                 } else { checker.are_comparable(part, projected) };
+                 if possible { part } else { TypeId::NEVER }
+             })
+diff --git a/src/sema/check/flow.rs b/src/sema/check/flow.rs
+--- a/src/sema/check/flow.rs
++++ b/src/sema/check/flow.rs
+@@ -4042,9 +4042,9 @@
+             narrowed
+         } else if self.is_subtype(candidate, ty) {
+             candidate
+-        } else if self.is_assignable(ty, candidate) {
++        } else if self.native_is_assignable_with_strict_nil(ty, candidate) {
+             ty
+-        } else if self.is_assignable(candidate, ty) {
++        } else if self.native_is_assignable_with_strict_nil(candidate, ty) {
+             candidate
+         } else {
+             self.intersection(&[ty, candidate])
+@@ -6801,8 +6801,13 @@
+             matches!(*self.data(assigned), TypeData::BoolLit { fresh: true, .. });
+         let assigned = self.regular(assigned);
+         let reduced = self.filter(declared, |c, m| {
+-            c.parts(assigned).iter().any(|&a| c.is_assignable(a, m))
++            c.parts(assigned).iter().any(|&a| c.native_is_assignable_with_strict_nil(a, m))
+         });
++        // Compatibility accepts nil stores without changing what the runtime
++        // actually stored or selecting every non-nil arm of the written type.
++        let reduced = if !self.native_strict_nil && self.contains_undefined(assigned)
++            && self.is_assignable(TypeId::UNDEFINED, declared)
++        { self.union(&[reduced, TypeId::UNDEFINED]) } else { reduced };
+         if !self.is_assignable(assigned, reduced) {
+             return declared;
+         }
+diff --git a/src/sema/check/native_nil.rs b/src/sema/check/native_nil.rs
+new file mode 100644
+--- /dev/null
++++ b/src/sema/check/native_nil.rs
+@@ -0,0 +1,30 @@
++//! Luanalysis v1's optional nil assignment compatibility. Runtime nil and its
++//! union members remain physical facts even when contracts accept nil.
++use super::Checker;
++use super::relate::Relation;
++use crate::types::TypeId;
++
++impl<'p, 's> Checker<'p, 's> {
++    /// Set before any queries; a checker's relation caches belong to one policy.
++    pub fn set_native_strict_nil(&mut self, strict: bool) {
++        self.native_strict_nil = strict;
++    }
++
++    pub fn native_contains_nil(&mut self, ty: TypeId) -> bool {
++        self.native_is_assignable_with_strict_nil(TypeId::UNDEFINED, ty)
++    }
++
++    pub(super) fn native_nil_assignment_compatible(&self, source: TypeId, target: TypeId, relation: Relation) -> bool {
++        !self.native_strict_nil && relation == Relation::Assignable
++            && source.is_undefined() && !target.is_never()
++            && !self.is_union(target) && !self.is_intersection(target)
++    }
++
++    /// Physical exclusion and narrowing must not treat nil as every type merely
++    /// because an assignment contract permits it. A separate relation key keeps
++    /// strict physical comparisons apart from permissive contract comparisons.
++    pub(super) fn native_is_assignable_with_strict_nil(&mut self, source: TypeId, target: TypeId) -> bool {
++        let relation = if self.native_strict_nil { Relation::Assignable } else { Relation::NativeStrictAssignable };
++        self.related(source, target, relation)
++    }
++}
