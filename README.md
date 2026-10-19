@@ -321,8 +321,8 @@ end
 Predicate functions return booleans. Their target must be assignable to the named parameter's
 type. Function types and overloads support the same syntax: `fun(value: unknown): value is string`.
 Assertions such as `assert(isString(value))` and comparisons such as `isString(value) == false`
-also narrow the argument. See [type predicates](docs/TYPE-PREDICATES.md) for nominal subclasses,
-generic guards and validation rules, or try the [checked example](examples/features/type-predicates.lua).
+also narrow the argument. The [checked example](examples/features/type-predicates.lua) covers
+primitive unions and nominal subclasses.
 
 ### Correlated results
 
@@ -460,7 +460,7 @@ options of `check`, and without paths it checks the editor's workspace. It provi
   ranges and unsaved buffers. A rename that would change what a name refers to, merge two
   names, or edit a library's declarations is refused, with why. Rename errors include structured
   reasons and related source locations, so embedded editors can map them to authored files;
-  see the [rename error protocol](docs/RENAME-ERRORS.md).
+  see [rename errors](#rename-errors).
 * Full-document and range formatting, and newline-triggered indentation, for Lua and `.ttslua`.
 * The document outline, with class members and nested functions/locals, workspace symbol search,
   call and type hierarchies, native inferred-type and parameter-name inlays, semantic
@@ -507,6 +507,23 @@ supported; collisions and operations with no safe module name are refused. Open 
 and versions are retained; `documentChanges` is used when supported. Module roots/package paths
 remain host configuration. Moves affecting `--module-map` manifests require host updates, and
 renaming symbolic links is declined. The server never moves files itself.
+
+### Rename errors
+
+`textDocument/prepareRename` and `textDocument/rename` reject unsafe renames with JSON-RPC error
+code `-32803` and a readable `message`. Their `error.data` contains `kind: "rename"`, a `reason`
+such as `invalidName`, `capture` or `libraryOwned`, and a `relatedInformation` array. Each related
+entry has `location.uri`, `location.range`, `message` and compiler `origin` metadata.
+
+Locations refer to the original source before the proposed edit, including unsaved text, and
+use the negotiated position encoding (UTF-16 by default). Open documents retain the exact URI
+the client supplied. Hosts analyzing generated source can map this URI/range through their
+source map without parsing the readable message. Errors without a related location have an
+empty `relatedInformation` array.
+
+`origin.kind` is `filesystem` or `declarationLibrary`; `origin.role` is `implementation` or
+`declaration`. Bundled declaration libraries also carry their compiler resource `identity`.
+This describes compiler provenance; mapping to authored files remains the host's responsibility.
 
 ## Library
 
