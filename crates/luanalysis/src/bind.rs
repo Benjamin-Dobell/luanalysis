@@ -104,6 +104,9 @@ struct IntrinsicOccurrence {
 pub struct BoundFile {
     pub scopes: Vec<Scope>,
     pub declarations: Vec<Declaration>,
+    /// The binding visible immediately before each declaration becomes active.
+    /// Aligned with `declarations`; captured during binding rather than reconstructed from spans.
+    shadowed_bindings: Vec<Option<BindingId>>,
     /// Original-source occurrences sorted by byte offset.
     pub occurrences: Vec<NameOccurrence>,
     intrinsic_occurrences: Vec<IntrinsicOccurrence>,
@@ -136,6 +139,11 @@ impl BoundFile {
     }
     pub fn declaration(&self, binding: BindingId) -> &Declaration {
         &self.declarations[binding.0]
+    }
+
+    /// The earlier local hidden by `binding` at Lua's declaration activation boundary.
+    pub fn shadowed_binding(&self, binding: BindingId) -> Option<BindingId> {
+        self.shadowed_bindings[binding.0]
     }
 
     pub fn scope(&self, scope: ScopeId) -> &Scope {
@@ -273,6 +281,7 @@ pub fn bind(file: &File) -> BoundFile {
         file: BoundFile {
             scopes: Vec::new(),
             declarations: Vec::new(),
+            shadowed_bindings: Vec::new(),
             occurrences: Vec::new(),
             intrinsic_occurrences: Vec::new(),
             modified_module_environment: false,
@@ -345,8 +354,10 @@ impl Binder {
     }
 
     fn declare_at(&mut self, name: &str, span: Span, kind: DeclarationKind, activation: usize) {
+        let shadowed = self.resolve(name);
         let id = BindingId(self.file.declarations.len());
         let scope = self.current_scope();
+        self.file.shadowed_bindings.push(shadowed);
         self.file.declarations.push(Declaration {
             id,
             name: name.to_owned(),

@@ -123,6 +123,7 @@ fn options(case: &Case) -> ProjectCheckOptions {
         strict_nil: case.strict_nil,
         overload_mode: OverloadMode::LegacyExposeImplementation,
         describe_types: false,
+        inspections: case.id == "LocalNameShadowedTest/testLocalNameHidesPrevious",
         ..Default::default()
     }
 }
@@ -198,7 +199,7 @@ fn semantic_code(description: Option<&str>, code: &str) -> bool {
     }
     // Bare markers mean any *language* diagnostic in the original test. Do not
     // let parser failures or a LUA20xx unsupported-feature report stand in for it.
-    description.is_empty() && code.starts_with("TS")
+    description.is_empty() && (code.starts_with("TS") || code == "LUA4001")
 }
 
 fn language_level_description(description: &str) -> bool {
@@ -589,6 +590,15 @@ pub fn run_with_sources(
             .expect("entry not checked")
             .report
             .diagnostics;
+        // The original harness enabled only LocalNameShadowed for this case.
+        // Keep checker errors visible; other optional inspections were not selected.
+        let selected;
+        let actual = if case.id == "LocalNameShadowedTest/testLocalNameHidesPrevious" {
+            selected = actual.iter().filter(|diagnostic| {
+                diagnostic.category() == DiagnosticCategory::Error || diagnostic.code == "LUA4001"
+            }).cloned().collect::<Vec<_>>();
+            &selected
+        } else { actual };
         append_diagnostics(
             &mut result,
             case.inputs[index],

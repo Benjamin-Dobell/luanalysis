@@ -72,6 +72,23 @@ impl Checker<'_> {
 }
 
 impl NativeRegistry {
+    /// The binder records the earlier active local before installing each new declaration,
+    /// including declarations nested in initializer functions and loop headers.
+    pub(crate) fn report_shadowed_declarations(&self) {
+        if !self.inspections() || self.source_role() != luanalysis_project::SourceRole::Implementation { return; }
+        let bound = self.bound();
+        let diagnostics = bound.declarations.iter()
+            .filter(|declaration| declaration.name != "_" && declaration.kind != DeclarationKind::ImplicitReceiver)
+            .filter(|declaration| bound.shadowed_binding(declaration.id).is_some())
+            .map(|declaration| Diagnostic {
+                code: "LUA4001",
+                span: declaration.span,
+                message: format!("Local name '{}' shadows a previously declared local.", declaration.name),
+            })
+            .collect();
+        self.merge_report(CheckReport { diagnostics, ..CheckReport::default() });
+    }
+
     /// Each local, local function, loop variable and parameter whose value is never read
     /// (TS6133). A name starting with `_` declares that it is unused.
     pub(crate) fn report_unused_declarations(&self) {

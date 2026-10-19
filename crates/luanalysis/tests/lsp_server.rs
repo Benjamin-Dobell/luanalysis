@@ -268,6 +268,24 @@ fn completions_answer_from_the_unsaved_text_being_typed() {
 }
 
 #[test]
+fn local_shadow_warning_uses_the_original_name_range_and_clears_when_renamed() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "-- 🦀\nlocal value = 1\nprint(value)\nlocal value = 2\nprint(value)\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    let published = server.diagnostics(&main, |message| message.contains("LUA4001"));
+    assert!(published.contains(r#""range":{"start":{"line":3,"character":6},"end":{"line":3,"character":11}},"severity":2,"code":"LUA4001""#), "{published}");
+    assert!(!published.contains(r#""tags":[1]"#) && !published.contains(r#""severity":1"#), "{published}");
+    let corrected = source.replace("local value = 2\nprint(value)", "local other = 2\nprint(other)");
+    server.change(&main, 2, &corrected);
+    server.diagnostics(&main, |message| message.contains(r#""diagnostics":[]"#));
+    server.finish();
+}
+
+#[test]
 fn inspections_are_published_as_warnings_and_faded_hints() {
     let root = fixture();
     let main = root.join("main.lua");

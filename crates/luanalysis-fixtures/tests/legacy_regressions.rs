@@ -428,6 +428,24 @@ regression!(generic_self, "TypeSafetyTest/testGenericSelf");
 regression!(global_definitions, "TypeSafetyTest/testGlobalDefinitions");
 regression!(global_usage, "TypeSafetyTest/testGlobalUsage");
 regression!(non_strict_nil, "TypeSafetyTest/testNonStrictNil");
+regression!(local_name_shadow, "LocalNameShadowedTest/testLocalNameHidesPrevious");
+
+#[test]
+fn shadow_markers_require_the_shadow_warning_and_selected_inspection_keeps_checker_errors() {
+    let fixture = import("<warning>value</warning>").unwrap();
+    assert_eq!(legacy::compare(&fixture, &[observed("LUA4001", 0, 5)], false), (vec![], vec![]));
+    for code in ["TS6133", "LUA2872", "LUA2031", "LUA1001"] {
+        assert_eq!(legacy::compare(&fixture, &[observed(code, 0, 5)], false), (vec![0], vec![0]));
+    }
+    let case = legacy::cases().into_iter()
+        .find(|case| case.id == "LocalNameShadowedTest/testLocalNameHidesPrevious").unwrap();
+    let directory = legacy::Temp::new();
+    let result = legacy::run_with_sources(&case, &directory.0, |_, source| {
+        format!("{source}\n---@type number\nlocal wrong = 'bad'\n")
+    });
+    assert!(!result.passed && result.missing == 0 && result.unexpected == 1, "{}", result.detail);
+    assert!(result.detail.contains("TS2322"), "{}", result.detail);
+}
 
 #[test]
 fn member_and_index_range_translations_keep_the_exact_key_identity() {
