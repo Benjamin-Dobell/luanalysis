@@ -839,6 +839,13 @@ pub enum CallError {
     },
 }
 
+/// Passive completion observation for an original receiver read in one checker session.
+#[must_use]
+pub struct NativeEnvironmentRead {
+    read: bun_sema::check::native_flow::NativeEnvironmentRead,
+    epoch: u64,
+}
+
 /// Queries available during one native checker session. All inputs and outputs
 /// are owned descriptions; checker lifetimes and type IDs remain private.
 pub trait TypeQueries {
@@ -854,6 +861,12 @@ pub trait TypeQueries {
     fn function_check_state(&mut self, function: &Type) -> NativeFunctionCheckState;
     fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError>;
     fn global_environment_origin(&mut self, environment: &Type) -> Option<NativeEnvironmentKey>;
+    /// Observe the actual source read; this never replaces its type/diagnostic work.
+    fn begin_environment_read(&mut self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeEnvironmentRead>;
+    fn end_environment_read(&mut self, read: NativeEnvironmentRead, origin: Option<NativeEnvironmentKey>, complete: bool);
+    /// A completed runtime-origin fact for the exact original frozen evaluation.
+    fn cached_environment_origin(&mut self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeEnvironmentKey>;
+
     /// Whether strict runtime effects were requested (`--strict-standard-effects`).
     fn strict_runtime_effects(&mut self) -> bool { false }
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError>;
@@ -1408,6 +1421,17 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn global_binding_type(&mut self, binding: NativeGlobalBindingKey) -> Result<Type, GlobalQueryError> { self.global_binding_type_native(binding) }
     fn global_environment_type(&mut self, environment: NativeEnvironmentKey) -> Result<Type, GlobalQueryError> { self.global_environment_type_native(environment) }
     fn global_environment_origin(&mut self, environment: &Type) -> Option<NativeEnvironmentKey> { self.global_environment_origin_native(environment) }
+    fn begin_environment_read(&mut self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeEnvironmentRead> {
+        self.checker.begin_environment_read(value, input).map(|read| NativeEnvironmentRead { read, epoch: self.handles.epoch })
+    }
+    fn end_environment_read(&mut self, read: NativeEnvironmentRead, origin: Option<NativeEnvironmentKey>, complete: bool) {
+        assert_eq!(read.epoch, self.handles.epoch, "foreign native environment-read observation");
+        self.checker.end_environment_read(read.read, origin.map(native_globals::core_environment), complete);
+    }
+    fn cached_environment_origin(&mut self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeEnvironmentKey> {
+        self.checker.cached_environment_origin(value, input).map(|origin| NativeEnvironmentKey { snapshot: origin.snapshot, index: origin.index })
+    }
+
     fn strict_runtime_effects(&mut self) -> bool { self.checker.native_strict_runtime_effects() }
     fn value_declaration_type(&mut self, declaration: NativeValueDeclarationKey) -> Result<Type, GlobalQueryError> { self.value_declaration_type_native(declaration) }
     fn module_result_pack(&mut self, key: NativeModuleKey) -> Result<ValuePack, NativeProjectError> { self.module_result_pack_native(key) }

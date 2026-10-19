@@ -671,6 +671,12 @@ SOURCE_ADAPTATIONS.extend({
     "reason": "Resolve written native type predicates through signature caches and mappers, retain boolean call results, and narrow their original arguments through the shared TypeScript predicate worker.",
 } for path in ["call.rs", "decl.rs", "mod.rs", "native_flow.rs", "native_packs.rs", "native_signatures.rs", "sink.rs"])
 
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-predicate-environment-references.patch",
+    "reason": "Canonicalize native predicate references at frozen receiver inputs through a flow-only typed provider demand, with a pure presence gate, guarded epoch cache and incomplete-query propagation; preserve structural reachability without receiver type demands.",
+} for path in ["mod.rs", "native_flow.rs", "sink.rs"])
+
 
 def git(source, *args):
     return subprocess.check_output(["git", "-C", str(source), *args])

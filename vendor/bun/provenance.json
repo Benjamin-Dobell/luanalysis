@@ -2538,6 +2538,24 @@
       "patch": "vendor/patches/bun-sema-native-type-predicates.patch",
       "reason": "Resolve written native type predicates through signature caches and mappers, retain boolean call results, and narrow their original arguments through the shared TypeScript predicate worker.",
       "patch_sha256": "07ee0038f1489df9c2b1655ff6cb6dfb5cad047e7684e8f017dec475eb6b44c2"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-predicate-environment-references.patch",
+      "reason": "Canonicalize native predicate references at frozen receiver inputs through a flow-only typed provider demand, with a pure presence gate, guarded epoch cache and incomplete-query propagation; preserve structural reachability without receiver type demands.",
+      "patch_sha256": "f93c0879eb3668206b0c7855b5893eb5edb9505227aba2c083a2a1dfa62a509b"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-predicate-environment-references.patch",
+      "reason": "Canonicalize native predicate references at frozen receiver inputs through a flow-only typed provider demand, with a pure presence gate, guarded epoch cache and incomplete-query propagation; preserve structural reachability without receiver type demands.",
+      "patch_sha256": "f93c0879eb3668206b0c7855b5893eb5edb9505227aba2c083a2a1dfa62a509b"
+    },
+    {
+      "path": "src/sema/check/sink.rs",
+      "patch": "vendor/patches/bun-sema-native-predicate-environment-references.patch",
+      "reason": "Canonicalize native predicate references at frozen receiver inputs through a flow-only typed provider demand, with a pure presence gate, guarded epoch cache and incomplete-query propagation; preserve structural reachability without receiver type demands.",
+      "patch_sha256": "f93c0879eb3668206b0c7855b5893eb5edb9505227aba2c083a2a1dfa62a509b"
     }
   ],
   "source_additions": {
@@ -2558,7 +2576,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "7d115714dc4e70a5b34f8ad5dc33fc54e33d8bd8f98e6566a9d55b0d28bbf301",
+      "extracted_sha256": "611651811ea85fe0b607337a93a31cec3c0cc205f1bf5210caa8dde83469f423",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_globals.rs": {
@@ -3564,7 +3582,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "c7b0d030e6b62dc1b1ed120e8ccf1a5476c3cf4a3562e0c6deeca78e3967602d"
+      "extracted_sha256": "4fb3e0d135d8c837989a81dc4ed44960bd6c5afc027b490c485f1ccb3a058433"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -3649,7 +3667,7 @@
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
       "sha256": "c6c11b4c10ed78fc938652d6f25d96865093ee86c0f7c451f1dbbbe4c725e133",
-      "extracted_sha256": "da3414c92edbd7a0730e205fef9a8aef58901e1a45247212de453528ee366d93"
+      "extracted_sha256": "cfa8fccdfac2d40064a2b861a617f7585d975383f6037498d0d42bf9e7358aae"
     },
     "src/sema/check/spans.rs": {
       "upstream": "src/sema/check/spans.rs",

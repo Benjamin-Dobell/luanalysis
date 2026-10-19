@@ -2466,6 +2466,17 @@ impl NativeRegistry {
 }
 
 impl NativeRegistry {
+    pub(super) fn environment_receiver_read_key(&self, expression: &Expr, at: NativeFlowKey) -> Option<(luanalysis_engine::NativeValueKey, NativeFlowKey)> {
+        let ExprKind::Name(name) = &expression.kind else { return None; };
+        let candidate = match self.bound.binding_at(name.span.start) {
+            Some(binding) => self.flow.environment_candidate(binding),
+            None => matches!(name.text.as_str(), "_G" | "_ENV"),
+        };
+        if !candidate { return None; }
+        let evaluation = self.flow.evaluation_for_expression(expression, at.graph)?;
+        Some((self.flow.evaluation_value(evaluation.id), self.flow.flow_key(evaluation.input, at.graph.context)))
+    }
+
     /// An immutable local declaration cannot acquire predicate syntax from a
     /// different runtime value. Prove absence from all its written public heads
     /// before creating a checker or walking the callee's frozen reference flow.
@@ -2485,6 +2496,53 @@ impl NativeRegistry {
 }
 
 impl FlowValueQueries for NativeRegistry {
+    fn predicate_environment_reference(
+        &self,
+        sources: &NativeFlowSources,
+        evaluation: &super::flow::Evaluation,
+        graph: luanalysis_engine::NativeGraphKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<luanalysis_engine::NativeReferenceKey> {
+        let mut evaluation = evaluation;
+        while matches!(sources.program.expression(evaluation.expression).expression.kind, ExprKind::Parenthesized(_)) {
+            evaluation = sources.program.evaluation(*evaluation.operands.first()?);
+        }
+        let expression = &sources.program.expression(evaluation.expression).expression;
+        let (ExprKind::Field { .. } | ExprKind::Index { .. }) = &expression.kind else { return None };
+        let reference = sources.program.references.get(&evaluation.expression)?;
+        if matches!(reference.path.last(), Some(super::flow::Key::Dynamic(_))) { return None; }
+        let receiver = sources.program.evaluation(*evaluation.operands.first()?);
+        let receiver_expression = &sources.program.expression(receiver.expression).expression;
+        let input = sources.flow_key(receiver.input, graph.context);
+        if queries.cached_environment_origin(sources.evaluation_value(receiver.id), input).is_some() {
+            return sources.environment_member_reference(graph, expression);
+        }
+        if matches!(receiver_expression.kind, ExprKind::Name(_))
+            && self.expression_assertions(receiver_expression.span).is_empty()
+        {
+            // Both branch edges share this exact receiver evaluation. Reuse
+            // its completed runtime value instead of constructing a checker
+            // and walking `_G` again for the other edge.
+            let mut original = false;
+            queries.with_native_type_query(&mut |queries| {
+                let value = queries.flow_value(&FlowAdapter { sources, values: self }, sources.evaluation_value(receiver.id), input);
+                original = queries.global_environment_origin(&value).is_some();
+            });
+            return original.then(|| sources.environment_member_reference(graph, expression)).flatten();
+        }
+        self.with_flow_type_query(input, queries, &mut |queries| {
+            let mut checker = self.checker_at_flow(input, queries);
+            // A written shape or assertion cannot certify the runtime table.
+            // Freeze the receiver before any computed key or later operand.
+            let original = checker.environment_origin_of_expression(receiver_expression).is_some();
+            let complete = !checker.incomplete_flow;
+            if complete {
+                self.merge_flow_report(input, checker.check_mode, checker.report, checker.engine);
+            }
+            (original && complete).then(|| sources.environment_member_reference(graph, expression)).flatten()
+        })
+    }
+
     fn runtime_table_store_in_scope(&self, declaration: luanalysis_engine::NativeTypeDeclarationKey, at: NativeFlowKey) -> bool {
         self.runtime_store_in_scope(declaration, at)
     }

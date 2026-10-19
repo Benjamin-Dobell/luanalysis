@@ -848,7 +848,17 @@ impl Checker<'_> {
     }
 
     fn receiver_expression(&mut self, expr: &Expr) -> EvaluatedExpression {
-        self.expression_value(expr, None, true)
+        // The normal read already establishes the runtime table's origin.
+        // Retain that completed fact at its original input so a later guard
+        // does not need to repeat the receiver's flow traversal.
+        let observed = self.native.zip(self.flow_at)
+            .and_then(|(native, at)| native.environment_receiver_read_key(expr, at))
+            .and_then(|(value, input)| self.engine.begin_environment_read(value, input));
+        let value = self.expression_value(expr, None, true);
+        if let Some(observed) = observed {
+            self.engine.end_environment_read(observed, value.environment, !self.incomplete_flow);
+        }
+        value
     }
 
     fn expression_value(&mut self, expr: &Expr, expected: Option<&Type>, capture_origin: bool) -> EvaluatedExpression {

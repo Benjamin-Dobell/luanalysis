@@ -1114,6 +1114,7 @@ enum Query {
     NativeAliasMetatableCall(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
     NativeFlowCallTypePredicate(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
+    NativeFlowPredicate(native_flow::NativeFlowKey, u64),
     NativeSignatureTypePredicate(SigId),
     /// The type of an original recipe at its frozen input (`native_flow_value`).
     NativeFlowValue(native_flow::NativeValueKey, native_flow::NativeFlowKey),
@@ -1211,7 +1212,7 @@ impl Query {
             Query::BaseConstructor(sym) => (sym.file, 13),
             Query::ReturnOfSignature(_)
             | Query::NativeContextualTypeOwner(..)
-            | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallTypePredicate(..) | Query::NativeSignatureTypePredicate(..) | Query::NativeFlowValue(..)
+            | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallTypePredicate(..) | Query::NativeFlowPredicate(..) | Query::NativeSignatureTypePredicate(..) | Query::NativeFlowValue(..)
             | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
             | Query::NativeAliasLoaderState(..)
             | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)

@@ -1,0 +1,211 @@
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index 7be5bef..ba84933 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -1114,6 +1114,7 @@ enum Query {
+     NativeAliasMetatableCall(native_flow::NativeValueKey, native_flow::NativeFlowKey, native_flow::NativeValueKey, native_flow::NativeFlowKey, u64, u64),
+     NativeFlowCallEffects(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
+     NativeFlowCallTypePredicate(native_flow::NativeValueKey, native_flow::NativeFlowKey, u64),
++    NativeFlowPredicate(native_flow::NativeFlowKey, u64),
+     NativeSignatureTypePredicate(SigId),
+     /// The type of an original recipe at its frozen input (`native_flow_value`).
+     NativeFlowValue(native_flow::NativeValueKey, native_flow::NativeFlowKey),
+@@ -1211,7 +1212,7 @@ impl Query {
+             Query::BaseConstructor(sym) => (sym.file, 13),
+             Query::ReturnOfSignature(_)
+             | Query::NativeContextualTypeOwner(..)
+-            | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallTypePredicate(..) | Query::NativeSignatureTypePredicate(..) | Query::NativeFlowValue(..)
++            | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallTypePredicate(..) | Query::NativeFlowPredicate(..) | Query::NativeSignatureTypePredicate(..) | Query::NativeFlowValue(..)
+             | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
+             | Query::NativeAliasLoaderState(..)
+             | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)
+diff --git a/src/sema/check/native_flow.rs b/src/sema/check/native_flow.rs
+index 791c681..3a50f93 100644
+--- a/src/sema/check/native_flow.rs
++++ b/src/sema/check/native_flow.rs
+@@ -271,6 +271,20 @@ pub struct NativePackProjection {
+     pub index: usize,
+ }
+ 
++/// Passive observation around an actual source receiver read. It owns no
++/// checker query or memo scope and cannot change the source computation's
++/// recursion, provisional capabilities, diagnostics, or contextual lifetime.
++#[must_use]
++pub struct NativeEnvironmentRead {
++    key: (NativeValueKey, NativeFlowKey),
++    generation: u64,
++    counters: (u64, u64),
++    frames: usize,
++    frame_serial: Option<u64>,
++    taints: u64,
++    cuts: u64,
++}
++
+ /// A physical scalar read, frozen before later expressions in its Lua list.
+ #[derive(Clone, Copy, Debug)]
+ pub struct NativeFrozenReference {
+@@ -362,6 +376,14 @@ pub trait NativeFlowProvider {
+     fn reference_proper_prefixes(&self, _: NativeReferenceKey) -> Option<Vec<NativeReferenceKey>> { None }
+     /// Original immutable predicate recipe for a verified assertion argument.
+     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
++    /// Canonicalize original predicate addresses using their frozen receiver
++    /// evaluations. This is a flow-only demand; structural reachability never
++    /// asks for runtime receiver identities. None retains the immutable recipe.
++    /// Pure source-presence gate: ordinary predicates require no typed query
++    /// frame, cloned tree, or memo entry.
++    fn predicate_needs_types(&self, _: NativeFlowKey, _: NativeReferenceKey, _: &NativePredicate) -> bool { false }
++    fn predicate_with_types(&self, _: NativeFlowKey, _: NativePredicate, _: &mut Checker<'_, '_>) -> Option<NativePredicate> { None }
++
+     fn call_type_predicate(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut Checker<'_, '_>) -> Option<super::native_signatures::NativeTypePredicate> { None }
+     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
+     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
+@@ -436,9 +458,13 @@ pub(super) struct NativeFlowState {
+     loop_types: FxHashMap<LoopKey, TypeId>,
+     pub loops: Vec<NativeLoopFrame>,
+     value_types: FxHashMap<ValueContext, TypeId>,
++    environment_origins: FxHashMap<ValueContext, super::native_globals::NativeEnvironmentId>,
++    environment_reads: FxHashMap<ValueContext, u64>,
++    next_environment_read: u64,
+     pack_types: FxHashMap<ValueContext, NativeResultPack>,
+     call_effects: FxHashMap<(ValueContext, u64), NativeCallEffects>,
+     call_type_predicates: FxHashMap<(ValueContext, u64), Option<super::native_signatures::NativeTypePredicate>>,
++    typed_predicates: FxHashMap<(NativeFlowKey, u64), NativePredicate>,
+     pub(super) signature_type_predicates: FxHashMap<SigId, Option<super::decl::Predicate>>,
+     pub(super) contextual_owners: FxHashMap<(NativeFunctionId, NativeFlowKey, u64), Option<TypeId>>,
+     // Provisional query handles name actual effect records, never TypeIds.
+@@ -710,6 +736,20 @@ impl NativeDomain<'_> {
+ 
+     fn predicate_flow_step(&self, checker: &mut Checker<'_, '_>, at: NativeFlowKey, before: NativeFlowKey, predicate: NativePredicate, sense: bool, walk: &NativeWalk) -> FlowStep<NativeFlowKey, NativeTransfer> {
+         if !self.edge(at, before) || !self.predicate_valid(at, &predicate) { return FlowStep::Value(TypeId::ERROR) }
++        let predicate = if matches!(predicate, NativePredicate::NumericIteration { .. } | NativePredicate::GenericIteration { .. } | NativePredicate::Unsupported(_)) {
++            predicate
++        } else {
++            match checker.native_flow_predicate_with_types(self.provider, at, walk.reference, &predicate) {
++                Ok(Some(typed)) => {
++                    if !self.predicate_valid(at, &typed) { return FlowStep::Value(TypeId::ERROR) }
++                    typed
++                },
++                Ok(None) => predicate,
++                // An unfinished receiver identity cannot publish a completed
++                // reference walk, even when its raw source path was unchanged.
++                Err(()) => return FlowStep::Follow { before, transfer: Some(NativeTransfer::IncompleteCall), count_passed: false },
++            }
++        };
+         if let NativePredicate::GenericIteration { frame, .. } = predicate {
+             return FlowStep::Follow { before, transfer: (walk.reference == frame).then_some(NativeTransfer::GenericIteration(sense)), count_passed: true };
+         }
+@@ -1184,12 +1224,16 @@ impl FlowDomain for NativeDomain<'_> {
+         work: impl FnOnce(&mut Checker<'_, '_>) -> R,
+     ) -> R {
+         let cache = std::mem::take(&mut checker.flow_memo.native_state.value_types);
++        let origins = std::mem::take(&mut checker.flow_memo.native_state.environment_origins);
++        let reads = std::mem::take(&mut checker.flow_memo.native_state.environment_reads);
+         let calls = std::mem::take(&mut checker.flow_memo.native_state.call_effects);
+         let packs = std::mem::take(&mut checker.flow_memo.native_state.pack_types);
+         let epoch = checker.flow_memo.native_state.effect_epoch;
+         checker.flow_memo.native_state.fresh_effect_epoch();
+         let result = work(checker);
+         checker.flow_memo.native_state.value_types = cache;
++        checker.flow_memo.native_state.environment_origins = origins;
++        checker.flow_memo.native_state.environment_reads = reads;
+         checker.flow_memo.native_state.call_effects = calls;
+         checker.flow_memo.native_state.pack_types = packs;
+         checker.flow_memo.native_state.effect_epoch = epoch;
+@@ -1684,6 +1728,52 @@ impl<'s, 'p> Checker<'s, 'p> {
+         !reachable && stored.is_some()
+     }
+ 
++    /// A passive observer may retain facts only from an entirely settled
++    /// context. Inherited provisional frames must not become stable facts just
++    /// because a nested source read itself raises no additional counter.
++    fn environment_read_is_clean(&self) -> bool {
++        self.lowest_taint == usize::MAX && !self.relation_too_complex && self.reliability == 0
++            && !self.frames.iter().any(|frame| frame.tainted || frame.circular || frame.incomplete_flow)
++    }
++
++    /// Observe an existing source read without entering a query, opening a
++    /// memo scope, or changing any state that controls the source computation.
++    pub fn begin_environment_read(&mut self, value: NativeValueKey, input: NativeFlowKey) -> Option<NativeEnvironmentRead> {
++        let key = (value, input);
++        if value.snapshot != input.graph.snapshot || self.flow_memo.native_state.environment_origins.contains_key(&key) { return None; }
++        if let Some(generation) = self.flow_memo.native_state.environment_reads.get_mut(&key) {
++            // Reentry invalidates only the observation, never normal checking.
++            *generation = 0;
++            return None;
++        }
++        if !self.environment_read_is_clean() { return None; }
++        let generation = self.flow_memo.native_state.next_environment_read.checked_add(1)
++            .expect("native environment observation generation overflow");
++        self.flow_memo.native_state.next_environment_read = generation;
++        self.flow_memo.native_state.environment_reads.insert(key, generation);
++        Some(NativeEnvironmentRead {
++            key, generation, counters: self.non_cacheable_mark(), frames: self.frames.len(),
++            frame_serial: self.frames.last().map(|frame| frame.serial), taints: self.taints, cuts: self.cuts(),
++        })
++    }
++
++    pub fn end_environment_read(&mut self, read: NativeEnvironmentRead, origin: Option<super::native_globals::NativeEnvironmentId>, complete: bool) {
++        let generation = self.flow_memo.native_state.environment_reads.remove(&read.key);
++        if complete && generation == Some(read.generation)
++            && self.non_cacheable_mark() == read.counters && self.taints == read.taints && self.cuts() == read.cuts
++            && self.frames.len() == read.frames && self.frames.last().map(|frame| frame.serial) == read.frame_serial
++            && self.environment_read_is_clean() && !self.is_stack_low()
++            && let Some(origin) = origin
++            && self.native_globals_provider.is_some_and(|provider| provider.contains_global_environment(origin))
++        {
++            self.flow_memo.native_state.environment_origins.insert(read.key, origin);
++        }
++    }
++
++    pub fn cached_environment_origin(&self, value: NativeValueKey, input: NativeFlowKey) -> Option<super::native_globals::NativeEnvironmentId> {
++        self.flow_memo.native_state.environment_origins.get(&(value, input)).copied()
++    }
++
+     /// The value of an original recipe at its frozen input, through the same
+     /// cache flow walks use (stored only when the computation was stable).
+     pub fn native_flow_value_cached(&mut self, provider: &dyn NativeFlowProvider, value: NativeValueKey, input: NativeFlowKey) -> TypeId {
+@@ -1734,6 +1824,31 @@ impl<'s, 'p> Checker<'s, 'p> {
+         ty
+     }
+ 
++    fn native_flow_predicate_with_types(
++        &mut self,
++        provider: &dyn NativeFlowProvider,
++        at: NativeFlowKey,
++        reference: NativeReferenceKey,
++        predicate: &NativePredicate,
++    ) -> Result<Option<NativePredicate>, ()> {
++        if !provider.predicate_needs_types(at, reference, predicate) { return Ok(None); }
++        let epoch = self.flow_memo.native_state.effect_epoch;
++        let key = (at, epoch);
++        if let Some(cached) = self.flow_memo.native_state.typed_predicates.get(&key) { return Ok(Some(cached.clone())); }
++        let query = super::Query::NativeFlowPredicate(at, epoch);
++        if !self.enter(query) { return Err(()); }
++        let begun = self.begin_memoizable();
++        let typed = provider.predicate_with_types(at, predicate.clone(), self);
++        let stored = self.end_memoizable(begun);
++        if self.leave(query).is_ok() && stored.is_some() && !self.is_stack_low() {
++            // Ordinary lexical predicates keep no additional cache entries.
++            if let Some(ref typed) = typed {
++                self.flow_memo.native_state.typed_predicates.insert(key, typed.clone());
++            }
++            Ok(typed)
++        } else { Err(()) }
++    }
++
+     fn native_flow_call_type_predicate(
+         &mut self,
+         provider: &dyn NativeFlowProvider,
+diff --git a/src/sema/check/sink.rs b/src/sema/check/sink.rs
+index 7bdea92..ff784dd 100644
+--- a/src/sema/check/sink.rs
++++ b/src/sema/check/sink.rs
+@@ -271,7 +271,7 @@ fn is_task_independent(q: Query) -> bool {
+         | Query::Comparison(_) => true,
+         Query::NativeGlobals(_)
+         | Query::NativeContextualTypeOwner(..)
+-        | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallTypePredicate(..) | Query::NativeSignatureTypePredicate(..) | Query::NativeFlowValue(..)
++        | Query::NativeFlowCallEffects(..) | Query::NativeFlowCallTypePredicate(..) | Query::NativeFlowPredicate(..) | Query::NativeSignatureTypePredicate(..) | Query::NativeFlowValue(..)
+         | Query::NativeAlias(..) | Query::NativeAliasValue(..) | Query::NativeAliasReturn(..) | Query::NativeCallPreserves(..) | Query::NativeAliasMetatableAbsence(..)
+         | Query::NativeAliasLoaderState(..)
+         | Query::NativeAliasNewIndexAbsence(..) | Query::NativeAliasMetatableCall(..)

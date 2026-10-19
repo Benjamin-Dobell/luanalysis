@@ -16,6 +16,10 @@ builds and tests before measuring. See `--help` for environment-variable
 equivalents and optional settings. Corpus roots are needed only for their
 selected workloads; for a synthetic-only comparison, pass `--workload
 boolean128 --workload predicate128`. `PYTHON_BIN` selects the Python executable.
+The runner rejects byte-identical baseline/current executables before creating
+evidence or launching measurements. Freeze Cargo's `target/release/luanalysis-cli`
+after each build; an older renamed `luanalysis` artifact can otherwise be copied
+by mistake.
 
 The defaults are one warmup and five measured rounds per variant, with a
 180-second process timeout. Paired workloads run baseline/current, then
@@ -27,6 +31,18 @@ and a 60-second timeout for investigation.
 guard conditions per function and three parameter reads in each branch. The
 predicate copies change only the guard's return annotation. Both branches are
 valid without narrowing; functional regressions separately verify narrowed APIs.
+
+`environment128` and `environment256` use the same function/guard/read counts
+with a nullable global and `_G.globalValue ~= nil` conditions. Three global
+reads in each branch remain valid without narrowing, so baseline/current full
+reports can match while measuring original-environment flow costs. These run
+both binaries with the same five alternating pairs as the boolean controls.
+
+`environment-bare128` and `environment-bare256` copy the corresponding
+environment fixtures, changing only guard conditions to `globalValue ~= nil`;
+all branch reads retain `_G.globalValue`. For the original `_G` follow-up, both
+snapshots already narrow through these bare-global guards, providing a paired
+control where both revisions perform the same narrowed-flow work.
 
 `metrics.py` measures fresh CLI processes with monotonic wall time and
 `os.wait4` child resource usage. It reports user/system/total CPU time and peak

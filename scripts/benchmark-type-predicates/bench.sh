@@ -29,7 +29,7 @@ Usage: bash scripts/benchmark-type-predicates/bench.sh [options]
   --timeout SECONDS     Timeout per process (default: 180)
   --quick               One measured round and a 60-second timeout
   --help                Show this usage text
-Workloads: luals-j1 luals-j10 ge-tts-j1 ge-tts-j10 boolean128 boolean256 predicate128 predicate256
+Workloads: luals-j1 luals-j10 ge-tts-j1 ge-tts-j10 boolean128 boolean256 predicate128 predicate256 environment128 environment256 environment-bare128 environment-bare256
 Corpus roots are required only for their selected workloads. No builds are run.
 USAGE
 }
@@ -57,10 +57,14 @@ while (($#)); do
 done
 [[ $rounds =~ ^[1-9][0-9]*$ && $warmups =~ ^[0-9]+$ && $timeout =~ ^[1-9][0-9]*([.][0-9]+)?$ ]] || { printf 'Invalid rounds/warmups/timeout\n' >&2; exit 2; }
 [[ -x $baseline && -x $current ]] || { printf 'Both frozen binaries must exist before running\n' >&2; exit 2; }
+if cmp -s "$baseline" "$current"; then
+    printf 'Baseline and current binaries are byte-identical; freeze the intended distinct builds before measuring (Cargo target: target/release/luanalysis-cli).\n' >&2
+    exit 2
+fi
 baseline=$(cd -- "$(dirname -- "$baseline")" && printf '%s/%s\n' "$PWD" "$(basename -- "$baseline")")
 current=$(cd -- "$(dirname -- "$current")" && printf '%s/%s\n' "$PWD" "$(basename -- "$current")")
 repo=$(cd -- "$repo" && pwd -P)
-all_workloads=(luals-j1 luals-j10 ge-tts-j1 ge-tts-j10 boolean128 boolean256 predicate128 predicate256)
+all_workloads=(luals-j1 luals-j10 ge-tts-j1 ge-tts-j10 boolean128 boolean256 predicate128 predicate256 environment128 environment256 environment-bare128 environment-bare256)
 if ((${#selected[@]} == 0)); then selected=("${all_workloads[@]}"); fi
 need_lua=false
 need_pi=false
@@ -147,7 +151,7 @@ run_one() {
             command=("$checker" check --format json --lua-version 5.2 --jobs "$jobs"
                 --library "$pi/lib/tts-types" --module-root "$pi/lib" --package-path '?.ttslua;?/init.ttslua;?.lua;?/init.lua'
                 "$pi/lib/ge_tts") ;;
-        boolean*|predicate*)
+        boolean*|predicate*|environment*)
             command=("$checker" check --format json --lua-version 5.4 --jobs 1 "$workloads/$workload.lua") ;;
     esac
     "$python_bin" "$helper" run --prefix "$output/runs/$workload/$variant-$phase$round" \

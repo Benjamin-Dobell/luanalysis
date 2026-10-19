@@ -81,6 +81,12 @@ pub trait NativeFlowProvider {
     /// No source in the project may mutate the module loader.
     fn loader_never_mutated(&self, _: NativeGraphKey) -> bool { false }
     fn assertion_predicate(&self, _: NativeValueKey, _: NativeFlowKey) -> Option<NativePredicate> { None }
+    /// Resolve frozen predicate receiver identities; None keeps the source recipe.
+    /// This hook is never called by structural reachability.
+    /// Pure source-presence gate for frozen predicate address resolution.
+    fn predicate_needs_types(&self, _: NativeFlowKey, _: NativeReferenceKey, _: &NativePredicate) -> bool { false }
+    fn predicate_with_types(&self, _: NativeFlowKey, _: NativePredicate, _: &mut dyn TypeQueries) -> Option<NativePredicate> { None }
+
     fn call_type_predicate(&self, _: NativeValueKey, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Option<super::TypePredicate> { None }
     fn reference_declaration(&self, _: NativeReferenceKey) -> Option<NativeVariableDeclaration> { None }
     fn graph_creation(&self, _: NativeGraphKey) -> Option<NativeFunctionCreation> { None }
@@ -225,6 +231,13 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
     fn assertion_predicate(&self, condition: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> {
         self.provider.assertion_predicate(condition, input)
     }
+    fn predicate_needs_types(&self, at: NativeFlowKey, reference: NativeReferenceKey, predicate: &NativePredicate) -> bool {
+        self.provider.predicate_needs_types(at, reference, predicate)
+    }
+    fn predicate_with_types(&self, at: NativeFlowKey, predicate: NativePredicate, checker: &mut Checker<'_, '_>) -> Option<NativePredicate> {
+        self.provider.predicate_with_types(at, predicate, &mut SessionQueries { checker, handles: self.handles })
+    }
+
     fn call_type_predicate(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::check::native_signatures::NativeTypePredicate> {
         let predicate = self.provider.call_type_predicate(value, input, &mut SessionQueries { checker, handles: self.handles })?;
         Some(bun_sema::check::native_signatures::NativeTypePredicate { parameter: predicate.parameter, ty: import_type(checker, self.handles, &predicate.ty) })

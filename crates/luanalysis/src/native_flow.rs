@@ -1229,6 +1229,16 @@ impl NativeFlowSources {
         key: NativeFlowKey,
         evaluation: &flow::Evaluation,
     ) -> NativePredicate {
+        self.predicate_evaluation_with_references(key, evaluation, &mut |evaluation, graph| self.predicate_reference(evaluation, graph))
+    }
+
+    fn predicate_evaluation_with_references<R>(
+        &self,
+        key: NativeFlowKey,
+        evaluation: &flow::Evaluation,
+        reference: &mut R,
+    ) -> NativePredicate
+    where R: FnMut(&flow::Evaluation, NativeGraphKey) -> Option<NativeReferenceKey> {
         let expression = evaluation.expression;
         let source = &self.program.expression(expression).expression;
         let argument_start = match &source.kind {
@@ -1244,7 +1254,7 @@ impl NativeFlowSources {
                 frozen &= self.guard_argument_is_frozen(argument);
                 if !frozen { return None; }
                 let argument = self.program.evaluation(argument);
-                self.predicate_reference(argument, key.graph)
+                reference(argument, key.graph)
             }).collect();
             arguments.reverse();
             return NativePredicate::Call {
@@ -1257,7 +1267,7 @@ impl NativeFlowSources {
         match &source.kind {
             ExprKind::Parenthesized(_) => {
                 if let Some(inner) = evaluation.operands.first() {
-                    return self.predicate_evaluation(key, self.program.evaluation(*inner));
+                    return self.predicate_evaluation_with_references(key, self.program.evaluation(*inner), reference);
                 }
             }
             ExprKind::Unary {
@@ -1266,7 +1276,7 @@ impl NativeFlowSources {
             } => {
                 if let Some(inner) = evaluation.operands.first() {
                     return NativePredicate::Not(Box::new(
-                        self.predicate_evaluation(key, self.program.evaluation(*inner)),
+                        self.predicate_evaluation_with_references(key, self.program.evaluation(*inner), reference),
                     ));
                 }
             }
@@ -1275,10 +1285,10 @@ impl NativeFlowSources {
                 ..
             } if evaluation.operands.len() == 2 => {
                 let left = Box::new(
-                    self.predicate_evaluation(key, self.program.evaluation(evaluation.operands[0])),
+                    self.predicate_evaluation_with_references(key, self.program.evaluation(evaluation.operands[0]), reference),
                 );
                 let right = Box::new(
-                    self.predicate_evaluation(key, self.program.evaluation(evaluation.operands[1])),
+                    self.predicate_evaluation_with_references(key, self.program.evaluation(evaluation.operands[1]), reference),
                 );
                 return if matches!(
                     &source.kind,
@@ -1319,7 +1329,7 @@ impl NativeFlowSources {
                                 operand = self.program.evaluation(inner);
                             }
                             ExprKind::Call { .. } | ExprKind::MethodCall { .. } => {
-                                let mut predicate = self.predicate_evaluation(key, call);
+                                let mut predicate = self.predicate_evaluation_with_references(key, call, reference);
                                 let mut negated = value != equals;
                                 while let NativePredicate::Not(operand) = predicate {
                                     predicate = *operand;
@@ -1339,15 +1349,15 @@ impl NativeFlowSources {
                     }
                 }
                 if let Some(predicate) = self
-                    .runtime_type_predicate(key, left, right, equals)
-                    .or_else(|| self.runtime_type_predicate(key, right, left, equals))
+                    .runtime_type_predicate(key, left, right, equals, reference)
+                    .or_else(|| self.runtime_type_predicate(key, right, left, equals, reference))
                 {
                     return predicate;
                 }
-                let pair = self.predicate_reference(left, key.graph)
-                    .map(|reference| (reference, right))
-                    .or_else(|| self.predicate_reference(right, key.graph)
-                        .map(|reference| (reference, left)));
+                let pair = reference(left, key.graph)
+                    .map(|subject| (subject, right))
+                    .or_else(|| reference(right, key.graph)
+                        .map(|subject| (subject, left)));
                 if let Some((subject, other)) = pair {
                     return NativePredicate::Equal {
                         subject,
@@ -1365,7 +1375,7 @@ impl NativeFlowSources {
             }
         }
         NativePredicate::Truthy {
-            subject: self.predicate_reference(evaluation, key.graph),
+            subject: reference(evaluation, key.graph),
             value: self.evaluation_value(evaluation.id),
             input: self.flow_key(evaluation.input, key.graph.context),
         }
@@ -1388,13 +1398,15 @@ impl NativeFlowSources {
         }
     }
 
-    fn runtime_type_predicate(
+    fn runtime_type_predicate<R>(
         &self,
         key: NativeFlowKey,
         call: &flow::Evaluation,
         literal: &flow::Evaluation,
         equals: bool,
-    ) -> Option<NativePredicate> {
+        reference: &mut R,
+    ) -> Option<NativePredicate>
+    where R: FnMut(&flow::Evaluation, NativeGraphKey) -> Option<NativeReferenceKey> {
         if !self.runtime_type_intrinsic_enabled { return None; }
         let mut call = call;
         while matches!(
@@ -1431,7 +1443,7 @@ impl NativeFlowSources {
         };
         let argument = self.program.evaluation(*call.operands.get(1)?);
         Some(NativePredicate::RuntimeType {
-            subject: self.predicate_reference(argument, key.graph)?,
+            subject: reference(argument, key.graph)?,
             value: self.evaluation_value(argument.id),
             input: self.flow_key(argument.input, key.graph.context),
             kind,
@@ -1647,6 +1659,7 @@ fn intern_reference(
 }
 
 pub(super) trait FlowValueQueries {
+    fn predicate_environment_reference(&self, _: &NativeFlowSources, _: &flow::Evaluation, _: NativeGraphKey, _: &mut dyn TypeQueries) -> Option<NativeReferenceKey> { None }
     fn flow_call_type_predicate(&self, _: &NativeFlowSources, _: &ValueRecipe, _: NativeFlowKey, _: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypePredicate> { None }
     fn runtime_table_store_in_scope(&self, _: luanalysis_engine::NativeTypeDeclarationKey, _: NativeFlowKey) -> bool { false }
     fn alias_value_type(&self, sources:&NativeFlowSources, value:&ValueRecipe, input:NativeFlowKey, queries:&mut dyn TypeQueries)->Type {self.flow_value_type(sources,value,input,queries)}
@@ -1702,6 +1715,41 @@ pub(super) struct FlowAdapter<'a> {
 }
 
 impl FlowAdapter<'_> {
+    fn predicate_reference_needs_types(&self, reference: NativeReferenceKey) -> bool {
+        let Some(reference) = self.sources.source_reference(reference) else { return false };
+        if reference.path.is_empty() || matches!(reference.path.last(), Some(flow::Key::Dynamic(_))) { return false; }
+        match reference.root {
+            flow::ReferenceRoot::EnvironmentCell => reference.path.len() > 1
+                && matches!(reference.path.first(), Some(flow::Key::String(name)) if name == b"_G"),
+            flow::ReferenceRoot::Binding(binding) => self.sources.environment_candidate(binding),
+            _ => false,
+        }
+    }
+
+    fn predicate_has_environment_subject(&self, predicate: &NativePredicate, query: NativeReferenceKey) -> bool {
+        let relevant = |reference| {
+            if !self.predicate_reference_needs_types(reference) { return false; }
+            let Some(subject) = self.sources.source_reference(reference) else { return false; };
+            let Some(query) = self.sources.source_reference(query) else { return false; };
+            // Resolve only when either the lexical address or its possible
+            // canonical global member can affect this reference. This is a
+            // relevance test, not a proof that the receiver is the environment.
+            let raw = subject.root == query.root && (subject.path == query.path
+                || subject.path.len() == query.path.len() + 1 && subject.path.starts_with(&query.path));
+            let canonical = query.root == flow::ReferenceRoot::EnvironmentObject
+                && (query.path.is_empty() || query.path.len() == 1 && query.path.last() == subject.path.last());
+            raw || canonical
+        };
+        match predicate {
+            NativePredicate::And(left, right) | NativePredicate::Or(left, right) => self.predicate_has_environment_subject(left, query) || self.predicate_has_environment_subject(right, query),
+            NativePredicate::Not(inner) => self.predicate_has_environment_subject(inner, query),
+            NativePredicate::Truthy { subject, .. } => subject.is_some_and(relevant),
+            NativePredicate::Equal { subject, .. } | NativePredicate::RuntimeType { subject, .. } => relevant(*subject),
+            NativePredicate::Call { arguments, .. } => arguments.iter().flatten().any(|&reference| relevant(reference)),
+            _ => false,
+        }
+    }
+
     /// Some(None) certifies raw absence in this complete original literal;
     /// None leaves the recipe unsupported. No inferred property view is used.
     fn alias_literal_member(&self, value: NativeValueKey, input: NativeFlowKey, key: &luanalysis_engine::LuaKey) -> Option<Option<luanalysis_engine::NativeAliasReturnValue>> {
@@ -1885,6 +1933,36 @@ impl FlowAdapter<'_> {
 }
 
 impl NativeFlowProvider for FlowAdapter<'_> {
+    fn predicate_needs_types(&self, _: NativeFlowKey, reference: NativeReferenceKey, predicate: &NativePredicate) -> bool {
+        self.predicate_has_environment_subject(predicate, reference)
+    }
+
+    fn predicate_with_types(&self, at: NativeFlowKey, _predicate: NativePredicate, queries: &mut dyn TypeQueries) -> Option<NativePredicate> {
+        let node = self.sources.source_node(at)?;
+        let evaluation = match &node.kind {
+            flow::NodeKind::Predicate { predicate: flow::Predicate::Expression(expression), .. } => {
+                *self.sources.predicate_evaluations.get(&(*expression, *node.antecedents.first()?))?
+            }
+            // Only the native assertion-effect transfer reaches this hook for
+            // a call node. Its first physical argument owns the condition.
+            flow::NodeKind::Call { evaluation, .. } => {
+                let call = self.sources.program.evaluation(*evaluation);
+                let first = match self.sources.program.expression(call.expression).expression.kind {
+                    ExprKind::Call { .. } => 1,
+                    ExprKind::MethodCall { .. } => 0,
+                    _ => return None,
+                };
+                *call.operands.get(first)?
+            }
+            _ => return None,
+        };
+        Some(self.sources.predicate_evaluation_with_references(at, self.sources.program.evaluation(evaluation), &mut |evaluation, graph| {
+            let reference = self.sources.predicate_reference(evaluation, graph)?;
+            if !self.predicate_reference_needs_types(reference) { return Some(reference); }
+            self.values.predicate_environment_reference(self.sources, evaluation, graph, queries).or(Some(reference))
+        }))
+    }
+
     fn alias_environment_candidate(&self, value:NativeValueKey, _:NativeFlowKey)->bool {
         let evaluation=match self.sources.value(value) {
             Some(ValueRecipe::Evaluation(evaluation)|ValueRecipe::PackElement {evaluation,index:0})=>self.sources.program.evaluation(*evaluation),

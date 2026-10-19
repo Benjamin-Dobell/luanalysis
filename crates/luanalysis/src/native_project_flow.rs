@@ -68,6 +68,8 @@ impl NativeFlowProvider for ProjectRegistry {
         fn value_lexical_standard(value: NativeValueKey, input: NativeFlowKey) -> NativeLexicalStandard { value.snapshot; NativeLexicalStandard::Unknown }
         fn loader_never_mutated(graph: NativeGraphKey) -> bool { graph.snapshot; false }
         fn assertion_predicate(value: NativeValueKey, input: NativeFlowKey) -> Option<NativePredicate> { value.snapshot; None }
+        fn predicate_needs_types(at: NativeFlowKey, reference: NativeReferenceKey, predicate: &NativePredicate) -> bool { at.graph.snapshot; false }
+        fn predicate_with_types(at: NativeFlowKey, predicate: NativePredicate, queries: &mut dyn TypeQueries) -> Option<NativePredicate> { at.graph.snapshot; None }
         fn call_type_predicate(value: NativeValueKey, input: NativeFlowKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypePredicate> { value.snapshot; None }
         fn reference_declaration(reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> { reference.graph.snapshot; None }
         fn graph_creation(graph: NativeGraphKey) -> Option<NativeFunctionCreation> { graph.snapshot; None }
