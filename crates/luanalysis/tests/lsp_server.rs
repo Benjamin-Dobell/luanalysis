@@ -217,7 +217,7 @@ fn requests_before_initialize_and_unknown_requests_are_errors() {
     let early = server.wait(|message| message.contains(r#""id":7"#));
     assert!(early.contains("-32002"), "{early}");
     server.initialize(&root);
-    server.send(r#"{"jsonrpc":"2.0","id":8,"method":"textDocument/formatting","params":{}}"#);
+    server.send(r#"{"jsonrpc":"2.0","id":8,"method":"textDocument/unsupportedRequest","params":{}}"#);
     let unknown = server.wait(|message| message.contains(r#""id":8"#));
     assert!(unknown.contains("-32601"), "{unknown}");
     server.finish();
@@ -611,7 +611,7 @@ fn documents_and_the_workspace_list_their_symbols() {
     // The workspace's symbols, by a query whose characters a name contains in order.
     server.send(r#"{"jsonrpc":"2.0","id":4,"method":"workspace/symbol","params":{"query":"plen"}}"#);
     let response = server.wait(|message| message.contains(r#""id":4,"#));
-    assert!(response.contains(r#""name":"Point:length","kind":6"#) && response.contains(&uri(&shapes)), "{response}");
+    assert!(response.contains(r#""name":"length","kind":6"#) && response.contains(r#""containerName":"Point""#) && response.contains(&uri(&shapes)), "{response}");
     assert!(!response.contains(r#""name":"show""#), "{response}");
     server.finish();
 }

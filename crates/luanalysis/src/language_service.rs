@@ -924,7 +924,8 @@ fn is_identifier(name: &str) -> bool {
 pub struct SignatureSite {
     /// The editor's text, repaired to parse if it does not.
     pub text: String,
-    /// The call's `(`, at the same offset in the editor's text and in `text`.
+    /// The call's `(`, or the argument delimiter of a shorthand string call, at the
+    /// same offset in the editor's text and in `text`.
     pub open: usize,
     /// The argument the cursor is in, counted from 0.
     pub argument: usize,
@@ -955,23 +956,24 @@ pub struct SignatureHelp {
     pub active_parameter: usize,
 }
 
-/// The call whose arguments surround a byte offset of `text`, or `None` outside one, in a
-/// comment or a string, or in a function's parameter list.
+/// The call whose arguments surround a byte offset of `text`, including the contents of
+/// quoted and long-string arguments, or `None` in a comment or a function's parameter list.
 pub fn signature_site(text: &str, offset: usize) -> Option<SignatureSite> {
     let offset = floor_char_boundary(text, offset);
-    let head = &text[..offset];
-    let tokens = luanalysis_syntax::lex(head).tokens;
-    // A comment or a string still open at the cursor is a token that ends there, unclosed.
-    let inside = tokens.iter().any(|token| token.span.end == offset && match &token.kind {
-        TokenKind::Comment(comment) => comment.kind != CommentKind::Long || !head[token.span.start..].ends_with(']'),
-        TokenKind::String(_) => !closed_string(&head[token.span.start..]),
+    // Lex the complete buffer: truncating at the caret makes an otherwise complete string
+    // look unterminated. Its punctuation still belongs to the literal, never to the call.
+    let tokens = luanalysis_syntax::lex(text).tokens;
+    if tokens.iter().any(|token| token.span.start < offset && match &token.kind {
+        TokenKind::Comment(comment) => offset < token.span.end
+            || offset == token.span.end && comment.kind != CommentKind::Long,
         _ => false,
-    });
-    if inside { return None; }
+    }) { return None; }
     let significant: Vec<_> = tokens.iter()
-        .filter(|token| !matches!(token.kind, TokenKind::Newline | TokenKind::Comment(_) | TokenKind::Eof))
+        .filter(|token| token.span.start < offset
+            && !matches!(token.kind, TokenKind::Newline | TokenKind::Comment(_) | TokenKind::Eof))
         .collect();
-    // Open brackets, each with the commas directly inside it.
+    // Open brackets, each with the commas directly inside it. A string is a single token,
+    // even when the caret is in it, so nested calls and long strings count correctly.
     let mut open: Vec<(usize, usize)> = Vec::new();
     for (index, token) in significant.iter().enumerate() {
         let TokenKind::Symbol(symbol) = &token.kind else { continue };
@@ -982,30 +984,64 @@ pub fn signature_site(text: &str, offset: usize) -> Option<SignatureSite> {
             _ => {}
         }
     }
-    let &(index, argument) = open.iter().rev().find(|&&(index, _)| {
+    let mut call = open.iter().rev().find(|&&(index, _)| {
         matches!(&significant[index].kind, TokenKind::Symbol(symbol) if symbol == "(") && is_call_paren(&significant, index)
-    })?;
-    let paren = significant[index].span.start;
+    }).map(|&(index, argument)| (significant[index].span.start, argument));
+    // Lua also permits `require "name"` and `consume [=[text]=]`. Their string
+    // delimiter opens the argument list; prefer this inner call to an enclosing `(`.
+    if let Some(literal) = tokens.iter().find(|token| matches!(token.kind, TokenKind::String(_))
+        && token.span.start <= offset && offset <= token.span.end)
+    {
+        let parsed = luanalysis_syntax::parse(text);
+        crate::module_requests::visit_expressions(&parsed.statements, &mut |expression: &Expr| {
+            let (end, args) = match &expression.kind {
+                ExprKind::Call { callee, args } => (callee.span.end, args),
+                ExprKind::MethodCall { name, args, .. } => (name.span.end, args),
+                _ => return,
+            };
+            if args.first().is_some_and(|argument| argument.span == literal.span)
+                && text.get(end..literal.span.start).is_some_and(|between| between.trim().is_empty())
+                && call.is_none_or(|(open, _)| open < literal.span.start)
+            { call = Some((literal.span.start, 0)); }
+        });
+    }
+    let (paren, argument) = call?;
+    let head = &text[..offset];
     let tail = &text[offset..];
     let mut candidates = vec![text.to_owned(), format!("{head}{PLACEHOLDER}{tail}")];
+    // A partially typed literal is closed before its call is repaired. A trailing backslash
+    // must not escape the synthetic quote. Long brackets must keep their exact '=' level.
+    if let Some(token) = significant.last().filter(|token| matches!(token.kind, TokenKind::String(_)) && offset <= token.span.end) {
+        let literal = &text[token.span.start..offset];
+        if let Some(closer) = string_closer(literal) {
+            let prefix = format!("{head}{closer}");
+            let closing = closers(&prefix);
+            candidates.push(prefix + &closing);
+        }
+    }
     for argument in ["", PLACEHOLDER] {
         let prefix = format!("{head}{argument}");
-        let closers = closers(&prefix);
-        candidates.push(prefix + &closers);
+        let closing = closers(&prefix);
+        candidates.push(prefix + &closing);
     }
     let text = repaired(candidates, |_| true)?;
     Some(SignatureSite { text, open: paren, argument })
 }
 
-/// Whether a string token is closed, as `"text"` is and `"text` is not.
-fn closed_string(token: &str) -> bool {
+/// What completes a prefix of a Lua string token. The lexer, rather than character scanning,
+/// identifies the token; this only closes its delimiter for incomplete-buffer recovery.
+fn string_closer(token: &str) -> Option<String> {
     let bytes = token.as_bytes();
     match bytes.first() {
         Some(&quote @ (b'"' | b'\'')) => {
-            bytes.len() >= 2 && bytes[bytes.len() - 1] == quote
-                && bytes[1..bytes.len() - 1].iter().rev().take_while(|&&byte| byte == b'\\').count() % 2 == 0
+            let trailing = bytes.iter().rev().take_while(|&&byte| byte == b'\\').count();
+            Some(format!("{}{}", if trailing % 2 == 1 { "\\" } else { "" }, quote as char))
         }
-        _ => token.ends_with(']'),
+        Some(b'[') => {
+            let level = bytes.iter().skip(1).take_while(|&&byte| byte == b'=').count();
+            (bytes.get(level + 1) == Some(&b'[')).then(|| format!("]{}]", "=".repeat(level)))
+        }
+        _ => None,
     }
 }
 
@@ -1993,133 +2029,358 @@ pub struct DocumentSymbol {
     pub children: Vec<DocumentSymbol>,
 }
 
-/// The outline of a Lua source: its classes, shapes and aliases with their fields, its functions
-/// and methods with the functions inside them, and its top-level locals and globals, with a
-/// table constructor's keys.
+/// The outline of the current source, with runtime members grouped under their lexical
+/// owner (including the nominal class attached to a differently named runtime local).
+/// A parent's range contains all its children, even when members are declared later.
 pub fn document_symbols(text: &str) -> Vec<DocumentSymbol> {
     let file = luanalysis_syntax::parse(text);
-    let slice = |span: Span| text.get(span.start..span.end).unwrap_or_default().to_owned();
-    let mut symbols = Vec::new();
-    for declaration in &file.type_declarations {
-        let (kind, fields) = match &declaration.kind {
-            luanalysis_syntax::NamedTypeDeclarationKind::Alias { target } => (SymbolKind::Alias, (Vec::new(), Some(slice(target.span)))),
-            luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor, fields, .. } => {
-                let kind = match flavor {
+    let mut outline = Outline {
+        text,
+        declarations: &file.type_declarations,
+        type_nodes: vec![None; file.type_declarations.len()],
+        nodes: Vec::new(),
+        roots: Vec::new(),
+        scopes: Vec::new(),
+    };
+    let scope = outline.scope(None, None, file.span, true);
+    outline.statements(&file.statements, scope);
+    outline.finish(None)
+}
+
+struct OutlineNode {
+    symbol: DocumentSymbol,
+    parent: Option<usize>,
+    children: Vec<usize>,
+}
+
+struct OutlineScope {
+    parent: Option<usize>,
+    owner: Option<usize>,
+    span: Span,
+    direct_locals: bool,
+    // A hidden block local still shadows an outer outline owner.
+    bindings: Vec<(String, Option<usize>)>,
+}
+
+struct Outline<'a> {
+    text: &'a str,
+    declarations: &'a [luanalysis_syntax::NamedTypeDeclaration],
+    type_nodes: Vec<Option<usize>>,
+    nodes: Vec<OutlineNode>,
+    roots: Vec<usize>,
+    scopes: Vec<OutlineScope>,
+}
+
+impl Outline<'_> {
+    fn slice(&self, span: Span) -> String {
+        self.text.get(span.start..span.end).unwrap_or_default().to_owned()
+    }
+
+    fn scope(&mut self, parent: Option<usize>, owner: Option<usize>, span: Span, direct_locals: bool) -> usize {
+        let id = self.scopes.len();
+        self.scopes.push(OutlineScope { parent, owner, span, direct_locals, bindings: Vec::new() });
+        id
+    }
+
+    fn bind(&mut self, scope: usize, name: String, node: Option<usize>) {
+        self.scopes[scope].bindings.push((name, node));
+    }
+
+    fn lookup(&self, mut scope: usize, name: &str) -> Option<Option<usize>> {
+        loop {
+            if let Some((_, node)) = self.scopes[scope].bindings.iter().rev().find(|(binding, _)| binding == name) {
+                return Some(*node);
+            }
+            scope = self.scopes[scope].parent?;
+        }
+    }
+
+    fn add(&mut self, parent: Option<usize>, symbol: DocumentSymbol) -> usize {
+        let id = self.nodes.len();
+        if let Some(parent) = parent { self.nodes[parent].children.push(id); } else { self.roots.push(id); }
+        self.nodes.push(OutlineNode { symbol, parent, children: Vec::new() });
+        id
+    }
+
+    fn child(&self, parent: usize, name: &str) -> Option<usize> {
+        self.nodes[parent].children.iter().copied().find(|&child| self.nodes[child].symbol.name == name)
+    }
+
+    fn symbol(name: String, kind: SymbolKind, range: Span, selection: Span) -> DocumentSymbol {
+        DocumentSymbol { name, detail: None, kind, range, selection, children: Vec::new() }
+    }
+
+    /// Install documentation in source order before its following runtime statement. Nested
+    /// scopes consume their own declarations before their parent reaches the next statement.
+    fn types_before(&mut self, end: usize, scope: usize) {
+        let declarations = self.declarations;
+        for (index, declaration) in declarations.iter().enumerate() {
+            if self.type_nodes[index].is_some() || declaration.span.start < self.scopes[scope].span.start || declaration.group_span.end > end {
+                continue;
+            }
+            let kind = match &declaration.kind {
+                luanalysis_syntax::NamedTypeDeclarationKind::Alias { .. } => SymbolKind::Alias,
+                luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor, .. } => match flavor {
                     luanalysis_syntax::NamedRecordKind::Class => SymbolKind::Class,
                     luanalysis_syntax::NamedRecordKind::Shape => SymbolKind::Interface,
                     luanalysis_syntax::NamedRecordKind::Module => SymbolKind::Module,
-                };
-                let children = fields.iter().filter_map(|field| match &field.key {
-                    luanalysis_syntax::TypeFieldKey::Named(name) => Some(DocumentSymbol {
-                        name: name.text.clone(), detail: Some(slice(field.ty.span)), kind: SymbolKind::Field,
-                        range: field.span, selection: name.span, children: Vec::new(),
-                    }),
-                    _ => None,
-                }).collect();
-                (kind, (children, None))
-            }
-        };
-        let range = declaration.span.join(declaration.name.span);
-        let range = fields.0.iter().fold(range, |range, field| range.join(field.range));
-        symbols.push(DocumentSymbol { name: declaration.name.text.clone(), detail: fields.1, kind, range, selection: declaration.name.span, children: fields.0 });
-    }
-    statement_symbols(&file.statements, text, true, &mut symbols);
-    symbols.sort_by_key(|symbol| (symbol.range.start, symbol.range.end));
-    symbols
-}
-
-fn statement_symbols(statements: &[luanalysis_syntax::Stmt], text: &str, top: bool, symbols: &mut Vec<DocumentSymbol>) {
-    use luanalysis_syntax::StmtKind;
-    let slice = |span: Span| text.get(span.start..span.end).unwrap_or_default().to_owned();
-    for statement in statements {
-        match &statement.kind {
-            StmtKind::LocalFunction { name, function } => symbols.push(function_symbol(name.text.clone(), SymbolKind::Function, statement.span, name.span, function, text)),
-            StmtKind::FunctionDeclaration { target, function, method_span } => {
-                let (kind, selection) = match &target.kind {
-                    ExprKind::Field { name, .. } => (if method_span.is_some() { SymbolKind::Method } else { SymbolKind::Function }, name.span),
-                    _ => (SymbolKind::Function, target.span),
-                };
-                symbols.push(function_symbol(slice(target.span), kind, statement.span, selection, function, text));
-            }
-            StmtKind::Local { names, attributes, values, .. } if top => {
-                for (index, name) in names.iter().enumerate() {
-                    let constant = attributes.get(index).and_then(Option::as_ref).is_some_and(|attribute| attribute.text == "const");
-                    symbols.push(value_symbol(name.text.clone(), if constant { SymbolKind::Constant } else { SymbolKind::Variable }, statement.span, name.span, values.get(index), text));
+                },
+            };
+            let mut symbol = Self::symbol(declaration.name.text.clone(), kind, declaration.group_span, declaration.name.span);
+            if let luanalysis_syntax::NamedTypeDeclarationKind::Alias { target } = &declaration.kind { symbol.detail = Some(self.slice(target.span)); }
+            let node = self.add(self.scopes[scope].owner, symbol);
+            self.type_nodes[index] = Some(node);
+            if kind != SymbolKind::Alias { self.bind(scope, declaration.name.text.clone(), Some(node)); }
+            if let luanalysis_syntax::NamedTypeDeclarationKind::Record { fields, .. } = &declaration.kind {
+                for field in fields {
+                    if let luanalysis_syntax::TypeFieldKey::Named(name) = &field.key {
+                        let mut symbol = Self::symbol(name.text.clone(), SymbolKind::Field, field.span, name.span);
+                        symbol.detail = Some(self.slice(field.ty.span));
+                        self.add(Some(node), symbol);
+                    }
                 }
             }
-            StmtKind::Local { values, .. } => for value in values { nested_function_symbols(value, text, symbols); },
-            StmtKind::Assign { targets, values, .. } => {
-                for (index, target) in targets.iter().enumerate() {
-                    let selection = match &target.kind {
-                        ExprKind::Name(_) if top => target.span,
-                        ExprKind::Field { name, .. } if top => name.span,
-                        _ => {
-                            if let Some(value) = values.get(index) { nested_function_symbols(value, text, symbols); }
+        }
+    }
+
+    fn attached_records(&self, span: Span) -> Vec<usize> {
+        self.declarations.iter().enumerate().filter_map(|(index, declaration)| {
+            (declaration.attachment == Some(span) && matches!(declaration.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record { .. }))
+                .then_some(self.type_nodes[index]).flatten()
+        }).collect()
+    }
+
+    fn statements(&mut self, statements: &[luanalysis_syntax::Stmt], scope: usize) {
+        use luanalysis_syntax::StmtKind;
+        for statement in statements {
+            self.types_before(statement.span.start, scope);
+            let records = self.attached_records(statement.span);
+            match &statement.kind {
+                StmtKind::LocalFunction { name, function } => {
+                    let node = self.add(self.scopes[scope].owner, Self::symbol(name.text.clone(), SymbolKind::Function, statement.span, name.span));
+                    self.bind(scope, name.text.clone(), Some(node));
+                    self.function(node, function, scope, None);
+                }
+                StmtKind::FunctionDeclaration { target, function, method_span } => {
+                    let Some(path) = outline_path(target) else { continue };
+                    let Some((node, receiver)) = self.target(&path, scope, SymbolKind::Function, statement.span) else { continue };
+                    if path.len() > 1 || method_span.is_some() { self.nodes[node].symbol.kind = SymbolKind::Method; }
+                    self.function(node, function, scope, method_span.and(receiver));
+                }
+                StmtKind::Local { names, attributes, values, .. } => {
+                    let mut bindings = Vec::with_capacity(names.len());
+                    for (index, name) in names.iter().enumerate() {
+                        let value = values.get(index);
+                        let function = value.is_some_and(|value| matches!(value.kind, ExprKind::Function(_)));
+                        if !self.scopes[scope].direct_locals && !function && records.get(index).is_none() {
+                            bindings.push((name.text.clone(), None));
+                            if let Some(value) = value { self.nested(value, scope); }
                             continue;
                         }
+                        let node = if let Some(&record) = records.get(index) {
+                            self.nodes[record].symbol.range = self.nodes[record].symbol.range.join(statement.span);
+                            record
+                        } else {
+                            let constant = attributes.get(index).and_then(Option::as_ref).is_some_and(|attribute| attribute.text == "const");
+                            self.add(self.scopes[scope].owner, Self::symbol(name.text.clone(), if constant { SymbolKind::Constant } else { SymbolKind::Variable }, statement.span, name.span))
+                        };
+                        self.value(node, value, scope);
+                        bindings.push((name.text.clone(), Some(node)));
+                    }
+                    // Every initializer sees the old scope, before any names in this local
+                    // declaration enter it (including functions capturing a sibling name).
+                    for value in values.iter().skip(names.len()) { self.nested(value, scope); }
+                    for (name, node) in bindings { self.bind(scope, name, node); }
+                }
+                StmtKind::Assign { targets, values, .. } => {
+                    for (index, target) in targets.iter().enumerate() {
+                        let Some(path) = outline_path(target) else {
+                            if let Some(value) = values.get(index) { self.nested(value, scope); }
+                            continue;
+                        };
+                        let node = if let Some(&record) = records.get(index) {
+                            self.nodes[record].symbol.range = self.nodes[record].symbol.range.join(statement.span);
+                            if path.len() == 1 { self.bind(scope, path[0].0.clone(), Some(record)); }
+                            record
+                        } else {
+                            let Some((node, _)) = self.target(&path, scope, SymbolKind::Variable, statement.span) else { continue };
+                            node
+                        };
+                        self.value(node, values.get(index), scope);
+                    }
+                    for value in values.iter().skip(targets.len()) { self.nested(value, scope); }
+                }
+                StmtKind::Block { body, body_span } => {
+                    let nested = self.scope(Some(scope), self.scopes[scope].owner, *body_span, false);
+                    self.statements(body, nested);
+                }
+                StmtKind::While { condition, body, body_span } => {
+                    self.nested(condition, scope);
+                    let nested = self.scope(Some(scope), self.scopes[scope].owner, *body_span, false);
+                    self.statements(body, nested);
+                }
+                StmtKind::Repeat { body, body_span, condition } => {
+                    let nested = self.scope(Some(scope), self.scopes[scope].owner, *body_span, false);
+                    self.statements(body, nested);
+                    self.nested(condition, nested);
+                }
+                StmtKind::NumericFor { name, start, limit, step, body, body_span } => {
+                    self.nested(start, scope);
+                    self.nested(limit, scope);
+                    if let Some(step) = step { self.nested(step, scope); }
+                    let nested = self.scope(Some(scope), self.scopes[scope].owner, *body_span, false);
+                    self.bind(nested, name.text.clone(), None);
+                    self.statements(body, nested);
+                }
+                StmtKind::GenericFor { names, values, body, body_span } => {
+                    for value in values { self.nested(value, scope); }
+                    let nested = self.scope(Some(scope), self.scopes[scope].owner, *body_span, false);
+                    for name in names { self.bind(nested, name.text.clone(), None); }
+                    self.statements(body, nested);
+                }
+                StmtKind::If { branches, else_branch } => {
+                    for branch in branches {
+                        self.nested(&branch.condition, scope);
+                        let nested = self.scope(Some(scope), self.scopes[scope].owner, branch.body_span, false);
+                        self.statements(&branch.body, nested);
+                    }
+                    if let Some(branch) = else_branch {
+                        let nested = self.scope(Some(scope), self.scopes[scope].owner, branch.body_span, false);
+                        self.statements(&branch.body, nested);
+                    }
+                }
+                StmtKind::Call(value) => self.nested(value, scope),
+                StmtKind::Return(values) => for value in values { self.nested(value, scope); },
+                _ => {}
+            }
+        }
+        self.types_before(self.scopes[scope].span.end, scope);
+    }
+
+    /// Resolve each written path through the nearest lexical binding. Unknown namespace
+    /// prefixes get real source selections; a shadowing hidden local never picks an outer class.
+    fn target(&mut self, path: &[(String, Span)], scope: usize, kind: SymbolKind, range: Span) -> Option<(usize, Option<usize>)> {
+        let (name, selection) = path.first()?;
+        let root = match self.lookup(scope, name) {
+            Some(Some(node)) => node,
+            Some(None) => return None,
+            None => {
+                let node = self.add(self.scopes[scope].owner, Self::symbol(name.clone(), if path.len() > 1 { SymbolKind::Variable } else { kind }, range, *selection));
+                self.bind(scope, name.clone(), Some(node));
+                node
+            }
+        };
+        let mut node = root;
+        let mut receiver = None;
+        for (name, selection) in &path[1..] {
+            receiver = Some(node);
+            node = self.child(node, name).unwrap_or_else(|| self.add(Some(node), Self::symbol(name.clone(), SymbolKind::Field, range, *selection)));
+        }
+        self.nodes[node].symbol.range = self.nodes[node].symbol.range.join(range);
+        if kind == SymbolKind::Function { self.nodes[node].symbol.kind = kind; }
+        Some((node, receiver))
+    }
+
+    fn function(&mut self, node: usize, function: &luanalysis_syntax::Function, parent: usize, receiver: Option<usize>) {
+        self.nodes[node].symbol.detail = self.text.get(function.span.start..function.body_span.start).and_then(|header| {
+            let open = header.find('(')?;
+            Some(header[open..].trim_end().to_owned())
+        });
+        let scope = self.scope(Some(parent), Some(node), function.body_span, true);
+        if let Some(receiver) = receiver { self.bind(scope, "self".into(), Some(receiver)); }
+        for parameter in &function.params { self.bind(scope, parameter.text.clone(), None); }
+        self.statements(&function.body, scope);
+    }
+
+    fn value(&mut self, node: usize, value: Option<&Expr>, scope: usize) {
+        let Some(value) = value else { return };
+        match &value.kind {
+            ExprKind::Parenthesized(inner) => self.value(node, Some(inner), scope),
+            ExprKind::Function(function) => {
+                if !matches!(self.nodes[node].symbol.kind, SymbolKind::Class | SymbolKind::Interface | SymbolKind::Module) {
+                    self.nodes[node].symbol.kind = if self.nodes[node].parent.is_some_and(|parent| !matches!(self.nodes[parent].symbol.kind, SymbolKind::Function | SymbolKind::Method)) { SymbolKind::Method } else { SymbolKind::Function };
+                }
+                self.function(node, function, scope, None);
+            }
+            ExprKind::Table(fields) => {
+                let table_scope = self.scope(Some(scope), Some(node), value.span, false);
+                for field in fields {
+                    let key = match &field.kind {
+                        luanalysis_syntax::TableFieldKind::Named(name) => Some((name.text.clone(), name.span)),
+                        luanalysis_syntax::TableFieldKind::Keyed(key) => outline_literal_key(key),
+                        _ => None,
                     };
-                    let kind = if matches!(target.kind, ExprKind::Field { .. }) { SymbolKind::Field } else { SymbolKind::Variable };
-                    symbols.push(value_symbol(slice(target.span), kind, statement.span, selection, values.get(index), text));
+                    if let Some((name, selection)) = key {
+                        let child = self.child(node, &name).unwrap_or_else(|| self.add(Some(node), Self::symbol(name.clone(), SymbolKind::Field, field.span, selection)));
+                        self.nodes[child].symbol.range = self.nodes[child].symbol.range.join(field.span);
+                        self.value(child, Some(&field.value), table_scope);
+                    } else {
+                        self.nested(&field.value, table_scope);
+                    }
                 }
             }
-            StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
-                | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => statement_symbols(body, text, false, symbols),
-            StmtKind::If { branches, else_branch } => {
-                for branch in branches { statement_symbols(&branch.body, text, false, symbols); }
-                if let Some(branch) = else_branch { statement_symbols(&branch.body, text, false, symbols); }
+            _ => self.nested(value, scope),
+        }
+    }
+
+    fn nested(&mut self, value: &Expr, scope: usize) {
+        match &value.kind {
+            ExprKind::Function(function) => {
+                let selection = Span { start: value.span.start, end: (value.span.start + "function".len()).min(value.span.end) };
+                let node = self.add(self.scopes[scope].owner, Self::symbol("<anonymous>".into(), SymbolKind::Function, value.span, selection));
+                self.function(node, function, scope, None);
             }
-            StmtKind::Call(call) => nested_function_symbols(call, text, symbols),
-            StmtKind::Return(values) => for value in values { nested_function_symbols(value, text, symbols); },
+            ExprKind::Call { callee, args } => {
+                self.nested(callee, scope);
+                for arg in args { self.nested(arg, scope); }
+            }
+            ExprKind::MethodCall { receiver, args, .. } => {
+                self.nested(receiver, scope);
+                for arg in args { self.nested(arg, scope); }
+            }
+            ExprKind::Table(fields) => for field in fields { self.nested(&field.value, scope); },
+            ExprKind::Parenthesized(inner) | ExprKind::Field { base: inner, .. } | ExprKind::Unary { value: inner, .. } => self.nested(inner, scope),
+            ExprKind::Index { base, index } => { self.nested(base, scope); self.nested(index, scope); }
+            ExprKind::Binary { left, right, .. } => { self.nested(left, scope); self.nested(right, scope); }
             _ => {}
         }
     }
-}
 
-fn function_symbol(name: String, kind: SymbolKind, range: Span, selection: Span, function: &luanalysis_syntax::Function, text: &str) -> DocumentSymbol {
-    let parameters = text.get(function.span.start..function.body_span.start).and_then(|header| {
-        let open = header.find('(')?;
-        Some(header[open..].trim_end().to_owned())
-    });
-    let mut children = Vec::new();
-    statement_symbols(&function.body, text, false, &mut children);
-    DocumentSymbol { name, detail: parameters, kind, range, selection, children }
-}
-
-/// A local's, global's or field's symbol: a function's if it holds one, with a table constructor's
-/// keys as its children.
-fn value_symbol(name: String, kind: SymbolKind, range: Span, selection: Span, value: Option<&Expr>, text: &str) -> DocumentSymbol {
-    match value.map(|value| &value.kind) {
-        Some(ExprKind::Function(function)) => function_symbol(name, if kind == SymbolKind::Field { SymbolKind::Method } else { SymbolKind::Function }, range, selection, function, text),
-        Some(ExprKind::Table(fields)) => {
-            let children = fields.iter().filter_map(|field| match &field.kind {
-                luanalysis_syntax::TableFieldKind::Named(key) => Some(value_symbol(key.text.clone(), SymbolKind::Field, field.span, key.span, Some(&field.value), text)),
-                _ => None,
-            }).collect();
-            DocumentSymbol { name, detail: None, kind, range, selection, children }
-        }
-        _ => DocumentSymbol { name, detail: None, kind, range, selection, children: Vec::new() },
+    fn finish(&self, parent: Option<usize>) -> Vec<DocumentSymbol> {
+        let children = parent.map(|parent| &self.nodes[parent].children).unwrap_or(&self.roots);
+        let mut symbols: Vec<_> = children.iter().map(|&id| {
+            let mut symbol = self.nodes[id].symbol.clone();
+            symbol.children = self.finish(Some(id));
+            symbol.range = symbol.children.iter().fold(symbol.range, |range, child| range.join(child.range));
+            symbol
+        }).collect();
+        symbols.sort_by_key(|symbol| (symbol.range.start, symbol.selection.start));
+        symbols
     }
 }
 
-/// The named functions inside the anonymous functions an expression holds, such as a callback's.
-fn nested_function_symbols(expression: &Expr, text: &str, symbols: &mut Vec<DocumentSymbol>) {
+fn outline_path(expression: &Expr) -> Option<Vec<(String, Span)>> {
     match &expression.kind {
-        ExprKind::Function(function) => statement_symbols(&function.body, text, false, symbols),
-        ExprKind::Call { callee, args } => {
-            nested_function_symbols(callee, text, symbols);
-            for arg in args { nested_function_symbols(arg, text, symbols); }
+        ExprKind::Name(name) => Some(vec![(name.text.clone(), name.span)]),
+        ExprKind::Field { base, name } => {
+            let mut path = outline_path(base)?;
+            path.push((name.text.clone(), name.span));
+            Some(path)
         }
-        ExprKind::MethodCall { receiver, args, .. } => {
-            nested_function_symbols(receiver, text, symbols);
-            for arg in args { nested_function_symbols(arg, text, symbols); }
+        ExprKind::Index { base, index } => {
+            let mut path = outline_path(base)?;
+            path.push(outline_literal_key(index)?);
+            Some(path)
         }
-        ExprKind::Table(fields) => for field in fields { nested_function_symbols(&field.value, text, symbols); },
-        ExprKind::Parenthesized(inner) | ExprKind::Field { base: inner, .. } => nested_function_symbols(inner, text, symbols),
-        ExprKind::Binary { left, right, .. } => {
-            nested_function_symbols(left, text, symbols);
-            nested_function_symbols(right, text, symbols);
-        }
-        _ => {}
+        _ => None,
+    }
+}
+
+fn outline_literal_key(expression: &Expr) -> Option<(String, Span)> {
+    match &expression.kind {
+        ExprKind::String(value) => Some((String::from_utf8(value.clone()).ok()?, expression.span)),
+        ExprKind::Number(value) => Some((format!("[{value}]"), expression.span)),
+        _ => None,
     }
 }
 
@@ -2130,6 +2391,9 @@ pub struct Fold {
     pub start: usize,
     pub end: usize,
     pub kind: Option<FoldKind>,
+    /// Code blocks keep their final `end`, `else` or `}` line visible. Literal strings,
+    /// comments and regions fold through their final line, even without an LSP fold kind.
+    pub keep_last_line_visible: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2138,48 +2402,64 @@ pub enum FoldKind {
     Region,
 }
 
-/// The foldable ranges of a Lua source: functions, blocks, multi-line tables, runs of
-/// documentation comments, long comments, and `--region` to `--endregion` (or `--{{{` to
-/// `--}}}`), as v1 folds them.
+/// The foldable ranges of the current Lua source: functions, blocks, multiline tables and
+/// strings, comment runs, and matched regions. Region markers accept whitespace after `--`,
+/// optional `#`, and either `region`/`endregion` or `{{{`/`}}}`.
 pub fn folding_ranges(text: &str) -> Vec<Fold> {
     let file = luanalysis_syntax::parse(text);
     let mut folds = Vec::new();
     statement_folds(&file.statements, &mut folds);
     crate::module_requests::visit_expressions(&file.statements, &mut |expression: &Expr| {
         if matches!(expression.kind, ExprKind::Table(_) | ExprKind::Function(_)) {
-            folds.push(Fold { start: expression.span.start, end: expression.span.end, kind: None });
+            folds.push(Fold { start: expression.span.start, end: expression.span.end, kind: None, keep_last_line_visible: true });
         }
+        if let ExprKind::Function(function) = &expression.kind { statement_folds(&function.body, &mut folds); }
     });
+    // Use lexical spans so long strings still fold in a partially typed statement, without
+    // treating region-looking content inside a string as a real comment marker.
+    for token in luanalysis_syntax::lex(text).tokens {
+        if matches!(token.kind, TokenKind::String(_)) {
+            folds.push(Fold { start: token.span.start, end: token.span.end, kind: None, keep_last_line_visible: false });
+        }
+    }
     let mut regions = Vec::new();
     let mut run: Option<Span> = None;
+    let flush = |run: &mut Option<Span>, folds: &mut Vec<Fold>| {
+        if let Some(span) = run.take() { folds.push(Fold { start: span.start, end: span.end, kind: Some(FoldKind::Comment), keep_last_line_visible: false }); }
+    };
     for comment in &file.comments {
-        let body = comment.text.trim_start_matches('-').trim_start_matches('#');
-        let line_comment = comment.text.starts_with("--") && !comment.text.starts_with("--[");
-        if line_comment && (body.starts_with("region") || comment.text.starts_with("--{{{")) {
+        let line_comment = matches!(comment.kind, CommentKind::Line | CommentKind::Documentation) && comment.text.starts_with("--");
+        let body = comment.text.strip_prefix("--").unwrap_or_default().trim_start_matches('-').trim_start();
+        let body = body.trim_start_matches('#').trim_start();
+        let marker = |word: &str| body.strip_prefix(word).is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+        if line_comment && (marker("region") || body.starts_with("{{{")) {
+            flush(&mut run, &mut folds);
             regions.push(comment.span.start);
             continue;
         }
-        if line_comment && (body.starts_with("endregion") || comment.text.starts_with("--}}}")) {
-            if let Some(start) = regions.pop() { folds.push(Fold { start, end: comment.span.end, kind: Some(FoldKind::Region) }); }
+        if line_comment && (marker("endregion") || body.starts_with("}}}")) {
+            flush(&mut run, &mut folds);
+            if let Some(start) = regions.pop() { folds.push(Fold { start, end: comment.span.end, kind: Some(FoldKind::Region), keep_last_line_visible: false }); }
             continue;
         }
         if !line_comment {
-            folds.push(Fold { start: comment.span.start, end: comment.span.end, kind: Some(FoldKind::Comment) });
+            flush(&mut run, &mut folds);
+            folds.push(Fold { start: comment.span.start, end: comment.span.end, kind: Some(FoldKind::Comment), keep_last_line_visible: false });
             continue;
         }
-        // Consecutive line comments fold together.
+        // Consecutive line comments fold together, accepting Lua's LF, CRLF and CR newlines.
         run = Some(match run {
-            Some(span) if text.get(span.end..comment.span.start).is_some_and(|gap| gap.trim().is_empty() && gap.matches('\n').count() <= 1) => span.join(comment.span),
+            Some(span) if text.get(span.end..comment.span.start).is_some_and(|gap| gap.trim().is_empty() && gap.replace("\r\n", "\n").chars().filter(|ch| matches!(*ch, '\r' | '\n')).count() <= 1) => span.join(comment.span),
             Some(span) => {
-                folds.push(Fold { start: span.start, end: span.end, kind: Some(FoldKind::Comment) });
+                folds.push(Fold { start: span.start, end: span.end, kind: Some(FoldKind::Comment), keep_last_line_visible: false });
                 comment.span
             }
             None => comment.span,
         });
     }
-    if let Some(span) = run { folds.push(Fold { start: span.start, end: span.end, kind: Some(FoldKind::Comment) }); }
-    // Only what spans lines folds.
-    folds.retain(|fold| text.get(fold.start..fold.end).is_some_and(|folded| folded.trim_end().contains('\n')));
+    flush(&mut run, &mut folds);
+    // A fold must hide at least part of another line.
+    folds.retain(|fold| text.get(fold.start..fold.end).is_some_and(|folded| folded.trim_end().contains(['\r', '\n'])));
     folds.sort_by_key(|fold| (fold.start, fold.end));
     folds.dedup_by_key(|fold| (fold.start, fold.end));
     folds
@@ -2191,12 +2471,12 @@ fn statement_folds(statements: &[luanalysis_syntax::Stmt], folds: &mut Vec<Fold>
         match &statement.kind {
             StmtKind::LocalFunction { .. } | StmtKind::FunctionDeclaration { .. } | StmtKind::Block { .. }
                 | StmtKind::While { .. } | StmtKind::Repeat { .. } | StmtKind::NumericFor { .. } | StmtKind::GenericFor { .. } => {
-                folds.push(Fold { start: statement.span.start, end: statement.span.end, kind: None });
+                folds.push(Fold { start: statement.span.start, end: statement.span.end, kind: None, keep_last_line_visible: true });
             }
             StmtKind::If { branches, else_branch } => {
                 // Each branch folds to the next, so `else` stays visible.
-                for branch in branches { folds.push(Fold { start: branch.span.start, end: branch.body_span.end, kind: None }); }
-                if let Some(branch) = else_branch { folds.push(Fold { start: branch.span.start, end: branch.body_span.end, kind: None }); }
+                for branch in branches { folds.push(Fold { start: branch.span.start, end: branch.body_span.end, kind: None, keep_last_line_visible: true }); }
+                if let Some(branch) = else_branch { folds.push(Fold { start: branch.span.start, end: branch.body_span.end, kind: None, keep_last_line_visible: true }); }
             }
             _ => {}
         }
@@ -2304,8 +2584,139 @@ pub fn untyped_declarations(text: &str) -> Vec<Span> {
     names
 }
 
-/// The parameter names of the literal arguments of the calls in `range` of `file`: each
-/// argument's offset and its parameter's name, as TypeScript's "literals" inlay hints show them.
+/// Controls the independently useful inlay categories. Existing clients keep the quiet
+/// literal-argument and non-obvious-local defaults; contextual parameters and results opt in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InlayOptions {
+    pub variable_types: bool,
+    pub parameter_names: bool,
+    /// Include binary/unary expressions, tables and function values, as the legacy editor did.
+    pub expression_parameters: bool,
+    pub parameter_types: bool,
+    pub return_types: bool,
+}
+
+impl Default for InlayOptions {
+    fn default() -> Self {
+        Self { variable_types: true, parameter_names: true, expression_parameters: false, parameter_types: false, return_types: false }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InlayHint {
+    pub offset: usize,
+    pub label: String,
+    /// A parameter name before an argument (LSP kind 2); otherwise a type (kind 1).
+    pub parameter: bool,
+}
+
+/// Inlays from one native session over the current project, including its unsaved overlays.
+/// Types come from the same canonical body checks that publish diagnostics, so callback
+/// parameters keep their contextual types and a stale diagnostics snapshot is unnecessary.
+pub fn inlay_hints(
+    project: Project,
+    options: ProjectCheckOptions,
+    workspace: &mut ProjectWorkspace,
+    file: FileId,
+    range: Range<usize>,
+    preferences: InlayOptions,
+    deliver: impl FnOnce(Vec<InlayHint>) + Send,
+) {
+    let needs_types = preferences.variable_types || preferences.parameter_types || preferences.return_types;
+    let options = ProjectCheckOptions { jobs: 1, describe_types: needs_types, inspections: false, ..options };
+    crate::project_check::with_project_session(project, options, workspace, |project, registry, queries| {
+        let mut hints = Vec::new();
+        let Some(source) = registry.source(file) else { return deliver(hints) };
+        let text = &project.file(file).expect("a registered source belongs to the project").source;
+        let functions = inlay_functions(source.syntax());
+        // Probe function expressions before checking, when the call or assignment supplies
+        // their expected type. A raw NativeFunction alone cannot describe that context.
+        if preferences.return_types {
+            for function in &functions { source.probe_expression(function.span); }
+        }
+        if needs_types {
+            let reports = registry.check_owned_roots(queries, &[file]);
+            if let Some(report) = reports.iter().find(|report| report.file == file) {
+                let variables = if preferences.variable_types { untyped_declarations(text) } else { Vec::new() };
+                for binding in &report.report.bindings {
+                    let local = variables.contains(&binding.span);
+                    let parameter = preferences.parameter_types && functions.iter().any(|function| {
+                        function.annotations.type_annotation.is_none()
+                            && function.params.iter().any(|name| name.span == binding.span)
+                            && !function.annotations.params.iter().any(|annotation| annotation.name.text == binding.name)
+                    });
+                    if (local || parameter) && range.contains(&binding.span.end)
+                        && let Some(label) = inlay_type_label(&binding.ty)
+                    {
+                        hints.push(InlayHint { offset: binding.span.end, label, parameter: false });
+                    }
+                }
+            }
+        }
+        if preferences.return_types {
+            for function in &functions {
+                let probed = source.probed_types(function.span);
+                if !range.contains(&function.body_span.start) || function.annotations.returns.is_some()
+                    || function.annotations.type_annotation.is_some() || !function.annotations.overloads.is_empty()
+                { continue; }
+                let value = probed.into_iter().next().or_else(|| source.function_key_at(function.span).map(Type::NativeFunction));
+                if let Some((_, returns)) = value.and_then(|value| crate::describe_signature(&value, queries))
+                    && returns != "void"
+                    && let Some(label) = inlay_type_label(&returns)
+                {
+                    hints.push(InlayHint { offset: function.body_span.start, label, parameter: false });
+                }
+            }
+        }
+        if preferences.parameter_names {
+            hints.extend(argument_parameter_names(registry, file, range, preferences.expression_parameters, queries)
+                .into_iter().map(|(offset, name)| InlayHint { offset, label: format!("{name}:"), parameter: true }));
+        }
+        hints.sort_by(|left, right| (left.offset, left.parameter, &left.label).cmp(&(right.offset, right.parameter, &right.label)));
+        hints.dedup();
+        deliver(hints);
+    });
+}
+
+fn inlay_type_label(ty: &str) -> Option<String> {
+    if matches!(ty, "any" | "unknown" | "never") { return None; }
+    let ty = if ty.chars().count() > 60 { format!("{}…", ty.chars().take(59).collect::<String>()) } else { ty.to_owned() };
+    Some(format!(": {ty}"))
+}
+
+fn inlay_functions(syntax: &luanalysis_syntax::File) -> Vec<Box<luanalysis_syntax::Function>> {
+    fn collect(statements: &[luanalysis_syntax::Stmt], functions: &mut Vec<Box<luanalysis_syntax::Function>>) {
+        use luanalysis_syntax::StmtKind;
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::LocalFunction { function, .. } | StmtKind::FunctionDeclaration { function, .. } => {
+                    functions.push(function.clone());
+                    collect(&function.body, functions);
+                }
+                StmtKind::Block { body, .. } | StmtKind::While { body, .. } | StmtKind::Repeat { body, .. }
+                    | StmtKind::NumericFor { body, .. } | StmtKind::GenericFor { body, .. } => collect(body, functions),
+                StmtKind::If { branches, else_branch } => {
+                    for branch in branches { collect(&branch.body, functions); }
+                    if let Some(branch) = else_branch { collect(&branch.body, functions); }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut functions = Vec::new();
+    collect(&syntax.statements, &mut functions);
+    crate::module_requests::visit_expressions(&syntax.statements, &mut |expression: &Expr| {
+        if let ExprKind::Function(function) = &expression.kind {
+            functions.push(function.clone());
+            collect(&function.body, &mut functions);
+        }
+    });
+    functions.sort_by_key(|function| (function.span.start, function.span.end));
+    functions.dedup_by_key(|function| function.span);
+    functions
+}
+
+/// Compatibility entry point for callers asking only for literal argument parameter names.
 pub fn parameter_hints(
     project: Project,
     options: ProjectCheckOptions,
@@ -2316,55 +2727,56 @@ pub fn parameter_hints(
 ) {
     let options = ProjectCheckOptions { jobs: 1, describe_types: false, inspections: false, ..options };
     crate::project_check::with_project_session(project, options, workspace, |_, registry, queries| {
-        deliver(literal_parameter_names(registry, file, range, queries));
+        deliver(argument_parameter_names(registry, file, range, false, queries));
     });
 }
 
-fn literal_parameter_names(
+fn argument_parameter_names(
     registry: &crate::native_functions::project_provider::ProjectRegistry,
     file: FileId,
     range: Range<usize>,
+    expressions: bool,
     queries: &mut dyn luanalysis_engine::TypeQueries,
 ) -> Vec<(usize, String)> {
     let Some(source) = registry.source(file) else { return Vec::new() };
-    // As TypeScript's "literals" hints: scalars, not tables or functions.
-    let literal = |argument: &Expr| matches!(argument.kind, ExprKind::Nil | ExprKind::Boolean(_) | ExprKind::Number(_) | ExprKind::String(_))
-        || matches!(&argument.kind, ExprKind::Unary { value, .. } if matches!(value.kind, ExprKind::Number(_)));
+    let show = |argument: &Expr| matches!(argument.kind, ExprKind::Nil | ExprKind::Boolean(_) | ExprKind::Number(_) | ExprKind::String(_))
+        || matches!(&argument.kind, ExprKind::Unary { value, .. } if expressions || matches!(value.kind, ExprKind::Number(_)))
+        || expressions && matches!(argument.kind, ExprKind::Binary { .. } | ExprKind::Table(_) | ExprKind::Function(_));
     let mut calls = Vec::new();
     crate::module_requests::visit_expressions(&source.syntax().statements, &mut |expression: &Expr| {
-        if expression.span.end < range.start || expression.span.start > range.end { return; }
+        if expression.span.end < range.start || expression.span.start >= range.end { return; }
         match &expression.kind {
-            ExprKind::Call { callee, args } if args.iter().any(literal) => calls.push((callee.span, None, args.clone())),
-            ExprKind::MethodCall { receiver, name, args } if args.iter().any(literal) => calls.push((receiver.span, Some(name.text.clone()), args.clone())),
+            ExprKind::Call { callee, args } if args.iter().any(show) => calls.push((callee.span, None, args.clone())),
+            ExprKind::MethodCall { receiver, name, args } if args.iter().any(show) => calls.push((receiver.span, Some(name.text.clone()), args.clone())),
             _ => {}
         }
     });
     let mut hints = Vec::new();
     for (callee, method, args) in calls {
-        let alone = |span: Span, queries: &mut dyn luanalysis_engine::TypeQueries| {
-            source.source_check_expression(source.expression_key_for_span(span), None, NativeCheckMode::empty(), queries)
-        };
-        let value = match &method {
-            None => alone(callee, queries),
+        let Some(callee_type) = expression_type(registry, file, callee, queries) else { continue };
+        let (value, receiver) = match &method {
+            None => (callee_type, None),
             Some(name) => {
-                let receiver = alone(callee, queries);
-                let receiver = queries.exclude_type(&receiver, &Type::Nil);
+                let receiver = queries.exclude_type(&callee_type, &Type::Nil);
                 let Some((_, member)) = queries.type_members(&receiver).into_iter().find(|(member, _)| member == name) else { continue };
-                member
+                (member, Some(receiver))
             }
         };
-        let hidden = usize::from(method.is_some());
-        // The first overload that takes as many arguments.
-        let mut names: Option<Vec<String>> = None;
+        let hidden = usize::from(receiver.is_some());
+        let mut given: Vec<Type> = receiver.into_iter().collect();
+        given.extend(args.iter().map(|argument| expression_type(registry, file, argument.span, queries).unwrap_or(Type::Any)));
+        let mut candidates = Vec::new();
         for head in queries.call_signature_types(&value) {
             let Some((parameters, _)) = crate::describe_signature(&head, queries) else { continue };
-            let shown: Vec<String> = parameters.iter().skip(hidden).map(|parameter| parameter.split(':').next().unwrap_or_default().trim_end_matches('?').to_owned()).collect();
+            let shown: Vec<String> = parameters.iter().skip(hidden).map(|parameter| parameter.split(':').next().unwrap_or_default().trim_end_matches('?').trim().to_owned()).collect();
             let rest = shown.last().is_some_and(|name| name == "...");
-            if rest || shown.len() >= args.len() { names = Some(shown); break; }
+            if !rest && shown.len() < args.len() { continue; }
+            let applicable = queries.call(&head, &given).errors.is_empty();
+            candidates.push((applicable, shown));
         }
-        let Some(names) = names else { continue };
-        for (argument, name) in args.iter().zip(&names) {
-            if literal(argument) && name != "..." && !name.is_empty() && range.contains(&argument.span.start) {
+        let Some((_, names)) = candidates.iter().find(|(applicable, _)| *applicable).or_else(|| candidates.first()) else { continue };
+        for (argument, name) in args.iter().zip(names) {
+            if show(argument) && name != "..." && !name.is_empty() && !name.starts_with('_') && range.contains(&argument.span.start) {
                 hints.push((argument.span.start, name.clone()));
             }
         }
@@ -3051,8 +3463,8 @@ mod tests {
     }
 
     #[test]
-    fn parameter_lists_parentheses_strings_and_comments_are_not_calls() {
-        for text in ["local function f(|", "function M.f(a, |", "function M:f(|", "local g = function(|", "local x = (|", "f('a, |", "f(1) -- f(|", "f(1) --[[ g(| ]]"] {
+    fn parameter_lists_parentheses_and_comments_are_not_calls() {
+        for text in ["local function f(|", "function M.f(a, |", "function M:f(|", "local g = function(|", "local x = (|", "f(1) -- f(|", "f(1) --[[ g(| ]]"] {
             assert!(call(text).is_none(), "{text}");
         }
         assert!(call("f('a', |").is_some());
@@ -3080,9 +3492,7 @@ mod tests {
             format!("{}:{:?}[{}]", symbol.name, symbol.kind, children.join(","))
         }).collect::<Vec<_>>();
         assert_eq!(outline(&document_symbols(text)), vec![
-            "Point:Class[x:Field]",
-            "Point:Variable[]",
-            "Point:length:Method[square:Function]",
+            "Point:Class[x:Field,length:Method]",
             "config:Variable[name:Field,run:Method]",
             "VERSION:Variable[]",
             "helper:Function[]",

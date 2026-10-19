@@ -26,6 +26,13 @@ const REQUEST_FAILED: i64 = -32803;
 const REQUEST_CANCELLED: i64 = -32800;
 const SERVER_NOT_INITIALIZED: i64 = -32002;
 
+fn document_version(value: &Json) -> Option<i64> {
+    match value {
+        Json::Number(number) if number.fract() == 0.0 && *number >= i32::MIN as f64 && *number <= i32::MAX as f64 => Some(*number as i64),
+        _ => None,
+    }
+}
+
 /// Receives each message for the client: one JSON-RPC message, without framing.
 type Output = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -191,9 +198,10 @@ enum Event {
     /// A message that is not JSON.
     Malformed(String),
     Closed,
-    Checked(Box<Snapshot>),
+    Checked(Box<Snapshot>, u64),
     /// A response computed off the main thread.
     Answered(Json, Json),
+    RevisionAnswer(Json, Json, u64),
     /// A request refused off the main thread, with why.
     Refused(Json, String),
     /// A request the client cancelled before it was answered.
@@ -208,6 +216,7 @@ struct Job {
 /// document.
 struct Query {
     id: Json,
+    revision: u64,
     path: PathBuf,
     overlays: HashMap<PathBuf, String>,
     /// The URIs the client uses for its open documents.
@@ -248,6 +257,7 @@ enum Site {
     Hover(HoverSite),
     Navigate(NavigateSite),
     Hints(HintSite),
+    FileRename(FileRenameSite),
 }
 
 /// A call or type hierarchy request at a position of a document.
@@ -270,14 +280,24 @@ struct ActionSite {
     text: String,
     actions: Vec<Json>,
     diagnostics: Vec<(Json, String, luanalysis_syntax::Span)>,
+    range: std::ops::Range<usize>,
+    only: Vec<String>,
+    version: Option<i64>,
+    document_changes: bool,
 }
 
-/// Inlay hints for a range of a document: the type hints the last check gives, to which the
-/// parameter names of the range's calls are added.
+/// Current-overlay native inlay hints, controlled independently by category.
 struct HintSite {
     text: String,
     range: std::ops::Range<usize>,
-    types: Vec<Json>,
+    preferences: language_service::InlayOptions,
+}
+
+struct FileRenameSite {
+    text: String,
+    renames: Vec<crate::file_operations::FileRename>,
+    document_changes: bool,
+    versions: HashMap<PathBuf, i64>,
 }
 
 /// A navigation from the current buffers, including renames while the checked index is stale.
@@ -318,6 +338,7 @@ impl Query {
             Site::Hints(site) => &site.text,
             Site::Actions(site) => &site.text,
             Site::Hierarchy(site) => &site.text,
+            Site::FileRename(site) => &site.text,
         }
     }
 
@@ -326,8 +347,9 @@ impl Query {
         match &self.site {
             Site::Completion(_) => Json::object([("isIncomplete", Json::from(true)), ("items", Json::Array(Vec::new()))]),
             Site::Signature(_) | Site::Navigate(_) => Json::Null,
-            Site::Hints(site) => Json::Array(site.types.clone()),
-            Site::Actions(site) => Json::Array(site.actions.clone()),
+            Site::Hints(_) => Json::Array(Vec::new()),
+            Site::FileRename(_) => Json::Null,
+            Site::Actions(_) => Json::Array(Vec::new()),
             Site::Hierarchy(_) | Site::Warm(_) => Json::Null,
             Site::Resolve(_, item) => item.clone(),
             // Without documentation, a hover still has the last check's type.
@@ -348,7 +370,7 @@ impl Query {
         let rename = |site: &Site| matches!(site, Site::Navigate(NavigateSite {
             request: Navigate::PrepareRename | Navigate::Rename(_), ..
         }));
-        if rename(&self.site) || rename(&other.site) { return false; }
+        if rename(&self.site) || rename(&other.site) || matches!(self.site, Site::FileRename(_)) || matches!(other.site, Site::FileRename(_)) { return false; }
         std::mem::discriminant(&self.site) == std::mem::discriminant(&other.site)
     }
 
@@ -391,6 +413,9 @@ struct Server {
     resolves_details: bool,
     deprecation: Deprecation,
     initialized: bool,
+    document_changes: bool,
+    will_rename_files: bool,
+    did_rename_files: bool,
     shutdown: bool,
     documents: HashMap<PathBuf, Document>,
     /// Advanced by every change to what a check reads.
@@ -398,6 +423,7 @@ struct Server {
     /// Advanced by every change a completion's cached project cannot see: files saved or
     /// changed on disk, and documents opened or closed.
     disk_generation: u64,
+    worker_generation: u64,
     /// The revision of the last job sent to the checker.
     requested: Option<u64>,
     checking: bool,
@@ -436,10 +462,14 @@ impl Server {
             resolves_details: false,
             deprecation: Deprecation::None,
             initialized: false,
+            document_changes: false,
+            will_rename_files: false,
+            did_rename_files: false,
             shutdown: false,
             documents: HashMap::new(),
             revision: 0,
             disk_generation: 0,
+            worker_generation: 0,
             requested: None,
             checking: false,
             snapshot: None,
@@ -476,8 +506,12 @@ impl Server {
                     Event::Message(message) => {
                         if let Some(code) = self.message(message) { return code; }
                     }
-                    Event::Checked(snapshot) => self.checked(*snapshot),
+                    Event::Checked(snapshot, generation) => if generation == self.worker_generation { self.checked(*snapshot) },
                     Event::Answered(id, result) => self.respond(id, result),
+                    Event::RevisionAnswer(id, result, revision) => {
+                        if self.revision == revision { self.respond(id, result) }
+                        else { self.respond_error(id, -32801, "document contents changed while computing edits") }
+                    }
                     Event::Refused(id, error) => self.respond_error(id, REQUEST_FAILED, &error),
                     Event::Cancelled(id) => self.respond_error(id, REQUEST_CANCELLED, "the request was cancelled"),
                     Event::Malformed(error) => self.respond_error(Json::Null, PARSE_ERROR, &format!("a message that is not JSON: {error}")),
@@ -566,8 +600,13 @@ impl Server {
                 let result = self.workspace_symbols(params);
                 self.respond(id, result);
             }
+            "textDocument/formatting" | "textDocument/rangeFormatting" | "textDocument/onTypeFormatting" => {
+                let result = self.format_document(method, params);
+                self.respond(id, result);
+            }
             "textDocument/inlayHint" => self.inlay_hints(id, params),
             "textDocument/codeAction" => self.code_actions(id, params),
+            "workspace/willRenameFiles" => self.will_rename(id, params),
             "textDocument/prepareCallHierarchy" => self.hierarchy(id, params, Hierarchy::Calls(language_service::CallDirection::Prepare)),
             "callHierarchy/incomingCalls" => self.hierarchy(id, params, Hierarchy::Calls(language_service::CallDirection::Incoming)),
             "callHierarchy/outgoingCalls" => self.hierarchy(id, params, Hierarchy::Calls(language_service::CallDirection::Outgoing)),
@@ -622,7 +661,7 @@ impl Server {
                 let uri = document.and_then(|document| document.get("uri")).and_then(Json::as_str);
                 let text = document.and_then(|document| document.get("text")).and_then(Json::as_str);
                 if let (Some(uri), Some(text)) = (uri, text) && let Some(path) = uri_to_path(uri) {
-                    let version = document.and_then(|document| document.get("version")).and_then(Json::as_u64).unwrap_or(0) as i64;
+                    let version = document.and_then(|document| document.get("version")).and_then(document_version).unwrap_or(0);
                     self.documents.insert(path.clone(), Document { uri: uri.to_owned(), text: text.to_owned(), version });
                     self.revision += 1;
                     self.disk_generation += 1;
@@ -631,8 +670,11 @@ impl Server {
             }
             "textDocument/didChange" => {
                 let uri = params.path(&["textDocument", "uri"]).and_then(Json::as_str);
-                let version = params.path(&["textDocument", "version"]).and_then(Json::as_u64);
+                let version = params.path(&["textDocument", "version"]).and_then(document_version);
                 if let Some(uri) = uri && let Some(path) = uri_to_path(uri) {
+                    // Clients may queue obsolete revisions. Never replace a newer buffer with
+                    // an older change, including immediately before a formatting request.
+                    if version.is_some_and(|version| self.documents.get(&path).is_some_and(|document| version <= document.version)) { return None; }
                     let encoding = self.encoding;
                     let document = self.documents.entry(path).or_insert_with(|| Document { uri: uri.to_owned(), text: String::new(), version: 0 });
                     // Incremental synchronization: each change replaces a range, or without one, the whole text.
@@ -654,10 +696,11 @@ impl Server {
                             None => document.text = text.to_owned(),
                         }
                     }
-                    if let Some(version) = version { document.version = version as i64; }
+                    if let Some(version) = version { document.version = version; }
                     self.revision += 1;
                 }
             }
+            "workspace/didRenameFiles" => self.did_rename(params),
             "workspace/didChangeConfiguration" => {
                 let settings = params.get("settings").cloned().unwrap_or(Json::Null);
                 if let Err(error) = self.configure(&settings) { self.log(1, &format!("luanalysis: settings: {error}")); }
@@ -715,6 +758,8 @@ impl Server {
     fn start_workers(&mut self, inputs: CheckInputs, options: ProjectCheckOptions) {
         // The threads with older settings stop what they are doing.
         self.cancellation.cancel();
+        self.worker_generation += 1;
+        let generation = self.worker_generation;
         self.cancellation = crate::project_check::Cancellation::default();
         let options = ProjectCheckOptions { cancellation: self.cancellation.clone(), ..options };
         self.workers.retain(|worker| !worker.is_finished());
@@ -737,7 +782,7 @@ impl Server {
         let running = Running::start(&self.running);
         self.workers.push(std::thread::Builder::new()
             .name("luanalysis-lsp-check".into())
-            .spawn(move || { let _running = running; check_jobs(inputs, options, received, events, sources) })
+            .spawn(move || { let _running = running; check_jobs(inputs, options, received, events, sources, generation) })
             .expect("start the language server's checking thread"));
         self.jobs = Some(jobs);
         // A new checker checks everything again, and a new query thread loads the project again.
@@ -807,6 +852,9 @@ impl Server {
             let settings = params.get("initializationOptions").cloned().unwrap_or(Json::Null);
             if let Err(error) = self.configure(&settings) { self.log(1, &format!("luanalysis: settings: {error}")); }
         }
+        self.document_changes = params.path(&["capabilities", "workspace", "workspaceEdit", "documentChanges"]) == Some(&Json::Bool(true));
+        self.will_rename_files = params.path(&["capabilities", "workspace", "fileOperations", "willRename"]) == Some(&Json::Bool(true));
+        self.did_rename_files = params.path(&["capabilities", "workspace", "fileOperations", "didRename"]) == Some(&Json::Bool(true));
         self.initialized = true;
         Json::object([
             ("capabilities", Json::object([
@@ -824,13 +872,28 @@ impl Server {
                 ("documentSymbolProvider", Json::from(true)),
                 ("workspaceSymbolProvider", Json::from(true)),
                 ("foldingRangeProvider", Json::from(true)),
+                ("documentFormattingProvider", Json::from(true)),
+                ("documentRangeFormattingProvider", Json::from(true)),
+                ("documentOnTypeFormattingProvider", Json::object([
+                    ("firstTriggerCharacter", Json::from("\n")),
+                ])),
                 ("inlayHintProvider", Json::from(true)),
-                ("codeActionProvider", Json::object([("codeActionKinds", Json::Array(vec![Json::from("quickfix")]))])),
+                ("codeActionProvider", Json::object([("codeActionKinds", Json::Array(vec![Json::from("quickfix"), Json::from("refactor.rewrite")]))])),
                 ("callHierarchyProvider", Json::from(true)),
-                ("workspace", Json::object([("workspaceFolders", Json::object([
-                    ("supported", Json::from(true)),
-                    ("changeNotifications", Json::from(true)),
-                ]))])),
+                ("workspace", Json::object([
+                    ("workspaceFolders", Json::object([
+                        ("supported", Json::from(true)),
+                        ("changeNotifications", Json::from(true)),
+                    ])),
+                    ("fileOperations", Json::Object([
+                        ("willRename", self.will_rename_files), ("didRename", self.did_rename_files),
+                    ].into_iter().filter(|(_, supported)| *supported).map(|(name, _)| (name.to_owned(), Json::object([
+                        ("filters", Json::Array(vec![Json::object([
+                            ("scheme", Json::from("file")),
+                            ("pattern", Json::object([("glob", Json::from("**/*"))])),
+                        ])])),
+                    ]))).collect())),
+                ])),
                 ("typeHierarchyProvider", Json::from(true)),
                 ("semanticTokensProvider", Json::object([
                     ("legend", Json::object([
@@ -1064,7 +1127,8 @@ impl Server {
             pending.extend(outline.iter().map(|symbol| (symbol, None)));
             while let Some((symbol, container)) = pending.pop() {
                 pending.extend(symbol.children.iter().map(|child| (child, Some(symbol.name.clone()))));
-                if !matches(&symbol.name) { continue; }
+                let qualified = container.as_ref().map_or_else(|| symbol.name.clone(), |container| format!("{container}.{}", symbol.name));
+                if !matches(&qualified) { continue; }
                 let mut fields = vec![
                     ("name".to_owned(), Json::from(symbol.name.as_str())),
                     ("kind".to_owned(), Json::from(symbol_kind(symbol.kind))),
@@ -1081,9 +1145,139 @@ impl Server {
         Json::Array(results)
     }
 
-    /// Inlay hints for a range of a document: the types of its locals declared without one, from
-    /// the last check while the document is as it was checked, and the parameter names of its
-    /// calls' literal arguments.
+    fn file_renames(params: &Json, completed: bool) -> Result<Vec<crate::file_operations::FileRename>, String> {
+        let files = params.get("files").and_then(Json::as_array).ok_or("files must be an array")?;
+        let renames: Result<Vec<_>, String> = files.iter().map(|file| {
+            let old_path = file.get("oldUri").and_then(Json::as_str).and_then(uri_to_lexical_path).ok_or("oldUri must be a file URI")?;
+            let new_path = file.get("newUri").and_then(Json::as_str).and_then(uri_to_lexical_path).ok_or("newUri must be a file URI")?;
+            Ok(crate::file_operations::FileRename { old_path, new_path })
+        }).collect();
+        let renames = renames?;
+        if completed { crate::file_operations::normalize_completed_renames(&renames) }
+        else { crate::file_operations::normalize_renames(&renames) }
+    }
+
+    fn will_rename(&mut self, id: Json, params: &Json) {
+        // Renaming a link itself does not rename the module at its canonical target.
+        // Leave this ambiguous operation to the host instead of editing that target's users.
+        for file in params.get("files").and_then(Json::as_array).unwrap_or(&[]) {
+            if file.get("oldUri").and_then(Json::as_str).and_then(uri_to_lexical_path)
+                .and_then(|path| std::fs::symlink_metadata(path).ok()).is_some_and(|metadata| metadata.file_type().is_symlink())
+            { return self.respond_error(id, REQUEST_FAILED, "module reference edits for renaming a symbolic link are not supported"); }
+        }
+        let renames = match Self::file_renames(params, false) {
+            Ok(renames) => renames,
+            Err(error) => return self.respond_error(id, REQUEST_FAILED, &error),
+        };
+        let Some(first) = renames.first() else { return self.respond(id, Json::Null) };
+        // Use an actual Lua source as the query anchor; folders need not be source files.
+        let path = self.documents.keys().find(|path| path.extension().is_some_and(|ext| ext == "lua" || ext == "ttslua")).cloned()
+            .or_else(|| self.snapshot.as_ref().and_then(|snapshot| snapshot.files.keys().next().cloned()))
+            .unwrap_or_else(|| first.old_path.clone());
+        let text = self.file_text(&path).unwrap_or_default();
+        let lines = LineIndex::new(text.clone());
+        let site = FileRenameSite {
+            text, renames, document_changes: self.document_changes,
+            versions: self.documents.iter().map(|(path, document)| (path.clone(), document.version)).collect(),
+        };
+        self.query(id, path, Site::FileRename(site), lines);
+    }
+
+    fn did_rename(&mut self, params: &Json) {
+        let renames = match Self::file_renames(params, true) {
+            Ok(renames) => renames,
+            Err(error) => return self.log(1, &format!("luanalysis: didRenameFiles: {error}")),
+        };
+        let remap = |path: &Path| crate::file_operations::remap_path(path, &renames);
+        // Remap simultaneously so a batch swap cannot consume another document's overlay.
+        let previous = std::mem::take(&mut self.documents);
+        let operations = params.get("files").and_then(Json::as_array).unwrap_or(&[]);
+        let destinations: HashMap<PathBuf, (String, String, i64)> = previous.iter()
+            .filter(|(path, _)| remap(path) == **path)
+            .map(|(path, document)| (path.clone(), (document.uri.clone(), document.text.clone(), document.version))).collect();
+        for (path, mut document) in previous {
+            let target = remap(&path);
+            if target != path {
+                // Preserve the URI spelling supplied by the client, including percent escapes.
+                document.uri = operations.iter().filter_map(|file| {
+                    let old_uri = file.get("oldUri")?.as_str()?;
+                    let new_uri = file.get("newUri")?.as_str()?;
+                    let old_path = uri_to_path(old_uri)?;
+                    let suffix = path.strip_prefix(&old_path).ok()?;
+                    let uri = if suffix.as_os_str().is_empty() { new_uri.to_owned() }
+                        else if let Some(suffix) = document.uri.strip_prefix(old_uri.trim_end_matches('/')) {
+                            format!("{}{suffix}", new_uri.trim_end_matches('/'))
+                        } else { path_to_uri(&target) };
+                    Some((old_path.components().count(), uri))
+                }).max_by_key(|(depth, _)| *depth).map_or_else(|| path_to_uri(&target), |(_, uri)| uri);
+            }
+            if target != path && let Some((uri, text, version)) = destinations.get(&target) {
+                document = Document { uri: uri.clone(), text: text.clone(), version: *version };
+            }
+            self.documents.insert(target, document);
+        }
+        if let Some((inputs, _)) = &mut self.base {
+            inputs.files = inputs.files.iter().map(|path| remap(path)).collect();
+            inputs.libraries = inputs.libraries.iter().map(|path| remap(path)).collect();
+        }
+        self.symbols.clear();
+        self.snapshot = None;
+        let settings = self.settings.clone();
+        if let Err(error) = self.configure(&settings) { self.log(1, &format!("luanalysis: didRenameFiles: {error}")); }
+    }
+
+    /// Formatting reads the current buffer synchronously, so edits cannot come from an older
+    /// checked snapshot. Byte edits become positions only against exactly that buffer.
+    fn format_document(&self, method: &str, params: &Json) -> Json {
+        use crate::formatting::{self, FormattingOptions, Newline};
+        let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else { return Json::Null };
+        let Some(text) = self.file_text(&path) else { return Json::Null };
+        let Some(options) = params.get("options") else { return Json::Null };
+        let Some(tab_size) = options.get("tabSize").and_then(Json::as_u64).filter(|size| *size > 0 && *size <= 32) else { return Json::Null };
+        let Some(Json::Bool(insert_spaces)) = options.get("insertSpaces") else { return Json::Null };
+        let flag = |name: &str| options.get(name).and_then(|value| match value { Json::Bool(value) => Some(*value), _ => None });
+        let options = FormattingOptions {
+            tab_size: tab_size as usize,
+            insert_spaces: *insert_spaces,
+            trim_trailing_whitespace: flag("trimTrailingWhitespace"),
+            insert_final_newline: flag("insertFinalNewline"),
+            trim_final_newlines: flag("trimFinalNewlines"),
+            keep_multiple_statements_in_one_line: flag("keepMultipleStatementsInOneLine").unwrap_or(false),
+            newline: match options.get("newline").and_then(Json::as_str) {
+                Some("lf") => Some(Newline::Lf),
+                Some("crlf") => Some(Newline::CrLf),
+                _ => None,
+            },
+        };
+        let lines = LineIndex::new(text.clone());
+        let offset = |position: &Json| -> Option<usize> {
+            Some(lines.offset(position.get("line")?.as_u64()? as usize,
+                position.get("character")?.as_u64()? as usize, self.encoding))
+        };
+        let edits = match method {
+            "textDocument/rangeFormatting" => {
+                let Some(range) = params.get("range") else { return Json::Null };
+                let (Some(start), Some(end)) = (range.get("start").and_then(offset), range.get("end").and_then(offset)) else { return Json::Null };
+                if start > end { return Json::Null; }
+                formatting::format(&text, &options, Some(luanalysis_syntax::Span { start, end }))
+            }
+            "textDocument/onTypeFormatting" => {
+                let Some(at) = params.get("position").and_then(offset) else { return Json::Null };
+                let Some(trigger) = params.get("ch").and_then(Json::as_str) else { return Json::Null };
+                formatting::on_type(&text, at, trigger, &options)
+            }
+            _ => formatting::format(&text, &options, None),
+        };
+        match edits {
+            None => Json::Null,
+            Some(edits) => Json::Array(edits.into_iter().map(|edit| Json::object([
+                ("range", lines.range(edit.span.start, edit.span.end, self.encoding)),
+                ("newText", Json::from(edit.new_text)),
+            ])).collect()),
+        }
+    }
+
+    /// Infer inlays against the current buffers rather than retaining types from an old check.
     fn inlay_hints(&mut self, id: Json, params: &Json) {
         let Some(path) = params.path(&["textDocument", "uri"]).and_then(Json::as_str).and_then(uri_to_path) else {
             return self.respond(id, Json::Null);
@@ -1096,21 +1290,14 @@ impl Server {
             lines.offset(line, character, self.encoding)
         };
         let range = position("start")..position("end");
-        let mut types = Vec::new();
-        if self.preferences.type_hints && let Some(file) = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path)).filter(|file| file.lines.text == text) {
-            for span in language_service::untyped_declarations(&text) {
-                if !range.contains(&span.start) { continue; }
-                let Some(binding) = file.bindings.iter().find(|binding| binding.start == span.start && binding.end == span.end) else { continue };
-                let ty = if binding.ty.chars().count() > 60 { format!("{}…", binding.ty.chars().take(59).collect::<String>()) } else { binding.ty.clone() };
-                types.push(Json::object([
-                    ("position", lines.position(span.end, self.encoding)),
-                    ("label", Json::from(format!(": {ty}"))),
-                    ("kind", Json::from(1usize)),
-                ]));
-            }
-        }
-        if !self.preferences.parameter_hints { return self.respond(id, Json::Array(types)); }
-        self.query(id, path, Site::Hints(HintSite { text, range, types }), lines);
+        let preferences = language_service::InlayOptions {
+            variable_types: self.preferences.type_hints,
+            parameter_names: self.preferences.parameter_hints,
+            expression_parameters: self.preferences.expression_parameter_hints,
+            parameter_types: self.preferences.parameter_type_hints,
+            return_types: self.preferences.return_type_hints,
+        };
+        self.query(id, path, Site::Hints(HintSite { text, range, preferences }), lines);
     }
 
     /// A call or type hierarchy: prepared at a document's position, or followed from an item that
@@ -1137,7 +1324,7 @@ impl Server {
         };
         let Some(text) = self.file_text(&path) else { return self.respond(id, Json::Null) };
         let lines = LineIndex::new(text.clone());
-        let uri = path_to_uri(&path);
+        let uri = self.uri(&path);
         let offset = |position: Option<&Json>| {
             let line = position.and_then(|position| position.get("line")).and_then(Json::as_u64).unwrap_or(0) as usize;
             let character = position.and_then(|position| position.get("character")).and_then(Json::as_u64).unwrap_or(0) as usize;
@@ -1151,9 +1338,12 @@ impl Server {
                 start: offset(diagnostic.path(&["range", "start"])),
                 end: offset(diagnostic.path(&["range", "end"])),
             };
-            let name = &text[span.start.min(text.len())..span.end.min(text.len())];
+            let Some(name) = text.get(span.start..span.end) else { continue };
+            let checked_unused = self.snapshot.as_ref().and_then(|snapshot| snapshot.files.get(&path))
+                .is_some_and(|file| file.lines.text == text && file.diagnostics.iter().any(|diagnostic|
+                    diagnostic.code == "TS6133" && diagnostic.start == span.start && diagnostic.end == span.end));
             match code.as_str() {
-                "TS6133" if name.starts_with(|ch: char| ch.is_alphabetic()) && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_') => {
+                "TS6133" if checked_unused && name.starts_with(|ch: char| ch.is_alphabetic()) && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_') => {
                     actions.push(quick_fix(format!("Prefix '{name}' with '_' to mark it unused"), diagnostic, &uri,
                         lines.range(span.start, span.start, self.encoding), "_".to_owned()));
                 }
@@ -1161,8 +1351,12 @@ impl Server {
                 _ => {}
             }
         }
-        if diagnostics.is_empty() { return self.respond(id, Json::Array(actions)); }
-        self.query(id, path, Site::Actions(ActionSite { text, actions, diagnostics }), lines);
+        let range = offset(params.path(&["range", "start"]))..offset(params.path(&["range", "end"]));
+        let only: Vec<String> = params.path(&["context", "only"]).and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(Json::as_str).map(str::to_owned).collect();
+        if !action_kind_requested("quickfix", &only) { actions.clear(); diagnostics.clear(); }
+        let version = self.documents.get(&path).map(|document| document.version);
+        let document_changes = self.document_changes;
+        self.query(id, path, Site::Actions(ActionSite { text, actions, diagnostics, range, only, version, document_changes }), lines);
     }
 
     /// A document's semantic tokens, relative to one another as LSP encodes them.
@@ -1198,7 +1392,7 @@ impl Server {
             let start = lines.line(fold.start);
             let last = lines.line(fold.end.saturating_sub(1).max(fold.start));
             // A comment or region folds whole; a block keeps its closing line.
-            let end = if fold.kind.is_some() { last } else { last.saturating_sub(1) };
+            let end = if fold.keep_last_line_visible { last.saturating_sub(1) } else { last };
             (end > start).then(|| {
                 let mut fields = vec![("startLine".to_owned(), Json::from(start)), ("endLine".to_owned(), Json::from(end))];
                 match fold.kind {
@@ -1302,7 +1496,7 @@ impl Server {
         let overlays: HashMap<PathBuf, String> = self.documents.iter()
             .map(|(path, document)| (path.clone(), document.text.clone())).collect();
         let lines = LineIndex::new(text.clone());
-        let query = Query { id: Json::Null, path, overlays, uris: HashMap::new(), disk: self.disk_generation, site: Site::Warm(text), lines, encoding: self.encoding, snippets: false, call_snippets: false, deprecation: self.deprecation };
+        let query = Query { id: Json::Null, revision: self.revision, path, overlays, uris: HashMap::new(), disk: self.disk_generation, site: Site::Warm(text), lines, encoding: self.encoding, snippets: false, call_snippets: false, deprecation: self.deprecation };
         if let Some(queries) = &self.queries { let _ = queries.send(query); }
     }
 
@@ -1312,8 +1506,8 @@ impl Server {
         let mut overlays: HashMap<PathBuf, String> = self.documents.iter()
             .map(|(path, document)| (path.clone(), document.text.clone())).collect();
         let uris = self.documents.iter().map(|(path, document)| (path.clone(), document.uri.clone())).collect();
-        let query = Query { id: id.clone(), path: path.clone(), overlays: HashMap::new(), uris, disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets, call_snippets: self.snippets && self.preferences.call_snippets, deprecation: self.deprecation };
-        overlays.insert(path, query.text().to_owned());
+        let query = Query { id: id.clone(), revision: self.revision, path: path.clone(), overlays: HashMap::new(), uris, disk: self.disk_generation, site, lines, encoding: self.encoding, snippets: self.snippets, call_snippets: self.snippets && self.preferences.call_snippets, deprecation: self.deprecation };
+        if !matches!(query.site, Site::FileRename(_)) { overlays.insert(path, query.text().to_owned()); }
         let query = Query { overlays, ..query };
         let unanswered = query.unanswered();
         if self.queries.as_ref().is_none_or(|queries| queries.send(query).is_err()) {
@@ -1436,7 +1630,7 @@ impl Server {
 }
 
 
-fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Receiver<Job>, events: mpsc::Sender<Event>, sources: Arc<crate::incremental::SharedSources>) {
+fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Receiver<Job>, events: mpsc::Sender<Event>, sources: Arc<crate::incremental::SharedSources>, generation: u64) {
     // Its work, and its sessions', unwinds when the server cancels it.
     options.cancellation.enter();
     let mut workspace = ProjectWorkspace::shared(Arc::clone(&sources));
@@ -1455,7 +1649,7 @@ fn check_jobs(inputs: CheckInputs, options: ProjectCheckOptions, jobs: mpsc::Rec
                 Snapshot::failed("checking failed internally; see the server's standard error".into())
             }
         };
-        if events.send(Event::Checked(Box::new(snapshot))).is_err() { return; }
+        if events.send(Event::Checked(Box::new(snapshot), generation)).is_err() { return; }
     }
 }
 
@@ -1503,6 +1697,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                     eprintln!("luanalysis profile: query={:.6}s", started.elapsed().as_secs_f64());
                 }
                 let _ = events.send(match result {
+                    Ok(result) if matches!(query.site, Site::Actions(_) | Site::FileRename(_)) => Event::RevisionAnswer(query.id.clone(), result, query.revision),
                     Ok(result) => Event::Answered(query.id.clone(), result),
                     Err(error) => Event::Refused(query.id.clone(), error),
                 });
@@ -1520,6 +1715,7 @@ fn answer_queries(inputs: CheckInputs, options: ProjectCheckOptions, queries: mp
                 Site::Navigate(site) => navigate(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Hints(site) => hints(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
                 Site::Actions(site) => actions(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
+                Site::FileRename(site) => file_rename(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut answer),
                 Site::Hierarchy(site) => hierarchy(&inputs, options.clone(), &mut workspace, &mut loaded, &query, site, &mut |result| answer(Ok(result))),
             }));
             if completed.is_err() {
@@ -1760,18 +1956,55 @@ fn symbol_kind(kind: language_service::SymbolKind) -> usize {
     }
 }
 
+fn file_rename(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &FileRenameSite, answer: &mut (dyn FnMut(Result<Json, String>) + Send)) {
+    let _ = loaded;
+    let discovery = match inputs.discover() { Ok(discovery) => discovery, Err(error) => return answer(Err(error.to_string())) };
+    let resolver = match inputs.resolver(&discovery) { Ok(resolver) => resolver, Err(error) => return answer(Err(error.to_string())) };
+    // File operations have no synthetic document. Read every closed source from disk and
+    // replace only the actual open documents, including before the first diagnostics arrive.
+    let project = Project::load_plan_with_overlays(&resolver, with_documents(&discovery.plan, &query.overlays), &query.overlays,
+        |source| workspace.static_require_requests(source));
+    let report = workspace.check_project(project, options);
+    let edits = match crate::file_operations::rename_edits(&report, &resolver, &site.renames) {
+        Ok(edits) => edits, Err(error) => return answer(Err(error)),
+    };
+    if edits.is_empty() { return answer(Ok(Json::Null)); }
+    let mut grouped: std::collections::BTreeMap<PathBuf, Vec<Json>> = std::collections::BTreeMap::new();
+    for edit in edits {
+        let Some(source) = report.project.file_by_path(&edit.path) else { return answer(Err("rename source disappeared".to_owned())) };
+        let lines = LineIndex::new(source.source.clone());
+        grouped.entry(edit.path).or_default().push(Json::object([
+            ("range", lines.range(edit.span.start, edit.span.end, query.encoding)),
+            ("newText", Json::from(edit.replacement)),
+        ]));
+    }
+    let edit = if site.document_changes {
+        Json::object([("documentChanges", Json::Array(grouped.into_iter().map(|(path, edits)| Json::object([
+            ("textDocument", Json::object([
+                ("uri", Json::from(query.uri(&path))),
+                ("version", site.versions.get(&path).map_or(Json::Null, |version| Json::from(*version))),
+            ])),
+            ("edits", Json::Array(edits)),
+        ])).collect()))])
+    } else {
+        Json::object([("changes", Json::Object(grouped.into_iter().map(|(path, edits)| (query.uri(&path), Json::Array(edits))).collect()))])
+    };
+    answer(Ok(edit));
+}
+
 fn hints(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut ProjectWorkspace, loaded: &mut Option<LoadedProject>, query: &Query, site: &HintSite, answer: &mut (dyn FnMut(Json) + Send)) {
     let Some(project) = load(inputs, workspace, loaded, query) else { return };
     let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
-    language_service::parameter_hints(project, options, workspace, file, site.range.clone(), |names| {
-        let mut hints = site.types.clone();
-        hints.extend(names.into_iter().map(|(offset, name)| Json::object([
-            ("position", query.lines.position(offset, query.encoding)),
-            ("label", Json::from(format!("{name}:"))),
-            ("kind", Json::from(2usize)),
-            ("paddingRight", Json::from(true)),
-        ])));
-        answer(Json::Array(hints));
+    language_service::inlay_hints(project, options, workspace, file, site.range.clone(), site.preferences, |hints| {
+        answer(Json::Array(hints.into_iter().map(|hint| {
+            let mut fields = vec![
+                ("position".to_owned(), query.lines.position(hint.offset, query.encoding)),
+                ("label".to_owned(), Json::from(hint.label)),
+                ("kind".to_owned(), Json::from(if hint.parameter { 2usize } else { 1usize })),
+            ];
+            if hint.parameter { fields.push(("paddingRight".to_owned(), Json::from(true))); }
+            Json::Object(fields)
+        }).collect()));
     });
 }
 
@@ -1831,13 +2064,51 @@ fn actions(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut P
     let Some(project) = load(inputs, workspace, loaded, query) else { return };
     let Some(file) = project.file_by_path(&query.path).map(|file| file.id) else { return };
     let requested = site.diagnostics.iter().map(|(_, code, span)| (code.clone(), *span)).collect();
-    let uri = path_to_uri(&query.path);
-    language_service::spelling_fixes(project, options, workspace, file, requested, |fixes| {
-        let mut actions = site.actions.clone();
-        actions.extend(fixes.into_iter().map(|fix| quick_fix(fix.title, &site.diagnostics[fix.diagnostic].0, &uri,
+    let uri = query.uri(&query.path);
+    let mut result = site.actions.clone();
+    language_service::spelling_fixes(project.clone(), options.clone(), workspace, file, requested, |fixes| {
+        result.extend(fixes.into_iter().map(|fix| quick_fix(fix.title, &site.diagnostics[fix.diagnostic].0, &uri,
             query.lines.range(fix.span.start, fix.span.end, query.encoding), fix.replacement)));
-        answer(Json::Array(actions));
     });
+    if action_kind_requested("refactor.rewrite", &site.only) {
+        crate::semantic_actions::actions(project, options, workspace, file, site.range.clone(), |actions| {
+            result.extend(actions.into_iter().filter(|action| action_kind_requested(action.kind, &site.only)).map(|action| Json::object([
+                ("title", Json::from(action.title)),
+                ("kind", Json::from(action.kind)),
+                ("edit", {
+                    let edits = Json::Array(action.edits.into_iter().map(|edit| Json::object([
+                        ("range", query.lines.range(edit.span.start, edit.span.end, query.encoding)),
+                        ("newText", Json::from(edit.replacement)),
+                    ])).collect());
+                    if site.document_changes { Json::object([("documentChanges", Json::Array(vec![Json::object([
+                        ("textDocument", Json::object([("uri", Json::from(uri.clone())), ("version", site.version.map_or(Json::Null, Json::from))])),
+                        ("edits", edits),
+                    ])]))]) }
+                    else { Json::object([("changes", Json::Object(vec![(uri.clone(), edits)]))]) }
+                }),
+            ])));
+        });
+    }
+    if site.document_changes {
+        for action in &mut result {
+            let Some(changes) = action.path(&["edit", "changes"]).cloned() else { continue };
+            let Json::Object(changes) = changes else { continue };
+            let edits = changes.into_iter().map(|(uri, edits)| Json::object([
+                ("textDocument", Json::object([("uri", Json::from(uri)), ("version", site.version.map_or(Json::Null, Json::from))])),
+                ("edits", edits),
+            ])).collect();
+            if let Json::Object(fields) = action {
+                if let Some((_, edit)) = fields.iter_mut().find(|(name, _)| name == "edit") {
+                    *edit = Json::object([("documentChanges", Json::Array(edits))]);
+                }
+            }
+        }
+    }
+    answer(Json::Array(result));
+}
+
+fn action_kind_requested(kind: &str, only: &[String]) -> bool {
+    only.is_empty() || only.iter().any(|wanted| kind == wanted || kind.strip_prefix(wanted.as_str()).is_some_and(|suffix| suffix.starts_with('.')))
 }
 
 /// What the client's settings ask of the editor's features.
@@ -1845,12 +2116,15 @@ fn actions(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut P
 struct Preferences {
     type_hints: bool,
     parameter_hints: bool,
+    expression_parameter_hints: bool,
+    parameter_type_hints: bool,
+    return_type_hints: bool,
     call_snippets: bool,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { type_hints: true, parameter_hints: true, call_snippets: true }
+        Self { type_hints: true, parameter_hints: true, expression_parameter_hints: false, parameter_type_hints: false, return_type_hints: false, call_snippets: true }
     }
 }
 
@@ -1895,6 +2169,9 @@ fn apply_settings(mut inputs: CheckInputs, mut options: ProjectCheckOptions, set
     let preferences = Preferences {
         type_hints: flag(&["inlayHints", "types"]).unwrap_or(true),
         parameter_hints: flag(&["inlayHints", "parameterNames"]).unwrap_or(true),
+        expression_parameter_hints: flag(&["inlayHints", "expressionParameterNames"]).unwrap_or(false),
+        parameter_type_hints: flag(&["inlayHints", "parameterTypes"]).unwrap_or(false),
+        return_type_hints: flag(&["inlayHints", "returnTypes"]).unwrap_or(false),
         call_snippets: flag(&["completion", "callSnippets"]).unwrap_or(true),
     };
     Ok((inputs, options, preferences))
@@ -2022,7 +2299,11 @@ struct LineIndex {
 impl LineIndex {
     fn new(text: String) -> Self {
         let mut line_starts = vec![0];
-        line_starts.extend(text.match_indices('\n').map(|(index, _)| index + 1));
+        for (index, byte) in text.bytes().enumerate() {
+            if byte == b'\n' || byte == b'\r' && text.as_bytes().get(index + 1) != Some(&b'\n') {
+                line_starts.push(index + 1);
+            }
+        }
         Self { text, line_starts }
     }
 
@@ -2054,7 +2335,8 @@ impl LineIndex {
 
     fn offset(&self, line: usize, character: usize, encoding: Encoding) -> usize {
         let Some(&start) = self.line_starts.get(line) else { return self.text.len() };
-        let end = self.line_starts.get(line + 1).map_or(self.text.len(), |&next| next - 1);
+        let mut end = self.line_starts.get(line + 1).map_or(self.text.len(), |&next| next);
+        while end > start && matches!(self.text.as_bytes()[end - 1], b'\r' | b'\n') { end -= 1; }
         match encoding {
             Encoding::Utf8 => self.floor((start + character).min(end)),
             Encoding::Utf16 => {
@@ -2070,6 +2352,11 @@ impl LineIndex {
 }
 
 fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    let path = uri_to_lexical_path(uri)?;
+    Some(std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+fn uri_to_lexical_path(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let rest = rest.strip_prefix("localhost").unwrap_or(rest);
     let bytes = rest.as_bytes();
@@ -2091,8 +2378,7 @@ fn uri_to_path(uri: &str) -> Option<PathBuf> {
         [b'/', drive, b':', ..] if cfg!(windows) && drive.is_ascii_alphabetic() => PathBuf::from(&path[1..]),
         _ => PathBuf::from(path),
     };
-    // Checked paths are canonical; an editor's may name a link to the same file.
-    Some(std::fs::canonicalize(&path).unwrap_or(path))
+    Some(path)
 }
 
 fn path_to_uri(path: &Path) -> String {
@@ -2121,11 +2407,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn line_index_round_trips_lf_crlf_and_cr_with_unicode() {
+        for newline in ["\n", "\r\n", "\r"] {
+            let text = format!("-- 😀{newline}local x = '😀'{newline}return x{newline}");
+            let lines = LineIndex::new(text.clone());
+            assert_eq!(lines.line_starts.len(), 4);
+            for encoding in [Encoding::Utf8, Encoding::Utf16] {
+                for at in text.char_indices().map(|(at, _)| at).chain([text.len()]) {
+                    if text.as_bytes().get(at).is_some_and(|byte| *byte == b'\r' || *byte == b'\n') { continue; }
+                    let position = lines.position(at, encoding);
+                    assert_eq!(lines.offset(position.get("line").unwrap().as_u64().unwrap() as usize,
+                        position.get("character").unwrap().as_u64().unwrap() as usize, encoding), at);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn signed_document_versions_and_code_action_kinds() {
+        assert_eq!(document_version(&Json::from(-1i64)), Some(-1));
+        assert_eq!(document_version(&Json::from(i32::MIN as i64)), Some(i32::MIN as i64));
+        assert_eq!(document_version(&Json::Number(0.5)), None);
+        assert_eq!(document_version(&Json::from(i32::MAX as i64 + 1)), None);
+        assert!(action_kind_requested("refactor.rewrite", &["refactor".into()]));
+        assert!(!action_kind_requested("refactor.rewrite", &["quickfix".into()]));
+    }
+
+    #[test]
     fn queued_rename_is_not_superseded_by_navigation() {
         let path = std::env::temp_dir().join("luanalysis queued rename.lua");
         let text = "local function greet() end\ngreet()\n";
         let query = |id: usize, request| Query {
-            id: Json::from(id), path: path.clone(),
+            id: Json::from(id), revision: 0, path: path.clone(),
             overlays: HashMap::from([(path.clone(), text.to_owned())]),
             uris: HashMap::new(), disk: 0,
             site: Site::Navigate(NavigateSite { text: text.to_owned(), offset: 15, request }),

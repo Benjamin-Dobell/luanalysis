@@ -459,17 +459,44 @@ options of `check`, and without paths it checks the editor's workspace. It provi
   accept Unicode identifiers using the same rules as Lua source, including UTF-16 editor
   ranges and unsaved buffers. A rename that would change what a name refers to, merge two
   names, or edit a library's declarations is refused, with why.
-* The document outline and workspace symbol search, call and type hierarchies, inlay hints for
-  inferred types and literal arguments' parameters, semantic highlighting, folding (including
-  `--region`), selection ranges, links for `require`d modules (calls the check takes as the
-  standard loader's, not a replacement's), and quick fixes for misspelled names and members and
-  for unused names.
+* Full-document and range formatting, and newline-triggered indentation, for Lua and `.ttslua`.
+* The document outline, with class members and nested functions/locals, workspace symbol search,
+  call and type hierarchies, native inferred-type and parameter-name inlays, semantic
+  highlighting, folding (including long strings, `--region` and `-- {{{ title`), selection
+  ranges, and links for resolved standard-loader `require` calls.
+* Quick fixes for misspelled names/members and unused names, plus `refactor.rewrite` actions for
+  LuaDoc and inferred annotations, optional parameter annotations, call parentheses, boolean
+  inversion, proven literal logical expressions, and assigning method parameters to fields.
+* File move/rename reference edits through `workspace/willRenameFiles`, followed by
+  `workspace/didRenameFiles`. The editor applies the edits and performs the filesystem operation.
 
 Editors' settings, in `initializationOptions` or `workspace/didChangeConfiguration` (directly or
 under `luanalysis`), apply on top of the command line's options: `luaVersion`, `libraries`,
 `moduleRoots`, `packagePath`, `stdlib`, `noStdlib` and `noImplicitAny`, and
 `inlayHints.types`, `inlayHints.parameterNames` and `completion.callSnippets` to turn those off.
+`inlayHints.expressionParameterNames`, `inlayHints.parameterTypes` and `inlayHints.returnTypes`
+opt into wider expression argument names, contextual parameter types and inferred function
+results; these three default to false. Explicit annotations and redundant hints are suppressed.
 Every workspace folder is checked, and a check in progress is shown as work-done progress.
+
+Formatting reads current unsaved text and respects negotiated UTF-8/UTF-16 positions. It changes
+whitespace between native lexer tokens, preserving strings, comments, annotations, casts and
+semicolons. Full/range formatting declines invalid Lua; range edits stay within the selection.
+It supports `tabSize` (1–32), `insertSpaces`, `trimTrailingWhitespace`, `insertFinalNewline` and
+`trimFinalNewlines`. Extensions in the request's formatting options are `newline: "lf"` or
+`"crlf"` (otherwise retain the first line ending) and `keepMultipleStatementsInOneLine: true`
+(default false). Whitespace inside strings/comments stays intact even when trimming is enabled.
+Only `\n` is advertised for on-type formatting; it changes line indentation, including in
+unfinished blocks, and inserts no block-closing tokens. Editors must opt into that trigger.
+
+File-operation capabilities are advertised when the client opts into `workspace.fileOperations`
+`willRename`/`didRename`. Edits use current overlays, proven standard-loader identity and resolved
+module targets, and validate names against the post-move search order across all module roots.
+Local loader shadows and unrelated strings are preserved. Batches and directory moves are
+supported; collisions and operations with no safe module name are refused. Open document URIs
+and versions are retained; `documentChanges` is used when supported. Module roots/package paths
+remain host configuration. Moves affecting `--module-map` manifests require host updates, and
+renaming symbolic links is declined. The server never moves files itself.
 
 ## Library
 
