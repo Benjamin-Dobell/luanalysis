@@ -181,6 +181,47 @@ end
 `{ readonly: boolean }` still declare a field named `readonly`. Editors point this out;
 `["readonly"]` names that field explicitly, and `readonly readonly` makes it read-only.
 
+### Types from values
+
+`typeof` gives the declared type of a value: a local or a global, or a member of one
+(`typeof M.config`). `keyof T` is the union of a table type's keys, and `T[K]` the type of its
+values at keys of type `K`. Together they derive a type from a table instead of repeating it:
+
+```lua
+---@alias Color typeof Colors[keyof typeof Colors]
+local Colors = { Red = 1, Green = 2, Blue = 3 }
+
+---@param color Color
+local function paint(color) end
+
+paint(Colors.Red)
+paint(4) -- error: '4' is not assignable to '1 | 2 | 3'
+```
+
+Keys keep their Lua types: `keyof` of `{ [1]: string, active: boolean }` is `1 | "active"`, of
+`string[]` is `number` and of `table<string, V>` is `string`. Generic functions can be typed by
+key:
+
+```lua
+---@generic T, K: keyof T
+---@param object T
+---@param key K
+---@return T[K]
+local function get(object, key) return object[key] end
+
+---@type Point
+local point = { x = 3, y = 4 }
+local x = get(point, "x") -- number
+get(point, "z")           -- error: '"z"' is not assignable to '"x" | "y"'
+```
+
+`typeof` names the variable in scope where it is written. A type declaration attached to a
+statement, as the alias above is, also sees what that statement declares. As in TypeScript, it is
+the variable's declared type, not one narrowed where the annotation is.
+
+lua-language-server's `---@enum Name` above a table is this alias, `typeof X[keyof typeof X]` for
+the table `X` it assigns, and `---@enum (key) Name` is `keyof typeof X`.
+
 ### Functions
 
 Function types describe parameters, optional parameters, variadic parameters and multiple or
@@ -345,6 +386,27 @@ type. Function types and overloads support the same syntax: `fun(value: unknown)
 Assertions such as `assert(isString(value))` and comparisons such as `isString(value) == false`
 also narrow the argument. The [checked example](examples/features/type-predicates.lua) covers
 primitive unions and nominal subclasses.
+
+An assertion function returns only when its argument has a type, or, with `asserts value` alone,
+when it is truthy. After a call, the argument has that type:
+
+```lua
+---@param value any
+---@return asserts value is string
+local function checkString(value)
+    if type(value) ~= "string" then error("expected a string") end
+end
+
+---@param value string | number
+local function shout(value)
+    checkString(value)
+    return value:upper() -- string
+end
+```
+
+As with a function that returns `never`, a call has this effect only through written types: a
+documented function, or a variable, parameter or field declared with a type. A class's assertion
+methods assert when called on a typed instance, not on the class's own table.
 
 Unlike TypeScript, narrowing ends at a call that can visibly change the value: a call to a
 function defined in the same file that assigns the variable or field, directly or through the

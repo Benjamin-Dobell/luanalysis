@@ -35,7 +35,10 @@ pub struct NativeSignatureHeader {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct NativeTypePredicate {
     pub parameter: usize,
-    pub ty: TypeId,
+    /// None: an assertion that the parameter is truthy.
+    pub ty: Option<TypeId>,
+    /// An assertion function's: the parameter has `ty` wherever a call returns.
+    pub asserts: bool,
 }
 
 impl<'p, 's> Checker<'p, 's> {

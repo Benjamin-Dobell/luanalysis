@@ -2780,6 +2780,36 @@
       "reason": "Analyze native generic writable storage through original mapped declarations, captured parameters and finite recursive observability profiles without publishing provisional variance masks.",
       "added": true,
       "patch_sha256": "2d30a507c0095ba83518b9cb7a15d0a97e4ff6fa6a330f81b6eb5eee2606be6c"
+    },
+    {
+      "path": "src/sema/check/mapped.rs",
+      "patch": "vendor/patches/bun-sema-native-type-operators.patch",
+      "reason": "Give keyof and indexed access types Lua table keys: literal field keys of every kind, indexer key types and sequence numbers, reads through the native table read, and generic table reads at their own generic keys as deferred T[K].",
+      "patch_sha256": "6f7b5293f669d4ecd5884bd77d7cca1ec8eb9baca710d84542279ed99e222f1a"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-type-operators.patch",
+      "reason": "Give keyof and indexed access types Lua table keys: literal field keys of every kind, indexer key types and sequence numbers, reads through the native table read, and generic table reads at their own generic keys as deferred T[K].",
+      "patch_sha256": "6f7b5293f669d4ecd5884bd77d7cca1ec8eb9baca710d84542279ed99e222f1a"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-assertion-predicates.patch",
+      "reason": "Carry written assertion predicates (asserts x is T, asserts x) through native signatures, narrowing an asserted argument by its type or truthiness wherever the call returns.",
+      "patch_sha256": "662a83e564e2297c00e639d667dd1d3a3fffafbe549c9639158f4b01216047b3"
+    },
+    {
+      "path": "src/sema/check/native_flow.rs",
+      "patch": "vendor/patches/bun-sema-native-assertion-predicates.patch",
+      "reason": "Carry written assertion predicates (asserts x is T, asserts x) through native signatures, narrowing an asserted argument by its type or truthiness wherever the call returns.",
+      "patch_sha256": "662a83e564e2297c00e639d667dd1d3a3fffafbe549c9639158f4b01216047b3"
+    },
+    {
+      "path": "src/sema/check/native_signatures.rs",
+      "patch": "vendor/patches/bun-sema-native-assertion-predicates.patch",
+      "reason": "Carry written assertion predicates (asserts x is T, asserts x) through native signatures, narrowing an asserted argument by its type or truthiness wherever the call returns.",
+      "patch_sha256": "662a83e564e2297c00e639d667dd1d3a3fffafbe549c9639158f4b01216047b3"
     }
   ],
   "source_additions": {
@@ -2800,7 +2830,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-inline-assertions.patch"
     },
     "src/sema/check/native_flow.rs": {
-      "extracted_sha256": "fbf3039b403324df34015f8bfb7ddbfecfba0b5d698ca065e6f7b7e2a697916f",
+      "extracted_sha256": "adac9b40b5f4784ad66c1ce7fcbea7e3614e8ca90e245abce88f3b456164102f",
       "introduced_by_patch": "vendor/patches/bun-sema-native-flow.patch"
     },
     "src/sema/check/native_generic_storage.rs": {
@@ -2848,7 +2878,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
-      "extracted_sha256": "174fea2eb1dd146d6203ad00b6c227ea7350413b91c56ba6e4396407d0df9bf2",
+      "extracted_sha256": "0cca4e83c25b696da621837bc8402cd87c5f9a13a13abc43d771f279b42044d5",
       "introduced_by_patch": "vendor/patches/bun-sema-source-callable-signatures.patch"
     },
     "src/sema/check/native_standard_assumptions.rs": {
@@ -2856,7 +2886,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "24b6e89b995452e39aa52f1e20ac1feebb8b5743e233ef2e8defe0ec3dae25d1",
+      "extracted_sha256": "bc9462a424d74da1432fccf639656740ae11470d2339063cd65355015938656e",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -3569,7 +3599,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "8076294e0f8ece195b7aaeb14361c767f2d68d255d6575b86afabeab71e59f87"
+      "extracted_sha256": "133ce5b60930f5b68a4974765200c2f583ed301b3a9d73bff46e956701c6a69a"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -3809,7 +3839,7 @@
     "src/sema/check/mapped.rs": {
       "upstream": "src/sema/check/mapped.rs",
       "sha256": "4dd9deabe9cc5c9e6fd585457addae05eab3311270100ef682f9bbfece820361",
-      "extracted_sha256": "5ddc848d22347d0c120f7620656b083906dd507236f9ec2314a1b7b81038d21e"
+      "extracted_sha256": "04fed6ea3c50872407e267a3dc20463c9022cc8e6dce06574e5906cf8327111f"
     },
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",

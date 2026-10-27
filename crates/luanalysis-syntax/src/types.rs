@@ -48,6 +48,9 @@ pub(crate) enum DeclarationItem {
         generics: Vec<GenericParameter>,
         kind: NamedTypeDeclarationKind,
         span: Span,
+        /// LuaLS's `---@enum`, `Some(true)` for `(key)`: the alias is derived from the table
+        /// that the statement it is attached to assigns.
+        enumeration: Option<bool>,
     },
     Field(FieldDeclaration),
     Function {
@@ -302,6 +305,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                                 generics,
                                 kind,
                                 span: annotation_span,
+                                enumeration: None,
                             });
                             tail_start = parser.documentation_tail();
                         }
@@ -309,8 +313,9 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     "enum" => {
                         active_function = None;
                         // LuaLS's `---@enum (key) Name` names the values (or keys) of the table
-                        // after it. Until enumerations are modelled, the name is an alias of
-                        // any value (of string for keys).
+                        // after it: `typeof X[keyof typeof X]` (or `keyof typeof X`) once it is
+                        // attached to the statement that assigns `X`. Without one, the name is an
+                        // alias of any value (of string for keys).
                         let mut keys = false;
                         if parser.take("(").is_some() {
                             keys = parser.declaration_name("@enum modifier").is_some_and(|modifier| modifier.text == "key");
@@ -324,6 +329,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                                 generics: Vec::new(),
                                 kind: NamedTypeDeclarationKind::Alias { target },
                                 span: annotation_span,
+                                enumeration: Some(keys),
                             });
                             tail_start = parser.documentation_tail();
                         }
@@ -554,9 +560,11 @@ fn type_depth(root: &TypeExpr) -> usize {
     while let Some((ty, current)) = pending.pop() {
         depth = depth.max(current);
         match &ty.kind {
-            TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. } | TypeExprKind::TypePredicate { ty: element, .. } => {
+            TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. } | TypeExprKind::TypePredicate { ty: Some(element), .. }
+            | TypeExprKind::KeyOf(element) => {
                 pending.push((element, current + 1))
             }
+            TypeExprKind::IndexedAccess { object, index } => pending.extend([(object.as_ref(), current + 1), (index.as_ref(), current + 1)]),
             TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. } => {
                 pending.extend(types.iter().map(|ty| (ty, current + 1)));
             }
@@ -582,7 +590,8 @@ fn type_depth(root: &TypeExpr) -> usize {
                 }
                 pending.extend(function.returns.iter().map(|ty| (ty, current + 1)));
             }
-            TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {}
+            TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
+            | TypeExprKind::TypeQuery(_) | TypeExprKind::Error => {}
         }
     }
     depth
@@ -1166,7 +1175,13 @@ impl TypeParser {
         if matches!(self.current().kind, TokenKind::Identifier(_))
             && self.word_at(self.pos + 1, "is")
         {
-            return self.predicate_return();
+            return self.predicate_return(false);
+        }
+        // So is `asserts`, before a parameter's name.
+        if self.word_at(self.pos, "asserts")
+            && matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(_)))
+        {
+            return self.predicate_return(true);
         }
         let mut types = Vec::new();
         let mut alternatives = Vec::new();
@@ -1211,14 +1226,21 @@ impl TypeParser {
         (types, Some(Box::new(TypePacks { alternatives, span })))
     }
     #[inline(never)]
-    fn predicate_return(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
+    fn predicate_return(&mut self, asserts: bool) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
+        let asserts = asserts.then(|| {
+            self.pos += 1;
+            self.tokens[self.pos - 1].span
+        });
         let parameter = self.name().expect("predicate parameter");
-        self.pos += 1; // Contextual `is`.
         self.depth += 1;
         // The asserted type owns unions and intersections, while an enclosing
         // callback parameter or generic argument still owns its comma.
-        let ty = self.union();
-        let mut span = parameter.span.join(ty.span);
+        // `asserts value` alone asserts that the value is truthy.
+        let ty = (asserts.is_none() || self.word_at(self.pos, "is")).then(|| {
+            self.pos += 1; // Contextual `is`.
+            self.union()
+        });
+        let mut span = asserts.unwrap_or(parameter.span).join(ty.as_ref().map_or(parameter.span, |ty| ty.span));
         let kind = if self.symbol("...") || self.return_comma() {
             self.error("a type predicate must be the sole function return type".to_owned());
             if self.take("...").is_some() {
@@ -1231,7 +1253,7 @@ impl TypeParser {
             }
             TypeExprKind::Error
         } else {
-            TypeExprKind::TypePredicate { parameter, ty: Box::new(ty) }
+            TypeExprKind::TypePredicate { parameter, ty: ty.map(Box::new), asserts }
         };
         self.depth -= 1;
         (vec![TypeExpr { kind, span }], None)
@@ -1477,6 +1499,14 @@ impl TypeParser {
                 self.pos += 1;
                 self.function_type()
             }
+            // `keyof` and `typeof` are contextual, as in TypeScript: before an operand they are
+            // operators, and otherwise names.
+            TokenKind::Identifier(name) if name == "keyof" && self.type_starts_at(self.pos + 1) => self.key_of(start),
+            TokenKind::Identifier(name) if name == "typeof"
+                && matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(_))) =>
+            {
+                self.type_query(start)
+            }
             TokenKind::Identifier(name) => {
                 self.pos += 1;
                 self.qualified(name, start)
@@ -1618,20 +1648,82 @@ impl TypeParser {
         ty
     }
 
-    /// Array suffixes, then LuaLS's `T?`: T or nil. Out of line, as one call, to keep
-    /// the recursive type parsers' frames small.
+    /// Array and index suffixes, then LuaLS's `T?`: T or nil. Out of line, as one call, to
+    /// keep the recursive type parsers' frames small.
     #[inline(never)]
     fn type_suffixes(&mut self, ty: TypeExpr) -> TypeExpr {
-        let mut ty = self.array_suffix(ty);
+        let mut ty = self.postfix_types(ty);
         if let Some(question) = self.take("?") {
             let span = ty.span.join(question);
             ty = TypeExpr {
                 kind: TypeExprKind::Union(vec![ty, TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span: question }]),
                 span,
             };
-            ty = self.array_suffix(ty);
+            ty = self.postfix_types(ty);
         }
         ty
+    }
+
+    /// `T[]` and `T[K]`, in any order. An index touches its type, so a bracketed description
+    /// after a type (`string [optional]`) is not an index.
+    fn postfix_types(&mut self, mut ty: TypeExpr) -> TypeExpr {
+        loop {
+            ty = self.array_suffix(ty);
+            if !self.symbol("[") || self.current().span.start != ty.span.end || matches!(ty.kind, TypeExprKind::Error) {
+                return ty;
+            }
+            self.pos += 1;
+            // The brackets own their commas, as parentheses do.
+            let surrounding_comma_mode = self.comma_ends_type;
+            let surrounding_parameter_depth = self.function_parameter_comma_depth;
+            self.comma_ends_type = 0;
+            self.function_parameter_comma_depth = None;
+            let index = self.union();
+            self.comma_ends_type = surrounding_comma_mode;
+            self.function_parameter_comma_depth = surrounding_parameter_depth;
+            let end = self.expect("]");
+            let span = ty.span.join(end);
+            ty = TypeExpr { kind: TypeExprKind::IndexedAccess { object: Box::new(ty), index: Box::new(index) }, span };
+        }
+    }
+
+    /// Whether a type can begin at `pos`, so that a contextual operator before it applies to it.
+    fn type_starts_at(&self, pos: usize) -> bool {
+        match self.tokens.get(pos).map(|token| &token.kind) {
+            Some(TokenKind::Identifier(_) | TokenKind::Number(_) | TokenKind::String(_)) => true,
+            Some(TokenKind::Keyword(name)) => matches!(name.as_str(), "nil" | "true" | "false" | "function"),
+            Some(TokenKind::Symbol(symbol)) => matches!(symbol.as_str(), "(" | "{" | "[" | "-"),
+            _ => false,
+        }
+    }
+
+    /// `keyof` and its operand, with the operand's array and index suffixes: `keyof T[]` is
+    /// `keyof (T[])`. Out of line, as the other recursive type parsers' helpers are.
+    #[inline(never)]
+    fn key_of(&mut self, start: Span) -> TypeExpr {
+        self.pos += 1;
+        let operand = self.primary();
+        let span = start.join(operand.span);
+        TypeExpr { kind: TypeExprKind::KeyOf(Box::new(operand)), span }
+    }
+
+    /// `typeof` and the value it names: a name and the members after it, touching
+    /// (`typeof M.config`).
+    #[inline(never)]
+    fn type_query(&mut self, start: Span) -> TypeExpr {
+        self.pos += 1;
+        let mut path = vec![self.name().expect("type query name")];
+        while self.symbol(".")
+            && self.current().span.start == path.last().unwrap().span.end
+            && let Some(next) = self.tokens.get(self.pos + 1)
+            && next.span.start == self.current().span.end
+            && let TokenKind::Identifier(text) | TokenKind::Keyword(text) = &next.kind
+        {
+            path.push(Name { text: text.clone(), span: next.span });
+            self.pos += 2;
+        }
+        let span = start.join(path.last().unwrap().span);
+        TypeExpr { kind: TypeExprKind::TypeQuery(path), span }
     }
 
     /// A dotted or hyphenated name continued from `first` (`parser.object`, `fs.path`,

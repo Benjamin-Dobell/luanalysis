@@ -207,8 +207,8 @@ impl super::Checker<'_> {
         source: &TypeExpr,
         parameters: &[Parameter],
     ) -> Option<luanalysis_engine::TypePredicate> {
-        let TypeExprKind::TypePredicate { parameter, ty } = &source.kind else { return None };
-        let target = self.annotation(ty);
+        let TypeExprKind::TypePredicate { parameter, ty, asserts } = &source.kind else { return None };
+        let target = ty.as_ref().map(|ty| self.annotation(ty));
         let Some(index) = parameters.iter().rposition(|candidate| candidate.name == parameter.text) else {
             self.error("TS1225", parameter.span, format!("Cannot find parameter '{}'.", parameter.text));
             return None;
@@ -218,15 +218,17 @@ impl super::Checker<'_> {
         } else {
             parameters[index].ty.clone()
         };
-        if !self.engine.is_assignable(&target, &parameter_type) {
+        if let (Some(ty), Some(target)) = (ty, &target)
+            && !self.engine.is_assignable(target, &parameter_type)
+        {
             self.error_types(
                 "TS2677", ty.span,
                 "A type predicate's type '{}' must be assignable to its parameter's type '{}'.",
-                &[&target, &parameter_type],
+                &[target, &parameter_type],
             );
             return None;
         }
-        Some(luanalysis_engine::TypePredicate { parameter: index, ty: target })
+        Some(luanalysis_engine::TypePredicate { parameter: index, ty: target, asserts: asserts.is_some() })
     }
 }
 
@@ -359,9 +361,14 @@ impl NativeRegistry {
                 )
             }
             TypeExprKind::Array { element, .. }
-            | TypeExprKind::TypePredicate { ty: element, .. } => {
+            | TypeExprKind::TypePredicate { ty: Some(element), .. }
+            | TypeExprKind::KeyOf(element) => {
                 ResultPackSourceType::Parts(vec![self.result_pack_source_type(context, element)])
             }
+            TypeExprKind::IndexedAccess { object, index } => ResultPackSourceType::Parts(vec![
+                self.result_pack_source_type(context, object),
+                self.result_pack_source_type(context, index),
+            ]),
             TypeExprKind::Record(fields) => {
                 let mut parts = Vec::new();
                 for field in fields {
@@ -372,7 +379,8 @@ impl NativeRegistry {
                 }
                 ResultPackSourceType::Parts(parts)
             }
-            TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {
+            TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
+            | TypeExprKind::TypeQuery(_) | TypeExprKind::Error => {
                 ResultPackSourceType::Parts(Vec::new())
             }
         }
@@ -1619,8 +1627,12 @@ impl NativeSignatures {
                 }
             }
             TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element)
-            | TypeExprKind::TypePredicate { ty: element, .. } => {
+            | TypeExprKind::TypePredicate { ty: Some(element), .. } | TypeExprKind::KeyOf(element) => {
                 self.visit_type(owner, context, parent, element)
+            }
+            TypeExprKind::IndexedAccess { object, index } => {
+                self.visit_type(owner, context, parent, object);
+                self.visit_type(owner, context, parent, index)
             }
             _ => {}
         }

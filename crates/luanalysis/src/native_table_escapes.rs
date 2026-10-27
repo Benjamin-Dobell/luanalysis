@@ -218,16 +218,31 @@ impl Checker<'_> {
             EscapeTarget::Argument { own: true, .. } => vec![Type::Unknown],
             EscapeTarget::Argument { expression, index, .. } => {
                 let call = &native.expressions().get(*expression).expression;
-                let mut checker = native.checker_for_expression(*expression, NativeCheckMode::TYPE_ONLY, &mut *self.engine);
-                let callee = match &call.kind {
-                    ExprKind::Call { callee, .. } => Some(checker.expression(callee)),
-                    ExprKind::MethodCall { receiver, name, .. } => {
-                        let receiver = checker.expression(receiver);
-                        checker.engine.property_type(&receiver, &name.text)
-                    }
+                // A named callee's parameters are its declared contract. Reading it needs neither
+                // the caller's flow nor its signature, either of which can need this table's own
+                // type (`---@return typeof Table` on the caller, or an `---@enum` of the table).
+                let mut declared = native.checker(&mut *self.engine);
+                declared.check_mode = NativeCheckMode::TYPE_ONLY;
+                let named = match &call.kind {
+                    ExprKind::Call { callee, .. } => declared.declared_expression_type(callee),
+                    ExprKind::MethodCall { receiver, name, .. } => declared.declared_expression_type(receiver)
+                        .and_then(|receiver| declared.engine.property_type(&receiver, &name.text)),
                     _ => None,
                 };
-                complete &= !checker.incomplete_flow;
+                complete &= !declared.incomplete_flow;
+                let callee = named.or_else(|| {
+                    let mut checker = native.checker_for_expression(*expression, NativeCheckMode::TYPE_ONLY, &mut *self.engine);
+                    let callee = match &call.kind {
+                        ExprKind::Call { callee, .. } => Some(checker.expression(callee)),
+                        ExprKind::MethodCall { receiver, name, .. } => {
+                            let receiver = checker.expression(receiver);
+                            checker.engine.property_type(&receiver, &name.text)
+                        }
+                        _ => None,
+                    };
+                    complete &= !checker.incomplete_flow;
+                    callee
+                });
                 callee.map_or_else(Vec::new, |callee| self.engine.call_parameter_types(&callee, *index))
             }
             EscapeTarget::Annotation { annotation, slot, value } => {

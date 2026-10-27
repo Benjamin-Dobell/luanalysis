@@ -105,3 +105,21 @@ fn a_rename_keeps_every_name_referring_to_what_it_did() {
     assert_eq!(index.rename(file, at("later2"), "later").unwrap().len(), 2);
     assert_eq!(index.rename(file, at("first"), "initial").unwrap().len(), 2);
 }
+
+#[test]
+fn a_rename_edits_the_variables_that_typeof_names() {
+    let text = "---@alias Color typeof Colors[keyof typeof Colors]\nlocal Colors = { Red = 1 }\n---@type typeof Colors\nlocal copy = Colors\nShared = { on = true }\n---@type typeof Shared\nlocal state = Shared\nreturn copy, state\n";
+    let fixture = Fixture::new(&[("main.lua", text)]);
+    let index = fixture.index(&["main.lua"]);
+    let file = index.file(&fixture.0.join("main.lua")).unwrap();
+    // Each `typeof Colors` refers to the local, the alias's included: it describes that statement.
+    let (symbol, _) = index.symbol_at(file, text.find("Colors").unwrap()).unwrap();
+    assert!(matches!(symbol, Symbol::Local { .. }));
+    let edits = index.rename(file, text.find("Colors").unwrap(), "Palette").unwrap();
+    let mut renamed: Vec<usize> = edits.iter().map(|edit| edit.span.start).collect();
+    renamed.sort();
+    assert_eq!(renamed, text.match_indices("Colors").map(|(at, _)| at).collect::<Vec<_>>());
+    let (symbol, _) = index.symbol_at(file, text.find("typeof Shared").unwrap() + 7).unwrap();
+    assert_eq!(symbol, Symbol::Global { name: "Shared".into() });
+    assert_eq!(index.occurrences(&symbol).len(), 3);
+}

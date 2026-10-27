@@ -1356,6 +1356,9 @@ impl<'s, 'p> Checker<'s, 'p> {
             NativePredicate::And(left, right) => if sense { self.native_predicate_possible(provider, left, true) && self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) || self.native_predicate_possible(provider, right, false) },
             NativePredicate::Or(left, right) => if sense { self.native_predicate_possible(provider, left, true) || self.native_predicate_possible(provider, right, true) } else { self.native_predicate_possible(provider, left, false) && self.native_predicate_possible(provider, right, false) },
             NativePredicate::Not(inner) => self.native_predicate_possible(provider, inner, !sense),
+            // An assertion function's call holds wherever it returns, whatever it returns.
+            NativePredicate::Call { value, input, negated, .. } if sense != *negated
+                && self.native_flow_call_type_predicate(provider, *value, *input).is_some_and(|predicate| predicate.asserts) => true,
             NativePredicate::Truthy { value, input, .. } | NativePredicate::Call { value, input, .. } => { let value = self.native_flow_value(provider, *value, *input); !self.lua_truthiness_type(value, sense).is_never() },
             NativePredicate::RuntimeType { value, input, kind, equals, .. } => { if !provider.runtime_type_operation(*value, *input, self) { return true; } let value = self.native_flow_value(provider, *value, *input); !self.native_runtime_type(value, kind, *equals == sense).is_never() },
             _ => true,
@@ -1410,7 +1413,7 @@ impl<'s, 'p> Checker<'s, 'p> {
             }
             NativePredicate::Call { value, input, negated, .. } => {
                 match self.native_flow_call_type_predicate(provider, *value, *input) {
-                    Some(predicate) => self.narrowed_to(ty, predicate.ty, sense != *negated, super::flow::CheckDerived::No),
+                    Some(predicate) => self.native_predicate_narrowed(ty, predicate, sense != *negated),
                     None => ty,
                 }
             }
@@ -1450,7 +1453,7 @@ impl<'s, 'p> Checker<'s, 'p> {
             let value = match predicate {
                 NativePredicate::Call { value: call, input, negated, .. } => {
                     match self.native_flow_call_type_predicate(provider, *call, *input) {
-                        Some(predicate) => self.narrowed_to(value, predicate.ty, sense != *negated, super::flow::CheckDerived::No),
+                        Some(predicate) => self.native_predicate_narrowed(value, predicate, sense != *negated),
                         None => value,
                     }
                 }
@@ -1847,6 +1850,14 @@ impl<'s, 'p> Checker<'s, 'p> {
             }
             Ok(typed)
         } else { Err(()) }
+    }
+
+    /// `ty` where a written predicate of its reference holds (`sense`) or does not.
+    fn native_predicate_narrowed(&mut self, ty: TypeId, predicate: super::native_signatures::NativeTypePredicate, sense: bool) -> TypeId {
+        match predicate.ty {
+            Some(target) => self.narrowed_to(ty, target, sense, super::flow::CheckDerived::No),
+            None => self.lua_truthiness_type(ty, sense),
+        }
     }
 
     fn native_flow_call_type_predicate(

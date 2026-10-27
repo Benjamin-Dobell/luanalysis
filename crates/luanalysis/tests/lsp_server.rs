@@ -1539,3 +1539,22 @@ fn escaped_literal_fields_widen_live_and_readonly_names_are_hinted() {
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn a_typeof_name_goes_to_its_variable_and_hovers_its_type() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "local Colors = { Red = 1 }\n---@type typeof Colors\nlocal copy = { Red = 1 }\nreturn copy\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    let published = server.diagnostics(&main, |message| message.contains(r#""version":1"#));
+    assert!(published.contains(r#""diagnostics":[]"#), "{published}");
+    let definition = server.request(2, "textDocument/definition", &main, 1, 17);
+    assert!(definition.contains(r#""range":{"start":{"line":0,"character":6},"end":{"line":0,"character":12}}"#), "{definition}");
+    let hover = server.request(3, "textDocument/hover", &main, 1, 17);
+    assert!(hover.contains(r#"{ [\"Red\"]: 1 }"#), "{hover}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}

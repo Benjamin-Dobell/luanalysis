@@ -240,7 +240,7 @@ impl core::NativeFlowProvider for FlowProviderAdapter<'_> {
 
     fn call_type_predicate(&self, value: NativeValueKey, input: NativeFlowKey, checker: &mut Checker<'_, '_>) -> Option<bun_sema::check::native_signatures::NativeTypePredicate> {
         let predicate = self.provider.call_type_predicate(value, input, &mut SessionQueries { checker, handles: self.handles })?;
-        Some(bun_sema::check::native_signatures::NativeTypePredicate { parameter: predicate.parameter, ty: import_type(checker, self.handles, &predicate.ty) })
+        Some(crate::import_predicate(checker, self.handles, &predicate))
     }
 
     fn reference_declaration(&self, reference: NativeReferenceKey) -> Option<NativeVariableDeclaration> { self.provider.reference_declaration(reference) }

@@ -204,7 +204,9 @@ impl<'p, 's> Checker<'p, 's> {
                 self.union(&keys)
             };
         }
-        if self.mapped_origin(ty).is_some() {
+        if let Some(keys) = self.native_key_type(ty) {
+            keys
+        } else if self.mapped_origin(ty).is_some() {
             self.get_index_type_for_mapped_type(ty, index_flags)
         } else if ty == TypeId::WILDCARD {
             ty
@@ -627,6 +629,11 @@ impl<'p, 's> Checker<'p, 's> {
             .unwrap_or(TypeId::UNKNOWN)
     }
 
+    /// `obj[index]` as a type, written as one. `None` if there is no such property.
+    pub fn indexed_access_type(&mut self, obj: TypeId, index: TypeId) -> Option<TypeId> {
+        self.indexed_access_if_any(obj, index, false)
+    }
+
     /// The instantiation of a deferred `obj[index]`, now that more is known of `obj` or `index`.
     /// `undefined`: the flag preserved from its creation (`AccessFlagsPersistent`). It is no longer
     /// an expression access, so it is deferred by the rules for types.
@@ -721,7 +728,9 @@ impl<'p, 's> Checker<'p, 's> {
         }
         // `getReducedType`: an intersection that reduces to `never` is removed.
         let obj = self.reduced(obj);
-        let index = self.key_into_string_index_only(obj, index);
+        // A Lua table's keys are not property names: `t[1]` is not `t["1"]`.
+        let native = self.is_native_table_type(obj);
+        let index = if native { index } else { self.key_into_string_index_only(obj, index) };
         if self.p.files.options.no_unchecked_indexed_access
             && access_flags.contains(AccessFlags::EXPRESSION_POSITION)
         {
@@ -753,6 +762,9 @@ impl<'p, 's> Checker<'p, 's> {
                 }
                 None => deferred,
             });
+        }
+        if native {
+            return self.native_table_read(obj, super::native_tables::NativeTableAccessKey::Type(index)).ok();
         }
         let apparent = self.reduced_apparent_type(obj);
         if let TypeData::Union(keys) = self.data(index)

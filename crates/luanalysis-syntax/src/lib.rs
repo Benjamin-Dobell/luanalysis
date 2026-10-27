@@ -22,7 +22,7 @@ mod diagnostic_origin_tests;
 pub use lexer::{Lexed, Token, TokenKind, identifier_continue, identifier_start, is_identifier, lex};
 pub use parser::{parse, parse_with_checkpoint};
 pub use documentation::{Documentation, documentation_above, documentation_at};
-pub use navigation::{TypeName, TypeNameKind, type_names};
+pub use navigation::{TypeName, TypeNameKind, type_names, type_query_roots};
 
 /// Half-open UTF-8 byte offsets in the original Lua source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -578,11 +578,23 @@ pub enum TypeExprKind {
     Record(Vec<TypeField>),
     Parenthesized(Box<TypeExpr>),
     Function(FunctionType),
-    /// A sole boolean result that narrows a named parameter when it is true.
+    /// A sole boolean result that narrows a named parameter when it is true, or with
+    /// `asserts`, a function that returns only when the parameter is of `ty`, or when there is
+    /// no `ty`, truthy.
     TypePredicate {
         parameter: Name,
-        ty: Box<TypeExpr>,
+        ty: Option<Box<TypeExpr>>,
+        asserts: Option<Span>,
     },
+    /// `keyof T`: the union of T's keys.
+    KeyOf(Box<TypeExpr>),
+    /// `T[K]`: the type of T's values at keys of type K.
+    IndexedAccess {
+        object: Box<TypeExpr>,
+        index: Box<TypeExpr>,
+    },
+    /// `typeof name.member`: the declared type of a value in scope.
+    TypeQuery(Vec<Name>),
     Array {
         element: Box<TypeExpr>,
         suffix_span: Span,

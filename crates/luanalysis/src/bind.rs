@@ -71,6 +71,9 @@ pub enum OccurrenceKind {
     Write,
     /// A named @param tag or return predicate referring to a function parameter.
     Annotation,
+    /// A variable that a `typeof` in an annotation names. It reads the variable's type, not its
+    /// value, so it captures nothing.
+    TypeQuery,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,12 +201,18 @@ impl BoundFile {
     /// The real lexical `_ENV` upvalue for an unresolved source name.
     /// None denotes the chunk's implicit environment upvalue.
     pub fn environment_binding_at(&self, byte_offset: usize) -> Option<BindingId> {
+        self.visible_binding("_ENV", byte_offset)
+    }
+
+    /// The local named `name` that a reference at an original byte offset would read, as a
+    /// name in an annotation there refers to it. None: the name is global there.
+    pub fn visible_binding(&self, name: &str, byte_offset: usize) -> Option<BindingId> {
         let mut scope = self.scope_at(byte_offset);
         while let Some(current) = scope {
             let node = self.scope(current);
             if let Some(binding) = node.bindings.iter().rev().copied().find(|binding| {
                 let declaration = self.declaration(*binding);
-                declaration.name == "_ENV" && declaration.activation <= byte_offset
+                declaration.name == name && declaration.activation <= byte_offset
             }) {
                 return Some(binding);
             }
@@ -298,6 +307,24 @@ pub fn bind(file: &File) -> BoundFile {
     binder.enter_scope(ScopeKind::File, file.span);
     binder.statements(&file.statements);
     binder.leave_scope();
+    // A comment has no scope of its own: a variable `typeof` names is the one in scope there.
+    // A type declaration attached to a statement describes it, so what that statement declares
+    // is in scope for it too (`---@alias Color typeof Colors[keyof typeof Colors]` above
+    // `local Colors = { ... }`).
+    let roots = luanalysis_syntax::type_query_roots(file);
+    let attached: Vec<(Span, Span)> = if roots.is_empty() { Vec::new() } else {
+        file.type_declarations.iter().filter_map(|declaration| Some((declaration.group_span, declaration.attachment?)))
+            .chain(file.type_extensions.iter().filter_map(|extension| Some((extension.group_span, extension.attachment?))))
+            .collect()
+    };
+    for root in roots {
+        let position = attached.iter()
+            .find(|(group, _)| group.start <= root.span.start && root.span.end <= group.end)
+            .map_or(root.span.start, |(_, statement)| statement.end);
+        let binding = binder.file.visible_binding(&root.text, position);
+        let scope = binder.file.scope_at(root.span.start).unwrap_or(ScopeId(0));
+        binder.file.occurrences.push(NameOccurrence { name: root.text, span: root.span, scope, binding, kind: OccurrenceKind::TypeQuery });
+    }
     binder
         .file
         .occurrences

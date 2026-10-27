@@ -80,6 +80,30 @@ struct DocumentationGroup {
     operators: Vec<usize>,
     functions: Vec<usize>,
     active_function: Option<usize>,
+    /// `---@enum` declarations, and whether each is `(key)`.
+    enumerations: Vec<(usize, bool)>,
+}
+
+/// The variable that a statement assigns a single table constructor to, as a name and its
+/// members: `local X = { ... }`, `X = { ... }` or `M.X = { ... }`.
+fn enumeration_table(statement: &Stmt) -> Option<Vec<Name>> {
+    let (target, value) = match &statement.kind {
+        StmtKind::Local { names, values, .. } if names.len() == 1 && values.len() == 1 => return matches!(values[0].kind, ExprKind::Table(_)).then(|| vec![names[0].clone()]),
+        StmtKind::Assign { targets, values, .. } if targets.len() == 1 && values.len() == 1 => (&targets[0], &values[0]),
+        _ => return None,
+    };
+    if !matches!(value.kind, ExprKind::Table(_)) { return None }
+    let mut path = Vec::new();
+    let mut expression = target;
+    loop {
+        match &expression.kind {
+            ExprKind::Name(name) => { path.push(name.clone()); break }
+            ExprKind::Field { base, name } => { path.push(name.clone()); expression = base; }
+            _ => return None,
+        }
+    }
+    path.reverse();
+    Some(path)
 }
 
 fn documentation_gap_is_contiguous(gap: &str) -> bool {
@@ -221,7 +245,7 @@ impl<'a> Parser<'a> {
             }
             if let Some(stmt) = self.statement() {
                 if let Some(group) = group {
-                    self.attach_type_group(group, stmt.span);
+                    self.attach_type_group(group, &stmt);
                 }
                 returned = matches!(stmt.kind, StmtKind::Return(_));
                 return_semicolon_used = false;
@@ -273,16 +297,29 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn attach_type_group(&mut self, group: DocumentationGroup, statement: Span) {
-        let gap = &self.source[group.span.end..statement.start];
+    fn attach_type_group(&mut self, group: DocumentationGroup, statement: &Stmt) {
+        let gap = &self.source[group.span.end..statement.span.start];
         if !documentation_gap_is_contiguous(gap) {
             return;
         }
         for index in group.declarations {
-            self.type_declarations[index].attachment = Some(statement);
+            self.type_declarations[index].attachment = Some(statement.span);
         }
         for index in group.extensions {
-            self.type_extensions[index].attachment = Some(statement);
+            self.type_extensions[index].attachment = Some(statement.span);
+        }
+        if group.enumerations.is_empty() { return }
+        let Some(path) = enumeration_table(statement) else { return };
+        for (index, keys) in group.enumerations {
+            // `typeof X[keyof typeof X]`, or `keyof typeof X`, naming the variable where the
+            // statement writes it.
+            let span = path[0].span.join(path.last().unwrap().span);
+            let table = || TypeExpr { kind: TypeExprKind::TypeQuery(path.clone()), span };
+            let names = TypeExpr { kind: TypeExprKind::KeyOf(Box::new(table())), span };
+            let target = if keys { names } else {
+                TypeExpr { kind: TypeExprKind::IndexedAccess { object: Box::new(table()), index: Box::new(names) }, span }
+            };
+            self.type_declarations[index].kind = NamedTypeDeclarationKind::Alias { target };
         }
     }
 
@@ -311,6 +348,7 @@ impl<'a> Parser<'a> {
                 operators: Vec::new(),
                 functions: Vec::new(),
                 active_function: None,
+                enumerations: Vec::new(),
             });
         }
         let group = self.documentation_group.as_mut().unwrap();
@@ -373,9 +411,10 @@ impl<'a> Parser<'a> {
                     group.functions.push(index);
                     group.active_function = Some(index);
                 }
-                types::DeclarationItem::Named { name, generics, kind, span } => {
+                types::DeclarationItem::Named { name, generics, kind, span, enumeration } => {
                     group.active_function = None;
                     let index = self.type_declarations.len();
+                    if let Some(keys) = enumeration { group.enumerations.push((index, keys)); }
                     let record = matches!(kind, NamedTypeDeclarationKind::Record { .. });
                     self.type_declarations.push(NamedTypeDeclaration {
                         id: NamedTypeDeclarationId(

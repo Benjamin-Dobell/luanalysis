@@ -2492,10 +2492,19 @@ impl NativeRegistry {
         // all-never result terminates this continuation. Any Pending native
         // dependency still taints the enclosing query.
         if matches!(queries.function_declared_scalar_return(&callee), Some(Type::Never)) {
-            NativeCallEffects::Never
-        } else {
-            NativeCallEffects::None
+            return NativeCallEffects::Never;
         }
+        // An assertion function's call asserts its own predicate, as `assert(guard(value))`
+        // asserts the guard's: it holds wherever the call returns.
+        if queries.may_have_type_predicate(&callee)
+            && self.flow_call_type_predicate(sources, value, input, queries).is_some_and(|predicate| predicate.asserts)
+        {
+            return NativeCallEffects::Assert {
+                condition: sources.evaluation_value(evaluation.id),
+                input: sources.flow_key(evaluation.input, input.graph.context),
+            };
+        }
+        NativeCallEffects::None
     }
 }
 

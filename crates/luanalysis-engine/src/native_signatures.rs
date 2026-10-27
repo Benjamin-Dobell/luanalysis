@@ -215,7 +215,7 @@ mod tests {
         }
         fn signature_type_predicate(&self, key: NativeSignatureKey, _: &mut dyn TypeQueries) -> Option<crate::TypePredicate> {
             self.predicate_reads.set(self.predicate_reads.get() + 1);
-            self.heads[key.index as usize].predicate.clone().map(|ty| crate::TypePredicate { parameter: 0, ty })
+            self.heads[key.index as usize].predicate.clone().map(|ty| crate::TypePredicate { parameter: 0, ty: Some(ty), asserts: false })
         }
         fn signature_declared_return_pack(
             &self,
@@ -549,8 +549,8 @@ mod tests {
                 assert_eq!(called.return_type, Type::Boolean);
                 let predicate = called.predicate.expect("selected predicate");
                 assert_eq!(predicate.parameter, 0);
-                assert!(queries.is_assignable(&predicate.ty, &ty));
-                assert!(queries.is_assignable(&ty, &predicate.ty));
+                assert!(queries.is_assignable(predicate.ty.as_ref().unwrap(), &ty));
+                assert!(queries.is_assignable(&ty, predicate.ty.as_ref().unwrap()));
                 let packed = queries.call_native_arguments(&callable, None, &[crate::PackArgument::Resolved(ty.clone())], &[], None);
                 assert!(packed.errors.is_empty());
                 assert_eq!(packed.return_type, Type::Boolean);
@@ -651,8 +651,8 @@ mod tests {
                 assert!(called.errors.is_empty(), "{:?}", called.errors);
                 assert_eq!(called.return_type, Type::Boolean);
                 let predicate = called.predicate.expect("captured declaration predicate");
-                assert!(queries.is_assignable(&predicate.ty, &outer));
-                assert!(queries.is_assignable(&outer, &predicate.ty));
+                assert!(queries.is_assignable(predicate.ty.as_ref().unwrap(), &outer));
+                assert!(queries.is_assignable(&outer, predicate.ty.as_ref().unwrap()));
             }
         });
     }

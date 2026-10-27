@@ -184,9 +184,10 @@ impl NativeRegistry {
                 }
                 TypeExprKind::Union(types) | TypeExprKind::Intersection(types) => pending.extend(types.iter().map(|ty| (context, ty))),
                 TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element)
-                | TypeExprKind::TypePredicate { ty: element, .. } => {
+                | TypeExprKind::TypePredicate { ty: Some(element), .. } | TypeExprKind::KeyOf(element) => {
                     pending.push((context, element))
                 }
+                TypeExprKind::IndexedAccess { object, index } => pending.extend([(context, object.as_ref()), (context, index.as_ref())]),
                 TypeExprKind::Record(fields) => {
                     for field in fields {
                         pending.push((context, &field.ty));
@@ -214,7 +215,8 @@ impl NativeRegistry {
                         pending.push((context, &vararg.ty));
                     }
                 }
-                TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {}
+                TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
+                | TypeExprKind::TypeQuery(_) | TypeExprKind::Error => {}
             }
             let Some(name) = reference else { continue };
             // Match annotation name-binding precedence for primitive keywords.

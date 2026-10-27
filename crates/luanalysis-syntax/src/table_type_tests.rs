@@ -94,7 +94,7 @@ fn generic_arity_and_literal_key_normalization_are_not_parser_operations() {
 
 #[test]
 fn malformed_array_generic_and_indexer_syntax_is_diagnosed_with_recovery() {
-    for ty in ["table<>", "Pair<T,>", "number[index]", "{[string] number}", "{name?: number}"] {
+    for ty in ["table<>", "Pair<T,>", "number[index", "number[]]", "{[string] number}", "{name?: number}"] {
         let source = format!("---@type {ty}\nlocal value = {{}}\nlocal recovery = 7\n");
         let file = parse(&source);
         assert!(!file.diagnostics.is_empty(), "{ty}");

@@ -5583,7 +5583,7 @@ impl<'p, 's> Checker<'p, 's> {
         };
         let predicate = native.map(|(predicate, mapper)| {
             let name = self.sig_params(sig).get(predicate.parameter).map_or(Atom::NONE, |parameter| parameter.name);
-            Predicate { param: Some(predicate.parameter), name, ty: Some(self.instantiate(predicate.ty, mapper)), asserts: false }
+            Predicate { param: Some(predicate.parameter), name, ty: predicate.ty.map(|ty| self.instantiate(ty, mapper)), asserts: predicate.asserts }
         });
         let stored = self.end_memoizable(begun);
         if self.leave(query).is_ok() && stored.is_some() && !self.is_stack_low() {

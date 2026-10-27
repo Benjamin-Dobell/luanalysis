@@ -790,7 +790,11 @@ pub struct Relation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypePredicate {
     pub parameter: usize,
-    pub ty: Type,
+    /// None: an assertion that the parameter is truthy.
+    pub ty: Option<Type>,
+    /// An assertion function's (`asserts parameter is ty`): the parameter has `ty` wherever a
+    /// call returns.
+    pub asserts: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1214,6 +1218,12 @@ pub trait TypeQueries {
     /// The type of the parameter at `index` in each call signature of `callee` that has one,
     /// without resolving any signature's return type.
     fn call_parameter_types(&mut self, callee: &Type, index: usize) -> Vec<Type>;
+    /// `keyof ty`: the union of its keys. A Lua table's keys are what indexes it, literal keys
+    /// keeping their literal types. Deferred while `ty` is generic.
+    fn key_type(&mut self, ty: &Type) -> Type;
+    /// `object[index]`: what `object` gives at keys of type `index`, deferred while either is
+    /// generic. `None`: `object` has nothing at some key of `index`.
+    fn indexed_access_type(&mut self, object: &Type, index: &Type) -> Option<Type>;
     fn inspect_type(&mut self, ty: &Type) -> Type;
     /// Exact backend recovery type, preserving its error identity across the owned boundary.
     fn error_type(&mut self) -> Type;
@@ -2097,6 +2107,17 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
             .map(|ty| export_type_with_literal_policy(self.checker, self.handles, ty, true))
             .collect()
     }
+    fn key_type(&mut self, ty: &Type) -> Type {
+        let ty = import_type(self.checker, self.handles, ty);
+        let keys = self.checker.keyof(ty);
+        export_type(self.checker, self.handles, keys)
+    }
+    fn indexed_access_type(&mut self, object: &Type, index: &Type) -> Option<Type> {
+        let object = import_type(self.checker, self.handles, object);
+        let index = import_type(self.checker, self.handles, index);
+        let value = self.checker.indexed_access_type(object, index)?;
+        Some(export_type(self.checker, self.handles, value))
+    }
     fn native_function_type_parameters(
         &mut self,
         key: NativeFunctionKey,
@@ -2403,8 +2424,11 @@ impl SessionQueries<'_, '_, '_> {
     fn export_call_result(&mut self, result: bun_sema::check::ResolvedTypeCall) -> CallResult {
         let predicate = if result.errors.is_empty() {
             result.sig.and_then(|sig| self.checker.sig_predicate(sig)).and_then(|predicate| {
-                if predicate.asserts { return None; }
-                Some(TypePredicate { parameter: predicate.param?, ty: export_type(self.checker, self.handles, predicate.ty?) })
+                Some(TypePredicate {
+                    parameter: predicate.param?,
+                    ty: predicate.ty.map(|ty| export_type(self.checker, self.handles, ty)),
+                    asserts: predicate.asserts,
+                })
             })
         } else { None };
         let return_type = export_type(self.checker, self.handles, result.ret);
@@ -2695,11 +2719,11 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
     }
     fn signature_type_predicate(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeSignatureId) -> Option<bun_sema::check::native_signatures::NativeTypePredicate> {
         let predicate = self.provider.signature_type_predicate(source_signature_key(key), &mut SessionQueries { checker, handles: self.handles })?;
-        Some(bun_sema::check::native_signatures::NativeTypePredicate { parameter: predicate.parameter, ty: import_type(checker, self.handles, &predicate.ty) })
+        Some(import_predicate(checker, self.handles, &predicate))
     }
     fn function_type_predicate(&self, checker: &mut Checker<'_, '_>, key: NativeFunctionId) -> Option<bun_sema::check::native_signatures::NativeTypePredicate> {
         let predicate = self.provider.function_type_predicate(source_key(key), &mut SessionQueries { checker, handles: self.handles })?;
-        Some(bun_sema::check::native_signatures::NativeTypePredicate { parameter: predicate.parameter, ty: import_type(checker, self.handles, &predicate.ty) })
+        Some(import_predicate(checker, self.handles, &predicate))
     }
     fn signature_header(&self, key: bun_sema::types::NativeSignatureId) -> bun_sema::check::native_signatures::NativeSignatureHeader { self.signature_header_core(key) }
     fn signature_has_unconstrained_return(&self, key: bun_sema::types::NativeSignatureId) -> bool { self.provider.signature_has_unconstrained_return(source_signature_key(key)) }
@@ -3289,6 +3313,14 @@ fn import_parameters(
             }
         })
         .collect()
+}
+
+fn import_predicate(checker: &mut Checker<'_, '_>, handles: &TypeHandles, predicate: &TypePredicate) -> bun_sema::check::native_signatures::NativeTypePredicate {
+    bun_sema::check::native_signatures::NativeTypePredicate {
+        parameter: predicate.parameter,
+        ty: predicate.ty.as_ref().map(|ty| import_type(checker, handles, ty)),
+        asserts: predicate.asserts,
+    }
 }
 
 fn import_type(checker: &mut Checker<'_, '_>, handles: &TypeHandles, ty: &Type) -> TypeId {

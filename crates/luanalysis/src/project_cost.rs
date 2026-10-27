@@ -95,8 +95,12 @@ impl OriginalTypes {
                 }
             }
             TypeExprKind::Parenthesized(inner) | TypeExprKind::Array { element: inner, .. }
-            | TypeExprKind::TypePredicate { ty: inner, .. } => {
+            | TypeExprKind::TypePredicate { ty: Some(inner), .. } | TypeExprKind::KeyOf(inner) => {
                 self.ty(inner);
+            }
+            TypeExprKind::IndexedAccess { object, index } => {
+                self.ty(object);
+                self.ty(index);
             }
             TypeExprKind::Generic { args, .. } => {
                 for argument in args {
@@ -107,6 +111,8 @@ impl OriginalTypes {
             TypeExprKind::Named(_)
             | TypeExprKind::Literal(_)
             | TypeExprKind::CompletionHint(_)
+            | TypeExprKind::TypePredicate { ty: None, .. }
+            | TypeExprKind::TypeQuery(_)
             | TypeExprKind::Error => {}
         }
     }

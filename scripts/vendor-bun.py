@@ -748,6 +748,16 @@ SOURCE_ADAPTATIONS.append({
     "reason": "Analyze native generic writable storage through original mapped declarations, captured parameters and finite recursive observability profiles without publishing provisional variance masks.",
     "added": True,
 })
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-type-operators.patch",
+    "reason": "Give keyof and indexed access types Lua table keys: literal field keys of every kind, indexer key types and sequence numbers, reads through the native table read, and generic table reads at their own generic keys as deferred T[K].",
+} for path in ["mapped.rs", "native_tables.rs"])
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-assertion-predicates.patch",
+    "reason": "Carry written assertion predicates (asserts x is T, asserts x) through native signatures, narrowing an asserted argument by its type or truthiness wherever the call returns.",
+} for path in ["decl.rs", "native_flow.rs", "native_signatures.rs"])
 
 
 def git(source, *args):

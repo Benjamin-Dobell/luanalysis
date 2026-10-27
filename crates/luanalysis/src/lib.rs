@@ -49,6 +49,7 @@ mod native_packs;
 mod native_return_annotations;
 mod native_tables;
 mod native_table_escapes;
+mod native_type_operators;
 mod native_types;
 mod operators;
 mod pattern_captures;
@@ -226,7 +227,7 @@ impl CheckReport {
         {
             if matches!(
                 occurrence.kind,
-                bind::OccurrenceKind::Declaration | bind::OccurrenceKind::Annotation
+                bind::OccurrenceKind::Declaration | bind::OccurrenceKind::Annotation | bind::OccurrenceKind::TypeQuery
             ) {
                 let binding = occurrence.binding?;
                 return self
@@ -807,7 +808,15 @@ impl Checker<'_> {
             }
             TypeExprKind::Intersection(types) => Type::Intersection(types.iter().map(|ty| self.annotation(ty)).collect()),
             TypeExprKind::CompletionHint(_) => Type::Never,
-            TypeExprKind::TypePredicate { .. } => Type::Boolean,
+            TypeExprKind::TypePredicate { asserts: None, .. } => Type::Boolean,
+            // An assertion function returns nothing when it returns.
+            TypeExprKind::TypePredicate { asserts: Some(_), .. } => Type::Void,
+            TypeExprKind::KeyOf(operand) => {
+                let operand = self.annotation(operand);
+                self.engine.key_type(&operand)
+            }
+            TypeExprKind::IndexedAccess { object, index } => self.indexed_access_annotation(object, index),
+            TypeExprKind::TypeQuery(path) => self.type_query_annotation(path),
             TypeExprKind::Literal(literal) => {
                 let value = match literal {
                     TypeLiteral::Boolean(value) => Type::BooleanLiteral(*value),

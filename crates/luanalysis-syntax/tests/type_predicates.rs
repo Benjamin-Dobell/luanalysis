@@ -1,10 +1,40 @@
 use luanalysis_syntax::{StmtKind, TypeExpr, TypeExprKind, parse, type_names};
 
 fn predicate(ty: &TypeExpr) -> (&luanalysis_syntax::Name, &TypeExpr) {
-    let TypeExprKind::TypePredicate { parameter, ty } = &ty.kind else {
+    let TypeExprKind::TypePredicate { parameter, ty: Some(ty), asserts: None } = &ty.kind else {
         panic!("expected type predicate: {ty:#?}")
     };
     (parameter, ty)
+}
+
+fn assertion<'a>(source: &'a str, ty: &'a TypeExpr) -> (&'a str, Option<&'a str>, &'a str) {
+    let TypeExprKind::TypePredicate { parameter, ty: target, asserts: Some(asserts) } = &ty.kind else {
+        panic!("expected assertion: {ty:#?}")
+    };
+    assert_eq!(&source[asserts.start..asserts.end], "asserts");
+    (&parameter.text, target.as_ref().map(|target| &source[target.span.start..target.span.end]), &source[ty.span.start..ty.span.end])
+}
+
+#[test]
+fn assertions_name_a_parameter_with_or_without_a_type() {
+    let source = "---@param value any\n---@return asserts value is string | number # checked\nlocal function check(value) end\n---@param value any\n---@return asserts value\nlocal function present(value) end\n---@type fun(value: any): asserts value is integer\nlocal guard\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:#?}", file.diagnostics);
+    let StmtKind::LocalFunction { function, .. } = &file.statements[0].kind else { panic!("function") };
+    let returns = function.annotations.returns.as_ref().unwrap();
+    assert_eq!(assertion(source, &returns.types[0]), ("value", Some("string | number"), "asserts value is string | number"));
+    let StmtKind::LocalFunction { function, .. } = &file.statements[1].kind else { panic!("function") };
+    let returns = function.annotations.returns.as_ref().unwrap();
+    assert_eq!(assertion(source, &returns.types[0]), ("value", None, "asserts value"));
+    let StmtKind::Local { annotation: Some(annotation), .. } = &file.statements[2].kind else { panic!("annotated local") };
+    let TypeExprKind::Function(signature) = &annotation.types[0].kind else { panic!("function type") };
+    assert_eq!(assertion(source, &signature.returns[0]), ("value", Some("integer"), "asserts value is integer"));
+}
+
+#[test]
+fn an_assertion_is_the_sole_return_type() {
+    let file = parse("---@return asserts value is string, number\nlocal function check(value) end\n");
+    assert!(file.diagnostics.iter().any(|diagnostic| diagnostic.message == "a type predicate must be the sole function return type"), "{:#?}", file.diagnostics);
 }
 
 #[test]

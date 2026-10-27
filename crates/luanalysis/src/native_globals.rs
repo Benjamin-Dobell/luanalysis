@@ -450,7 +450,7 @@ impl NativeRegistry {
         let more = variadic || parameters.len() > required.len();
         Some((required, more))
     }
-    pub(super) fn global_binding(&self, name: &str) -> Option<NativeGlobalBindingKey> {
+    pub(crate) fn global_binding(&self, name: &str) -> Option<NativeGlobalBindingKey> {
         self.project_globals.as_ref()?.binding(name)
     }
     /// The original assignments that can own an implementation global table.

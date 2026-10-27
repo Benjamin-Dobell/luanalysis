@@ -153,7 +153,7 @@ impl NativeRegistry {
         let bound = self.bound();
         let mut read = vec![false; bound.declarations.len()];
         for occurrence in &bound.occurrences {
-            if occurrence.kind == OccurrenceKind::Read && let Some(binding) = occurrence.binding {
+            if matches!(occurrence.kind, OccurrenceKind::Read | OccurrenceKind::TypeQuery) && let Some(binding) = occurrence.binding {
                 read[binding.0] = true;
             }
         }

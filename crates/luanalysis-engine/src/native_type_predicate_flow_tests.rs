@@ -42,7 +42,7 @@ impl NativeFlowProvider for PredicateGraph {
     fn call_type_predicate(&self, call: NativeValueKey, input: NativeFlowKey, _: &mut dyn TypeQueries) -> Option<TypePredicate> {
         assert_eq!(input, Self::at(0));
         self.resolutions.set(self.resolutions.get() + 1);
-        (call.index == 0).then_some(TypePredicate { parameter: 1, ty: Type::String })
+        (call.index == 0).then_some(TypePredicate { parameter: 1, ty: Some(Type::String), asserts: false })
     }
     fn flow_error(&self, _: NativeFlowKey, error: NativeFlowError) { panic!("unexpected flow error: {error:?}"); }
 }

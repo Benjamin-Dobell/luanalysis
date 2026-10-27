@@ -655,9 +655,10 @@ impl NativeNamed {
                         }
                     }
                     TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element)
-                    | TypeExprKind::TypePredicate { ty: element, .. } => {
+                    | TypeExprKind::TypePredicate { ty: Some(element), .. } | TypeExprKind::KeyOf(element) => {
                         pending.push(element)
                     }
+                    TypeExprKind::IndexedAccess { object, index } => pending.extend([index.as_ref(), object.as_ref()]),
                     TypeExprKind::Function(function) => {
                         pending.extend(function.generics.iter().rev().filter_map(|parameter| parameter.constraint.as_ref()));
                         pending.extend(function.returns.iter().rev());
@@ -672,7 +673,8 @@ impl NativeNamed {
                                 .filter_map(|parameter| parameter.ty.as_ref()),
                         );
                     }
-                    TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {}
+                    TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_)
+                    | TypeExprKind::TypePredicate { ty: None, .. } | TypeExprKind::TypeQuery(_) | TypeExprKind::Error => {}
                 }
             }
         }

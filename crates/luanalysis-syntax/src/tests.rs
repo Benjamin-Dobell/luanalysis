@@ -195,7 +195,7 @@ fn unsupported_lua_and_annotation_forms_are_reported_and_recover() {
     for unsupported in [
         "local x = {[1] 'one'}",
         "local function f(..., value) end",
-        "---@type number[index]",
+        "---@type number[index",
         "---@type fun<>(x: T): T",
         "---@overload fun(value: number): number",
         "---@type { [string] number }",

@@ -307,7 +307,11 @@ impl Builder<'_> {
             TypeExprKind::Union(parts) | TypeExprKind::Intersection(parts) => for part in parts { self.annotation_type(part); },
             TypeExprKind::Record(fields) => for field in fields { self.annotation_type(&field.ty); },
             TypeExprKind::Parenthesized(ty) | TypeExprKind::Array { element: ty, .. }
-                | TypeExprKind::TypePredicate { ty, .. } => self.annotation_type(ty),
+                | TypeExprKind::TypePredicate { ty: Some(ty), .. } | TypeExprKind::KeyOf(ty) => self.annotation_type(ty),
+            TypeExprKind::IndexedAccess { object, index } => {
+                self.annotation_type(object);
+                self.annotation_type(index);
+            }
             TypeExprKind::Function(function) => self.annotation_function(function),
             TypeExprKind::Generic { args, .. } => for arg in args { self.annotation_type(arg); },
             _ => {}

@@ -2,7 +2,7 @@
 //! references and rename of classes, shapes, aliases and generic parameters.
 
 use crate::types::{DeclarationItem, ParsedDocumentation};
-use crate::{CommentKind, File, FunctionAnnotations, FunctionType, GenericParameter, Span, TypeAnnotation, TypeExpr, TypeExprKind, TypeFieldKey};
+use crate::{CommentKind, File, FunctionAnnotations, Name, FunctionType, GenericParameter, Span, TypeAnnotation, TypeExpr, TypeExprKind, TypeFieldKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeNameKind {
@@ -36,7 +36,7 @@ pub fn type_names(file: &File, source: &str) -> Vec<TypeName> {
         });
         let (parsed, _) = crate::types::annotations(comment);
         let mut found = Vec::new();
-        visit_documentation(&parsed, &mut |name, span, kind| found.push((name.to_owned(), span, kind)));
+        visit_documentation(&parsed, &mut |name, span, kind| if let Visited::Type(kind) = kind { found.push((name.to_owned(), span, kind)) });
         names.extend(found.into_iter().map(|(name, span, kind)| TypeName { name, span, kind, block: comment.span }));
     }
     // Each name's block is the whole run of comments it belongs to.
@@ -58,13 +58,31 @@ pub fn type_names(file: &File, source: &str) -> Vec<TypeName> {
     names
 }
 
-fn visit_documentation(parsed: &ParsedDocumentation, visit: &mut dyn FnMut(&str, Span, TypeNameKind)) {
+/// What the documentation visitor finds: a type's name, or the variable a `typeof` names.
+#[derive(Clone, Copy)]
+enum Visited {
+    Type(TypeNameKind),
+    Value,
+}
+
+/// The variables `typeof` names in the documentation comments of `file`, in source order: the
+/// first name of each (`Color` in `typeof Color.Red`). A reference there reads that variable.
+pub fn type_query_roots(file: &File) -> Vec<Name> {
+    let mut roots = Vec::new();
+    for comment in file.comments.iter().filter(|comment| comment.kind == CommentKind::Documentation && comment.text.contains("typeof")) {
+        let (parsed, _) = crate::types::annotations(comment);
+        visit_documentation(&parsed, &mut |name, span, kind| if let Visited::Value = kind { roots.push(Name { text: name.to_owned(), span }) });
+    }
+    roots
+}
+
+fn visit_documentation(parsed: &ParsedDocumentation, visit: &mut dyn FnMut(&str, Span, Visited)) {
     visit_annotations(&parsed.functions, visit);
     for item in &parsed.declarations {
         match item {
-            DeclarationItem::Reference(reference) => visit(&reference.target.text, reference.target.span, TypeNameKind::Reference),
+            DeclarationItem::Reference(reference) => visit(&reference.target.text, reference.target.span, Visited::Type(TypeNameKind::Reference)),
             DeclarationItem::Named { name, generics, kind, .. } => {
-                visit(&name.text, name.span, TypeNameKind::Declaration);
+                visit(&name.text, name.span, Visited::Type(TypeNameKind::Declaration));
                 visit_generics(generics, visit);
                 match kind {
                     crate::NamedTypeDeclarationKind::Alias { target } => visit_type(target, visit),
@@ -75,11 +93,11 @@ fn visit_documentation(parsed: &ParsedDocumentation, visit: &mut dyn FnMut(&str,
                 }
             }
             DeclarationItem::Field(field) => {
-                if let Some(owner) = &field.explicit_owner { visit(&owner.text, owner.span, TypeNameKind::Reference); }
+                if let Some(owner) = &field.explicit_owner { visit(&owner.text, owner.span, Visited::Type(TypeNameKind::Reference)); }
                 visit_field(&field.key, &field.ty, visit);
             }
             DeclarationItem::Function { explicit_owner, signature, annotations, .. } => {
-                if let Some(owner) = explicit_owner { visit(&owner.text, owner.span, TypeNameKind::Reference); }
+                if let Some(owner) = explicit_owner { visit(&owner.text, owner.span, Visited::Type(TypeNameKind::Reference)); }
                 visit_function(signature, visit);
                 visit_annotations(annotations, visit);
             }
@@ -90,30 +108,30 @@ fn visit_documentation(parsed: &ParsedDocumentation, visit: &mut dyn FnMut(&str,
     for cast in &parsed.casts { visit_annotation(&cast.annotation, visit); }
 }
 
-fn visit_annotations(annotations: &FunctionAnnotations, visit: &mut dyn FnMut(&str, Span, TypeNameKind)) {
+fn visit_annotations(annotations: &FunctionAnnotations, visit: &mut dyn FnMut(&str, Span, Visited)) {
     visit_generics(&annotations.generics, visit);
     for param in &annotations.params { visit_type(&param.ty, visit); }
     if let Some(vararg) = &annotations.vararg { visit_type(&vararg.ty, visit); }
     for annotation in annotations.returns.iter().chain(&annotations.type_annotation) { visit_annotation(annotation, visit); }
 }
 
-fn visit_annotation(annotation: &TypeAnnotation, visit: &mut dyn FnMut(&str, Span, TypeNameKind)) {
+fn visit_annotation(annotation: &TypeAnnotation, visit: &mut dyn FnMut(&str, Span, Visited)) {
     for ty in &annotation.types { visit_type(ty, visit); }
 }
 
-fn visit_generics(generics: &[GenericParameter], visit: &mut dyn FnMut(&str, Span, TypeNameKind)) {
+fn visit_generics(generics: &[GenericParameter], visit: &mut dyn FnMut(&str, Span, Visited)) {
     for generic in generics {
-        visit(&generic.name.text, generic.name.span, TypeNameKind::Generic);
+        visit(&generic.name.text, generic.name.span, Visited::Type(TypeNameKind::Generic));
         if let Some(constraint) = &generic.constraint { visit_type(constraint, visit); }
     }
 }
 
-fn visit_field(key: &TypeFieldKey, ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, TypeNameKind)) {
+fn visit_field(key: &TypeFieldKey, ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited)) {
     if let TypeFieldKey::Indexed(key) = key { visit_type(key, visit); }
     visit_type(ty, visit);
 }
 
-fn visit_function(function: &FunctionType, visit: &mut dyn FnMut(&str, Span, TypeNameKind)) {
+fn visit_function(function: &FunctionType, visit: &mut dyn FnMut(&str, Span, Visited)) {
     visit_generics(&function.generics, visit);
     for param in &function.params {
         if let Some(ty) = &param.ty { visit_type(ty, visit); }
@@ -122,18 +140,26 @@ fn visit_function(function: &FunctionType, visit: &mut dyn FnMut(&str, Span, Typ
     for ty in &function.returns { visit_type(ty, visit); }
 }
 
-fn visit_type(ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, TypeNameKind)) {
+fn visit_type(ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited)) {
     match &ty.kind {
-        TypeExprKind::Named(name) => visit(name, ty.span, TypeNameKind::Reference),
+        TypeExprKind::Named(name) => visit(name, ty.span, Visited::Type(TypeNameKind::Reference)),
         TypeExprKind::Generic { base, args, .. } => {
-            visit(&base.text, base.span, TypeNameKind::Reference);
+            visit(&base.text, base.span, Visited::Type(TypeNameKind::Reference));
             for arg in args { visit_type(arg, visit); }
         }
         TypeExprKind::Union(types) | TypeExprKind::Intersection(types) => for ty in types { visit_type(ty, visit); },
-        TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element) | TypeExprKind::TypePredicate { ty: element, .. } => visit_type(element, visit),
+        TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element) | TypeExprKind::TypePredicate { ty: Some(element), .. }
+        | TypeExprKind::KeyOf(element) => visit_type(element, visit),
+        TypeExprKind::IndexedAccess { object, index } => {
+            visit_type(object, visit);
+            visit_type(index, visit);
+        }
         TypeExprKind::Record(fields) => for field in fields { visit_field(&field.key, &field.ty, visit); },
         TypeExprKind::Function(function) => visit_function(function, visit),
-        TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::Error => {}
+        // A type query names a value, not a type.
+        TypeExprKind::TypeQuery(path) => visit(&path[0].text, path[0].span, Visited::Value),
+        TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
+        | TypeExprKind::Error => {}
     }
 }
 

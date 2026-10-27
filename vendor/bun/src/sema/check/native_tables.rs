@@ -763,6 +763,47 @@ impl<'p, 's> Checker<'p, 's> {
         }).collect()
     }
 
+    /// `keyof` of a Lua table: the type of each key it has, as Lua indexes it. A named field's
+    /// key is its string literal and another literal key its own literal type, an index
+    /// signature gives its key type and a sequence `number`. `None`: `ty` is not a Lua table, so
+    /// TypeScript's `keyof` applies.
+    pub(super) fn native_key_type(&mut self, ty: TypeId) -> Option<TypeId> {
+        let ty = self.native_runtime_carrier(ty);
+        let resolved = match *self.data(ty) {
+            TypeData::NativeArray { .. } => return Some(TypeId::NUMBER),
+            TypeData::NativeTable(_) => ty,
+            TypeData::NativeObject(_) | TypeData::NativeRuntimeTable(_) | TypeData::NativeDefinition(_) => {
+                self.native_object_schema_resolved(ty).unwrap_or(TypeId::ERROR)
+            }
+            _ => return None,
+        };
+        let TypeData::NativeTable(data) = self.data(resolved) else {
+            // A runtime table's view or a definition's table that is itself another representation.
+            return if resolved == ty || self.is_error_type(resolved) { Some(TypeId::NEVER) } else { self.native_key_type(resolved).or(Some(TypeId::NEVER)) };
+        };
+        let mut keys: Vec<TypeId> = Vec::new();
+        if let Some(environment) = data.environment_origin {
+            for (name, _) in self.native_global_environment_properties(environment) { keys.push(self.string_literal(name, false)); }
+        }
+        let (fields, indexers, sequence) = (data.fields.to_vec(), data.indexers.to_vec(), !data.sequence_tails.is_empty() || data.constructor_sequence.is_some());
+        keys.extend(fields.iter().map(|field| self.native_table_key_type(field.key)));
+        keys.extend(indexers.iter().map(|indexer| indexer.key));
+        if sequence { keys.push(TypeId::NUMBER); }
+        Some(self.union(&keys))
+    }
+
+    /// Whether `ty` is a Lua table representation, or a union or intersection with one, so that
+    /// a type's index into it reads it as Lua does.
+    pub(super) fn is_native_table_type(&self, ty: TypeId) -> bool {
+        match self.data(ty) {
+            TypeData::NativeTable(_) | TypeData::NativeObject(_) | TypeData::NativeRuntimeTable(_)
+            | TypeData::NativeDefinition(_) | TypeData::NativeArray { .. } => true,
+            TypeData::NativeRuntimeTop { carrier, .. } => *carrier != ty && self.is_native_table_type(*carrier),
+            TypeData::Union(parts) | TypeData::Intersection(parts) => parts.iter().any(|&part| self.is_native_table_type(part)),
+            _ => false,
+        }
+    }
+
     fn native_completion_names(&mut self, ty: TypeId, names: &mut Vec<Atom>, depth: usize) {
         if depth > 16 { return }
         let ty = self.native_runtime_carrier(ty);
@@ -838,6 +879,17 @@ impl<'p, 's> Checker<'p, 's> {
             && let Some(member) = self.native_primitive_property(table, name)
         { return member; }
         let table = self.native_runtime_carrier(table);
+        // A generic table at a generic key of its own, `object[key]` where `key: K` and
+        // `K: keyof T`, is `T[K]`, as a TypeScript element access is.
+        if let NativeTableAccessKey::Type(key_type) = key
+            && self.is_generic_object_type(table)
+            && self.is_generic_index_type(key_type)
+        {
+            let keys = self.keyof(table);
+            if self.is_assignable(key_type, keys)
+                && let Some(value) = self.indexed_access_type(table, key_type)
+            { return Ok(value) }
+        }
         if let Some(reference) = self.native_runtime_table_ref(table) { return self.native_runtime_table_read(reference, key) }
         if let Some(reference) = self.native_definition_ref(table) { return self.native_definition_member_read(reference, table, key) }
         if let TypeData::NativeObject(reference) = *self.data(table) {
