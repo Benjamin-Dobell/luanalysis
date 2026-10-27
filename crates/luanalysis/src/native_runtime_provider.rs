@@ -65,7 +65,7 @@ impl NativeRegistry {
             _ => false,
         }
     }
-    fn syntactic_table_owner(&self, expression: &Expr, region: Option<u32>, depth: u32, memo: &mut HashMap<(usize, usize), Option<NativeExpressionKey>>) -> Option<NativeExpressionKey> {
+    pub(crate) fn syntactic_table_owner(&self, expression: &Expr, region: Option<u32>, depth: u32, memo: &mut HashMap<(usize, usize), Option<NativeExpressionKey>>) -> Option<NativeExpressionKey> {
         if depth > 32 { return None; }
         if let Some(&known) = memo.get(&(expression.span.start, expression.span.end)) { return known; }
         // A cycle through this expression has no owner.

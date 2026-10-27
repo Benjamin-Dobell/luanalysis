@@ -101,6 +101,7 @@ pub(super) struct AnonymousMemberSource {
     pub owner: NativeAnonymousHeadKey,
     pub key_recipe: AnonymousMemberKeyRecipe,
     pub ty: TypeExpr,
+    pub readonly: bool,
     pub span: Span,
 }
 
@@ -612,6 +613,7 @@ impl NativeNamed {
                                         key,
                                         AnonymousMemberKeyRecipe::Record(field.key.clone()),
                                         field.ty.clone(),
+                                        field.readonly.is_some(),
                                         field.span,
                                     ));
                                 }
@@ -621,6 +623,7 @@ impl NativeNamed {
                                     key,
                                     AnonymousMemberKeyRecipe::ArrayNumber,
                                     *element.clone(),
+                                    false,
                                     ty.span,
                                 ))
                             }
@@ -629,6 +632,7 @@ impl NativeNamed {
                                     key,
                                     AnonymousMemberKeyRecipe::Table(args[0].clone()),
                                     args[1].clone(),
+                                    false,
                                     ty.span,
                                 ))
                             }
@@ -679,6 +683,7 @@ impl NativeNamed {
         owner: NativeAnonymousHeadKey,
         key_recipe: AnonymousMemberKeyRecipe,
         ty: TypeExpr,
+        readonly: bool,
         span: Span,
     ) -> NativeAnonymousMemberKey {
         let key = NativeAnonymousMemberKey {
@@ -691,6 +696,7 @@ impl NativeNamed {
             owner,
             key_recipe,
             ty,
+            readonly,
             span,
         });
         key

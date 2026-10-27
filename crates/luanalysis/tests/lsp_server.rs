@@ -1510,3 +1510,32 @@ fn captured_writes_clear_stale_condition_diagnostics_and_hover_narrowing() {
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn escaped_literal_fields_widen_live_and_readonly_names_are_hinted() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "local state={ready=false}\n---@param s {ready: boolean}\nlocal function enable(s) s.ready=true end\nenable(state)\nif state.ready then print('taken') end\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    let published = server.diagnostics(&main, |message| message.contains(r#""version":1"#));
+    assert!(published.contains(r#""diagnostics":[]"#), "{published}");
+    let hover = server.request(2, "textDocument/hover", &main, 4, 10);
+    assert!(hover.contains("boolean"), "{hover}");
+    // A read-only view cannot assign the field, which stays false.
+    let readonly = source.replace("{ready: boolean}", "{readonly ready: boolean}").replace("s.ready=true", "print(s.ready)");
+    server.change(&main, 2, &readonly);
+    let published = server.diagnostics(&main, |message| message.contains(r#""version":2"#));
+    assert!(published.contains("LUA2873"), "{published}");
+    let reserved = "---@class Named\n---@field readonly boolean\nlocal Named={readonly=false}\nreturn Named\n";
+    server.change(&main, 3, reserved);
+    let published = server.diagnostics(&main, |message| message.contains(r#""version":3"#));
+    assert!(published.contains("LUA4004"), "{published}");
+    server.change(&main, 4, source);
+    let published = server.diagnostics(&main, |message| message.contains(r#""version":4"#));
+    assert!(published.contains(r#""diagnostics":[]"#), "{published}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}

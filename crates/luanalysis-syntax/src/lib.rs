@@ -176,6 +176,8 @@ pub struct FieldDeclaration {
     pub key: TypeFieldKey,
     pub ty: TypeExpr,
     pub visibility: Option<FieldVisibilityAnnotation>,
+    /// `---@field readonly name T`: the field cannot be assigned.
+    pub readonly: Option<Span>,
     pub explicit_owner: Option<Name>,
     /// Original `<Owner>` spelling, retained for deprecated syntax tooling.
     pub deprecated_owner_span: Option<Span>,
@@ -763,6 +765,8 @@ pub struct FunctionTypeParam {
 pub struct TypeField {
     pub key: TypeFieldKey,
     pub ty: TypeExpr,
+    /// `{ readonly name: T }`: the field cannot be assigned.
+    pub readonly: Option<Span>,
     pub span: Span,
 }
 

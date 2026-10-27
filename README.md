@@ -159,6 +159,28 @@ ages.bob = "old" -- error: '"old"' is not assignable to 'number'
 Tables can also be written inline (`{ name: string, [number]: boolean }`), and tuples as
 `[number, string]`.
 
+### Read-only fields
+
+A field declared `readonly`, with `@field` or inline, can be read but not assigned.
+
+```lua
+---@shape Job
+---@field readonly path string
+---@field retries number
+
+---@param job Job
+---@param options { readonly verbose: boolean }
+local function retry(job, options)
+    job.retries = job.retries + 1
+    job.path = "other" -- error: Cannot assign to readonly property "path"
+    options.verbose = true -- error: Cannot assign to readonly property "verbose"
+end
+```
+
+`readonly` comes before a field's name, so `---@field readonly boolean` and
+`{ readonly: boolean }` still declare a field named `readonly`. Editors point this out;
+`["readonly"]` names that field explicitly, and `readonly readonly` makes it read-only.
+
 ### Functions
 
 Function types describe parameters, optional parameters, variadic parameters and multiple or
@@ -366,6 +388,23 @@ config.port = 8080
 ---@type number
 local port = config.port
 local wrong = config.prot -- error: Property 'prot' does not exist
+```
+
+A field written as a literal has that literal's type, as in Luanalysis 1: `{ ready = false }`
+has a field of type `false`, and assigning `true` to it is an error. When such a table is passed
+to a parameter, or given to a variable, whose declared type has a wider field that can be
+assigned, such as `{ ready: boolean }`, the field has that wider type everywhere, because that
+code may change it. A parameter without a type widens the fields its function assigns. A
+`readonly` field cannot be assigned, so it widens nothing.
+
+```lua
+local state = { ready = false }
+
+---@param s { ready: boolean }
+local function enable(s) s.ready = true end
+
+enable(state)
+if state.ready then print("ready") end -- state.ready is boolean
 ```
 
 ### Inspections

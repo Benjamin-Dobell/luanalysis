@@ -181,6 +181,10 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 let types_offset = tag_offset + 1 + tag_len + raw_types.len()
                     - raw_types.trim_start_matches([' ', '\t']).len();
                 let lexed = crate::lexer::lex_annotation(types);
+                let line_breaks = lexed.tokens.iter()
+                    .filter(|token| matches!(token.kind, TokenKind::Newline))
+                    .map(|token| token.span.start + types_offset)
+                    .collect();
                 let tokens = lexed
                     .tokens
                     .into_iter()
@@ -215,6 +219,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                 }).collect();
                 let mut parser = TypeParser {
                     tokens,
+                    line_breaks,
                     pos: 0,
                     diagnostics: Vec::new(),
                     depth: 0,
@@ -720,6 +725,8 @@ pub(crate) fn annotation_spans(group: &FunctionAnnotations) -> Vec<Span> {
 
 struct TypeParser {
     tokens: Vec<Token>,
+    /// Where the tag's continuation lines begin, in order: its tokens omit them.
+    line_breaks: Vec<usize>,
     pos: usize,
     diagnostics: Vec<Diagnostic>,
     depth: usize,
@@ -819,6 +826,7 @@ impl TypeParser {
             }
             _ => None,
         };
+        let readonly = self.readonly_field_modifier();
         let mut deprecated_owner_span = None;
         let mut explicit_owner = if let Some(open) = self.take("<") {
             let owner = self.declaration_name("field owner");
@@ -861,10 +869,41 @@ impl TypeParser {
             key,
             ty,
             visibility,
+            readonly,
             explicit_owner,
             deprecated_owner_span,
             span,
         })
+    }
+
+    /// `readonly` modifies a field only when a key and a complete type follow it, so that
+    /// `---@field readonly readonly boolean` is a read-only field named `readonly`, while
+    /// `---@field readonly boolean` and `---@field readonly string[]` still name a field
+    /// `readonly`. Nothing is consumed or reported unless it is the modifier.
+    fn readonly_field_modifier(&mut self) -> Option<Span> {
+        if !self.word_at(self.pos, "readonly") { return None; }
+        let (pos, diagnostics) = (self.pos, self.diagnostics.len());
+        let span = self.current().span;
+        self.pos += 1;
+        let key = if self.take("[").is_some() {
+            self.union();
+            self.take("]").is_some()
+        } else {
+            // `readonly string[]`, `readonly string|nil` and `readonly table<K, V>` continue a type.
+            self.declaration_name("field").is_some() && !(self.symbol("[") && self.symbol_at(self.pos + 1, "]"))
+                && !["|", "&", "<"].into_iter().any(|operator| self.symbol(operator))
+        };
+        self.take("?");
+        // A field's description may continue on the next line: its type is on the key's.
+        let same_line = !self.eof() && {
+            let (key_end, type_start) = (self.tokens[self.pos - 1].span.end, self.current().span.start);
+            !self.line_breaks.iter().any(|&line_break| (key_end..type_start).contains(&line_break))
+        };
+        let typed = key && same_line && { let start = self.pos; self.union(); self.pos > start };
+        let modifier = typed && self.diagnostics.len() == diagnostics;
+        self.pos = pos;
+        self.diagnostics.truncate(diagnostics);
+        modifier.then(|| { self.pos += 1; span })
     }
 
     /// `---@operator name[(Other)][:] Result`, as proposed in LuaLS issue 599 and
@@ -1644,7 +1683,7 @@ impl TypeParser {
             self.comma_ends_type += 1;
             let ty = self.union();
             self.comma_ends_type -= 1;
-            fields.push(TypeField { key: TypeFieldKey::Sequence { index: fields.len() + 1 }, span: ty.span, ty });
+            fields.push(TypeField { key: TypeFieldKey::Sequence { index: fields.len() + 1 }, span: ty.span, ty, readonly: None });
             if self.take(",").is_none() { break; }
         }
         let end = self.expect("]");
@@ -1822,6 +1861,7 @@ impl TypeParser {
         let mut sequence_index = 0;
         while !self.eof() && !self.symbol("}") {
             let field_start = self.current().span;
+            let readonly = self.readonly_record_modifier();
             let key = if self.take("[").is_some() {
                 self.comma_ends_type += 1;
                 let mut key = self.union();
@@ -1877,7 +1917,7 @@ impl TypeParser {
                 };
             }
             let span = field_start.join(ty.span);
-            fields.push(TypeField { key, ty, span });
+            fields.push(TypeField { key, ty, readonly, span });
             if self.take(",").is_some() {
                 continue;
             }
@@ -1895,6 +1935,29 @@ impl TypeParser {
             kind: TypeExprKind::Record(fields),
             span: start.join(end),
         }
+    }
+    /// `{ readonly name: T }` and `{ readonly [K]: V }`, as in TypeScript; `{ readonly: T }`
+    /// is a field named `readonly`.
+    fn readonly_record_modifier(&mut self) -> Option<Span> {
+        if !self.word_at(self.pos, "readonly") { return None; }
+        let named = matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(_) | TokenKind::Keyword(_)))
+            && self.symbol_at(self.pos + 2, ":");
+        let indexed = self.symbol_at(self.pos + 1, "[") && {
+            let (pos, diagnostics) = (self.pos, self.diagnostics.len());
+            self.pos += 2;
+            self.comma_ends_type += 1;
+            self.union();
+            self.comma_ends_type -= 1;
+            let indexed = self.take("]").is_some() && self.symbol(":") && self.diagnostics.len() == diagnostics;
+            self.pos = pos;
+            self.diagnostics.truncate(diagnostics);
+            indexed
+        };
+        (named || indexed).then(|| {
+            let span = self.current().span;
+            self.pos += 1;
+            span
+        })
     }
     fn recover_record(&mut self) {
         while !self.eof() && !self.symbol(",") && !self.symbol("}") {
@@ -1932,7 +1995,7 @@ fn alias_continuation(lines: &[&str], mut offset: usize, alias: Span, diagnostic
             token.span.end += start;
             token
         }).collect();
-        let mut parser = TypeParser { tokens, pos: 0, diagnostics: Vec::new(), depth: 0, comma_ends_type: 0, function_parameter_comma_depth: None };
+        let mut parser = TypeParser { tokens, line_breaks: Vec::new(), pos: 0, diagnostics: Vec::new(), depth: 0, comma_ends_type: 0, function_parameter_comma_depth: None };
         members.push(parser.union());
         diagnostics.extend(parser.diagnostics);
         offset += line.len();

@@ -123,6 +123,14 @@ pub(super) struct NativeRegistry {
     /// The runtime-table constructor each original store's receiver names, as a
     /// binder sees it (`runtime_store_owner`). Computed once per registry.
     pub(super) runtime_store_owners: std::cell::OnceCell<Vec<Option<NativeExpressionKey>>>,
+    /// Where each uncontracted constructor escapes to a declared view (`native_table_escapes`).
+    /// Computed once per registry.
+    pub(super) table_escapes: std::cell::OnceCell<super::native_table_escapes::TableEscapes>,
+    /// Completed `escaped_field_type` results.
+    pub(super) escape_widenings: RefCell<HashMap<super::native_table_escapes::EscapeWideningKey, Option<Type>>>,
+    /// Completed declared views of escaping constructors, and those being decided.
+    pub(super) escape_views: RefCell<HashMap<super::native_table_escapes::EscapeViewKey, std::rc::Rc<Vec<Vec<Type>>>>>,
+    pub(super) escape_views_active: RefCell<HashSet<super::native_table_escapes::EscapeViewKey>>,
     /// The `---@type` of each value assigned to a local by an annotated assignment statement,
     /// by the value's span. Computed once per registry.
     assignment_annotations: std::cell::OnceCell<HashMap<(usize, usize), luanalysis_syntax::TypeAnnotation>>,
@@ -399,6 +407,10 @@ impl NativeRegistry {
             doc_members,
             runtime_tables,
             runtime_store_owners: Default::default(),
+            table_escapes: Default::default(),
+            escape_widenings: Default::default(),
+            escape_views: Default::default(),
+            escape_views_active: Default::default(),
             assignment_annotations: Default::default(),
             expression_assertion_index: Default::default(),
             class_definitions,
@@ -588,6 +600,11 @@ impl NativeRegistry {
 
     pub(super) fn expressions(&self) -> &NativeExpressions {
         &self.expressions
+    }
+
+    /// The source's inline table, array and dictionary annotation types.
+    pub(super) fn anonymous_heads(&self) -> &[super::native_named::AnonymousHeadSource] {
+        self.named.anonymous_heads()
     }
 
     /// The `---@type` a value assigned to a local has: `---@type T` above `x = value`, as LuaLS

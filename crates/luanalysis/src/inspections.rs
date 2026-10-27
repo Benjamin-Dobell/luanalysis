@@ -117,6 +117,35 @@ impl NativeRegistry {
         self.merge_report(CheckReport { diagnostics, ..CheckReport::default() });
     }
 
+    /// `---@field readonly T` and `{ readonly: T }` name a field `readonly`, as they always
+    /// have, but read like a read-only field missing its name. `["readonly"]` names the field
+    /// without the warning.
+    pub(crate) fn report_reserved_field_names(&self) {
+        use luanalysis_syntax::{NamedTypeDeclarationKind, TypeExprKind, TypeFieldKey};
+        if !self.inspections() { return; }
+        let reserved = |readonly: Option<Span>, key: &TypeFieldKey| match key {
+            TypeFieldKey::Named(name) if readonly.is_none() && name.text == "readonly" => Some(name.span),
+            _ => None,
+        };
+        let syntax = self.syntax();
+        let declared = syntax.type_declarations.iter().filter_map(|declaration| match &declaration.kind {
+            NamedTypeDeclarationKind::Record { fields, .. } => Some(fields.as_slice()),
+            _ => None,
+        }).chain(syntax.type_extensions.iter().map(|extension| extension.fields.as_slice()))
+            .flatten()
+            .filter_map(|field| reserved(field.readonly, &field.key));
+        let inline = self.anonymous_heads().iter().filter_map(|head| match &head.syntax.kind {
+            TypeExprKind::Record(fields) => Some(fields),
+            _ => None,
+        }).flatten().filter_map(|field| reserved(field.readonly, &field.key));
+        let diagnostics = declared.chain(inline).map(|span| Diagnostic {
+            code: "LUA4004",
+            span,
+            message: "'readonly' is a reserved word and may cause confusion: this declares a writable field named 'readonly'. Write [\"readonly\"] to name it explicitly.".to_owned(),
+        }).collect();
+        self.merge_report(CheckReport { diagnostics, ..CheckReport::default() });
+    }
+
     /// Each local, local function, loop variable and parameter whose value is never read
     /// (TS6133). A name starting with `_` declares that it is unused.
     pub(crate) fn report_unused_declarations(&self) {

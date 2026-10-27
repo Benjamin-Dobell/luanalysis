@@ -509,7 +509,7 @@ impl NativeRegistry {
                 // chooses completions: whatever it is, the field is a member of its class.
                 visibility: TypeMemberVisibility::Public,
                 optional: false,
-                readonly: false,
+                readonly: source.field.readonly.is_some(),
             };
         }
         let source = self
@@ -526,7 +526,7 @@ impl NativeRegistry {
             },
             visibility: TypeMemberVisibility::Public,
             optional: false,
-            readonly: false,
+            readonly: source.readonly,
         }
     }
     pub(super) fn named_declaration_members(

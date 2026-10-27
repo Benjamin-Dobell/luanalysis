@@ -48,6 +48,7 @@ mod native_signatures;
 mod native_packs;
 mod native_return_annotations;
 mod native_tables;
+mod native_table_escapes;
 mod native_types;
 mod operators;
 mod pattern_captures;
@@ -109,7 +110,7 @@ impl Diagnostic {
     pub fn category(&self) -> DiagnosticCategory {
         match self.code {
             "TS2367" | "LUA2872" | "LUA2873" | "LUA4001" => DiagnosticCategory::Warning,
-            "TS6133" | "TS7027" | "TS7044" | "TS7047" | "LUA4002" | "LUA4003" => DiagnosticCategory::Suggestion,
+            "TS6133" | "TS7027" | "TS7044" | "TS7047" | "LUA4002" | "LUA4003" | "LUA4004" => DiagnosticCategory::Suggestion,
             _ => DiagnosticCategory::Error,
         }
     }

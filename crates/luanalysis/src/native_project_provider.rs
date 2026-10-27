@@ -656,6 +656,7 @@ impl ProjectRegistry {
                 file.source.check_module_requests(queries);
                 file.source.report_unused_declarations();
                 file.source.report_shadowed_declarations();
+                file.source.report_reserved_field_names();
                 if file.role == SourceRole::Implementation {
                     let mut checker = file.source.checker(queries);
                     checker.flow_at = Some(file.source.flow_entry(None, None));

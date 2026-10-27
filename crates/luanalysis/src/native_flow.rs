@@ -721,6 +721,12 @@ impl NativeFlowSources {
         self.recipes.call_writes.get_or_init(|| self.compute_call_writes()).may_write(evaluation, reference)
     }
 
+    /// Whether a function the original call `evaluation` calls may visibly write `path` below
+    /// its parameter `index` (see `call_writes`).
+    pub(super) fn call_may_write_parameter(&self, evaluation: flow::EvaluationId, index: usize, path: &[flow::Key]) -> bool {
+        self.recipes.call_writes.get_or_init(|| self.compute_call_writes()).may_write_parameter(evaluation, index, path)
+    }
+
     /// What original stores in this source may replace through the environment
     /// or a local alias of it (`environment_candidate_paths`): `bind::STANDARD_NAMES`
     /// bits, and whether the module loader (`require`, `package` loader fields)

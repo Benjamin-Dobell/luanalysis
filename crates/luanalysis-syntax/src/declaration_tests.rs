@@ -284,3 +284,31 @@ fn named_alias_type_depth_remains_bounded_before_clone_and_drop() {
     drop(file);
     drop(cloned);
 }
+
+#[test]
+fn readonly_modifies_a_field_only_before_a_key_and_type() {
+    let source = "---@class Flags\n---@field readonly boolean\n---@field readonly readonly boolean\n---@field readonly ready boolean\n---@field private readonly hidden number\n---@field readonly string[]\n---@field readonly boolean # described\n---@field readonly fun(): boolean\n---@field readonly [string] number\n---@field readonly maybe? string\n---@field readonly string|nil\n---@field readonly table<string, number>";
+    let file = checked(source);
+    let (_, _, fields) = record(&file.type_declarations[0]);
+    let named = |field: &FieldDeclaration| match &field.key {
+        TypeFieldKey::Named(name) => name.text.clone(),
+        TypeFieldKey::Indexed(_) => "[]".to_owned(),
+        TypeFieldKey::Sequence { .. } => unreachable!(),
+    };
+    let summary: Vec<_> = fields.iter().map(|field| (named(field), field.readonly.is_some())).collect();
+    assert_eq!(summary, [
+        ("readonly", false), ("readonly", true), ("ready", true), ("hidden", true), ("readonly", false),
+        ("readonly", false), ("readonly", false), ("[]", true), ("maybe", true), ("readonly", false), ("readonly", false),
+    ].map(|(name, readonly)| (name.to_owned(), readonly)));
+    let modifier = fields[1].readonly.unwrap();
+    assert_eq!(&source[modifier.start..modifier.end], "readonly");
+    let TypeFieldKey::Named(name) = &fields[1].key else { panic!("named") };
+    assert!(name.span.start > modifier.end);
+    assert_eq!(fields[3].visibility.unwrap().kind, FieldVisibility::Private);
+    assert!(matches!(fields[4].ty.kind, TypeExprKind::Array { .. }));
+    assert!(matches!(fields[6].ty.kind, TypeExprKind::Function(_)));
+    assert!(matches!(fields[8].ty.kind, TypeExprKind::Union(_)));
+    let described = checked("---@class Described\n---@field readonly boolean\n--- Whether it is locked.\n---@field readonly locked\n--- boolean");
+    let (_, _, fields) = record(&described.type_declarations[0]);
+    assert!(fields.iter().all(|field| field.readonly.is_none() && matches!(&field.key, TypeFieldKey::Named(name) if name.text == "readonly")));
+}

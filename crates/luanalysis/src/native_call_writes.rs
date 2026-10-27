@@ -107,6 +107,14 @@ impl CallWrites {
                     ))
             }))
     }
+
+    /// Whether a callee of `call` may write `path` below its parameter `index`.
+    pub(super) fn may_write_parameter(&self, call: flow::EvaluationId, index: usize, path: &[flow::Key]) -> bool {
+        self.calls.get(&call).is_some_and(|call| call.callees.iter().any(|&function| {
+            self.functions[function as usize].parameters.get(&index)
+                .is_some_and(|paths| paths.iter().any(|written| writes_path(written, path)))
+        }))
+    }
 }
 
 impl NativeFlowRecipes {

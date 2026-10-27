@@ -1211,6 +1211,9 @@ pub trait TypeQueries {
         expected_return: Option<&Type>,
     ) -> CallResult;
     fn function_signature(&mut self, ty: &Type) -> Option<FunctionType>;
+    /// The type of the parameter at `index` in each call signature of `callee` that has one,
+    /// without resolving any signature's return type.
+    fn call_parameter_types(&mut self, callee: &Type, index: usize) -> Vec<Type>;
     fn inspect_type(&mut self, ty: &Type) -> Type;
     /// Exact backend recovery type, preserving its error identity across the owned boundary.
     fn error_type(&mut self) -> Type;
@@ -2083,6 +2086,16 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let ty = import_type(self.checker, self.handles, ty);
         let signatures = self.checker.signatures(ty, false);
         (signatures.len() == 1).then(|| export_signature(self.checker, self.handles, signatures[0]))
+    }
+    fn call_parameter_types(&mut self, callee: &Type, index: usize) -> Vec<Type> {
+        let callee = import_type(self.checker, self.handles, callee);
+        let signatures = self.checker.signatures(callee, false).into_vec();
+        signatures.into_iter()
+            .filter_map(|signature| self.checker.sig_params(signature).into_vec().get(index).filter(|param| !param.rest).map(|param| param.ty))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|ty| export_type_with_literal_policy(self.checker, self.handles, ty, true))
+            .collect()
     }
     fn native_function_type_parameters(
         &mut self,

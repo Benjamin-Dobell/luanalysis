@@ -49,9 +49,10 @@ impl Checker<'_> {
                     (descriptor, key.span)
                 }
             };
+            let readonly = field.readonly.is_some();
             match &key {
-                TableKey::Literal(key) => table.fields.push(NativeField::new(key.clone(), value)),
-                TableKey::Type(key) => table.indexers.push(TableIndexer::new(key.clone(), value)),
+                TableKey::Literal(key) => table.fields.push(NativeField { readonly, ..NativeField::new(key.clone(), value) }),
+                TableKey::Type(key) => table.indexers.push(TableIndexer { readonly, ..TableIndexer::new(key.clone(), value) }),
             }
             origins.push((key, origin));
         }
@@ -179,7 +180,15 @@ impl Checker<'_> {
             // Use the native regular-literal operation without declaring the
             // field or making the table readonly. Written bounds stay ahead
             // of the initializer's value as before.
-            let value = declared.unwrap_or_else(|| self.engine.regular_type(&actual));
+            let mut value = declared.unwrap_or_else(|| self.engine.regular_type(&actual));
+            // A literal field that a declared view of this table may write more into has the
+            // wider type the view gives it, however the table is reached.
+            if written.is_none() && context.is_none()
+                && (self.engine.is_primitive_literal(&value) || matches!(value, Type::Nil))
+                && let Some(wider) = self.escaped_field_type(span, &key, &value)
+            {
+                value = wider;
+            }
             match &key {
                 TableKey::Literal(key) => table.fields.push(if written.is_some() {
                     NativeField::declared(key.clone(), value)

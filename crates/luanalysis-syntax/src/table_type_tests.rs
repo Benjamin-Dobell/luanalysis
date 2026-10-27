@@ -116,3 +116,20 @@ fn array_generic_and_indexer_type_depth_is_bounded_without_recursive_drop_failur
         drop(file);
     }
 }
+
+#[test]
+fn record_fields_accept_readonly_before_a_named_or_indexed_key() {
+    let source = "---@type { readonly ready: boolean, readonly: string, readonly [string]: number, plain: number }, { readonly }, { readonly[] }\nlocal value, single, list\n";
+    let types = annotation(source).types;
+    let TypeExprKind::Record(fields) = &types[0].kind else { panic!("expected record") };
+    assert!(matches!(&fields[0].key, TypeFieldKey::Named(name) if name.text == "ready"));
+    let modifier = fields[0].readonly.unwrap();
+    assert_eq!(&source[modifier.start..modifier.end], "readonly");
+    assert!(matches!(&fields[1].key, TypeFieldKey::Named(name) if name.text == "readonly") && fields[1].readonly.is_none());
+    assert!(matches!(&fields[2].key, TypeFieldKey::Indexed(_)) && fields[2].readonly.is_some());
+    assert!(fields[3].readonly.is_none());
+    let TypeExprKind::Record(single) = &types[1].kind else { panic!("expected record") };
+    assert!(matches!(&single[0].ty.kind, TypeExprKind::Named(name) if name == "readonly") && single[0].readonly.is_none());
+    let TypeExprKind::Record(list) = &types[2].kind else { panic!("expected record") };
+    assert!(matches!(list[0].ty.kind, TypeExprKind::Array { .. }) && list[0].readonly.is_none());
+}
