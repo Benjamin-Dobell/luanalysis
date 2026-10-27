@@ -95,7 +95,8 @@ pub(crate) fn remap_path(path: &Path, renames: &[FileRename]) -> PathBuf {
 /// The caller supplies a check of the CURRENT overlay revision, never an old snapshot.
 pub(crate) fn rename_edits(report: &ProjectCheckReport, resolver: &Resolver, renames: &[FileRename]) -> Result<Vec<FileReferenceEdit>, String> {
     let renames = normalize_renames(renames)?;
-    let view = AfterMove { report, resolver, renames: &renames };
+    let suffix_files = resolver.config().suffix_files.iter().map(|file| remap_path(file, &renames)).collect();
+    let view = AfterMove { report, resolver, renames: &renames, suffix_files };
     view.validate()?;
     let mut edits = Vec::new();
     let mut parsed = HashMap::new();
@@ -112,10 +113,13 @@ pub(crate) fn rename_edits(report: &ProjectCheckReport, resolver: &Resolver, ren
         let moved_target = remap_path(&target.path, &renames);
         let moved_source = remap_path(&source.path, &renames);
         let module = &dependency.request.module;
+        // A module a root provides stays one a root provides, as Luanalysis v1 renames it; one
+        // found by its path's suffix may still be found so, by as many parts as it can.
+        let by_suffix = resolver.resolve_in_roots(module).map(|module| module.path).as_ref() != Ok(&target.path);
         // @meta module names are explicit contracts, independent of file paths.
-        if view.resolve(&moved_source, module).as_ref() == Some(&moved_target) { continue; }
-        let candidates = view.module_names(&moved_target, module, &target.path);
-        let Some(replacement_module) = candidates.into_iter().find(|name| view.resolve(&moved_source, name).as_ref() == Some(&moved_target)) else {
+        if view.resolve(&moved_source, module, by_suffix).as_ref() == Some(&moved_target) { continue; }
+        let candidates = view.module_names(&moved_target, module, &target.path, by_suffix);
+        let Some(replacement_module) = candidates.into_iter().find(|name| view.resolve(&moved_source, name, by_suffix).as_ref() == Some(&moved_target)) else {
             return Err(format!("{} cannot safely refer to moved module {} using the configured module roots and package.path", source.path.display(), moved_target.display()));
         };
         let file = parsed.entry(source.path.clone()).or_insert_with(|| luanalysis_syntax::parse(&source.source));
@@ -146,6 +150,8 @@ struct AfterMove<'a> {
     report: &'a ProjectCheckReport,
     resolver: &'a Resolver,
     renames: &'a [FileRename],
+    /// The files a module no root provides is found among, where they will be.
+    suffix_files: Vec<PathBuf>,
 }
 
 impl AfterMove<'_> {
@@ -176,9 +182,10 @@ impl AfterMove<'_> {
     }
 
     /// Resolve in the virtual post-operation filesystem, honoring the same root
-    /// and template order as Resolver::resolve_from. No files are moved or read
-    /// from their destination while preparing the edit.
-    fn resolve(&self, source: &Path, module: &str) -> Option<PathBuf> {
+    /// and template order as Resolver::resolve_from, and its path suffixes when
+    /// `by_suffix`. No files are moved or read from their destination while
+    /// preparing the edit.
+    fn resolve(&self, source: &Path, module: &str, by_suffix: bool) -> Option<PathBuf> {
         let config = self.resolver.config();
         if let Some(map) = &config.module_map {
             return map.get(source)?.get(module).cloned();
@@ -198,7 +205,8 @@ impl AfterMove<'_> {
                 }
             }
         }
-        None
+        if !by_suffix { return None; }
+        self.resolver.suffix_module(Some(source), module, &self.suffix_files)
     }
 
     fn file_at(&self, candidate: &Path) -> Result<Option<PathBuf>, ()> {
@@ -223,9 +231,13 @@ impl AfterMove<'_> {
         Ok(is_file(&candidate)?.then_some(candidate))
     }
 
-    fn module_names(&self, target: &Path, previous: &str, original: &Path) -> Vec<String> {
+    fn module_names(&self, target: &Path, previous: &str, original: &Path, by_suffix: bool) -> Vec<String> {
         let mut names = Vec::new();
         let Some(target) = target.to_str() else { return names; };
+        let separator = if previous.contains('/') || previous.contains('\\') { "/" } else { "." };
+        if by_suffix && !self.suffix_files.is_empty() {
+            names = suffix_names(target, previous, separator, &self.resolver.config().templates);
+        }
         let previous_path = previous.replace('.', std::path::MAIN_SEPARATOR_STR);
         let mut templates: Vec<_> = self.resolver.config().roots.iter().flat_map(|root| {
             self.resolver.config().templates.iter().map(move |template| (root, template))
@@ -240,13 +252,36 @@ impl AfterMove<'_> {
                 let pattern = identity(&root.join(template.replace('?', &marker.to_string())));
                 let Some(pattern) = pattern.to_str() else { continue; };
                 let Some(name) = invert_template(pattern, target, marker) else { continue; };
-                let name = if previous.contains('/') || previous.contains('\\') {
-                    name.replace(std::path::MAIN_SEPARATOR, "/")
-                } else { name.replace(std::path::MAIN_SEPARATOR, ".") };
+                let name = name.replace(std::path::MAIN_SEPARATOR, separator);
                 if !name.is_empty() && !names.contains(&name) { names.push(name); }
         }
         names
     }
+}
+
+/// The names that may find `target` by its path's suffix: for each template of one `?` after a
+/// directory or nothing, the path's last parts before the template's suffix, as many as
+/// `previous` has first, then fewest first.
+fn suffix_names(target: &str, previous: &str, separator: &str, templates: &[String]) -> Vec<String> {
+    let parts = previous.split(['.', '/', '\\']).count();
+    let mut names = Vec::new();
+    for template in templates {
+        let Some((prefix, suffix)) = template.split_once('?') else { continue };
+        if suffix.contains('?') || !(prefix.is_empty() || prefix.ends_with(['/', '\\'])) { continue; }
+        let suffix = suffix.replace(['/', '\\'], std::path::MAIN_SEPARATOR_STR);
+        let Some(stem) = target.strip_suffix(suffix.as_str()) else { continue };
+        let components: Vec<&str> = stem.split(std::path::MAIN_SEPARATOR).collect();
+        let prefix: Vec<&str> = prefix.split(['/', '\\']).filter(|part| !part.is_empty() && *part != ".").collect();
+        let mut counts: Vec<usize> = (1..components.len()).collect();
+        counts.sort_by_key(|count| (*count != parts, *count));
+        for count in counts {
+            let (before, name) = components.split_at(components.len() - count);
+            if !before.ends_with(&prefix) { continue; }
+            let name = name.join(separator);
+            if !names.contains(&name) { names.push(name); }
+        }
+    }
+    names
 }
 
 fn is_file(path: &Path) -> Result<bool, ()> {
@@ -320,8 +355,13 @@ mod tests {
             fs::write(path, source).unwrap();
         }
         fn resolver(&self, roots: &[&str]) -> Resolver {
+            self.resolver_with_suffixes(roots, &[])
+        }
+        /// Finds a module no root provides among `files` by its path's suffix.
+        fn resolver_with_suffixes(&self, roots: &[&str], files: &[&str]) -> Resolver {
             let mut config = ProjectConfig::new(roots.iter().map(|root| self.0.join(root)));
             config.set_package_path("?.lua;?/init.lua;?.ttslua;?/init.ttslua");
+            config.suffix_files = files.iter().map(|file| self.0.join(file)).collect();
             Resolver::new(config).unwrap()
         }
         fn check(&self, resolver: &Resolver, entry: &str, overlay: Option<&str>) -> ProjectCheckReport {
@@ -461,6 +501,25 @@ mod tests {
         assert!(rename_edits(&report, &resolver, &[fixture.rename("one/old.lua", "two/new.lua")]).is_err());
         // Moving the shadowed file never edits references to the first root.
         assert!(rename_edits(&report, &resolver, &[fixture.rename("two/old.lua", "two/other.lua")]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_module_found_by_suffix_keeps_its_name_or_parts_and_one_a_root_provides_stays_so() {
+        let fixture = Fixture::new(&[
+            ("src/main.lua", "local a = require('ge.utils')\nlocal b = require('lib.ge.table')\nreturn a, b\n"),
+            ("lib/ge/utils.lua", "return 1\n"), ("lib/ge/table.lua", "return 2\n"),
+        ]);
+        let files = ["src/main.lua", "lib/ge/utils.lua", "lib/ge/table.lua"];
+        let resolver = fixture.resolver_with_suffixes(&[""], &files);
+        let report = fixture.check(&resolver, "src/main.lua", None);
+        assert!(!report.has_errors(), "{report:#?}");
+        // A move that keeps the suffix keeps the name; a rename keeps as many parts.
+        assert!(rename_edits(&report, &resolver, &[fixture.rename("lib/ge/utils.lua", "vendor/ge/utils.lua")]).unwrap().is_empty());
+        let edits = rename_edits(&report, &resolver, &[fixture.rename("lib/ge/utils.lua", "lib/ge/helpers.lua")]).unwrap();
+        assert_eq!(edits.iter().map(|edit| edit.replacement.as_str()).collect::<Vec<_>>(), ["'ge.helpers'"]);
+        // A module the root provides is still named from the root after a move.
+        let edits = rename_edits(&report, &resolver, &[fixture.rename("lib/ge/table.lua", "vendor/ge/table.lua")]).unwrap();
+        assert_eq!(edits.iter().map(|edit| edit.replacement.as_str()).collect::<Vec<_>>(), ["'vendor.ge.table'"]);
     }
 
     #[test]

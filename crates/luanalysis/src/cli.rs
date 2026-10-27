@@ -5,7 +5,7 @@ use crate::project_check::ProjectCheckOptions;
 use crate::report::{CliReport, HostDiagnostic};
 use crate::standard_environment::{StandardEnvironmentProfile, StandardLibraryAllowList};
 use luanalysis_engine::NativeLoaderPolicy;
-use luanalysis_project::{Project, ProjectConfig, ProjectInput, ProjectLoadPlan, Resolver, SourceRole};
+use luanalysis_project::{IgnoreRules, Project, ProjectConfig, ProjectInput, ProjectLoadPlan, Resolver, SourceRole};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
@@ -34,7 +34,9 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
     let mut libraries = Vec::new();
     let mut module_roots = Vec::new();
     let mut package_path = None;
+    let mut path_strict = None;
     let mut module_map = None;
+    let mut lua_version_chosen = false;
     let mut environment = StandardEnvironmentProfile::LegacyMinimal;
     let mut standard_library: Option<StandardLibraryAllowList> = None;
     let mut no_stdlib = false;
@@ -122,6 +124,7 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
                 "Lua standard environment {:?} is not implemented; supported versions: 5.0, 5.1, 5.2, 5.3, 5.4",
                 version
             ))?;
+            lua_version_chosen = true;
             continue;
         }
         if !positional && arg == "--module-root" {
@@ -138,6 +141,10 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
             if module_map.replace(PathBuf::from(path)).is_some() {
                 return Err("--module-map may only be given once".into());
             }
+            continue;
+        }
+        if !positional && arg == "--path-strict" {
+            path_strict = Some(true);
             continue;
         }
         if !positional && arg == "--package-path" {
@@ -171,7 +178,10 @@ pub fn parse_arguments(remaining: Vec<OsString>) -> Result<Parsed, String> {
         libraries,
         module_roots,
         package_path,
+        path_strict,
         module_map,
+        lua_version_chosen,
+        ..CheckInputs::default()
     };
     let loader_policy = loader_policy(environment);
     let options = ProjectCheckOptions {
@@ -216,15 +226,29 @@ pub(crate) fn loader_policy(environment: StandardEnvironmentProfile) -> NativeLo
 }
 
 /// The paths and module search settings of a check.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct CheckInputs {
     pub files: Vec<PathBuf>,
     pub libraries: Vec<PathBuf>,
     pub module_roots: Vec<PathBuf>,
     pub package_path: Option<String>,
+    /// Leaves a module that no module root provides unresolved, instead of finding it among the
+    /// checked and library files by its path's suffix (LuaLS's `runtime.pathStrict`); None
+    /// leaves it to the project configuration, which by default finds it.
+    pub path_strict: Option<bool>,
     /// A host's module map manifest (`--module-map`), read again by each discovery.
     pub module_map: Option<PathBuf>,
+    /// Whether the options chose the Lua version, which a project configuration then leaves.
+    pub lua_version_chosen: bool,
+    /// What discovery skips in a directory input, as its project configuration says. Other
+    /// directories skip what LuaLS does by default.
+    pub ignore: Vec<(PathBuf, IgnoreRules)>,
+    /// Problems with project configurations, reported with discovery's.
+    pub config_errors: Vec<HostDiagnostic>,
 }
+
+/// The `package.path` templates of a check that sets none.
+const DEFAULT_PACKAGE_PATH: &str = "?.lua;?/init.lua;?.ttslua;?/init.ttslua";
 
 /// The files `CheckInputs` name, and how their modules resolve.
 #[derive(Clone, PartialEq, Eq)]
@@ -238,13 +262,24 @@ pub struct DiscoveredInputs {
 }
 
 impl CheckInputs {
+    /// Applies each checked directory's LuaLS project configuration (`.luarc.json`) where these
+    /// inputs and `options` do not decide.
+    pub fn configure(&mut self, options: &mut ProjectCheckOptions) {
+        crate::luarc::apply(self, options);
+    }
+
+    /// What discovery skips in `directory`.
+    fn ignore_rules(&self, directory: &Path) -> IgnoreRules {
+        self.ignore.iter().find(|(path, _)| path == directory).map_or_else(crate::luarc::default_ignore, |(_, rules)| rules.clone())
+    }
+
     pub fn discover(&self) -> io::Result<DiscoveredInputs> {
-        let mut host_errors = Vec::new();
+        let mut host_errors = self.config_errors.clone();
         let mut display_paths = HashMap::new();
         let mut library_files = Vec::new();
         let mut library_seen = HashSet::new();
         for path in &self.libraries {
-            for file in expand(path, &mut host_errors) {
+            for file in expand(path, self.ignore_rules(path), &mut host_errors) {
                 let identity = identity(&file);
                 if library_seen.insert(identity.clone()) {
                     display_paths
@@ -263,7 +298,7 @@ impl CheckInputs {
             if directory {
                 roots.push(path.clone());
             }
-            for file in expand(path, &mut host_errors) {
+            for file in expand(path, self.ignore_rules(path), &mut host_errors) {
                 let identity = identity(&file);
                 // A declaration directory nested in positional discovery has an
                 // explicit role. Direct file arguments still request an explicit
@@ -304,12 +339,13 @@ impl CheckInputs {
 
     pub fn resolver(&self, discovery: &DiscoveredInputs) -> io::Result<Resolver> {
         let mut config = ProjectConfig::new(discovery.roots.clone());
-        config.set_package_path(
-            self.package_path
-                .as_deref()
-                .unwrap_or("?.lua;?/init.lua;?.ttslua;?/init.ttslua"),
-        );
+        config.set_package_path(self.package_path.as_deref().unwrap_or(DEFAULT_PACKAGE_PATH));
         config.module_map = discovery.module_map.clone();
+        // As Luanalysis v1 and LuaLS find a module, one that no root provides is the checked or
+        // library file whose path ends with its own.
+        if !self.path_strict.unwrap_or(false) {
+            config.suffix_files = discovery.display_paths.keys().cloned().collect();
+        }
         Resolver::new(config)
     }
 }
@@ -322,10 +358,13 @@ pub fn check_json(arguments: Vec<OsString>) -> String {
         Ok(Parsed::Run(arguments)) if arguments.inputs.files.is_empty() && arguments.inputs.libraries.is_empty() => {
             CliReport::failure(HostDiagnostic::general("LUA0000", "check requires at least one Lua file"))
         }
-        Ok(Parsed::Run(arguments)) => match check_once(&arguments, &mut ProjectWorkspace::new()) {
-            Ok(report) => report,
-            Err(error) => CliReport::failure(HostDiagnostic::general("LUA0001", error)),
-        },
+        Ok(Parsed::Run(mut arguments)) => {
+            arguments.inputs.configure(&mut arguments.options);
+            match check_once(&arguments, &mut ProjectWorkspace::new()) {
+                Ok(report) => report,
+                Err(error) => CliReport::failure(HostDiagnostic::general("LUA0001", error)),
+            }
+        }
         Ok(Parsed::Help) => CliReport::failure(HostDiagnostic::general("LUA0000", "--help needs the command line")),
         Err(message) => CliReport::failure(HostDiagnostic::general("LUA0000", message)),
     };
@@ -345,12 +384,13 @@ pub fn identity(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn expand(path: &Path, errors: &mut Vec<HostDiagnostic>) -> Vec<PathBuf> {
+fn expand(path: &Path, ignore: IgnoreRules, errors: &mut Vec<HostDiagnostic>) -> Vec<PathBuf> {
     if !path.is_dir() {
         return vec![path.to_path_buf()];
     }
     let mut config = ProjectConfig::new([path.to_path_buf()]);
     config.discovery_extensions.push("ttslua".into());
+    config.ignore = ignore;
     let resolver = match Resolver::new(config) {
         Ok(resolver) => resolver,
         Err(error) => {
@@ -368,7 +408,7 @@ fn expand(path: &Path, errors: &mut Vec<HostDiagnostic>) -> Vec<PathBuf> {
 /// The command line's help text.
 pub fn help() {
     println!(
-        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--lua-version 5.0|5.1|5.2|5.3|5.4] [--stdlib <libraries and members>]... [--no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] [--module-map <manifest.json>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--stdlib declares only the named standard libraries and members, as a sandbox provides them, e.g. basic,string,table,math,os.time (repeatable).\n--no-stdlib declares none of the standard library, for a host that declares its own, except type, assert, setmetatable and the builtin types; --stdlib adds parts back.\nWithout --lua-version, --stdlib and --no-stdlib use Lua 5.4.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\n--module-map supplies a host's closed module namespace: each source's modules by their exact names (version 1 JSON; paths relative to the manifest). An unmapped module is unresolved, never found by package.path.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
+        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--lua-version 5.0|5.1|5.2|5.3|5.4] [--stdlib <libraries and members>]... [--no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] [--path-strict] [--module-map <manifest.json>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively, skipping .vscode and what .gitignore files ignore.\nA directory's LuaLS .luarc.json (or .luarc.jsonc) supplies runtime.version, runtime.path, runtime.pathStrict, workspace.library, workspace.ignoreDir and workspace.useGitIgnore where options do not.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--stdlib declares only the named standard libraries and members, as a sandbox provides them, e.g. basic,string,table,math,os.time (repeatable).\n--no-stdlib declares none of the standard library, for a host that declares its own, except type, assert, setmetatable and the builtin types; --stdlib adds parts back.\nWithout --lua-version, --stdlib and --no-stdlib use Lua 5.4.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nA module no root provides is the checked or library file whose path ends with a template's path for it, the shortest first; --path-strict leaves it unresolved.\n--module-map supplies a host's closed module namespace: each source's modules by their exact names (version 1 JSON; paths relative to the manifest). An unmapped module is unresolved, never found by package.path.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
     );
     println!(
         "Selected standard profiles preserve reached builtin/environment bindings across unknown calls and property effects; known assignments still apply.\n--strict-standard-effects requires runtime-effect preservation proofs instead."

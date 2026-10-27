@@ -22,6 +22,7 @@ pub mod cli;
 pub mod incremental;
 mod json;
 mod language_version;
+mod luarc;
 pub mod language_service;
 pub mod lsp;
 mod file_operations;

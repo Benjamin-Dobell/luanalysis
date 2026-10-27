@@ -780,6 +780,15 @@ impl Server {
             "textDocument/didSave" | "workspace/didChangeWatchedFiles" => {
                 self.revision += 1;
                 self.disk_generation += 1;
+                // A changed project configuration changes what is checked, and how.
+                let changed = params.path(&["textDocument", "uri"]).into_iter()
+                    .chain(params.get("changes").and_then(Json::as_array).unwrap_or(&[]).iter().filter_map(|change| change.get("uri")))
+                    .filter_map(Json::as_str).filter_map(uri_to_path)
+                    .any(|path| path.file_name().is_some_and(|name| crate::luarc::FILE_NAMES.iter().any(|config| name == *config)));
+                if changed {
+                    let settings = self.settings.clone();
+                    if let Err(error) = self.configure(&settings) { self.log(1, &format!("luanalysis: settings: {error}")); }
+                }
             }
             _ => {}
         }
@@ -791,7 +800,13 @@ impl Server {
     /// and queries with them.
     fn configure(&mut self, settings: &Json) -> Result<(), String> {
         self.settings = settings.clone();
-        let Some((inputs, options)) = self.base.clone() else { return Ok(()) };
+        let Some((mut inputs, mut options)) = self.base.clone() else { return Ok(()) };
+        // The workspace's LuaLS configuration, which the client's settings override.
+        inputs.configure(&mut options);
+        for error in &inputs.config_errors {
+            let path = error.path.as_ref().map_or_else(String::new, |path| format!("{}: ", path.display()));
+            self.log(1, &format!("luanalysis: {path}{}", error.message));
+        }
         let settings = settings.get("luanalysis").unwrap_or(settings);
         let (inputs, options, preferences) = apply_settings(inputs, options, settings)?;
         self.preferences = preferences;
@@ -2188,8 +2203,8 @@ impl Default for Preferences {
 }
 
 /// The checked paths and options with the client's settings applied, as the command line's
-/// options would apply them: `luaVersion`, `libraries`, `moduleRoots`, `packagePath`, `stdlib`,
-/// `noStdlib`, `noImplicitAny` and `strictNil`; and the editor preferences `inlayHints.types`,
+/// options would apply them: `luaVersion`, `libraries`, `moduleRoots`, `packagePath`,
+/// `pathStrict`, `stdlib`, `noStdlib`, `noImplicitAny` and `strictNil`; and the editor preferences `inlayHints.types`,
 /// `inlayHints.parameterNames` and `completion.callSnippets`. A relative path is the workspace's.
 fn apply_settings(mut inputs: CheckInputs, mut options: ProjectCheckOptions, settings: &Json) -> Result<(CheckInputs, ProjectCheckOptions, Preferences), String> {
     let root = inputs.files.iter().find(|file| file.is_dir()).cloned();
@@ -2212,6 +2227,7 @@ fn apply_settings(mut inputs: CheckInputs, mut options: ProjectCheckOptions, set
     inputs.libraries.extend(strings("libraries").into_iter().map(path));
     inputs.module_roots.extend(strings("moduleRoots").into_iter().map(path));
     if let Some(package_path) = settings.get("packagePath").and_then(Json::as_str) { inputs.package_path = Some(package_path.to_owned()); }
+    if let Some(strict) = flag(&["pathStrict"]) { inputs.path_strict = Some(strict); }
     let stdlib = strings("stdlib");
     if !stdlib.is_empty() {
         options.standard_library = Some(crate::standard_environment::StandardLibraryAllowList::parse(&stdlib.join(",")));
@@ -2542,7 +2558,7 @@ mod tests {
         send.send(query(3, Navigate::Definition)).unwrap();
         drop(send);
         let (events, answers) = mpsc::channel();
-        let inputs = CheckInputs { files: Vec::new(), libraries: Vec::new(), module_roots: Vec::new(), package_path: None, module_map: None };
+        let inputs = CheckInputs::default();
         answer_queries(inputs, ProjectCheckOptions::default(), queries, events,
             Arc::new(std::sync::Mutex::new(HashSet::new())), Arc::new(crate::incremental::SharedSources::default()));
         let answers: Vec<_> = answers.try_iter().collect();

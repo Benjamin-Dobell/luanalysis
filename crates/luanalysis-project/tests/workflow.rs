@@ -1,6 +1,6 @@
 use luanalysis_project::{
-    DependencyOutcome, FileRequests, Project, ProjectConfig, RequireRequest, ResolveError,
-    Resolver,
+    DependencyOutcome, FileRequests, IgnoreRules, Project, ProjectConfig, RequireRequest,
+    ResolveError, Resolver,
 };
 use std::{
     fs,
@@ -246,4 +246,81 @@ fn a_module_an_entry_provides_by_name_resolves_before_its_path() {
     assert_eq!(project.provider("native"), Some(provider));
     assert_eq!(project.dependencies[0].outcome, DependencyOutcome::Resolved(provider));
     assert_eq!(project.files.len(), 2, "the path candidate is never loaded");
+}
+
+#[test]
+fn a_module_no_root_provides_is_the_shortest_file_ending_in_a_template_path() {
+    let temp = Temp::new();
+    let src = temp.file("src/main.lua", "");
+    let near = temp.file("lib/ge/utils.ttslua", "return 1");
+    let far = temp.file("lib/vendor/deep/ge/utils.ttslua", "return 2");
+    let init = temp.file("other/pkg/init.lua", "return 3");
+    temp.file("lib/xge/table.lua", "return 4");
+    let canonical = |path: &PathBuf| fs::canonicalize(path).unwrap();
+    let mut config = ProjectConfig::new([temp.0.join("src")]);
+    config.set_package_path("?.lua;?/init.lua;?.ttslua;?/init.ttslua");
+    config.suffix_files = [&src, &near, &far, &init].into_iter().map(canonical).collect();
+    config.suffix_files.push(canonical(&temp.0.join("lib/xge/table.lua")));
+    let resolver = Resolver::new(config).unwrap();
+    assert_eq!(resolver.resolve("ge.utils").unwrap().path, canonical(&near));
+    assert_eq!(resolver.resolve("pkg").unwrap().path, canonical(&init));
+    // A suffix matches whole path components, and a root's file still comes first.
+    assert!(matches!(resolver.resolve("ge.table"), Err(ResolveError::Missing { .. })));
+    assert_eq!(resolver.resolve("main").unwrap().path, canonical(&src));
+    // A source is not its own module.
+    assert!(resolver.resolve_from(Some(&canonical(&near)), "utils").is_ok_and(|module| module.path == canonical(&far)));
+    // No suffix files is strict resolution, and a module map is closed.
+    let strict = Resolver::new(ProjectConfig::new([temp.0.join("src")])).unwrap();
+    assert!(matches!(strict.resolve("ge.utils"), Err(ResolveError::Missing { .. })));
+    assert_eq!(strict.suffix_module(None, "ge.utils", &[canonical(&far), canonical(&near)]), None);
+    let mut suffixed = ProjectConfig::new([temp.0.join("src")]);
+    suffixed.set_package_path("?.ttslua");
+    suffixed.suffix_files = vec![canonical(&far)];
+    let suffixed = Resolver::new(suffixed).unwrap();
+    assert_eq!(suffixed.suffix_module(None, "ge.utils", &[canonical(&far), canonical(&near)]), Some(canonical(&near)));
+}
+
+#[test]
+fn a_project_loads_a_module_found_by_suffix() {
+    let temp = Temp::new();
+    let main = temp.file("src/main.lua", "");
+    let utils = temp.file("lib/ge_tts/Utils.lua", "");
+    let mut config = ProjectConfig::new([temp.0.join("src")]);
+    config.suffix_files = vec![fs::canonicalize(&main).unwrap(), fs::canonicalize(&utils).unwrap()];
+    let resolver = Resolver::new(config).unwrap();
+    let project = Project::load(&resolver, [main], |source| {
+        if source.path.ends_with("main.lua") { vec![RequireRequest::new("ge_tts.Utils", 0..0)] } else { Vec::new() }
+    });
+    let [dependency] = project.dependencies.as_slice() else { panic!("{:?}", project.dependencies) };
+    let DependencyOutcome::Resolved(target) = dependency.outcome else { panic!("{:?}", dependency.outcome) };
+    assert_eq!(project.file(target).unwrap().path, fs::canonicalize(utils).unwrap());
+}
+
+#[test]
+fn discovery_skips_what_configured_patterns_and_gitignore_files_ignore() {
+    let temp = Temp::new();
+    for name in ["src/a.lua", "src/gen/b.lua", "src/keep.lua", "build/c.lua", "node_modules/d.lua", ".vscode/e.lua",
+        "lib/f.lua", "lib/g.lua", "lib/sub/h.lua", "x/build/i.lua", ".git/j.lua", "excluded/k.lua"]
+    {
+        temp.file(name, "");
+    }
+    temp.file(".gitignore", "/build/\nnode_modules/\n*.lua\n!*.lua\n");
+    temp.file("src/.gitignore", "gen/\n");
+    temp.file("lib/.gitignore", "g.lua\nsub\n");
+    temp.file(".git/info/exclude", "excluded\n");
+    let discovered = |ignore: IgnoreRules| {
+        let mut config = ProjectConfig::new([temp.0.clone()]);
+        config.ignore = ignore;
+        let root = fs::canonicalize(&temp.0).unwrap();
+        Resolver::new(config).unwrap().discover().files.into_iter()
+            .map(|file| file.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/")).collect::<Vec<_>>()
+    };
+    assert_eq!(discovered(IgnoreRules { patterns: vec![".vscode".into()], git_ignore: true }),
+        ["lib/f.lua", "src/a.lua", "src/keep.lua", "x/build/i.lua"]);
+    assert_eq!(discovered(IgnoreRules { patterns: vec!["/src/keep.lua".into(), "/x".into()], git_ignore: false }).len(), 10);
+    assert_eq!(discovered(IgnoreRules::default()).len(), 12);
+    // A root named explicitly is never ignored.
+    let mut config = ProjectConfig::new([temp.0.join("build")]);
+    config.ignore = IgnoreRules { patterns: vec!["build".into()], git_ignore: true };
+    assert_eq!(Resolver::new(config).unwrap().discover().files.len(), 1);
 }

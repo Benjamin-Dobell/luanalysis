@@ -101,10 +101,7 @@ impl Server {
     }
 
     fn start_with_options(root: &Path, libraries: &[PathBuf], encoding: Option<&str>) -> Self {
-        let inputs = CheckInputs {
-            files: vec![root.to_path_buf()], libraries: libraries.to_vec(), module_roots: Vec::new(),
-            package_path: None, module_map: None,
-        };
+        let inputs = CheckInputs { files: vec![root.to_path_buf()], libraries: libraries.to_vec(), ..CheckInputs::default() };
         let gate = Arc::new(Mutex::new(None::<DiagnosticGate>));
         let output_gate = Arc::clone(&gate);
         let (sender, messages) = mpsc::channel();

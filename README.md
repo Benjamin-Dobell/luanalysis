@@ -505,13 +505,33 @@ Luanalysis checks a project as a whole. `require` calls are resolved through mod
 crosses files. Declaration files (`.def.lua`) describe globals and libraries, and standard library
 declarations are included for Lua 5.0 through 5.4.
 
+A module that no module root provides is, as in Luanalysis v1 and LuaLS, the checked or library
+file whose path ends with the module's path under a template, the shortest such path first: with
+`src/` and `lib/` checked, `require("ge_tts.TableUtils")` is `lib/ge_tts/TableUtils.ttslua`.
+`--path-strict` (or LuaLS's `runtime.pathStrict`) leaves it unresolved instead.
+
+A checked directory's LuaLS configuration, `.luarc.json` (or `.luarc.jsonc`), applies where
+options do not decide, in its flat (`"runtime.version"`) or nested form:
+
+| Setting | Effect |
+| --- | --- |
+| `runtime.version` | `"Lua 5.1"` to `"Lua 5.4"`, as `--lua-version`; `"Lua 5.5"` uses 5.4's declarations, `"LuaJIT"` 5.1's. |
+| `runtime.path` | `package.path` templates, relative to the directory; `.lua` templates also find `.ttslua` files. |
+| `runtime.pathStrict` | Find modules only through templates, as `--path-strict`. |
+| `workspace.library` | Declaration libraries, as `--library`. LuaLS's `${…}` paths are its own. |
+| `workspace.ignoreDir` | Gitignore patterns for what directory discovery skips; by default `.vscode`. |
+| `workspace.useGitIgnore` | Skip what `.gitignore` files and `.git/info/exclude` ignore (default true). |
+
+Other settings are LuaLS's own. A path named explicitly is checked even where discovery skips it.
+
 ## Command line
 
 ```sh
 luanalysis check --lua-version 5.4 src
 ```
 
-Directories are searched for `.lua` and `.ttslua` files.
+Directories are searched for `.lua` and `.ttslua` files, skipping `.vscode` and what `.gitignore`
+files ignore unless a `.luarc.json` says otherwise.
 
 | Option | Effect |
 | --- | --- |
@@ -521,6 +541,7 @@ Directories are searched for `.lua` and `.ttslua` files.
 | `--library <path>` | Include declaration files or directories. |
 | `--module-root <dir>` | Search this directory for `require`d modules (repeatable, in order). |
 | `--package-path <templates>` | `package.path` templates, such as `?.lua;?/init.lua`. |
+| `--path-strict` | Leave a module that no module root provides unresolved, instead of finding it by its path. |
 | `--module-map <manifest.json>` | Resolve `require`s with a host's own module map instead (below). |
 | `--jobs <n>` | Worker threads; by default, one per core. |
 | `--watch` | Check again whenever sources or declarations change. |
@@ -587,13 +608,15 @@ options of `check`, and without paths it checks the editor's workspace. It provi
   `workspace/didRenameFiles`. The editor applies the edits and performs the filesystem operation.
 
 Editors' settings, in `initializationOptions` or `workspace/didChangeConfiguration` (directly or
-under `luanalysis`), apply on top of the command line's options: `luaVersion`, `libraries`,
-`moduleRoots`, `packagePath`, `stdlib`, `noStdlib`, `noImplicitAny` and `strictNil` (default true), and
+under `luanalysis`), apply on top of the command line's options and the workspace's `.luarc.json`:
+`luaVersion`, `libraries`, `moduleRoots`, `packagePath`, `pathStrict`, `stdlib`, `noStdlib`,
+`noImplicitAny` and `strictNil` (default true), and
 `inlayHints.types`, `inlayHints.parameterNames` and `completion.callSnippets` to turn those off.
 `inlayHints.expressionParameterNames`, `inlayHints.parameterTypes` and `inlayHints.returnTypes`
 opt into wider expression argument names, contextual parameter types and inferred function
 results; these three default to false. Explicit annotations and redundant hints are suppressed.
-Every workspace folder is checked, and a check in progress is shown as work-done progress.
+Every workspace folder is checked, and a check in progress is shown as work-done progress. A
+changed `.luarc.json` applies when the editor reports it saved or changed.
 
 Formatting reads current unsaved text and respects negotiated UTF-8/UTF-16 positions. It changes
 whitespace between native lexer tokens, preserving executable tokens, strings and casts.

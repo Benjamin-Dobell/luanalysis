@@ -45,11 +45,12 @@ fn run() -> i32 {
     }
     let remaining: Vec<_> = args.collect();
     let format = OutputFormat::requested(&remaining);
-    let Arguments { dump, watch, inputs, options } = match parse_arguments(remaining) {
+    let Arguments { dump, watch, mut inputs, mut options } = match parse_arguments(remaining) {
         Ok(Parsed::Run(arguments)) => arguments,
         Ok(Parsed::Help) => { help(); return 0; }
         Err(message) => return usage_error(format, &message),
     };
+    inputs.configure(&mut options);
     if inputs.files.is_empty() && inputs.libraries.is_empty() {
         return usage_error(format, "check requires at least one Lua file");
     }

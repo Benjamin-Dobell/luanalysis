@@ -746,6 +746,39 @@ fn a_require_string_links_only_through_the_standard_loader() {
 }
 
 #[test]
+fn a_require_resolves_by_its_path_suffix_as_the_project_configuration_and_settings_say() {
+    let root = fixture();
+    fs::create_dir_all(root.join("lib/ge_tts")).unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let utils = root.join("lib/ge_tts/Utils.ttslua");
+    fs::write(&utils, "return {}\n").unwrap();
+    let main = root.join("src/main.ttslua");
+    let source = "local Utils = require('ge_tts.Utils')\nreturn Utils\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    let published = server.diagnostics(&main, |_| true);
+    assert!(!published.contains("TS2307"), "{published}");
+    let response = server.request(2, "textDocument/definition", &main, 0, 25);
+    assert!(response.contains(&uri(&utils)), "{response}");
+    let response = server.request(3, "textDocument/documentLink", &main, 0, 0);
+    assert!(response.contains(&uri(&utils)), "{response}");
+    // A changed configuration applies at once.
+    let config = root.join(".luarc.json");
+    fs::write(&config, r#"{ "runtime": { "pathStrict": true } }"#).unwrap();
+    server.send(&format!(r#"{{"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles","params":{{"changes":[{{"uri":"{}","type":1}}]}}}}"#, uri(&config)));
+    server.diagnostics(&main, |message| message.contains("TS2307"));
+    let response = server.request(4, "textDocument/documentLink", &main, 0, 0);
+    assert!(!response.contains(&uri(&utils)), "{response}");
+    // The client's settings override it.
+    server.send(r#"{"jsonrpc":"2.0","method":"workspace/didChangeConfiguration","params":{"settings":{"luanalysis":{"pathStrict":false}}}}"#);
+    server.diagnostics(&main, |message| !message.contains("TS2307"));
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn inlay_hints_show_inferred_types_and_literal_arguments_parameters() {
     let root = fixture();
     let main = root.join("main.lua");

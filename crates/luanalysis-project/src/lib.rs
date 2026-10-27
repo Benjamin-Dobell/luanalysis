@@ -3,11 +3,16 @@
 //! and binder. It does not parse source, execute Lua, or check types.
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    ffi::OsString,
     fs, io,
     ops::Range,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
+    rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
 };
+
+mod ignore;
+pub use ignore::IgnoreRules;
 
 static NEXT_PROJECT: AtomicU64 = AtomicU64::new(1);
 
@@ -19,6 +24,12 @@ pub struct ProjectConfig {
     pub templates: Vec<String>,
     pub discovery_extensions: Vec<String>,
     pub excluded: Vec<PathBuf>,
+    /// What discovery skips in each root directory.
+    pub ignore: IgnoreRules,
+    /// The files a module that no root provides is found among by its path's suffix, as LuaLS
+    /// finds it with `runtime.pathStrict` false: the shortest whose path ends with a template's
+    /// path for the module. Canonical paths, as discovery gives them; none finds no module so.
+    pub suffix_files: Vec<PathBuf>,
     /// A host's own module namespace, closed: each importing source's modules by their exact
     /// names. With it, a module is what the map says or unresolved; neither package.path nor a
     /// `---@meta` declaration provides one.
@@ -36,6 +47,8 @@ impl ProjectConfig {
             module_map: None,
             discovery_extensions: vec!["lua".into()],
             excluded: Vec::new(),
+            ignore: IgnoreRules::default(),
+            suffix_files: Vec::new(),
         }
     }
     /// Empty path entries are ignored as in package.searchpath. This API does
@@ -106,6 +119,8 @@ pub struct ResolvedModule {
 #[derive(Clone, Debug)]
 pub struct Resolver {
     config: ProjectConfig,
+    /// `config.suffix_files` by file name.
+    suffix_index: HashMap<OsString, Vec<PathBuf>>,
 }
 impl Resolver {
     pub fn new(mut config: ProjectConfig) -> io::Result<Self> {
@@ -138,7 +153,13 @@ impl Resolver {
             }
             config.module_map = Some(canonical);
         }
-        Ok(Self { config })
+        let mut suffix_index: HashMap<OsString, Vec<PathBuf>> = HashMap::new();
+        for file in &config.suffix_files {
+            if let Some(name) = file.file_name() {
+                suffix_index.entry(name.to_owned()).or_default().push(file.clone());
+            }
+        }
+        Ok(Self { config, suffix_index })
     }
     pub fn config(&self) -> &ProjectConfig {
         &self.config
@@ -157,6 +178,23 @@ impl Resolver {
                 Some(path) => Ok(ResolvedModule { module: module.into(), path: path.clone(), attempted: vec![path.clone()] }),
                 None => Err(ResolveError::Unmapped(module.into())),
             };
+        }
+        let attempted = match self.resolve_in_roots(module) {
+            Err(ResolveError::Missing { attempted, .. }) => attempted,
+            result => return result,
+        };
+        if let Some(path) = self.suffix_match(source, module, |name| self.suffix_index.get(name).into_iter().flatten().collect()) {
+            return Ok(ResolvedModule { module: module.into(), path, attempted });
+        }
+        Err(ResolveError::Missing {
+            module: module.into(),
+            attempted,
+        })
+    }
+    /// The first file a template finds for `module` in a root, in order: `package.searchpath`'s.
+    pub fn resolve_in_roots(&self, module: &str) -> Result<ResolvedModule, ResolveError> {
+        if module.is_empty() || module.contains('\0') {
+            return Err(ResolveError::InvalidModule(module.into()));
         }
         let name = module.replace('.', std::path::MAIN_SEPARATOR_STR);
         let mut attempted = Vec::new();
@@ -194,6 +232,46 @@ impl Resolver {
             attempted,
         })
     }
+    /// The file among `files` that `module` is by its path's suffix, as `resolve_from` finds a
+    /// module that no root provides among `suffix_files`.
+    pub fn suffix_module(&self, source: Option<&Path>, module: &str, files: &[PathBuf]) -> Option<PathBuf> {
+        self.suffix_match(source, module, |name| files.iter().filter(|file| file.file_name() == Some(name)).collect())
+    }
+    /// The shortest of the files `named` gives for a file name whose path ends with a template's
+    /// path for `module`, earlier templates first among paths of a length. A source is not its
+    /// own module; absolute templates and those leaving their root have no suffix.
+    fn suffix_match<'a>(&self, source: Option<&Path>, module: &str, named: impl Fn(&std::ffi::OsStr) -> Vec<&'a PathBuf>) -> Option<PathBuf> {
+        if self.config.suffix_files.is_empty() || self.config.module_map.is_some() {
+            return None;
+        }
+        let name = module.replace('.', std::path::MAIN_SEPARATOR_STR);
+        let mut best: Option<(usize, usize, &PathBuf)> = None;
+        for (order, template) in self.config.templates.iter().enumerate() {
+            let path = PathBuf::from(template.replace('?', &name));
+            let mut suffix = PathBuf::new();
+            for component in path.components() {
+                match component {
+                    Component::Normal(part) => suffix.push(part),
+                    Component::CurDir => {}
+                    _ => {
+                        suffix.clear();
+                        break;
+                    }
+                }
+            }
+            let Some(file_name) = suffix.file_name() else { continue };
+            for file in named(file_name) {
+                if Some(file.as_path()) == source || !file.ends_with(&suffix) {
+                    continue;
+                }
+                let key = (file.as_os_str().len(), order, file);
+                if best.is_none_or(|best| key < best) {
+                    best = Some(key);
+                }
+            }
+        }
+        best.map(|(_, _, file)| file.clone())
+    }
     pub fn discover(&self) -> Discovery {
         let mut result = Discovery::default();
         let mut directories = HashSet::new();
@@ -204,12 +282,25 @@ impl Resolver {
             .iter()
             .map(|path| fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
             .collect();
-        let mut pending: Vec<_> = self.config.roots.iter().rev().cloned().collect();
-        while let Some(path) = pending.pop() {
+        let rules = &self.config.ignore;
+        let configured: Vec<_> = rules.patterns.iter().filter_map(|line| ignore::pattern(line)).collect();
+        // Each path, with the root it was found in and the `.gitignore` patterns there; a root
+        // has none.
+        let mut pending: Vec<(PathBuf, Option<Walk>)> = self.config.roots.iter().rev().map(|root| (root.clone(), None)).collect();
+        while let Some((path, walk)) = pending.pop() {
+            let ignored = |directory: bool| {
+                let Some(walk) = &walk else { return false };
+                if directory && rules.git_ignore && path.file_name() == Some(".git".as_ref()) {
+                    return true;
+                }
+                walk.ignores(&configured, &path, directory)
+            };
             let canonical = match fs::canonicalize(&path) {
                 Ok(path) => path,
                 Err(error) => {
-                    result.errors.push(PathFailure::new(path, error));
+                    if !ignored(false) {
+                        result.errors.push(PathFailure::new(path, error));
+                    }
                     continue;
                 }
             };
@@ -226,6 +317,9 @@ impl Resolver {
                     continue;
                 }
             };
+            if ignored(metadata.is_dir()) {
+                continue;
+            }
             if metadata.is_file() {
                 let accepted = canonical
                     .extension()
@@ -257,12 +351,70 @@ impl Resolver {
                     }
                 }
                 paths.sort();
-                pending.extend(paths.into_iter().rev());
+                let walk = Walk::within(walk, &canonical, rules.git_ignore);
+                pending.extend(paths.into_iter().rev().map(|path| (path, Some(walk.clone()))));
             }
         }
         result.files.sort();
         result.errors.sort_by(|a, b| a.path.cmp(&b.path));
         result
+    }
+}
+
+/// Where discovery is: the root directory it began in and the `.gitignore` patterns of the
+/// directory it is reading.
+#[derive(Clone)]
+struct Walk {
+    root: Rc<PathBuf>,
+    scope: Option<Rc<Scope>>,
+}
+
+/// A directory's `.gitignore` patterns, then those of the directories it is in.
+struct Scope {
+    base: PathBuf,
+    patterns: Vec<ignore::Pattern>,
+    parent: Option<Rc<Scope>>,
+}
+
+impl Walk {
+    /// The walk in `directory`, found by `walk` or a root: with `git_ignore`, its `.gitignore`
+    /// (and in a root, `.git/info/exclude`, which yields to it) applies to what it holds.
+    fn within(walk: Option<Walk>, directory: &Path, git_ignore: bool) -> Walk {
+        let read = |path: PathBuf, parent: Option<Rc<Scope>>| {
+            let patterns = fs::read_to_string(path).map(|text| ignore::patterns(&text)).unwrap_or_default();
+            if patterns.is_empty() { parent } else { Some(Rc::new(Scope { base: directory.to_path_buf(), patterns, parent })) }
+        };
+        let mut walk = walk.unwrap_or_else(|| Walk {
+            root: Rc::new(directory.to_path_buf()),
+            scope: if git_ignore { read(directory.join(".git").join("info").join("exclude"), None) } else { None },
+        });
+        if git_ignore {
+            walk.scope = read(directory.join(".gitignore"), walk.scope.take());
+        }
+        walk
+    }
+
+    /// Whether `configured` patterns, of the root, or the nearest `.gitignore` that names it
+    /// ignore `path`.
+    fn ignores(&self, configured: &[ignore::Pattern], path: &Path, directory: bool) -> bool {
+        let relative = |base: &Path| ignore::relative(path, base)
+            .or_else(|| path.file_name().map(|name| name.to_string_lossy().into_owned()));
+        if !configured.is_empty()
+            && let Some(relative) = relative(&self.root)
+            && ignore::decision(configured, &relative, directory) == Some(true)
+        {
+            return true;
+        }
+        let mut scope = self.scope.as_deref();
+        while let Some(current) = scope {
+            if let Some(relative) = relative(&current.base)
+                && let Some(ignored) = ignore::decision(&current.patterns, &relative, directory)
+            {
+                return ignored;
+            }
+            scope = current.parent.as_deref();
+        }
+        false
     }
 }
 /// A module map's file, as the project names it: its canonical path.

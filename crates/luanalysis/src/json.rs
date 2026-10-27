@@ -1,4 +1,5 @@
-//! The JSON of the language server protocol: a value, a parser and a writer.
+//! The JSON of the language server protocol: a value, a parser and a writer. The parser also
+//! reads JSON with comments, as project configuration files are written.
 
 use std::fmt::Write as _;
 
@@ -55,7 +56,17 @@ impl Json {
     }
 
     pub(crate) fn parse(text: &str) -> Result<Json, String> {
-        let mut parser = Parser { bytes: text.as_bytes(), at: 0 };
+        Self::parse_with(text, false)
+    }
+
+    /// JSON with comments (`//` and `/* */`) and trailing commas, as VS Code's settings and
+    /// LuaLS's `.luarc.json` are written.
+    pub(crate) fn parse_with_comments(text: &str) -> Result<Json, String> {
+        Self::parse_with(text, true)
+    }
+
+    fn parse_with(text: &str, comments: bool) -> Result<Json, String> {
+        let mut parser = Parser { bytes: text.as_bytes(), at: 0, comments };
         let value = parser.value(0)?;
         parser.whitespace();
         if parser.at != parser.bytes.len() {
@@ -143,13 +154,42 @@ fn write_string(text: &str, out: &mut String) {
 struct Parser<'a> {
     bytes: &'a [u8],
     at: usize,
+    /// Comments are whitespace, and a comma may end an array or object.
+    comments: bool,
 }
 
 impl Parser<'_> {
     fn whitespace(&mut self) {
-        while matches!(self.bytes.get(self.at), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            self.at += 1;
+        loop {
+            while matches!(self.bytes.get(self.at), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+                self.at += 1;
+            }
+            if !self.comments || self.bytes.get(self.at) != Some(&b'/') {
+                return;
+            }
+            match self.bytes.get(self.at + 1) {
+                Some(b'/') => {
+                    while self.bytes.get(self.at).is_some_and(|byte| *byte != b'\n') {
+                        self.at += 1;
+                    }
+                }
+                Some(b'*') => {
+                    let end = self.bytes[self.at + 2..].windows(2).position(|pair| pair == b"*/");
+                    self.at = end.map_or(self.bytes.len(), |end| self.at + 2 + end + 2);
+                }
+                _ => return,
+            }
         }
+    }
+
+    /// Whether a trailing comma's array or object ends here.
+    fn closes(&mut self, close: u8) -> bool {
+        self.whitespace();
+        if self.comments && self.bytes.get(self.at) == Some(&close) {
+            self.at += 1;
+            return true;
+        }
+        false
     }
 
     fn error<T>(&self, expected: &str) -> Result<T, String> {
@@ -187,7 +227,10 @@ impl Parser<'_> {
                     items.push(self.value(depth + 1)?);
                     self.whitespace();
                     match self.bytes.get(self.at) {
-                        Some(b',') => self.at += 1,
+                        Some(b',') => {
+                            self.at += 1;
+                            if self.closes(b']') { return Ok(Json::Array(items)); }
+                        }
                         Some(b']') => { self.at += 1; return Ok(Json::Array(items)); }
                         _ => return self.error("',' or ']'"),
                     }
@@ -215,7 +258,10 @@ impl Parser<'_> {
                     entries.push((key, self.value(depth + 1)?));
                     self.whitespace();
                     match self.bytes.get(self.at) {
-                        Some(b',') => self.at += 1,
+                        Some(b',') => {
+                            self.at += 1;
+                            if self.closes(b'}') { return Ok(Json::Object(entries)); }
+                        }
                         Some(b'}') => { self.at += 1; return Ok(Json::Object(entries)); }
                         _ => return self.error("',' or '}'"),
                     }
@@ -311,6 +357,13 @@ mod tests {
     fn malformed_and_too_deep_input_is_rejected() {
         assert!(Json::parse("{\"a\":}").is_err());
         assert!(Json::parse("[1,]").is_err());
+        assert!(Json::parse("[1 // one\n]").is_err());
+        assert_eq!(
+            Json::parse_with_comments("// settings\n{ /* a */ \"a\": [1, 2,], // b\n \"b\": \"//\", }").unwrap(),
+            Json::object([("a", Json::Array(vec![Json::Number(1.0), Json::Number(2.0)])), ("b", Json::from("//"))]),
+        );
+        assert!(Json::parse_with_comments("[,]").is_err());
+        assert!(Json::parse_with_comments("{\"a\": 1 /* open").is_err());
         assert!(Json::parse(&"[".repeat(10_000)).is_err());
     }
 }
