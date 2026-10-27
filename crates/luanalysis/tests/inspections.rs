@@ -82,3 +82,47 @@ fn checking_reports_no_inspections_unless_requested() {
     let checked = check("local unused = 1\nlocal t = {}\nif t then print(t) end\n", ProjectCheckOptions::default());
     assert!(found(&checked).is_empty());
 }
+
+#[test]
+fn a_call_that_visibly_writes_a_reference_ends_its_condition_facts() {
+    for source in [
+        "local ready=false\nlocal function enable() ready=true end\nenable()\nif ready then print('taken') end\n",
+        "---@type string|nil\nlocal value=nil\nlocal function enable() value='ready' end\nenable()\nif value then print('taken') end\n",
+        "local ready=false\nlocal function enable() ready=true end\nlocal function wrapper() enable() end\nwrapper()\nif ready then print('taken') end\n",
+        "local ready=false\nlocal function enable() ready=true end\nfor i=1,2 do\nif ready then print(i) end\nenable()\nend\n",
+        "local found=false\npcall(function() found=true end)\nif found then print('taken') end\n",
+        "---@param items number[]\n---@param f fun(item: number)\nlocal function each(items, f) for _, item in ipairs(items) do f(item) end end\nlocal found=false\neach({1}, function() found=true end)\nif found then print('taken') end\n",
+        "local ready=false\nlocal M={}\nfunction M.enable() ready=true end\nM.enable()\nif ready then print('taken') end\n",
+        "local ready=false\nlocal api={enable=function() ready=true end}\napi.enable()\nif ready then print('taken') end\n",
+        "ready=false\nfunction enable() ready=true end\nenable()\nif ready then print('taken') end\n",
+        "---@class State\n---@field ready boolean\n\n---@param state State\nlocal function enable(state) state.ready=true end\n---@param state State\nlocal function run(state)\nstate.ready=false\nenable(state)\nif state.ready then print('taken') end\nend\nreturn run\n",
+        "---@class Worker\n---@field busy boolean\nlocal Worker={busy=false}\nfunction Worker:finish() self.busy=true end\nfunction Worker:run()\nself.busy=false\nself:finish()\nif self.busy then print('taken') end\nend\nreturn Worker\n",
+        "---@class Worker\n---@field busy boolean\nlocal Worker={busy=false}\nfunction Worker:run()\nself.busy=false\nlocal function finish() self.busy=true end\nfinish()\nif self.busy then print('taken') end\nend\nreturn Worker\n",
+    ] {
+        let checked = inspect(source);
+        assert!(found(&checked).is_empty(), "{source}\n{:?}", found(&checked));
+    }
+}
+
+#[test]
+fn a_call_keeps_condition_facts_it_does_not_visibly_write() {
+    let unwritten = |call: &str| format!("local ready=false\nlocal function enable() ready=true end\n{call}\nif ready then print('not taken') end\nenable()\n");
+    for call in ["local function noop() end\nnoop()", "print('unknown')", "enable()\nready=false"] {
+        assert_eq!(found(&inspect(&unwritten(call))), ["LUA2873 ready"], "{call}");
+    }
+    let source = "---@type false\nlocal ready=false\nlocal function enable() ready=true end\nenable()\nif ready then print('not taken') end\n";
+    assert_eq!(found(&inspect(source)), ["TS2322 true", "LUA2873 ready"]);
+    let members = |call: &str| format!("---@class State\n---@field ready boolean\n---@field count number\n\n---@param state State\nlocal function enable(state) state.ready=true end\n---@param state State\nlocal function count(state) state.count=1 end\n---@param state State\n---@param other State\nlocal function run(state, other)\nstate.ready=false\n{call}\nif state.ready then print('not taken') end\nreturn other\nend\nreturn run, enable, count\n");
+    for call in ["enable(other)", "count(state)"] {
+        assert_eq!(found(&inspect(&members(call))), ["LUA2873 state.ready"], "{call}");
+    }
+    // A branch that ends in a call that never returns has no write to join.
+    let source = "---@type string|nil\nlocal value=nil\n---@return never\nlocal function fail() value=nil error('failed') end\n---@param ok boolean\nlocal function f(ok)\nvalue='ready'\nif not ok then fail() end\n---@type string\nlocal ready=value\nreturn ready\nend\nreturn f\n";
+    assert!(found(&inspect(source)).is_empty(), "{:?}", found(&inspect(source)));
+}
+
+#[test]
+fn a_captured_write_keeps_both_return_paths_reachable() {
+    let source = "local function choose()\nlocal ready=false\nlocal function enable() ready=true end\nenable()\nif ready then return 1 else return 'other' end\nend\n---@type string\nlocal result=choose()\nprint(result)\n";
+    assert_eq!(found(&inspect(source)), ["TS2322 choose()"]);
+}

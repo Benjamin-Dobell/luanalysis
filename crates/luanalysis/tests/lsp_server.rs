@@ -1486,3 +1486,27 @@ fn legacy_unicode_members_are_completed_at_utf16_positions_and_replace_typed_uni
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn captured_writes_clear_stale_condition_diagnostics_and_hover_narrowing() {
+    let root = fixture();
+    let main = root.join("main.lua");
+    let source = "local ready=false\nlocal function enable() ready=true end\nenable()\nif ready then print('taken') end\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&main, source);
+    let published = server.diagnostics(&main, |message| message.contains(r#""version":1"#));
+    assert!(published.contains(r#""diagnostics":[]"#), "{published}");
+    let hover = server.request(2, "textDocument/hover", &main, 3, 4);
+    assert!(hover.contains("boolean"), "{hover}");
+    let unchanged = source.replace("ready=true end", "print('unchanged') end");
+    server.change(&main, 2, &unchanged);
+    let published = server.diagnostics(&main, |message| message.contains(r#""version":2"#));
+    assert!(published.contains("LUA2873"), "{published}");
+    server.change(&main, 3, source);
+    let published = server.diagnostics(&main, |message| message.contains(r#""version":3"#));
+    assert!(published.contains(r#""diagnostics":[]"#), "{published}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}

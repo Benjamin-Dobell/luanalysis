@@ -9,6 +9,8 @@ mod assertion_tests;
 #[cfg(test)]
 #[path = "native_flow_metadata_index.rs"]
 mod metadata_index_tests;
+#[path = "native_call_writes.rs"]
+mod call_writes;
 
 use super::{bind::BindingId, flow};
 use luanalysis_engine::{
@@ -189,6 +191,12 @@ pub(super) struct NativeFlowRecipes {
     write_metadata: OriginalWriteMetadata,
     /// `environment_replacements`, computed once for these recipes: it walks every node.
     environment_replacements: std::sync::OnceLock<(u8, bool)>,
+    /// Each parameter's position in its function; an implicit receiver is first.
+    parameter_indices: HashMap<BindingId, usize>,
+    /// The implicit receiver of each `function owner:name()` graph.
+    implicit_receivers: HashMap<u32, BindingId>,
+    /// What each original call may visibly write, computed once on first use.
+    call_writes: std::sync::OnceLock<call_writes::CallWrites>,
 }
 
 pub(super) struct NativeFlowSources {
@@ -339,6 +347,9 @@ impl NativeFlowSources {
             write_metadata: OriginalWriteMetadata::default(),
             program,
             environment_replacements: std::sync::OnceLock::new(),
+            parameter_indices: HashMap::default(),
+            implicit_receivers: HashMap::default(),
+            call_writes: std::sync::OnceLock::new(),
         };
         for (span, index) in functions {
             let graph = result.program.functions[span];
@@ -548,6 +559,14 @@ impl NativeFlowSources {
         }
         for scope in bound.scopes.iter().filter(|scope| scope.kind == super::bind::ScopeKind::Function) {
             let graph = result.program.functions[&(scope.span.start, scope.span.end)] as usize;
+            let parameters = scope.bindings.iter().copied().filter(|&binding| matches!(bound.declaration(binding).kind,
+                super::bind::DeclarationKind::ImplicitReceiver | super::bind::DeclarationKind::Parameter));
+            for (index, binding) in parameters.enumerate() {
+                if bound.declaration(binding).kind == super::bind::DeclarationKind::ImplicitReceiver {
+                    result.implicit_receivers.insert(graph as u32, binding);
+                }
+                result.parameter_indices.insert(binding, index);
+            }
             for &binding in &scope.captures {
                 intern_reference(&mut result.references[graph], &mut result.reference_indices[graph], &flow::Reference {
                     root: flow::ReferenceRoot::Binding(binding),
@@ -694,6 +713,12 @@ impl NativeFlowSources {
         let [write] = self.write_metadata.exact.get(&reference)?.as_slice() else { return None; };
         let flow::NodeKind::Write { value: flow::ValueDemand::Function(graph), declaration: true, .. } = &self.program.node(*write).kind else { return None; };
         self.graph_functions.get(*graph as usize).copied().flatten()
+    }
+
+    /// Whether the original call `evaluation` may visibly write `reference`
+    /// (see `call_writes`).
+    pub(super) fn call_may_write(&self, evaluation: flow::EvaluationId, reference: &flow::Reference) -> bool {
+        self.recipes.call_writes.get_or_init(|| self.compute_call_writes()).may_write(evaluation, reference)
     }
 
     /// What original stores in this source may replace through the environment
@@ -2252,8 +2277,10 @@ impl NativeFlowProvider for FlowAdapter<'_> {
         self.typed_write_affects(reference, target, at, queries, false)
     }
     fn call_invalidates_reference(&self, reference: NativeReferenceKey, at: NativeFlowKey, queries: &mut dyn TypeQueries) -> bool {
-        if !self.sources.source_reference(reference).is_some_and(|reference| reference.root == flow::ReferenceRoot::LoaderState) {
-            return false;
+        let Some(source) = self.sources.source_reference(reference) else { return false; };
+        if source.root != flow::ReferenceRoot::LoaderState {
+            return matches!(self.sources.source_node(at), Some(flow::Node { kind: flow::NodeKind::Call { evaluation, .. }, .. })
+                if self.sources.call_may_write(*evaluation, source));
         }
         let Some(node) = self.sources.source_node(at) else { return true; };
         if self.sources.loader_mutations.contains(&(node.span.start, node.span.end)) { return true; }

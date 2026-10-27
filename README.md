@@ -324,6 +324,18 @@ Assertions such as `assert(isString(value))` and comparisons such as `isString(v
 also narrow the argument. The [checked example](examples/features/type-predicates.lua) covers
 primitive unions and nominal subclasses.
 
+Unlike TypeScript, narrowing ends at a call that can visibly change the value: a call to a
+function defined in the same file that assigns the variable or field, directly or through the
+functions it calls, or a call given such a function as an argument. The value then has its
+declared type. Other calls keep the narrowing.
+
+```lua
+local ready = false
+local function enable() ready = true end
+enable()
+if ready then print("ready") end -- boolean, not false
+```
+
 ### Correlated results
 
 Lua functions commonly return a success flag and then either a result or an error. Declare each
