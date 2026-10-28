@@ -3008,6 +3008,12 @@
       "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
       "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
       "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-table-literal-candidates.patch",
+      "reason": "Count a table a Lua constructor built as an object literal in `unionObjectAndArrayLiteralCandidates`, whether fresh, widened or a local's constructed table, as TypeScript keeps an object literal's flag after widening, so that a generic call unions table literal candidates instead of fixing the first.",
+      "patch_sha256": "45aa346655acc3f1a4513e74de35080fb4e22dc928b7eb8a5964b272c8fc0112"
     }
   ],
   "source_additions": {
@@ -4007,7 +4013,7 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "c42594dc5ad945bf814e791f01b2d3b0214e743fac3b7656b0f124ae43295b87"
+      "extracted_sha256": "87a06f7e83ef5deeac2010a256ad70861f797b3aee499ab5743e082fcf3ba3df"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",

@@ -165,6 +165,24 @@ push(names, "grace")
 push(names, 42) -- error: '42' is not assignable to 'string'
 ```
 
+When several arguments infer one type parameter, the candidates combine as in TypeScript.
+Table literals, whether written in the call or built into a local, are unioned, as are
+literals of one primitive type. Otherwise a candidate that is a supertype of the others is
+the type, or else the first candidate, and an argument that it does not accept is an error:
+
+```lua
+---@generic T
+---@param a T
+---@param b T
+---@return T
+local function both(a, b) return a end
+
+local tables = both({ a = 1 }, { b = 2 }) -- { a: 1 } | { b: 2 }
+local counts = both(1, 2)                 -- number
+local pet = both(dog, animal)             -- Animal, given a Dog and an Animal
+both(1, "x") -- error: '"x"' is not assignable to '1'
+```
+
 A type parameter may have a default, after its constraint, as in TypeScript and EmmyLua Analyzer.
 An omitted type argument is its default, and so is one that a call's arguments do not infer:
 
@@ -907,6 +925,12 @@ over stdio; separately resolved item details are excluded.
 
 Luanalysis reads the annotations of Luanalysis for IntelliJ and EmmyLua, and the annotation
 syntax of lua-language-server, so existing annotated code can be checked as it is.
+
+Some checks are deliberately stricter than Luanalysis for IntelliJ's, as TypeScript's are:
+
+- A type parameter inferred from several unrelated arguments is not their union, except for
+  table literals and literals of one primitive type. `both(1, "x")` is an error, where
+  Luanalysis for IntelliJ inferred `1 | "x"`. See [Generics](#generics).
 
 ## Building from source
 

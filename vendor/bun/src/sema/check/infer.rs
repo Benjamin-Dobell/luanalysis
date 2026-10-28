@@ -2820,7 +2820,12 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `isObjectOrArrayLiteralType`
     fn is_object_or_array_literal_type(&self, ty: TypeId) -> bool {
-        self.types().is_array_literal(ty) || self.is_object_literal_type(ty)
+        self.types().is_array_literal(ty)
+            || self.is_object_literal_type(ty)
+            // A table a Lua constructor built is an object literal's type, fresh or widened, and
+            // a local's constructed table is one however its stores grow it.
+            || matches!(self.data(ty), TypeData::NativeTable(table) if table.collision_candidates)
+            || matches!(self.data(ty), TypeData::NativeRuntimeTable(_))
     }
 
     /// `getCovariantInference`, and the constraint of `param`.

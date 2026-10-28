@@ -806,6 +806,11 @@ SOURCE_ADAPTATIONS.extend({
     "src/sema/check/unions.rs",
     "src/sema/types.rs",
 ])
+SOURCE_ADAPTATIONS.append({
+    "path": "src/sema/check/infer.rs",
+    "patch": "vendor/patches/bun-sema-native-table-literal-candidates.patch",
+    "reason": "Count a table a Lua constructor built as an object literal in `unionObjectAndArrayLiteralCandidates`, whether fresh, widened or a local's constructed table, as TypeScript keeps an object literal's flag after widening, so that a generic call unions table literal candidates instead of fixing the first.",
+})
 
 
 def git(source, *args):
