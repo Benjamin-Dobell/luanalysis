@@ -96,6 +96,9 @@ pub struct File {
     pub documentation_references: Vec<DocumentationReference>,
     /// Written contracts on original return lists, separate from function docs.
     pub return_annotations: Vec<ReturnAnnotation>,
+    /// The names of locals that EmmyLua Analyzer's `---@readonly` declares: their tables'
+    /// fields are not assigned.
+    pub readonly_locals: Vec<Span>,
     pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
     pub span: Span,
@@ -504,6 +507,11 @@ pub struct FunctionAnnotations {
     pub vararg: Option<Box<VarargAnnotation>>,
     pub returns: Option<TypeAnnotation>,
     pub type_annotation: Option<TypeAnnotation>,
+    /// EmmyLua Analyzer's `---@return_overload` rows, each one result list a call may return.
+    /// Once a comment's tags are read they are its result contract, the union of the rows.
+    pub return_overloads: Vec<TypeAnnotation>,
+    /// EmmyLua Analyzer's `---@readonly` on a local: its table's fields are not assigned.
+    pub readonly: Option<Span>,
 }
 
 impl FunctionAnnotations {
@@ -746,6 +754,9 @@ pub struct OverloadAnnotation {
     /// Neutral documentation candidates. The registry selects semantic owner;
     /// multiple candidates are not silently resolved by source order.
     pub named_candidates: Vec<NamedTypeDeclarationId>,
+    /// Written into a documented local's type as one of its call signatures, so no function or
+    /// declaration owns it.
+    pub in_type: bool,
 }
 
 /// A Lua operator a named type declares with `---@operator`. `call` is a class

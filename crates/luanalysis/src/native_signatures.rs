@@ -1236,7 +1236,8 @@ impl NativeSignatures {
             if let Some(vararg)=&declaration.annotations.vararg { result.visit_type(SignatureOwner::Standalone,context,Some(key),&vararg.ty); }
             if let Some(returns)=&declaration.annotations.returns { for ty in &returns.types { result.visit_type(SignatureOwner::Standalone,context,Some(key),ty); } }
         }
-        for head in &file.overload_annotations {
+        // An overload written into a documented local's type is that type's call signature.
+        for head in file.overload_annotations.iter().filter(|head| !head.in_type) {
             let named_key = match head.named_candidates.as_slice() {
                 [] => None,
                 [id] => named.key_for_syntax(*id),

@@ -149,6 +149,8 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     | "not"
                     | "param"
                     | "return"
+                    | "return_overload"
+                    | "readonly"
                     | "generic"
                     | "vararg"
                     | "alias"
@@ -410,6 +412,11 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                             packs,
                         });
                     }
+                    "readonly" => group.readonly = Some(Span::new(tag_offset, tag_offset + 1 + tag_len)),
+                    "return_overload" => {
+                        let (types, packs) = parser.return_packs();
+                        group.return_overloads.push(TypeAnnotation { span: annotation_span, types, packs });
+                    }
                     "type" => {
                         let (types, packs) = parser.annotation_type_list();
                         group.type_annotation = Some(TypeAnnotation {
@@ -512,6 +519,27 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
     }
     crate::completion_metadata::validate(&result, &mut diagnostics);
     (result, diagnostics)
+}
+
+/// EmmyLua Analyzer's `---@return_overload` rows are the function's result contract: a call
+/// returns one of them, as `---@return (true, T) | (false, E)` writes it.
+fn folded_return_overloads(rows: &[TypeAnnotation]) -> Option<TypeAnnotation> {
+    let span = rows.iter().map(|row| row.span).reduce(Span::join)?;
+    let mut types = Vec::new();
+    let mut alternatives = Vec::new();
+    for row in rows.iter().cloned() {
+        let offset = types.len();
+        match row.packs {
+            Some(packs) => alternatives.extend(packs.alternatives.into_iter().map(|mut pack| {
+                pack.fixed = pack.fixed.start + offset..pack.fixed.end + offset;
+                if let Some(variadic) = pack.variadic.as_mut() { variadic.type_index += offset; }
+                pack
+            })),
+            None => alternatives.push(TypePack { fixed: offset..offset + row.types.len(), variadic: None, span: row.span }),
+        }
+        types.extend(row.types);
+    }
+    Some(TypeAnnotation { types, packs: Some(Box::new(TypePacks { alternatives, span })), span })
 }
 
 /// A description as written over one or more lines: each line trimmed, without the `#` that
@@ -629,6 +657,8 @@ pub(crate) fn merge_annotations(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     target.overloads.extend(incoming.overloads);
+    target.return_overloads.extend(incoming.return_overloads);
+    if incoming.readonly.is_some() { target.readonly = incoming.readonly; }
     for generic in incoming.generics {
         if target
             .generics
@@ -670,7 +700,11 @@ pub(crate) fn merge_annotations(
             target.vararg = Some(vararg);
         }
     }
-    if let Some(returns) = incoming.returns {
+    // `---@return_overload` rows describe what a `---@return` beside them says more generally,
+    // so once there are rows they are the results, whatever the order of the lines.
+    let returns = incoming.returns.filter(|_| target.return_overloads.is_empty());
+    if let Some(returns) = folded_return_overloads(&target.return_overloads) { target.returns = Some(returns); }
+    if let Some(returns) = returns {
         // LuaLS writes one @return line per value: they list the function's results in order.
         if let Some(existing) = &target.returns
             && existing.types.iter().chain(&returns.types).any(|ty| matches!(ty.kind, TypeExprKind::TypePredicate { .. }))
@@ -1622,7 +1656,7 @@ impl TypeParser {
     }
     /// Types joined by `&`, which binds more tightly than `|`, as in TypeScript.
     fn intersection(&mut self) -> TypeExpr {
-        let first = self.primary();
+        let first = self.subtracted();
         self.intersected(first)
     }
     fn intersected(&mut self, first: TypeExpr) -> TypeExpr {
@@ -1631,12 +1665,54 @@ impl TypeParser {
         }
         let mut types = vec![first];
         while self.take("&").is_some() {
-            types.push(self.primary());
+            types.push(self.subtracted());
         }
         let span = types.first().unwrap().span.join(types.last().unwrap().span);
         TypeExpr {
             kind: TypeExprKind::Intersection(types),
             span,
+        }
+    }
+    /// EmmyLua Analyzer's `A - B`: `A` without the members of `B`, `Exclude<A, B>`, binding more
+    /// tightly than `&`. `T - ?` is `T` without nil. A `-` that begins a description
+    /// (`number - the count`) subtracts nothing: a subtrahend other than `?` must end the type.
+    fn subtracted(&mut self) -> TypeExpr {
+        let mut ty = self.primary();
+        while self.symbol("-") {
+            let (pos, diagnostics) = (self.pos, self.diagnostics.len());
+            let operator = self.current().span;
+            self.pos += 1;
+            let removed = match self.take("?") {
+                Some(question) => TypeExpr { kind: TypeExprKind::Named("nil".to_owned()), span: question },
+                None => {
+                    let removed = self.primary();
+                    if matches!(removed.kind, TypeExprKind::Error) || !self.type_ends() {
+                        self.pos = pos;
+                        self.diagnostics.truncate(diagnostics);
+                        break;
+                    }
+                    removed
+                }
+            };
+            let span = ty.span.join(removed.span);
+            ty = TypeExpr {
+                kind: TypeExprKind::Generic {
+                    base: Name { text: "Exclude".to_owned(), span: operator },
+                    args: vec![ty, removed],
+                    args_span: span,
+                },
+                span,
+            };
+        }
+        ty
+    }
+    /// Whether the current token can follow a complete type, rather than continue a description.
+    fn type_ends(&self) -> bool {
+        match &self.current().kind {
+            TokenKind::Eof | TokenKind::Newline => true,
+            TokenKind::Symbol(symbol) => matches!(symbol.as_str(), "," | ")" | "]" | "}" | ">" | "|" | "&" | "-" | "?" | "@" | "#" | "..." | ";" | "="),
+            TokenKind::Keyword(word) => matches!(word.as_str(), "and" | "or"),
+            _ => false,
         }
     }
     fn primary(&mut self) -> TypeExpr {
@@ -1667,8 +1743,9 @@ impl TypeParser {
             TokenKind::Identifier(name) if name == "infer" && matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(_))) => {
                 self.infer_type(start)
             }
-            // LuaLS's `async fun(...)`: an async function is an ordinary function type.
-            TokenKind::Identifier(name) if name == "async"
+            // LuaLS's `async fun(...)`, and EmmyLua Analyzer's `sync fun(...)`: either is an
+            // ordinary function type.
+            TokenKind::Identifier(name) if (name == "async" || name == "sync")
                 && matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(next)) if next == "fun") =>
             {
                 self.pos += 1;

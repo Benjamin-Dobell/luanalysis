@@ -1329,6 +1329,19 @@ impl Checker<'_> {
                         _ => unreachable!(),
                     };
                     let receiver = self.expression(base);
+                    if self.readonly_local(base) {
+                        let field = match &target.kind {
+                            ExprKind::Field { name, .. } => Some(name.text.clone()),
+                            ExprKind::Index { index, .. } => operators::literal_string_key(index)
+                                .and_then(|key| std::str::from_utf8(key).ok()).map(str::to_owned),
+                            _ => None,
+                        };
+                        match field {
+                            Some(field) => self.error("TS2540", target.span, format!("Cannot assign to '{field}' because it is a read-only property.")),
+                            None => self.error_types("TS2542", target.span, "Index signature in type '{}' only permits reading.", &[&receiver]),
+                        }
+                        continue;
+                    }
                     let (key, key_span) = match &target.kind {
                         ExprKind::Field { name, .. } => (
                             TableKey::Literal(LuaKey::String(name.text.as_bytes().to_vec())),
@@ -1390,6 +1403,15 @@ impl Checker<'_> {
                 }
             }
         }
+    }
+
+    /// Whether `expr` names a local that EmmyLua Analyzer's `---@readonly` declares, whose
+    /// table's fields are not assigned.
+    fn readonly_local(&self, expr: &Expr) -> bool {
+        let ExprKind::Name(name) = &expr.kind else { return false };
+        let (Some(native), Some(binding)) = (self.native, self.bound.binding_at(name.span.start)) else { return false };
+        let declaration = self.bound.declarations[binding.0].span;
+        native.syntax().readonly_locals.contains(&declaration)
     }
 
     fn reference(&self, expr: &Expr) -> Option<Reference> {

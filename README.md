@@ -929,6 +929,12 @@ over stdio; separately resolved item details are excluded.
 Luanalysis reads the annotations of Luanalysis for IntelliJ and EmmyLua, and the annotation
 syntax of lua-language-server, so existing annotated code can be checked as it is.
 
+It also reads EmmyLua Analyzer's additions: `A - B`, `A` without the members of `B`
+(`Exclude<A, B>`; `T - ?` is `T` without nil); `async` and `sync` function types; result rows
+written as `---@return_overload true, T` lines, which a call returns one of; `---@readonly`
+above a local, whose table's fields are then not assigned; and signature tags (`---@param`,
+`---@return`, `---@overload`) above a local whose value is no function, which declare its type.
+
 Some checks deliberately differ from Luanalysis for IntelliJ's. Stricter, as TypeScript's are:
 
 - A type parameter inferred from several unrelated arguments is not their union, except for

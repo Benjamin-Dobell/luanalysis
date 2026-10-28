@@ -1,6 +1,6 @@
 use crate::{
     BinaryOperator, Comment, CommentKind, Diagnostic, Expr, ExprKind, File, Function,
-    FunctionAnnotations, Name, NamedTypeDeclaration, NamedTypeDeclarationId,
+    FunctionAnnotations, FunctionType, FunctionTypeParam, Name, NamedTypeDeclaration, NamedTypeDeclarationId,
     NamedTypeDeclarationKind, Span, Stmt, StmtKind, TableField, TableFieldKind, Token, TokenKind,
     TypeAnnotation, TypeExpr, TypeExprKind, TypeExtension, UnaryOperator, types,
     OverloadAnnotation, OverloadDeclarationId, OverloadReference,
@@ -41,6 +41,7 @@ pub fn parse_with_checkpoint(source: &str, checkpoint: impl Fn()) -> File {
         operator_annotations: parser.operator_annotations,
         documentation_references: parser.documentation_references,
         return_annotations: parser.return_annotations,
+        readonly_locals: parser.readonly_locals,
         comments,
         diagnostics: parser.diagnostics,
         span: Span::new(0, source.len()),
@@ -64,6 +65,7 @@ struct Parser<'a> {
     operator_annotations: Vec<crate::OperatorAnnotation>,
     documentation_references: Vec<crate::DocumentationReference>,
     return_annotations: Vec<crate::ReturnAnnotation>,
+    readonly_locals: Vec<Span>,
     documentation_group: Option<DocumentationGroup>,
     depth: usize,
     block_depth: usize,
@@ -147,6 +149,7 @@ impl<'a> Parser<'a> {
             operator_annotations: Vec::new(),
             documentation_references: Vec::new(),
             return_annotations: Vec::new(),
+            readonly_locals: Vec::new(),
             documentation_group: None,
             depth: 0,
             block_depth: 0,
@@ -362,7 +365,7 @@ impl<'a> Parser<'a> {
                     let index = self.overload_annotations.len();
                     let id = OverloadDeclarationId(index.try_into().expect("original overload index fits u32"));
                     self.overload_annotations.push(OverloadAnnotation {
-                        id, signature, span, tag_span, group_span: group.span, named_candidates: Vec::new(),
+                        id, signature, span, tag_span, group_span: group.span, named_candidates: Vec::new(), in_type: false,
                     });
                     group.overloads.push(index);
                     let reference = OverloadReference { id, span };
@@ -566,7 +569,8 @@ impl<'a> Parser<'a> {
                     let contiguous = self.documentation_group.as_ref().is_some_and(|group| {
                         self.pending_annotations.returns.as_ref().is_some_and(|returns| returns.span.start >= group.span.start)
                     });
-                    if !types::annotation_spans(&annotations).is_empty() {
+                    // A `---@readonly` that no local takes says nothing, as EmmyLua Analyzer reads it.
+                    if !types::annotation_spans(&annotations).is_empty() || annotations.readonly.is_some() {
                         let line_start = self.source[..comment.span.start]
                             .rfind(['\r', '\n'])
                             .map_or(0, |index| index + 1);
@@ -821,11 +825,20 @@ impl<'a> Parser<'a> {
             let value_end = values.last().map_or(names.last().unwrap().span, |value| value.span);
             self.trailing_type_annotation(value_end, &mut annotations);
             let annotation = annotations.type_annotation.take();
+            // As EmmyLua Analyzer and LuaLS read them, a signature's tags on a local whose value
+            // is no function (`local f = debug.setmetatable`) declare its type, that signature.
+            let annotation = annotation.or_else(|| {
+                (names.len() == 1 && values.len() == 1 && first_function(&mut values[0]).is_none())
+                    .then(|| self.documented_signature(&mut annotations)).flatten()
+            });
             if annotation.as_ref().is_some_and(function_type_annotation)
                 && values.len() == 1
                 && function_initializer(&mut values[0]).is_some()
             {
                 annotations.type_annotation = annotation.clone();
+            }
+            if annotations.readonly.take().is_some() {
+                self.readonly_locals.extend(names.iter().map(|name| name.span));
             }
             self.attach_function_annotations(&mut values, annotations);
             let end = values
@@ -912,7 +925,7 @@ impl<'a> Parser<'a> {
                 types::DeclarationItem::Overload { signature, span, tag_span } => {
                     let id = OverloadDeclarationId(self.overload_annotations.len().try_into().expect("original overload index fits u32"));
                     self.overload_annotations.push(OverloadAnnotation {
-                        id, signature, span, tag_span, group_span: comment, named_candidates: Vec::new(),
+                        id, signature, span, tag_span, group_span: comment, named_candidates: Vec::new(), in_type: false,
                     });
                     annotations.overloads.push(OverloadReference { id, span });
                 }
@@ -960,6 +973,42 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// The function type a declaration's signature tags describe, taking them: its generics,
+    /// parameters, vararg and results, with each `---@overload` as another call signature.
+    fn documented_signature(&mut self, annotations: &mut FunctionAnnotations) -> Option<TypeAnnotation> {
+        let spans = types::annotation_spans(annotations);
+        let span = spans.iter().copied().reduce(Span::join)?;
+        // A signature has parameters or results; generics or overloads alone describe none. A
+        // class's own `---@overload`s, above its table, call the class.
+        if annotations.params.is_empty() && annotations.returns.is_none() && annotations.vararg.is_none() { return None }
+        if self.documentation_group.as_ref().is_some_and(|group| group.record.is_some() || !group.declarations.is_empty()) { return None }
+        let params = std::mem::take(&mut annotations.params).into_iter().map(|param| FunctionTypeParam {
+            name: param.name, ty: Some(param.ty), optional: param.optional, span: param.span,
+        }).collect();
+        let returns = annotations.returns.take();
+        let signature = FunctionType {
+            generics: std::mem::take(&mut annotations.generics),
+            parameters_span: Some(span),
+            params,
+            vararg: annotations.vararg.take(),
+            returns_span: returns.as_ref().map(|returns| returns.span),
+            packs: returns.as_ref().and_then(|returns| returns.packs.clone()),
+            returns: returns.map(|returns| returns.types).unwrap_or_default(),
+            span,
+        };
+        let generics = signature.generics.clone();
+        let mut signatures = vec![TypeExpr { kind: TypeExprKind::Function(signature), span }];
+        for overload in std::mem::take(&mut annotations.overloads) {
+            let written = &mut self.overload_annotations[overload.id.0 as usize];
+            written.in_type = true;
+            let mut signature = written.signature.clone();
+            // An overload sees the function's `---@generic` parameters, as a declared function's do.
+            if signature.generics.is_empty() { signature.generics = generics.clone(); }
+            signatures.push(TypeExpr { kind: TypeExprKind::Function(*signature), span: overload.span });
+        }
+        let ty = if signatures.len() == 1 { signatures.pop().unwrap() } else { TypeExpr { kind: TypeExprKind::Intersection(signatures), span } };
+        Some(TypeAnnotation { types: vec![ty], packs: None, span })
+    }
     fn attach_function_annotations(
         &mut self,
         values: &mut [Expr],

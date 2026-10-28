@@ -532,7 +532,9 @@ fn return_accepts_one_terminal_semicolon_and_diagnoses_additional_ones() {
 fn missing_end_bad_parameters_and_annotations_are_diagnosed() {
     for source in [
         "do local x = 1", "local function f(x,) return x end", "local function f(..., value) end",
-        "---@param x number\nlocal x = 1", "---@param x number\n---@param x string\nlocal function f(x) end",
+        // `---@param x number` above `local x = 1` declares `x` a function, as EmmyLua Analyzer
+        // reads it; the checker rejects its value (tests/emmylua_syntax.rs).
+        "---@param x number\n---@param x string\nlocal function f(x) end",
         "local function f() return 1 local x = 2 end", "local x = f(1,)",
         "function global[index]() end",
     ] {
