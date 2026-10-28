@@ -83,7 +83,8 @@ impl Checker<'_, '_> {
                 return Some(self.place_of_signature_declaration(file, func));
             }
             TypeData::Anon { origin, .. } => match *origin {
-                Origin::TypeLiteral(file, node) | Origin::Mapped(file, node) => {
+                Origin::Mapped(MappedRoot::Native(_)) => return None,
+                Origin::TypeLiteral(file, node) | Origin::Mapped(MappedRoot::Node(file, node)) => {
                     let start = self.hir(file)[node].pos;
                     let range = |c: &Self| (start, c.end_of_type_node(file, node));
                     return Some(self.place_in_file(file, start, range));

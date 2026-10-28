@@ -5,8 +5,8 @@
 
 use super::Diagnostic;
 use super::native_named::{NamedGenericScopeRecipe, NativeNamedKey, NativeTypeContext};
-use luanalysis_engine::{NativeConditionalKey, NativeFunctionKey, NativeSignatureKey, NativeTypeParameterKey};
-use luanalysis_syntax::{ConditionalDeclaration, Name, Span, TypeExpr};
+use luanalysis_engine::{NativeAnnotationKey, NativeFunctionKey, NativeSignatureKey, NativeTypeParameterKey};
+use luanalysis_syntax::{AnnotationDeclaration, Name, Span, TypeExpr};
 use std::cell::RefCell;
 use luanalysis_engine::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::cell::Cell;
@@ -78,14 +78,15 @@ pub(super) struct NativeTypes {
     parameters: Vec<TypeParameterSource>,
     diagnostics: Vec<Diagnostic>,
     metadata_epochs: Vec<Rc<Cell<u64>>>,
-    /// The conditional types of the documentation comments, by `NativeConditionalKey`.
-    conditionals: Vec<ConditionalSource>,
-    /// Those that declare `infer` type parameters.
-    infer_scopes: Vec<u32>,
-    /// The `infer` type parameter that each `infer P` declares, by the start of `P`.
-    infer_declarations: HashMap<usize, NativeTypeParameterKey>,
-    /// How many conditional types' branches are being lowered.
-    lowering_branches: Cell<u32>,
+    /// The conditional and mapped types of the documentation comments, by `NativeAnnotationKey`.
+    annotations: Vec<AnnotationSource>,
+    /// Those that declare type parameters.
+    scoped_annotations: Vec<u32>,
+    /// The type parameter that each `infer P` and mapped type's `[P in K]` declares, by the
+    /// start of `P`.
+    parameter_declarations: HashMap<usize, NativeTypeParameterKey>,
+    /// How many pieces of conditional and mapped types are being lowered.
+    lowering_pieces: Cell<u32>,
     /// Where a check that publishes nothing first saw a limit that the checker could not
     /// place (`Checker::report_unplaced_limit`), and how many had been hit when it began and
     /// ended.
@@ -102,7 +103,7 @@ pub(super) struct AnnotationContext {
 
 impl AnnotationContext {
     /// As the checker carries it with a conditional type, for any task that reads its branches.
-    pub(super) fn encode(self) -> luanalysis_engine::NativeConditionalContext {
+    pub(super) fn encode(self) -> luanalysis_engine::NativeAnnotationContext {
         [
             self.function.map(|key| (key.snapshot, key.index)),
             self.named.map(|key| (key.snapshot, key.index)),
@@ -110,7 +111,7 @@ impl AnnotationContext {
         ]
     }
 
-    pub(super) fn decode([function, named, signature]: luanalysis_engine::NativeConditionalContext) -> Self {
+    pub(super) fn decode([function, named, signature]: luanalysis_engine::NativeAnnotationContext) -> Self {
         Self {
             function: function.map(|(snapshot, index)| NativeFunctionKey { snapshot, index }),
             named: named.map(|(snapshot, index)| NativeNamedKey { snapshot, index }),
@@ -119,25 +120,29 @@ impl AnnotationContext {
     }
 }
 
-/// A conditional type, whose true and false types are lowered when first read, in the
-/// context that lowered the rest of it.
-pub(super) struct ConditionalSource {
-    pub syntax: ConditionalDeclaration,
-    /// Where its `infer` type parameters are seen: its extends type and its true branch. One
-    /// declared twice is one.
-    infer: Vec<(String, NativeTypeParameterKey)>,
-    /// Where this source lowered it, or read a branch of it, first: the context of its `infer`
-    /// constraints, and of the branches that `check_unread_conditional_branches` lowers.
+/// A conditional or mapped type, whose pieces (a conditional type's branches, a mapped type's
+/// template and `as` clause) are lowered when first read, in the context that lowered the rest
+/// of it.
+pub(super) struct AnnotationSource {
+    pub syntax: AnnotationDeclaration,
+    /// The type parameters it declares: a conditional type's `infer` ones (one declared twice is
+    /// one), a mapped type's key.
+    parameters: Vec<(String, NativeTypeParameterKey)>,
+    /// Where they are seen: a conditional type's extends type and true branch, a mapped type's
+    /// `as` clause and template.
+    regions: Vec<Span>,
+    /// Where this source lowered it, or read a piece of it, first: the context of its
+    /// parameters' constraints, and of the pieces that `check_unread_annotation_pieces` lowers.
     pub context: RefCell<Option<AnnotationContext>>,
-    /// Which branches have been lowered: true, false.
+    /// Which pieces have been lowered: true branch or template, false branch or `as` clause.
     pub lowered: Cell<[bool; 2]>,
 }
 
-impl ConditionalSource {
-    /// The region of it that sees its `infer` type parameters and has `span`, if any.
-    fn infer_region(&self, span: Span) -> Option<Span> {
-        if self.infer.is_empty() { return None }
-        [self.syntax.extends, self.syntax.yes.span].into_iter().find(|region| region.start <= span.start && span.end <= region.end)
+impl AnnotationSource {
+    /// The region of it that sees its type parameters and has `span`, if any.
+    fn region(&self, span: Span) -> Option<Span> {
+        if self.parameters.is_empty() { return None }
+        self.regions.iter().copied().find(|region| region.start <= span.start && span.end <= region.end)
     }
 }
 
@@ -248,7 +253,7 @@ impl NativeTypes {
         snapshot: u64,
         recipes: Vec<TypeScopeRecipe>,
         named: Vec<NamedGenericScopeRecipe>,
-        conditionals: Vec<ConditionalDeclaration>,
+        annotations: Vec<AnnotationDeclaration>,
     ) -> Self {
         let mut result = Self {
             snapshot,
@@ -257,10 +262,10 @@ impl NativeTypes {
             parameters: Vec::new(),
             diagnostics: Vec::new(),
             metadata_epochs: vec![Rc::new(Cell::new(0))],
-            conditionals: Vec::new(),
-            infer_scopes: Vec::new(),
-            infer_declarations: HashMap::default(),
-            lowering_branches: Cell::new(0),
+            annotations: Vec::new(),
+            scoped_annotations: Vec::new(),
+            parameter_declarations: HashMap::default(),
+            lowering_pieces: Cell::new(0),
             unplaced_limit_claim: Cell::new(None),
         };
         // Every sibling identity exists before any callback can ask for a
@@ -344,20 +349,31 @@ impl NativeTypes {
                 "one type scope per original generic owner"
             );
         }
-        // After every written generic, so that their keys do not depend on `infer`.
-        for (index, conditional) in conditionals.into_iter().enumerate() {
-            let index = u32::try_from(index).expect("conditional type index fits in u32");
-            let mut source = ConditionalSource {
-                infer: Vec::new(),
+        // After every written generic, so that their keys do not depend on these.
+        for (index, syntax) in annotations.into_iter().enumerate() {
+            let index = u32::try_from(index).expect("annotation type index fits in u32");
+            let (declarations, regions): (Vec<(Name, Option<TypeExpr>)>, Vec<Span>) = match &syntax {
+                AnnotationDeclaration::Conditional(conditional) => (
+                    conditional.infer.iter().map(|declaration| (declaration.name.clone(), declaration.constraint.clone())).collect(),
+                    vec![conditional.extends, conditional.yes.span],
+                ),
+                AnnotationDeclaration::Mapped(mapped) => (
+                    vec![(mapped.parameter.clone(), Some(mapped.constraint.clone()))],
+                    mapped.name.iter().map(|name| name.span).chain([mapped.ty.span]).collect(),
+                ),
+            };
+            let mut source = AnnotationSource {
+                parameters: Vec::new(),
+                regions,
                 context: RefCell::new(None),
                 lowered: Cell::new([false; 2]),
-                syntax: conditional,
+                syntax,
             };
-            if source.syntax.infer.is_empty() {
-                result.conditionals.push(source);
+            if declarations.is_empty() {
+                result.annotations.push(source);
                 continue;
             }
-            let owner = NativeTypeContext::Conditional(NativeConditionalKey { snapshot, index });
+            let owner = NativeTypeContext::Annotation(NativeAnnotationKey { snapshot, index });
             let mut scope = TypeScope {
                 metadata_epoch: Rc::clone(&result.metadata_epochs[0]),
                 annotation_scope: None,
@@ -368,13 +384,12 @@ impl NativeTypes {
                 names: HashMap::default(),
                 parameters: Vec::new(),
             };
-            for declaration in &source.syntax.infer {
-                let name = &declaration.name;
+            for (name, constraint) in declarations {
                 let key = match scope.names.get(&name.text) {
                     // One declared again is one parameter, constrained by the first constraint.
                     Some(&key) => {
                         let parameter = &mut result.parameters[key.index as usize];
-                        if parameter.constraint.is_none() { parameter.constraint = declaration.constraint.clone(); }
+                        if parameter.constraint.is_none() { parameter.constraint = constraint; }
                         key
                     }
                     None => {
@@ -390,44 +405,44 @@ impl NativeTypes {
                             name: name.clone(),
                             owner,
                             order: u32::try_from(scope.parameters.len() - 1).expect("type parameter order fits in u32"),
-                            constraint: declaration.constraint.clone(),
+                            constraint,
                             default: None,
                             semantic_self: None,
                         });
                         key
                     }
                 };
-                result.infer_declarations.insert(name.span.start, key);
+                result.parameter_declarations.insert(name.span.start, key);
             }
             let mut names: Vec<_> = scope.names.iter().map(|(name, &key)| (name.clone(), key)).collect();
             names.sort_by_key(|(_, key)| key.index);
-            source.infer = names;
-            result.conditionals.push(source);
-            result.infer_scopes.push(index);
+            source.parameters = names;
+            result.annotations.push(source);
+            result.scoped_annotations.push(index);
             result.scopes.insert(owner, scope);
         }
         result
     }
 
-    /// The conditional type written at `span`.
-    pub(super) fn conditional_at(&self, span: Span) -> Option<NativeConditionalKey> {
-        let index = self.conditionals.binary_search_by_key(&(span.start, span.end), |conditional| (conditional.syntax.span.start, conditional.syntax.span.end)).ok()?;
-        Some(NativeConditionalKey { snapshot: self.snapshot, index: index as u32 })
+    /// The conditional or mapped type written at `span`.
+    pub(super) fn annotation_at(&self, span: Span) -> Option<NativeAnnotationKey> {
+        let index = self.annotations.binary_search_by_key(&(span.start, span.end), |annotation| (annotation.syntax.span().start, annotation.syntax.span().end)).ok()?;
+        Some(NativeAnnotationKey { snapshot: self.snapshot, index: index as u32 })
     }
 
-    pub(super) fn conditional(&self, key: NativeConditionalKey) -> Option<&ConditionalSource> {
-        (key.snapshot == self.snapshot).then(|| self.conditionals.get(key.index as usize)).flatten()
+    pub(super) fn annotation(&self, key: NativeAnnotationKey) -> Option<&AnnotationSource> {
+        (key.snapshot == self.snapshot).then(|| self.annotations.get(key.index as usize)).flatten()
     }
 
-    /// Every conditional type of the documentation comments.
-    pub(super) fn conditionals(&self) -> &[ConditionalSource] {
-        &self.conditionals
+    /// Every conditional and mapped type of the documentation comments.
+    pub(super) fn annotations(&self) -> &[AnnotationSource] {
+        &self.annotations
     }
 
-    /// Whether a conditional type's branch is being lowered, which another type's evaluation
-    /// reads.
-    pub(super) fn lowering_conditional_branch(&self) -> bool {
-        self.lowering_branches.get() != 0
+    /// Whether a piece of a conditional or mapped type is being lowered, which another type's
+    /// evaluation reads.
+    pub(super) fn lowering_annotation_piece(&self) -> bool {
+        self.lowering_pieces.get() != 0
     }
 
     /// Claims `span` for the limits hit since `since`, until `hits`, unless a check within it
@@ -443,44 +458,46 @@ impl NativeTypes {
         (since <= start).then_some(span)
     }
 
-    /// Lowers a conditional type's branch with `lower`.
-    pub(super) fn lower_conditional_branch<T>(&self, lower: impl FnOnce() -> T) -> T {
-        self.lowering_branches.set(self.lowering_branches.get() + 1);
+    /// Lowers a piece of a conditional or mapped type with `lower`.
+    pub(super) fn lower_annotation_piece<T>(&self, lower: impl FnOnce() -> T) -> T {
+        self.lowering_pieces.set(self.lowering_pieces.get() + 1);
         let lowered = lower();
-        self.lowering_branches.set(self.lowering_branches.get() - 1);
+        self.lowering_pieces.set(self.lowering_pieces.get() - 1);
         lowered
     }
 
-    /// The `infer` type parameter that `infer P` declares, where `name` is `P`.
-    pub(super) fn infer_parameter(&self, name: Span) -> Option<NativeTypeParameterKey> {
-        self.infer_declarations.get(&name.start).copied()
+    /// The type parameter that `infer P`, or a mapped type's `[P in K]`, declares, where `name`
+    /// is `P`.
+    pub(super) fn declared_parameter(&self, name: Span) -> Option<NativeTypeParameterKey> {
+        self.parameter_declarations.get(&name.start).copied()
     }
 
-    /// The `infer` type parameters of the conditional type `key`.
-    pub(super) fn conditional_infer_parameters(&self, key: NativeConditionalKey) -> Vec<NativeTypeParameterKey> {
-        self.conditional(key).map(|conditional| conditional.infer.iter().map(|(_, key)| *key).collect()).unwrap_or_default()
+    /// The type parameters that the conditional or mapped type `key` declares.
+    pub(super) fn declared_annotation_parameters(&self, key: NativeAnnotationKey) -> Vec<NativeTypeParameterKey> {
+        self.annotation(key).map(|annotation| annotation.parameters.iter().map(|(_, key)| *key).collect()).unwrap_or_default()
     }
 
-    /// The `infer` type parameter named `name` that a reference at `at` sees: that of the
-    /// innermost conditional type whose extends type or true branch has `at`.
-    pub(super) fn visible_infer_parameter(&self, name: &str, at: Span) -> Option<NativeTypeParameterKey> {
-        self.infer_scopes.iter()
-            .map(|&index| &self.conditionals[index as usize])
-            .filter_map(|conditional| {
-                let region = conditional.infer_region(at)?;
-                let (_, key) = conditional.infer.iter().find(|(declared, _)| declared == name)?;
+    /// The type parameter named `name` that a reference at `at` sees: that of the innermost
+    /// conditional or mapped type that declares it and has `at` where it is seen.
+    pub(super) fn visible_annotation_parameter(&self, name: &str, at: Span) -> Option<NativeTypeParameterKey> {
+        self.scoped_annotations.iter()
+            .map(|&index| &self.annotations[index as usize])
+            .filter_map(|annotation| {
+                let region = annotation.region(at)?;
+                let (_, key) = annotation.parameters.iter().find(|(declared, _)| declared == name)?;
                 Some((region.end - region.start, *key))
             })
             .min_by_key(|(width, _)| *width)
             .map(|(_, key)| key)
     }
 
-    /// The `infer` type parameters that what is written at `span` sees, as outer type parameters.
-    pub(super) fn visible_infer_parameters(&self, span: Span) -> impl Iterator<Item = NativeTypeParameterKey> + '_ {
-        self.infer_scopes.iter()
-            .map(|&index| &self.conditionals[index as usize])
-            .filter(move |conditional| conditional.infer_region(span).is_some())
-            .flat_map(|conditional| conditional.infer.iter().map(|(_, key)| *key))
+    /// The type parameters of conditional and mapped types that what is written at `span` sees,
+    /// as outer type parameters.
+    pub(super) fn visible_annotation_parameters(&self, span: Span) -> impl Iterator<Item = NativeTypeParameterKey> + '_ {
+        self.scoped_annotations.iter()
+            .map(|&index| &self.annotations[index as usize])
+            .filter(move |annotation| annotation.region(span).is_some())
+            .flat_map(|annotation| annotation.parameters.iter().map(|(_, key)| *key))
     }
 
     pub(super) fn register_self_parameter(&mut self, owner: NativeNamedKey, span: Span) -> NativeTypeParameterKey {
@@ -712,6 +729,6 @@ fn context_snapshot(context: NativeTypeContext) -> u64 {
         NativeTypeContext::Function(key) => key.snapshot,
         NativeTypeContext::NamedType(key) => key.snapshot,
         NativeTypeContext::Signature(key) => key.snapshot,
-        NativeTypeContext::Conditional(key) => key.snapshot,
+        NativeTypeContext::Annotation(key) => key.snapshot,
     }
 }

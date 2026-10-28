@@ -102,6 +102,8 @@ pub(super) struct AnonymousMemberSource {
     pub key_recipe: AnonymousMemberKeyRecipe,
     pub ty: TypeExpr,
     pub readonly: bool,
+    /// `name?: T`
+    pub optional: bool,
     pub span: Span,
 }
 
@@ -110,8 +112,9 @@ pub(super) enum NativeTypeContext {
     Function(NativeFunctionKey),
     NamedType(NativeNamedKey),
     Signature(luanalysis_engine::NativeSignatureKey),
-    /// A conditional type, which owns the `infer` type parameters of its extends type.
-    Conditional(luanalysis_engine::NativeConditionalKey),
+    /// A conditional or mapped type, which owns the type parameters it declares: the `infer` ones
+    /// of a conditional type's extends type, a mapped type's key.
+    Annotation(luanalysis_engine::NativeAnnotationKey),
 }
 
 #[derive(Clone, Debug)]
@@ -616,7 +619,7 @@ impl NativeNamed {
                                         key,
                                         AnonymousMemberKeyRecipe::Record(field.key.clone()),
                                         field.ty.clone(),
-                                        field.readonly.is_some(),
+                                        (field.readonly.is_some(), field.optional.is_some()),
                                         field.span,
                                     ));
                                 }
@@ -626,7 +629,7 @@ impl NativeNamed {
                                     key,
                                     AnonymousMemberKeyRecipe::ArrayNumber,
                                     *element.clone(),
-                                    false,
+                                    (false, false),
                                     ty.span,
                                 ))
                             }
@@ -635,7 +638,7 @@ impl NativeNamed {
                                     key,
                                     AnonymousMemberKeyRecipe::Table(args[0].clone()),
                                     args[1].clone(),
-                                    false,
+                                    (false, false),
                                     ty.span,
                                 ))
                             }
@@ -651,6 +654,11 @@ impl NativeNamed {
                         pending.extend(types.iter().rev())
                     }
                     TypeExprKind::Conditional { check, extends, yes, no } => pending.extend([no, yes, extends, check].map(|ty| ty.as_ref())),
+                    TypeExprKind::Mapped(mapped) => {
+                        pending.push(&mapped.ty);
+                        pending.extend(&mapped.name);
+                        pending.push(&mapped.constraint);
+                    }
                     TypeExprKind::Record(fields) => {
                         for field in fields.iter().rev() {
                             pending.push(&field.ty);
@@ -691,7 +699,7 @@ impl NativeNamed {
         owner: NativeAnonymousHeadKey,
         key_recipe: AnonymousMemberKeyRecipe,
         ty: TypeExpr,
-        readonly: bool,
+        (readonly, optional): (bool, bool),
         span: Span,
     ) -> NativeAnonymousMemberKey {
         let key = NativeAnonymousMemberKey {
@@ -705,6 +713,7 @@ impl NativeNamed {
             key_recipe,
             ty,
             readonly,
+            optional,
             span,
         });
         key

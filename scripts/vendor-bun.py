@@ -780,6 +780,32 @@ SOURCE_ADAPTATIONS.extend({
     "src/sema/check/unions.rs",
     "src/sema/types.rs",
 ])
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+    "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+} for path in [
+    "src/sema/check/alias.rs",
+    "src/sema/check/decl.rs",
+    "src/sema/check/errors_assign.rs",
+    "src/sema/check/errors_small.rs",
+    "src/sema/check/expr.rs",
+    "src/sema/check/flow.rs",
+    "src/sema/check/infer.rs",
+    "src/sema/check/instantiate.rs",
+    "src/sema/check/mapped.rs",
+    "src/sema/check/mod.rs",
+    "src/sema/check/native_tables.rs",
+    "src/sema/check/print.rs",
+    "src/sema/check/relate.rs",
+    "src/sema/check/related_expected.rs",
+    "src/sema/check/services/symbol_at_location.rs",
+    "src/sema/check/services/types.rs",
+    "src/sema/check/shape.rs",
+    "src/sema/check/symbol_ids.rs",
+    "src/sema/check/unions.rs",
+    "src/sema/types.rs",
+])
 
 
 def git(source, *args):

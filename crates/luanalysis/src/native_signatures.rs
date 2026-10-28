@@ -385,6 +385,10 @@ impl NativeRegistry {
             TypeExprKind::Conditional { check, extends, yes, no } => {
                 ResultPackSourceType::Parts([check, extends, yes, no].iter().map(|ty| self.result_pack_source_type(context, ty)).collect())
             }
+            TypeExprKind::Mapped(mapped) => ResultPackSourceType::Parts(
+                [&mapped.constraint].into_iter().chain(&mapped.name).chain([&mapped.ty])
+                    .map(|ty| self.result_pack_source_type(context, ty)).collect(),
+            ),
             TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
             | TypeExprKind::TypeQuery(_) | TypeExprKind::Infer { .. } | TypeExprKind::Error => {
                 ResultPackSourceType::Parts(Vec::new())
@@ -463,7 +467,7 @@ impl NativeRegistry {
                         )
                     }
                 }),
-            NativeTypeContext::NamedType(_) | NativeTypeContext::Conditional(_) => None,
+            NativeTypeContext::NamedType(_) | NativeTypeContext::Annotation(_) => None,
         };
         // An explicit correlated result row promises each of its fixed
         // members. Expanding its T into a possibly empty producer sequence
@@ -527,7 +531,7 @@ impl NativeRegistry {
                 NamedTypeDeclarationKind::Record { .. } => Vec::new(),
             },
             // An `infer` type parameter is a value's type.
-            NativeTypeContext::Conditional(_) => return false,
+            NativeTypeContext::Annotation(_) => return false,
         };
         let mut summary = ResultPackSourceSummary::default();
         for ty in input_types {
@@ -1084,7 +1088,7 @@ impl NativeRegistry {
             .types
             .outer_parameters_in_context(NativeTypeContext::Signature(key), &used);
         // A function type written in a conditional type sees its `infer` type parameters.
-        outer.extend(self.types.visible_infer_parameters(recipe.span).filter(|parameter| used.contains(parameter) && !outer.contains(parameter)).collect::<Vec<_>>());
+        outer.extend(self.types.visible_annotation_parameters(recipe.span).filter(|parameter| used.contains(parameter) && !outer.contains(parameter)).collect::<Vec<_>>());
         self.extend_contextual_self_dependencies(NativeTypeContext::Signature(key), &used, &mut outer);
         if self.ambient_annotation_function(key).is_some() {
             let formals = self.signature_parameters_keys(key);
@@ -1650,6 +1654,11 @@ impl NativeSignatures {
                 }
             }
             TypeExprKind::Infer { constraint: Some(constraint), .. } => self.visit_type(owner, context, parent, constraint),
+            TypeExprKind::Mapped(mapped) => {
+                for ty in [&mapped.constraint].into_iter().chain(&mapped.name).chain([&mapped.ty]) {
+                    self.visit_type(owner, context, parent, ty)
+                }
+            }
             _ => {}
         }
     }

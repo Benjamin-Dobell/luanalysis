@@ -27,8 +27,42 @@ pub(super) enum AccessNode {
 }
 
 /// A `getObjectTypeInstantiation` of a mapped type: its target and its key.
+/// What a mapped type declares, as `Mapped` holds it for a node (`mapped_root_decl`).
+#[derive(Copy, Clone)]
+pub(super) struct MappedDecl {
+    pub readonly: MappedModifier,
+    pub optional: MappedModifier,
+    pub is_readonly_with_plus: bool,
+    pub is_optional_with_plus: bool,
+    /// An `as` clause.
+    pub has_name: bool,
+    pub has_template: bool,
+}
+
+impl MappedDecl {
+    /// `ReadonlyToken` as the node builder prints it, which copies the token of the declaration.
+    pub fn readonly_text(&self) -> &'static [u8] {
+        match self.readonly {
+            MappedModifier::None => b"",
+            MappedModifier::Add if self.is_readonly_with_plus => b"+readonly ",
+            MappedModifier::Add => b"readonly ",
+            MappedModifier::Remove => b"-readonly ",
+        }
+    }
+
+    /// `QuestionToken` as the node builder prints it.
+    pub fn question_text(&self) -> &'static [u8] {
+        match self.optional {
+            MappedModifier::None => b"",
+            MappedModifier::Add if self.is_optional_with_plus => b"+?",
+            MappedModifier::Add => b"?",
+            MappedModifier::Remove => b"-?",
+        }
+    }
+}
+
 pub(super) struct MappedInstantiation {
-    target: (FileId, TypeNodeId),
+    target: MappedRoot,
     /// `InstantiationKey::type_arguments`
     type_arguments: MapperId,
     /// `NewAlias::Given`
@@ -125,24 +159,23 @@ impl<'p, 's> Checker<'p, 's> {
     /// `isGenericMappedType`
     pub(super) fn is_generic_mapped_type(&mut self, ty: TypeId) -> bool {
         let TypeData::Anon {
-            origin: Origin::Mapped(file, node),
+            origin: Origin::Mapped(root),
             mapper,
         } = *self.data(ty)
         else {
             return false;
         };
-        let constraint = self.mapped_constraint(file, node, mapper);
+        let constraint = self.mapped_constraint(root, mapper);
         if self.is_generic_index_type(constraint) {
             return true;
         }
         // So is one whose `as` clause mentions something generic other than the key: the name is
         // generic even after the known keys are substituted for the key parameter.
-        let mapped = self.mapped_decl(file, node);
-        if mapped.name_ty.is_none() {
+        if !self.mapped_root_decl(root).has_name {
             return false;
         }
-        let declared = self.declared_name_type_of_mapped(file, node);
-        let param = self.type_param(file, mapped.param);
+        let declared = self.declared_name_type_of_mapped(root);
+        let param = self.mapped_root_param(root);
         let with_keys = self.mapper_with_pair(mapper, param, constraint);
         // The name may contain `ty`: `{ [K in keyof C as C[K] & string]: 1 }` as a member of
         // `C`. `isGenericMappedType` has no guard and caches nothing. Every level
@@ -155,8 +188,8 @@ impl<'p, 's> Checker<'p, 's> {
             return false;
         }
         // In `{ [K in "a" as Z<T[]>]: 1 }` every level is another type of the one declaration.
-        let is_in_progress = (self.generic_mapped_types_in_progress).contains(&(file, node));
-        self.generic_mapped_types_in_progress.push((file, node));
+        let is_in_progress = (self.generic_mapped_types_in_progress).contains(&root);
+        self.generic_mapped_types_in_progress.push(root);
         let name = if is_in_progress && self.is_half_of_stack_in_use() {
             self.generic_mapped_types_cut_short.push(ty);
             self.instantiation_count = 5_000_000;
@@ -238,31 +271,31 @@ impl<'p, 's> Checker<'p, 's> {
         ty: TypeId,
         index_flags: IndexFlags,
     ) -> TypeId {
-        let Some((file, node, mapper)) = self.mapped_origin(ty) else {
+        let Some((root, mapper)) = self.mapped_origin(ty) else {
             return TypeId::NEVER;
         };
         let (decl, constraint) = (
-            self.mapped_decl(file, node),
-            self.mapped_constraint(file, node, mapper),
+            self.mapped_root_decl(root),
+            self.mapped_constraint(root, mapper),
         );
         let no_index_signatures = index_flags.contains(IndexFlags::NO_INDEX_SIGNATURES);
         // "no mapping and no filtering required, just quickly bail to returning the constraint in the common case"
-        if decl.name_ty.is_none() && !no_index_signatures {
+        if !decl.has_name && !no_index_signatures {
             return constraint;
         }
         let keys = if self.is_generic_index_type(constraint) {
             // "it's not safe to resolve the shape of modifier type"
-            if matches!(self.mapped_modifiers_source(file, node), Some((_, true))) {
+            if matches!(self.mapped_modifiers_source(root), Some((_, true))) {
                 return self.intern(TypeData::Keyof(ty));
             }
             List::Kept(self.parts(constraint))
         } else {
-            self.mapped_key_types(file, node, mapper, constraint).0
+            self.mapped_key_types(root, mapper, constraint).0
         };
-        let name_type = if decl.name_ty.is_some() {
+        let name_type = if decl.has_name {
             Some((
-                self.type_param(file, decl.param),
-                self.declared_name_type_of_mapped(file, node),
+                self.mapped_root_param(root),
+                self.declared_name_type_of_mapped(root),
             ))
         } else {
             None
@@ -545,17 +578,16 @@ impl<'p, 's> Checker<'p, 's> {
     /// not the string that it spells. `None`: it is not known from which key.
     fn name_type_of_mapped_prop(&mut self, of: TypeId, prop: &Prop) -> Option<TypeId> {
         let TypeData::Anon {
-            origin: Origin::Mapped(file, node),
+            origin: Origin::Mapped(root),
             ..
         } = *self.data(of)
         else {
             return None;
         };
-        let mapped = self.mapped_decl(file, node);
-        let param = self.type_param(file, mapped.param);
+        let param = self.mapped_root_param(root);
         let key = self.types().map(prop.mapper, param)?;
-        let names = if mapped.name_ty.is_some() {
-            let declared = self.declared_name_type_of_mapped(file, node);
+        let names = if self.mapped_root_decl(root).has_name {
+            let declared = self.declared_name_type_of_mapped(root);
             self.instantiate(declared, prop.mapper)
         } else {
             key
@@ -1403,17 +1435,18 @@ impl<'p, 's> Checker<'p, 's> {
                     (2, NativeConditionalBranches::Lowered { yes, .. }) => yes,
                     (_, NativeConditionalBranches::Lowered { no, .. }) => no,
                     (_, NativeConditionalBranches::Written(id)) => {
-                        self.native_conditional_branch(id, which == 2)
+                        let piece = if which == 2 { NativeAnnotationPiece::True } else { NativeAnnotationPiece::False };
+                        self.native_annotation_piece(id, piece)
                     }
                 }
             }
         }
     }
 
-    /// The declared true (`yes`) or false type of the conditional type `id`, lowered once. One
-    /// that its own lowering reads is an error.
-    fn native_conditional_branch(&mut self, id: NativeConditionalId, yes: bool) -> TypeId {
-        match self.native_conditional_branches.get(&(id, yes)) {
+    /// The declared `piece` of the conditional or mapped type `id`, lowered once. One that its own
+    /// lowering reads is an error.
+    pub(super) fn native_annotation_piece(&mut self, id: NativeAnnotationId, piece: NativeAnnotationPiece) -> TypeId {
+        match self.native_annotation_pieces.get(&(id, piece)) {
             Some(Some(known)) => return *known,
             Some(None) => return TypeId::ERROR,
             None => {}
@@ -1421,9 +1454,9 @@ impl<'p, 's> Checker<'p, 's> {
         let Some(provider) = self.native_function_provider else {
             return TypeId::ERROR;
         };
-        self.native_conditional_branches.insert((id, yes), None);
-        let ty = provider.conditional_branch(self, id, yes);
-        self.native_conditional_branches.insert((id, yes), Some(ty));
+        self.native_annotation_pieces.insert((id, piece), None);
+        let ty = provider.annotation_piece(self, id, piece);
+        self.native_annotation_pieces.insert((id, piece), Some(ty));
         ty
     }
 
@@ -1450,7 +1483,7 @@ impl<'p, 's> Checker<'p, 's> {
                     if constraint != TypeId::UNRESOLVED
                         && let Some((declaration, MapperId::IDENTITY)) = self.native_type_parameter_decl(param)
                     {
-                        self.native_infer_constraints.insert(declaration, constraint);
+                        self.native_seeded_constraints.insert(declaration, constraint);
                     }
                 }
                 params
@@ -1949,14 +1982,175 @@ impl<'p, 's> Checker<'p, 's> {
         &hir[m]
     }
 
-    /// `getNameTypeFromMappedType` for the mapped type as declared at `node`, which has an `as`
+    /// What the mapped type that `root` declares has, as `Mapped` holds it for a node.
+    pub(super) fn mapped_root_decl(&self, root: MappedRoot) -> MappedDecl {
+        match root {
+            MappedRoot::Node(file, node) => {
+                let mapped = self.mapped_decl(file, node);
+                MappedDecl {
+                    readonly: mapped.readonly,
+                    optional: mapped.optional,
+                    is_readonly_with_plus: mapped.is_readonly_with_plus,
+                    is_optional_with_plus: mapped.is_optional_with_plus,
+                    has_name: mapped.name_ty.is_some(),
+                    has_template: mapped.ty.is_some(),
+                }
+            }
+            MappedRoot::Native(root) => {
+                let TypeData::NativeMappedRoot { readonly, optional, pieces, .. } = *self.data(root) else {
+                    unreachable!("a native mapped root")
+                };
+                let modifier = |code: u8| match code {
+                    1 | 2 => MappedModifier::Add,
+                    3 => MappedModifier::Remove,
+                    _ => MappedModifier::None,
+                };
+                MappedDecl {
+                    readonly: modifier(readonly),
+                    optional: modifier(optional),
+                    is_readonly_with_plus: readonly == 2,
+                    is_optional_with_plus: optional == 2,
+                    has_name: match pieces {
+                        NativeMappedPieces::Written { has_name, .. } => has_name,
+                        NativeMappedPieces::Lowered { name, .. } => name != TypeId::UNRESOLVED,
+                    },
+                    has_template: true,
+                }
+            }
+        }
+    }
+
+    /// The type parameter of the mapped type that `root` declares, as declared.
+    pub(super) fn mapped_root_param(&mut self, root: MappedRoot) -> TypeId {
+        match root {
+            MappedRoot::Node(file, node) => self.type_param(file, self.mapped_decl(file, node).param),
+            MappedRoot::Native(root) => {
+                let TypeData::NativeMappedRoot { param, constraint, .. } = *self.data(root) else {
+                    unreachable!("a native mapped root")
+                };
+                self.seed_native_constraint(param, constraint);
+                param
+            }
+        }
+    }
+
+    /// The parameter of the mapped type that `root` declares, cloned around `mapper`.
+    pub(super) fn mapped_root_cloned_param(&mut self, root: MappedRoot, mapper: MapperId) -> TypeId {
+        match root {
+            MappedRoot::Node(file, node) => self.cloned_type_param(file, self.mapped_decl(file, node).param, mapper),
+            MappedRoot::Native(_) => {
+                let param = self.mapped_root_param(root);
+                let Some((declaration, _)) = self.native_type_parameter_decl(param) else { return param };
+                self.cloned_native_type_param(declaration, mapper)
+            }
+        }
+    }
+
+    /// `getTemplateTypeFromMappedType` of the mapped type as `root` declares it, before the
+    /// optionality is added: its declared template, or the error type without one.
+    pub(super) fn mapped_root_template(&mut self, root: MappedRoot) -> TypeId {
+        match root {
+            MappedRoot::Node(file, node) => {
+                let ty = self.mapped_decl(file, node).ty;
+                if ty.is_none() {
+                    return TypeId::ERROR;
+                }
+                self.type_from_node(file, ty)
+            }
+            MappedRoot::Native(root) => match *self.data(root) {
+                TypeData::NativeMappedRoot { pieces: NativeMappedPieces::Written { id, .. }, .. } => {
+                    self.native_annotation_piece(id, NativeAnnotationPiece::Template)
+                }
+                TypeData::NativeMappedRoot { pieces: NativeMappedPieces::Lowered { template, .. }, .. } => template,
+                _ => TypeId::ERROR,
+            },
+        }
+    }
+
+    /// The mapped type as `root` declares it: `getTypeFromMappedTypeNode`.
+    pub(super) fn declared_mapped_type(&mut self, root: MappedRoot) -> TypeId {
+        match root {
+            MappedRoot::Node(file, node) => self.type_from_node(file, node),
+            MappedRoot::Native(native) => {
+                let TypeData::NativeMappedRoot { outer, .. } = *self.data(native) else { return TypeId::ERROR };
+                self.instantiate_mapped(root, outer)
+            }
+        }
+    }
+
+    /// The mapped type that a Lua annotation writes: `{ [param in constraint as name]: template }`,
+    /// where `keyof` is the `X` of a constraint written `keyof X`, and the modifiers are coded as
+    /// `NativeMappedRoot`'s. Its outer type parameters are `outer`, those its written pieces
+    /// mention, and those its other pieces mention, each mapped to itself, as
+    /// `identity_mapper_for_node` maps those a written mapped type mentions.
+    pub fn native_mapped_type(
+        &mut self,
+        param: TypeId,
+        constraint: TypeId,
+        keyof: Option<TypeId>,
+        (readonly, optional): (u8, u8),
+        pieces: NativeMappedPieces,
+        outer: &[TypeId],
+    ) -> TypeId {
+        let keyof = keyof.unwrap_or(TypeId::UNRESOLVED);
+        let mut scanned: SmallVec<[TypeId; 4]> = SmallVec::from_slice(&[constraint]);
+        if keyof != TypeId::UNRESOLVED {
+            scanned.push(keyof);
+        }
+        if let NativeMappedPieces::Lowered { template, name } = pieces {
+            scanned.push(template);
+            if name != TypeId::UNRESOLVED {
+                scanned.push(name);
+            }
+        }
+        let mut outer: SmallVec<[TypeId; 4]> = outer.iter().copied().filter(|&t| t != param).collect();
+        for piece in scanned {
+            self.any_type_in(piece, true, |t| {
+                let is_parameter = matches!(
+                    self.data(t),
+                    TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::ThisParam(_)
+                );
+                if is_parameter && t != param && !outer.contains(&t) {
+                    outer.push(t);
+                }
+                false
+            });
+        }
+        let outer = self.types().mapper(outer.into_iter().map(|t| (t, t)).collect());
+        let root = self.intern(TypeData::NativeMappedRoot { param, constraint, keyof, readonly, optional, pieces, outer });
+        // `getTypeFromMappedTypeNode`: the constraint of the key is resolved eagerly, through its
+        // base constraint, which detects a cycle through a type alias.
+        let key = self.mapped_root_param(MappedRoot::Native(root));
+        self.base_constraint(key);
+        self.instantiate_mapped(MappedRoot::Native(root), outer)
+    }
+
+    /// The constraint that the root of a Lua annotation's conditional or mapped type carries for
+    /// `param`, which it declares.
+    pub(super) fn seed_native_constraint(&mut self, param: TypeId, constraint: TypeId) {
+        if constraint != TypeId::UNRESOLVED
+            && let Some((declaration, MapperId::IDENTITY)) = self.native_type_parameter_decl(param)
+        {
+            self.native_seeded_constraints.insert(declaration, constraint);
+        }
+    }
+
+    /// `getNameTypeFromMappedType` for the mapped type as `root` declares it, which has an `as`
     /// clause. `m.nameType` is assigned when the first request returns, whatever is in progress. A
     /// later request reads it: it pushes no resolution and closes no cycle.
-    pub(super) fn declared_name_type_of_mapped(
-        &mut self,
-        file: FileId,
-        node: TypeNodeId,
-    ) -> TypeId {
+    pub(super) fn declared_name_type_of_mapped(&mut self, root: MappedRoot) -> TypeId {
+        let (file, node) = match root {
+            MappedRoot::Node(file, node) => (file, node),
+            MappedRoot::Native(native) => {
+                return match *self.data(native) {
+                    TypeData::NativeMappedRoot { pieces: NativeMappedPieces::Written { id, has_name: true }, .. } => {
+                        self.native_annotation_piece(id, NativeAnnotationPiece::Name)
+                    }
+                    TypeData::NativeMappedRoot { pieces: NativeMappedPieces::Lowered { name, .. }, .. } if name != TypeId::UNRESOLVED => name,
+                    _ => TypeId::ERROR,
+                };
+            }
+        };
         let name = self.mapped_decl(file, node).name_ty;
         if let Some(raw) = self.provisional_as_assigned(Query::TypeNode(file, name))
             && raw != u64::from(TypeId::UNRESOLVED.0)
@@ -1967,8 +2161,15 @@ impl<'p, 's> Checker<'p, 's> {
         self.type_from_node(file, name)
     }
 
-    /// `getConstraintOfTypeParameter` for the parameter of the mapped type at `node`.
-    fn constraint_of_mapped_param(&mut self, file: FileId, node: TypeNodeId) -> Option<TypeId> {
+    /// `getConstraintOfTypeParameter` for the parameter of the mapped type that `root` declares.
+    fn constraint_of_mapped_param(&mut self, root: MappedRoot) -> Option<TypeId> {
+        let (file, node) = match root {
+            MappedRoot::Node(file, node) => (file, node),
+            MappedRoot::Native(_) => {
+                let param = self.mapped_root_param(root);
+                return self.constraint_of_type_param(param);
+            }
+        };
         if let Some(known) = (self.p.mapped_param_constraints).get(&self.task, &(file, node)) {
             return known;
         }
@@ -1989,16 +2190,11 @@ impl<'p, 's> Checker<'p, 's> {
     /// `getConstraintTypeFromMappedType`: the type that the parameter of the mapped type ranges
     /// over. An `any` annotation there means every kind of key (`getConstraintFromTypeParameter`);
     /// a constraint that refers back to the parameter is an error.
-    pub(super) fn mapped_constraint(
-        &mut self,
-        file: FileId,
-        node: TypeNodeId,
-        mapper: MapperId,
-    ) -> TypeId {
+    pub(super) fn mapped_constraint(&mut self, root: MappedRoot, mapper: MapperId) -> TypeId {
         // `getConstraintOfTypeParameter` is nil unless `hasNonCircularBaseConstraint`. Where
         // `pushTypeResolution` fails, the first request and every resolution above it are in the
         // cycle: the cycle start is inclusive.
-        let key = (file, node, mapper);
+        let key = (root, mapper);
         let mut in_progress = self.mapped_constraints_in_progress.iter();
         if let Some(start) = in_progress.position(|it| it.0 == key) {
             let height = self.mapped_constraints_in_progress[start].1;
@@ -2014,11 +2210,19 @@ impl<'p, 's> Checker<'p, 's> {
         }
         self.mapped_constraints_in_progress
             .push((key, self.stack.len(), false));
-        let constraint = self.instantiated_constraint_of_mapped_param(file, node, mapper);
+        let constraint = self.instantiated_constraint_of_mapped_param(root, mapper);
         // `!popTypeResolution()` in `getResolvedBaseConstraint`
         if (self.mapped_constraints_in_progress.pop()).is_some_and(|it| it.2) {
             (self.p.circular_mapped_constraints).insert(&self.task, key, (), Stored::new());
-            self.report_circular_mapped_key(file, node);
+            match root {
+                MappedRoot::Node(file, node) => self.report_circular_mapped_key(file, node),
+                MappedRoot::Native(_) => {
+                    let param = self.mapped_root_param(root);
+                    if let Some((declaration, _)) = self.native_type_parameter_decl(param) {
+                        self.report_native_circular_constraint(declaration);
+                    }
+                }
+            }
         }
         // Afterwards: this may be the resolution in which the cycle was closed.
         match (self.p.circular_mapped_constraints).get(&self.task, &key) {
@@ -2029,14 +2233,9 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `instantiateType(getConstraintTypeFromMappedType(t), m)`, where `t` is the mapped type as it
     /// is declared. The key of the instantiation is not being resolved.
-    fn instantiated_constraint_of_mapped_param(
-        &mut self,
-        file: FileId,
-        node: TypeNodeId,
-        mapper: MapperId,
-    ) -> TypeId {
+    fn instantiated_constraint_of_mapped_param(&mut self, root: MappedRoot, mapper: MapperId) -> TypeId {
         let declared = self
-            .constraint_of_mapped_param(file, node)
+            .constraint_of_mapped_param(root)
             .unwrap_or(TypeId::ERROR);
         self.instantiate(declared, mapper)
     }
@@ -2045,23 +2244,31 @@ impl<'p, 's> Checker<'p, 's> {
     /// where `K` is an alias of `keyof T` or is constrained by it: `T` as declared. Its properties
     /// determine what is optional and what is read-only. Also returns whether the constraint node
     /// is `keyof T` (`isMappedTypeWithKeyofConstraintDeclaration`).
-    pub(super) fn mapped_modifiers_source(
-        &mut self,
-        file: FileId,
-        node: TypeNodeId,
-    ) -> Option<(TypeId, bool)> {
-        let param = &self.hir(file)[self.mapped_decl(file, node).param];
-        let constraint = param.constraint;
-        // Decided by the syntax: `keyof` of a non-generic type is a plain union by now. A
-        // `ParenthesizedType` is not a type operator.
-        if let TypeNodeKind::Keyof(of) = self.hir(file)[constraint].kind
-            && (self.parenthesized_types_around(file, constraint, param.pos))
-                .next()
-                .is_none()
-        {
-            return Some((self.type_from_node(file, of), true));
-        }
-        let declared = self.type_from_node(file, constraint);
+    pub(super) fn mapped_modifiers_source(&mut self, root: MappedRoot) -> Option<(TypeId, bool)> {
+        let declared = match root {
+            MappedRoot::Node(file, node) => {
+                let param = &self.hir(file)[self.mapped_decl(file, node).param];
+                let constraint = param.constraint;
+                // Decided by the syntax: `keyof` of a non-generic type is a plain union by now. A
+                // `ParenthesizedType` is not a type operator.
+                if let TypeNodeKind::Keyof(of) = self.hir(file)[constraint].kind
+                    && (self.parenthesized_types_around(file, constraint, param.pos))
+                        .next()
+                        .is_none()
+                {
+                    return Some((self.type_from_node(file, of), true));
+                }
+                self.type_from_node(file, constraint)
+            }
+            MappedRoot::Native(native) => {
+                let TypeData::NativeMappedRoot { constraint, keyof, .. } = *self.data(native) else { return None };
+                // The annotation wrote `keyof X`.
+                if keyof != TypeId::UNRESOLVED {
+                    return Some((keyof, true));
+                }
+                constraint
+            }
+        };
         match *self.data(declared) {
             TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } => match self.constraint_of_type_param(declared) {
                 Some(c) => match *self.data(c) {
@@ -2077,13 +2284,8 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// `getHomomorphicTypeVariable`: the `T` of a mapped type whose constraint type is `keyof T`,
     /// regardless of its syntax.
-    pub(super) fn homomorphic_type_variable(
-        &mut self,
-        file: FileId,
-        node: TypeNodeId,
-        mapper: MapperId,
-    ) -> Option<TypeId> {
-        let constraint = self.mapped_constraint(file, node, mapper);
+    pub(super) fn homomorphic_type_variable(&mut self, root: MappedRoot, mapper: MapperId) -> Option<TypeId> {
+        let constraint = self.mapped_constraint(root, mapper);
         let TypeData::Keyof(target) = *self.data(constraint) else {
             return None;
         };
@@ -2095,21 +2297,21 @@ impl<'p, 's> Checker<'p, 's> {
     /// array or a tuple is one too.
     pub(super) fn apparent_type_of_mapped(&mut self, ty: TypeId) -> TypeId {
         let TypeData::Anon {
-            origin: Origin::Mapped(file, node),
+            origin: Origin::Mapped(root),
             mapper,
         } = *self.data(ty)
         else {
             return ty;
         };
-        let Some(source) = self.homomorphic_type_variable(file, node, MapperId::IDENTITY) else {
+        let Some(source) = self.homomorphic_type_variable(root, MapperId::IDENTITY) else {
             return ty;
         };
-        if self.mapped_decl(file, node).name_ty.is_some() {
+        if self.mapped_root_decl(root).has_name {
             return ty;
         }
         // Not `source`: in the true branch of `T extends X[] ? .. : ..` the `T` of `keyof T` is a
         // substitution type, whose base constraint is `X[]`.
-        let Some((modifiers, _)) = self.mapped_modifiers_source(file, node) else {
+        let Some((modifiers, _)) = self.mapped_modifiers_source(root) else {
             return ty;
         };
         let modifiers = self.instantiate(modifiers, mapper);
@@ -2126,7 +2328,7 @@ impl<'p, 's> Checker<'p, 's> {
         match base_constraint {
             Some(base_constraint) if self.every_type(base_constraint, is_array_like) => {
                 let applied = self.prepend_type_mapping(source, base_constraint, mapper);
-                self.instantiate_mapped(file, node, applied)
+                self.instantiate_mapped(root, applied)
             }
             _ => ty,
         }
@@ -2134,28 +2336,22 @@ impl<'p, 's> Checker<'p, 's> {
 
     /// The mapped type at `node` under `mapper`, as `getObjectTypeInstantiation` creates it without
     /// an alias.
-    pub fn instantiate_mapped(
-        &mut self,
-        file: FileId,
-        node: TypeNodeId,
-        mapper: MapperId,
-    ) -> TypeId {
-        self.instantiate_mapped_type(file, node, mapper, NewAlias::OfNode)
+    pub fn instantiate_mapped(&mut self, root: MappedRoot, mapper: MapperId) -> TypeId {
+        self.instantiate_mapped_type(root, mapper, NewAlias::OfNode)
     }
 
     /// `getObjectTypeInstantiation` of the mapped type at `node`, from where it finds nothing under
     /// its key to `data.instantiations[key] = result`. The same key may be asked for in between.
     pub(super) fn instantiate_mapped_type(
         &mut self,
-        file: FileId,
-        node: TypeNodeId,
+        root: MappedRoot,
         mapper: MapperId,
         alias: NewAlias<'_>,
     ) -> TypeId {
-        let nesting = self.mapped_instantiations_in_progress_under(file, node, mapper, alias);
+        let nesting = self.mapped_instantiations_in_progress_under(root, mapper, alias);
         self.mapped_instantiations_in_progress
             .push(MappedInstantiation {
-                target: (file, node),
+                target: root,
                 type_arguments: mapper,
                 alias: match alias {
                     NewAlias::Given(alias, type_arguments) => {
@@ -2165,7 +2361,7 @@ impl<'p, 's> Checker<'p, 's> {
                 },
                 nesting,
             });
-        let result = self.instantiate_mapped_type_worker(file, node, mapper, alias);
+        let result = self.instantiate_mapped_type_worker(root, mapper, alias);
         self.mapped_instantiations_in_progress.pop();
         result
     }
@@ -2173,20 +2369,19 @@ impl<'p, 's> Checker<'p, 's> {
     /// How many `instantiate_mapped_type` with the key of these arguments are in progress.
     fn mapped_instantiations_in_progress_under(
         &self,
-        file: FileId,
-        node: TypeNodeId,
+        root: MappedRoot,
         mapper: MapperId,
         alias: NewAlias<'_>,
     ) -> u8 {
         let mut with_type_arguments = (self.mapped_instantiations_in_progress.iter().rev())
-            .filter(|it| it.target == (file, node) && it.type_arguments == mapper)
+            .filter(|it| it.target == root && it.type_arguments == mapper)
             .peekable();
         // The target itself is under the key of its type parameters from the start.
         if with_type_arguments.peek().is_none() || !self.is_instantiating(mapper) {
             return 0;
         }
         // `instantiateTypeAlias(t.alias, m)` is one key, whether it is passed in or not.
-        let of_node = self.alias_of_node_under(file, node, mapper);
+        let of_node = self.alias_of_mapped_root_under(root, mapper);
         let of_node =
             (of_node.as_ref()).map(|(alias, type_arguments)| (*alias, &type_arguments[..]));
         let new_alias = match alias {
@@ -2208,15 +2403,14 @@ impl<'p, 's> Checker<'p, 's> {
     /// `InstantiationKey::alias` for the alias passed to `instantiate_mapped_type`.
     fn alias_of_instantiation_key(
         &mut self,
-        file: FileId,
-        node: TypeNodeId,
+        root: MappedRoot,
         mapper: MapperId,
         alias: NewAlias<'_>,
     ) -> Option<(Sym, TypeId)> {
         let NewAlias::Given(alias, type_arguments) = alias else {
             return None;
         };
-        let of_node = self.alias_of_node_under(file, node, mapper);
+        let of_node = self.alias_of_mapped_root_under(root, mapper);
         if of_node.is_some_and(|it| it.0 == alias && it.1 == type_arguments) {
             return None;
         }
@@ -2224,11 +2418,19 @@ impl<'p, 's> Checker<'p, 's> {
         Some((alias, self.tuple(type_arguments, &flags, false)))
     }
 
+    /// `alias_of_node_under` for the node of a mapped type. A Lua annotation's has no alias of its
+    /// node: a named alias gives it its alias.
+    fn alias_of_mapped_root_under(&self, root: MappedRoot, mapper: MapperId) -> Option<(Sym, Vec<TypeId>)> {
+        match root {
+            MappedRoot::Node(file, node) => self.alias_of_node_under(file, node, mapper),
+            MappedRoot::Native(_) => None,
+        }
+    }
+
     /// `instantiateMappedType`. A mapped type over the keys of an array is an array, and so on.
     fn instantiate_mapped_type_worker(
         &mut self,
-        file: FileId,
-        node: TypeNodeId,
+        root: MappedRoot,
         mapper: MapperId,
         alias: NewAlias<'_>,
     ) -> TypeId {
@@ -2240,17 +2442,17 @@ impl<'p, 's> Checker<'p, 's> {
                 .mapping(mapper)
                 .iter()
                 .any(|pair| pair.0 != pair.1)
-                && c.instantiated_constraint_of_mapped_param(file, node, mapper) == TypeId::WILDCARD
+                && c.instantiated_constraint_of_mapped_param(root, mapper) == TypeId::WILDCARD
             {
                 return TypeId::WILDCARD;
             }
             let created = TypeData::Anon {
-                origin: Origin::Mapped(file, node),
+                origin: Origin::Mapped(root),
                 mapper,
             };
             let nesting = c.nesting_of_mapped_instantiation();
             if nesting != 0 {
-                let given = c.alias_of_instantiation_key(file, node, mapper, alias);
+                let given = c.alias_of_instantiation_key(root, mapper, alias);
                 let could_contain_type_variables =
                     c.could_type_arguments_contain_type_variables(mapper);
                 return c.types().intern_key_with(
@@ -2285,7 +2487,7 @@ impl<'p, 's> Checker<'p, 's> {
                 NewAlias::OfNode => created,
             }
         };
-        let Some(source) = self.homomorphic_type_variable(file, node, MapperId::IDENTITY) else {
+        let Some(source) = self.homomorphic_type_variable(root, MapperId::IDENTITY) else {
             return anon(self);
         };
         let Some(value) = self.types().map(mapper, source) else {
@@ -2295,11 +2497,11 @@ impl<'p, 's> Checker<'p, 's> {
             return anon(self);
         }
         let value = self.reduced(value);
-        let given = self.alias_of_instantiation_key(file, node, mapper, alias);
+        let given = self.alias_of_instantiation_key(root, mapper, alias);
         // `instantiateTypeAlias(t.alias, m)`
         let of_node = match alias {
             NewAlias::OfNode if self.is_union(value) => {
-                self.alias_of_node_under(file, node, mapper)
+                self.alias_of_mapped_root_under(root, mapper)
             }
             _ => None,
         };
@@ -2311,7 +2513,7 @@ impl<'p, 's> Checker<'p, 's> {
         };
         let result = self.map_type_with_alias(
             value,
-            |c, t| c.instantiate_mapped_constituent(file, node, mapper, source, t, given),
+            |c, t| c.instantiate_mapped_constituent(root, mapper, source, t, given),
             alias,
         );
         // `getObjectTypeInstantiation`: "If none of the type arguments for the outer type
@@ -2369,8 +2571,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// a union, substituted for `source`. `given`: `InstantiationKey::alias`.
     fn instantiate_mapped_constituent(
         &mut self,
-        file: FileId,
-        node: TypeNodeId,
+        root: MappedRoot,
         mapper: MapperId,
         source: TypeId,
         t: TypeId,
@@ -2385,12 +2586,12 @@ impl<'p, 's> Checker<'p, 's> {
         {
             return t;
         }
-        let mapped = self.mapped_decl(file, node);
+        let mapped = self.mapped_root_decl(root);
         let one = self.prepend_type_mapping(source, t, mapper);
         // `instantiateAnonymousType(t, prependTypeMapping(typeVariable, s, m), nil)`
         let anonymous = |c: &mut Self| {
             let created = TypeData::Anon {
-                origin: Origin::Mapped(file, node),
+                origin: Origin::Mapped(root),
                 mapper: one,
             };
             // `getObjectTypeInstantiation` stores the result under `m` and the alias.
@@ -2422,18 +2623,14 @@ impl<'p, 's> Checker<'p, 's> {
                 },
             )
         };
-        if mapped.name_ty.is_some() {
+        if mapped.has_name {
             return anonymous(self);
         }
-        let param = self.type_param(file, mapped.param);
+        let param = self.mapped_root_param(root);
         // `instantiateMappedTypeTemplate`
         let template = |c: &mut Self, of: MapperId, key: TypeId, is_optional: bool| {
             // `getTemplateTypeFromMappedType`
-            let declared = if mapped.ty.is_some() {
-                c.type_from_node(file, mapped.ty)
-            } else {
-                TypeId::ERROR
-            };
+            let declared = c.mapped_root_template(root);
             let with_key = c.mapper_with_pair(of, param, key);
             let ty = c.instantiate(declared, with_key);
             if !c.p.files.options.strict_null_checks {
@@ -2490,7 +2687,7 @@ impl<'p, 's> Checker<'p, 's> {
                     if of_element == mapper {
                         return self.excessively_deep();
                     }
-                    let declared = self.type_from_node(file, node);
+                    let declared = self.declared_mapped_type(root);
                     self.instantiate(declared, of_element)
                 } else {
                     let list = self.array_of(elems[i]);
@@ -2536,7 +2733,7 @@ impl<'p, 's> Checker<'p, 's> {
         {
             let members: Vec<TypeId> = parts
                 .iter()
-                .map(|&p| self.instantiate_mapped_constituent(file, node, mapper, source, p, given))
+                .map(|&p| self.instantiate_mapped_constituent(root, mapper, source, p, given))
                 .collect();
             return self.intersection(&members);
         }
@@ -2640,25 +2837,25 @@ impl<'p, 's> Checker<'p, 's> {
         index: TypeId,
     ) -> Option<TypeId> {
         let TypeData::Anon {
-            origin: Origin::Mapped(file, node),
+            origin: Origin::Mapped(root),
             mapper,
         } = *self.data(obj)
         else {
             return None;
         };
-        let mapped = self.mapped_decl(file, node);
+        let mapped = self.mapped_root_decl(root);
         if mapped.optional == MappedModifier::Remove
-            || mapped.name_ty.is_some()
-            || mapped.ty.is_none()
+            || mapped.has_name
+            || !mapped.has_template
         {
             return None;
         }
         if self.is_generic(obj) || !self.is_generic(index) {
             return None;
         }
-        let param = self.type_param(file, mapped.param);
+        let param = self.mapped_root_param(root);
         let with_key = self.mapper_with_pair(mapper, param, index);
-        let template = self.type_from_node(file, mapped.ty);
+        let template = self.mapped_root_template(root);
         let template = self.instantiate(template, with_key);
         // `couldAccessOptionalProperty`: it may be one of the optional properties.
         let mut optional = mapped.optional == MappedModifier::Add;
@@ -2735,12 +2932,11 @@ impl<'p, 's> Checker<'p, 's> {
     /// the `T` of `keyof T` (`getModifiersTypeFromMappedType`).
     fn mapped_key_types(
         &mut self,
-        file: FileId,
-        node: TypeNodeId,
+        root: MappedRoot,
         mapper: MapperId,
         constraint: TypeId,
     ) -> (List<'p, TypeId>, Option<Modifiers<'p>>) {
-        let source = self.mapped_modifiers_source(file, node);
+        let source = self.mapped_modifiers_source(root);
         let over_keyof = matches!(source, Some((_, true)));
         // `getReducedApparentType`: the constraint of a type parameter, and an intersection that
         // reduces to `never` is removed.
@@ -2774,7 +2970,7 @@ impl<'p, 's> Checker<'p, 's> {
             // properties and index signatures of `T` one by one: in the union `keyof T`, `string`
             // has absorbed the names.
             Some(Modifiers::Object(owner, m)) if over_keyof => {
-                let renames = self.mapped_decl(file, node).name_ty.is_some();
+                let renames = self.mapped_root_decl(root).has_name;
                 let mut keys = Vec::with_capacity(
                     m.shape().props.len() + self.structured(m).index_infos().len(),
                 );
@@ -2859,7 +3055,7 @@ impl<'p, 's> Checker<'p, 's> {
     /// `resolveObjectTypeMembers` instantiates the base type, and the instantiation of a mapped
     /// type with other type arguments has symbols of its own.
     pub(super) fn containing_type_of_mapped_prop(&self, of: TypeId, prop: &Prop) -> TypeId {
-        let Some((file, node, mapper)) = self.mapped_origin(of) else {
+        let Some((root, mapper)) = self.mapped_origin(of) else {
             return of;
         };
         let types = self.types();
@@ -2873,7 +3069,7 @@ impl<'p, 's> Checker<'p, 's> {
         let type_arguments: SmallVec<[(TypeId, TypeId); 8]> =
             own.iter().map(type_argument).collect();
         self.intern(TypeData::Anon {
-            origin: Origin::Mapped(file, node),
+            origin: Origin::Mapped(root),
             mapper: types.mapper_of(&type_arguments),
         })
     }
@@ -2882,13 +3078,13 @@ impl<'p, 's> Checker<'p, 's> {
     /// `addMemberForKeyTypeWorker`. `build_mapped_shape` created `prop` for the mapped type `of`.
     pub(super) fn synthetic_origin(&mut self, of: TypeId, prop: &Prop) -> Option<&'p Prop<'p>> {
         let of = self.containing_type_of_mapped_prop(of, prop);
-        let (file, node, mapper) = self.mapped_origin(of)?;
-        let param = self.type_param(file, self.mapped_decl(file, node).param);
+        let (root, mapper) = self.mapped_origin(of)?;
+        let param = self.mapped_root_param(root);
         let key_type = self.types().map(prop.mapper, param)?;
         // `keyType` is the union of the keys that have the name. The first created the symbol.
         let key = if self.is_union(key_type) {
-            let constraint = self.mapped_constraint(file, node, mapper);
-            let (keys, _) = self.mapped_key_types(file, node, mapper, constraint);
+            let constraint = self.mapped_constraint(root, mapper);
+            let (keys, _) = self.mapped_key_types(root, mapper, constraint);
             let named_alike = self.parts(key_type);
             keys.iter().copied().find(|key| named_alike.contains(key))?
         } else {
@@ -2910,7 +3106,7 @@ impl<'p, 's> Checker<'p, 's> {
         {
             return known;
         }
-        let Some((file, node, _)) = self.mapped_origin(of) else {
+        let Some((root, _)) = self.mapped_origin(of) else {
             return TypeId::UNRESOLVED;
         };
         let created_for = of;
@@ -2950,12 +3146,8 @@ impl<'p, 's> Checker<'p, 's> {
             }
             return TypeId::ERROR;
         }
-        let mapped = self.mapped_decl(file, node);
-        let template = if mapped.ty.is_some() {
-            self.type_from_node(file, mapped.ty)
-        } else {
-            TypeId::ERROR
-        };
+        let mapped = self.mapped_root_decl(root);
+        let template = self.mapped_root_template(root);
         let ty = self.instantiate(template, prop.mapper);
         let ty = self.mapped_property_type(
             ty,
@@ -2998,29 +3190,20 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// `resolveMappedTypeMembers`
-    pub(super) fn build_mapped_shape(
-        &mut self,
-        file: FileId,
-        node: TypeNodeId,
-        mapper: MapperId,
-    ) -> Shape<'s> {
-        let mapped = self.mapped_decl(file, node);
-        let param = self.type_param(file, mapped.param);
-        let constraint = self.mapped_constraint(file, node, mapper);
+    pub(super) fn build_mapped_shape(&mut self, root: MappedRoot, mapper: MapperId) -> Shape<'s> {
+        let mapped = self.mapped_root_decl(root);
+        let param = self.mapped_root_param(root);
+        let constraint = self.mapped_constraint(root, mapper);
         let mut shape = Shape::new_in(self.arena);
-        let name_declared = if mapped.name_ty.is_some() {
-            Some(self.declared_name_type_of_mapped(file, node))
+        let name_declared = if mapped.has_name {
+            Some(self.declared_name_type_of_mapped(root))
         } else {
             None
         };
-        let template_declared = if mapped.ty.is_some() {
-            self.type_from_node(file, mapped.ty)
-        } else {
-            TypeId::ERROR
-        };
-        let (keys, modifiers) = self.mapped_key_types(file, node, mapper, constraint);
+        let template_declared = self.mapped_root_template(root);
+        let (keys, modifiers) = self.mapped_key_types(root, mapper, constraint);
         let of = self.intern(TypeData::Anon {
-            origin: Origin::Mapped(file, node),
+            origin: Origin::Mapped(root),
             mapper,
         });
         if keys.len() > 4 {

@@ -143,22 +143,65 @@ pub struct NativeTypeParameterKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidNativeTypeParameterKey(pub NativeTypeParameterKey);
 
-/// A conditional type written in the source `snapshot`, whose true and false types the provider
-/// lowers when they are first read (`NativeTypeProvider::conditional_branch`).
+/// A conditional or mapped type written in the source `snapshot`, whose pieces the provider
+/// lowers when they are first read (`NativeTypeProvider::annotation_piece`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NativeConditionalKey {
+pub struct NativeAnnotationKey {
     pub snapshot: u64,
     pub index: u32,
 }
 
+/// A piece of a written conditional or mapped type that is lowered when first read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AnnotationPiece {
+    /// A conditional type's true type.
+    True,
+    /// A conditional type's false type.
+    False,
+    /// A mapped type's template.
+    Template,
+    /// A mapped type's `as` clause.
+    Name,
+}
+
 /// Where a conditional type was lowered, in the provider's terms, for its branches: three
 /// source keys (snapshot, index) whose meaning the provider gives.
-pub type NativeConditionalContext = [Option<(u64, u32)>; 3];
+pub type NativeAnnotationContext = [Option<(u64, u32)>; 3];
+
+/// A mapped type's `readonly` or `?`: absent, added (bare or with `+`) or removed (`-`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MappedTypeModifier {
+    None,
+    Add,
+    Plus,
+    Remove,
+}
+
+/// The template and `as` clause of a mapped type: lowered when first read, or already.
+#[derive(Debug, Clone)]
+pub enum MappedTypePieces {
+    Written { key: NativeAnnotationKey, context: NativeAnnotationContext, has_name: bool },
+    Lowered { template: Type, name: Option<Type> },
+}
+
+/// The mapped type `{ [parameter in constraint as name]: template }`, with its modifiers.
+#[derive(Debug, Clone)]
+pub struct MappedTypeRecipe {
+    pub parameter: NativeTypeParameterKey,
+    pub constraint: Type,
+    /// `X` where the constraint is written `keyof X`: the mapped type is homomorphic in it.
+    pub keyof: Option<Type>,
+    pub readonly: MappedTypeModifier,
+    pub optional: MappedTypeModifier,
+    pub pieces: MappedTypePieces,
+    /// The type parameters that written pieces mention.
+    pub outer: Vec<NativeTypeParameterKey>,
+}
 
 /// The true and false types of a conditional type: lowered when first read, or already.
 #[derive(Debug, Clone)]
 pub enum ConditionalBranches {
-    Written(NativeConditionalKey, NativeConditionalContext),
+    Written(NativeAnnotationKey, NativeAnnotationContext),
     Lowered(Type, Type),
 }
 
@@ -465,7 +508,7 @@ pub trait NativeTypeProvider {
     fn contains_signature(&self, _: NativeSignatureKey) -> bool { false }
     /// The declared true (`yes`) or false type of the conditional type `key`, lowered where
     /// `context` says the rest of it was.
-    fn conditional_branch(&self, _: NativeConditionalKey, _: NativeConditionalContext, _: bool, queries: &mut dyn TypeQueries) -> Type { queries.error_type() }
+    fn annotation_piece(&self, _: NativeAnnotationKey, _: NativeAnnotationContext, _: AnnotationPiece, queries: &mut dyn TypeQueries) -> Type { queries.error_type() }
     /// Immutable declaration syntax only. False proves there is no written predicate;
     /// providers without that proof preserve the full metadata query.
     fn signature_may_have_type_predicate(&self, _: NativeSignatureKey) -> bool { true }
@@ -1292,6 +1335,13 @@ pub trait TypeQueries {
     /// is, and deferred while either is generic. Each of `infer` has its constraint, if any.
     /// `outer`: the type parameters that written branches mention.
     fn conditional_type(&mut self, check: &Type, extends: &Type, infer: &[(NativeTypeParameterKey, Option<Type>)], branches: &ConditionalBranches, outer: &[NativeTypeParameterKey]) -> Type;
+    /// The mapped type `{ [P in K as N]: T }`: a property for each key of `K`, named by `N` and
+    /// of type `T` with `P` the key, homomorphic in `X` (keeping its optional and read-only
+    /// properties, and mapping an array to an array) where `K` is written `keyof X`, and
+    /// deferred while `K` is generic.
+    fn mapped_type(&mut self, mapped: &MappedTypeRecipe) -> Type;
+    /// `NoInfer<ty>`: `ty`, where inference does not look for a type parameter.
+    fn no_infer_type(&mut self, ty: &Type) -> Type;
     /// How many limits (2589, 2590, 2799, 2800) the checker has hit that no TypeScript node
     /// could report: the provider reports each where it is checking.
     fn unplaced_limits(&mut self) -> u64;
@@ -2209,6 +2259,35 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     fn take_unplaced_limit_since(&mut self, since: u64) -> Option<u32> {
         self.checker.take_unplaced_limit_since(since)
     }
+    fn no_infer_type(&mut self, ty: &Type) -> Type {
+        let ty = import_type(self.checker, self.handles, ty);
+        let ty = self.checker.no_infer(ty);
+        export_type(self.checker, self.handles, ty)
+    }
+    fn mapped_type(&mut self, mapped: &MappedTypeRecipe) -> Type {
+        let param = import_type(self.checker, self.handles, &Type::NativeTypeParameter(mapped.parameter));
+        let constraint = import_type(self.checker, self.handles, &mapped.constraint);
+        let keyof = mapped.keyof.as_ref().map(|ty| import_type(self.checker, self.handles, ty));
+        let code = |modifier: MappedTypeModifier| match modifier {
+            MappedTypeModifier::None => 0,
+            MappedTypeModifier::Add => 1,
+            MappedTypeModifier::Plus => 2,
+            MappedTypeModifier::Remove => 3,
+        };
+        let pieces = match &mapped.pieces {
+            MappedTypePieces::Written { key, context, has_name } => bun_sema::types::NativeMappedPieces::Written {
+                id: bun_sema::types::NativeAnnotationId { snapshot: key.snapshot, index: key.index, context: *context },
+                has_name: *has_name,
+            },
+            MappedTypePieces::Lowered { template, name } => bun_sema::types::NativeMappedPieces::Lowered {
+                template: import_type(self.checker, self.handles, template),
+                name: name.as_ref().map_or(TypeId::UNRESOLVED, |name| import_type(self.checker, self.handles, name)),
+            },
+        };
+        let outer: Vec<_> = mapped.outer.iter().map(|&key| import_type(self.checker, self.handles, &Type::NativeTypeParameter(key))).collect();
+        let ty = self.checker.native_mapped_type(param, constraint, keyof, (code(mapped.readonly), code(mapped.optional)), pieces, &outer);
+        export_type(self.checker, self.handles, ty)
+    }
     fn conditional_type(&mut self, check: &Type, extends: &Type, infer: &[(NativeTypeParameterKey, Option<Type>)], branches: &ConditionalBranches, outer: &[NativeTypeParameterKey]) -> Type {
         let [check, extends] = [check, extends].map(|ty| import_type(self.checker, self.handles, ty));
         let infer: Vec<_> = infer.iter().map(|(key, constraint)| (
@@ -2217,7 +2296,7 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         )).collect();
         let outer: Vec<_> = outer.iter().map(|&key| import_type(self.checker, self.handles, &Type::NativeTypeParameter(key))).collect();
         let branches = match branches {
-            ConditionalBranches::Written(key, context) => bun_sema::types::NativeConditionalBranches::Written(bun_sema::types::NativeConditionalId { snapshot: key.snapshot, index: key.index, context: *context }),
+            ConditionalBranches::Written(key, context) => bun_sema::types::NativeConditionalBranches::Written(bun_sema::types::NativeAnnotationId { snapshot: key.snapshot, index: key.index, context: *context }),
             ConditionalBranches::Lowered(yes, no) => bun_sema::types::NativeConditionalBranches::Lowered {
                 yes: import_type(self.checker, self.handles, yes),
                 no: import_type(self.checker, self.handles, no),
@@ -2815,9 +2894,15 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
         Some(NativeTypeResult::Declaration(checker.native_pack_slot(pack, 0)))
     }
     fn contains_signature(&self, key: bun_sema::types::NativeSignatureId) -> bool { self.provider.contains_signature(source_signature_key(key)) }
-    fn conditional_branch(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeConditionalId, yes: bool) -> TypeId {
-        let (context, key) = (key.context, NativeConditionalKey { snapshot: key.snapshot, index: key.index });
-        let ty = self.provider.conditional_branch(key, context, yes, &mut SessionQueries { checker, handles: self.handles });
+    fn annotation_piece(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeAnnotationId, piece: bun_sema::types::NativeAnnotationPiece) -> TypeId {
+        let piece = match piece {
+            bun_sema::types::NativeAnnotationPiece::True => AnnotationPiece::True,
+            bun_sema::types::NativeAnnotationPiece::False => AnnotationPiece::False,
+            bun_sema::types::NativeAnnotationPiece::Template => AnnotationPiece::Template,
+            bun_sema::types::NativeAnnotationPiece::Name => AnnotationPiece::Name,
+        };
+        let (context, key) = (key.context, NativeAnnotationKey { snapshot: key.snapshot, index: key.index });
+        let ty = self.provider.annotation_piece(key, context, piece, &mut SessionQueries { checker, handles: self.handles });
         import_type(checker, self.handles, &ty)
     }
     fn signature_may_have_type_predicate(&self, key: bun_sema::types::NativeSignatureId) -> bool {

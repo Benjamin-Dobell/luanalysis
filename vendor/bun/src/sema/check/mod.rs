@@ -155,8 +155,8 @@ pub trait NativeFunctionProvider {
     fn function_is_method(&self, _: NativeFunctionId) -> bool { false }
     fn signature_is_method(&self, _: NativeSignatureId) -> bool { false }
     fn contains_signature(&self, _: NativeSignatureId) -> bool { false }
-    /// The declared true (`yes`) or false type of a conditional type that a Lua annotation writes.
-    fn conditional_branch(&self, _: &mut Checker<'_, '_>, _: NativeConditionalId, _: bool) -> TypeId { panic!("native conditional provider is not installed") }
+    /// The declared `piece` of a conditional or mapped type that a Lua annotation writes.
+    fn annotation_piece(&self, _: &mut Checker<'_, '_>, _: NativeAnnotationId, _: NativeAnnotationPiece) -> TypeId { panic!("native annotation provider is not installed") }
     /// False attests immutable absence of written predicate syntax, independent
     /// of the selected instantiation/capture frame. Unknown providers use true.
     fn signature_may_have_type_predicate(&self, _: NativeSignatureId) -> bool { true }
@@ -398,7 +398,7 @@ pub struct Program<'s> {
     circular_alias_targets: ByNode<Sym, (), Buffered, &'s Session>,
     /// The mapped types whose key has a circular constraint (2313), by the node and the mapper:
     /// their `constraintType` is `errorType`.
-    circular_mapped_constraints: ByKey<(FileId, TypeNodeId, MapperId), (), Buffered, &'s Session>,
+    circular_mapped_constraints: ByKey<(MappedRoot, MapperId), (), Buffered, &'s Session>,
     /// The annotations of the setters whose `writeType` is `anyType` because
     /// `getWriteTypeOfAccessors` found a cycle (2502).
     circular_write_types: ByKey<(FileId, TypeNodeId), (), Buffered, &'s Session>,
@@ -946,8 +946,8 @@ impl<'s> Program<'s> {
             simplified: Default::default(),
             inherited_names: [0; 4],
             cond_distributive_memo: Default::default(),
-            native_conditional_branches: Default::default(),
-            native_infer_constraints: Default::default(),
+            native_annotation_pieces: Default::default(),
+            native_seeded_constraints: Default::default(),
             unplaced_limits: 0,
             unplaced_limit: 0,
             unplaced_limits_reported: 0,
@@ -1494,7 +1494,7 @@ pub struct Checker<'p, 's> {
     /// `pushTypeResolution(key, ResolvedBaseConstraint)`, for the key of each mapped type whose
     /// constraint type is being resolved, the height of `stack` at that time, and whether a cycle
     /// has closed around it (`mark_cycle_from`).
-    mapped_constraints_in_progress: Vec<((FileId, TypeNodeId, MapperId), usize, bool)>,
+    mapped_constraints_in_progress: Vec<((MappedRoot, MapperId), usize, bool)>,
     /// The indices in `stack` of the `MappedProp` frames that were entered again through what
     /// `resolveMappedTypeMembers` resolves before the symbol exists (`type_of_mapped_prop`).
     mapped_props_reentered_through_members: Vec<usize>,
@@ -1713,12 +1713,12 @@ pub struct Checker<'p, 's> {
     pub(super) inherited_names: [u64; 4],
     /// `resolvedConstraintOfDistributive`. `None` is `noConstraintType`.
     cond_distributive_memo: FxHashMap<TypeId, Option<TypeId>>,
-    /// The declared branches of conditional types that Lua annotations write. `None`: being
-    /// lowered.
-    native_conditional_branches: FxHashMap<(NativeConditionalId, bool), Option<TypeId>>,
-    /// The constraints of the `infer` type parameters of those conditional types, which their
-    /// roots carry.
-    native_infer_constraints: FxHashMap<NativeTypeParamId, TypeId>,
+    /// The declared pieces of conditional and mapped types that Lua annotations write. `None`:
+    /// being lowered.
+    native_annotation_pieces: FxHashMap<(NativeAnnotationId, NativeAnnotationPiece), Option<TypeId>>,
+    /// The constraints of the type parameters that those types declare (`infer`, a mapped type's
+    /// key), which their roots carry.
+    native_seeded_constraints: FxHashMap<NativeTypeParamId, TypeId>,
     /// How many limits (2589, 2590, 2799, 2800) were hit with no node to report them at, the code
     /// of the last, and how many of those the native provider has reported where it checks
     /// (`take_unplaced_limit_since`).
@@ -1762,7 +1762,7 @@ pub struct Checker<'p, 's> {
     generic_object_flags: FxHashMap<TypeId, (bool, bool)>,
     /// `number_name` of the index, `NONE` where it has not been asked for.
     names_of_small_numbers: std::cell::RefCell<Vec<Atom>>,
-    generic_mapped_types_in_progress: Vec<(FileId, TypeNodeId)>,
+    generic_mapped_types_in_progress: Vec<MappedRoot>,
     /// Those for which it has ended at the limit of `instantiation_count` since `check_file` began.
     generic_mapped_types_cut_short: Vec<TypeId>,
     /// The entries most recently found in `Program::members`, in the signature tables and in

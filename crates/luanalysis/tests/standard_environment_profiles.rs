@@ -365,7 +365,7 @@ fn selected_profile_registers_active_declarations_without_runtime_membership_or_
         StandardEnvironmentProfile::Lua54,
     );
     clean(&report);
-    assert_eq!(report.standard_library_files.len(), 11);
+    assert_eq!(report.standard_library_files.len(), 12);
     assert_eq!(report.checked_file_count(), 1);
     assert_eq!(report.project.entries.len(), 1);
     assert!(report.project.dependencies.is_empty());
@@ -379,11 +379,13 @@ fn selected_profile_registers_active_declarations_without_runtime_membership_or_
         assert!(!report.project.entries.contains(id));
         let name = source.path.file_name().unwrap();
         names.push(name.to_str().unwrap());
-        let active = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("stdlib/Lua54").join(name);
+        // The utility types are one file for every version.
+        let directory = if name == "utility.def.lua" { "stdlib" } else { "stdlib/Lua54" };
+        let active = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(directory).join(name);
         assert_eq!(source.source, fs::read_to_string(active).unwrap());
     }
     names.sort_unstable();
-    assert_eq!(names, ["builtin.def.lua", "coroutine.def.lua", "debug.def.lua", "global.def.lua", "io.def.lua", "math.def.lua", "os.def.lua", "package.def.lua", "string.def.lua", "table.def.lua", "utf8.def.lua"]);
+    assert_eq!(names, ["builtin.def.lua", "coroutine.def.lua", "debug.def.lua", "global.def.lua", "io.def.lua", "math.def.lua", "os.def.lua", "package.def.lua", "string.def.lua", "table.def.lua", "utf8.def.lua", "utility.def.lua"]);
 }
 
 #[test]
@@ -648,12 +650,13 @@ fn primitive_string_members_retain_original_context_inside_generic_callbacks() {
 
 #[test]
 fn each_lua_version_selects_only_its_original_standard_declarations() {
+    // Each count includes the utility types, which every version declares.
     for (profile, directory, count, has_bit32, has_utf8, has_package) in [
-        (StandardEnvironmentProfile::Lua50, "Lua50", 9, false, false, false),
-        (StandardEnvironmentProfile::Lua51, "Lua51", 10, false, false, true),
-        (StandardEnvironmentProfile::Lua52, "Lua52", 11, true, false, true),
-        (StandardEnvironmentProfile::Lua53, "Lua53", 12, true, true, true),
-        (StandardEnvironmentProfile::Lua54, "Lua54", 11, false, true, true),
+        (StandardEnvironmentProfile::Lua50, "Lua50", 10, false, false, false),
+        (StandardEnvironmentProfile::Lua51, "Lua51", 11, false, false, true),
+        (StandardEnvironmentProfile::Lua52, "Lua52", 12, true, false, true),
+        (StandardEnvironmentProfile::Lua53, "Lua53", 13, true, true, true),
+        (StandardEnvironmentProfile::Lua54, "Lua54", 12, false, true, true),
     ] {
         let fixture = Fixture::new();
         let report = fixture.check("local value=math.abs(-1)\nlocal text=('WORD'):lower()\n", profile);
@@ -670,6 +673,7 @@ fn each_lua_version_selects_only_its_original_standard_declarations() {
         assert_eq!(names.iter().any(|name| name == "bit32.def.lua"), has_bit32);
         assert_eq!(names.iter().any(|name| name == "utf8.def.lua"), has_utf8);
         assert_eq!(names.iter().any(|name| name == "package.def.lua"), has_package);
+        assert!(names.iter().any(|name| name == "utility.def.lua"), "{profile:?}");
     }
 }
 

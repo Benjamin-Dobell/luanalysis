@@ -644,7 +644,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// `getNoInferType`
-    pub(super) fn no_infer(&mut self, ty: TypeId) -> TypeId {
+    pub fn no_infer(&mut self, ty: TypeId) -> TypeId {
         if self.is_no_infer_target_type(ty) {
             self.intern(TypeData::Substitution {
                 base: ty,
@@ -1318,9 +1318,9 @@ impl<'p, 's> Checker<'p, 's> {
             }
             TypeData::Anon { origin, mapper } => {
                 let (origin, mapper) = (*origin, *mapper);
-                if let Origin::Mapped(file, node) = origin {
+                if let Origin::Mapped(root) = origin {
                     let resolved =
-                        self.shape_memo(ty, |c| c.build_mapped_shape(file, node, mapper));
+                        self.shape_memo(ty, |c| c.build_mapped_shape(root, mapper));
                     return Some((resolved, MapperId::IDENTITY));
                 }
                 let identity = self.identity_of(mapper);
@@ -3243,11 +3243,11 @@ impl<'p, 's> Checker<'p, 's> {
         };
         for &part in parts {
             if let TypeData::Anon {
-                origin: Origin::Mapped(file, node),
+                origin: Origin::Mapped(root),
                 mapper,
             } = *self.data(part)
             {
-                self.mapped_constraint(file, node, mapper);
+                self.mapped_constraint(root, mapper);
             }
         }
         let base = self.reduced(base);
@@ -6835,10 +6835,10 @@ impl<'p, 's> Checker<'p, 's> {
             &TypeData::Keyof(of) => {
                 // The keys of a generic mapped type with an `as` clause whose constraint is not
                 // declared with `keyof` are its name type.
-                if let Some((file, node, _)) = self.mapped_origin(of)
+                if let Some((root, _)) = self.mapped_origin(of)
                     && self.is_generic_mapped_type(of)
-                    && self.mapped_decl(file, node).name_ty.is_some()
-                    && !matches!(self.mapped_modifiers_source(file, node), Some((_, true)))
+                    && self.mapped_root_decl(root).has_name
+                    && !matches!(self.mapped_modifiers_source(root), Some((_, true)))
                 {
                     let names = self.get_index_type_for_mapped_type(of, IndexFlags::empty());
                     return self.next_base_constraint(names);

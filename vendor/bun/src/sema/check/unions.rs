@@ -1731,7 +1731,7 @@ impl<'p, 's> Checker<'p, 's> {
             | TypeData::Enum { symbol: sym, .. }
             | TypeData::EnumLit { member: sym, .. } => self.symbol_place(sym),
             TypeData::Anon { origin, .. } => match origin {
-                Origin::TypeLiteral(file, node) | Origin::Mapped(file, node) => {
+                Origin::TypeLiteral(file, node) | Origin::Mapped(MappedRoot::Node(file, node)) => {
                     at(file, self.hir(file)[node].pos)
                 }
                 Origin::ObjectLiteral(file, e, ..) | Origin::WidenedLiteral(file, e, ..) => {
@@ -2397,6 +2397,33 @@ impl<'p, 's> Checker<'p, 's> {
             }
             (&TypeData::NativeDefinition(x), &TypeData::NativeDefinition(y)) => {
                 declaration(x.class.declaration).cmp(&declaration(y.class.declaration)).then_with(|| types(x.view, y.view))
+            }
+            // Mapped types that Lua annotations write: their pieces, then their mappers.
+            (
+                &TypeData::Anon { origin: Origin::Mapped(MappedRoot::Native(x)), mapper: m },
+                &TypeData::Anon { origin: Origin::Mapped(MappedRoot::Native(y)), mapper: n },
+            ) => {
+                let pieces = |root: TypeId| match *self.data(root) {
+                    TypeData::NativeMappedRoot { param, constraint, keyof, readonly, optional, pieces, .. } => {
+                        let (written, lowered) = match pieces {
+                            NativeMappedPieces::Written { id, has_name } => (Some((id.snapshot, id.index, id.context, has_name)), Vec::new()),
+                            NativeMappedPieces::Lowered { template, name } => (None, vec![template, name]),
+                        };
+                        ((readonly, optional, written), [param, constraint, keyof].into_iter().chain(lowered).collect::<Vec<_>>())
+                    }
+                    _ => ((0, 0, None), Vec::new()),
+                };
+                let ((x_codes, x), (y_codes, y)) = (pieces(x), pieces(y));
+                let values = |mapper: MapperId| self.types().mapping(mapper).iter().map(|pair| pair.1).collect::<Vec<_>>();
+                let (m, n) = (values(m), values(n));
+                x_codes.cmp(&y_codes)
+                    .then_with(|| x.len().cmp(&y.len()))
+                    .then_with(|| x.iter().zip(&y).map(|(&x, &y)| {
+                        let (absent_x, absent_y) = (x == TypeId::UNRESOLVED, y == TypeId::UNRESOLVED);
+                        absent_x.cmp(&absent_y).then_with(|| if x == y || absent_x { Equal } else { types(x, y) })
+                    }).find(|order| order.is_ne()).unwrap_or(Equal))
+                    .then_with(|| m.len().cmp(&n.len()))
+                    .then_with(|| m.iter().zip(&n).map(|(x, y)| types(*x, *y)).find(|order| order.is_ne()).unwrap_or(Equal))
             }
             // Conditional types that Lua annotations write: their pieces, then their mappers.
             (

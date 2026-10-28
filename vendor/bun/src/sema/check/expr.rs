@@ -845,10 +845,10 @@ impl<'p, 's> Checker<'p, 's> {
             &TypeData::Substitution { base, .. } => self.is_const_type_variable(base, depth),
             // `getHomomorphicTypeVariable`: `{ [K in keyof T]: .. }` follows `T`.
             &TypeData::Anon {
-                origin: Origin::Mapped(file, node),
+                origin: Origin::Mapped(root),
                 mapper,
             } => {
-                let keys = self.mapped_constraint(file, node, mapper);
+                let keys = self.mapped_constraint(root, mapper);
                 match *self.data(keys) {
                     TypeData::Keyof(of) if matches!(self.data(of), TypeData::TypeParam(..)) => {
                         self.is_const_type_variable(of, depth)
@@ -1607,8 +1607,8 @@ impl<'p, 's> Checker<'p, 's> {
             }
             None => {
                 if e.is_some_and(|e| self.is_assignment_target(access_node.0, e))
-                    && let Some((of, node, _)) = self.mapped_origin(obj)
-                    && self.mapped_decl(of, node).readonly == MappedModifier::Add
+                    && let Some((root, _)) = self.mapped_origin(obj)
+                    && self.mapped_root_decl(root).readonly == MappedModifier::Add
                 {
                     self.error_at(access_node, 2542, &[Arg::Type(obj)]);
                 }
@@ -3508,16 +3508,16 @@ impl<'p, 's> Checker<'p, 's> {
     /// tuple to a tuple.
     fn is_homomorphic_generic_mapped(&mut self, ty: TypeId) -> bool {
         let TypeData::Anon {
-            origin: Origin::Mapped(file, node),
+            origin: Origin::Mapped(root),
             ..
         } = *self.data(ty)
         else {
             return false;
         };
-        self.mapped_decl(file, node).name_ty.is_none()
+        !self.mapped_root_decl(root).has_name
             && self.is_generic(ty)
             && self
-                .homomorphic_type_variable(file, node, MapperId::IDENTITY)
+                .homomorphic_type_variable(root, MapperId::IDENTITY)
                 .is_some()
     }
 

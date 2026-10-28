@@ -429,7 +429,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
             };
             registry.check_all_bodies(engine);
             while registry.retry_contextual_owner_validations(engine) {}
-            registry.check_unread_conditional_branches(engine);
+            registry.check_unread_annotation_pieces(engine);
             registry.check_deferred_constraints(engine);
             report.append(registry.take_report());
             report.render(engine);
@@ -727,7 +727,7 @@ impl Checker<'_> {
     /// the check around it that publishes.
     pub(crate) fn report_unplaced_limit(&mut self, since: u64, span: Span) {
         let Some(native) = self.native else { return };
-        if native.types.lowering_conditional_branch() { return }
+        if native.types.lowering_annotation_piece() { return }
         let hits = self.engine.unplaced_limits();
         if hits <= since { return }
         if !native_expressions::publishes(self.check_mode) {
@@ -792,7 +792,7 @@ impl Checker<'_> {
                 _ => {
                     // An `infer` type parameter is seen where it is written, whichever context
                     // lowers what has the reference.
-                    if let Some(key)=self.native.and_then(|native| native.types.visible_infer_parameter(name, ty.span)) {
+                    if let Some(key)=self.native.and_then(|native| native.types.visible_annotation_parameter(name, ty.span)) {
                         return Type::NativeTypeParameter(key);
                     }
                     if let Some(native)=self.native {
@@ -858,6 +858,7 @@ impl Checker<'_> {
             TypeExprKind::Intersection(types) => Type::Intersection(types.iter().map(|ty| self.annotation(ty)).collect()),
             TypeExprKind::CompletionHint(_) => Type::Never,
             TypeExprKind::Conditional { .. } => self.conditional_annotation(ty),
+            TypeExprKind::Mapped(mapped) => self.mapped_annotation(mapped, ty.span),
             TypeExprKind::Infer { name, .. } => self.infer_annotation(name, ty.span),
             TypeExprKind::TemplateLiteral { texts, types } => {
                 // As TypeScript requires, each placeholder is of a type that can be written as text.
@@ -903,7 +904,7 @@ impl Checker<'_> {
             }
             TypeExprKind::Generic { base, args, .. } => {
                 let arguments:Vec<_>=args.iter().map(|arg|self.annotation(arg)).collect();
-                if base.text == "self" || self.native.and_then(|native| native.types.visible_infer_parameter(&base.text, base.span)).is_some() {
+                if base.text == "self" || self.native.and_then(|native| native.types.visible_annotation_parameter(&base.text, base.span)).is_some() {
                     self.error("TS2315", base.span, format!("Type '{}' is not generic.", base.text));
                     return self.engine.error_type();
                 }
@@ -919,6 +920,14 @@ impl Checker<'_> {
                         return self.engine.error_type();
                     }
                     return self.engine.string_mapping_type(mapping, argument);
+                }
+                // So is `NoInfer<T>`.
+                if base.text == "NoInfer" {
+                    let [argument]=arguments.as_slice() else {
+                        self.error("TS2314", ty.span, "Generic type 'NoInfer' requires 1 type argument(s).");
+                        return self.engine.error_type();
+                    };
+                    return self.engine.no_infer_type(argument);
                 }
                 let parameter=self.native.map(|native| {
                     let context=self.signature_type_context.map(native_named::NativeTypeContext::Signature)

@@ -261,13 +261,15 @@ impl<'c, 'p, 's> Services<'c, 'p, 's> {
             }
             TypeData::Keyof(of) => Structure::Index { ty: of },
             TypeData::Anon {
-                origin: Origin::Mapped(file, node),
+                origin: Origin::Mapped(root),
                 ..
             } => {
-                let TypeNodeKind::Mapped(mapped) = self.c.hir(file)[node].kind else {
+                if let MappedRoot::Node(file, node) = root
+                    && !matches!(self.c.hir(file)[node].kind, TypeNodeKind::Mapped(_))
+                {
                     return Structure::Other;
-                };
-                let mapped = self.c.hir(file)[mapped];
+                }
+                let mapped = self.c.mapped_root_decl(root);
                 Structure::Mapped {
                     type_parameter: self.c.mapped_type_param(ty),
                     constraint: self.c.mapped_keys(ty),

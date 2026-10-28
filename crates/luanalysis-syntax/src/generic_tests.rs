@@ -268,3 +268,36 @@ fn extends_and_or_is_a_conditional_type_whose_extends_type_may_declare_infer() {
 
     assert!(!parse("---@type T extends string and 1\nlocal x\n").diagnostics.is_empty());
 }
+
+#[test]
+fn a_record_whose_member_is_p_in_k_is_a_mapped_type() {
+    let parse_type = |source: &str| {
+        let file = parse(source);
+        assert!(file.diagnostics.is_empty(), "{source}: {:?}", file.diagnostics);
+        let StmtKind::Local { annotation: Some(annotation), .. } = &file.statements[0].kind else { panic!("{:#?}", file.statements) };
+        annotation.types[0].clone()
+    };
+    let source = "---@type { +readonly [P in keyof T as `get_${P}`]-?: T[P]; }\nlocal x\n";
+    let TypeExprKind::Mapped(mapped) = parse_type(source).kind else { panic!() };
+    assert_eq!((mapped.readonly, mapped.optional), (MappedModifier::Plus, MappedModifier::Remove));
+    assert_eq!(mapped.parameter.text, "P");
+    assert_eq!(&source[mapped.constraint.span.start..mapped.constraint.span.end], "keyof T");
+    assert!(matches!(mapped.name.as_ref().map(|name| &name.kind), Some(TypeExprKind::TemplateLiteral { .. })));
+    assert_eq!(&source[mapped.ty.span.start..mapped.ty.span.end], "T[P]");
+    let TypeExprKind::Mapped(mapped) = parse_type("---@type { readonly [K in Keys]?: V }\nlocal x\n").kind else { panic!() };
+    assert_eq!((mapped.readonly, mapped.optional), (MappedModifier::Add, MappedModifier::Add));
+
+    // `[K]` without `in` is an indexed field; `readonly [K]` a read-only one.
+    assert!(matches!(parse_type("---@type { [string]: number }\nlocal x\n").kind, TypeExprKind::Record(_)));
+    assert!(matches!(parse_type("---@type { readonly [string]: number }\nlocal x\n").kind, TypeExprKind::Record(_)));
+    // A record field may be optional.
+    let TypeExprKind::Record(fields) = parse_type("---@type { name?: string, [\"key\"]?: number }\nlocal x\n").kind else { panic!() };
+    assert!(fields.iter().all(|field| field.optional.is_some()));
+    // A mapped type has one member.
+    assert!(!parse("---@type { [P in K]: V, other: number }\nlocal x\n").diagnostics.is_empty());
+    // `extends` may introduce a constraint, as `:` does.
+    let file = parse("---@generic K extends string, V\n---@param key K\nlocal function f(key) end\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let generics = &local_function(&file).annotations.generics;
+    assert!(generics[0].constraint.is_some() && generics[1].constraint.is_none());
+}

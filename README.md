@@ -184,6 +184,8 @@ local count = pick(3) -- number
 ```
 
 A constrained parameter's default follows its constraint, `---@generic T: Constraint = Default`.
+`extends` may stand for the colon, as in TypeScript and EmmyLua Analyzer: `---@generic K extends string`,
+`---@alias Result<F extends function>`.
 As TypeScript checks them, parameters with defaults follow those without, a default refers only
 to earlier parameters of its list, and it satisfies its constraint. A union default is
 parenthesized, as a union constraint is: `---@generic T = (string | nil)`.
@@ -227,6 +229,9 @@ end
 `readonly` comes before a field's name, so `---@field readonly boolean` and
 `{ readonly: boolean }` still declare a field named `readonly`. Editors point this out;
 `["readonly"]` names that field explicitly, and `readonly readonly` makes it read-only.
+
+A field written `name?: T` in a table type may be absent, as in TypeScript and EmmyLua Analyzer:
+`{ name?: string }` accepts `{}`, and reading `name` gives `nil | string`.
 
 ### Types from values
 
@@ -300,6 +305,46 @@ As in TypeScript, the type is deferred while its check or extends type is generi
 refer to the alias whose body it is, and recursion that never ends is reported (TS2589).
 `infer P extends C` constrains what is inferred. A `---@return` may be conditional too; without
 `and` after its extends type, `extends` begins the description (v1).
+
+### Mapped types
+
+`{ [P in K]: T }` is a table with a property for each key `P` of `K`, of type `T`, as in
+TypeScript and EmmyLua Analyzer. Over `keyof X` it keeps `X`'s optional and read-only
+properties; `?`, `readonly`, `-?` and `-readonly` add or remove them, and `as` renames each key:
+
+```lua
+---@class Point
+---@field x number
+---@field y number
+
+---@alias Optional<T> { [P in keyof T]?: T[P] }
+---@alias Getters<T> { [P in keyof T as `get_${P & string}`]: fun(): T[P] }
+---@alias DeepPartial<T> { [P in keyof T]?: DeepPartial<T[P]> }
+
+---@type Optional<Point>
+local partial = { x = 1 }   -- { x?: number, y?: number }
+---@type Getters<Point>
+local getters
+local x = getters.get_x()   -- number
+```
+
+The template may refer to the alias whose body it is, as `DeepPartial` does. A Lua table has an
+absent property as `nil`, so a property whose type admits `nil` need not be there. Inference
+goes through a mapped type, as TypeScript's does: a function taking `Partial<T>` infers `T`.
+
+TypeScript's utility types are declared with every version of Lua: `Partial`, `Required`,
+`Readonly`, `Pick`, `Omit`, `Record`, `Exclude`, `Extract`, `NonNullable` and `ReturnType`. A
+project's own declaration of one of those names is the type of that name. `NoInfer<T>` is `T`
+where inference does not look for a type parameter:
+
+```lua
+---@generic T: string
+---@param values T[]
+---@param default NoInfer<T>
+---@return T
+local function pick(values, default) return default end
+pick({ "a", "b" }, "c") -- error: '"c"' is not assignable to '"a" | "b"'
+```
 
 ### Functions
 

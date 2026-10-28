@@ -170,6 +170,17 @@ impl ProjectNamedIndex {
     pub(crate) fn is_merged(&self, key: NativeTypeDeclarationKey) -> bool {
         self.merged.contains_key(&key) || self.merges.contains_key(&key)
     }
+    /// A project's own declaration of a name that the bundled utility types (`Partial`, `Record`
+    /// and their kin) declare is the type of that name: those are TypeScript's, which Lua
+    /// projects predate.
+    fn yield_utilities(&mut self, utilities: &HashSet<NativeTypeDeclarationKey>) {
+        if utilities.is_empty() { return }
+        for candidates in self.names.values_mut() {
+            if candidates.iter().any(|key| !utilities.contains(key)) {
+                candidates.retain(|key| !utilities.contains(key));
+            }
+        }
+    }
     /// A class declared in a declaration file, such as the standard library's `string`, is the
     /// one its other declarations extend.
     fn merge_classes(&mut self, classes: &HashSet<NativeTypeDeclarationKey>, declared: &HashSet<NativeTypeDeclarationKey>) {
@@ -287,6 +298,7 @@ impl ProjectRegistry {
         let mut names = ProjectNamedIndex::default();
         let mut classes = HashSet::default();
         let mut declared = HashSet::default();
+        let mut utilities = HashSet::default();
         let mut files: Vec<_> = inputs
             .into_iter()
             .enumerate()
@@ -301,6 +313,7 @@ impl ProjectRegistry {
                 for declaration in source.named.declarations() {
                     let key = NativeTypeDeclarationKey { snapshot: declaration.key.snapshot, index: declaration.key.index };
                     names.names.entry(declaration.syntax.name.text.clone()).or_default().push(key);
+                    if input.standard_library == Some(crate::standard_environment::StandardLibrarySource::Utility) { utilities.insert(key); }
                     if matches!(declaration.syntax.kind, luanalysis_syntax::NamedTypeDeclarationKind::Record { flavor: luanalysis_syntax::NamedRecordKind::Class, .. }) {
                         classes.insert(key);
                         if input.role == SourceRole::Declaration { declared.insert(key); }
@@ -315,6 +328,7 @@ impl ProjectRegistry {
             })
             .collect();
         names.merge_classes(&classes, &declared);
+        names.yield_utilities(&utilities);
         // Every source sees every other's scopes, merged once for all of them.
         let original_scopes: Vec<_> = files.iter().map(|file| file.source.types.original_scopes()).collect();
         let shared = Rc::new(crate::native_types::OriginalTypeScopes::merge(&original_scopes));
@@ -681,7 +695,7 @@ impl ProjectRegistry {
             }
             for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
                 if !owned_only && !checked.contains(&index) { continue; }
-                file.source.check_unread_conditional_branches(queries);
+                file.source.check_unread_annotation_pieces(queries);
                 file.source.check_deferred_constraints(queries);
                 let mut pending = file.source.take_report();
                 if !self.describe_types { pending.discard_types(); }
@@ -1130,7 +1144,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn signature_may_have_type_predicate(key: NativeSignatureKey) -> bool;
         fn function_may_have_type_predicate(key: NativeFunctionKey) -> bool;
         fn function_type_predicate(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypePredicate>;
-        fn conditional_branch(key: luanalysis_engine::NativeConditionalKey, context: luanalysis_engine::NativeConditionalContext, yes: bool, queries: &mut dyn TypeQueries) -> Type;
+        fn annotation_piece(key: luanalysis_engine::NativeAnnotationKey, context: luanalysis_engine::NativeAnnotationContext, piece: luanalysis_engine::AnnotationPiece, queries: &mut dyn TypeQueries) -> Type;
         fn signature_return_cycle(key: NativeSignatureKey) -> ();
         fn signature_return_type_too_deep(key: NativeSignatureKey) -> ();
 

@@ -255,7 +255,7 @@ fn a_member_no_alternative_has_does_not_narrow_its_table_to_never() {
     assert!(!report.contains("'never'"), "{report}");
     assert!(report.contains("main.lua:7:15: inside: { type: \"if\" } | { type: \"else\" }"), "{report}");
     // A member one alternative has still selects it.
-    assert!(report.contains("main.lua:10:23: onlyA: { kind: \"a\"; x: 1 }"), "{report}");
+    assert!(report.contains("main.lua:10:23: onlyA: { kind: \"a\", x: 1 }"), "{report}");
 }
 
 #[test]

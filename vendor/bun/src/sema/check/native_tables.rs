@@ -1156,6 +1156,8 @@ impl<'p, 's> Checker<'p, 's> {
             if let NativeTableAccessKey::Literal(NativeTableKey::String(name)) = key
                 && let Some(expected) = self.write_type_of_property(table, name)
             {
+                // A read-only property of an object type, as a mapped type's `readonly` makes one.
+                if self.is_readonly_property(table, name) { return Err(NativeTableError::ReadOnly { key }) }
                 return if self.is_assignable(value, expected) { Ok(()) } else { Err(NativeTableError::ValueType { value, expected }) };
             }
             return Err(NativeTableError::NotTable { ty: table });

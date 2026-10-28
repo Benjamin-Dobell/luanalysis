@@ -31,8 +31,8 @@ impl super::Checker<'_> {
         let TypeExprKind::Conditional { check, extends, yes, no } = &ty.kind else {
             unreachable!("a conditional type annotation")
         };
-        let key = self.native.and_then(|native| native.types.conditional_at(ty.span));
-        let infer: Vec<_> = key.zip(self.native).map(|(key, native)| native.types.conditional_infer_parameters(key)).unwrap_or_default()
+        let key = self.native.and_then(|native| native.types.annotation_at(ty.span));
+        let infer: Vec<_> = key.zip(self.native).map(|(key, native)| native.types.declared_annotation_parameters(key)).unwrap_or_default()
             .into_iter()
             .map(|parameter| {
                 let constraint = self.native.and_then(|native| native.types.parameter(parameter).constraint.as_ref()).map(|constraint| self.annotation(constraint));
@@ -49,23 +49,74 @@ impl super::Checker<'_> {
             named: self.named_type_context,
             signature: self.signature_type_context,
         };
-        let source = native.types.conditional(key).expect("registered conditional type");
+        let source = native.types.annotation(key).expect("registered conditional type");
         source.context.borrow_mut().get_or_insert(context);
         let lexical = self.signature_type_context.map(crate::native_named::NativeTypeContext::Signature)
             .or_else(|| self.named_type_context.map(crate::native_named::NativeTypeContext::NamedType))
             .or_else(|| self.type_context.map(crate::native_named::NativeTypeContext::Function));
-        let mut outer = native.conditional_outer_parameters(lexical, yes);
-        for parameter in native.conditional_outer_parameters(lexical, no) {
+        let mut outer = native.annotation_piece_outer_parameters(lexical, yes);
+        for parameter in native.annotation_piece_outer_parameters(lexical, no) {
             if !outer.contains(&parameter) { outer.push(parameter); }
         }
         let branches = luanalysis_engine::ConditionalBranches::Written(key, context.encode());
         self.engine.conditional_type(&check_type, &extends_type, &infer, &branches, &outer)
     }
 
+    /// TypeScript's mapped type, `{ [P in K as N]?: T }`. Its template and `as` clause see `P`
+    /// and are lowered when first read, as TypeScript reads them, so that one may refer to the
+    /// alias whose body this is. Written `keyof X`, its keys make it homomorphic in `X`.
+    pub(super) fn mapped_annotation(&mut self, mapped: &luanalysis_syntax::MappedType, span: luanalysis_syntax::Span) -> Type {
+        use luanalysis_engine::MappedTypeModifier;
+        let modifier = |modifier: luanalysis_syntax::MappedModifier| match modifier {
+            luanalysis_syntax::MappedModifier::None => MappedTypeModifier::None,
+            luanalysis_syntax::MappedModifier::Add => MappedTypeModifier::Add,
+            luanalysis_syntax::MappedModifier::Plus => MappedTypeModifier::Plus,
+            luanalysis_syntax::MappedModifier::Remove => MappedTypeModifier::Remove,
+        };
+        let key = self.native.and_then(|native| native.types.annotation_at(span));
+        let declared = key.zip(self.native).and_then(|(key, native)| native.types.declared_annotation_parameters(key).first().copied());
+        let (Some(key), Some(parameter), Some(native)) = (key, declared, self.native) else {
+            unreachable!("every documentation comment's mapped type is registered")
+        };
+        let (constraint, keyof) = match &mapped.constraint.value_syntax().kind {
+            TypeExprKind::KeyOf(of) => {
+                let of = self.annotation(of);
+                (self.engine.key_type(&of), Some(of))
+            }
+            _ => (self.annotation(&mapped.constraint), None),
+        };
+        let context = crate::native_types::AnnotationContext {
+            function: self.type_context,
+            named: self.named_type_context,
+            signature: self.signature_type_context,
+        };
+        let source = native.types.annotation(key).expect("registered mapped type");
+        source.context.borrow_mut().get_or_insert(context);
+        let lexical = self.signature_type_context.map(crate::native_named::NativeTypeContext::Signature)
+            .or_else(|| self.named_type_context.map(crate::native_named::NativeTypeContext::NamedType))
+            .or_else(|| self.type_context.map(crate::native_named::NativeTypeContext::Function));
+        let mut outer = native.annotation_piece_outer_parameters(lexical, &mapped.ty);
+        if let Some(name) = &mapped.name {
+            for parameter in native.annotation_piece_outer_parameters(lexical, name) {
+                if !outer.contains(&parameter) { outer.push(parameter); }
+            }
+        }
+        outer.retain(|&outer| outer != parameter);
+        self.engine.mapped_type(&luanalysis_engine::MappedTypeRecipe {
+            parameter,
+            constraint,
+            keyof,
+            readonly: modifier(mapped.readonly),
+            optional: modifier(mapped.optional),
+            pieces: luanalysis_engine::MappedTypePieces::Written { key, context: context.encode(), has_name: mapped.name.is_some() },
+            outer,
+        })
+    }
+
     /// The type parameter that `infer name` declares, which only a conditional type's extends
     /// type can.
     pub(super) fn infer_annotation(&mut self, name: &Name, span: luanalysis_syntax::Span) -> Type {
-        if let Some(key) = self.native.and_then(|native| native.types.infer_parameter(name.span)) {
+        if let Some(key) = self.native.and_then(|native| native.types.declared_parameter(name.span)) {
             return Type::NativeTypeParameter(key);
         }
         self.error("TS1338", span, "'infer' declarations are only permitted in the 'extends' clause of a conditional type.");

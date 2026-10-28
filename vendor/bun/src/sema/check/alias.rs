@@ -154,7 +154,7 @@ impl<'p, 's> Checker<'p, 's> {
     fn alias_node_of_type(&self, ty: TypeId) -> Option<(FileId, TypeNodeId, MapperId)> {
         Some(match *self.data(ty) {
             TypeData::Anon {
-                origin: Origin::TypeLiteral(file, node) | Origin::Mapped(file, node),
+                origin: Origin::TypeLiteral(file, node) | Origin::Mapped(MappedRoot::Node(file, node)),
                 mapper,
             }
             | TypeData::Cond {
@@ -342,14 +342,14 @@ impl<'p, 's> Checker<'p, 's> {
                 self.conditional_type_instantiation(root, new, Some(alias))
             }
             &TypeData::Anon {
-                origin: Origin::Mapped(file, node),
+                origin: Origin::Mapped(root),
                 mapper: own,
             } => {
                 let new = self.map_mapper(own, mapper);
                 if new == own {
                     return ty;
                 }
-                self.instantiate_mapped_type(file, node, new, NewAlias::Given(alias.0, alias.1))
+                self.instantiate_mapped_type(root, new, NewAlias::Given(alias.0, alias.1))
             }
             // Only a deferred type reference goes through `getObjectTypeInstantiation`: it is the
             // body of an alias and has that alias.

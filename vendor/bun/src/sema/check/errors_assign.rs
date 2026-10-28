@@ -964,7 +964,7 @@ impl Checker<'_, '_> {
         if hir[m].ty != node || hir[m].name_ty.is_some() {
             return None;
         }
-        let Some((source, true)) = self.mapped_modifiers_source(file, parent) else {
+        let Some((source, true)) = self.mapped_modifiers_source(MappedRoot::Node(file, parent)) else {
             return None;
         };
         let source = self.actual_type_variable(source);

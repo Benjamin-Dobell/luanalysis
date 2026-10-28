@@ -49,9 +49,9 @@ impl Checker<'_> {
                     (descriptor, key.span)
                 }
             };
-            let readonly = field.readonly.is_some();
+            let (readonly, optional) = (field.readonly.is_some(), field.optional.is_some());
             match &key {
-                TableKey::Literal(key) => table.fields.push(NativeField { readonly, ..NativeField::new(key.clone(), value) }),
+                TableKey::Literal(key) => table.fields.push(NativeField { readonly, optional, ..NativeField::new(key.clone(), value) }),
                 TableKey::Type(key) => table.indexers.push(TableIndexer { readonly, ..TableIndexer::new(key.clone(), value) }),
             }
             origins.push((key, origin));

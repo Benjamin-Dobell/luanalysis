@@ -331,7 +331,7 @@ impl NativeRegistry {
                 .map(|source| source.generic_scope.clone())
                 .chain(signatures.scopes(&file))
                 .collect(),
-            luanalysis_syntax::conditional_types(&file),
+            luanalysis_syntax::annotation_types(&file),
         );
         for (function,signature) in signatures.implementation_scopes(&functions) {
             types.attach_signature_scope(function,signature);
@@ -1226,14 +1226,19 @@ impl NativeRegistry {
         }
     }
 
-    /// Lowers the branches that no evaluation read of the conditional types that were lowered,
-    /// for their diagnostics, as TypeScript checks every node of a conditional type.
-    pub(crate) fn check_unread_conditional_branches(&self, queries: &mut dyn TypeQueries) {
-        for (index, source) in self.types.conditionals().iter().enumerate() {
+    /// Lowers the pieces that no evaluation read of the conditional and mapped types that were
+    /// lowered, for their diagnostics, as TypeScript checks every node of such a type.
+    pub(crate) fn check_unread_annotation_pieces(&self, queries: &mut dyn TypeQueries) {
+        use luanalysis_engine::AnnotationPiece;
+        for (index, source) in self.types.annotations().iter().enumerate() {
             let Some(context) = *source.context.borrow() else { continue };
-            let key = luanalysis_engine::NativeConditionalKey { snapshot: self.snapshot, index: index as u32 };
-            for (lowered, yes) in source.lowered.get().into_iter().zip([true, false]) {
-                if !lowered { self.conditional_branch(key, context.encode(), yes, queries); }
+            let key = luanalysis_engine::NativeAnnotationKey { snapshot: self.snapshot, index: index as u32 };
+            let pieces = match &source.syntax {
+                luanalysis_syntax::AnnotationDeclaration::Conditional(_) => [Some(AnnotationPiece::True), Some(AnnotationPiece::False)],
+                luanalysis_syntax::AnnotationDeclaration::Mapped(mapped) => [Some(AnnotationPiece::Template), mapped.name.as_ref().map(|_| AnnotationPiece::Name)],
+            };
+            for (lowered, piece) in source.lowered.get().into_iter().zip(pieces) {
+                if let Some(piece) = piece.filter(|_| !lowered) { self.annotation_piece(key, context.encode(), piece, queries); }
             }
         }
     }
@@ -3294,8 +3299,8 @@ impl NativeTypeProvider for NativeRegistry {
             NativeTypeContext::NamedType(owner) => checker.named_type_context = Some(owner),
             NativeTypeContext::Signature(owner) => checker.signature_type_context = Some(owner),
             // An `infer` type parameter's constraint is lowered where its conditional type is.
-            NativeTypeContext::Conditional(key) => {
-                if let Some(context) = self.types.conditional(key).and_then(|conditional| *conditional.context.borrow()) {
+            NativeTypeContext::Annotation(key) => {
+                if let Some(context) = self.types.annotation(key).and_then(|conditional| *conditional.context.borrow()) {
                     checker.type_context = context.function;
                     checker.named_type_context = context.named;
                     checker.signature_type_context = context.signature;
@@ -3324,7 +3329,7 @@ impl NativeTypeProvider for NativeRegistry {
             NativeTypeContext::NamedType(owner) => checker.named_type_context = Some(owner),
             NativeTypeContext::Signature(owner) => checker.signature_type_context = Some(owner),
             // An `infer` type parameter has no default.
-            NativeTypeContext::Conditional(_) => {}
+            NativeTypeContext::Annotation(_) => {}
         }
         let default = checker.annotation(recipe);
         self.merge_report(checker.report);
@@ -3335,10 +3340,22 @@ impl NativeTypeProvider for NativeRegistry {
         self.types.parameter(key).order
     }
 
-    fn conditional_branch(&self, key: luanalysis_engine::NativeConditionalKey, context: luanalysis_engine::NativeConditionalContext, yes: bool, queries: &mut dyn TypeQueries) -> Type {
-        let Some(source) = self.types.conditional(key) else { return queries.error_type() };
+    fn annotation_piece(&self, key: luanalysis_engine::NativeAnnotationKey, context: luanalysis_engine::NativeAnnotationContext, piece: luanalysis_engine::AnnotationPiece, queries: &mut dyn TypeQueries) -> Type {
+        use luanalysis_engine::AnnotationPiece;
+        use luanalysis_syntax::AnnotationDeclaration;
+        let Some(source) = self.types.annotation(key) else { return queries.error_type() };
+        let syntax = match (&source.syntax, piece) {
+            (AnnotationDeclaration::Conditional(conditional), AnnotationPiece::True) => &conditional.yes,
+            (AnnotationDeclaration::Conditional(conditional), AnnotationPiece::False) => &conditional.no,
+            (AnnotationDeclaration::Mapped(mapped), AnnotationPiece::Template) => &mapped.ty,
+            (AnnotationDeclaration::Mapped(mapped), AnnotationPiece::Name) => match &mapped.name {
+                Some(name) => name,
+                None => return queries.error_type(),
+            },
+            _ => return queries.error_type(),
+        };
         let mut lowered = source.lowered.get();
-        lowered[usize::from(!yes)] = true;
+        lowered[usize::from(matches!(piece, AnnotationPiece::False | AnnotationPiece::Name))] = true;
         source.lowered.set(lowered);
         let context = crate::native_types::AnnotationContext::decode(context);
         source.context.borrow_mut().get_or_insert(context);
@@ -3346,7 +3363,7 @@ impl NativeTypeProvider for NativeRegistry {
         checker.type_context = context.function;
         checker.named_type_context = context.named;
         checker.signature_type_context = context.signature;
-        let ty = self.types.lower_conditional_branch(|| checker.annotation(if yes { &source.syntax.yes } else { &source.syntax.no }));
+        let ty = self.types.lower_annotation_piece(|| checker.annotation(syntax));
         self.merge_report(checker.report);
         ty
     }

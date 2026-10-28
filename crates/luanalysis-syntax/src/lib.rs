@@ -22,7 +22,7 @@ mod diagnostic_origin_tests;
 pub use lexer::{Lexed, Token, TokenKind, identifier_continue, identifier_start, is_identifier, lex};
 pub use parser::{parse, parse_with_checkpoint};
 pub use documentation::{Documentation, documentation_above, documentation_at};
-pub use navigation::{ConditionalDeclaration, InferDeclaration, TypeName, TypeNameKind, conditional_types, referenced_type_names, type_names, type_query_roots};
+pub use navigation::{AnnotationDeclaration, ConditionalDeclaration, InferDeclaration, MappedDeclaration, TypeName, TypeNameKind, annotation_types, referenced_type_names, type_names, type_query_roots};
 
 /// Half-open UTF-8 byte offsets in the original Lua source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -604,6 +604,9 @@ pub enum TypeExprKind {
     /// `infer P` in a conditional type's constraint: a type parameter its true branch can use.
     /// `infer P extends C` constrains it.
     Infer { name: Name, constraint: Option<Box<TypeExpr>> },
+    /// TypeScript's (and EmmyLua Analyzer's) mapped type, `{ [P in K as N]?: T }`: a property for
+    /// each key `P` of `K`, named `N` when there is an `as` clause, of type `T`.
+    Mapped(Box<MappedType>),
     /// `T[K]`: the type of T's values at keys of type K.
     IndexedAccess {
         object: Box<TypeExpr>,
@@ -656,6 +659,7 @@ impl TypeExpr {
             | TypeExprKind::Infer { constraint: Some(element), .. } => vec![element],
             TypeExprKind::IndexedAccess { object, index } => vec![object, index],
             TypeExprKind::Conditional { check, extends, yes, no } => vec![check, extends, yes, no],
+            TypeExprKind::Mapped(mapped) => [&mapped.constraint].into_iter().chain(&mapped.name).chain([&mapped.ty]).collect(),
             TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. }
             | TypeExprKind::TemplateLiteral { types, .. } => types.iter().collect(),
             TypeExprKind::Record(fields) => fields
@@ -840,11 +844,36 @@ pub struct FunctionTypeParam {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct MappedType {
+    pub readonly: MappedModifier,
+    pub parameter: Name,
+    /// `K`: the keys `P` ranges over.
+    pub constraint: TypeExpr,
+    /// `as N`
+    pub name: Option<TypeExpr>,
+    pub optional: MappedModifier,
+    /// `T`: each property's type.
+    pub ty: TypeExpr,
+}
+
+/// A mapped type's `readonly` or `?`: absent, added (`+` or bare) or removed (`-`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MappedModifier {
+    None,
+    Add,
+    /// `+readonly`, `+?`: the same as `Add`, written so.
+    Plus,
+    Remove,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct TypeField {
     pub key: TypeFieldKey,
     pub ty: TypeExpr,
     /// `{ readonly name: T }`: the field cannot be assigned.
     pub readonly: Option<Span>,
+    /// `{ name?: T }`: the field may be absent, as in TypeScript and EmmyLua Analyzer.
+    pub optional: Option<Span>,
     pub span: Span,
 }
 

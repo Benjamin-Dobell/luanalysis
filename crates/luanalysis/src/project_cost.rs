@@ -88,6 +88,11 @@ impl OriginalTypes {
                     self.ty(part);
                 }
             }
+            TypeExprKind::Mapped(mapped) => {
+                for part in [&mapped.constraint].into_iter().chain(&mapped.name).chain([&mapped.ty]) {
+                    self.ty(part);
+                }
+            }
             TypeExprKind::Conditional { check, extends, yes, no } => {
                 for part in [check, extends, yes, no] {
                     self.ty(part);

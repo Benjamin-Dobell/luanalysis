@@ -2330,7 +2330,7 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// `isReadonlySymbol(getPropertyOfType(object, name))`
-    fn is_readonly_property(&mut self, object: TypeId, name: Atom) -> bool {
+    pub(super) fn is_readonly_property(&mut self, object: TypeId, name: Atom) -> bool {
         self.get_property_of_type(object, name)
             .is_some_and(|(prop, _)| self.is_readonly_symbol(prop))
     }

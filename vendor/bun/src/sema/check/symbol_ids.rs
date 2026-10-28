@@ -146,9 +146,11 @@ impl Checker<'_, '_> {
             return;
         }
         let key = match origin {
-            Origin::TypeLiteral(file, node) | Origin::Mapped(file, node) => {
+            Origin::TypeLiteral(file, node) | Origin::Mapped(MappedRoot::Node(file, node)) => {
                 SymbolKey::Declared(file, Decl::TypeLiteral(node))
             }
+            // A Lua annotation's mapped type declares no symbol.
+            Origin::Mapped(MappedRoot::Native(_)) => return,
             Origin::ObjectLiteral(file, literal, ..)
             | Origin::WidenedLiteral(file, literal, ..) => {
                 SymbolKey::Declared(file, Decl::ObjectLiteral(literal))

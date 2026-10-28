@@ -537,9 +537,10 @@ impl<'p> Checker<'p, '_> {
                 Origin::ObjectLiteral(file, e, ..) | Origin::WidenedLiteral(file, e, ..) => {
                     SymbolAtLocation::Anonymous(file, self.hir(file).node(e))
                 }
-                Origin::TypeLiteral(file, node) | Origin::Mapped(file, node) => {
+                Origin::TypeLiteral(file, node) | Origin::Mapped(MappedRoot::Node(file, node)) => {
                     SymbolAtLocation::Anonymous(file, self.hir(file).node(node))
                 }
+                Origin::Mapped(MappedRoot::Native(_)) => return None,
                 Origin::GlobalThis => SymbolAtLocation::Symbol(files.global_this_symbol),
             },
             TypeData::Fns { ref decls, .. } => {

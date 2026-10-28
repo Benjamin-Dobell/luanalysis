@@ -191,7 +191,7 @@ return width, config, same, global, narrowed, missing, nowhere
     assert_eq!(checked.ty("global"), "{ enabled: true }");
     assert_eq!(checked.ty("copy"), "string | nil");
     assert_eq!(checked.diagnostics, [
-        "TS2339 missing | Property 'missing' does not exist on type '{ config: { title: \"t\"; width: 10 } }'.",
+        "TS2339 missing | Property 'missing' does not exist on type '{ config: { title: \"t\", width: 10 } }'.",
         "TS2304 Nowhere | Cannot find name 'Nowhere'.",
     ]);
 }

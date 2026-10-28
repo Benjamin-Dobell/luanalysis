@@ -78,9 +78,11 @@ pub(crate) enum StandardLibrarySource {
     Table,
     String,
     Utf8,
+    /// TypeScript's utility types, `Partial`, `Pick`, `Exclude` and their kin.
+    Utility,
 }
 impl StandardLibrarySource {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::LegacyRequire,
         Self::Base,
         Self::Bit32,
@@ -94,6 +96,7 @@ impl StandardLibrarySource {
         Self::Table,
         Self::String,
         Self::Utf8,
+        Self::Utility,
     ];
 
     fn name(self) -> &'static str {
@@ -111,6 +114,7 @@ impl StandardLibrarySource {
             Self::Table => "table",
             Self::String => "string",
             Self::Utf8 => "utf8",
+            Self::Utility => "utility",
         }
     }
 
@@ -118,13 +122,18 @@ impl StandardLibrarySource {
     /// loader are not libraries; they are always included.
     fn library(self) -> Option<&'static str> {
         match self {
-            Self::LegacyRequire | Self::Builtin => None,
+            Self::LegacyRequire | Self::Builtin | Self::Utility => None,
             Self::Base => Some("basic"),
             kind => Some(kind.name()),
         }
     }
 
     fn source(self, profile: StandardEnvironmentProfile) -> Option<&'static str> {
+        // One file for every version of Lua, as the builtin types are; not v1's minimal one.
+        if self == Self::Utility {
+            return (!matches!(profile, StandardEnvironmentProfile::None | StandardEnvironmentProfile::LegacyMinimal))
+                .then_some(include_str!("../stdlib/utility.def.lua"));
+        }
         macro_rules! sources {
             ($directory:literal; $($kind:ident => $file:literal),* $(,)?) => {
                 match self {

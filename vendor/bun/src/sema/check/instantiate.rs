@@ -807,7 +807,7 @@ impl<'p, 's> Checker<'p, 's> {
                 if new == *own && (is_under_its_own_key || !self.is_instantiating(mapper)) {
                     return ty;
                 }
-                if let Origin::Mapped(file, node) = *origin {
+                if let Origin::Mapped(root) = *origin {
                     // `newAlias`: `instantiateTypeAlias(t.alias, m)`
                     let kept = self.stored_alias(ty).map(|(alias, type_arguments)| {
                         (*alias, self.instantiate_all(type_arguments, mapper))
@@ -816,7 +816,7 @@ impl<'p, 's> Checker<'p, 's> {
                         Some((alias, type_arguments)) => NewAlias::Given(*alias, type_arguments),
                         None => NewAlias::OfNode,
                     };
-                    return self.instantiate_mapped_type(file, node, new, alias);
+                    return self.instantiate_mapped_type(root, new, alias);
                 }
                 self.intern(TypeData::Anon {
                     origin: *origin,

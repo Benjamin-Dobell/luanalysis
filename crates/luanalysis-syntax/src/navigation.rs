@@ -59,12 +59,12 @@ pub fn type_names(file: &File, source: &str) -> Vec<TypeName> {
 }
 
 /// What the documentation visitor finds: a type's name, the variable a `typeof` names, or a
-/// conditional type.
+/// conditional or mapped type.
 #[derive(Clone, Copy)]
 enum Visited<'a> {
     Type(TypeNameKind),
     Value,
-    Conditional(&'a TypeExpr),
+    Annotation(&'a TypeExpr),
 }
 
 /// A conditional type written in a documentation comment.
@@ -85,27 +85,66 @@ pub struct InferDeclaration {
     pub constraint: Option<TypeExpr>,
 }
 
-/// The conditional types in the documentation comments of `file`, in source order, each once.
-pub fn conditional_types(file: &File) -> Vec<ConditionalDeclaration> {
-    let mut found: Vec<ConditionalDeclaration> = Vec::new();
-    for comment in file.comments.iter().filter(|comment| comment.kind == CommentKind::Documentation && comment.text.contains("extends")) {
+/// A mapped type written in a documentation comment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MappedDeclaration {
+    pub span: Span,
+    /// `P`, which `name` and `ty` see.
+    pub parameter: Name,
+    /// `K`
+    pub constraint: TypeExpr,
+    /// `as N`
+    pub name: Option<TypeExpr>,
+    pub ty: TypeExpr,
+}
+
+/// A conditional or mapped type written in a documentation comment: one that declares type
+/// parameters of its own, and whose pieces a checker may read only when it needs them.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AnnotationDeclaration {
+    Conditional(ConditionalDeclaration),
+    Mapped(MappedDeclaration),
+}
+
+impl AnnotationDeclaration {
+    pub fn span(&self) -> Span {
+        match self {
+            AnnotationDeclaration::Conditional(conditional) => conditional.span,
+            AnnotationDeclaration::Mapped(mapped) => mapped.span,
+        }
+    }
+}
+
+/// The conditional and mapped types in the documentation comments of `file`, in source order,
+/// each once.
+pub fn annotation_types(file: &File) -> Vec<AnnotationDeclaration> {
+    let mut found: Vec<AnnotationDeclaration> = Vec::new();
+    let may_have = |text: &str| text.contains("extends") || text.contains(" in ");
+    for comment in file.comments.iter().filter(|comment| comment.kind == CommentKind::Documentation && may_have(&comment.text)) {
         let (parsed, _) = crate::types::annotations(comment);
         visit_documentation(&parsed, &mut |_, _, visited| {
-            if let Visited::Conditional(ty) = visited
-                && let TypeExprKind::Conditional { extends, yes, no, .. } = &ty.kind
-                && !found.iter().any(|known| known.span == ty.span)
-            {
-                found.push(ConditionalDeclaration {
+            let Visited::Annotation(ty) = visited else { return };
+            if found.iter().any(|known| known.span() == ty.span) { return }
+            match &ty.kind {
+                TypeExprKind::Conditional { extends, yes, no, .. } => found.push(AnnotationDeclaration::Conditional(ConditionalDeclaration {
                     span: ty.span,
                     extends: extends.span,
                     yes: (**yes).clone(),
                     no: (**no).clone(),
                     infer: extends.infer_declarations(),
-                });
+                })),
+                TypeExprKind::Mapped(mapped) => found.push(AnnotationDeclaration::Mapped(MappedDeclaration {
+                    span: ty.span,
+                    parameter: mapped.parameter.clone(),
+                    constraint: mapped.constraint.clone(),
+                    name: mapped.name.clone(),
+                    ty: mapped.ty.clone(),
+                })),
+                _ => {}
             }
         });
     }
-    found.sort_by_key(|conditional| (conditional.span.start, conditional.span.end));
+    found.sort_by_key(|declaration| (declaration.span().start, declaration.span().end));
     found
 }
 
@@ -211,10 +250,18 @@ fn visit_type(ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited<'_>)) {
             visit_type(index, visit);
         }
         TypeExprKind::Conditional { check, extends, yes, no } => {
-            visit("", ty.span, Visited::Conditional(ty));
+            visit("", ty.span, Visited::Annotation(ty));
             for ty in [check, extends, yes, no] { visit_type(ty, visit); }
         }
         // `infer P` declares a type parameter, as `@generic` does.
+        // `[P in K]` declares `P`, as `@generic` does.
+        TypeExprKind::Mapped(mapped) => {
+            visit("", ty.span, Visited::Annotation(ty));
+            visit_type(&mapped.constraint, visit);
+            visit(&mapped.parameter.text, mapped.parameter.span, Visited::Type(TypeNameKind::Generic));
+            if let Some(name) = &mapped.name { visit_type(name, visit); }
+            visit_type(&mapped.ty, visit);
+        }
         TypeExprKind::Infer { name, constraint } => {
             visit(&name.text, name.span, Visited::Type(TypeNameKind::Generic));
             if let Some(constraint) = constraint { visit_type(constraint, visit); }

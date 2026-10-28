@@ -2888,6 +2888,126 @@
       "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
       "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
       "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/check/alias.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/errors_assign.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/errors_small.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/expr.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/flow.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/mapped.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/related_expected.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/services/symbol_at_location.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/services/types.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/shape.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/symbol_ids.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/check/unions.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-mapped-types.patch",
+      "reason": "Let a Lua annotation declare a mapped type: a root that is a native type, not a type node, with an eager key parameter, constraint and keyof source and a template and as clause that the provider lowers when first read, behind one root-aware accessor layer for every mapped type. Generalize the lazily read pieces of conditional types to any annotation piece. Treat an absent property of a Lua table as nil where the target property admits nil, report writes to read-only object properties, expose NoInfer, and print object types and function types as the Lua printer writes them.",
+      "patch_sha256": "bb3d08b4e1d1b6f213f27ff40c1061c32fee934b1462716cbdd94c2e01c55837"
     }
   ],
   "source_additions": {
@@ -2964,7 +3084,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "bc9462a424d74da1432fccf639656740ae11470d2339063cd65355015938656e",
+      "extracted_sha256": "cd65e6996f48da8e3baf1cdc360786b4e55a997ab8f473e67b7e4a13dbdd9153",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -3657,7 +3777,7 @@
     "src/sema/check/alias.rs": {
       "upstream": "src/sema/check/alias.rs",
       "sha256": "b7ba227d0b9437fafc433f5651d85bc797a0f8c9b92a3b9fc303ea4b77d58b15",
-      "extracted_sha256": "c4ddec9eabe06dada848e4b9b7d1bd59876a2af6e2966c03c6cf59db7753a09a"
+      "extracted_sha256": "e712746609e1cff2992ec0444561b26d8115d3878b18434ac2cdf4f77ce03d14"
     },
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
@@ -3677,7 +3797,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "34bfb9b5c6716d6b5cb5efea59d24e9d72e981847bcf0f65c1cf006180e228d5"
+      "extracted_sha256": "a797c87055821a7c486f3ce1a1e88e69ac1d5b5047a28da6790cbd1daff1676c"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -3707,7 +3827,7 @@
     "src/sema/check/errors_assign.rs": {
       "upstream": "src/sema/check/errors_assign.rs",
       "sha256": "9ea7054f2b5447746b42798171f8c2644fc0fdaa566b05f340f7c2ac0da52dc3",
-      "extracted_sha256": "9ea7054f2b5447746b42798171f8c2644fc0fdaa566b05f340f7c2ac0da52dc3"
+      "extracted_sha256": "1d1603321b541a529c459518ed63a38e055c65220f3d6826d5918ce75a784025"
     },
     "src/sema/check/errors_call.rs": {
       "upstream": "src/sema/check/errors_call.rs",
@@ -3842,7 +3962,7 @@
     "src/sema/check/errors_small.rs": {
       "upstream": "src/sema/check/errors_small.rs",
       "sha256": "3400e1136da1a464f79b46d95819c9ee06aaf08f15c8f9afd30707b288603464",
-      "extracted_sha256": "3400e1136da1a464f79b46d95819c9ee06aaf08f15c8f9afd30707b288603464"
+      "extracted_sha256": "97146c89dd605b23e4b7513d25d31d161ab39e4d7ec09b95447fd170bb001d6c"
     },
     "src/sema/check/errors_statements.rs": {
       "upstream": "src/sema/check/errors_statements.rs",
@@ -3872,12 +3992,12 @@
     "src/sema/check/expr.rs": {
       "upstream": "src/sema/check/expr.rs",
       "sha256": "b7bd24b3e1af1beddbe9cf4f1b95f69b31b22340562cba93954c0ed3b6c8a70b",
-      "extracted_sha256": "4beec1dab8e69697dffc490e6a995d15340133d5f09cd6f0349d2abc252ba760"
+      "extracted_sha256": "c14302fc08bdc702b088ec10aec8b1b4e927a5ef21b4ef61f6c3bb463d0588ad"
     },
     "src/sema/check/flow.rs": {
       "upstream": "src/sema/check/flow.rs",
       "sha256": "eca4c6e84d836502b89074917574c1f0623497ab0b0f11b06b729296b4d2c467",
-      "extracted_sha256": "82a405bb73a901b9db78e4f496c48892cc244205f91238dffedab2710c682682"
+      "extracted_sha256": "4df7cf0a28d83eb8e0f82ace119e6d0128d295819dbae91e09d538503086fcfd"
     },
     "src/sema/check/grammarchecks.rs": {
       "upstream": "src/sema/check/grammarchecks.rs",
@@ -3887,12 +4007,12 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "36518eadaff57fd9a22dae159529a9aa654d72c9eb50a7cb2ae103fbb5b25af9"
+      "extracted_sha256": "c42594dc5ad945bf814e791f01b2d3b0214e743fac3b7656b0f124ae43295b87"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "037428ccfa8e59d5f7fb82f5929dcc57840fc35285f04e273c19be2cfad232b6"
+      "extracted_sha256": "84debf6f8af310e34cf52465b534ca6581aa840d3a237b5b584369d99917abc4"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -3917,12 +4037,12 @@
     "src/sema/check/mapped.rs": {
       "upstream": "src/sema/check/mapped.rs",
       "sha256": "4dd9deabe9cc5c9e6fd585457addae05eab3311270100ef682f9bbfece820361",
-      "extracted_sha256": "01641bbf39392b38ffd1fcd75efaae89d5abff58b4a9029880e35ef588334d6d"
+      "extracted_sha256": "bf45f17c2bd87911395fd845a9d20b7c88b99cabb13a9dd95d963796529199f2"
     },
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "14152f279c5a1497d18de0f66df834e0e5325876ab064fc8dfef810af72a992a"
+      "extracted_sha256": "8e0cc2364068e609d747d4bee7a616c72a2b889d150acdacd7afb597251c00e5"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -3932,7 +4052,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "c3eeed48979082085182678bb83ca4068275ec3d43184d048fbf34f763ced718"
+      "extracted_sha256": "9357eb988a1f60b9ff46014659b576ffce6db649d07df528c32263b1788f949c"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -3947,7 +4067,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "d9073278ef57845a2bcbd1460352a5a4ef8122d2166128b26504e2721531c21c"
+      "extracted_sha256": "e2dd28a2c083326aeb1efac43203eac546ce0daa602fcf426f50f70f5526754a"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -3957,7 +4077,7 @@
     "src/sema/check/related_expected.rs": {
       "upstream": "src/sema/check/related_expected.rs",
       "sha256": "d365cff355599c2ba9788405d2079d773970d7cbd635b19f3ef1770e7d698638",
-      "extracted_sha256": "d365cff355599c2ba9788405d2079d773970d7cbd635b19f3ef1770e7d698638"
+      "extracted_sha256": "1541f3c7a44b4c428e706fcd1b3324015b567f4f1b3e219cde0c1916a50489a9"
     },
     "src/sema/check/services.rs": {
       "upstream": "src/sema/check/services.rs",
@@ -3972,7 +4092,7 @@
     "src/sema/check/services/symbol_at_location.rs": {
       "upstream": "src/sema/check/services/symbol_at_location.rs",
       "sha256": "8d07e1f6eb9def195a21f3fc0d68691226db7fbc7fdf19b58b2b5b7ed07f49e5",
-      "extracted_sha256": "8d07e1f6eb9def195a21f3fc0d68691226db7fbc7fdf19b58b2b5b7ed07f49e5"
+      "extracted_sha256": "2e37e86087a5082ab3f825b2c695fc4a4ea7942d8f41e66086335405d8a4dc74"
     },
     "src/sema/check/services/symbols.rs": {
       "upstream": "src/sema/check/services/symbols.rs",
@@ -3987,7 +4107,7 @@
     "src/sema/check/services/types.rs": {
       "upstream": "src/sema/check/services/types.rs",
       "sha256": "21c08d14db595f88d62e9821a1bacf65afd6313fe0453d1cf87e4d74fbf8b9d3",
-      "extracted_sha256": "6a663b1922a0d3a1d2fb0939545c7d9e453f61ad572288afdb03971726ad80bf"
+      "extracted_sha256": "5ce8f641cef360255ce2991f34188ced794dc4f832ca80a1ab0cf1306589b6fc"
     },
     "src/sema/check/services/visited.rs": {
       "upstream": "src/sema/check/services/visited.rs",
@@ -4002,7 +4122,7 @@
     "src/sema/check/shape.rs": {
       "upstream": "src/sema/check/shape.rs",
       "sha256": "2cf304511e8b6f482765340001ba2cae60a0253399a78a61979e3c8dd88f11f3",
-      "extracted_sha256": "d96ac20faef652ced9543c898191e3ff282ca9ca82e11cd4054e408e02097acb"
+      "extracted_sha256": "e37ed3921eb6b52e45b910d0e5c4523280abd9bc78ec331a74b3f0506a9b871e"
     },
     "src/sema/check/sink.rs": {
       "upstream": "src/sema/check/sink.rs",
@@ -4017,7 +4137,7 @@
     "src/sema/check/symbol_ids.rs": {
       "upstream": "src/sema/check/symbol_ids.rs",
       "sha256": "f2884b18f4e2d57b1b845d4cd3c1303eb9773a0151cd1ec31322f880b019a97f",
-      "extracted_sha256": "f2884b18f4e2d57b1b845d4cd3c1303eb9773a0151cd1ec31322f880b019a97f"
+      "extracted_sha256": "c16a004c0f69fdd085c4126526587107dbdfde12ef55f154966d26f722c5f211"
     },
     "src/sema/check/symbols.rs": {
       "upstream": "src/sema/check/symbols.rs",
@@ -4037,7 +4157,7 @@
     "src/sema/check/unions.rs": {
       "upstream": "src/sema/check/unions.rs",
       "sha256": "80987181d7283550317b7096535b41e417eab932147592c0524e02c698f40776",
-      "extracted_sha256": "3faab6c68e9c071174adcf892af4e48b96f791f7c0c1f713e1a932a1bff9c8b9"
+      "extracted_sha256": "cf51919d889be2af897c0aff53a3721177c7eb539842007d4195e0ff2b71ace5"
     },
     "src/sema/components.rs": {
       "upstream": "src/sema/components.rs",
@@ -4127,7 +4247,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "1e9b7fb82c6a4a11ca9383337c7bbbb8ac61b50c821d8b17a8594b238161528d"
+      "extracted_sha256": "0a5b741474bef3efe7339f5a30e84d86a2cba191caf91d71f3cafb2d427f1f26"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

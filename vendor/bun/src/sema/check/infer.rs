@@ -2343,8 +2343,8 @@ impl<'p, 's> Checker<'p, 's> {
             return shape;
         };
         let adds_optional = self.mapped_optional_modifier(target) == MappedModifier::Add;
-        let adds_readonly = self.mapped_origin(target).is_some_and(|(file, node, _)| {
-            self.mapped_decl(file, node).readonly == MappedModifier::Add
+        let adds_readonly = self.mapped_origin(target).is_some_and(|(root, _)| {
+            self.mapped_root_decl(root).readonly == MappedModifier::Add
         });
         if let Some(info) = self
             .structured(members)

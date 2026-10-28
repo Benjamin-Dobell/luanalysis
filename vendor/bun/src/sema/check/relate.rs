@@ -1615,8 +1615,8 @@ impl<'p, 's> Checker<'p, 's> {
         object: TypeId,
         index: TypeId,
     ) -> Option<TypeId> {
-        let (file, node, mapper) = self.mapped_origin(object)?;
-        let mapped = self.mapped_decl(file, node);
+        let (root, mapper) = self.mapped_origin(object)?;
+        let mapped = self.mapped_root_decl(root);
         // `getMappedTypeNameTypeKind`: a name type that always yields the key itself, or no key,
         // only filters keys.
         if let Some(name) = self.mapped_name_type(object) {
@@ -1625,14 +1625,14 @@ impl<'p, 's> Checker<'p, 's> {
                 return None;
             }
         }
-        if mapped.ty.is_none() {
+        if !mapped.has_template {
             return Some(TypeId::ERROR);
         }
-        let param = self.type_param(file, mapped.param);
+        let param = self.mapped_root_param(root);
         let mut pairs = self.types().mapping(mapper).to_vec();
         pairs.push((param, index));
         let with_key = self.types().mapper(pairs);
-        let template = self.type_from_node(file, mapped.ty);
+        let template = self.mapped_root_template(root);
         let template = self.instantiate(template, with_key);
         // Unless it declares `?` itself, the optionality comes from its modifiers type, with or
         // without `-?`.
@@ -2000,12 +2000,12 @@ impl<'p, 's> Checker<'p, 's> {
 
     // ───────────────────────────── mapped types ─────────────────────────────
 
-    pub(super) fn mapped_origin(&self, t: TypeId) -> Option<(FileId, TypeNodeId, MapperId)> {
+    pub(super) fn mapped_origin(&self, t: TypeId) -> Option<(MappedRoot, MapperId)> {
         match *self.data(t) {
             TypeData::Anon {
-                origin: Origin::Mapped(file, node),
+                origin: Origin::Mapped(root),
                 mapper,
-            } => Some((file, node, mapper)),
+            } => Some((root, mapper)),
             _ => None,
         }
     }
@@ -2013,14 +2013,14 @@ impl<'p, 's> Checker<'p, 's> {
     /// `getTemplateTypeFromMappedType`: with the missing type added when the mapped type makes
     /// properties optional.
     pub(super) fn mapped_template(&mut self, t: TypeId) -> TypeId {
-        let Some((file, node, _)) = self.mapped_origin(t) else {
+        let Some((root, _)) = self.mapped_origin(t) else {
             return TypeId::UNRESOLVED;
         };
-        let mapped = self.mapped_decl(file, node);
-        if mapped.ty.is_none() {
+        let mapped = self.mapped_root_decl(root);
+        if !mapped.has_template {
             return TypeId::ERROR;
         }
-        let declared = self.type_from_node(file, mapped.ty);
+        let declared = self.mapped_root_template(root);
         let declared = if mapped.optional == MappedModifier::Add {
             self.optional_property(declared)
         } else {
@@ -2033,20 +2033,19 @@ impl<'p, 's> Checker<'p, 's> {
     /// `getTypeParameterFromMappedType`. An instantiated mapped type has a fresh type parameter,
     /// which ranges over the instantiated keys (`instantiateAnonymousType`).
     pub(super) fn mapped_type_param(&mut self, t: TypeId) -> TypeId {
-        let Some((file, node, mapper)) = self.mapped_origin(t) else {
+        let Some((root, mapper)) = self.mapped_origin(t) else {
             return TypeId::UNRESOLVED;
         };
-        let param = self.mapped_decl(file, node).param;
-        self.cloned_type_param(file, param, mapper)
+        self.mapped_root_cloned_param(root, mapper)
     }
 
     /// `MappedType.mapper`: maps the outer type parameters of the mapped type `t`, and the declared
     /// type parameter to the one of `t`.
     fn mapped_mapper(&mut self, t: TypeId) -> MapperId {
-        let Some((file, node, mapper)) = self.mapped_origin(t) else {
+        let Some((root, mapper)) = self.mapped_origin(t) else {
             return MapperId::IDENTITY;
         };
-        let declared = self.type_param(file, self.mapped_decl(file, node).param);
+        let declared = self.mapped_root_param(root);
         let own = self.mapped_type_param(t);
         if own == declared {
             return mapper;
@@ -2058,34 +2057,34 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub(super) fn mapped_keys(&mut self, t: TypeId) -> TypeId {
-        let Some((file, node, mapper)) = self.mapped_origin(t) else {
+        let Some((root, mapper)) = self.mapped_origin(t) else {
             return TypeId::UNRESOLVED;
         };
-        self.mapped_constraint(file, node, mapper)
+        self.mapped_constraint(root, mapper)
     }
 
     /// `getNameTypeFromMappedType`
     pub(super) fn mapped_name_type(&mut self, t: TypeId) -> Option<TypeId> {
-        let (file, node, _) = self.mapped_origin(t)?;
-        if self.mapped_decl(file, node).name_ty.is_none() {
+        let (root, _) = self.mapped_origin(t)?;
+        if !self.mapped_root_decl(root).has_name {
             return None;
         }
-        let declared = self.declared_name_type_of_mapped(file, node);
+        let declared = self.declared_name_type_of_mapped(root);
         let mapper = self.mapped_mapper(t);
         Some(self.instantiate(declared, mapper))
     }
 
     pub(super) fn mapped_optional_modifier(&self, t: TypeId) -> MappedModifier {
         match self.mapped_origin(t) {
-            Some((file, node, _)) => self.mapped_decl(file, node).optional,
+            Some((root, _)) => self.mapped_root_decl(root).optional,
             None => MappedModifier::None,
         }
     }
 
     /// `getModifiersTypeFromMappedType`. `None`: `unknown`.
     pub(super) fn mapped_modifiers_type(&mut self, t: TypeId) -> Option<TypeId> {
-        let (file, node, mapper) = self.mapped_origin(t)?;
-        let (declared, _) = self.mapped_modifiers_source(file, node)?;
+        let (root, mapper) = self.mapped_origin(t)?;
+        let (declared, _) = self.mapped_modifiers_source(root)?;
         Some(self.instantiate(declared, mapper))
     }
 
@@ -2098,8 +2097,8 @@ impl<'p, 's> Checker<'p, 's> {
         name: TypeId,
         mapped: TypeId,
     ) -> Option<TypeId> {
-        let (file, node, mapper) = self.mapped_origin(mapped)?;
-        let (declared, true) = self.mapped_modifiers_source(file, node)? else {
+        let (root, mapper) = self.mapped_origin(mapped)?;
+        let (declared, true) = self.mapped_modifiers_source(root)? else {
             return None;
         };
         let modifiers = self.instantiate(declared, mapper);
@@ -2163,12 +2162,12 @@ impl<'p, 's> Checker<'p, 's> {
         let TypeData::IndexedAccess { obj, index, .. } = *self.data(t) else {
             return false;
         };
-        let Some((file, node, _)) = self.mapped_origin(obj) else {
+        let Some((root, _)) = self.mapped_origin(obj) else {
             return false;
         };
-        let mapped = self.mapped_decl(file, node);
+        let mapped = self.mapped_root_decl(root);
         mapped.optional != MappedModifier::Remove
-            && mapped.name_ty.is_none()
+            && !mapped.has_name
             && !self.is_generic_mapped_type(obj)
             && self.is_generic_index_type(index)
     }
@@ -4249,7 +4248,7 @@ impl<'p, 's> Checker<'p, 's> {
         };
         // Circular aliases are reported elsewhere. Here the loop must terminate.
         for _ in 0..64 {
-            let Some((_, _, mapper)) = self.mapped_origin(t) else {
+            let Some((_, mapper)) = self.mapped_origin(t) else {
                 break;
             };
             // `ObjectFlagsInstantiatedMapped`: not the declared mapped type.
@@ -4365,9 +4364,13 @@ impl<'p, 's> Checker<'p, 's> {
             }
             | TypeData::ThisParam(sym) => (1, sym.file.0, sym.id.0),
             TypeData::Anon {
-                origin: Origin::TypeLiteral(file, node) | Origin::Mapped(file, node),
+                origin: Origin::TypeLiteral(file, node) | Origin::Mapped(MappedRoot::Node(file, node)),
                 ..
             } => (2, file.0, node.0),
+            TypeData::Anon {
+                origin: Origin::Mapped(MappedRoot::Native(root)),
+                ..
+            } => (10, root.0, 0),
             // `getWidenedTypeOfObjectLiteral` creates an anonymous object type with the symbol of the literal.
             TypeData::Anon {
                 origin: Origin::WidenedLiteral(file, e, ..),
@@ -5777,8 +5780,9 @@ impl<'p, 's> Checker<'p, 's> {
             Relation::Comparable => true,
             Relation::Identity => {
                 let modifiers = |c: &Self, t: TypeId| {
-                    c.mapped_origin(t).map(|(f, n, _)| {
-                        (c.mapped_decl(f, n).optional, c.mapped_decl(f, n).readonly)
+                    c.mapped_origin(t).map(|(root, _)| {
+                        let mapped = c.mapped_root_decl(root);
+                        (mapped.optional, mapped.readonly)
                     })
                 };
                 modifiers(self, source) == modifiers(self, target)
@@ -5947,6 +5951,19 @@ impl<'p, 's> Checker<'p, 's> {
     // ───────────────────────────── properties ─────────────────────────────
 
     /// `propertiesRelatedTo`
+    /// Whether the Lua table `source`, which lacks the property `tp` of the target, has it as
+    /// Lua does: as `nil`, which a target property whose type admits nil accepts. A Lua table's
+    /// absent key and its key set to `nil` are one.
+    fn lua_table_has_as_nil(&mut self, source: TypeId, tp: &Prop, mapper: MapperId) -> bool {
+        matches!(
+            self.data(source),
+            TypeData::NativeTable(_) | TypeData::NativeObject(_) | TypeData::NativeRuntimeTable(_) | TypeData::NativeDefinition(_)
+        ) && {
+            let ty = self.type_of_prop_as_read(tp, mapper);
+            self.contains_undefined(ty)
+        }
+    }
+
     pub(super) fn properties_related_to<const REPORT: bool>(
         &mut self,
         r: &mut Relater,
@@ -6187,6 +6204,7 @@ impl<'p, 's> Checker<'p, 's> {
                 || (self.property_among(has_properties, &sm, &mut inherited, tp.name)).is_some()
                 // `isStaticPrivateIdentifierProperty`
                 || self.is_static_private_name(tp)
+                || self.lua_table_has_as_nil(source, tp, tm.mapper)
             {
                 continue;
             }
@@ -6207,6 +6225,7 @@ impl<'p, 's> Checker<'p, 's> {
                         && (require_optional_properties || !tp.flags.contains(PropFlags::OPTIONAL))
                         && (self.property_among(has_properties, &sm, &mut inherited, tp.name))
                             .is_none()
+                        && !self.lua_table_has_as_nil(source, tp, tm.mapper)
                     {
                         unmatched.push(tp);
                     }

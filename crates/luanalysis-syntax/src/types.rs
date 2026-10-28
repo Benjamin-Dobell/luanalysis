@@ -1,6 +1,6 @@
 use crate::{
     Comment, Diagnostic, FieldDeclaration, FieldVisibility, FieldVisibilityAnnotation,
-    FunctionAnnotations, FunctionType, FunctionTypeParam, GenericParameter, Name, NamedRecordKind,
+    FunctionAnnotations, FunctionType, FunctionTypeParam, GenericParameter, MappedModifier, MappedType, Name, NamedRecordKind,
     NamedTypeDeclarationKind, ParamAnnotation, Span, Token, TokenKind, TypeAnnotation, TypeExpr,
     TypeExprKind, TypeField, TypeFieldKey, TypeLiteral, TypePack, TypePacks, VarargAnnotation,
     VariadicTypeIndex,
@@ -569,6 +569,9 @@ fn type_depth(root: &TypeExpr) -> usize {
             TypeExprKind::Conditional { check, extends, yes, no } => {
                 pending.extend([check, extends, yes, no].map(|ty| (ty.as_ref(), current + 1)));
             }
+            TypeExprKind::Mapped(mapped) => {
+                pending.extend([&mapped.constraint].into_iter().chain(&mapped.name).chain([&mapped.ty]).map(|ty| (ty, current + 1)));
+            }
             TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. }
             | TypeExprKind::TemplateLiteral { types, .. } => {
                 pending.extend(types.iter().map(|ty| (ty, current + 1)));
@@ -792,7 +795,7 @@ impl TypeParser {
             let Some(name) = self.declaration_name("generic declaration") else {
                 break;
             };
-            let constraint = if self.take(":").is_some() {
+            let constraint = if self.take_constraint_keyword() {
                 self.comma_ends_type += 1;
                 // generic_def and class extension use one `ty` in doc.bnf;
                 // a union constraint must be explicitly parenthesized.
@@ -1144,7 +1147,7 @@ impl TypeParser {
                 self.error("expected a type parameter name after @generic or ','".to_owned());
                 break;
             };
-            let constraint = if self.take(":").is_some() {
+            let constraint = if self.take_constraint_keyword() {
                 // doc.bnf: generic_def ::= ID (EXTENDS ty)?. A constraint is
                 // one `ty`, rather than `complex_ty`; unions must be wrapped
                 // in parentheses. A function constraint's bare return also
@@ -1237,6 +1240,18 @@ impl TypeParser {
         TypeExpr { kind: TypeExprKind::TemplateLiteral { texts, types }, span }
     }
 
+    /// A generic parameter's `:` or `extends` before its constraint: `T: C` (v1, LuaLS) or
+    /// `T extends C` (EmmyLua Analyzer, TypeScript).
+    fn take_constraint_keyword(&mut self) -> bool {
+        if self.take(":").is_some() {
+            return true;
+        }
+        if self.word_at(self.pos, "extends") && self.pos + 1 < self.tokens.len() {
+            self.pos += 1;
+            return true;
+        }
+        false
+    }
     /// A generic parameter's `= Default`, as EmmyLua Analyzer and TypeScript write it: one type,
     /// as a constraint is, so a union default is parenthesized.
     fn generic_default(&mut self) -> Option<TypeExpr> {
@@ -1935,7 +1950,7 @@ impl TypeParser {
             self.comma_ends_type += 1;
             let ty = self.union();
             self.comma_ends_type -= 1;
-            fields.push(TypeField { key: TypeFieldKey::Sequence { index: fields.len() + 1 }, span: ty.span, ty, readonly: None });
+            fields.push(TypeField { key: TypeFieldKey::Sequence { index: fields.len() + 1 }, span: ty.span, ty, readonly: None, optional: None });
             if self.take(",").is_none() { break; }
         }
         let end = self.expect("]");
@@ -2108,12 +2123,16 @@ impl TypeParser {
         }
     }
     fn record(&mut self) -> TypeExpr {
+        if self.at_mapped_type() {
+            return self.mapped_type();
+        }
         let start = self.expect("{");
         let mut fields = Vec::new();
         let mut sequence_index = 0;
         while !self.eof() && !self.symbol("}") {
             let field_start = self.current().span;
             let readonly = self.readonly_record_modifier();
+            let mut optional = None;
             let key = if self.take("[").is_some() {
                 self.comma_ends_type += 1;
                 let mut key = self.union();
@@ -2130,17 +2149,27 @@ impl TypeParser {
                     };
                 }
                 self.expect("]");
+                optional = self.take("?");
                 self.expect(":");
                 TypeFieldKey::Indexed(Box::new(key))
             } else if let TokenKind::Identifier(text) | TokenKind::Keyword(text) =
                 self.current().kind.clone()
             {
-                if self.symbol_at(self.pos + 1, ":") {
+                let name_span = self.current().span;
+                if self.symbol_at(self.pos + 1, "?") && self.symbol_at(self.pos + 2, ":") {
+                    self.pos += 1;
+                    optional = self.take("?");
+                    self.expect(":");
+                    TypeFieldKey::Named(Name {
+                        text,
+                        span: name_span,
+                    })
+                } else if self.symbol_at(self.pos + 1, ":") {
                     self.pos += 1;
                     self.expect(":");
                     TypeFieldKey::Named(Name {
                         text,
-                        span: field_start,
+                        span: name_span,
                     })
                 } else {
                     sequence_index += 1;
@@ -2169,7 +2198,7 @@ impl TypeParser {
                 };
             }
             let span = field_start.join(ty.span);
-            fields.push(TypeField { key, ty, readonly, span });
+            fields.push(TypeField { key, ty, readonly, optional, span });
             if self.take(",").is_some() {
                 continue;
             }
@@ -2186,6 +2215,79 @@ impl TypeParser {
         TypeExpr {
             kind: TypeExprKind::Record(fields),
             span: start.join(end),
+        }
+    }
+    /// At `{` of `{ [P in K]: T }`, perhaps after `readonly`, `+readonly` or `-readonly`.
+    fn at_mapped_type(&self) -> bool {
+        let mut pos = self.pos + 1;
+        if self.symbol_at(pos, "+") || self.symbol_at(pos, "-") {
+            if !self.word_at(pos + 1, "readonly") { return false; }
+            pos += 2;
+        } else if self.word_at(pos, "readonly") && self.symbol_at(pos + 1, "[") {
+            pos += 1;
+        }
+        self.symbol_at(pos, "[")
+            && matches!(self.tokens.get(pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(_)))
+            && self.word_at(pos + 2, "in")
+    }
+    /// `{ [P in K as N]?: T }` with its modifiers, as TypeScript writes it. Out of line: the
+    /// recursive type parsers keep small frames.
+    #[inline(never)]
+    fn mapped_type(&mut self) -> TypeExpr {
+        let start = self.expect("{");
+        let readonly = if self.take("+").is_some() {
+            self.expect_word("readonly");
+            MappedModifier::Plus
+        } else if self.take("-").is_some() {
+            self.expect_word("readonly");
+            MappedModifier::Remove
+        } else if self.word_at(self.pos, "readonly") {
+            self.pos += 1;
+            MappedModifier::Add
+        } else {
+            MappedModifier::None
+        };
+        self.expect("[");
+        let TokenKind::Identifier(text) = self.current().kind.clone() else { unreachable!("a mapped type's parameter") };
+        let parameter = Name { text, span: self.current().span };
+        self.pos += 2;
+        let constraint = self.union();
+        let name = self.word_at(self.pos, "as").then(|| {
+            self.pos += 1;
+            self.union()
+        });
+        self.expect("]");
+        let optional = if self.take("+").is_some() {
+            self.expect("?");
+            MappedModifier::Plus
+        } else if self.take("-").is_some() {
+            self.expect("?");
+            MappedModifier::Remove
+        } else if self.take("?").is_some() {
+            MappedModifier::Add
+        } else {
+            MappedModifier::None
+        };
+        self.expect(":");
+        self.comma_ends_type += 1;
+        let ty = self.union();
+        self.comma_ends_type -= 1;
+        if self.take(";").is_none() { self.take(","); }
+        if !self.eof() && !self.symbol("}") {
+            self.error("a mapped type has one member".to_owned());
+            self.recover_record();
+        }
+        let end = self.expect("}");
+        TypeExpr {
+            kind: TypeExprKind::Mapped(Box::new(MappedType { readonly, parameter, constraint, name, optional, ty })),
+            span: start.join(end),
+        }
+    }
+    fn expect_word(&mut self, word: &str) {
+        if self.word_at(self.pos, word) {
+            self.pos += 1;
+        } else {
+            self.error(format!("expected `{word}`"));
         }
     }
     /// `{ readonly name: T }` and `{ readonly [K]: V }`, as in TypeScript; `{ readonly: T }`

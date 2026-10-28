@@ -1103,7 +1103,7 @@ struct ReverseMappedProperty {
     owner: TypeId,
     name: Atom,
     property_type: TypeId,
-    mapped: Option<(FileId, TypeNodeId)>,
+    mapped: Option<MappedRoot>,
 }
 
 /// The syntax of the name in one declaration of a property.
@@ -1935,7 +1935,8 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                     let value = self.type_to_node(tail.value);
                     members.push(cat!(if tail.readonly { &b"readonly "[..] } else { &b""[..] }, b"[", tail.start.to_string().as_bytes(), b"..integer]?: ", value.text));
                 }
-                Node::simple(cat!(b"{ ", members.join(&b"; "[..]), b" }"))
+                // As the Lua printer writes a table's fields.
+                Node::simple(cat!(b"{ ", members.join(&b", "[..]), b" }"))
             }
             TypeData::NativeArray { element, readonly } => {
                 let element = self.type_to_node(*element);
@@ -3073,9 +3074,10 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             TypeData::Fns { decls, .. } => decls.first().map(|it| (it.0, it.1.0, 2)),
             TypeData::Synth(shape) => shape.symbol_declared_at.map(|it| (it.0, it.1, 3)),
             TypeData::Anon { origin, .. } => match *origin {
-                Origin::TypeLiteral(file, node) | Origin::Mapped(file, node) => {
+                Origin::TypeLiteral(file, node) | Origin::Mapped(MappedRoot::Node(file, node)) => {
                     Some((file, node.0, 4))
                 }
+                Origin::Mapped(MappedRoot::Native(_)) => None,
                 Origin::ObjectLiteral(file, e, ..) | Origin::WidenedLiteral(file, e, ..) => {
                     Some((file, e.0, 5))
                 }
@@ -4281,6 +4283,11 @@ impl<'p, 's> Printer<'_, 'p, 's> {
     /// `emitTypeLiteral`: `SingleLineTypeLiteralMembers`, or `MultiLineTypeLiteralMembers`.
     fn braces(&self, members: &[Vec<u8>]) -> Vec<u8> {
         let Some(level) = self.indent else {
+            // A Lua table type separates its fields with commas, as the Lua printer writes them.
+            if self.flags & NATIVE_LUA_TYPES != 0 {
+                let fields: Vec<&[u8]> = members.iter().map(|member| member.strip_suffix(b";").unwrap_or(member)).collect();
+                return cat!(b"{ ", fields.join(&b", "[..]), b" }");
+            }
             return cat!(b"{ ", members.join(&b" "[..]), b" }");
         };
         let mut text = b"{\n".to_vec();
@@ -4899,7 +4906,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             mapped: self
                 .c
                 .mapped_origin(mapped)
-                .map(|origin| (origin.0, origin.1)),
+                .map(|origin| origin.0),
         }
     }
 
@@ -5100,7 +5107,9 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             TypeId::ANY
         } else {
             let ty = self.c.type_of_prop(prop, mapper);
-            self.c.remove_missing_type(ty, is_optional)
+            let ty = self.c.remove_missing_type(ty, is_optional);
+            // A Lua field written `name?: T` may be nil: `?` says so, as the Lua printer has it.
+            if self.flags & NATIVE_LUA_TYPES != 0 && is_optional { self.c.without_undefined(ty) } else { ty }
         };
         // `isLateBoundName`
         if self.c.atoms().is_symbol_name(prop.name) {
@@ -5899,6 +5908,10 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             }
             SignatureKind::GetAccessor => cat!(b"get ", name, b"(", parameters, b"): "),
             SignatureKind::SetAccessor => cat!(b"set ", name, b"(", parameters, b")"),
+            // A Lua function type, as the Lua printer writes one.
+            SignatureKind::FunctionType if self.flags & NATIVE_LUA_TYPES != 0 => {
+                cat!(b"fun", type_parameters, b"(", parameters, b"): ")
+            }
             SignatureKind::FunctionType => cat!(type_parameters, b"(", parameters, b") => "),
             SignatureKind::ConstructorType => {
                 let modifier: &[u8] = if self.c.is_abstract_signature(signature) {
@@ -6011,13 +6024,16 @@ impl<'p, 's> Printer<'_, 'p, 's> {
 
     /// `createMappedTypeNodeFromType`
     fn mapped_type_to_node(&mut self, ty: TypeId) -> Node {
-        let Some((file, node, mapper)) = self.c.mapped_origin(ty) else {
+        let Some((root, mapper)) = self.c.mapped_origin(ty) else {
             return self.elided_information_placeholder();
         };
-        let mapped = self.c.mapped_decl(file, node);
-        let is_constrained = self.c.hir(file)[mapped.param].constraint.is_some();
+        let mapped = self.c.mapped_root_decl(root);
+        let is_constrained = match root {
+            MappedRoot::Node(file, node) => self.c.hir(file)[self.c.mapped_decl(file, node).param].constraint.is_some(),
+            MappedRoot::Native(_) => true,
+        };
         let over_keyof = if is_constrained {
-            self.c.mapped_modifiers_source(file, node)
+            self.c.mapped_modifiers_source(root)
         } else {
             None
         };
@@ -6029,11 +6045,11 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             && matches!(over_keyof, Some((_, true)))
             && self
                 .c
-                .homomorphic_type_variable(file, node, mapper)
+                .homomorphic_type_variable(root, mapper)
                 .is_none()
             && self
                 .c
-                .homomorphic_type_variable(file, node, MapperId::IDENTITY)
+                .homomorphic_type_variable(root, MapperId::IDENTITY)
                 .is_some();
         let needs_modifier_preserving_wrapper =
             generates_names && matches!(over_keyof, Some((_, false))) && {
@@ -6083,7 +6099,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
         };
         let template = match (new_type_variable, over_keyof) {
             (Some(new_type_variable), Some((declared, true))) => {
-                let target = self.c.type_from_node(file, node);
+                let target = self.c.declared_mapped_type(root);
                 let template = self.c.mapped_template(target);
                 let target_parameter = self.c.mapped_type_param(target);
                 let to_new_type_variable = self.c.mapper_from(

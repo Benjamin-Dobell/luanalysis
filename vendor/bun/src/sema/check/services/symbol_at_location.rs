@@ -873,10 +873,11 @@ impl<'p> SymbolFinder<'_, 'p, '_> {
                         declaration: Declaration::Expression(e),
                     }
                 }
-                Origin::TypeLiteral(file, node) | Origin::Mapped(file, node) => Found::Anonymous {
+                Origin::TypeLiteral(file, node) | Origin::Mapped(MappedRoot::Node(file, node)) => Found::Anonymous {
                     file,
                     declaration: Declaration::TypeNode(node),
                 },
+                Origin::Mapped(MappedRoot::Native(_)) => return None,
                 Origin::GlobalThis => Found::Undeclared(Undeclared::GlobalThis),
             },
             // A function expression or an arrow function.

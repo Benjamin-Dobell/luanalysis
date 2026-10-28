@@ -1922,7 +1922,7 @@ impl<'p, 's> Checker<'p, 's> {
                 return Some(kept);
             }
             if mapper == MapperId::IDENTITY
-                && let Some(&constraint) = self.native_infer_constraints.get(&declaration)
+                && let Some(&constraint) = self.native_seeded_constraints.get(&declaration)
             {
                 return Some(constraint);
             }
@@ -3407,7 +3407,7 @@ impl<'p, 's> Checker<'p, 's> {
                 let key = self.type_param(file, hir[m].param);
                 self.base_constraint(key);
                 let mapper = self.identity_mapper_for_node(file, scope, node);
-                self.instantiate_mapped(file, node, mapper)
+                self.instantiate_mapped(MappedRoot::Node(file, node), mapper)
             }
             TypeNodeKind::Cond { .. } => {
                 let mapper = self.identity_mapper_for_node(file, scope, node);
