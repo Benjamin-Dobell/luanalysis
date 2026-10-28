@@ -615,7 +615,8 @@ if state.ready then print("ready") end -- state.ready is boolean
 
 In editors, Luanalysis also points out code that type checks but is probably wrong: unreachable
 code, conditions that are always true or always false, comparisons that can never match, unused
-locals, and parameters without types.
+locals, locals and generic parameters that shadow others of the same name, and parameters
+without types.
 
 ## Standard library
 
@@ -926,11 +927,24 @@ over stdio; separately resolved item details are excluded.
 Luanalysis reads the annotations of Luanalysis for IntelliJ and EmmyLua, and the annotation
 syntax of lua-language-server, so existing annotated code can be checked as it is.
 
-Some checks are deliberately stricter than Luanalysis for IntelliJ's, as TypeScript's are:
+Some checks deliberately differ from Luanalysis for IntelliJ's. Stricter, as TypeScript's are:
 
 - A type parameter inferred from several unrelated arguments is not their union, except for
   table literals and literals of one primitive type. `both(1, "x")` is an error, where
   Luanalysis for IntelliJ inferred `1 | "x"`. See [Generics](#generics).
+- A function's inferred result widens its literals, as TypeScript's does:
+  `function() return 1 end` returns `number`, where Luanalysis for IntelliJ inferred `1`.
+
+More permissive:
+
+- Assigning `nil` to an element of a `T[]` deletes it, as Lua deletes a dictionary's entry.
+- A dictionary type is a view of the keys it names, as TypeScript's
+  `Partial<Record<"a", V>>` is: a `table<string, V>` is a `table<"a", V>`.
+- A generic parameter may shadow one of an enclosing function or class, as in TypeScript; an
+  editor's inspections point it out.
+
+And as lua-language-server reads them, more dashes than `---` comment an annotation out:
+`----@type T` is a plain comment.
 
 ## Building from source
 

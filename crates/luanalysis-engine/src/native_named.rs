@@ -205,6 +205,14 @@ pub(super) fn definition_value(queries: &mut SessionQueries<'_, '_, '_>, owner: 
         .map_err(|error| export_error(queries.checker,queries.handles,error))
 }
 
+pub(super) fn definition_value_recovered(queries: &mut SessionQueries<'_, '_, '_>, owner: NativeClassDefinitionKey, class: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
+    let class = import_type(queries.checker, queries.handles, class);
+    let actual = import_type(queries.checker, queries.handles, actual);
+    queries.checker.native_definition_value_recovered(core_definition(owner), class, actual)
+        .map(|ty| export_type(queries.checker,queries.handles,ty))
+        .map_err(|error| export_error(queries.checker,queries.handles,error))
+}
+
 pub(super) fn definition_reopen(queries: &mut SessionQueries<'_, '_, '_>, owner: NativeClassDefinitionKey, class: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
     let class = import_type(queries.checker, queries.handles, class);
     let actual = import_type(queries.checker, queries.handles, actual);
@@ -422,6 +430,12 @@ impl<P: NativeTypeProvider> NativeTypeDeclarationProvider for ProviderAdapter<'_
     }
     fn type_member_is_assignment(&self, key: NativeTypeMemberId) -> bool {
         self.provider.type_member_is_assignment(source_member(key))
+    }
+    fn type_member_is_written(&self, key: NativeTypeMemberId) -> bool {
+        self.provider.type_member_is_written(source_member(key))
+    }
+    fn type_member_is_stored(&self, key: NativeTypeMemberId) -> bool {
+        self.provider.type_member_is_stored(source_member(key))
     }
     fn type_member_activation(&self, checker: &mut Checker<'_, '_>, key: NativeTypeMemberId) -> bun_sema::check::native_named::NativeTypeMemberActivation {
         use bun_sema::check::native_named::NativeTypeMemberActivation as Core;

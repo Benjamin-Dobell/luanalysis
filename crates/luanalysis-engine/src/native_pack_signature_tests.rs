@@ -974,16 +974,8 @@ fn expanded_pack_arity_preserves_zero_one_optional_and_variadic_counts() {
             &[],
             None,
         );
-        assert!(matches!(
-            excessive_tail.errors.as_slice(),
-            [CallError::PackArity {
-                actual_minimum: 0,
-                actual_maximum: None,
-                minimum: 0,
-                maximum: Some(0),
-                ..
-            }]
-        ));
+        // Lua drops values past the parameters: a variadic tail is no excess.
+        assert!(excessive_tail.errors.is_empty(), "{:?}", excessive_tail.errors);
     });
 }
 

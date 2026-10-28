@@ -1070,6 +1070,8 @@ impl Checker<'_, '_> {
             let expected = self.rest_type_at_position(&params, boundary, false);
             let contextual = identity_context.and_then(|pack| self.native_pack_contextual_tail(pack, &prefix)).map_or(expected, |pack| pack.ty);
             let actual = self.native_argument_sequence_type(args, boundary, contextual, None, check_mode);
+            // Lua drops values past the parameters, so a variadic tail reaching past them is no excess.
+            let actual = self.native_pack_without_possible_excess(NativeResultPack { ty: actual }, NativeResultPack { ty: expected }).ty;
             if !self.is_resolved_call_argument_applicable(actual, expected, relation)
                 && !self.native_union_any_argument_applicable(sig, boundary, actual, expected, relation, true) {
                 self.note_parameter_types_resolved(sig, &params, boundary);

@@ -51,6 +51,9 @@ pub struct NativeTableSequenceTail {
     pub value: TypeId,
     pub readonly: bool,
     pub origin: NativeTableFieldOrigin,
+    /// Added by a store at a key it may not have written (`list[i] = v`): it reads as possibly
+    /// nil, as a sparse indexer does. A constructor's expansion (`{...}`) reads as its element.
+    pub sparse: bool,
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
@@ -300,7 +303,7 @@ impl<'p, 's> Checker<'p, 's> {
                 let mut tails = sequence_tails.to_vec();
                 if present == row.fixed.len() && let Some(value) = row.tail {
                     let start = start.checked_add(present as i64).ok_or(NativeTableError::InvalidSequenceStart { start })?;
-                    tails.push(NativeTableSequenceTail { start, value, readonly: false, origin });
+                    tails.push(NativeTableSequenceTail { start, value, readonly: false, origin, sparse: false });
                 }
                 let table = self.native_table_with_context_and_sequence_policy(&actual_fields, indexers, &tails, flavor, collision_candidates, expected)?;
                 tables.push(self.native_table_sequence_presence(table, start, width, open_start, origin)?);
@@ -328,7 +331,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         if let Some(open) = open_start {
             match tails.iter().map(|tail| tail.start).min() {
-                None => tails.push(NativeTableSequenceTail { start: open, value: TypeId::NEVER, readonly: false, origin }),
+                None => tails.push(NativeTableSequenceTail { start: open, value: TypeId::NEVER, readonly: false, origin, sparse: true }),
                 Some(current) if current > open => {
                     let gap = usize::try_from(current - open).map_err(|_| NativeTableError::SequenceTooComplex { count: usize::MAX, alternatives: 1 })?;
                     if gap >= 10_000 { return Err(NativeTableError::SequenceTooComplex { count: gap, alternatives: 1 }) }
@@ -954,9 +957,11 @@ impl<'p, 's> Checker<'p, 's> {
                 values.push(if indexer.sparse { self.optional(indexer.value) } else { indexer.value });
             }
         }
+        // A constructor's expansion reads as its element, as a TypeScript array or a written
+        // `T[]` does; that a short expansion leaves the key absent is the relation's concern.
         for tail in &data.sequence_tails {
             if self.native_sequence_access_matches(tail.start, key) {
-                values.push(self.optional(tail.value));
+                values.push(if tail.sparse { self.optional(tail.value) } else { tail.value });
             }
         }
         if !values.is_empty() && let NativeTableAccessKey::Type(_) = key {
@@ -1265,6 +1270,13 @@ impl<'p, 's> Checker<'p, 's> {
             if source.nominal_origin.is_none_or(|source_origin| !self.native_nominal_reference_compatible(source_origin, target_origin, identity)) {
                 return Ternary::FALSE;
             }
+            // As in v1, a declared subclass is an instance of its ancestor: an unannotated
+            // override may give an inherited inferred member the subclass's own type, so the
+            // ancestor's view of the instance is what relates, with its type arguments.
+            if !identity && let Some(source_origin) = source.nominal_origin && source_origin.declaration != target_origin.declaration
+                && let Some(view) = self.native_nominal_ancestor_view(source_origin, target_origin.declaration)
+                && let TypeData::NativeTable(view) = self.data(view)
+            { return self.native_tables_related::<REPORT>(r, view, target, state) }
         } else if identity && source.nominal_origin.is_some() { return Ternary::FALSE }
         if source.indexers.iter().any(|indexer| !self.native_table_valid_indexer_key(indexer, source.fresh))
             || target.indexers.iter().any(|indexer| !self.native_table_valid_indexer_key(indexer, target.fresh))

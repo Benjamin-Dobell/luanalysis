@@ -811,6 +811,21 @@ SOURCE_ADAPTATIONS.append({
     "patch": "vendor/patches/bun-sema-native-table-literal-candidates.patch",
     "reason": "Count a table a Lua constructor built as an object literal in `unionObjectAndArrayLiteralCandidates`, whether fresh, widened or a local's constructed table, as TypeScript keeps an object literal's flag after widening, so that a generic call unions table literal candidates instead of fixing the first.",
 })
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
+    "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
+} for path in [
+    "src/sema/check/call.rs",
+    "src/sema/check/errors_call.rs",
+    "src/sema/check/infer.rs",
+    "src/sema/check/native_named.rs",
+    "src/sema/check/native_packs.rs",
+    "src/sema/check/native_runtime_tables.rs",
+    "src/sema/check/native_tables.rs",
+    "src/sema/check/print.rs",
+    "src/sema/types.rs",
+])
 
 
 def git(source, *args):

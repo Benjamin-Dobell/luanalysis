@@ -49,7 +49,7 @@ impl Checker<'_> {
                 self.engine.adjust_pack(actual, index + 1),
                 self.engine.adjust_pack(expected, index + 1),
             ) else { break };
-            if !self.engine.pack_assignable(&actual, &expected) {
+            if !self.engine.result_list_assignable(&actual, &expected) {
                 return value.borrow().span;
             }
         }
@@ -68,7 +68,7 @@ impl Checker<'_> {
         let declared = self.engine.declared_result_pack(&declared);
         let allowed = self.engine.pack_with_implicit_empty(&declared);
         let actual = self.expression_list_pack(values, Some(&allowed));
-        if !self.engine.pack_assignable(&actual, &allowed) {
+        if !self.engine.result_list_assignable(&actual, &allowed) {
             let origin = self.return_pack_error_origin(values, statement, &actual, &allowed);
             self.error(
                 "TS2322",

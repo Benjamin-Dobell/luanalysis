@@ -56,6 +56,7 @@ fn written_dynamic_entries_and_open_tails_keep_contracts_without_changing_key_do
                 value: Type::StringLiteral(b"tail".to_vec()),
                 readonly: false,
                 origin: TableFieldOrigin::Declared,
+                sparse: true,
             }],
             fresh: true,
             ..Default::default()
@@ -108,7 +109,8 @@ fn constructor_collision_candidates_and_expanded_result_rows_still_use_native_un
         }]), None).unwrap();
         assert_eq!(description(q, &expanded, &access("contract")), Ok(Type::NumberLiteral(1.0)));
         assert_eq!(description(q, &expanded, &TableKey::Literal(LuaKey::Integer(1))), Ok(Type::Boolean));
-        assert_eq!(description(q, &expanded, &TableKey::Literal(LuaKey::Integer(2))), Ok(Type::Union(vec![Type::Nil, Type::String])));
+        // An expansion's tail reads as its element, as a TypeScript array's does.
+        assert_eq!(description(q, &expanded, &TableKey::Literal(LuaKey::Integer(2))), Ok(Type::String));
         let Type::Table(description) = q.inspect_type(&expanded) else { panic!("owned expanded table") };
         assert_eq!(description.sequence_tails[0].origin, TableFieldOrigin::Inferred);
     });

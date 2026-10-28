@@ -282,6 +282,12 @@ pub trait NativeTypeDeclarationProvider {
     }
     fn type_member_owner_application(&self, _: &mut Checker<'_, '_>, _: NativeTypeMemberId) -> Option<NativeMemberOwnerApplication> { None }
     fn type_member_is_assignment(&self, _: NativeTypeMemberId) -> bool { false }
+    /// Whether a member's value has a written type, as a written member or an annotated
+    /// function does, rather than one inferred from its value.
+    fn type_member_is_written(&self, member: NativeTypeMemberId) -> bool { self.type_member_origin(member) == crate::types::NativeTableFieldOrigin::Declared }
+    /// Whether a statement of its own (an assignment, a function declaration) stores the member's
+    /// value, checking it against the member's type.
+    fn type_member_is_stored(&self, _: NativeTypeMemberId) -> bool { false }
     /// Pure written callable members, with no runtime implementation or body.
     fn type_member_signatures(&self, _: NativeTypeMemberId) -> Option<Vec<NativeSignatureId>> { None }
     /// Own declarations plus potential explicit-owner augmentations; the backend validates each
@@ -706,6 +712,12 @@ impl<'p, 's> Checker<'p, 's> {
                 }
             }
             for base in self.native_object_bases(owner)? {
+                // As in v1, an inherited inferred member is no contract: a store overriding it
+                // declares the subclass's own member.
+                if let NativeTableAccessKey::Literal(literal) = key
+                    && let TypeData::NativeObject(base_owner) = *self.data(base)
+                    && let Ok(literal) = literal.normalize()
+                    && self.native_named_key_origin(base_owner, literal)? == Some(crate::types::NativeTableFieldOrigin::Inferred) { continue }
                 if let Some(context) = self.native_table_value_context(base, key) { contexts.push(context); }
             }
             Ok(if contexts.is_empty() { None } else { Some(self.intersection(&contexts)) })
@@ -936,6 +948,54 @@ impl<'p, 's> Checker<'p, 's> {
             effective = Some(if metadata.origin == Declared || effective == Some(Declared) { Declared } else { Inferred });
         }
         Ok(effective)
+    }
+
+    /// Whether a member's type is written, as a written member's or an annotated function's is,
+    /// rather than inferred from its value.
+    fn native_object_member_written(&mut self, origin: &NativeObjectMember) -> Result<bool, NativeNamedTypeError> {
+        if self.native_object_member_effective_origin(origin)? == Some(crate::types::NativeTableFieldOrigin::Declared) { return Ok(true) }
+        let provider = self.native_named_provider(origin.owner.declaration)?;
+        Ok(std::iter::once(origin.member).chain(origin.overloads.iter().copied()).any(|member| provider.type_member_is_written(member)))
+    }
+
+    /// Whether a statement of its own stores the member's value, checking it against the member.
+    fn native_object_member_stored(&mut self, origin: &NativeObjectMember) -> Result<bool, NativeNamedTypeError> {
+        let provider = self.native_named_provider(origin.owner.declaration)?;
+        Ok(provider.type_member_is_stored(origin.member))
+    }
+
+    /// A base's field for `key` as the base resolves it, with its effective origin.
+    fn native_base_field(&mut self, base: TypeId, key: NativeTableKey, validate: bool) -> Result<Option<NativeTableField>, NativeNamedTypeError> {
+        let table = if validate { self.native_object_resolved(base)? } else { self.native_object_schema_resolved(base)? };
+        Ok(match self.data(table) { TypeData::NativeTable(data) => data.fields.iter().find(|field| field.key == key).copied(), _ => None })
+    }
+
+    /// Whether a named object's member `key` is written (`Declared`) or inferred: its own member,
+    /// or, as in v1, an unannotated override of an inherited written member, which takes that
+    /// member's type; `None` if no fixed member has the key.
+    pub(super) fn native_named_key_origin(&mut self, reference: NativeObjectReference, key: NativeTableKey) -> Result<Option<crate::types::NativeTableFieldOrigin>, NativeNamedTypeError> {
+        use crate::types::NativeTableFieldOrigin::Declared;
+        let members = self.native_object_members(reference)?;
+        let provider = self.native_named_provider(reference.declaration)?;
+        let mut own = None;
+        for origin in members {
+            let NativeTypeMemberKey::Fixed(member_key) = provider.type_member_header(self, origin.member).key else { continue };
+            if member_key.normalize() != Ok(key) { continue }
+            match origin.via {
+                None => match self.native_object_member_effective_origin(&origin)? {
+                    Some(Declared) => return Ok(Some(Declared)),
+                    Some(_) if self.native_object_member_written(&origin)? => return Ok(Some(Declared)),
+                    Some(inferred) => own = Some(inferred),
+                    None => {}
+                },
+                Some((_, base)) => {
+                    let TypeData::NativeObject(owner) = *self.data(base) else { continue };
+                    let inherited = self.native_named_key_origin(owner, key)?;
+                    return Ok(if inherited == Some(Declared) { inherited } else { own.or(inherited) });
+                }
+            }
+        }
+        Ok(own)
     }
 
     fn native_object_member_demand(&mut self, origin: &NativeObjectMember) -> Result<Option<TypeId>, NativeNamedTypeError> {
@@ -1372,6 +1432,17 @@ impl<'p, 's> Checker<'p, 's> {
         bases.into_iter().any(|base| self.native_nominally_derived(base, target))
     }
 
+    /// The resolved instance of `reference`'s declared ancestor `declaration`, mapped as its
+    /// heritage names it.
+    pub(super) fn native_nominal_ancestor_view(&mut self, reference: NativeObjectReference, declaration: NativeTypeDeclarationId) -> Option<TypeId> {
+        for base in self.native_object_bases(reference).ok()? {
+            let TypeData::NativeObject(owner) = *self.data(base) else { continue };
+            if owner.declaration == declaration { return self.native_object_resolved(base).ok() }
+            if let Some(view) = self.native_nominal_ancestor_view(owner, declaration) { return Some(view) }
+        }
+        None
+    }
+
     pub(super) fn native_nominal_reference_compatible(&mut self, source: NativeObjectReference, target: NativeObjectReference, identity: bool) -> bool {
         if source.declaration == target.declaration { return true }
         if identity { return false }
@@ -1564,6 +1635,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let mut fields = Vec::new();
         let mut field_origins: Vec<NativeObjectMember> = Vec::new();
+        let mut overridden = None;
         let mut indexers = Vec::new();
         let mut indexer_origins: Vec<NativeObjectMember> = Vec::new();
         for origin in members.iter().cloned() {
@@ -1604,15 +1676,41 @@ impl<'p, 's> Checker<'p, 's> {
                             return Err(NativeNamedTypeError::Table { declaration, error: NativeTableError::DuplicateDeclaredField { key: field.key } })
                         }
                         let (index, base) = origin.via.unwrap();
+                        if previous_origin.via.is_none() && !self.native_object_member_written(previous_origin)? {
+                            // As in v1, an unannotated override takes the type of an inherited
+                            // written member, against which its own value is checked, and keeps its
+                            // own type beside an inherited inferred one, unchecked.
+                            let inherited = self.native_base_field(base, field.key, validate)?.unwrap_or(field);
+                            if inherited.origin != crate::types::NativeTableFieldOrigin::Declared { continue }
+                            let expected = if inherited.optional { self.optional(inherited.value) } else { inherited.value };
+                            // A stored value is checked against the type it takes by its store.
+                            if validate && !self.native_object_member_stored(previous_origin)? && !self.is_assignable(actual, expected) {
+                                let error = NativeNamedTypeError::IncompatibleOverride { declaration, member: previous_origin.member, base, expected, actual };
+                                if overridden.is_some() { self.report_native_named(error) } else { overridden = Some(error) }
+                            }
+                            fields[position] = NativeTableField { key: previous.key, ..inherited };
+                            continue;
+                        }
                         if !validate { continue; }
                         if previous_origin.via.is_none() {
+                            // Each incompatible override is reported, at its member; the class keeps
+                            // the first as its error.
                             if previous.optional && !field.optional || !self.is_assignable(actual, expected) {
-                                return Err(NativeNamedTypeError::IncompatibleOverride { declaration, member: previous_origin.member, base, expected, actual });
+                                let error = NativeNamedTypeError::IncompatibleOverride { declaration, member: previous_origin.member, base, expected, actual };
+                                if overridden.is_some() { self.report_native_named(error) } else { overridden = Some(error) }
                             }
                         } else if previous.optional != field.optional || previous.readonly != field.readonly || !self.related(actual, expected, Relation::Identity) {
                             return Err(NativeNamedTypeError::IncompatibleBase { declaration, index, base, expected, actual });
                         }
-                    } else { fields.push(field); field_origins.push(origin); }
+                    } else {
+                        // An inherited member is as its owner resolves it, so an unannotated
+                        // override there carries the written type it takes.
+                        let field = match origin.via {
+                            Some((_, base)) => self.native_base_field(base, field.key, validate)?.unwrap_or(field),
+                            None => field,
+                        };
+                        fields.push(field); field_origins.push(origin);
+                    }
                 }
                 NativeTypeMemberKey::Indexer { sparse } => {
                     let raw_key = self.native_named_member_demand(origin.member, true)?;
@@ -1674,6 +1772,7 @@ impl<'p, 's> Checker<'p, 's> {
                 }
             }
         }
+        if let Some(error) = overridden { return Err(error) }
         if header.object_form == Some(NativeObjectDeclarationForm::Array) {
             if indexers.len() != 1 || indexers[0].key != TypeId::NUMBER || !fields.is_empty() {
                 return Err(NativeNamedTypeError::InvalidDeclaration(declaration));
@@ -1727,6 +1826,8 @@ impl<'p, 's> Checker<'p, 's> {
             let provider = self.native_named_provider(reference.declaration).map_err(|error| error.table_error(TypeId::ERROR))?;
             let mut found: Option<(NativeObjectMember, NativeTypeMemberHeader, TypeId)> = None;
             let mut found_declared = false;
+            let mut found_written = false;
+            let mut kept_own = None;
             for origin in members {
                 let metadata = provider.type_member_header(self, origin.member);
                 if let NativeTypeMemberKey::Fixed(member_key) = metadata.key && member_key.normalize()? == key {
@@ -1740,6 +1841,27 @@ impl<'p, 's> Checker<'p, 's> {
                         let TypeData::NativeObject(owner) = *self.data(base) else { unreachable!() };
                         self.native_named_read(owner, NativeTableAccessKey::Literal(key))?
                     } else if metadata.optional { self.optional(value) } else { value };
+                    if let Some((_, base)) = origin.via && !found_written
+                        && let Some((previous, _, actual)) = &found && previous.via.is_none()
+                    {
+                        // As in v1, an unannotated override reads as an inherited written
+                        // member, against which it is checked, and as itself beside an
+                        // inherited inferred one.
+                        let (member, actual, previous_member) = (previous.member, *actual, previous.clone());
+                        let TypeData::NativeObject(owner) = *self.data(base) else { unreachable!() };
+                        if kept_own == origin.via { continue }
+                        if self.native_named_key_origin(owner, key).map_err(|error| error.table_error(TypeId::ERROR))? != Some(crate::types::NativeTableFieldOrigin::Declared) {
+                            kept_own = origin.via;
+                            continue;
+                        }
+                        if !self.native_object_member_stored(&previous_member).map_err(|error| error.table_error(TypeId::ERROR))? && !self.is_assignable(actual, value) {
+                            self.report_native_named(NativeNamedTypeError::IncompatibleOverride { declaration: reference.declaration, member, base, expected: value, actual });
+                        }
+                        found = Some((origin, metadata, value));
+                        found_declared = true;
+                        found_written = true;
+                        continue;
+                    }
                     if let Some((previous, previous_metadata, actual)) = &found {
                         let error = if let Some((index, base)) = origin.via {
                             if previous.via.is_none() {
@@ -1754,13 +1876,19 @@ impl<'p, 's> Checker<'p, 's> {
                             if declared_here && !found_declared {
                                 found = Some((origin, metadata, value));
                                 found_declared = true;
+                                found_written = true;
                             }
                             None
                         };
                         // An incompatible override is reported at its declaration; the member
                         // still reads as this class declares it, as in TypeScript.
                         if let Some(error) = error { self.report_native_named(error); }
-                    } else { found = Some((origin, metadata, value)); found_declared = declared_here; }
+                    } else {
+                        found_written = declared_here || origin.via.is_some()
+                            || self.native_object_member_written(&origin).map_err(|error| error.table_error(TypeId::ERROR))?;
+                        found = Some((origin, metadata, value));
+                        found_declared = declared_here;
+                    }
                 }
             }
             if let Some((_, _, value)) = found { return Ok(value) }
@@ -1803,8 +1931,12 @@ impl<'p, 's> Checker<'p, 's> {
                     return self.native_named_context_value(owner, key);
                 }
                 let Some(raw) = self.native_object_member_demand(&origin).ok()? else { continue };
+                let declared = self.native_object_member_effective_origin(&origin).ok()? == Some(crate::types::NativeTableFieldOrigin::Declared);
+                // An unannotated override of a written member takes that member's type (v1).
+                if !declared && !self.native_object_member_written(&origin).ok()?
+                    && self.native_named_key_origin(reference, literal).ok()? == Some(crate::types::NativeTableFieldOrigin::Declared) { continue }
                 let value = self.native_member_type(raw, origin.owner);
-                let value = if self.native_object_member_effective_origin(&origin).ok()? == Some(crate::types::NativeTableFieldOrigin::Declared) { self.regular(value) } else { value };
+                let value = if declared { self.regular(value) } else { value };
                 return Some(if metadata.optional { self.optional(value) } else { value });
             }
         }
@@ -1870,7 +2002,9 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let schema = self.native_object_resolved_uncached(reference, &members, true)?;
         let TypeData::NativeTable(data) = self.data(schema) else { unreachable!() };
-        let fields: Vec<_> = data.fields.iter().map(|field| NativeTableField { optional: true, ..*field }).collect();
+        // An inherited inferred member is no contract for the subclass's own value (v1).
+        let fields: Vec<_> = data.fields.iter().filter(|field| field.origin == crate::types::NativeTableFieldOrigin::Declared)
+            .map(|field| NativeTableField { optional: true, ..*field }).collect();
         let mut context = (**data).clone_in(self.arena);
         context.nominal_origin = None;
         context.definition_origin = None;
@@ -1901,6 +2035,17 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub fn native_definition_value(&mut self, owner: NativeDefinitionId, class: TypeId, actual: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+        self.native_definition_value_checking(owner, class, actual, true)
+    }
+
+    /// The definition an initializer whose fields fail their contracts still makes, once that
+    /// error is reported: as a TypeScript class with an incompatible member is still the class,
+    /// its later members and uses are not errors too.
+    pub fn native_definition_value_recovered(&mut self, owner: NativeDefinitionId, class: TypeId, actual: TypeId) -> Result<TypeId, NativeNamedTypeError> {
+        self.native_definition_value_checking(owner, class, actual, false)
+    }
+
+    fn native_definition_value_checking(&mut self, owner: NativeDefinitionId, class: TypeId, actual: TypeId, check: bool) -> Result<TypeId, NativeNamedTypeError> {
         let reference = self.native_definition_class(owner, class)?;
         let TypeData::NativeTable(data) = self.data(actual) else {
             return Err(NativeNamedTypeError::DefinitionInitializer { owner, actual });
@@ -1920,7 +2065,7 @@ impl<'p, 's> Checker<'p, 's> {
         // This operation checks supplied members, rather than assigning a whole object to a weak
         // TS type. Inferred extras remain in the actual view even when no declared field is present.
         let mut relation = Relater::new(Relation::Assignable, self.cycles);
-        if !self.native_tables_related::<false>(&mut relation, supplied_data, context_data, STATE_NONE).holds() {
+        if check && !self.native_tables_related::<false>(&mut relation, supplied_data, context_data, STATE_NONE).holds() {
             return Err(NativeNamedTypeError::DefinitionField { owner, error: NativeTableError::ValueType { value: actual, expected: context } });
         }
         let schema_class = self.native_definition_schema(class)?;
@@ -1934,14 +2079,14 @@ impl<'p, 's> Checker<'p, 's> {
             for indexer in &supplied.indexers {
                 if !self.native_table_inference_key_matches(literal, indexer.key) { continue }
                 let value = if supplied.collision_candidates { self.without_undefined(indexer.value) } else { indexer.value };
-                if !self.is_assignable(value, field.value) {
+                if check && !self.is_assignable(value, field.value) {
                     return Err(NativeNamedTypeError::DefinitionField { owner, error: NativeTableError::ValueType { value, expected: field.value } });
                 }
             }
             for tail in &supplied.sequence_tails {
                 if !Self::native_sequence_contains(tail.start, field.key) { continue }
                 let value = if supplied.collision_candidates { self.without_undefined(tail.value) } else { tail.value };
-                if !self.is_assignable(value, field.value) {
+                if check && !self.is_assignable(value, field.value) {
                     return Err(NativeNamedTypeError::DefinitionField { owner, error: NativeTableError::ValueType { value, expected: field.value } });
                 }
             }

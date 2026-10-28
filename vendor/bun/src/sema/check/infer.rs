@@ -1424,8 +1424,11 @@ impl<'p, 's> Checker<'p, 's> {
                 return;
             }
         }
-        // Only if the two types may be related.
-        if self.types_definitely_unrelated(source, target) {
+        // Only if the two types may be related. Lua result lists, the only tuples of native
+        // checking, are lists: one of another length still gives the values it has to the
+        // positions they fill, the rest being nil.
+        let result_lists = self.native_arrays && matches!(self.data(source), TypeData::Tuple { .. }) && matches!(self.data(target), TypeData::Tuple { .. });
+        if !result_lists && self.types_definitely_unrelated(source, target) {
             return;
         }
         if self.is_array_or_tuple(source) {

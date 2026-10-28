@@ -3014,6 +3014,60 @@
       "patch": "vendor/patches/bun-sema-native-table-literal-candidates.patch",
       "reason": "Count a table a Lua constructor built as an object literal in `unionObjectAndArrayLiteralCandidates`, whether fresh, widened or a local's constructed table, as TypeScript keeps an object literal's flag after widening, so that a generic call unions table literal candidates instead of fixing the first.",
       "patch_sha256": "45aa346655acc3f1a4513e74de35080fb4e22dc928b7eb8a5964b272c8fc0112"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
+      "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
+      "patch_sha256": "ba987ffe7196cef0cabb5bbbf52bdd1e45069acfd7f76db6ae24d5a100a19352"
+    },
+    {
+      "path": "src/sema/check/errors_call.rs",
+      "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
+      "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
+      "patch_sha256": "ba987ffe7196cef0cabb5bbbf52bdd1e45069acfd7f76db6ae24d5a100a19352"
+    },
+    {
+      "path": "src/sema/check/infer.rs",
+      "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
+      "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
+      "patch_sha256": "ba987ffe7196cef0cabb5bbbf52bdd1e45069acfd7f76db6ae24d5a100a19352"
+    },
+    {
+      "path": "src/sema/check/native_named.rs",
+      "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
+      "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
+      "patch_sha256": "ba987ffe7196cef0cabb5bbbf52bdd1e45069acfd7f76db6ae24d5a100a19352"
+    },
+    {
+      "path": "src/sema/check/native_packs.rs",
+      "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
+      "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
+      "patch_sha256": "ba987ffe7196cef0cabb5bbbf52bdd1e45069acfd7f76db6ae24d5a100a19352"
+    },
+    {
+      "path": "src/sema/check/native_runtime_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
+      "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
+      "patch_sha256": "ba987ffe7196cef0cabb5bbbf52bdd1e45069acfd7f76db6ae24d5a100a19352"
+    },
+    {
+      "path": "src/sema/check/native_tables.rs",
+      "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
+      "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
+      "patch_sha256": "ba987ffe7196cef0cabb5bbbf52bdd1e45069acfd7f76db6ae24d5a100a19352"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
+      "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
+      "patch_sha256": "ba987ffe7196cef0cabb5bbbf52bdd1e45069acfd7f76db6ae24d5a100a19352"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-legacy-deficiencies.patch",
+      "reason": "Apply v1's rule to unannotated overrides (a written inherited member's type, checked against the member's value; its own type beside an inferred one) and relate a declared subclass to its ancestor through the ancestor's view; report every incompatible override; keep a failed class definition as the class; publish a written variadic return tail; drop a variadic tail past a result list's target, as Lua does; type a call no overload accepts by its longest candidate, with the arity range all overloads admit; read a constructor's expansion as its element, with sparse store tails; infer the shared positions of result lists of other lengths; and let a failed call's error values satisfy any result list.",
+      "patch_sha256": "ba987ffe7196cef0cabb5bbbf52bdd1e45069acfd7f76db6ae24d5a100a19352"
     }
   ],
   "source_additions": {
@@ -3054,7 +3108,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-generic-iteration.patch"
     },
     "src/sema/check/native_named.rs": {
-      "extracted_sha256": "d0e04ba7b96c2353c8caee793574ae597229dd46be051a480cdcc53596090483",
+      "extracted_sha256": "16fc7dcdfb9003ac79c1777b0db65781e175b55eb3854c81701df43d5a44a5b9",
       "introduced_by_patch": "vendor/patches/bun-sema-native-named-types.patch"
     },
     "src/sema/check/native_nil.rs": {
@@ -3062,7 +3116,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-nil-compatibility.patch"
     },
     "src/sema/check/native_packs.rs": {
-      "extracted_sha256": "6cbd57643881f93993d95e518a307a3e290392c963304d1b3634f7d0c86479e7",
+      "extracted_sha256": "0d3eaad0f64054c71e5aacf46b412644ffe4a139ee6697d0a7e8cec7925856f8",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     },
     "src/sema/check/native_project.rs": {
@@ -3078,7 +3132,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-lua-runtime-top-types.patch"
     },
     "src/sema/check/native_runtime_tables.rs": {
-      "extracted_sha256": "b2452e9fe34c67f3a3c856fca23cc51de9d0910b3e7aecb940ac179c3aacdf31",
+      "extracted_sha256": "d898599a23ec2f11aadecdcb09aea6fff82842d5c119527a03e24799161288a9",
       "introduced_by_patch": "vendor/patches/bun-sema-native-runtime-schema-origin-checkpoint.patch"
     },
     "src/sema/check/native_signatures.rs": {
@@ -3090,7 +3144,7 @@
       "introduced_by_patch": "vendor/patches/bun-sema-native-standard-operation-policy.patch"
     },
     "src/sema/check/native_tables.rs": {
-      "extracted_sha256": "cd65e6996f48da8e3baf1cdc360786b4e55a997ab8f473e67b7e4a13dbdd9153",
+      "extracted_sha256": "d0d02f0efcc99a1beb443b334cc18335d7a5ab2c83efae8351a12c1c1cc5a7d0",
       "introduced_by_patch": "vendor/patches/bun-sema-lua-packs-tables.patch"
     }
   },
@@ -3788,7 +3842,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "772a1958b7b91fa19b6801fc50e568526a83f00b6ef64c7587260429e8576505"
+      "extracted_sha256": "20dd2fe2a75b6a8ca027e968bdb7b1be858296c244ba0ab2a78548efcb2e4238"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -3838,7 +3892,7 @@
     "src/sema/check/errors_call.rs": {
       "upstream": "src/sema/check/errors_call.rs",
       "sha256": "d3afd92a719df2d061cc57fdbaaceab03111588613ea9748fe20a3a2cfab230f",
-      "extracted_sha256": "7b74a5f743df5a57b6e4bc13f506eb00d2729cdf0664c555f3ba14f242d59503"
+      "extracted_sha256": "5a69ddb136055adf54d1d82ea8ee8134970df11f4cb02ded2e1119ca82ba881e"
     },
     "src/sema/check/errors_circular.rs": {
       "upstream": "src/sema/check/errors_circular.rs",
@@ -4013,7 +4067,7 @@
     "src/sema/check/infer.rs": {
       "upstream": "src/sema/check/infer.rs",
       "sha256": "58a5f30b6be3764fe28362105fe324c90b180021032108dfeada3d0cce88c461",
-      "extracted_sha256": "87a06f7e83ef5deeac2010a256ad70861f797b3aee499ab5743e082fcf3ba3df"
+      "extracted_sha256": "c320471ebddd47b48172c6ca19b8bb386a5283f0719831154d18f5225f62ce80"
     },
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
@@ -4058,7 +4112,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "9357eb988a1f60b9ff46014659b576ffce6db649d07df528c32263b1788f949c"
+      "extracted_sha256": "672e7c2914c633cdbf0c48aa5c390862c784d42fb6df88c7c45359d76f15388f"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -4253,7 +4307,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "0a5b741474bef3efe7339f5a30e84d86a2cba191caf91d71f3cafb2d427f1f26"
+      "extracted_sha256": "128b057febfde5cf3fee104c581371c9676cf186d288b2b7a218658c6f9184a4"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

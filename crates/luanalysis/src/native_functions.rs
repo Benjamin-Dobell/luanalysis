@@ -895,6 +895,15 @@ impl NativeRegistry {
         }
     }
 
+    /// Whether an inline `@type` cast types the value at `span`.
+    pub(super) fn casts_value(&self, span: luanalysis_syntax::Span) -> bool { self.methods.casts(span) }
+    /// Each original function, with the class whose method it is stored as.
+    pub(crate) fn functions_with_method_classes(&self) -> impl Iterator<Item = (&Function, Option<crate::native_named::NativeNamedKey>)> + '_ {
+        self.functions.iter().enumerate().map(|(index, function)| {
+            let key = NativeFunctionKey { snapshot: self.snapshot, index: index as u32 };
+            (function, self.methods.get(key).and_then(|method| method.class_owner))
+        })
+    }
     pub(super) fn function(&self, key: NativeFunctionKey) -> &Function {
         assert!(
             self.contains_function(key),
@@ -2949,6 +2958,14 @@ impl NativeTypeProvider for NativeRegistry {
         self.original_member_effective_metadata(key, queries).unwrap_or(luanalysis_engine::TypeMemberEffectiveMetadata {
             origin: luanalysis_engine::TableFieldOrigin::Declared, is_assignment: false,
         })
+    }
+    fn type_member_is_written(&self, key: luanalysis_engine::NativeTypeMemberKey) -> bool {
+        if let Some(source)=self.runtime_tables.member(key) {return source.annotation.is_some();}
+        self.original_member_is_written(key)
+    }
+    fn type_member_is_stored(&self, key: luanalysis_engine::NativeTypeMemberKey) -> bool {
+        self.members.get(key).is_some_and(|source| matches!(source.candidates[0].origin,
+            crate::native_members::OriginalMemberOrigin::AssignmentField(_) | crate::native_members::OriginalMemberOrigin::Method(_)))
     }
     fn type_member_is_assignment(&self, key: luanalysis_engine::NativeTypeMemberKey) -> bool {
         self.members.get(key).is_some_and(|source| matches!(source.candidates[0].origin, crate::native_members::OriginalMemberOrigin::AssignmentField(_)))

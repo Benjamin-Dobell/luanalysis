@@ -290,6 +290,12 @@ impl Checker<'_> {
         match value
         {
             Ok(value) => value,
+            // A field that fails its contract is reported once; the table is still the class's
+            // definition, as a TypeScript class with an incompatible member is still the class.
+            Err(error @ NamedTypeError::DefinitionField { .. }) if !reopened => {
+                self.class_definition_error(error, span);
+                self.engine.class_definition_value_recovered(directive.key, &class, &actual).unwrap_or(actual)
+            }
             Err(error) => {
                 self.class_definition_error(error, span);
                 actual

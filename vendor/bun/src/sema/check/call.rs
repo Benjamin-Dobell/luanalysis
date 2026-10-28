@@ -820,7 +820,10 @@ impl<'p, 's> Checker<'p, 's> {
         if chosen.is_none() {
             chosen = self.choose_overload(&mut state, Relation::Assignable);
         }
-        let selected = chosen.unwrap_or_else(|| self.candidate_for_overload_failure(&state));
+        // As v1 types a call no overload accepts, and as TypeScript does where it keeps the
+        // candidates, the longest candidate types it: their union's intersected results would be
+        // `never`, silencing every use of the result.
+        let selected = chosen.unwrap_or_else(|| self.pick_longest_candidate_signature(&state));
         let mut errors = Vec::new();
         if chosen.is_none() {
             let argument_candidate = state.candidates_for_argument_error.last().copied().and_then(|failed| {
@@ -866,12 +869,18 @@ impl<'p, 's> Checker<'p, 's> {
                     .unwrap_or(diagnostic_sig);
                 let params = self.sig_params(failed);
                 if !self.has_correct_arity(&state, &params) {
-                    let (min, max) = if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(&params).is_some() {
-                        let expected = NativeResultPack { ty: self.rest_type_at_position(&params, 0, false) };
-                        self.native_pack_count_bounds(expected)
-                    } else {
-                        (self.min_argument_count(&params), (!self.has_effective_rest_parameter(&params)).then(|| self.parameter_count(&params)))
-                    };
+                    let (min, max) = if state.candidates.len() > 1 {
+                        // `getArgumentArityError`: the range the overloads admit together.
+                        let candidates = state.candidates.clone();
+                        let (mut min, mut max) = (usize::MAX, Some(0));
+                        for candidate in candidates {
+                            let params = self.sig_params(candidate);
+                            let (least, most) = self.native_arity_bounds(args, &params);
+                            min = min.min(least);
+                            max = max.zip(most).map(|(max, most)| max.max(most));
+                        }
+                        (min, max)
+                    } else { self.native_arity_bounds(args, &params) };
                     if let Some(index) = args.iter().position(|arg| arg.is_spread()) {
                         let actual = self.native_argument_sequence_type(args, index, TypeId::UNKNOWN, None, CheckMode::empty());
                         let (actual_min, actual_max) = self.native_pack_count_bounds(NativeResultPack { ty: actual });
@@ -2803,10 +2812,30 @@ impl<'p, 's> Checker<'p, 's> {
         best
     }
 
+    /// The fewest and most arguments `params` admit in a Lua call.
+    fn native_arity_bounds(&mut self, args: &[Arg], params: &List<'p, SigParam>) -> (usize, Option<usize>) {
+        if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(params).is_some() {
+            let expected = NativeResultPack { ty: self.rest_type_at_position(params, 0, false) };
+            self.native_pack_count_bounds(expected)
+        } else {
+            (self.min_argument_count(params), (!self.has_effective_rest_parameter(params)).then(|| self.parameter_count(params)))
+        }
+    }
+
+    /// The number of arguments a call supplies, with a Lua expansion's fewest values.
+    fn argument_count(&mut self, s: &CallState<'_>) -> usize {
+        let args = s.args;
+        if !matches!(s.site, CallSite::Native { .. }) { return args.len() }
+        let Some(index) = args.iter().position(|arg| arg.is_spread()) else { return args.len() };
+        let actual = self.native_argument_sequence_type(args, index, TypeId::UNKNOWN, None, CheckMode::empty());
+        index + self.native_pack_count_bounds(NativeResultPack { ty: actual }).0
+    }
+
     /// `pickLongestCandidateSignature`
     fn pick_longest_candidate_signature(&mut self, s: &CallState<'_>) -> SigId {
-        let (sigs, type_args, args) = (&s.candidates[..], s.type_args, s.args);
-        let candidate = sigs[self.longest_candidate_index(sigs, args.len())];
+        let (sigs, type_args) = (&s.candidates[..], s.type_args);
+        let count = self.argument_count(s);
+        let candidate = sigs[self.longest_candidate_index(sigs, count)];
         let type_params = self.sig_type_params(candidate);
         if type_params.is_empty() {
             return candidate;

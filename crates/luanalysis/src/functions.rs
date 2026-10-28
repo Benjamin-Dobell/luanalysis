@@ -611,7 +611,7 @@ impl Checker<'_> {
             .map(|context| self.engine.contextual_return_pack(&context)));
         let pack = self.return_expression_pack(values, span, context.as_ref());
         if let Some(expected) = expected_pack {
-            if !self.engine.pack_assignable(&pack, &expected) {
+            if !self.engine.result_list_assignable(&pack, &expected) {
                 let origin = self.return_contract_origin(span).unwrap_or_else(|| {
                     self.return_pack_error_origin(values, span, &pack, &expected)
                 });

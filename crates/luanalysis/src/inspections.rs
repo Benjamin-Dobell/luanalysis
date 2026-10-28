@@ -117,6 +117,31 @@ impl NativeRegistry {
         self.merge_report(CheckReport { diagnostics, ..CheckReport::default() });
     }
 
+    /// A function's `---@generic` parameter named as one of an enclosing function's, or of the
+    /// class its method is stored on (`---@generic T` on a method of `Box<T>`), is another
+    /// parameter that hides it, as v1 reported (LUA4005). TypeScript permits it, so it is a warning.
+    pub(crate) fn report_shadowed_generic_parameters(&self) {
+        if !self.inspections() || self.source_role() != luanalysis_project::SourceRole::Implementation { return; }
+        let functions: Vec<_> = self.functions_with_method_classes().collect();
+        let mut diagnostics = Vec::new();
+        for &(function, class) in &functions {
+            for parameter in &function.annotations.generics {
+                let enclosing = functions.iter().any(|(outer, _)| outer.span.start < function.span.start && function.span.end <= outer.span.end
+                    && outer.annotations.generics.iter().any(|other| other.name.text == parameter.name.text));
+                let owner = class.and_then(|class| self.named_metadata().declaration(class))
+                    .is_some_and(|class| class.syntax.generics.iter().any(|other| other.name.text == parameter.name.text));
+                if enclosing || owner {
+                    diagnostics.push(Diagnostic {
+                        code: "LUA4005",
+                        span: parameter.span,
+                        message: format!("Generic parameter '{}' shadows a generic parameter of the same name in an enclosing scope.", parameter.name.text),
+                    });
+                }
+            }
+        }
+        self.merge_report(CheckReport { diagnostics, ..CheckReport::default() });
+    }
+
     /// `---@field readonly T` and `{ readonly: T }` name a field `readonly`, as they always
     /// have, but read like a read-only field missing its name. `["readonly"]` names the field
     /// without the warning.

@@ -1933,7 +1933,7 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 }
                 for tail in &table.sequence_tails {
                     let value = self.type_to_node(tail.value);
-                    members.push(cat!(if tail.readonly { &b"readonly "[..] } else { &b""[..] }, b"[", tail.start.to_string().as_bytes(), b"..integer]?: ", value.text));
+                    members.push(cat!(if tail.readonly { &b"readonly "[..] } else { &b""[..] }, b"[", tail.start.to_string().as_bytes(), if tail.sparse { &b"..integer]?: "[..] } else { &b"..integer]: "[..] }, value.text));
                 }
                 // As the Lua printer writes a table's fields.
                 Node::simple(cat!(b"{ ", members.join(&b", "[..]), b" }"))

@@ -122,7 +122,7 @@ impl Diagnostic {
     /// editor asks for, are warnings or suggestions.
     pub fn category(&self) -> DiagnosticCategory {
         match self.code {
-            "TS2367" | "LUA2872" | "LUA2873" | "LUA4001" => DiagnosticCategory::Warning,
+            "TS2367" | "LUA2872" | "LUA2873" | "LUA4001" | "LUA4005" => DiagnosticCategory::Warning,
             "TS6133" | "TS7027" | "TS7044" | "TS7047" | "LUA4002" | "LUA4003" | "LUA4004" => DiagnosticCategory::Suggestion,
             _ => DiagnosticCategory::Error,
         }

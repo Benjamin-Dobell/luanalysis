@@ -290,7 +290,7 @@ impl<'p, 's> Checker<'p, 's> {
         }
         let actual = self.native_result_pack(&actual_rows);
         let expected = self.native_result_pack(&expected_rows);
-        self.native_pack_assignable(actual, expected)
+        self.native_result_list_assignable(actual, expected)
     }
 
     /// Descriptors are unavailable while a symbolic variadic pack has not been instantiated.
@@ -621,6 +621,13 @@ impl<'p, 's> Checker<'p, 's> {
             for expected in &expected_rows {
                 let expected_count = self.native_pack_row_count_type(expected);
                 if !self.native_pack_assignable(actual_count, expected_count) { continue }
+                // A written variadic tail is the contract callers see, however many values the
+                // body happens to return.
+                if expected.tail.is_some() {
+                    rows.push(expected.clone());
+                    matched = true;
+                    continue;
+                }
                 let mut fixed = Vec::with_capacity(actual.fixed.len());
                 for (index, actual_slot) in actual.fixed.iter().enumerate() {
                     let ty = match expected.fixed.get(index) {
@@ -722,6 +729,40 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// Written return contracts keep required lengths and whole alternative correlations.
+    /// `actual` as a result list delivered to `declared`'s fixed slots: Lua drops values past
+    /// them, so a variadic tail that reaches past every declared slot is no excess. Within the
+    /// declared slots it stands for each count of values it may supply, none included.
+    pub fn native_pack_without_possible_excess(&mut self, actual: NativeResultPack, declared: NativeResultPack) -> NativeResultPack {
+        let Some(declared_rows) = self.native_pack_alternatives(declared) else { return actual };
+        if declared_rows.is_empty() || declared_rows.iter().any(|row| row.tail.is_some()) { return actual }
+        let slots = declared_rows.iter().map(|row| row.fixed.len()).max().unwrap_or(0);
+        let Some(actual_rows) = self.native_pack_alternatives(actual) else { return actual };
+        if !actual_rows.iter().any(|row| row.tail.is_some()) { return actual }
+        let mut rows = Vec::new();
+        for row in actual_rows {
+            let Some(tail) = row.tail else { rows.push(row); continue };
+            let mut fixed = row.fixed;
+            loop {
+                rows.push(NativePackAlternative { fixed: fixed.clone(), tail: None });
+                if fixed.len() >= slots { break }
+                fixed.push(NativePackSlot { ty: tail, optional: false });
+            }
+        }
+        self.native_result_pack(&rows)
+    }
+
+    /// A result list (a return's, a call's arguments) fits `declared` when its values do; a
+    /// variadic tail past the declared slots is dropped, as Lua drops it.
+    pub fn native_result_list_assignable(&mut self, actual: NativeResultPack, declared: NativeResultPack) -> bool {
+        // A failed call's values are the error type wherever a list carries them, as TypeScript
+        // relates its error type to anything: the failure is reported once, at the call.
+        if self.native_pack_alternatives(actual).is_some_and(|rows| rows.iter().any(|row| {
+            row.tail.is_some_and(|tail| self.is_error_type(tail)) || row.fixed.iter().any(|slot| self.is_error_type(slot.ty))
+        })) { return true }
+        let actual = self.native_pack_without_possible_excess(actual, declared);
+        self.native_pack_assignable(actual, declared)
+    }
+
     pub fn native_pack_assignable(&mut self, actual: NativeResultPack, declared: NativeResultPack) -> bool {
         if self.is_assignable(actual.ty, declared.ty) { return true; }
         // A variadic opaque source can straddle an optional first slot and a

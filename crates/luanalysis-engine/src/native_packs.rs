@@ -598,6 +598,11 @@ impl SessionQueries<'_, '_, '_> {
         let declared = import_pack(self.checker, self.handles, declared);
         self.checker.native_pack_assignable(actual, declared)
     }
+    pub(super) fn result_list_assignable_native(&mut self, actual: &ValuePack, declared: &ValuePack) -> bool {
+        let actual = import_pack(self.checker, self.handles, actual);
+        let declared = import_pack(self.checker, self.handles, declared);
+        self.checker.native_result_list_assignable(actual, declared)
+    }
     pub(super) fn pack_allows_implicit_return_native(&mut self, pack: &ValuePack) -> bool {
         let pack = import_pack(self.checker, self.handles, pack);
         self.checker.native_pack_allows_implicit_return(pack)

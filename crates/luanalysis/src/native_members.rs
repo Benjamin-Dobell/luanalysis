@@ -249,6 +249,16 @@ impl NativeRegistry {
             visibility: TypeMemberVisibility::Public, optional: false, readonly: false,
         })
     }
+    /// Whether a member's value has a written type: an annotation, a cast, or a function whose
+    /// signature is annotated (`---@param`, `---@return`, a `---@type` on its assignment).
+    pub(super) fn original_member_is_written(&self, key: NativeTypeMemberKey) -> bool {
+        self.members.get(key).is_some_and(|source| source.candidates.iter().any(|input| match input.value {
+            OriginalMemberValue::Written(_) => true,
+            OriginalMemberValue::Function(function) => self.function(function).annotations.types_signature()
+                || self.casts_value(self.function(function).span),
+            OriginalMemberValue::Expression(_) => false,
+        }))
+    }
     pub(super) fn original_member_origin(&self, key: NativeTypeMemberKey) -> Option<TableFieldOrigin> {
         Some(if self.members.get(key)?.candidates.iter().any(|input| matches!(input.value, OriginalMemberValue::Written(_))) {
             TableFieldOrigin::Declared

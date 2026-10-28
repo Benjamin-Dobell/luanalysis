@@ -549,6 +549,12 @@ pub trait NativeTypeProvider {
     fn type_member_owner_application(&self, _: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> Option<MemberOwnerApplication> { None }
     /// A store declares a new member only when no inherited contract exists.
     fn type_member_is_assignment(&self, _: NativeTypeMemberKey) -> bool { false }
+    /// Whether a member's value has a written type, as a written member or an annotated
+    /// function does, rather than one inferred from its value.
+    fn type_member_is_written(&self, member: NativeTypeMemberKey) -> bool { self.type_member_origin(member) == TableFieldOrigin::Declared }
+    /// Whether a statement of its own (an assignment, a function declaration) stores the member's
+    /// value, checking it against the member's type.
+    fn type_member_is_stored(&self, _: NativeTypeMemberKey) -> bool { false }
     fn type_member_activation(&self, _: NativeTypeMemberKey, _: &mut dyn TypeQueries) -> TypeMemberActivation { TypeMemberActivation::Active }
     /// Pure original callable members; no runtime implementation is implied.
     fn type_member_signatures(&self, _: NativeTypeMemberKey) -> Option<Vec<NativeSignatureKey>> { None }
@@ -982,6 +988,11 @@ pub trait TypeQueries {
 
     fn class_definition_context(&mut self, owner: NativeClassDefinitionKey, class_type: &Type) -> Result<Type, NamedTypeError>;
     fn class_definition_value(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError>;
+    /// The definition an initializer whose fields fail their contracts still makes, once that
+    /// error is reported, so that the class keeps its members.
+    fn class_definition_value_recovered(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
+        self.class_definition_value(owner, class_type, actual)
+    }
     /// A class declared in several places, reopened on a value that is already the class or
     /// its definition; any other value is an ordinary definition value.
     fn class_definition_reopen(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError>;
@@ -1139,6 +1150,8 @@ pub trait TypeQueries {
         context: Option<&ValuePack>,
     ) -> ValuePack;
     fn pack_assignable(&mut self, actual: &ValuePack, declared: &ValuePack) -> bool;
+    /// A result list delivered to `declared`, whose variadic tail past the declared slots Lua drops.
+    fn result_list_assignable(&mut self, actual: &ValuePack, declared: &ValuePack) -> bool { self.pack_assignable(actual, declared) }
     fn pack_allows_implicit_return(&mut self, pack: &ValuePack) -> bool;
     fn pack_with_implicit_empty(&mut self, pack: &ValuePack) -> ValuePack;
     fn captured_function_value(&mut self, context: &CapturedFunctionContext) -> Type;
@@ -1832,6 +1845,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn pack_assignable(&mut self, actual: &ValuePack, declared: &ValuePack) -> bool {
         self.pack_assignable_native(actual, declared)
+    }
+    fn result_list_assignable(&mut self, actual: &ValuePack, declared: &ValuePack) -> bool {
+        self.result_list_assignable_native(actual, declared)
     }
     fn pack_allows_implicit_return(&mut self, pack: &ValuePack) -> bool {
         self.pack_allows_implicit_return_native(pack)
@@ -2539,6 +2555,9 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
     }
     fn class_definition_value(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
         native_named::definition_value(self, owner, class_type, actual)
+    }
+    fn class_definition_value_recovered(&mut self, owner: NativeClassDefinitionKey, class_type: &Type, actual: &Type) -> Result<Type, NamedTypeError> {
+        native_named::definition_value_recovered(self, owner, class_type, actual)
     }
     fn class_definition_member_contract(&mut self, owner: NativeClassDefinitionKey, actual: &Type) -> Option<Type> {
         native_named::definition_member_contract(self, owner, actual)

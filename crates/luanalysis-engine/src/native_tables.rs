@@ -101,6 +101,8 @@ pub struct TableSequenceTail {
     pub value: Type,
     pub readonly: bool,
     pub origin: TableFieldOrigin,
+    /// Added by a store at a key it may not have written: it reads as possibly nil.
+    pub sparse: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -253,6 +255,7 @@ fn import_sequence_tails(
             value: import_type(checker, handles, &tail.value),
             readonly: tail.readonly,
             origin: import_origin(&tail.origin),
+            sparse: tail.sparse,
         })
         .collect()
 }
@@ -310,6 +313,7 @@ pub(super) fn export_table(
                 value: export_type_with_literal_policy(checker, handles, tail.value, preserve_regular && tail.origin == NativeTableFieldOrigin::Inferred),
                 readonly: tail.readonly,
                 origin: export_origin(tail.origin),
+                sparse: tail.sparse,
             })
             .collect(),
         fresh,
@@ -597,7 +601,8 @@ mod tests {
                 .table_lookup(&table, &literal(LuaKey::Integer(2)))
                 .unwrap();
             assert!(queries.is_assignable(&Type::String, &element));
-            assert!(queries.is_assignable(&Type::Nil, &element));
+            // An expansion reads as its element, as a TypeScript array does.
+            assert!(!queries.is_assignable(&Type::Nil, &element));
             assert!(!queries.is_assignable(&Type::Boolean, &element));
             assert!(matches!(
                 queries.table_lookup(&table, &literal(LuaKey::Integer(0))),
@@ -617,6 +622,7 @@ mod tests {
                     value: Type::String,
                     readonly: false,
                     origin: TableFieldOrigin::Inferred,
+                    sparse: false,
                 }]
             );
             let inspected = queries.inspect_type(&table);
@@ -776,6 +782,7 @@ mod tests {
                         value: Type::String,
                         readonly: true,
                         origin: TableFieldOrigin::Inferred,
+                        sparse: true,
                     }],
                     ..Default::default()
                 })

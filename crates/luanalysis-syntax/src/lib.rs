@@ -506,6 +506,14 @@ pub struct FunctionAnnotations {
     pub type_annotation: Option<TypeAnnotation>,
 }
 
+impl FunctionAnnotations {
+    /// Whether any part of the function's signature is written, rather than inferred.
+    pub fn types_signature(&self) -> bool {
+        !self.overloads.is_empty() || !self.params.is_empty() || self.vararg.is_some()
+            || self.returns.is_some() || self.type_annotation.is_some()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct VarargAnnotation {
     pub ty: TypeExpr,

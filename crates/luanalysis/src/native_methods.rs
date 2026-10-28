@@ -242,6 +242,10 @@ impl NativeMethods {
         }
         methods
     }
+    /// Whether an inline `@type` cast types the value at `span`.
+    pub(super) fn casts(&self, span: luanalysis_syntax::Span) -> bool {
+        self.casts.contains_key(&(span.start, span.end))
+    }
     pub(super) fn get(&self, key: NativeFunctionKey) -> Option<&MethodSource> {
         (key.snapshot == self.snapshot)
             .then(|| self.sources.get(key.index as usize))

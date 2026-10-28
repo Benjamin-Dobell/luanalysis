@@ -3695,7 +3695,7 @@ follow_enum!(NativeTableFieldOrigin {
 });
 follow_struct!(NativeTableField { key, value, optional, readonly, origin });
 follow_struct!(NativeTableIndexer { key, value, readonly, sparse, origin });
-follow_struct!(NativeTableSequenceTail { start, value, readonly, origin });
+follow_struct!(NativeTableSequenceTail { start, value, readonly, origin, sparse });
 follow_struct!(NativeEnvironmentId { snapshot, index });
 follow_struct!(NativeGlobalBindingId { environment, index });
 follow_struct!(NativeTableData<'_> { is_array, constructor_sequence, environment_origin, definition_origin, nominal_origin, fields, indexers, sequence_tails, fresh, collision_candidates });

@@ -33,8 +33,10 @@ fn return_pack_errors_preserve_correlated_alternatives_when_selecting_the_span()
 }
 
 #[test]
-fn forwarding_a_known_fixed_body_preserves_its_guaranteed_tail_result() {
-    accepted("---@return number,string,boolean...\nlocal function producer() return 1,'text',true end\n---@return number,string,boolean\nlocal function forward() return producer() end\n");
+fn a_written_variadic_tail_is_the_contract_however_many_values_the_body_returns() {
+    // Callers see the written contract, as v1 and TypeScript publish it: `producer` may return
+    // fewer than three values, whatever its body happens to return now.
+    rejected_at("---@return number,string,boolean...\nlocal function producer() return 1,'text',true end\n---@return number,string,boolean\nlocal function forward() return producer() end\n", "producer()");
     let unknown = "---@param producer fun():number,string,boolean...\n---@return number,string,boolean\nlocal function forward(producer) return producer() end\n";
     rejected_at(unknown, "producer()");
     accepted(&unknown.replace("---@return number,string,boolean\n", "---@return number,string,boolean...\n"));
@@ -43,8 +45,10 @@ fn forwarding_a_known_fixed_body_preserves_its_guaranteed_tail_result() {
 #[test]
 fn scalar_any_contracts_do_not_erase_the_physical_shape_of_typed_result_packs() {
     accepted("---@param value any\n---@return any\nlocal function scalar(value) return value end\n");
+    // A variadic tail past the written values is dropped, as Lua drops it; a fixed excess value
+    // is still an error.
     let variadic = "---@vararg any\n---@return any\nlocal function forward(...) return --[[---@not nil]] ... end\n";
-    rejected_at(variadic, "...");
+    accepted(variadic);
     accepted(&variadic.replace("---@return any\n", "---@return any...\n"));
     let fixed = "---@return any\nlocal function pair() return 1,true end\n";
     rejected_at(fixed, "true");

@@ -123,7 +123,8 @@ fn options(case: &Case) -> ProjectCheckOptions {
         strict_nil: case.strict_nil,
         overload_mode: OverloadMode::LegacyExposeImplementation,
         describe_types: false,
-        inspections: matches!(case.id, "LocalNameShadowedTest/testLocalNameHidesPrevious" | "TypeSafetyTest/testFunctionMultipleReturns"),
+        inspections: matches!(case.id, "LocalNameShadowedTest/testLocalNameHidesPrevious" | "TypeSafetyTest/testFunctionMultipleReturns"
+            | "TypeSafetyTest/testFunctionGenerics" | "TypeSafetyTest/testGenericClassScope"),
         ..Default::default()
     }
 }
@@ -162,7 +163,7 @@ fn semantic_code(description: Option<&str>, code: &str) -> bool {
         return matches!(code, "TS2310" | "TS2312" | "TS2506" | "LUA2018");
     }
     if description.starts_with("Generic parameters cannot be shadowed") {
-        return matches!(code, "LUA2020" | "LUA2021");
+        return code == "LUA4005";
     }
     if description.starts_with("Required parameters cannot follow optional") {
         return code == "TS1016";
@@ -228,6 +229,11 @@ pub fn matches(expected: &luanalysis_fixtures::ExpectedDiagnostic, actual: &Diag
         // Count inspection is intentionally a nonfatal hint; nil-to-required
         // type errors still have to match their own original error markers.
         Severity::WeakWarning
+    } else if actual.code == "LUA4005" && expected.description.as_deref()
+        .is_some_and(|description| description.starts_with("Generic parameters cannot be shadowed"))
+    {
+        // Shadowing is valid, as in TypeScript; v1's error is a warning inspection.
+        Severity::Warning
     } else if expected
         .description
         .as_deref()
@@ -603,11 +609,14 @@ pub fn run_with_sources(
         // Reproduce the original selected optional inspection family while
         // keeping every checker error visible.
         let selected;
-        let actual = if matches!(case.id, "LocalNameShadowedTest/testLocalNameHidesPrevious" | "TypeSafetyTest/testFunctionMultipleReturns") {
+        let actual = if matches!(case.id, "LocalNameShadowedTest/testLocalNameHidesPrevious" | "TypeSafetyTest/testFunctionMultipleReturns"
+            | "TypeSafetyTest/testFunctionGenerics" | "TypeSafetyTest/testGenericClassScope")
+        {
             selected = actual.iter().filter(|diagnostic| {
                 diagnostic.category() == DiagnosticCategory::Error || match case.id {
                     "LocalNameShadowedTest/testLocalNameHidesPrevious" => diagnostic.code == "LUA4001",
-                    _ => matches!(diagnostic.code, "LUA4002" | "LUA4003"),
+                    "TypeSafetyTest/testFunctionMultipleReturns" => matches!(diagnostic.code, "LUA4002" | "LUA4003"),
+                    _ => diagnostic.code == "LUA4005",
                 }
             }).cloned().collect::<Vec<_>>();
             &selected

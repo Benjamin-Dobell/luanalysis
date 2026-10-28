@@ -670,6 +670,7 @@ impl ProjectRegistry {
                 file.source.check_module_requests(queries);
                 file.source.report_unused_declarations();
                 file.source.report_shadowed_declarations();
+                file.source.report_shadowed_generic_parameters();
                 file.source.report_reserved_field_names();
                 if file.role == SourceRole::Implementation {
                     let mut checker = file.source.checker(queries);
@@ -1024,6 +1025,12 @@ impl NativeTypeProvider for ProjectRegistry {
     }
     fn type_member_is_assignment(&self, key: NativeTypeMemberKey) -> bool {
         self.owner(key.snapshot).type_member_is_assignment(key)
+    }
+    fn type_member_is_written(&self, key: NativeTypeMemberKey) -> bool {
+        self.owner(key.snapshot).type_member_is_written(key)
+    }
+    fn type_member_is_stored(&self, key: NativeTypeMemberKey) -> bool {
+        self.owner(key.snapshot).type_member_is_stored(key)
     }
     // A merged class's signatures and bases are those of all its declarations.
     fn type_declaration_call_signatures(&self, key: NativeTypeDeclarationKey) -> Vec<NativeSignatureKey> {

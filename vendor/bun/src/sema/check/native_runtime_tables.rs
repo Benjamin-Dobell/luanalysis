@@ -347,7 +347,7 @@ impl<'p, 's> Checker<'p, 's> {
                 NativeTableKey::Integer(index) if !field.optional => Some(index),
                 _ => None,
             }).max().unwrap_or(0).max(prefix);
-            tails.push(crate::types::NativeTableSequenceTail { start: count + 1, value: present, readonly: false, origin: NativeTableFieldOrigin::Inferred });
+            tails.push(crate::types::NativeTableSequenceTail { start: count + 1, value: present, readonly: false, origin: NativeTableFieldOrigin::Inferred, sparse: true });
         }
         description.sequence_tails = self.list(&tails);
         description.fresh = false;
