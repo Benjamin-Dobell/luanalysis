@@ -611,16 +611,54 @@ options of `check`, and without paths it checks the editor's workspace. It provi
 * File move/rename reference edits through `workspace/willRenameFiles`, followed by
   `workspace/didRenameFiles`. The editor applies the edits and performs the filesystem operation.
 
-Editors' settings, in `initializationOptions` or `workspace/didChangeConfiguration` (directly or
-under `luanalysis`), apply on top of the command line's options and the workspace's `.luarc.json`:
-`luaVersion`, `libraries`, `moduleRoots`, `packagePath`, `pathStrict`, `stdlib`, `noStdlib`,
-`noImplicitAny` and `strictNil` (default true), and
-`inlayHints.types`, `inlayHints.parameterNames` and `completion.callSnippets` to turn those off.
-`inlayHints.expressionParameterNames`, `inlayHints.parameterTypes` and `inlayHints.returnTypes`
-opt into wider expression argument names, contextual parameter types and inferred function
-results; these three default to false. Explicit annotations and redundant hints are suppressed.
-Every workspace folder is checked, and a check in progress is shown as work-done progress. A
-changed `.luarc.json` applies when the editor reports it saved or changed.
+Every workspace folder is checked, and a check in progress is shown as work-done progress.
+
+### Settings
+
+An editor configures the server with `initializationOptions` in its `initialize` request and
+with `settings` in `workspace/didChangeConfiguration`, either directly or under a `luanalysis` key:
+
+```json
+{
+  "luanalysis": {
+    "luaVersion": "5.2",
+    "libraries": ["lib/tts-types"],
+    "inlayHints": { "parameterTypes": true }
+  }
+}
+```
+
+| Setting | Type | Default | Command line | `.luarc.json` | Effect |
+| --- | --- | --- | --- | --- | --- |
+| `luaVersion` | `"5.0"` to `"5.4"` | v1's compatible declarations | `--lua-version` | `runtime.version` | The Lua version whose standard library is declared. |
+| `libraries` | paths | none | `--library` | `workspace.library` | Declaration files or directories, added to the others. |
+| `moduleRoots` | paths | the workspace folders | `--module-root` | | Directories that `require` searches in order, added to the others. |
+| `packagePath` | string | `?.lua;?/init.lua;?.ttslua;?/init.ttslua` | `--package-path` | `runtime.path` | `package.path` templates. |
+| `pathStrict` | boolean | `false` | `--path-strict` | `runtime.pathStrict` | Leave a module that no module root provides unresolved, instead of finding it by its path. |
+| `stdlib` | names | all of it | `--stdlib` | | Declare only these standard libraries and members, as a sandbox provides them. |
+| `noStdlib` | boolean | `false` | `--no-stdlib` | | Declare none of the standard library, for a host that declares its own. |
+| `noImplicitAny` | boolean | `false` | `--no-implicit-any` | | Require types for parameters and for locals whose type cannot be inferred. |
+| `strictNil` | boolean | `true` | `--no-strict-nil` (`false`) | | `false` permits nil assignments, for v1 compatibility. |
+| `inlayHints.types` | boolean | `true` | | | Show the inferred types of locals declared without one. |
+| `inlayHints.parameterNames` | boolean | `true` | | | Show parameter names at literal arguments: `nil`, booleans, numbers and strings. |
+| `inlayHints.expressionParameterNames` | boolean | `false` | | | Show parameter names at expression, table and function arguments too. |
+| `inlayHints.parameterTypes` | boolean | `false` | | | Show the contextual types of unannotated parameters. |
+| `inlayHints.returnTypes` | boolean | `false` | | | Show the inferred results of functions without `@return`. |
+| `completion.callSnippets` | boolean | `true` | | | Complete a function as its call, with its required parameters as placeholders. |
+
+Paths are a JSON array or a comma-separated string, and a relative path is the first workspace
+folder's. `stdlib` takes the names `--stdlib` does; with `stdlib` or `noStdlib` and no Lua
+version, the version is 5.4. Hints never repeat a written annotation or what the code already
+says.
+
+Each layer overrides the one before: the defaults, then the workspace's
+[`.luarc.json`](#projects-and-modules), then the command line's options, then the editor's
+settings. `libraries` and `moduleRoots` add to the paths before them instead of replacing them.
+Every `workspace/didChangeConfiguration` replaces the editor's earlier settings,
+`initializationOptions` included, so a setting it leaves out returns to the command line's or
+`.luarc.json`'s. A changed `.luarc.json` applies when the editor reports it saved or changed. An
+invalid setting is reported in the editor's log (`window/logMessage`), and the server keeps the
+settings it had.
 
 Formatting reads current unsaved text and respects negotiated UTF-8/UTF-16 positions. It changes
 whitespace between native lexer tokens, preserving executable tokens, strings and casts.
