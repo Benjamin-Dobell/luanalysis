@@ -234,6 +234,9 @@ impl ProjectRegistry {
     pub(crate) fn set_inspections(&mut self, enabled: bool) {
         for file in &mut self.files { file.source.set_inspections(enabled); }
     }
+    pub(crate) fn set_no_unsafe_any(&mut self, enabled: bool) {
+        for file in &mut self.files { file.source.set_no_unsafe_any(enabled); }
+    }
     pub(crate) fn set_cancellation(&mut self, cancellation: &crate::project_check::Cancellation) {
         self.cancellation = cancellation.clone();
         for file in &mut self.files { file.source.set_cancellation(cancellation); }

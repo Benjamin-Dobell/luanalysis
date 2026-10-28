@@ -172,6 +172,7 @@ impl Checker<'_> {
     ) -> ValuePack {
         if let Some(pack) = self.native_require_pack(callee, args, span) { return pack; }
         let callee_type = self.expression(callee);
+        self.unsafe_any_call(&callee_type, callee.span);
         let arguments = self.call_arguments(args);
         let limits = self.engine.unplaced_limits();
         let call = self
@@ -191,6 +192,14 @@ impl Checker<'_> {
         let defines_class = self.native.is_some_and(|native| native.is_class_definition_initializer(span));
         let table = if defines_class { first.clone() } else { self.setmetatable_result(callee, &callee_type, args, first.clone()) };
         if table == first { pack } else { ValuePack::single(table) }
+    }
+
+    /// Under `--no-unsafe-any`, calling a value of type `any` is an error, as v1's strict mode
+    /// and typescript-eslint's `no-unsafe-call` report it.
+    fn unsafe_any_call(&mut self, callee: &Type, span: Span) {
+        if self.reports_unsafe_any(callee) {
+            self.error("TS2349", span, "This expression is not callable: its type is 'any'.");
+        }
     }
 
     pub(super) fn call_arguments(&mut self, args: &[Expr]) -> Vec<PackArgument> {
@@ -654,6 +663,7 @@ impl Checker<'_> {
     ) -> Type {
         if let Some(pack) = self.native_require_pack(callee, args, span) { return self.engine.pack_slot(&pack, 0); }
         let callee_type = self.expression(callee);
+        self.unsafe_any_call(&callee_type, callee.span);
         let arguments = self.call_arguments(args);
         let limits = self.engine.unplaced_limits();
         let call = self

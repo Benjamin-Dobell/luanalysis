@@ -212,12 +212,38 @@ impl Checker<'_> {
         literal_key(expression).map_or(TableKey::Type(ty), TableKey::Literal)
     }
 
+    /// Under `--no-unsafe-any`, reading a member of or indexing a value of type `any` is an
+    /// error, as v1's strict mode and typescript-eslint's `no-unsafe-member-access` report it.
+    /// The access has the error type, so its uses do not report it again.
+    pub(super) fn unsafe_any_access(&mut self, receiver: &Type, key: &TableKey, span: Span) -> bool {
+        if !self.reports_unsafe_any(receiver) { return false }
+        match key {
+            TableKey::Literal(LuaKey::String(name)) => self.error("TS2339", span,
+                format!("Property '{}' does not exist on type 'any'.", String::from_utf8_lossy(name))),
+            _ => self.error("TS7053", span, "Element implicitly has an 'any' type because type 'any' has no index signature."),
+        }
+        true
+    }
+
+    /// Whether `--no-unsafe-any` reports access to `receiver`, a value of type `any`.
+    pub(super) fn reports_unsafe_any(&self, receiver: &Type) -> bool {
+        matches!(receiver, Type::Any) && self.native.is_some_and(|native| native.no_unsafe_any())
+    }
+
+    /// Under `--no-unsafe-any`, a member read that was reported keeps its error type: the flow's
+    /// `any` for it would report its use too.
+    pub(super) fn keeps_error_type(&mut self, receiver: &Type, read: &Type) -> bool {
+        self.native.is_some_and(|native| native.no_unsafe_any())
+            && (matches!(receiver, Type::Any) || *read == self.engine.error_type())
+    }
+
     pub(super) fn native_table_read(
         &mut self,
         receiver: &Type,
         key: &TableKey,
         span: Span,
     ) -> Type {
+        if self.unsafe_any_access(receiver, key, span) { return self.engine.error_type() }
         match self.engine.table_lookup(receiver, key) {
             Ok(ty) => ty,
             Err(TableError::PendingContext) => {
@@ -264,6 +290,7 @@ impl Checker<'_> {
         receiver_span: Span,
     ) -> Type {
         let key = TableKey::Literal(LuaKey::String(name.text.as_bytes().to_vec()));
+        if self.unsafe_any_access(receiver, &key, name.span) { return self.engine.error_type() }
         match self.engine.table_lookup(receiver, &key) {
             Ok(ty) => ty,
             Err(TableError::PendingContext) => {
@@ -304,6 +331,7 @@ impl Checker<'_> {
         key_span: Span,
         value_span: Span,
     ) -> bool {
+        if self.unsafe_any_access(receiver, key, key_span) { return false }
         let result = if matches!(key, TableKey::Type(_))
             && let (Some(native), Some(input)) = (self.native, self.flow_at)
             && let Some(store) = native.runtime_tables.store_for_target(target_span)

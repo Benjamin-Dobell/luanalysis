@@ -696,6 +696,7 @@ files ignore unless a `.luarc.json` says otherwise.
 | `--jobs <n>` | Worker threads; by default, one per core. |
 | `--watch` | Check again whenever sources or declarations change. |
 | `--no-implicit-any` | Require types for parameters and for locals whose type cannot be inferred. |
+| `--no-unsafe-any` | Report reading a member of, indexing or calling a value of type `any`, as Luanalysis for IntelliJ did with "unknown callable/indexable" off. `any` stays assignable either way. |
 | `--no-strict-nil` | Permit nil assignments for v1 compatibility; preserve runtime nil flow and physical result counts. |
 | `--format text\|json` | Report format. JSON reports include exact source ranges. |
 
@@ -788,6 +789,7 @@ with `settings` in `workspace/didChangeConfiguration`, either directly or under 
 | `stdlib` | names | all of it | `--stdlib` | | Declare only these standard libraries and members, as a sandbox provides them. |
 | `noStdlib` | boolean | `false` | `--no-stdlib` | | Declare none of the standard library, for a host that declares its own. |
 | `noImplicitAny` | boolean | `false` | `--no-implicit-any` | | Require types for parameters and for locals whose type cannot be inferred. |
+| `noUnsafeAny` | boolean | `false` | `--no-unsafe-any` | | Report reading a member of, indexing or calling a value of type `any`. |
 | `strictNil` | boolean | `true` | `--no-strict-nil` (`false`) | | `false` permits nil assignments, for v1 compatibility. |
 | `inlayHints.types` | boolean | `true` | | | Show the inferred types of locals declared without one. |
 | `inlayHints.parameterNames` | boolean | `true` | | | Show parameter names at literal arguments: `nil`, booleans, numbers and strings. |

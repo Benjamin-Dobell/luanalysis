@@ -27,6 +27,10 @@ pub struct ProjectCheckOptions {
     /// Opt-in missing parameter/rest contract diagnostics; ordinary analysis
     /// preserves v1's acceptance of unannotated runtime functions.
     pub no_implicit_any: bool,
+    /// Opt-in errors for reading a member of, indexing or calling a value of type `any`, as
+    /// v1's strict mode and typescript-eslint's `no-unsafe-member-access` and `no-unsafe-call`
+    /// report them. `any` remains assignable either way.
+    pub no_unsafe_any: bool,
     /// False selects v1's permissive nil assignments; runtime nil remains represented.
     pub strict_nil: bool,
     /// Ordinary analysis preserves reached standard bindings across unknown
@@ -88,6 +92,7 @@ impl Default for ProjectCheckOptions {
             standard_library: None,
             overload_mode: crate::OverloadMode::default(),
             no_implicit_any: false,
+            no_unsafe_any: false,
             strict_nil: true,
             assume_unknown_standard_effects: true,
             describe_types: true,
@@ -295,6 +300,7 @@ pub(crate) fn with_project_session<R: Send>(
             registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
             registry.set_describe_types(options.describe_types);
             registry.set_inspections(options.inspections);
+            registry.set_no_unsafe_any(options.no_unsafe_any);
             registry.set_cancellation(&options.cancellation);
             registry
         },
@@ -355,6 +361,7 @@ pub(crate) fn check_project_with_workspace(
         registry.set_standard_environment_assumptions(options.assume_unknown_standard_effects);
         registry.set_describe_types(options.describe_types);
         registry.set_inspections(options.inspections);
+        registry.set_no_unsafe_any(options.no_unsafe_any);
         registry.set_cancellation(&options.cancellation);
         if let Some(started) = started {
             factory_nanos.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);

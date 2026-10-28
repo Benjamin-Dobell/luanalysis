@@ -92,6 +92,8 @@ pub struct CheckOptions {
     /// Require written or contextual parameter types, including runtime varargs.
     /// Ordinary Luanalysis analysis permits missing contracts as in v1.
     pub no_implicit_any: bool,
+    /// Report member access, indexing and calls of `any` (`ProjectCheckOptions::no_unsafe_any`).
+    pub no_unsafe_any: bool,
     /// Require nil to appear in assignment contracts. False selects v1's
     /// permissive nil assignments without erasing physical runtime nil types.
     pub strict_nil: bool,
@@ -99,7 +101,7 @@ pub struct CheckOptions {
 
 impl Default for CheckOptions {
     fn default() -> Self {
-        Self { overload_mode: OverloadMode::default(), no_implicit_any: false, strict_nil: true }
+        Self { overload_mode: OverloadMode::default(), no_implicit_any: false, no_unsafe_any: false, strict_nil: true }
     }
 }
 
@@ -393,6 +395,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
             let mut registry = NativeRegistry::new(file, bound);
             registry.set_overload_mode(options.overload_mode);
             registry.set_no_implicit_any(options.no_implicit_any);
+            registry.set_no_unsafe_any(options.no_unsafe_any);
             registry.set_legacy_builtin_policy(builtins::LegacyBuiltinPolicy::MinimalTypeCompatibility);
             registry
         },
@@ -1058,7 +1061,9 @@ impl Checker<'_> {
                         name.span,
                         format!("Cannot find name '{}'.", name.text),
                     );
-                    Type::Any
+                    // As TypeScript recovers from an unresolved name, its value has the error
+                    // type, so its uses do not report it again.
+                    self.engine.error_type()
                 }
             },
             ExprKind::Parenthesized(value) => {
@@ -1072,7 +1077,8 @@ impl Checker<'_> {
                 let environment = receiver.environment;
                 let receiver = self.runtime_member_contract(base,receiver.ty);
                 let ty = self.native_named_property_read(&receiver, name, base.span);
-                self.native_member_flow_type(expr, ty, environment)
+                // A reported access keeps its error type, rather than the flow's `any`.
+                if self.keeps_error_type(&receiver, &ty) { ty } else { self.native_member_flow_type(expr, ty, environment) }
             }
             ExprKind::Function(function) => {
                 if let (Some(native), Some(expected)) = (self.native, expected) {
@@ -1103,7 +1109,7 @@ impl Checker<'_> {
                 let receiver = self.runtime_member_contract(base,receiver.ty);
                 let key = self.native_table_key(index);
                 let ty = self.native_table_read(&receiver, &key, index.span);
-                self.native_member_flow_type(expr, ty, environment)
+                if self.keeps_error_type(&receiver, &ty) { ty } else { self.native_member_flow_type(expr, ty, environment) }
             }
             ExprKind::MethodCall {
                 receiver,

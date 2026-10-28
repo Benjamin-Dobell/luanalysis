@@ -6,7 +6,7 @@
 //! those its type declares with `---@operator`; metatables are not traced.
 
 use super::Checker;
-use luanalysis_engine::{NativeOperator, PackArgument, TableError, Type, ValuePack};
+use luanalysis_engine::{LuaKey, NativeOperator, PackArgument, TableError, TableKey, Type, ValuePack};
 use luanalysis_syntax::{BinaryOperator, Expr, ExprKind, Name, Span, UnaryOperator};
 
 impl Checker<'_> {
@@ -383,7 +383,8 @@ impl Checker<'_> {
         let receiver_type = self.expression(receiver);
         let member_contract = self.runtime_member_contract(receiver,receiver_type.clone());
         let callee = if matches!(receiver_type, Type::Any) {
-            Type::Any
+            let key = TableKey::Literal(LuaKey::String(name.text.as_bytes().to_vec()));
+            if self.unsafe_any_access(&receiver_type, &key, name.span) { self.engine.error_type() } else { Type::Any }
         } else {
             match self.engine.property_type_checked(&member_contract, &name.text) {
             Ok(Some(callee)) => self.native.is_none().then(|| self.reference(receiver)).flatten()

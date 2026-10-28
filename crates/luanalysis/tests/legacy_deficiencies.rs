@@ -135,3 +135,24 @@ fn a_shadowed_generic_parameter_is_a_warning_inspection() {
     let shadowed: Vec<_> = inspected.iter().filter(|diagnostic| diagnostic.starts_with("LUA4005")).collect();
     assert_eq!(shadowed, ["LUA4005 T : string", "LUA4005 T"], "{inspected:#?}");
 }
+
+#[test]
+fn no_unsafe_any_reports_members_indexes_and_calls_of_any_once() {
+    let source = "---@type any\nlocal u\nu.field = 1\nu.method()\nlocal x = u[1]\nu:other()\nu()\n---@type number\nlocal n = u\nlocal function f(param) return param.value end\n";
+    assert!(errors(&report(source, &[])).is_empty());
+    let report = report(source, &["--no-unsafe-any"]);
+    let errors = errors(&report);
+    for expected in [
+        "main.lua:3:3: error[TS2339]: Property 'field' does not exist on type 'any'.",
+        "main.lua:4:3: error[TS2339]: Property 'method' does not exist on type 'any'.",
+        "main.lua:5:13: error[TS7053]",
+        "main.lua:6:3: error[TS2339]: Property 'other' does not exist on type 'any'.",
+        "main.lua:7:1: error[TS2349]: This expression is not callable: its type is 'any'.",
+        "main.lua:10:38: error[TS2339]: Property 'value' does not exist on type 'any'.",
+    ] {
+        assert!(errors.iter().any(|error| error.starts_with(expected)), "{expected}\n{report}");
+    }
+    // Each use is reported once: the member read, not the call of its result too; `any` itself
+    // stays assignable.
+    assert_eq!(errors.len(), 6, "{report}");
+}

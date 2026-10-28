@@ -2204,7 +2204,7 @@ impl Default for Preferences {
 
 /// The checked paths and options with the client's settings applied, as the command line's
 /// options would apply them: `luaVersion`, `libraries`, `moduleRoots`, `packagePath`,
-/// `pathStrict`, `stdlib`, `noStdlib`, `noImplicitAny` and `strictNil`; and the editor preferences `inlayHints.types`,
+/// `pathStrict`, `stdlib`, `noStdlib`, `noImplicitAny`, `noUnsafeAny` and `strictNil`; and the editor preferences `inlayHints.types`,
 /// `inlayHints.parameterNames` and `completion.callSnippets`. A relative path is the workspace's.
 fn apply_settings(mut inputs: CheckInputs, mut options: ProjectCheckOptions, settings: &Json) -> Result<(CheckInputs, ProjectCheckOptions, Preferences), String> {
     let root = inputs.files.iter().find(|file| file.is_dir()).cloned();
@@ -2241,6 +2241,7 @@ fn apply_settings(mut inputs: CheckInputs, mut options: ProjectCheckOptions, set
     if let Some(list) = &options.standard_library { list.validate(options.environment).map_err(|error| format!("stdlib: {error}"))?; }
     options.loader_policy = crate::cli::loader_policy(options.environment);
     if let Some(enabled) = flag(&["noImplicitAny"]) { options.no_implicit_any = enabled; }
+    if let Some(enabled) = flag(&["noUnsafeAny"]) { options.no_unsafe_any = enabled; }
     if let Some(enabled) = flag(&["strictNil"]) { options.strict_nil = enabled; }
     let preferences = Preferences {
         type_hints: flag(&["inlayHints", "types"]).unwrap_or(true),

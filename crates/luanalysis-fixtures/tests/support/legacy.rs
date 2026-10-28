@@ -121,6 +121,8 @@ fn options(case: &Case) -> ProjectCheckOptions {
         jobs: 1,
         environment,
         strict_nil: case.strict_nil,
+        // v1's "unknown callable/indexable" off is `--no-unsafe-any`.
+        no_unsafe_any: !case.unknown,
         overload_mode: OverloadMode::LegacyExposeImplementation,
         describe_types: false,
         inspections: matches!(case.id, "LocalNameShadowedTest/testLocalNameHidesPrevious" | "TypeSafetyTest/testFunctionMultipleReturns"
@@ -637,11 +639,6 @@ pub fn run_with_sources(
             "  Host errors: {:?}; {:?}; {:?}",
             report.environment_errors, report.project.entry_errors, report.project.library_errors
         ));
-    }
-    // The legacy unknown-call/index policy has no equivalent native switch.
-    // Retain the actual diagnostics as well as that unsupported configuration.
-    if case.id == "TypeSafetyTest/testUnknown" {
-        result.fail("  UNSUPPORTED SETTING: permissive unknown calls and indexing");
     }
     result
 }

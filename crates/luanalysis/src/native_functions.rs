@@ -102,6 +102,8 @@ pub(super) struct NativeRegistry {
     source_role: luanalysis_project::SourceRole,
     overload_mode: crate::OverloadMode,
     no_implicit_any: bool,
+    /// Report member access, indexing and calls of `any` (`ProjectCheckOptions::no_unsafe_any`).
+    no_unsafe_any: bool,
     /// Report inspections (`ProjectCheckOptions::inspections`).
     inspections: bool,
     /// Stops a check in progress: function bodies not yet begun are skipped.
@@ -391,6 +393,7 @@ impl NativeRegistry {
             source_role: luanalysis_project::SourceRole::Implementation,
             overload_mode: crate::OverloadMode::default(),
             no_implicit_any: false,
+            no_unsafe_any: false,
             inspections: false,
             cancellation: crate::project_check::Cancellation::default(),
             legacy_builtin_policy: super::builtins::LegacyBuiltinPolicy::Disabled,
@@ -521,6 +524,8 @@ impl NativeRegistry {
     pub(crate) fn source_role(&self) -> luanalysis_project::SourceRole { self.source_role }
     pub(crate) fn no_implicit_any(&self) -> bool { self.no_implicit_any }
     pub(crate) fn set_no_implicit_any(&mut self, enabled: bool) { self.no_implicit_any = enabled; }
+    pub(crate) fn no_unsafe_any(&self) -> bool { self.no_unsafe_any }
+    pub(crate) fn set_no_unsafe_any(&mut self, enabled: bool) { self.no_unsafe_any = enabled; }
     pub(crate) fn inspections(&self) -> bool { self.inspections }
     pub(crate) fn set_inspections(&mut self, enabled: bool) { self.inspections = enabled; }
     pub(super) fn derived_module_calls(&self) -> &[crate::module_requests::RequireCall] {
