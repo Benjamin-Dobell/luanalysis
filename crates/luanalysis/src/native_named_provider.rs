@@ -545,7 +545,8 @@ impl NativeRegistry {
                 // A field's visibility is for editors, as in Luanalysis for IntelliJ, where it
                 // chooses completions: whatever it is, the field is a member of its class.
                 visibility: TypeMemberVisibility::Public,
-                optional: false,
+                // `name? T` may be absent whatever T is: `any | nil` is `any`.
+                optional: source.field.optional,
                 readonly: source.field.readonly.is_some(),
             };
         }

@@ -284,6 +284,8 @@ function require(modname) end
 --- Otherwise, `index` must be the string "#", and `select` returns
 --- the total number of extra arguments it received.
 ---@generic T
+---@overload fun(index: "#", ...: any): integer
+---@overload fun(index: number, ...: T): T
 ---@param index number|string
 ---@vararg T
 ---@return T

@@ -1286,11 +1286,25 @@ impl NativeSignatures {
                 });
                 continue;
             };
+            // A function's `---@generic` parameters are each of its overloads' own, as LuaLS and
+            // EmmyLua Analyzer read them and as TypeScript gives each overload its own: a call
+            // infers them for the overload it selects.
+            let generic_overload;
+            let signature = match function {
+                Some(key) if named_key.is_none() && head.signature.generics.is_empty() => {
+                    let generics = &functions[key.index as usize].annotations.generics;
+                    if generics.is_empty() { head.signature.as_ref() } else {
+                        generic_overload = FunctionType { generics: generics.clone(), ..(*head.signature).clone() };
+                        &generic_overload
+                    }
+                }
+                _ => head.signature.as_ref(),
+            };
             let key = result.insert(
                 owner,
                 context,
                 None,
-                &head.signature,
+                signature,
                 head.span,
                 head.group_span,
             );

@@ -375,7 +375,8 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                         // `---@param ... T` (LuaLS) types the variadic parameters, as @vararg does.
                         if let Some(ellipsis_span) = parser.take("...") {
                             subject = Some("...".to_owned());
-                            let ty = if parser.eof() || parser.description_start().is_some() {
+                            // LuaLS writes a type after `...`; a `#` begins a description instead.
+                            let ty = if parser.eof() || parser.symbol("#") {
                                 TypeExpr { kind: TypeExprKind::Named("any".to_owned()), span: ellipsis_span }
                             } else {
                                 parser.union()
@@ -924,6 +925,7 @@ impl TypeParser {
             ty,
             visibility,
             readonly,
+            optional: optional.is_some(),
             explicit_owner,
             deprecated_owner_span,
             span,

@@ -75,3 +75,35 @@ fn signature_tags_on_a_local_whose_value_is_no_function_declare_its_type() {
     assert!(class.contains("main.lua:3:7: Callable: fun(x: number): string"), "{class}");
     assert!(class.contains("LUA1001"), "{class}");
 }
+
+#[test]
+fn param_dots_types_the_varargs() {
+    let report = report("---@param a string\n---@param ... number\nlocal function f(a, ...) end\nf(\"x\", \"z\")\nf(\"x\", 1, 2)\n");
+    assert!(report.contains("main.lua:3:16: f: fun(a: string, ...: number): void"), "{report}");
+    let errors = errors(&report);
+    assert!(errors.iter().any(|error| error.starts_with("main.lua:4:8: error[TS2345]")), "{report}");
+    assert_eq!(errors.len(), 1, "{report}");
+}
+
+#[test]
+fn an_optional_field_may_be_absent_whatever_its_type() {
+    let report = report("---@shape O\n---@field field? any\n---@field other? unknown\n---@field required any\n\n---@param o O\nlocal function g(o) end\ng({ required = 1 })\ng({})\n");
+    let errors = errors(&report);
+    assert!(errors.iter().any(|error| error.starts_with("main.lua:9:3: error[TS2345]")), "{report}");
+    assert_eq!(errors.len(), 1, "{report}");
+}
+
+#[test]
+fn a_functions_generic_parameters_are_each_of_its_overloads_own() {
+    let report = report("---@generic T\n---@overload fun(x: T): T\n---@param x any\n---@return any\nlocal function h(x) return x end\nlocal a = h(1)\nlocal b = h(\"s\")\n");
+    assert!(report.contains("main.lua:6:7: a: number"), "{report}");
+    assert!(report.contains("main.lua:7:7: b: string"), "{report}");
+    assert!(errors(&report).is_empty(), "{report}");
+}
+
+#[test]
+fn select_counts_with_hash_and_returns_values_with_an_index() {
+    let report = report("---@param ... string\nlocal function f(...)\n    for i = 1, select('#', ...) do\n        local value = select(i, ...)\n    end\nend\n");
+    assert!(report.contains("main.lua:4:15: value: string"), "{report}");
+    assert!(errors(&report).is_empty(), "{report}");
+}

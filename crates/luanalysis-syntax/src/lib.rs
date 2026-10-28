@@ -181,6 +181,8 @@ pub struct FieldDeclaration {
     pub visibility: Option<FieldVisibilityAnnotation>,
     /// `---@field readonly name T`: the field cannot be assigned.
     pub readonly: Option<Span>,
+    /// `---@field name? T`: the field may be absent, as well as nil.
+    pub optional: bool,
     pub explicit_owner: Option<Name>,
     /// Original `<Owner>` spelling, retained for deprecated syntax tooling.
     pub deprecated_owner_span: Option<Span>,
