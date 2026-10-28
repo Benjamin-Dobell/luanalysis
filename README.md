@@ -549,6 +549,10 @@ files ignore unless a `.luarc.json` says otherwise.
 | `--no-strict-nil` | Permit nil assignments for v1 compatibility; preserve runtime nil flow and physical result counts. |
 | `--format text\|json` | Report format. JSON reports include exact source ranges. |
 
+`luanalysis --version` prints the version and the commit it was built from, such as
+`0.1.0+b2cff754f241` (`.dirty` for a build from changed sources). The language server reports the
+same version in its `serverInfo`, and the library in `luanalysis_version()`.
+
 A host whose modules are not files that `package.path` finds, such as a game's scripts, can
 supply its own module map: each source's modules, by their exact, case-sensitive names.
 

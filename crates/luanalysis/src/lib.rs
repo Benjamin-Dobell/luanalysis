@@ -7,6 +7,17 @@
 
 /// Host tables use the checker's deterministic Fx hashing: keys are original
 /// source identities, never attacker-chosen input requiring DoS resistance.
+/// The version `luanalysis --version`, the language server and the C library report: the
+/// package's, with the commit it was built from (`0.1.0+b2cff754f241`, `.dirty` when built from
+/// changed sources).
+pub const VERSION: &str = env!("LUANALYSIS_VERSION");
+
+/// `VERSION`, NUL-terminated for C.
+pub const VERSION_C: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(concat!(env!("LUANALYSIS_VERSION"), "\0").as_bytes()) {
+    Ok(version) => version,
+    Err(_) => panic!("the version contains no NUL"),
+};
+
 pub(crate) mod collections {
     pub(crate) type HashMap<K, V> = std::collections::HashMap<K, V, luanalysis_engine::FxBuildHasher>;
     pub(crate) type HashSet<T> = std::collections::HashSet<T, luanalysis_engine::FxBuildHasher>;

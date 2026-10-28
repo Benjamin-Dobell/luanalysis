@@ -101,6 +101,8 @@ impl Server {
         let response = self.wait(|message| message.contains(r#""id":1"#));
         assert!(response.contains(r#""positionEncoding":"utf-16""#), "{response}");
         assert!(response.contains(r#""hoverProvider":true"#) && response.contains(r#""definitionProvider":true"#), "{response}");
+        // The client can tell which build it is connected to.
+        assert!(response.contains(&format!(r#""serverInfo":{{"name":"luanalysis","version":"{}"}}"#, luanalysis::VERSION)), "{response}");
         self.send(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#);
     }
 

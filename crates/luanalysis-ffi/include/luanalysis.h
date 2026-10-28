@@ -20,7 +20,9 @@ extern "C" {
 #define LUANALYSIS_API
 #endif
 
-/* The library's version, as `luanalysis --version` prints it. Static; do not free. */
+/* The library's version, as `luanalysis --version` prints it: the package's and the commit it was
+   built from, such as "0.1.0+b2cff754f241" (".dirty" when built from changed sources). Static; do not
+   free. */
 LUANALYSIS_API const char *luanalysis_version(void);
 
 /*

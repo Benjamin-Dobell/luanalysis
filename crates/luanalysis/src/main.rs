@@ -26,7 +26,7 @@ fn run() -> i32 {
     if command == "--version" || command == "-V" {
         println!(
             "luanalysis {} (Bun core {})",
-            env!("CARGO_PKG_VERSION"),
+            luanalysis::VERSION,
             luanalysis_engine::BUN_REVISION
         );
         return 0;

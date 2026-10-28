@@ -87,3 +87,16 @@ fn cli_keeps_io_failures_distinct_from_type_errors() {
             .contains("error[LUA0001]")
     );
 }
+
+#[test]
+fn version_reports_the_package_and_the_commit_it_was_built_from() {
+    let output = Command::new(env!("CARGO_BIN_EXE_luanalysis-cli")).arg("--version").output().unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let printed = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(printed, format!("luanalysis {} (Bun core {})\n", luanalysis::VERSION, luanalysis_engine::BUN_REVISION));
+    let (package, metadata) = luanalysis::VERSION.split_once('+').expect("a checkout's build names its commit");
+    assert_eq!(package, env!("CARGO_PKG_VERSION"));
+    let commit = metadata.strip_suffix(".dirty").unwrap_or(metadata);
+    assert!(commit.len() == 12 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()), "{metadata}");
+    assert_eq!(luanalysis::VERSION_C.to_str().unwrap(), luanalysis::VERSION);
+}

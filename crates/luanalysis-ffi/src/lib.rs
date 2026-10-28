@@ -35,10 +35,11 @@ impl Callback {
     }
 }
 
-/// The library's version, as `luanalysis --version` prints it.
+/// The library's version, as `luanalysis --version` prints it: the package's, with the commit
+/// it was built from.
 #[unsafe(no_mangle)]
 pub extern "C" fn luanalysis_version() -> *const c_char {
-    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
+    checker::VERSION_C.as_ptr()
 }
 
 /// `count` NUL-terminated UTF-8 strings, or `None` when one is not UTF-8.

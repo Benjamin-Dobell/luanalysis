@@ -976,7 +976,7 @@ impl Server {
             ])),
             ("serverInfo", Json::object([
                 ("name", Json::from("luanalysis")),
-                ("version", Json::from(env!("CARGO_PKG_VERSION"))),
+                ("version", Json::from(crate::VERSION)),
             ])),
         ])
     }
