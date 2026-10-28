@@ -2810,6 +2810,18 @@
       "patch": "vendor/patches/bun-sema-native-assertion-predicates.patch",
       "reason": "Carry written assertion predicates (asserts x is T, asserts x) through native signatures, narrowing an asserted argument by its type or truthiness wherever the call returns.",
       "patch_sha256": "662a83e564e2297c00e639d667dd1d3a3fffafbe549c9639158f4b01216047b3"
+    },
+    {
+      "path": "src/sema/check/call.rs",
+      "patch": "vendor/patches/bun-sema-native-overload-failure-report.patch",
+      "reason": "When several overloads reject a native call's arguments, report the error of the one that accepts the most of them (the last on a tie, as TypeScript reports the last), with its position and signature, so the frontend says that no overload matches at the argument where the call goes wrong.",
+      "patch_sha256": "2831a16afae5b9ef6960ba90340db1328f7973c0854bc70d300341bae1bea348"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-overload-failure-report.patch",
+      "reason": "When several overloads reject a native call's arguments, report the error of the one that accepts the most of them (the last on a tie, as TypeScript reports the last), with its position and signature, so the frontend says that no overload matches at the argument where the call goes wrong.",
+      "patch_sha256": "2831a16afae5b9ef6960ba90340db1328f7973c0854bc70d300341bae1bea348"
     }
   ],
   "source_additions": {
@@ -3584,7 +3596,7 @@
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
       "sha256": "4f9780bc0a7748906ca93cc55eab9874fbdb2b28d5c5e9b89e11ab094138ee09",
-      "extracted_sha256": "b00fede2290076bee3e217d971c09e98a472d6c69a144c685cf9b27eee4afaad"
+      "extracted_sha256": "772a1958b7b91fa19b6801fc50e568526a83f00b6ef64c7587260429e8576505"
     },
     "src/sema/check/check_source_file.rs": {
       "upstream": "src/sema/check/check_source_file.rs",
@@ -3844,7 +3856,7 @@
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "a7c74d5a90f4059c25d10eb1ff8dfdf5e7a44879dc9113614f8c88b04a387654"
+      "extracted_sha256": "36f23cee22d1275751c742bb80ef581017836273660db296700f4c6d70c90a8a"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",

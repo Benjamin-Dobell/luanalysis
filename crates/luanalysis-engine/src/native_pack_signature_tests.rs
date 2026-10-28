@@ -670,6 +670,7 @@ fn higher_order_source_calls_infer_packed_producers_and_check_consumers() {
                     index,
                     source,
                     target,
+                    ..
                 } => format!(
                     "argument {index}: {} -> {}",
                     packed_signature_text(queries, source),

@@ -71,7 +71,8 @@ fn corrected_original_xpcall_names_its_real_handler_and_checks_the_original_argu
     );
     pass(&fixture.check());
     fixture.source("local rejected=xpcall(function() return 42 end,123)\n");
-    fail(&fixture.check(), "TS2345");
+    // Neither overload takes a number handler.
+    fail(&fixture.check(), "main.lua:1:48: error[TS2769]");
     fixture.source(
         "local accepted=xpcall(function() return 42 end,function(message) return message end)\n",
     );

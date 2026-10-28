@@ -841,7 +841,19 @@ pub enum CallError {
         index: usize,
         source: Type,
         target: Type,
+        /// The overload this error is from, when the callee has several and none accepts the
+        /// call: the one that accepts the most arguments.
+        overload: Option<NoMatchingOverload>,
     },
+}
+
+/// Which of a callee's overloads an argument error is from: its position, of `overloads`, and its
+/// signature.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NoMatchingOverload {
+    pub overload: usize,
+    pub overloads: usize,
+    pub signature: Type,
 }
 
 /// Passive completion observation for an original receiver read in one checker session.
@@ -2476,10 +2488,16 @@ impl SessionQueries<'_, '_, '_> {
                     index,
                     source,
                     target,
+                    overload,
                 } => CallError::Argument {
                     index,
                     source: export_type(self.checker, self.handles, source),
                     target: export_type(self.checker, self.handles, target),
+                    overload: overload.map(|overload| NoMatchingOverload {
+                        overload: overload.overload,
+                        overloads: overload.overloads,
+                        signature: export_type(self.checker, self.handles, overload.signature),
+                    }),
                 },
             })
             .collect();
@@ -5784,6 +5802,7 @@ mod tests {
                 index: 0,
                 source: Type::Boolean,
                 target: Type::Number,
+                overload: None,
             }]
         );
         let two_parameters = Type::Function(FunctionType {
@@ -5809,6 +5828,7 @@ mod tests {
                 index: 0,
                 source: Type::String,
                 target: Type::Number,
+                overload: None,
             }]
         );
     }

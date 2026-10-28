@@ -1,0 +1,111 @@
+diff --git a/src/sema/check/call.rs b/src/sema/check/call.rs
+index 5ad33f7..261f7e8 100644
+--- a/src/sema/check/call.rs
++++ b/src/sema/check/call.rs
+@@ -48,9 +48,20 @@ pub enum ResolvedTypeCallError {
+         index: usize,
+         source: TypeId,
+         target: TypeId,
++        /// The overload this error is from, when the callee has several and none accepts the call.
++        overload: Option<NoMatchingOverload>,
+     },
+ }
+ 
++/// Of the overloads that reject a call's arguments, the one that accepts the most of them: its
++/// position among `overloads` and its signature's type.
++#[derive(Clone, Copy, Debug)]
++pub struct NoMatchingOverload {
++    pub overload: usize,
++    pub overloads: usize,
++    pub signature: TypeId,
++}
++
+ impl crate::table::Packed for ResolvedCall {
+     type Cell = std::sync::atomic::AtomicU64;
+     #[inline]
+@@ -813,11 +824,7 @@ impl<'p, 's> Checker<'p, 's> {
+         let mut errors = Vec::new();
+         if chosen.is_none() {
+             let argument_candidate = state.candidates_for_argument_error.last().copied().and_then(|failed| {
+-                state.candidates.iter().copied().find(|&candidate| {
+-                    self.types().sig_origin(candidate) == self.types().sig_origin(failed)
+-                        || self.sig_native_decl(candidate).zip(self.sig_native_decl(failed)).is_some_and(|(left, right)| left.0 == right.0)
+-                        || self.sig_native_signature_decl(candidate).zip(self.sig_native_signature_decl(failed)).is_some_and(|(left, right)| left.0 == right.0)
+-                })
++                state.candidates.iter().copied().find(|&candidate| self.is_overload_head(candidate, failed))
+             });
+             let diagnostic_sig = state.candidate_for_type_argument_error.or(argument_candidate)
+                 .or(state.candidate_for_argument_arity_error)
+@@ -840,7 +847,23 @@ impl<'p, 's> Checker<'p, 's> {
+             } else {
+                 // The synthesized overload-failure signature is recovery data:
+                 // its merged parameters are not an applicable public head.
+-                let failed = state.candidates_for_argument_error.last().copied().unwrap_or(diagnostic_sig);
++                // Of several overloads whose arguments fail, the one that accepts the most of them
++                // says where the call goes wrong; on a tie, the last, as TypeScript reports. One
++                // that fails is reported alone, as TypeScript does, whatever the others' arity.
++                let mut furthest: Option<(SigId, (usize, TypeId, TypeId))> = None;
++                if state.candidates_for_argument_error.len() > 1 {
++                    for failed in state.candidates_for_argument_error.clone() {
++                        let error = self.resolved_signature_argument_error(failed, args, Relation::Assignable, CheckMode::empty(), None);
++                        if let Some(error) = error
++                            && furthest.is_none_or(|(_, (index, ..))| error.0 >= index)
++                        {
++                            furthest = Some((failed, error));
++                        }
++                    }
++                }
++                let failed = furthest.map(|(failed, _)| failed)
++                    .or_else(|| state.candidates_for_argument_error.last().copied())
++                    .unwrap_or(diagnostic_sig);
+                 let params = self.sig_params(failed);
+                 if !self.has_correct_arity(&state, &params) {
+                     let (min, max) = if args.iter().any(|arg| arg.is_spread()) || self.non_array_rest_type(&params).is_some() {
+@@ -862,10 +885,16 @@ impl<'p, 's> Checker<'p, 's> {
+                             min, max,
+                         });
+                     }
+-                } else if let Some((index, source, target)) = self.resolved_signature_argument_error(
+-                    failed, args, Relation::Assignable, CheckMode::empty(), None,
+-                ) {
+-                    errors.push(ResolvedTypeCallError::Argument { index, source, target });
++                } else if let Some((index, source, target)) = furthest.map(|(_, error)| error).or_else(|| {
++                    self.resolved_signature_argument_error(failed, args, Relation::Assignable, CheckMode::empty(), None)
++                }) {
++                    let overload = furthest.and_then(|_| state.candidates.iter().position(|&candidate| self.is_overload_head(candidate, failed)))
++                        .map(|overload| NoMatchingOverload {
++                            overload,
++                            overloads: state.candidates.len(),
++                            signature: self.type_of_signature(state.candidates[overload], false),
++                        });
++                    errors.push(ResolvedTypeCallError::Argument { index, source, target, overload });
+                 }
+             }
+         }
+@@ -2068,6 +2097,13 @@ impl<'p, 's> Checker<'p, 's> {
+         }
+     }
+ 
++    /// Whether `failed`, a candidate as checked (instantiated, say), is the overload `candidate`.
++    fn is_overload_head(&self, candidate: SigId, failed: SigId) -> bool {
++        self.types().sig_origin(candidate) == self.types().sig_origin(failed)
++            || self.sig_native_decl(candidate).zip(self.sig_native_decl(failed)).is_some_and(|(left, right)| left.0 == right.0)
++            || self.sig_native_signature_decl(candidate).zip(self.sig_native_signature_decl(failed)).is_some_and(|(left, right)| left.0 == right.0)
++    }
++
+     /// `chooseOverload`
+     fn choose_overload(&mut self, s: &mut CallState<'_>, relation: Relation) -> Option<SigId> {
+         s.candidates_for_argument_error.clear();
+diff --git a/src/sema/check/mod.rs b/src/sema/check/mod.rs
+index 281db38..a3194b8 100644
+--- a/src/sema/check/mod.rs
++++ b/src/sema/check/mod.rs
+@@ -134,7 +134,7 @@ use native_project::{NativeProjectCache, NativeProjectProvider, NativeProjectQue
+ use native_named::{NativeNamedCache, NativeTypeDeclarationProvider, NativeTypeDeclarationQuery};
+ use native_globals::{NativeGlobalsCache, NativeGlobalsProvider, NativeGlobalsQuery};
+ 
+-pub use call::{NativeFunctionCheckState, ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
++pub use call::{NativeFunctionCheckState, NoMatchingOverload, ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
+ pub use native_packs::NativePackResult;
+ 
+ /// Written types need the signature substitution; checked values already used its scoped facts.

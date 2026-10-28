@@ -134,7 +134,7 @@ use native_project::{NativeProjectCache, NativeProjectProvider, NativeProjectQue
 use native_named::{NativeNamedCache, NativeTypeDeclarationProvider, NativeTypeDeclarationQuery};
 use native_globals::{NativeGlobalsCache, NativeGlobalsProvider, NativeGlobalsQuery};
 
-pub use call::{NativeFunctionCheckState, ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
+pub use call::{NativeFunctionCheckState, NoMatchingOverload, ResolvedCall, ResolvedTypeCall, ResolvedTypeCallError};
 pub use native_packs::NativePackResult;
 
 /// Written types need the signature substitution; checked values already used its scoped facts.

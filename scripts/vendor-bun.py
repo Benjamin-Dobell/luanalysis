@@ -758,6 +758,11 @@ SOURCE_ADAPTATIONS.extend({
     "patch": "vendor/patches/bun-sema-native-assertion-predicates.patch",
     "reason": "Carry written assertion predicates (asserts x is T, asserts x) through native signatures, narrowing an asserted argument by its type or truthiness wherever the call returns.",
 } for path in ["decl.rs", "native_flow.rs", "native_signatures.rs"])
+SOURCE_ADAPTATIONS.extend({
+    "path": "src/sema/check/" + path,
+    "patch": "vendor/patches/bun-sema-native-overload-failure-report.patch",
+    "reason": "When several overloads reject a native call's arguments, report the error of the one that accepts the most of them (the last on a tie, as TypeScript reports the last), with its position and signature, so the frontend says that no overload matches at the argument where the call goes wrong.",
+} for path in ["call.rs", "mod.rs"])
 
 
 def git(source, *args):

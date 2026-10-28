@@ -54,7 +54,7 @@ fn actual_cli_rejects_a_bad_transform_and_accepts_the_correction() {
     let rejected = invoke();
     assert_eq!(rejected.status.code(), Some(1));
     let errors = String::from_utf8(rejected.stderr).unwrap();
-    assert!(errors.contains("TS2345"), "{errors}");
+    assert!(errors.contains("error[TS2769]: No overload matches this call."), "{errors}");
     assert!(!errors.contains("TS2394"), "{errors}");
     std::fs::write(&path, SOURCE).unwrap();
     let corrected = invoke();

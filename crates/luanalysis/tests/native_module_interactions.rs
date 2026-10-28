@@ -100,7 +100,7 @@ fn exported_overload_heads_keep_their_public_view_and_cli_source_correction() {
         String::from_utf8_lossy(&failed.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&failed.stderr).contains("main.lua:4:21: error[TS2345]"),
+        String::from_utf8_lossy(&failed.stderr).contains("main.lua:4:21: error[TS2769]: No overload matches this call."),
         "{}",
         String::from_utf8_lossy(&failed.stderr)
     );
@@ -138,7 +138,7 @@ fn module_table_anonymous_documented_functions_keep_overload_identity() {
     let invalid = fixture.check(&bad);
     let main = &invalid.file(invalid.project.entries[0]).unwrap().report;
     assert_eq!(main.diagnostics.len(), 1, "{:#?}", main.diagnostics);
-    assert_eq!(main.diagnostics[0].code, "TS2345");
+    assert_eq!(main.diagnostics[0].code, "TS2769");
     assert_eq!(
         &bad[main.diagnostics[0].span.start..main.diagnostics[0].span.end],
         "true"

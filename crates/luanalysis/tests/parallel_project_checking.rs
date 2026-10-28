@@ -455,7 +455,7 @@ fn overload_implementation_contracts_stay_private_and_are_still_checked() {
     error_at(
         &fixture.minimal(&entries, &[]),
         "main.lua",
-        "TS2345",
+        "TS2769",
         "true",
     );
     fixture.file("main.lua", main);

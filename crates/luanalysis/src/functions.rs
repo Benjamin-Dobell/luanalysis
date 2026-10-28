@@ -761,9 +761,16 @@ impl Checker<'_> {
                     let actual = arity_range(actual_minimum, actual_maximum);
                     self.error("TS2554", span, format!("Expected {expected} arguments, but got {actual}."));
                 }
-                CallError::Argument { index, source, target } => {
+                CallError::Argument { index, source, target, overload } => {
                     let origin = argument_spans.get(index).or_else(|| argument_spans.last()).copied().unwrap_or(span);
-                    self.error_types("TS2345", origin, "Argument of type '{}' is not assignable to parameter of type '{}'.", &[&source, &target]);
+                    match overload {
+                        None => self.error_types("TS2345", origin, "Argument of type '{}' is not assignable to parameter of type '{}'.", &[&source, &target]),
+                        // As TypeScript explains it: no overload is selected, and the error is one overload's.
+                        Some(overload) => self.error_types("TS2769", origin, &format!(
+                            "No overload matches this call.\n  Overload {} of {}, '{{}}', gave the following error.\n    Argument of type '{{}}' is not assignable to parameter of type '{{}}'.",
+                            overload.overload + 1, overload.overloads,
+                        ), &[&overload.signature, &source, &target]),
+                    }
                 }
                 CallError::TypeArgumentArity { actual, minimum, maximum } => {
                     let expected = if maximum == minimum { minimum.to_string() } else { format!("{minimum}-{maximum}") };

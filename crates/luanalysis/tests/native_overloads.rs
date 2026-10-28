@@ -399,7 +399,7 @@ local first=callbacks.choose(1)"#;
     let bad=format!("{source}\nlocal rejected=callbacks.echo(true)");
     let report=check(&bad);
     assert_eq!(report.diagnostics.len(),1,"{:#?}",report.diagnostics);
-    assert_eq!(report.diagnostics[0].code,"TS2345");
+    assert_eq!(report.diagnostics[0].code,"TS2769");
     assert_eq!(&bad[report.diagnostics[0].span.start..report.diagnostics[0].span.end],"true");
 }
 
