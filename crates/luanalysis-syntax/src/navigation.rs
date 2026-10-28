@@ -159,7 +159,7 @@ fn visit_type(ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited)) {
             visit(&base.text, base.span, Visited::Type(TypeNameKind::Reference));
             for arg in args { visit_type(arg, visit); }
         }
-        TypeExprKind::Union(types) | TypeExprKind::Intersection(types) => for ty in types { visit_type(ty, visit); },
+        TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::TemplateLiteral { types, .. } => for ty in types { visit_type(ty, visit); },
         TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element) | TypeExprKind::TypePredicate { ty: Some(element), .. }
         | TypeExprKind::KeyOf(element) => visit_type(element, visit),
         TypeExprKind::IndexedAccess { object, index } => {

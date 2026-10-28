@@ -379,6 +379,9 @@ impl NativeRegistry {
                 }
                 ResultPackSourceType::Parts(parts)
             }
+            TypeExprKind::TemplateLiteral { types, .. } => {
+                ResultPackSourceType::Parts(types.iter().map(|ty| self.result_pack_source_type(context, ty)).collect())
+            }
             TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
             | TypeExprKind::TypeQuery(_) | TypeExprKind::Error => {
                 ResultPackSourceType::Parts(Vec::new())

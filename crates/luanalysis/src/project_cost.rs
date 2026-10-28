@@ -83,7 +83,7 @@ impl OriginalTypes {
             return;
         }
         match &ty.kind {
-            TypeExprKind::Union(parts) | TypeExprKind::Intersection(parts) => {
+            TypeExprKind::Union(parts) | TypeExprKind::Intersection(parts) | TypeExprKind::TemplateLiteral { types: parts, .. } => {
                 for part in parts {
                     self.ty(part);
                 }

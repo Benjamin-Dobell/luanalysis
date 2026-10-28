@@ -565,7 +565,8 @@ fn type_depth(root: &TypeExpr) -> usize {
                 pending.push((element, current + 1))
             }
             TypeExprKind::IndexedAccess { object, index } => pending.extend([(object.as_ref(), current + 1), (index.as_ref(), current + 1)]),
-            TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. } => {
+            TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. }
+            | TypeExprKind::TemplateLiteral { types, .. } => {
                 pending.extend(types.iter().map(|ty| (ty, current + 1)));
             }
             TypeExprKind::Record(fields) => {
@@ -577,7 +578,7 @@ fn type_depth(root: &TypeExpr) -> usize {
                 }
             }
             TypeExprKind::Function(function) => {
-                pending.extend(function.generics.iter().filter_map(|parameter| parameter.constraint.as_ref()).map(|ty| (ty, current + 1)));
+                pending.extend(function.generics.iter().flat_map(|parameter| parameter.constraint.iter().chain(&parameter.default)).map(|ty| (ty, current + 1)));
                 pending.extend(
                     function
                         .params
@@ -1164,6 +1165,72 @@ impl TypeParser {
         }
         parameters
     }
+    /// A template literal type's text, between its backticks at `span`: literal text, a
+    /// backslash escaping the character after it, and a type in each `${…}`.
+    fn template_literal(&mut self, text: &str, span: Span) -> TypeExpr {
+        // The text starts after the opening backtick.
+        let base = span.start + 1;
+        let mut texts = Vec::new();
+        let mut types = Vec::new();
+        let mut literal = String::new();
+        let mut chars = text.char_indices().peekable();
+        while let Some((at, ch)) = chars.next() {
+            if ch == '\\' {
+                if let Some((_, escaped)) = chars.next() {
+                    literal.push(escaped);
+                }
+                continue;
+            }
+            if ch != '$' || chars.peek().is_none_or(|(_, next)| *next != '{') {
+                literal.push(ch);
+                continue;
+            }
+            chars.next();
+            let body = at + 2;
+            let mut depth = 0usize;
+            let mut end = None;
+            for (at, ch) in chars.by_ref() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' if depth == 0 => {
+                        end = Some(at);
+                        break;
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            let Some(end) = end else {
+                self.diagnostics.push(Diagnostic {
+                    origin: crate::DiagnosticOrigin::Annotation,
+                    span: Span { start: base + at, end: span.end },
+                    message: "a template literal type's `${` needs a closing `}`".to_owned(),
+                });
+                break;
+            };
+            let tokens = crate::lexer::lex_annotation(&text[body..end]).tokens.into_iter().map(|mut token| {
+                token.span.start += base + body;
+                token.span.end += base + body;
+                token
+            }).collect();
+            let mut parser = TypeParser { tokens, line_breaks: Vec::new(), pos: 0, diagnostics: Vec::new(), depth: self.depth, comma_ends_type: 0, function_parameter_comma_depth: None };
+            let ty = if parser.eof() {
+                parser.error("a template literal type's `${…}` needs a type".to_owned());
+                TypeExpr { kind: TypeExprKind::Error, span: Span { start: base + at, end: base + end + 1 } }
+            } else {
+                parser.union()
+            };
+            if !parser.eof() {
+                parser.error("unexpected text in a template literal type's `${…}`".to_owned());
+            }
+            self.diagnostics.extend(parser.diagnostics);
+            texts.push(std::mem::take(&mut literal));
+            types.push(ty);
+        }
+        texts.push(literal);
+        TypeExpr { kind: TypeExprKind::TemplateLiteral { texts, types }, span }
+    }
+
     /// A generic parameter's `= Default`, as EmmyLua Analyzer and TypeScript write it: one type,
     /// as a constraint is, so a union default is parenthesized.
     fn generic_default(&mut self) -> Option<TypeExpr> {
@@ -1491,6 +1558,11 @@ impl TypeParser {
         }
         self.depth += 1;
         let mut ty = match self.current().kind.clone() {
+            // A backtick with no `${…}` is v1's completion hint, not a template literal.
+            TokenKind::CompletionHint(text) if text.contains("${") => {
+                self.pos += 1;
+                self.template_literal(&text, start)
+            }
             TokenKind::CompletionHint(text) => {
                 self.pos += 1;
                 TypeExpr { kind: TypeExprKind::CompletionHint(text), span: start }

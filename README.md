@@ -59,6 +59,30 @@ turn("north")
 turn("up") -- error: '"up"' is not assignable to '"east" | "north" | "south" | "west"'
 ```
 
+### Template literal types
+
+A template literal type, as in TypeScript, is the strings with its text around each `${…}`
+type. A union in a placeholder gives each combination, and a call can infer a type parameter
+from the text a string has:
+
+```lua
+---@alias Side "left" | "right"
+---@alias Edge `${Side}_${"top" | "bottom"}` -- "left_top" | "left_bottom" | ...
+
+---@type `on_${string}`
+local event = "click" -- error: '"click"' is not assignable to '`on_${string}`'
+
+---@generic T: string
+---@param event `on_${T}`
+---@return { name: T }
+local function handler(event) return { name = --[[---@type T]] event:sub(4) } end
+local handled = handler("on_click") -- { name: "click" }
+```
+
+`Uppercase<S>`, `Lowercase<S>`, `Capitalize<S>` and `Uncapitalize<S>` map a string type's
+letters. A placeholder is a string, number, boolean or `nil` type, and a backslash escapes the
+character after it. A backtick type without `${…}` is still a completion hint (v1).
+
 ### Intersections
 
 `A & B` is a value that is each of its types at once; `&` binds more tightly than `|`. As in

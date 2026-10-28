@@ -574,6 +574,9 @@ pub enum TypeExprKind {
     Literal(TypeLiteral),
     /// Suggested editor text; it contributes no values to its union type.
     CompletionHint(String),
+    /// TypeScript's template literal type, `` `prefix${T}suffix` ``: the strings made of `texts`
+    /// around each of `types`; `texts` has one more entry than `types`.
+    TemplateLiteral { texts: Vec<String>, types: Vec<TypeExpr> },
     Union(Vec<TypeExpr>),
     /// `A & B`: what is each of its types at once. It binds more tightly than `|`.
     Intersection(Vec<TypeExpr>),

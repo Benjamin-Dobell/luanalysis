@@ -182,7 +182,7 @@ impl NativeRegistry {
                     reference = Some(base.text.as_str());
                     pending.extend(args.iter().map(|ty| (context, ty)));
                 }
-                TypeExprKind::Union(types) | TypeExprKind::Intersection(types) => pending.extend(types.iter().map(|ty| (context, ty))),
+                TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::TemplateLiteral { types, .. } => pending.extend(types.iter().map(|ty| (context, ty))),
                 TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element)
                 | TypeExprKind::TypePredicate { ty: Some(element), .. } | TypeExprKind::KeyOf(element) => {
                     pending.push((context, element))

@@ -214,3 +214,20 @@ fn generic_annotations_are_diagnosed_when_not_attached_to_a_function() {
             .contains("unsupported Luanalysis annotation @generic")
     }));
 }
+
+#[test]
+fn a_backtick_type_with_placeholders_is_a_template_literal() {
+    let source = "---@type `on_${string}\\`${{ a: T }}`\nlocal x\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let StmtKind::Local { annotation: Some(annotation), .. } = &file.statements[0].kind else { panic!("{:#?}", file.statements) };
+    let TypeExprKind::TemplateLiteral { texts, types } = &annotation.types[0].kind else { panic!("{annotation:#?}") };
+    assert_eq!(texts, &["on_".to_owned(), "`".to_owned(), String::new()]);
+    assert_eq!(types.iter().map(|ty| &source[ty.span.start..ty.span.end]).collect::<Vec<_>>(), ["string", "{ a: T }"]);
+    // Without placeholders it is v1's completion hint.
+    let hint = parse("---@type string | `name`\nlocal x\n");
+    assert!(hint.diagnostics.is_empty(), "{:?}", hint.diagnostics);
+    for broken in ["---@type `a${string`\nlocal x\n", "---@type `a${}`\nlocal x\n", "---@type `a${string number}`\nlocal x\n"] {
+        assert!(!parse(broken).diagnostics.is_empty(), "{broken}");
+    }
+}

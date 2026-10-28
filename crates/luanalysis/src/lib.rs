@@ -820,6 +820,19 @@ impl Checker<'_> {
             }
             TypeExprKind::Intersection(types) => Type::Intersection(types.iter().map(|ty| self.annotation(ty)).collect()),
             TypeExprKind::CompletionHint(_) => Type::Never,
+            TypeExprKind::TemplateLiteral { texts, types } => {
+                // As TypeScript requires, each placeholder is of a type that can be written as text.
+                let placeholder = Type::Union(vec![Type::String, Type::Number, Type::Boolean, Type::Nil]);
+                let types: Vec<_> = types.iter().map(|syntax| {
+                    let ty = self.annotation(syntax);
+                    if !self.engine.is_assignable(&ty, &placeholder) {
+                        self.error_types("TS2322", syntax.span, "Type '{}' is not assignable to type '{}'.", &[&ty, &placeholder]);
+                        return self.engine.error_type();
+                    }
+                    ty
+                }).collect();
+                self.engine.template_literal_type(texts, &types)
+            }
             TypeExprKind::TypePredicate { asserts: None, .. } => Type::Boolean,
             // An assertion function returns nothing when it returns.
             TypeExprKind::TypePredicate { asserts: Some(_), .. } => Type::Void,
@@ -856,6 +869,18 @@ impl Checker<'_> {
                     return self.engine.error_type();
                 }
                 if let Some(resolved)=self.native_named_reference(&base.text,&arguments,ty){return resolved;}
+                // TypeScript's intrinsic string types, where no declaration has the name.
+                if let Some(mapping)=luanalysis_engine::StringMapping::named(&base.text) {
+                    let [argument]=arguments.as_slice() else {
+                        self.error("TS2314", ty.span, format!("Generic type '{}' requires 1 type argument(s).", base.text));
+                        return self.engine.error_type();
+                    };
+                    if !self.engine.is_assignable(argument, &Type::String) {
+                        self.error_types("TS2344", args[0].span, "Type '{}' does not satisfy the constraint '{}'.", &[argument, &Type::String]);
+                        return self.engine.error_type();
+                    }
+                    return self.engine.string_mapping_type(mapping, argument);
+                }
                 let parameter=self.native.map(|native| {
                     let context=self.signature_type_context.map(native_named::NativeTypeContext::Signature)
                         .or_else(||self.named_type_context.map(native_named::NativeTypeContext::NamedType))

@@ -856,6 +856,29 @@ pub struct NoMatchingOverload {
     pub signature: Type,
 }
 
+/// TypeScript's intrinsic string types: `Uppercase<S>`, `Lowercase<S>`, `Capitalize<S>` and
+/// `Uncapitalize<S>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringMapping {
+    Uppercase,
+    Lowercase,
+    Capitalize,
+    Uncapitalize,
+}
+
+impl StringMapping {
+    /// The intrinsic type a name declares, if it is one.
+    pub fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "Uppercase" => Self::Uppercase,
+            "Lowercase" => Self::Lowercase,
+            "Capitalize" => Self::Capitalize,
+            "Uncapitalize" => Self::Uncapitalize,
+            _ => return None,
+        })
+    }
+}
+
 /// Passive completion observation for an original receiver read in one checker session.
 #[must_use]
 pub struct NativeEnvironmentRead {
@@ -1236,6 +1259,11 @@ pub trait TypeQueries {
     /// `object[index]`: what `object` gives at keys of type `index`, deferred while either is
     /// generic. `None`: `object` has nothing at some key of `index`.
     fn indexed_access_type(&mut self, object: &Type, index: &Type) -> Option<Type>;
+    /// The template literal type `` `a${T}b` ``: the strings of `texts` around each of `types`
+    /// (`texts` has one more), deferred while one is generic.
+    fn template_literal_type(&mut self, texts: &[String], types: &[Type]) -> Type;
+    /// `Uppercase<ty>` and its kin: `ty`'s strings mapped, deferred while it is generic.
+    fn string_mapping_type(&mut self, mapping: StringMapping, ty: &Type) -> Type;
     fn inspect_type(&mut self, ty: &Type) -> Type;
     /// Exact backend recovery type, preserving its error identity across the owned boundary.
     fn error_type(&mut self) -> Type;
@@ -2123,6 +2151,23 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let ty = import_type(self.checker, self.handles, ty);
         let keys = self.checker.keyof(ty);
         export_type(self.checker, self.handles, keys)
+    }
+    fn template_literal_type(&mut self, texts: &[String], types: &[Type]) -> Type {
+        let texts: Vec<_> = texts.iter().map(|text| self.checker.atoms().intern(text.as_bytes())).collect();
+        let types: Vec<_> = types.iter().map(|ty| import_type(self.checker, self.handles, ty)).collect();
+        let template = self.checker.template_type(&texts, &types);
+        export_type(self.checker, self.handles, template)
+    }
+    fn string_mapping_type(&mut self, mapping: StringMapping, ty: &Type) -> Type {
+        let kind = match mapping {
+            StringMapping::Uppercase => bun_sema::types::StringMappingKind::Uppercase,
+            StringMapping::Lowercase => bun_sema::types::StringMappingKind::Lowercase,
+            StringMapping::Capitalize => bun_sema::types::StringMappingKind::Capitalize,
+            StringMapping::Uncapitalize => bun_sema::types::StringMappingKind::Uncapitalize,
+        };
+        let ty = import_type(self.checker, self.handles, ty);
+        let mapped = self.checker.string_mapping(kind, ty);
+        export_type(self.checker, self.handles, mapped)
     }
     fn indexed_access_type(&mut self, object: &Type, index: &Type) -> Option<Type> {
         let object = import_type(self.checker, self.handles, object);
