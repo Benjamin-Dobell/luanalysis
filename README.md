@@ -141,6 +141,29 @@ push(names, "grace")
 push(names, 42) -- error: '42' is not assignable to 'string'
 ```
 
+A type parameter may have a default, after its constraint, as in TypeScript and EmmyLua Analyzer.
+An omitted type argument is its default, and so is one that a call's arguments do not infer:
+
+```lua
+---@shape Box<T = string>
+---@field value T
+
+---@type Box -- Box<string>
+local label = { value = "ready" }
+
+---@generic T = string
+---@param fallback? T
+---@return T
+local function pick(fallback) return --[[---@type T]] fallback end
+local name = pick()   -- string
+local count = pick(3) -- number
+```
+
+A constrained parameter's default follows its constraint, `---@generic T: Constraint = Default`.
+As TypeScript checks them, parameters with defaults follow those without, a default refers only
+to earlier parameters of its list, and it satisfies its constraint. A union default is
+parenthesized, as a union constraint is: `---@generic T = (string | nil)`.
+
 ### Indexed fields
 
 Fields are not limited to names. Number literals, booleans and whole types can be keys, so

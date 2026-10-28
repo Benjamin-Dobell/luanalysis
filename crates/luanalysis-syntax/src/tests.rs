@@ -534,7 +534,7 @@ fn missing_end_bad_parameters_and_annotations_are_diagnosed() {
         "do local x = 1", "local function f(x,) return x end", "local function f(..., value) end",
         "---@param x number\nlocal x = 1", "---@param x number\n---@param x string\nlocal function f(x) end",
         "local function f() return 1 local x = 2 end", "local x = f(1,)",
-        "---@generic T = number\nlocal function f(x) return x end", "function global[index]() end",
+        "function global[index]() end",
     ] {
         let file = parse(source);
         assert!(!file.diagnostics.is_empty(), "invalid or unsupported input escaped diagnosis: {source}");

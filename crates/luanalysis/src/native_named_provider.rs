@@ -903,7 +903,48 @@ impl NativeRegistry {
             message,
         });
     }
+    /// TypeScript's checks of type parameter defaults: an optional parameter (one with a default)
+    /// precedes every required one, a default names no later parameter of its own list, and it
+    /// satisfies its parameter's constraint.
+    fn check_type_parameter_defaults(&self, queries: &mut dyn TypeQueries) {
+        let sources = self.types.parameter_sources();
+        let mut diagnostics = Vec::new();
+        for source in sources.iter().filter(|source| source.semantic_self.is_none()) {
+            let siblings = || sources.iter().filter(move |sibling| sibling.owner == source.owner && sibling.semantic_self.is_none());
+            let Some(default) = &source.default else {
+                if siblings().any(|sibling| sibling.order < source.order && sibling.default.is_some()) {
+                    diagnostics.push(Diagnostic {
+                        code: "TS2706",
+                        span: source.name.span,
+                        message: "Required type parameters may not follow optional type parameters.".into(),
+                    });
+                }
+                continue;
+            };
+            let later = luanalysis_syntax::referenced_type_names(default).into_iter()
+                .find(|name| siblings().any(|sibling| sibling.order > source.order && sibling.name.text == name.text));
+            if let Some(name) = later {
+                diagnostics.push(Diagnostic {
+                    code: "TS2744",
+                    span: name.span,
+                    message: "Type parameter defaults can only reference previously declared type parameters.".into(),
+                });
+                continue;
+            }
+            if source.constraint.is_some()
+                && let (Some(default_type), Some(constraint)) = (queries.type_parameter_default(source.key), queries.type_parameter_constraint(source.key))
+                && !queries.is_assignable(&default_type, &constraint)
+            {
+                let mut report = CheckReport::default();
+                report.push_type_diagnostic("TS2344", default.span, "Type '{}' does not satisfy the constraint '{}'.", &[&default_type, &constraint]);
+                self.merge_report(report);
+            }
+        }
+        self.report.borrow_mut().diagnostics.extend(diagnostics);
+    }
+
     pub(crate) fn check_named_declarations(&self, queries: &mut dyn TypeQueries) {
+        self.check_type_parameter_defaults(queries);
         self.prepare_documentation_scopes(queries);
         self.doc_members.validate(queries);
         self.validate_return_annotations(queries);

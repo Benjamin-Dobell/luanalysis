@@ -14,6 +14,7 @@ use std::rc::Rc;
 pub(super) struct TypeParameterRecipe {
     pub name: Name,
     pub constraint: Option<TypeExpr>,
+    pub default: Option<TypeExpr>,
 }
 
 pub(super) struct TypeScopeRecipe {
@@ -28,6 +29,7 @@ pub(super) struct TypeParameterSource {
     pub owner: NativeTypeContext,
     pub order: u32,
     pub constraint: Option<TypeExpr>,
+    pub default: Option<TypeExpr>,
     /// A real semantic class-self parameter. Its constraint is the original
     /// declared head, not a fabricated generic/constraint AST node.
     pub semantic_self: Option<NativeNamedKey>,
@@ -220,6 +222,7 @@ impl NativeTypes {
                         .map(|parameter| TypeParameterRecipe {
                             name: parameter.name,
                             constraint: parameter.constraint,
+                            default: parameter.default,
                         })
                         .collect(),
                 )
@@ -264,6 +267,7 @@ impl NativeTypes {
                     owner,
                     order: u32::try_from(order).expect("type parameter order fits in u32"),
                     constraint: parameter.constraint,
+                    default: parameter.default,
                     semantic_self: None,
                 });
             }
@@ -288,6 +292,7 @@ impl NativeTypes {
             owner: context,
             order: 0,
             constraint: None,
+            default: None,
             semantic_self: Some(owner),
         });
         self.scope_mut(&context).expect("original class type scope").self_parameter = Some(key);
@@ -340,6 +345,11 @@ impl NativeTypes {
 
     pub(super) fn contains(&self, key: NativeTypeParameterKey) -> bool {
         key.snapshot == self.snapshot && (key.index as usize) < self.parameters.len()
+    }
+
+    /// Every parameter's source, in declaration order within each owner.
+    pub(super) fn parameter_sources(&self) -> &[TypeParameterSource] {
+        &self.parameters
     }
 
     pub(super) fn parameter(&self, key: NativeTypeParameterKey) -> &TypeParameterSource {

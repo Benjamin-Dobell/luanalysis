@@ -48,6 +48,7 @@ fn one_allocator_separates_same_index_function_and_named_generic_owners() {
             parameters: vec![TypeParameterRecipe {
                 name: parameter.name,
                 constraint: None,
+                default: None,
             }],
         }],
         scopes(&named),
@@ -157,6 +158,7 @@ fn named_annotation_dependencies_capture_only_used_original_parent_parameters() 
                 .map(|parameter| TypeParameterRecipe {
                     name: parameter.name.clone(),
                     constraint: parameter.constraint.clone(),
+                    default: parameter.default.clone(),
                 })
                 .collect(),
         }],

@@ -129,11 +129,22 @@ fn generic_tags_work_in_long_documentation_with_trailing_prose() {
 }
 
 #[test]
-fn generic_defaults_and_bare_union_constraints_are_invalid() {
-    let defaults = parse("---@generic T = number\nlocal function f() end\n");
-    assert!(defaults.diagnostics.iter().any(|diagnostic| {
-        diagnostic.message == "generic parameter defaults are invalid Luanalysis annotation syntax"
-    }));
+fn generic_defaults_follow_their_constraints_in_every_generic_list() {
+    // As EmmyLua Analyzer and TypeScript write them: `T = Default`, or `T: Constraint = Default`.
+    let source = "---@generic T, U: number = 1, V = (string | nil)\nlocal function f() end\n---@class Box<T = string, U: Box = Box>\n---@type fun<T = number>(value: T): T\nlocal g\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let text = |ty: &Option<TypeExpr>| ty.as_ref().map(|ty| source[ty.span.start..ty.span.end].to_owned());
+    let generics = &local_function(&file).annotations.generics;
+    assert_eq!(generics.iter().map(|generic| text(&generic.default)).collect::<Vec<_>>(), [None, Some("1".into()), Some("(string | nil)".into())]);
+    assert_eq!(text(&generics[1].constraint).as_deref(), Some("number"));
+    assert_eq!(&source[generics[1].span.start..generics[1].span.end], "U: number = 1");
+    let missing = parse("---@generic T =\nlocal function f() end\n");
+    assert!(!missing.diagnostics.is_empty());
+}
+
+#[test]
+fn bare_union_constraints_are_invalid() {
     let union = parse("---@generic T: string | number\nlocal function f() end\n");
     assert!(union.diagnostics.iter().any(|diagnostic| {
         diagnostic.message == "unsupported or unexpected syntax after @generic"

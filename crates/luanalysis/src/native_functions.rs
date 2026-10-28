@@ -3286,12 +3286,43 @@ impl NativeTypeProvider for NativeRegistry {
         Some(constraint)
     }
 
+    fn has_type_parameter_default(&self, key: NativeTypeParameterKey) -> bool {
+        self.types.parameter(key).default.is_some()
+    }
+
+    fn type_parameter_default(
+        &self,
+        key: NativeTypeParameterKey,
+        queries: &mut dyn TypeQueries,
+    ) -> Option<Type> {
+        let source = self.types.parameter(key);
+        let recipe = source.default.as_ref()?;
+        let mut checker = self.checker(queries);
+        match source.owner {
+            NativeTypeContext::Function(owner) => checker.type_context = Some(owner),
+            NativeTypeContext::NamedType(owner) => checker.named_type_context = Some(owner),
+            NativeTypeContext::Signature(owner) => checker.signature_type_context = Some(owner),
+        }
+        let default = checker.annotation(recipe);
+        self.merge_report(checker.report);
+        Some(default)
+    }
+
     fn type_parameter_order(&self, key: NativeTypeParameterKey) -> u32 {
         self.types.parameter(key).order
     }
 
     fn type_parameter_siblings(&self, key: NativeTypeParameterKey) -> Vec<NativeTypeParameterKey> {
         self.types.siblings(key)
+    }
+
+    fn circular_type_parameter_default(&self, key: NativeTypeParameterKey) {
+        let source = self.types.parameter(key);
+        self.report.borrow_mut().diagnostics.push(Diagnostic {
+            code: "TS2716",
+            span: source.name.span,
+            message: format!("Type parameter '{}' has a circular default.", source.name.text),
+        });
     }
 
     fn circular_type_parameter_constraint(&self, key: NativeTypeParameterKey) {
@@ -3383,6 +3414,7 @@ fn type_scope_recipes(
                     .map(|parameter| TypeParameterRecipe {
                         name: parameter.name.clone(),
                         constraint: parameter.constraint.clone(),
+                        default: parameter.default.clone(),
                     })
                     .collect(),
             }

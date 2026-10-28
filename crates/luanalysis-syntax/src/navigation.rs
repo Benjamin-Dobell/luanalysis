@@ -123,7 +123,19 @@ fn visit_generics(generics: &[GenericParameter], visit: &mut dyn FnMut(&str, Spa
     for generic in generics {
         visit(&generic.name.text, generic.name.span, Visited::Type(TypeNameKind::Generic));
         if let Some(constraint) = &generic.constraint { visit_type(constraint, visit); }
+        if let Some(default) = &generic.default { visit_type(default, visit); }
     }
+}
+
+/// The type names `ty` refers to, outermost first.
+pub fn referenced_type_names(ty: &TypeExpr) -> Vec<Name> {
+    let mut names = Vec::new();
+    visit_type(ty, &mut |name, span, visited| {
+        if matches!(visited, Visited::Type(TypeNameKind::Reference)) {
+            names.push(Name { text: name.to_owned(), span });
+        }
+    });
+    names
 }
 
 fn visit_field(key: &TypeFieldKey, ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited)) {

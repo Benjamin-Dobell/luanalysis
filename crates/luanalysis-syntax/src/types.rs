@@ -795,12 +795,13 @@ impl TypeParser {
             } else {
                 None
             };
-            let span = constraint
-                .as_ref()
+            let default = self.generic_default();
+            let span = default.as_ref().or(constraint.as_ref())
                 .map_or(name.span, |ty| name.span.join(ty.span));
             parameters.push(GenericParameter {
                 name,
                 constraint,
+                default,
                 span,
             });
             if self.take(",").is_none() {
@@ -1148,28 +1149,31 @@ impl TypeParser {
             } else {
                 None
             };
-            let span = constraint
-                .as_ref()
+            let default = self.generic_default();
+            let span = default.as_ref().or(constraint.as_ref())
                 .map_or(name.span, |ty| name.span.join(ty.span));
             parameters.push(GenericParameter {
                 name,
                 constraint,
+                default,
                 span,
             });
-            if self.symbol("=") {
-                self.error(
-                    "generic parameter defaults are invalid Luanalysis annotation syntax"
-                        .to_owned(),
-                );
-                break;
-            }
             if self.take(",").is_none() {
                 break;
             }
         }
         parameters
     }
-    fn return_packs(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
+    /// A generic parameter's `= Default`, as EmmyLua Analyzer and TypeScript write it: one type,
+    /// as a constraint is, so a union default is parenthesized.
+    fn generic_default(&mut self) -> Option<TypeExpr> {
+        self.take("=")?;
+        self.comma_ends_type += 1;
+        let default = self.primary();
+        self.comma_ends_type -= 1;
+        Some(default)
+    }
+        fn return_packs(&mut self) -> (Vec<TypeExpr>, Option<Box<TypePacks>>) {
         // `is` is contextual: preserve it as a named type, and preserve prose
         // after completed types in annotation grammars without predicates.
         if matches!(self.current().kind, TokenKind::Identifier(_))

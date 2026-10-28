@@ -22,7 +22,7 @@ mod diagnostic_origin_tests;
 pub use lexer::{Lexed, Token, TokenKind, identifier_continue, identifier_start, is_identifier, lex};
 pub use parser::{parse, parse_with_checkpoint};
 pub use documentation::{Documentation, documentation_above, documentation_at};
-pub use navigation::{TypeName, TypeNameKind, type_names, type_query_roots};
+pub use navigation::{TypeName, TypeNameKind, referenced_type_names, type_names, type_query_roots};
 
 /// Half-open UTF-8 byte offsets in the original Lua source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -518,6 +518,8 @@ pub struct VarargAnnotation {
 pub struct GenericParameter {
     pub name: Name,
     pub constraint: Option<TypeExpr>,
+    /// `T = Default`: the type an omitted or uninferred argument takes.
+    pub default: Option<TypeExpr>,
     pub span: Span,
 }
 

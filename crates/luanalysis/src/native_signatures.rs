@@ -1712,6 +1712,7 @@ impl NativeSignatures {
                     .map(|generic| NamedGenericParameterRecipe {
                         name: generic.name.clone(),
                         constraint: generic.constraint.clone(),
+                        default: generic.default.clone(),
                     })
                     .collect(),
             }))
