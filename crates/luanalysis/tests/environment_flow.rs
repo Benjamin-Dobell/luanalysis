@@ -41,7 +41,7 @@ fn a_direct_loader_write_invalidates_only_its_original_continuation() {
     let fixture = Fixture::new();
     let output = fixture.check("local before=require('module')\n_G.require=function(name) return {} end\nlocal after=require('module')\n");
     clean(&output);
-    assert!(text(&output).contains("main.lua:1:7: before: { [\"value\"]: 42 }"), "{}", text(&output));
+    assert!(text(&output).contains("main.lua:1:7: before: { value: 42 }"), "{}", text(&output));
     assert!(text(&output).contains("main.lua:3:7: after: {  }"), "{}", text(&output));
 }
 

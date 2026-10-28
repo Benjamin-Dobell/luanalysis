@@ -52,6 +52,7 @@ fn one_allocator_separates_same_index_function_and_named_generic_owners() {
             }],
         }],
         scopes(&named),
+        Vec::new(),
     );
     let function_parameters = types.own_parameters(function);
     let named_parameters = types.own_parameters_in_context(NativeTypeContext::NamedType(alias));
@@ -80,7 +81,7 @@ fn one_allocator_separates_same_index_function_and_named_generic_owners() {
 fn named_sibling_constraints_keep_forward_reference_recipes_and_all_ids() {
     let named = named("---@alias Alias<A:B,B:number> A\n");
     let owner = NativeTypeContext::NamedType(named.candidates("Alias")[0]);
-    let types = NativeTypes::new_with_named(SNAPSHOT, Vec::new(), scopes(&named));
+    let types = NativeTypes::new_with_named(SNAPSHOT, Vec::new(), scopes(&named), Vec::new());
     let parameters = types.own_parameters_in_context(owner);
     assert_eq!(parameters.len(), 2);
     assert_eq!(types.siblings(parameters[0]), parameters);
@@ -98,7 +99,7 @@ fn named_sibling_constraints_keep_forward_reference_recipes_and_all_ids() {
 fn documentation_parameter_candidates_preserve_ambiguity_and_own_shadowing() {
     let named =
         named("---@class One<T>\n---@class Two<T>\n---@alias Both<U> U\n---@alias Own<T> T\n");
-    let types = NativeTypes::new_with_named(SNAPSHOT, Vec::new(), scopes(&named));
+    let types = NativeTypes::new_with_named(SNAPSHOT, Vec::new(), scopes(&named), Vec::new());
     let one = types
         .own_parameters_in_context(NativeTypeContext::NamedType(named.candidates("One")[0]))[0];
     let two = types
@@ -119,7 +120,7 @@ fn documentation_parameter_candidates_preserve_ambiguity_and_own_shadowing() {
 fn named_parameter_duplicates_keep_source_ranges_and_separate_siblings() {
     let source = "---@alias Alias<T:string,T:number> T\n";
     let named = named(source);
-    let types = NativeTypes::new_with_named(SNAPSHOT, Vec::new(), scopes(&named));
+    let types = NativeTypes::new_with_named(SNAPSHOT, Vec::new(), scopes(&named), Vec::new());
     let owner = NativeTypeContext::NamedType(named.candidates("Alias")[0]);
     let parameters = types.own_parameters_in_context(owner);
     assert_eq!(parameters.len(), 2);
@@ -163,6 +164,7 @@ fn named_annotation_dependencies_capture_only_used_original_parent_parameters() 
                 .collect(),
         }],
         scopes(&named),
+        Vec::new(),
     );
     let inside = named.declaration(named.candidates("Inside")[0]).unwrap();
     let owner = NativeTypeContext::NamedType(inside.key);
@@ -182,7 +184,7 @@ fn named_annotation_dependencies_capture_only_used_original_parent_parameters() 
 #[test]
 fn unused_visible_documentation_parameters_do_not_create_outer_mapper_inputs() {
     let named = named("---@class Owner<T,U>\n---@alias Child<V> V\n");
-    let types = NativeTypes::new_with_named(SNAPSHOT, Vec::new(), scopes(&named));
+    let types = NativeTypes::new_with_named(SNAPSHOT, Vec::new(), scopes(&named), Vec::new());
     let owner = NativeTypeContext::NamedType(named.candidates("Child")[0]);
     assert!(
         types

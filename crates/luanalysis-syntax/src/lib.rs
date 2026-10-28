@@ -22,7 +22,7 @@ mod diagnostic_origin_tests;
 pub use lexer::{Lexed, Token, TokenKind, identifier_continue, identifier_start, is_identifier, lex};
 pub use parser::{parse, parse_with_checkpoint};
 pub use documentation::{Documentation, documentation_above, documentation_at};
-pub use navigation::{TypeName, TypeNameKind, referenced_type_names, type_names, type_query_roots};
+pub use navigation::{ConditionalDeclaration, InferDeclaration, TypeName, TypeNameKind, conditional_types, referenced_type_names, type_names, type_query_roots};
 
 /// Half-open UTF-8 byte offsets in the original Lua source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -593,6 +593,17 @@ pub enum TypeExprKind {
     },
     /// `keyof T`: the union of T's keys.
     KeyOf(Box<TypeExpr>),
+    /// EmmyLua Analyzer's conditional type, `Check extends Constraint and Yes or No`
+    /// (TypeScript's `Check extends Constraint ? Yes : No`).
+    Conditional {
+        check: Box<TypeExpr>,
+        extends: Box<TypeExpr>,
+        yes: Box<TypeExpr>,
+        no: Box<TypeExpr>,
+    },
+    /// `infer P` in a conditional type's constraint: a type parameter its true branch can use.
+    /// `infer P extends C` constrains it.
+    Infer { name: Name, constraint: Option<Box<TypeExpr>> },
     /// `T[K]`: the type of T's values at keys of type K.
     IndexedAccess {
         object: Box<TypeExpr>,
@@ -635,6 +646,56 @@ impl TypeExpr {
             TypeExprKind::Union(parts) => parts.iter().all(Self::is_completion_only),
             _ => false,
         }
+    }
+
+    /// The types written directly in this one, in source order.
+    pub fn children(&self) -> Vec<&TypeExpr> {
+        match &self.kind {
+            TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. }
+            | TypeExprKind::TypePredicate { ty: Some(element), .. } | TypeExprKind::KeyOf(element)
+            | TypeExprKind::Infer { constraint: Some(element), .. } => vec![element],
+            TypeExprKind::IndexedAccess { object, index } => vec![object, index],
+            TypeExprKind::Conditional { check, extends, yes, no } => vec![check, extends, yes, no],
+            TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. }
+            | TypeExprKind::TemplateLiteral { types, .. } => types.iter().collect(),
+            TypeExprKind::Record(fields) => fields
+                .iter()
+                .flat_map(|field| match &field.key {
+                    TypeFieldKey::Indexed(key) => vec![key, &field.ty],
+                    _ => vec![&field.ty],
+                })
+                .collect(),
+            TypeExprKind::Function(function) => function
+                .generics
+                .iter()
+                .flat_map(|parameter| parameter.constraint.iter().chain(&parameter.default))
+                .chain(function.params.iter().filter_map(|param| param.ty.as_ref()))
+                .chain(function.vararg.iter().map(|vararg| &vararg.ty))
+                .chain(&function.returns)
+                .collect(),
+            TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_)
+            | TypeExprKind::TypePredicate { ty: None, .. } | TypeExprKind::Infer { constraint: None, .. } | TypeExprKind::TypeQuery(_)
+            | TypeExprKind::Error => Vec::new(),
+        }
+    }
+
+    /// The `infer P` declarations of the conditional type whose extends type this is, in source
+    /// order: those written in it, except in the extends type of a conditional type nested in
+    /// it, whose own they are. A name may be declared more than once.
+    pub fn infer_declarations(&self) -> Vec<InferDeclaration> {
+        let mut names = Vec::new();
+        let mut pending = vec![self];
+        while let Some(ty) = pending.pop() {
+            match &ty.kind {
+                TypeExprKind::Infer { name, constraint } => {
+                    names.push(InferDeclaration { name: name.clone(), constraint: constraint.as_deref().cloned() });
+                    pending.extend(constraint.as_deref());
+                }
+                TypeExprKind::Conditional { check, yes, no, .. } => pending.extend([no, yes, check].map(|ty| ty.as_ref())),
+                _ => pending.extend(ty.children().into_iter().rev()),
+            }
+        }
+        names
     }
 }
 

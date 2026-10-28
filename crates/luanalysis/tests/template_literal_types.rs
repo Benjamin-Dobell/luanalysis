@@ -102,3 +102,12 @@ local text = ""
         "TS2322 { a: number } | Type '{ a: number }' is not assignable to type 'string | number | boolean | nil'.",
     ]);
 }
+
+#[test]
+fn a_template_of_too_many_strings_is_reported_where_it_is_written() {
+    let checked = check(r#"---@alias D "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+---@type `${D}${D}${D}${D}${D}${D}`
+local big
+"#);
+    assert_eq!(checked.diagnostics, ["TS2590 `${D}${D}${D}${D}${D}${D}` | Expression produces a union type that is too complex to represent."]);
+}

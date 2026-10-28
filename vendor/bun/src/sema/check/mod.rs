@@ -155,6 +155,8 @@ pub trait NativeFunctionProvider {
     fn function_is_method(&self, _: NativeFunctionId) -> bool { false }
     fn signature_is_method(&self, _: NativeSignatureId) -> bool { false }
     fn contains_signature(&self, _: NativeSignatureId) -> bool { false }
+    /// The declared true (`yes`) or false type of a conditional type that a Lua annotation writes.
+    fn conditional_branch(&self, _: &mut Checker<'_, '_>, _: NativeConditionalId, _: bool) -> TypeId { panic!("native conditional provider is not installed") }
     /// False attests immutable absence of written predicate syntax, independent
     /// of the selected instantiation/capture frame. Unknown providers use true.
     fn signature_may_have_type_predicate(&self, _: NativeSignatureId) -> bool { true }
@@ -561,7 +563,7 @@ pub struct Program<'s> {
     circular_type_param_defaults: ById<TypeId, (), Buffered, &'s Session>,
     /// `ConditionalRoot.instantiations`, for the keys without an alias. The flag: nothing moved
     /// `non_cacheable_mark` while the type was computed, so `getConditionalType` returns it again.
-    conditionals: ByKey<(FileId, TypeNodeId, MapperId), (TypeId, bool), Buffered, &'s Session>,
+    conditionals: ByKey<(CondRoot, MapperId), (TypeId, bool), Buffered, &'s Session>,
     /// The constraint of the parameter of each mapped type, if any. See
     /// `constraint_of_mapped_param`.
     mapped_param_constraints: ByNode<(FileId, TypeNodeId), Option<TypeId>, Buffered, &'s Session>,
@@ -944,6 +946,11 @@ impl<'s> Program<'s> {
             simplified: Default::default(),
             inherited_names: [0; 4],
             cond_distributive_memo: Default::default(),
+            native_conditional_branches: Default::default(),
+            native_infer_constraints: Default::default(),
+            unplaced_limits: 0,
+            unplaced_limit: 0,
+            unplaced_limits_reported: 0,
             relation_too_complex: false,
             relation_too_deep: false,
             current_source_element: None,
@@ -1155,7 +1162,7 @@ enum Query {
     /// The type of a property of a mapped type: the mapped type and the property name. `getTypeOfMappedSymbol`
     MappedProp(TypeId, Atom),
     Enum(FileId, EnumMemberId),
-    Cond(FileId, TypeNodeId, MapperId),
+    Cond(CondRoot, MapperId),
     /// Whether the initializer of a parameter can be `undefined`.
     InitializerIsUndefined(FileId, ParamId),
     /// `TypeSystemPropertyNameResolvedTypeArguments`
@@ -1209,7 +1216,7 @@ impl Query {
             Query::Symbol(sym) => (sym.file, 7),
             Query::TypeNode(file, _) => (file, 8),
             Query::Declared(sym) => (sym.file, 9),
-            Query::Cond(file, ..) => (file, 10),
+            Query::Cond(CondRoot::Node(file, _), _) => (file, 10),
             Query::Enum(file, _) => (file, 11),
             Query::Bases(sym) => (sym.file, 12),
             Query::BaseConstructor(sym) => (sym.file, 13),
@@ -1232,6 +1239,7 @@ impl Query {
             | Query::TypeArguments(_)
             | Query::AliasTarget(_)
             | Query::WriteType(..)
+            | Query::Cond(CondRoot::Native(_), _)
             | Query::Comparison(_) => return None,
         })
     }
@@ -1705,6 +1713,18 @@ pub struct Checker<'p, 's> {
     pub(super) inherited_names: [u64; 4],
     /// `resolvedConstraintOfDistributive`. `None` is `noConstraintType`.
     cond_distributive_memo: FxHashMap<TypeId, Option<TypeId>>,
+    /// The declared branches of conditional types that Lua annotations write. `None`: being
+    /// lowered.
+    native_conditional_branches: FxHashMap<(NativeConditionalId, bool), Option<TypeId>>,
+    /// The constraints of the `infer` type parameters of those conditional types, which their
+    /// roots carry.
+    native_infer_constraints: FxHashMap<NativeTypeParamId, TypeId>,
+    /// How many limits (2589, 2590, 2799, 2800) were hit with no node to report them at, the code
+    /// of the last, and how many of those the native provider has reported where it checks
+    /// (`take_unplaced_limit_since`).
+    unplaced_limits: u64,
+    unplaced_limit: u32,
+    unplaced_limits_reported: u64,
     /// Set when a comparison exhausts `Relater::relation_count` (2859). The caller clears it before comparing.
     pub(super) relation_too_complex: bool,
     /// Whether the last `checkTypeRelatedToEx` reached 100 nested comparisons (2321).
@@ -3170,6 +3190,21 @@ impl<'p, 's> Checker<'p, 's> {
     /// 2589 at `currentNode` and returns the error type. Safe to call after any `enter` that
     /// refused. Returns `UNRESOLVED` where the recursion here is no evidence of recursion in tsgo:
     /// after a refusal, and more than 60 levels of `instantiate` deep under a conditional type.
+    /// How many limits have been hit where no node could report them.
+    pub fn unplaced_limits(&self) -> u64 {
+        self.unplaced_limits
+    }
+
+    /// The code of the last limit hit where no node could report it, if one was hit since
+    /// `unplaced_limits` was `since` and none since has been taken.
+    pub fn take_unplaced_limit_since(&mut self, since: u64) -> Option<u32> {
+        if self.unplaced_limits <= since.max(self.unplaced_limits_reported) {
+            return None;
+        }
+        self.unplaced_limits_reported = self.unplaced_limits;
+        Some(self.unplaced_limit)
+    }
+
     pub(super) fn excessively_deep(&mut self) -> TypeId {
         // Only the call right after a refused `enter` sees the refusal.
         let is_limit_in_tsgo = match std::mem::replace(&mut self.last_enter, EnterOutcome::Entered)
@@ -3260,6 +3295,11 @@ impl<'p, 's> Checker<'p, 's> {
             }),
         };
         let Some(at) = at.filter(|_| is_reported) else {
+            // A Lua source has no node here: its provider places the diagnostic where it checks.
+            if is_reported && self.native_function_provider.is_some() {
+                self.unplaced_limits += 1;
+                self.unplaced_limit = code;
+            }
             // The result is the error type, to which everything is related, and tsgo reports
             // 2589. The count is reset as in tsgo, so the file is not reported as clean.
             if is_reported && self.instantiation_count >= 5_000_000 {

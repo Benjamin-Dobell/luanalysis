@@ -1611,7 +1611,7 @@ fn a_typeof_name_goes_to_its_variable_and_hovers_its_type() {
     let definition = server.request(2, "textDocument/definition", &main, 1, 17);
     assert!(definition.contains(r#""range":{"start":{"line":0,"character":6},"end":{"line":0,"character":12}}"#), "{definition}");
     let hover = server.request(3, "textDocument/hover", &main, 1, 17);
-    assert!(hover.contains(r#"{ [\"Red\"]: 1 }"#), "{hover}");
+    assert!(hover.contains(r#"{ Red: 1 }"#), "{hover}");
     server.finish();
     fs::remove_dir_all(root).unwrap();
 }

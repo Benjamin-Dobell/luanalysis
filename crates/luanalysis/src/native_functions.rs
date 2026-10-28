@@ -331,6 +331,7 @@ impl NativeRegistry {
                 .map(|source| source.generic_scope.clone())
                 .chain(signatures.scopes(&file))
                 .collect(),
+            luanalysis_syntax::conditional_types(&file),
         );
         for (function,signature) in signatures.implementation_scopes(&functions) {
             types.attach_signature_scope(function,signature);
@@ -1222,6 +1223,18 @@ impl NativeRegistry {
     pub(super) fn defer_constraint_check(&self, span: Span, argument_spans: Vec<Span>, declaration: luanalysis_engine::NativeTypeDeclarationKey, arguments: &[Type]) {
         if self.deferred_constraint_spans.borrow_mut().insert((span.start, span.end)) {
             self.deferred_constraints.borrow_mut().push((span, argument_spans, declaration, arguments.to_vec()));
+        }
+    }
+
+    /// Lowers the branches that no evaluation read of the conditional types that were lowered,
+    /// for their diagnostics, as TypeScript checks every node of a conditional type.
+    pub(crate) fn check_unread_conditional_branches(&self, queries: &mut dyn TypeQueries) {
+        for (index, source) in self.types.conditionals().iter().enumerate() {
+            let Some(context) = *source.context.borrow() else { continue };
+            let key = luanalysis_engine::NativeConditionalKey { snapshot: self.snapshot, index: index as u32 };
+            for (lowered, yes) in source.lowered.get().into_iter().zip([true, false]) {
+                if !lowered { self.conditional_branch(key, context.encode(), yes, queries); }
+            }
         }
     }
 
@@ -3280,6 +3293,14 @@ impl NativeTypeProvider for NativeRegistry {
             NativeTypeContext::Function(owner) => checker.type_context = Some(owner),
             NativeTypeContext::NamedType(owner) => checker.named_type_context = Some(owner),
             NativeTypeContext::Signature(owner) => checker.signature_type_context = Some(owner),
+            // An `infer` type parameter's constraint is lowered where its conditional type is.
+            NativeTypeContext::Conditional(key) => {
+                if let Some(context) = self.types.conditional(key).and_then(|conditional| *conditional.context.borrow()) {
+                    checker.type_context = context.function;
+                    checker.named_type_context = context.named;
+                    checker.signature_type_context = context.signature;
+                }
+            }
         }
         let constraint = checker.annotation(recipe);
         self.merge_report(checker.report);
@@ -3302,6 +3323,8 @@ impl NativeTypeProvider for NativeRegistry {
             NativeTypeContext::Function(owner) => checker.type_context = Some(owner),
             NativeTypeContext::NamedType(owner) => checker.named_type_context = Some(owner),
             NativeTypeContext::Signature(owner) => checker.signature_type_context = Some(owner),
+            // An `infer` type parameter has no default.
+            NativeTypeContext::Conditional(_) => {}
         }
         let default = checker.annotation(recipe);
         self.merge_report(checker.report);
@@ -3310,6 +3333,22 @@ impl NativeTypeProvider for NativeRegistry {
 
     fn type_parameter_order(&self, key: NativeTypeParameterKey) -> u32 {
         self.types.parameter(key).order
+    }
+
+    fn conditional_branch(&self, key: luanalysis_engine::NativeConditionalKey, context: luanalysis_engine::NativeConditionalContext, yes: bool, queries: &mut dyn TypeQueries) -> Type {
+        let Some(source) = self.types.conditional(key) else { return queries.error_type() };
+        let mut lowered = source.lowered.get();
+        lowered[usize::from(!yes)] = true;
+        source.lowered.set(lowered);
+        let context = crate::native_types::AnnotationContext::decode(context);
+        source.context.borrow_mut().get_or_insert(context);
+        let mut checker = self.checker(queries);
+        checker.type_context = context.function;
+        checker.named_type_context = context.named;
+        checker.signature_type_context = context.signature;
+        let ty = self.types.lower_conditional_branch(|| checker.annotation(if yes { &source.syntax.yes } else { &source.syntax.no }));
+        self.merge_report(checker.report);
+        ty
     }
 
     fn type_parameter_siblings(&self, key: NativeTypeParameterKey) -> Vec<NativeTypeParameterKey> {

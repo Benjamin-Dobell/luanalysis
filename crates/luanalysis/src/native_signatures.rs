@@ -382,8 +382,11 @@ impl NativeRegistry {
             TypeExprKind::TemplateLiteral { types, .. } => {
                 ResultPackSourceType::Parts(types.iter().map(|ty| self.result_pack_source_type(context, ty)).collect())
             }
+            TypeExprKind::Conditional { check, extends, yes, no } => {
+                ResultPackSourceType::Parts([check, extends, yes, no].iter().map(|ty| self.result_pack_source_type(context, ty)).collect())
+            }
             TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
-            | TypeExprKind::TypeQuery(_) | TypeExprKind::Error => {
+            | TypeExprKind::TypeQuery(_) | TypeExprKind::Infer { .. } | TypeExprKind::Error => {
                 ResultPackSourceType::Parts(Vec::new())
             }
         }
@@ -460,7 +463,7 @@ impl NativeRegistry {
                         )
                     }
                 }),
-            NativeTypeContext::NamedType(_) => None,
+            NativeTypeContext::NamedType(_) | NativeTypeContext::Conditional(_) => None,
         };
         // An explicit correlated result row promises each of its fixed
         // members. Expanding its T into a possibly empty producer sequence
@@ -523,6 +526,8 @@ impl NativeRegistry {
                 NamedTypeDeclarationKind::Alias { target } => vec![target],
                 NamedTypeDeclarationKind::Record { .. } => Vec::new(),
             },
+            // An `infer` type parameter is a value's type.
+            NativeTypeContext::Conditional(_) => return false,
         };
         let mut summary = ResultPackSourceSummary::default();
         for ty in input_types {
@@ -1078,6 +1083,8 @@ impl NativeRegistry {
         let mut outer = self
             .types
             .outer_parameters_in_context(NativeTypeContext::Signature(key), &used);
+        // A function type written in a conditional type sees its `infer` type parameters.
+        outer.extend(self.types.visible_infer_parameters(recipe.span).filter(|parameter| used.contains(parameter) && !outer.contains(parameter)).collect::<Vec<_>>());
         self.extend_contextual_self_dependencies(NativeTypeContext::Signature(key), &used, &mut outer);
         if self.ambient_annotation_function(key).is_some() {
             let formals = self.signature_parameters_keys(key);
@@ -1637,6 +1644,12 @@ impl NativeSignatures {
                 self.visit_type(owner, context, parent, object);
                 self.visit_type(owner, context, parent, index)
             }
+            TypeExprKind::Conditional { check, extends, yes, no } => {
+                for ty in [check, extends, yes, no] {
+                    self.visit_type(owner, context, parent, ty)
+                }
+            }
+            TypeExprKind::Infer { constraint: Some(constraint), .. } => self.visit_type(owner, context, parent, constraint),
             _ => {}
         }
     }

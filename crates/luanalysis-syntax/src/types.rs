@@ -228,6 +228,7 @@ pub(crate) fn annotations(comment: &Comment) -> (ParsedDocumentation, Vec<Diagno
                     depth: 0,
                     comma_ends_type: 0,
                     function_parameter_comma_depth: None,
+                    in_conditional_extends: false,
                 };
                 let annotation_span = Span::new(tag_offset, types_offset + types.len());
                 let mut group = FunctionAnnotations::default();
@@ -561,10 +562,13 @@ fn type_depth(root: &TypeExpr) -> usize {
         depth = depth.max(current);
         match &ty.kind {
             TypeExprKind::Parenthesized(element) | TypeExprKind::Array { element, .. } | TypeExprKind::TypePredicate { ty: Some(element), .. }
-            | TypeExprKind::KeyOf(element) => {
+            | TypeExprKind::KeyOf(element) | TypeExprKind::Infer { constraint: Some(element), .. } => {
                 pending.push((element, current + 1))
             }
             TypeExprKind::IndexedAccess { object, index } => pending.extend([(object.as_ref(), current + 1), (index.as_ref(), current + 1)]),
+            TypeExprKind::Conditional { check, extends, yes, no } => {
+                pending.extend([check, extends, yes, no].map(|ty| (ty.as_ref(), current + 1)));
+            }
             TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::Generic { args: types, .. }
             | TypeExprKind::TemplateLiteral { types, .. } => {
                 pending.extend(types.iter().map(|ty| (ty, current + 1)));
@@ -592,7 +596,7 @@ fn type_depth(root: &TypeExpr) -> usize {
                 pending.extend(function.returns.iter().map(|ty| (ty, current + 1)));
             }
             TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
-            | TypeExprKind::TypeQuery(_) | TypeExprKind::Error => {}
+            | TypeExprKind::TypeQuery(_) | TypeExprKind::Infer { constraint: None, .. } | TypeExprKind::Error => {}
         }
     }
     depth
@@ -746,6 +750,8 @@ struct TypeParser {
     // At this depth, a nested callback may retain v1's bare result list.
     // Nested records, generic arguments and constraints still own their commas.
     function_parameter_comma_depth: Option<usize>,
+    /// Directly in a conditional type's extends type, where `infer P extends C` constrains `P`.
+    in_conditional_extends: bool,
 }
 
 struct ParsedReturnPack {
@@ -1213,7 +1219,7 @@ impl TypeParser {
                 token.span.end += base + body;
                 token
             }).collect();
-            let mut parser = TypeParser { tokens, line_breaks: Vec::new(), pos: 0, diagnostics: Vec::new(), depth: self.depth, comma_ends_type: 0, function_parameter_comma_depth: None };
+            let mut parser = TypeParser { tokens, line_breaks: Vec::new(), pos: 0, diagnostics: Vec::new(), depth: self.depth, comma_ends_type: 0, function_parameter_comma_depth: None, in_conditional_extends: false };
             let ty = if parser.eof() {
                 parser.error("a template literal type's `${…}` needs a type".to_owned());
                 TypeExpr { kind: TypeExprKind::Error, span: Span { start: base + at, end: base + end + 1 } }
@@ -1465,6 +1471,8 @@ impl TypeParser {
                 span,
             }
         };
+        // `T extends U and X or Y` is one result, as in a `---@type`.
+        let ty = if pending.is_none() && self.word_at(self.pos, "extends") { self.conditional(ty) } else { ty };
         (ty, pending)
     }
     fn return_unit(&mut self) -> ReturnUnit {
@@ -1506,6 +1514,78 @@ impl TypeParser {
         }
     }
     fn union(&mut self) -> TypeExpr {
+        // A whole type, as in parentheses or a type argument, may be conditional again.
+        let in_extends = std::mem::replace(&mut self.in_conditional_extends, false);
+        let check = self.union_members();
+        self.in_conditional_extends = in_extends;
+        if self.word_at(self.pos, "extends") { self.conditional(check) } else { check }
+    }
+    /// EmmyLua Analyzer's `Check extends Constraint and Yes or No`, after its check type: a union,
+    /// as TypeScript's check type is. Its constraint is a union too, and each branch a whole type,
+    /// so a conditional in the false branch chains. Without `and` after a constraint, `extends`
+    /// starts prose, not a conditional.
+    /// Out of line: the recursive type parsers keep small frames.
+    #[inline(never)]
+    fn conditional(&mut self, check: TypeExpr) -> TypeExpr {
+        let (pos, diagnostics) = (self.pos, self.diagnostics.len());
+        self.pos += 1;
+        let in_extends = std::mem::replace(&mut self.in_conditional_extends, true);
+        let extends = self.union_members();
+        self.in_conditional_extends = in_extends;
+        if !self.keyword("and") {
+            self.pos = pos;
+            self.diagnostics.truncate(diagnostics);
+            return check;
+        }
+        self.pos += 1;
+        let yes = self.union();
+        if !self.keyword("or") {
+            self.error("expected `or` and a conditional type's false branch".to_owned());
+            let span = check.span.join(yes.span);
+            return TypeExpr { kind: TypeExprKind::Error, span };
+        }
+        self.pos += 1;
+        let no = self.union();
+        let span = check.span.join(no.span);
+        TypeExpr {
+            kind: TypeExprKind::Conditional { check: Box::new(check), extends: Box::new(extends), yes: Box::new(yes), no: Box::new(no) },
+            span,
+        }
+    }
+    /// `infer P` or `infer P extends C`, at `infer`.
+    #[inline(never)]
+    fn infer_type(&mut self, start: Span) -> TypeExpr {
+        self.pos += 1;
+        let TokenKind::Identifier(parameter) = self.current().kind.clone() else { unreachable!() };
+        let parameter = Name { text: parameter, span: self.current().span };
+        self.pos += 1;
+        let constraint = self.infer_constraint();
+        let end = constraint.as_ref().map_or(parameter.span, |constraint| constraint.span);
+        TypeExpr { span: start.join(end), kind: TypeExprKind::Infer { name: parameter, constraint: constraint.map(Box::new) } }
+    }
+    /// `extends C` after `infer P`, as TypeScript's `tryParseConstraintOfInferType` takes it: always
+    /// directly in a conditional type's extends type, elsewhere unless `and` follows, when the
+    /// `extends` is a conditional type's whose check type is `infer P`.
+    fn infer_constraint(&mut self) -> Option<TypeExpr> {
+        if !matches!(&self.current().kind, TokenKind::Identifier(word) if word == "extends") {
+            return None;
+        }
+        let (pos, diagnostics) = (self.pos, self.diagnostics.len());
+        self.pos += 1;
+        let in_extends = std::mem::replace(&mut self.in_conditional_extends, true);
+        let constraint = self.union_members();
+        self.in_conditional_extends = in_extends;
+        if in_extends || !self.keyword("and") {
+            return Some(constraint);
+        }
+        self.pos = pos;
+        self.diagnostics.truncate(diagnostics);
+        None
+    }
+    fn keyword(&self, value: &str) -> bool {
+        matches!(&self.current().kind, TokenKind::Keyword(word) if word == value)
+    }
+    fn union_members(&mut self) -> TypeExpr {
         // A leading `|`, as a union split over lines begins (`---| "a"`).
         self.take("|");
         let first = self.intersection();
@@ -1568,6 +1648,10 @@ impl TypeParser {
                 TypeExpr { kind: TypeExprKind::CompletionHint(text), span: start }
             }
             TokenKind::Identifier(name) if name == "fun" => self.function_type(),
+            // `infer P`, contextual: `infer` is a name unless one follows it.
+            TokenKind::Identifier(name) if name == "infer" && matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(_))) => {
+                self.infer_type(start)
+            }
             // LuaLS's `async fun(...)`: an async function is an ordinary function type.
             TokenKind::Identifier(name) if name == "async"
                 && matches!(self.tokens.get(self.pos + 1).map(|token| &token.kind), Some(TokenKind::Identifier(next)) if next == "fun") =>
@@ -2163,7 +2247,7 @@ fn alias_continuation(lines: &[&str], mut offset: usize, alias: Span, diagnostic
             token.span.end += start;
             token
         }).collect();
-        let mut parser = TypeParser { tokens, line_breaks: Vec::new(), pos: 0, diagnostics: Vec::new(), depth: 0, comma_ends_type: 0, function_parameter_comma_depth: None };
+        let mut parser = TypeParser { tokens, line_breaks: Vec::new(), pos: 0, diagnostics: Vec::new(), depth: 0, comma_ends_type: 0, function_parameter_comma_depth: None, in_conditional_extends: false };
         members.push(parser.union());
         diagnostics.extend(parser.diagnostics);
         offset += line.len();

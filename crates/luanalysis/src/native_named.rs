@@ -110,6 +110,8 @@ pub(super) enum NativeTypeContext {
     Function(NativeFunctionKey),
     NamedType(NativeNamedKey),
     Signature(luanalysis_engine::NativeSignatureKey),
+    /// A conditional type, which owns the `infer` type parameters of its extends type.
+    Conditional(luanalysis_engine::NativeConditionalKey),
 }
 
 #[derive(Clone, Debug)]
@@ -648,6 +650,7 @@ impl NativeNamed {
                     | TypeExprKind::TemplateLiteral { types, .. } => {
                         pending.extend(types.iter().rev())
                     }
+                    TypeExprKind::Conditional { check, extends, yes, no } => pending.extend([no, yes, extends, check].map(|ty| ty.as_ref())),
                     TypeExprKind::Record(fields) => {
                         for field in fields.iter().rev() {
                             pending.push(&field.ty);
@@ -676,7 +679,8 @@ impl NativeNamed {
                         );
                     }
                     TypeExprKind::Named(_) | TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_)
-                    | TypeExprKind::TypePredicate { ty: None, .. } | TypeExprKind::TypeQuery(_) | TypeExprKind::Error => {}
+                    | TypeExprKind::TypePredicate { ty: None, .. } | TypeExprKind::TypeQuery(_) | TypeExprKind::Infer { constraint: None, .. } | TypeExprKind::Error => {}
+                    TypeExprKind::Infer { constraint: Some(constraint), .. } => pending.push(constraint),
                 }
             }
         }

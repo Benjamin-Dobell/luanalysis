@@ -183,6 +183,7 @@ impl NativeRegistry {
                     pending.extend(args.iter().map(|ty| (context, ty)));
                 }
                 TypeExprKind::Union(types) | TypeExprKind::Intersection(types) | TypeExprKind::TemplateLiteral { types, .. } => pending.extend(types.iter().map(|ty| (context, ty))),
+                TypeExprKind::Conditional { check, extends, yes, no } => pending.extend([check, extends, yes, no].map(|ty| (context, ty.as_ref()))),
                 TypeExprKind::Array { element, .. } | TypeExprKind::Parenthesized(element)
                 | TypeExprKind::TypePredicate { ty: Some(element), .. } | TypeExprKind::KeyOf(element) => {
                     pending.push((context, element))
@@ -215,6 +216,11 @@ impl NativeRegistry {
                         pending.push((context, &vararg.ty));
                     }
                 }
+                // `infer R` in a function type's result is that type's use of `R`.
+                TypeExprKind::Infer { name, constraint } => {
+                    used.extend(self.types.infer_parameter(name.span));
+                    pending.extend(constraint.as_deref().map(|ty| (context, ty)));
+                }
                 TypeExprKind::Literal(_) | TypeExprKind::CompletionHint(_) | TypeExprKind::TypePredicate { ty: None, .. }
                 | TypeExprKind::TypeQuery(_) | TypeExprKind::Error => {}
             }
@@ -224,6 +230,10 @@ impl NativeRegistry {
                 name,
                 "any" | "unknown" | "never" | "nil" | "boolean" | "number" | "integer" | "string" | "void" | "table" | "function"
             ) {
+                continue;
+            }
+            if let Some(key) = self.types.visible_infer_parameter(name, ty.span) {
+                used.insert(key);
                 continue;
             }
             if name == "self"
@@ -340,6 +350,22 @@ impl NativeRegistry {
                 .anonymous_member(anonymous_member_key(key))
                 .is_some()
     }
+    /// The type parameters that a conditional type's branch `ty`, lowered in `context`, uses
+    /// from outside it: those in scope there, and the `infer` ones it sees.
+    pub(crate) fn conditional_outer_parameters(
+        &self,
+        context: Option<NativeTypeContext>,
+        ty: &TypeExpr,
+    ) -> Vec<NativeTypeParameterKey> {
+        if context.is_some() {
+            return self.named_outer_parameters(context, ty);
+        }
+        let mut used = HashSet::default();
+        self.annotation_parameter_dependencies(None, ty, &mut used);
+        let mut outer: Vec<_> = self.types.visible_infer_parameters(ty.span).filter(|key| used.contains(key)).collect();
+        outer.dedup();
+        outer
+    }
     pub(crate) fn named_outer_parameters(
         &self,
         context: Option<NativeTypeContext>,
@@ -350,12 +376,17 @@ impl NativeRegistry {
         };
         let mut used = HashSet::default();
         self.annotation_parameter_dependencies(Some(context), ty, &mut used);
-        self.types
+        let mut outer: Vec<_> = self.types
             .outer_parameters_in_context(context, &used)
             .into_iter()
             .chain(self.types.own_parameters_in_context(context))
+            .chain(self.types.annotation_parameters_in_context(context))
             .filter(|key| used.contains(key))
-            .collect()
+            .collect();
+        outer.dedup();
+        // What is written in a conditional type sees its `infer` type parameters.
+        outer.extend(self.types.visible_infer_parameters(ty.span).filter(|key| used.contains(key) && !outer.contains(key)).collect::<Vec<_>>());
+        outer
     }
     pub(crate) fn named_declaration_header(
         &self,
@@ -586,7 +617,7 @@ impl NativeRegistry {
             Some(NativeTypeContext::Function(key)) => checker.type_context = Some(key),
             Some(NativeTypeContext::NamedType(key)) => checker.named_type_context = Some(key),
             Some(NativeTypeContext::Signature(key)) => checker.signature_type_context = Some(key),
-            None => {}
+            Some(NativeTypeContext::Conditional(_)) | None => {}
         }
         let result = checker.annotation(ty);
         self.merge_report(checker.report);
@@ -707,15 +738,16 @@ impl NativeRegistry {
         &self,
         key: NativeTypeParameterKey,
     ) -> Option<TypeDeclarationOwner> {
-        self.types
-            .contains(key)
-            .then(|| match self.types.parameter(key).owner {
-                NativeTypeContext::Function(key) => TypeDeclarationOwner::Function(key),
-                NativeTypeContext::Signature(key) => TypeDeclarationOwner::Signature(key),
-                NativeTypeContext::NamedType(key) => {
-                    TypeDeclarationOwner::NamedType(declaration(key))
-                }
-            })
+        if !self.types.contains(key) {
+            return None;
+        }
+        match self.types.parameter(key).owner {
+            NativeTypeContext::Function(key) => Some(TypeDeclarationOwner::Function(key)),
+            NativeTypeContext::Signature(key) => Some(TypeDeclarationOwner::Signature(key)),
+            NativeTypeContext::NamedType(key) => Some(TypeDeclarationOwner::NamedType(declaration(key))),
+            // A conditional type is not a declaration.
+            NativeTypeContext::Conditional(_) => None,
+        }
     }
     pub(super) fn named_key_for_annotation(
         &self,

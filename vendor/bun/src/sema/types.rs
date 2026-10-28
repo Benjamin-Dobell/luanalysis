@@ -40,6 +40,15 @@ pub struct NativeSignatureId {
     pub snapshot: u64,
     pub index: u32,
 }
+/// A conditional type that a Lua annotation writes, whose true and false types its provider
+/// lowers when they are first read, as `getTrueTypeFromConditionalType` reads a node's, in
+/// `context`: where the provider lowered the rest of it, in its own terms.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub struct NativeConditionalId {
+    pub snapshot: u64,
+    pub index: u32,
+    pub context: [Option<(u64, u32)>; 3],
+}
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NativeTypeParamId {
     pub snapshot: u64,
@@ -259,6 +268,32 @@ pub enum StringMappingKind {
     Lowercase,
     Capitalize,
     Uncapitalize,
+}
+
+/// What declares a conditional type (`ConditionalRoot`): the syntax of a `T extends U ? X : Y`
+/// node, or a Lua annotation, whose pieces are those of a `TypeData::NativeConditionalRoot`.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum CondRoot {
+    Node(FileId, TypeNodeId),
+    Native(TypeId),
+}
+
+/// The true and false types of a `TypeData::NativeConditionalRoot`.
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub enum NativeConditionalBranches {
+    /// Lowered when first read: a branch may refer to the alias whose body has the conditional.
+    Written(NativeConditionalId),
+    Lowered { yes: TypeId, no: TypeId },
+}
+
+impl MaybeLocal for CondRoot {
+    #[inline]
+    fn is_local(&self) -> bool {
+        match self {
+            CondRoot::Node(..) => false,
+            CondRoot::Native(root) => root.is_local(),
+        }
+    }
 }
 
 /// `checkObjectLiteral` creates a type on every call: the call that created a type of an object literal.
@@ -526,8 +561,7 @@ pub enum TypeData<'s> {
     },
     /// A deferred `check extends E ? X : Y`.
     Cond {
-        file: FileId,
-        node: TypeNodeId,
+        root: CondRoot,
         mapper: MapperId,
         /// `getConditionalTypeInstantiation` created the type for a member of the union that it
         /// distributes over, so its mapper is the `MergedTypeMapper` of
@@ -541,6 +575,17 @@ pub enum TypeData<'s> {
         /// for a constraint, so that two types are identical exactly where they are in tsgo.
         /// `IDENTITY`: it was not created for a constraint.
         for_constraint: MapperId,
+    },
+    /// The declared pieces of a conditional type that a Lua annotation writes, which a
+    /// `CondRoot::Native` names: the check and extends types, the `infer` type parameters of the
+    /// extends type, and the true and false types. Not a type of a value.
+    NativeConditionalRoot {
+        check: TypeId,
+        extends: TypeId,
+        infer: List<'s, TypeId>,
+        /// The constraint of each of `infer`, `UNRESOLVED` for none.
+        infer_constraints: List<'s, TypeId>,
+        branches: NativeConditionalBranches,
     },
     IndexedAccess {
         obj: TypeId,
@@ -3367,6 +3412,7 @@ has_no_references!(
     i64,
     NativeFunctionId,
     NativeSignatureId,
+    NativeConditionalId,
     NativeTypeDeclarationId,
     NativeDefinitionId,
     NativeTypeMemberId,
@@ -3413,6 +3459,14 @@ follow_enum!(NativeTableKey {
     NativeTableKey::Integer(a) => (a),
     NativeTableKey::Float(a) => (a),
     NativeTableKey::Boolean(a) => (a),
+});
+follow_enum!(CondRoot {
+    CondRoot::Node(a, b) => (a, b),
+    CondRoot::Native(a) => (a),
+});
+follow_enum!(NativeConditionalBranches {
+    NativeConditionalBranches::Written(a) => (a),
+    NativeConditionalBranches::Lowered { yes, no } => (yes, no),
 });
 follow_enum!(EnumValue {
     EnumValue::String(a) => (a),
@@ -3481,7 +3535,8 @@ follow_enum!(TypeData<'_> {
     TypeData::Fns { decls, mapper } => (decls, mapper),
     TypeData::Synth(a) => (a),
     TypeData::ReverseMapped { source, mapped, of } => (source, mapped, of),
-    TypeData::Cond { file, node, mapper, distributed_over, for_constraint } => (file, node, mapper, distributed_over, for_constraint),
+    TypeData::Cond { root, mapper, distributed_over, for_constraint } => (root, mapper, distributed_over, for_constraint),
+    TypeData::NativeConditionalRoot { check, extends, infer, infer_constraints, branches } => (check, extends, infer, infer_constraints, branches),
     TypeData::IndexedAccess { obj, index, undefined } => (obj, index, undefined),
     TypeData::Keyof(a) => (a),
     TypeData::Substitution { base, constraint } => (base, constraint),
@@ -3680,6 +3735,9 @@ clone_in_is_copy!(
     UniqueSymbolDeclaration,
     Marker,
     Origin,
+    CondRoot,
+    NativeConditionalId,
+    NativeConditionalBranches,
     StringMappingKind,
     ElemFlags,
     PropFlags,
@@ -3813,7 +3871,8 @@ clone_in_enum!(TypeData {
     Fns { decls, mapper },
     Synth(a),
     ReverseMapped { source, mapped, of },
-    Cond { file, node, mapper, distributed_over, for_constraint },
+    Cond { root, mapper, distributed_over, for_constraint },
+    NativeConditionalRoot { check, extends, infer, infer_constraints, branches },
     IndexedAccess { obj, index, undefined },
     Keyof(a),
     Substitution { base, constraint },

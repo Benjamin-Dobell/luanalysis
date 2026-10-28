@@ -681,6 +681,7 @@ impl ProjectRegistry {
             }
             for (index, (file, report)) in self.files.iter().zip(&mut reports).enumerate() {
                 if !owned_only && !checked.contains(&index) { continue; }
+                file.source.check_unread_conditional_branches(queries);
                 file.source.check_deferred_constraints(queries);
                 let mut pending = file.source.take_report();
                 if !self.describe_types { pending.discard_types(); }
@@ -1129,6 +1130,7 @@ impl NativeTypeProvider for ProjectRegistry {
         fn signature_may_have_type_predicate(key: NativeSignatureKey) -> bool;
         fn function_may_have_type_predicate(key: NativeFunctionKey) -> bool;
         fn function_type_predicate(key: NativeFunctionKey, queries: &mut dyn TypeQueries) -> Option<luanalysis_engine::TypePredicate>;
+        fn conditional_branch(key: luanalysis_engine::NativeConditionalKey, context: luanalysis_engine::NativeConditionalContext, yes: bool, queries: &mut dyn TypeQueries) -> Type;
         fn signature_return_cycle(key: NativeSignatureKey) -> ();
         fn signature_return_type_too_deep(key: NativeSignatureKey) -> ();
 

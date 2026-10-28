@@ -1767,7 +1767,10 @@ impl<'p, 's> Checker<'p, 's> {
                 None => None,
             },
             TypeData::TypeParam(file, tp, _) => at(file, self.hir(file)[tp].pos),
-            TypeData::Cond { file, node, .. } => at(file, self.hir(file)[node].pos),
+            TypeData::Cond {
+                root: CondRoot::Node(file, node),
+                ..
+            } => at(file, self.hir(file)[node].pos),
             TypeData::UniqueSymbol { symbol, .. } => match symbol {
                 UniqueSymbolDeclaration::Variable(variable) => self.symbol_place(variable),
                 UniqueSymbolDeclaration::Member(file, member) => {
@@ -2394,6 +2397,32 @@ impl<'p, 's> Checker<'p, 's> {
             }
             (&TypeData::NativeDefinition(x), &TypeData::NativeDefinition(y)) => {
                 declaration(x.class.declaration).cmp(&declaration(y.class.declaration)).then_with(|| types(x.view, y.view))
+            }
+            // Conditional types that Lua annotations write: their pieces, then their mappers.
+            (
+                &TypeData::Cond { root: CondRoot::Native(x), mapper: m, .. },
+                &TypeData::Cond { root: CondRoot::Native(y), mapper: n, .. },
+            ) => {
+                let pieces = |root: TypeId| match self.data(root) {
+                    TypeData::NativeConditionalRoot { check, extends, infer, infer_constraints, branches } => {
+                        let (branches, written) = match *branches {
+                            NativeConditionalBranches::Lowered { yes, no } => (vec![yes, no], None),
+                            NativeConditionalBranches::Written(id) => (Vec::new(), Some((id.snapshot, id.index, id.context))),
+                        };
+                        let pieces: Vec<TypeId> = [*check, *extends].into_iter().chain(infer.iter().copied())
+                            .chain(infer_constraints.iter().copied().filter(|&constraint| constraint != TypeId::UNRESOLVED)).chain(branches).collect();
+                        (written, pieces)
+                    }
+                    _ => (None, Vec::new()),
+                };
+                let ((written_x, x), (written_y, y)) = (pieces(x), pieces(y));
+                let values = |mapper: MapperId| self.types().mapping(mapper).iter().map(|pair| pair.1).collect::<Vec<_>>();
+                let (m, n) = (values(m), values(n));
+                written_x.cmp(&written_y)
+                    .then_with(|| x.len().cmp(&y.len()))
+                    .then_with(|| x.iter().zip(&y).map(|(x, y)| types(*x, *y)).find(|order| order.is_ne()).unwrap_or(Equal))
+                    .then_with(|| m.len().cmp(&n.len()))
+                    .then_with(|| m.iter().zip(&n).map(|(x, y)| types(*x, *y)).find(|order| order.is_ne()).unwrap_or(Equal))
             }
             _ => self.native_declaration_place(a).cmp(&self.native_declaration_place(b)),
         }

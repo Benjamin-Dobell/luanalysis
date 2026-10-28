@@ -173,6 +173,7 @@ impl Checker<'_> {
         if let Some(pack) = self.native_require_pack(callee, args, span) { return pack; }
         let callee_type = self.expression(callee);
         let arguments = self.call_arguments(args);
+        let limits = self.engine.unplaced_limits();
         let call = self
             .native
             .map(|native| native.expression_key_for_span(span));
@@ -180,6 +181,7 @@ impl Checker<'_> {
             self.engine
                 .call_native_arguments_in_frame(&callee_type, call, &arguments, &[], expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
+        self.report_unplaced_limit(limits, span);
         let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
         let checked = result.errors.is_empty();
         let pack = self.pack_call_result(result, &callee_type, &origins, callee.span, span);
@@ -653,6 +655,7 @@ impl Checker<'_> {
         if let Some(pack) = self.native_require_pack(callee, args, span) { return self.engine.pack_slot(&pack, 0); }
         let callee_type = self.expression(callee);
         let arguments = self.call_arguments(args);
+        let limits = self.engine.unplaced_limits();
         let call = self
             .native
             .map(|native| native.expression_key_for_span(span));
@@ -660,6 +663,7 @@ impl Checker<'_> {
             self.engine
                 .call_native_arguments_scalar_in_frame(&callee_type, call, &arguments, &[], expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
+        self.report_unplaced_limit(limits, span);
         let origins: Vec<_> = args.iter().map(|argument| argument.span).collect();
         let checked = result.errors.is_empty();
         let ty = self.call_result(result, &callee_type, &origins, callee.span, span);

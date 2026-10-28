@@ -429,6 +429,7 @@ pub fn check_with_options(source: &str, options: CheckOptions) -> CheckReport {
             };
             registry.check_all_bodies(engine);
             while registry.retry_contextual_owner_validations(engine) {}
+            registry.check_unread_conditional_branches(engine);
             registry.check_deferred_constraints(engine);
             report.append(registry.take_report());
             report.render(engine);
@@ -559,6 +560,7 @@ impl Checker<'_> {
         let mut unreachable_reported = false;
         for (index, statement) in statements.iter().enumerate() {
             crate::project_check::unwind_if_cancelled();
+            let limits = self.engine.unplaced_limits();
             let rest = &statements[index + 1..];
             match &statement.kind {
                 StmtKind::Local {
@@ -593,6 +595,7 @@ impl Checker<'_> {
                 }
                 StmtKind::Return(values) => {
                     self.return_statement(values, statement.span);
+                    self.report_unplaced_limit(limits, statement.span);
                     return true;
                 }
                 StmtKind::Call(expr) => {
@@ -711,8 +714,35 @@ impl Checker<'_> {
                 // A label is reached by the `goto`s naming it.
                 StmtKind::Label(_) => unreachable_reported = false,
             }
+            self.report_unplaced_limit(limits, statement.span);
         }
         false
+    }
+
+    /// A limit (instantiation depth, union size, tuple size) that the native checker hit while
+    /// checking what is at `span`, since it had hit `since`, and could not report there itself:
+    /// tsgo reports it at the node it is checking. Not where a conditional type's branch is
+    /// lowered while another type is evaluated: that is still the other's check.
+    /// A check that does not publish its diagnostics claims the place of one it saw first, for
+    /// the check around it that publishes.
+    pub(crate) fn report_unplaced_limit(&mut self, since: u64, span: Span) {
+        let Some(native) = self.native else { return };
+        if native.types.lowering_conditional_branch() { return }
+        let hits = self.engine.unplaced_limits();
+        if hits <= since { return }
+        if !native_expressions::publishes(self.check_mode) {
+            native.types.claim_unplaced_limit(since, hits, span);
+            return;
+        }
+        let Some(code) = self.engine.take_unplaced_limit_since(since) else { return };
+        let span = native.types.claimed_unplaced_limit(since).unwrap_or(span);
+        let (code, message) = match code {
+            2590 => ("TS2590", "Expression produces a union type that is too complex to represent."),
+            2799 => ("TS2799", "Type produces a tuple type that is too large to represent."),
+            2800 => ("TS2800", "Expression produces a tuple type that is too large to represent."),
+            _ => ("TS2589", "Type instantiation is excessively deep and possibly infinite."),
+        };
+        self.error(code, span, message);
     }
 
     fn error(&mut self, code: &'static str, span: Span, message: impl Into<String>) {
@@ -732,7 +762,9 @@ impl Checker<'_> {
     fn annotation(&mut self, ty: &TypeExpr) -> Type {
         let depth = self.annotation_depth;
         self.annotation_depth = depth + 1;
+        let limits = self.engine.unplaced_limits();
         let resolved = self.annotation_node(ty);
+        self.report_unplaced_limit(limits, ty.span);
         self.annotation_depth = depth;
         if depth == 0 {
             if let Some(context) = self.captured_function {
@@ -758,6 +790,11 @@ impl Checker<'_> {
                 "function" => Type::RuntimeFunction,
                 "void" => Type::Void,
                 _ => {
+                    // An `infer` type parameter is seen where it is written, whichever context
+                    // lowers what has the reference.
+                    if let Some(key)=self.native.and_then(|native| native.types.visible_infer_parameter(name, ty.span)) {
+                        return Type::NativeTypeParameter(key);
+                    }
                     if let Some(native)=self.native {
                         let context=self.signature_type_context.map(native_named::NativeTypeContext::Signature)
                             .or_else(||self.named_type_context.map(native_named::NativeTypeContext::NamedType))
@@ -820,6 +857,8 @@ impl Checker<'_> {
             }
             TypeExprKind::Intersection(types) => Type::Intersection(types.iter().map(|ty| self.annotation(ty)).collect()),
             TypeExprKind::CompletionHint(_) => Type::Never,
+            TypeExprKind::Conditional { .. } => self.conditional_annotation(ty),
+            TypeExprKind::Infer { name, .. } => self.infer_annotation(name, ty.span),
             TypeExprKind::TemplateLiteral { texts, types } => {
                 // As TypeScript requires, each placeholder is of a type that can be written as text.
                 let placeholder = Type::Union(vec![Type::String, Type::Number, Type::Boolean, Type::Nil]);
@@ -864,8 +903,8 @@ impl Checker<'_> {
             }
             TypeExprKind::Generic { base, args, .. } => {
                 let arguments:Vec<_>=args.iter().map(|arg|self.annotation(arg)).collect();
-                if base.text == "self" {
-                    self.error("TS2315", base.span, "Type 'self' is not generic.");
+                if base.text == "self" || self.native.and_then(|native| native.types.visible_infer_parameter(&base.text, base.span)).is_some() {
+                    self.error("TS2315", base.span, format!("Type '{}' is not generic.", base.text));
                     return self.engine.error_type();
                 }
                 if let Some(resolved)=self.native_named_reference(&base.text,&arguments,ty){return resolved;}
@@ -923,6 +962,7 @@ impl Checker<'_> {
     }
 
     fn expression_value(&mut self, expr: &Expr, expected: Option<&Type>, capture_origin: bool) -> EvaluatedExpression {
+        let limits = self.engine.unplaced_limits();
         let previous = self.flow_at;
         if let (Some(native), Some(at)) = (self.native, previous) {
             self.flow_at = Some(native.flow_input_for_expression(expr, at));
@@ -930,6 +970,7 @@ impl Checker<'_> {
         let value = if let Some(value) = self.asserted_expression_value(expr, capture_origin) { value }
             else { self.expression_value_at_current_flow(expr, expected, capture_origin) };
         self.flow_at = previous;
+        self.report_unplaced_limit(limits, expr.span);
         value
     }
 

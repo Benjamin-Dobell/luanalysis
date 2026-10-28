@@ -417,7 +417,7 @@ impl NativeRegistry {
                 NativeTypeContext::Signature(signature) => {
                     context = self.signatures.get(signature).context?
                 }
-                NativeTypeContext::NamedType(_) => return None,
+                NativeTypeContext::NamedType(_) | NativeTypeContext::Conditional(_) => return None,
             }
         }
     }

@@ -24,6 +24,54 @@ impl super::Checker<'_> {
         self.engine.error_type()
     }
 
+    /// `check extends extends and yes or no`, whose extends type and true branch see the `infer`
+    /// type parameters that the extends type declares. As TypeScript does, the branches are
+    /// lowered when first read, so that one may refer to the alias whose body this is.
+    pub(super) fn conditional_annotation(&mut self, ty: &TypeExpr) -> Type {
+        let TypeExprKind::Conditional { check, extends, yes, no } = &ty.kind else {
+            unreachable!("a conditional type annotation")
+        };
+        let key = self.native.and_then(|native| native.types.conditional_at(ty.span));
+        let infer: Vec<_> = key.zip(self.native).map(|(key, native)| native.types.conditional_infer_parameters(key)).unwrap_or_default()
+            .into_iter()
+            .map(|parameter| {
+                let constraint = self.native.and_then(|native| native.types.parameter(parameter).constraint.as_ref()).map(|constraint| self.annotation(constraint));
+                (parameter, constraint)
+            })
+            .collect();
+        let [check_type, extends_type] = [check, extends].map(|ty| self.annotation(ty));
+        let (Some(key), Some(native)) = (key, self.native) else {
+            let branches = luanalysis_engine::ConditionalBranches::Lowered(self.annotation(yes), self.annotation(no));
+            return self.engine.conditional_type(&check_type, &extends_type, &infer, &branches, &[]);
+        };
+        let context = crate::native_types::AnnotationContext {
+            function: self.type_context,
+            named: self.named_type_context,
+            signature: self.signature_type_context,
+        };
+        let source = native.types.conditional(key).expect("registered conditional type");
+        source.context.borrow_mut().get_or_insert(context);
+        let lexical = self.signature_type_context.map(crate::native_named::NativeTypeContext::Signature)
+            .or_else(|| self.named_type_context.map(crate::native_named::NativeTypeContext::NamedType))
+            .or_else(|| self.type_context.map(crate::native_named::NativeTypeContext::Function));
+        let mut outer = native.conditional_outer_parameters(lexical, yes);
+        for parameter in native.conditional_outer_parameters(lexical, no) {
+            if !outer.contains(&parameter) { outer.push(parameter); }
+        }
+        let branches = luanalysis_engine::ConditionalBranches::Written(key, context.encode());
+        self.engine.conditional_type(&check_type, &extends_type, &infer, &branches, &outer)
+    }
+
+    /// The type parameter that `infer name` declares, which only a conditional type's extends
+    /// type can.
+    pub(super) fn infer_annotation(&mut self, name: &Name, span: luanalysis_syntax::Span) -> Type {
+        if let Some(key) = self.native.and_then(|native| native.types.infer_parameter(name.span)) {
+            return Type::NativeTypeParameter(key);
+        }
+        self.error("TS1338", span, "'infer' declarations are only permitted in the 'extends' clause of a conditional type.");
+        self.engine.error_type()
+    }
+
     /// The declared type of the value `path` names where it is written: the local in scope
     /// there or else the global, then each member of it. As in TypeScript, this is the
     /// declared type, not one narrowed where the annotation is.

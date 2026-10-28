@@ -275,19 +275,28 @@ impl<'p, 's> Checker<'p, 's> {
         if self.flags(t) & (tf::PRIMITIVE | tf::ANY | tf::UNKNOWN | tf::NEVER) != 0 {
             return t;
         }
-        let (mut pairs, mut own) = (Vec::new(), Vec::new());
+        let (mut pairs, mut own, mut native) = (Vec::new(), Vec::new(), Vec::new());
         self.any_type_in(t, true, |part| {
             if self.flags(part) & tf::TYPE_PARAMETER != 0 {
                 pairs.push((part, map(self, part)));
             } else if let TypeData::Synth(shape) = self.data(part) {
                 for &sig in shape.call.iter().chain(&shape.construct) {
-                    if let SigData::Synth { type_params, .. } = self.types().sig(sig) {
-                        own.extend_from_slice(type_params);
+                    match self.types().sig(sig) {
+                        SigData::Synth { type_params, .. } => own.extend_from_slice(type_params),
+                        SigData::Native { .. } | SigData::NativeDeclarationSignature { .. }
+                        | SigData::NativeCaptured { .. } | SigData::NativeContextual { .. } => native.push(sig),
+                        _ => {}
                     }
                 }
             }
             false
         });
+        // A Lua signature's own type parameters, and the clones that its mapper gives them, are
+        // not outer type parameters of its type: tsgo instantiates an anonymous type through
+        // those alone.
+        for sig in native {
+            own.extend(self.sig_type_params(sig).iter().copied());
+        }
         pairs.retain(|pair| pair.0 != pair.1 && !own.contains(&pair.0));
         let mapper = self.types().mapper(pairs);
         self.instantiate(t, mapper)
@@ -906,17 +915,14 @@ impl<'p, 's> Checker<'p, 's> {
                 self.synth(new)
             }
             TypeData::Cond {
-                file,
-                node,
-                mapper: own,
-                ..
+                root, mapper: own, ..
             } => {
                 // A declared type has no mapper in tsgo. Here it has one of identity pairs.
                 if self.types().mapping(mapper).iter().all(|p| p.0 == p.1) {
                     return ty;
                 }
                 let new = self.map_mapper(*own, mapper);
-                self.conditional_type(*file, *node, new)
+                self.conditional_type(*root, new)
             }
             // `instantiateReverseMappedType`
             TypeData::ReverseMapped { source, mapped, of } => {

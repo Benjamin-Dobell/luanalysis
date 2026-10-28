@@ -32,7 +32,7 @@ fn modules_are_what_the_map_names_and_nothing_else() {
     ]);
     let report = check(&root, &["--module-map", "map.json", "main.lua"]);
     // Names differing only in case are different modules.
-    assert!(report.contains(r#"upper: { ["x"]: 1 }"#) && report.contains(r#"lower: { ["y"]: "two" }"#), "{report}");
+    assert!(report.contains(r#"upper: { x: 1 }"#) && report.contains(r#"lower: { y: "two" }"#), "{report}");
     // An unmapped module is unresolved, though a file of its name exists.
     assert!(report.contains(r#"main.lua:3:26: error[TS2307]: module "other" is not in the module map's imports of this file"#), "{report}");
     assert!(!report.contains("unmapped: number"), "{report}");

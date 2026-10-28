@@ -231,3 +231,40 @@ fn a_backtick_type_with_placeholders_is_a_template_literal() {
         assert!(!parse(broken).diagnostics.is_empty(), "{broken}");
     }
 }
+
+#[test]
+fn extends_and_or_is_a_conditional_type_whose_extends_type_may_declare_infer() {
+    let text = |source: &str, ty: &TypeExpr| source[ty.span.start..ty.span.end].to_owned();
+    let source = "---@type T extends (infer U extends string)[] and U or T extends number and 1 or nil\nlocal x\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let StmtKind::Local { annotation: Some(annotation), .. } = &file.statements[0].kind else { panic!("{:#?}", file.statements) };
+    let TypeExprKind::Conditional { check, extends, yes, no } = &annotation.types[0].kind else { panic!("{annotation:#?}") };
+    assert_eq!([check, extends, yes, no].map(|ty| text(source, ty)), ["T", "(infer U extends string)[]", "U", "T extends number and 1 or nil"]);
+    let infer = extends.infer_declarations();
+    assert_eq!(infer.iter().map(|declaration| (declaration.name.text.as_str(), declaration.constraint.as_ref().map(|ty| text(source, ty)))).collect::<Vec<_>>(), [("U", Some("string".to_owned()))]);
+    assert!(matches!(no.kind, TypeExprKind::Conditional { .. }));
+
+    // In parentheses, `infer U extends C and X or Y` is a conditional type whose check type is
+    // `infer U`, as TypeScript reads `infer U extends C ? X : Y` there.
+    let source = "---@type T extends (infer U extends string and 1 or 2) and U or nil\nlocal x\n";
+    let file = parse(source);
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let StmtKind::Local { annotation: Some(annotation), .. } = &file.statements[0].kind else { panic!() };
+    let TypeExprKind::Conditional { extends, .. } = &annotation.types[0].kind else { panic!() };
+    let TypeExprKind::Parenthesized(inner) = &extends.kind else { panic!("{extends:#?}") };
+    let TypeExprKind::Conditional { check, .. } = &inner.kind else { panic!("{inner:#?}") };
+    assert!(matches!(&check.kind, TypeExprKind::Infer { constraint: None, .. }));
+
+    // A result is a conditional type too; without `and` after it, `extends` begins prose.
+    let file = parse("---@return T extends string and number or boolean\nlocal function f() end\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let returns = local_function(&file).annotations.returns.as_ref().unwrap();
+    assert!(matches!(returns.types[0].kind, TypeExprKind::Conditional { .. }));
+    let file = parse("---@return string extends the base\nlocal function f() end\n");
+    assert!(file.diagnostics.is_empty(), "{:?}", file.diagnostics);
+    let returns = local_function(&file).annotations.returns.as_ref().unwrap();
+    assert!(matches!(&returns.types[..], [TypeExpr { kind: TypeExprKind::Named(name), .. }] if name == "string"));
+
+    assert!(!parse("---@type T extends string and 1\nlocal x\n").diagnostics.is_empty());
+}

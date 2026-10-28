@@ -1319,21 +1319,173 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// `getConditionalTypeInstantiation` without an alias.
-    pub fn conditional_type(&mut self, file: FileId, node: TypeNodeId, mapper: MapperId) -> TypeId {
-        self.conditional_type_instantiation(file, node, mapper, None)
+    pub fn conditional_type(&mut self, root: CondRoot, mapper: MapperId) -> TypeId {
+        self.conditional_type_instantiation(root, mapper, None)
     }
 
-    /// `getConditionalTypeInstantiation`: the conditional type at `node`, with `mapper` for its
-    /// outer type parameters. A type created with an alias is not cached: `getConditionalTypeKey`
-    /// includes the alias, `conditionals` does not.
+    /// The conditional type that a Lua annotation writes: `check extends extends ? yes : no`,
+    /// where `infer` are the type parameters that the `infer` declarations of `extends` declare.
+    /// Its outer type parameters are `outer`, the type parameters that its branches mention as
+    /// written, and those its other pieces mention, each mapped to itself, as
+    /// `identity_mapper_for_node` maps those a written conditional type mentions.
+    pub fn native_conditional_type(
+        &mut self,
+        check: TypeId,
+        extends: TypeId,
+        infer: &[(TypeId, Option<TypeId>)],
+        branches: NativeConditionalBranches,
+        outer: &[TypeId],
+    ) -> TypeId {
+        let root = self.intern(TypeData::NativeConditionalRoot {
+            check,
+            extends,
+            infer: self.list_of(infer.iter().map(|&(param, _)| param)),
+            infer_constraints: self.list_of(infer.iter().map(|&(_, constraint)| constraint.unwrap_or(TypeId::UNRESOLVED))),
+            branches,
+        });
+        let infer_params: SmallVec<[TypeId; 4]> = infer.iter().map(|&(param, _)| param).collect();
+        let infer_constraints: SmallVec<[Option<TypeId>; 4]> = infer.iter().map(|&(_, constraint)| constraint).collect();
+        // Seeds the constraints of `infer`.
+        self.cond_root_infer_params(CondRoot::Native(root));
+        let constraints: SmallVec<[TypeId; 4]> = infer_constraints.iter().flatten().copied().collect();
+        let infer: SmallVec<[TypeId; 4]> = infer_params.iter().copied().collect();
+        let mut pieces: SmallVec<[TypeId; 4]> = SmallVec::from_slice(&[check, extends]);
+        pieces.extend(constraints);
+        if let NativeConditionalBranches::Lowered { yes, no } = branches {
+            pieces.extend([yes, no]);
+        }
+        let mut outer: SmallVec<[TypeId; 4]> = outer.iter().copied().filter(|t| !infer.contains(t)).collect();
+        for piece in pieces {
+            self.any_type_in(piece, true, |t| {
+                let is_parameter = matches!(
+                    self.data(t),
+                    TypeData::TypeParam(..) | TypeData::NativeTypeParam { .. } | TypeData::ThisParam(_)
+                );
+                if is_parameter && !infer.contains(&t) && !outer.contains(&t) {
+                    outer.push(t);
+                }
+                false
+            });
+        }
+        let mapper = self.types().mapper(outer.into_iter().map(|t| (t, t)).collect());
+        self.conditional_type(CondRoot::Native(root), mapper)
+    }
+
+    /// The declared check (`0`), extends (`1`), true (`2`) or false (`3`) type of the conditional
+    /// type that `root` declares.
+    pub(super) fn cond_root_piece(&mut self, root: CondRoot, which: usize) -> TypeId {
+        match root {
+            CondRoot::Node(file, node) => {
+                let TypeNodeKind::Cond {
+                    check,
+                    extends,
+                    yes,
+                    no,
+                } = self.hir(file)[node].kind
+                else {
+                    return TypeId::UNRESOLVED;
+                };
+                self.type_from_node(file, [check, extends, yes, no][which])
+            }
+            CondRoot::Native(root) => {
+                let TypeData::NativeConditionalRoot {
+                    check,
+                    extends,
+                    branches,
+                    ..
+                } = *self.data(root)
+                else {
+                    return TypeId::UNRESOLVED;
+                };
+                match (which, branches) {
+                    (0, _) => check,
+                    (1, _) => extends,
+                    (2, NativeConditionalBranches::Lowered { yes, .. }) => yes,
+                    (_, NativeConditionalBranches::Lowered { no, .. }) => no,
+                    (_, NativeConditionalBranches::Written(id)) => {
+                        self.native_conditional_branch(id, which == 2)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The declared true (`yes`) or false type of the conditional type `id`, lowered once. One
+    /// that its own lowering reads is an error.
+    fn native_conditional_branch(&mut self, id: NativeConditionalId, yes: bool) -> TypeId {
+        match self.native_conditional_branches.get(&(id, yes)) {
+            Some(Some(known)) => return *known,
+            Some(None) => return TypeId::ERROR,
+            None => {}
+        }
+        let Some(provider) = self.native_function_provider else {
+            return TypeId::ERROR;
+        };
+        self.native_conditional_branches.insert((id, yes), None);
+        let ty = provider.conditional_branch(self, id, yes);
+        self.native_conditional_branches.insert((id, yes), Some(ty));
+        ty
+    }
+
+    /// `root.inferTypeParameters`
+    pub(super) fn cond_root_infer_params(&mut self, root: CondRoot) -> Vec<TypeId> {
+        match root {
+            CondRoot::Node(file, node) => {
+                let TypeNodeKind::Cond { extends, .. } = self.hir(file)[node].kind else {
+                    return Vec::new();
+                };
+                let mut params = Vec::new();
+                self.collect_infer_params(file, extends, &mut params);
+                params
+                    .into_iter()
+                    .map(|p| self.type_param(file, p))
+                    .collect()
+            }
+            CondRoot::Native(root) => {
+                let TypeData::NativeConditionalRoot { infer, infer_constraints, .. } = self.data(root) else {
+                    return Vec::new();
+                };
+                let (params, constraints) = (infer.to_vec(), infer_constraints.to_vec());
+                for (&param, &constraint) in params.iter().zip(&constraints) {
+                    if constraint != TypeId::UNRESOLVED
+                        && let Some((declaration, MapperId::IDENTITY)) = self.native_type_parameter_decl(param)
+                    {
+                        self.native_infer_constraints.insert(declaration, constraint);
+                    }
+                }
+                params
+            }
+        }
+    }
+
+    /// `checkTuples`: the check and extends types are written as tuples of one length without
+    /// optional or rest elements. A Lua annotation writes no tuple.
+    pub(super) fn cond_root_checks_tuples(&self, root: CondRoot) -> bool {
+        let CondRoot::Node(file, node) = root else {
+            return false;
+        };
+        let TypeNodeKind::Cond { check, extends, .. } = self.hir(file)[node].kind else {
+            return false;
+        };
+        match (
+            self.simple_tuple_len(file, check),
+            self.simple_tuple_len(file, extends),
+        ) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    /// `getConditionalTypeInstantiation`: the conditional type that `root` declares, with
+    /// `mapper` for its outer type parameters. A type created with an alias is not cached:
+    /// `getConditionalTypeKey` includes the alias, `conditionals` does not.
     pub(super) fn conditional_type_instantiation(
         &mut self,
-        file: FileId,
-        node: TypeNodeId,
+        root: CondRoot,
         mapper: MapperId,
         alias: Option<(Sym, &[TypeId])>,
     ) -> TypeId {
-        self.conditional_type_cached(file, node, mapper, alias, false)
+        self.conditional_type_cached(root, mapper, alias, false)
     }
 
     /// `is_member`: it is the `getConditionalType` that `getConditionalTypeInstantiation` calls for
@@ -1342,16 +1494,15 @@ impl<'p, 's> Checker<'p, 's> {
     /// `Program::conditionals`.
     fn conditional_type_cached(
         &mut self,
-        file: FileId,
-        node: TypeNodeId,
+        root: CondRoot,
         mapper: MapperId,
         alias: Option<(Sym, &[TypeId])>,
         is_member: bool,
     ) -> TypeId {
-        let q = Query::Cond(file, node, mapper);
+        let q = Query::Cond(root, mapper);
         if alias.is_none()
             && let Some((known, is_repeatable)) =
-                (self.p.conditionals).get(&self.task, &(file, node, mapper))
+                (self.p.conditionals).get(&self.task, &(root, mapper))
             && (is_repeatable || !is_member)
         {
             // The call in progress assigns the entry again.
@@ -1369,14 +1520,14 @@ impl<'p, 's> Checker<'p, 's> {
             return self.excessively_deep();
         }
         let mark = self.non_cacheable_mark();
-        let ty = self.conditional_type_uncached(file, node, mapper, false, alias);
+        let ty = self.conditional_type_uncached(root, mapper, false, alias);
         let is_repeatable = self.non_cacheable_mark() == mark;
         match (self.leave(q), alias) {
             (Ok(stored), None) if is_member => {
                 if is_repeatable {
                     (self.p.conditionals).insert(
                         &self.task,
-                        (file, node, mapper),
+                        (root, mapper),
                         (ty, true),
                         stored,
                     );
@@ -1386,7 +1537,7 @@ impl<'p, 's> Checker<'p, 's> {
             // Where it was in progress several times, the outermost is the last to store.
             (Ok(stored), None) => {
                 let entry = (ty, is_repeatable);
-                (self.p.conditionals).rewrite(&self.task, (file, node, mapper), entry, stored);
+                (self.p.conditionals).rewrite(&self.task, (root, mapper), entry, stored);
                 ty
             }
             (Err(open), None) => {
@@ -1398,11 +1549,8 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     /// `ConditionalRoot.isDistributive`
-    pub(super) fn is_distributive_conditional(&mut self, file: FileId, node: TypeNodeId) -> bool {
-        let TypeNodeKind::Cond { check, .. } = self.hir(file)[node].kind else {
-            return false;
-        };
-        let declared = self.type_from_node(file, check);
+    pub(super) fn is_distributive_conditional(&mut self, root: CondRoot) -> bool {
+        let declared = self.cond_root_piece(root, 0);
         self.flags(declared) & tf::TYPE_PARAMETER != 0
     }
 
@@ -1410,16 +1558,15 @@ impl<'p, 's> Checker<'p, 's> {
     /// test does not rule out that the type passes it.
     pub(super) fn conditional_type_uncached(
         &mut self,
-        file: FileId,
-        node: TypeNodeId,
+        root: CondRoot,
         mapper: MapperId,
         for_constraint: bool,
         alias: Option<(Sym, &[TypeId])>,
     ) -> TypeId {
-        let TypeNodeKind::Cond { check, .. } = self.hir(file)[node].kind else {
+        let check_declared = self.cond_root_piece(root, 0);
+        if check_declared == TypeId::UNRESOLVED {
             return TypeId::UNRESOLVED;
-        };
-        let check_declared = self.type_from_node(file, check);
+        }
         // `T extends U ? X : Y` with a naked `T` distributes over a union.
         if self.flags(check_declared) & tf::TYPE_PARAMETER != 0
             && let Some(value) = self.types().map(mapper, check_declared)
@@ -1435,8 +1582,7 @@ impl<'p, 's> Checker<'p, 's> {
                         // The type arguments of the union that is distributed over.
                         let for_constraint = distributed_over;
                         return c.resolve_conditional(
-                            file,
-                            node,
+                            root,
                             one,
                             distributed_over,
                             for_constraint,
@@ -1448,10 +1594,10 @@ impl<'p, 's> Checker<'p, 's> {
                     let has_type_variables = (c.types().mapper_flags(one))
                         .contains(ObjectFlags::COULD_CONTAIN_TYPE_VARIABLES);
                     if !has_type_variables && c.types().map(one, check_declared) == Some(part) {
-                        return c.conditional_type_cached(file, node, one, None, true);
+                        return c.conditional_type_cached(root, one, None, true);
                     }
                     let for_constraint = MapperId::IDENTITY;
-                    c.resolve_conditional(file, node, one, distributed_over, for_constraint, None)
+                    c.resolve_conditional(root, one, distributed_over, for_constraint, None)
                 };
                 return self.map_type_with_alias(value, of_member, alias);
             }
@@ -1461,14 +1607,7 @@ impl<'p, 's> Checker<'p, 's> {
         } else {
             MapperId::IDENTITY
         };
-        self.resolve_conditional(
-            file,
-            node,
-            mapper,
-            MapperId::IDENTITY,
-            for_constraint,
-            alias,
-        )
+        self.resolve_conditional(root, mapper, MapperId::IDENTITY, for_constraint, alias)
     }
 
     /// The number of elements of the tuple type node at `node`, if none is optional or a rest.
@@ -1488,41 +1627,33 @@ impl<'p, 's> Checker<'p, 's> {
     /// `getConditionalType`. `distributed_over`, `for_constraint`: see `TypeData::Cond`.
     fn resolve_conditional(
         &mut self,
-        file: FileId,
-        node: TypeNodeId,
+        root: CondRoot,
         mapper: MapperId,
         mut distributed_over: MapperId,
         for_constraint: MapperId,
         mut alias: Option<(Sym, &[TypeId])>,
     ) -> TypeId {
-        let (mut file, mut node, mut mapper) = (file, node, mapper);
+        let (mut root, mut mapper) = (root, mapper);
         let mut extra_types: Vec<TypeId> = Vec::new();
         // `tailCount`
         let mut tail_count = 0;
         // The roots that the loop has reached through a type reference.
-        let mut tail_roots: crate::util::FxHashSet<(FileId, TypeNodeId, MapperId)> =
-            Default::default();
+        let mut tail_roots: crate::util::FxHashSet<(CondRoot, MapperId)> = Default::default();
         // Whether each of their nodes is the body of a type alias.
-        let mut has_alias: SmallVec<[((FileId, TypeNodeId), bool); 4]> = SmallVec::new();
+        let mut has_alias: SmallVec<[(CondRoot, bool); 4]> = SmallVec::new();
         let result = loop {
             // `tailCount` does not count a root that is not the body of a type alias. In tsgo
             // `instantiationCount` ends a loop of those.
             if tail_count == 1000 || tail_roots.len() == 10_000 {
                 return self.excessively_deep();
             }
-            let TypeNodeKind::Cond {
-                check,
-                extends,
-                yes,
-                no,
-            } = self.hir(file)[node].kind
-            else {
+            let check_declared = self.cond_root_piece(root, 0);
+            if check_declared == TypeId::UNRESOLVED {
                 return TypeId::UNRESOLVED;
-            };
-            let check_declared = self.type_from_node(file, check);
+            }
             let check_variable = self.actual_type_variable(check_declared);
             let check_ty = self.instantiate(check_variable, mapper);
-            let extends_declared = self.type_from_node(file, extends);
+            let extends_declared = self.cond_root_piece(root, 1);
             if check_ty == TypeId::UNRESOLVED {
                 return TypeId::UNRESOLVED;
             }
@@ -1535,24 +1666,13 @@ impl<'p, 's> Checker<'p, 's> {
                 return TypeId::WILDCARD;
             }
             // `[A] extends [B]` is deferred on its elements like `A extends B` would be.
-            let check_tuples = match (
-                self.simple_tuple_len(file, check),
-                self.simple_tuple_len(file, extends),
-            ) {
-                (Some(a), Some(b)) => a == b,
-                _ => false,
-            };
+            let check_tuples = self.cond_root_checks_tuples(root);
             let check_is_generic =
                 self.is_generic(check_ty) || check_tuples && self.has_generic_element(check_ty);
 
-            let mut infer_params = Vec::new();
-            self.collect_infer_params(file, extends, &mut infer_params);
+            let params = self.cond_root_infer_params(root);
             let mut combined = mapper;
-            if !infer_params.is_empty() {
-                let params: SmallVec<[TypeId; 4]> = infer_params
-                    .iter()
-                    .map(|&p| self.type_param(file, p))
-                    .collect();
+            if !params.is_empty() {
                 if !check_is_generic {
                     // The `infer` positions are found in the `extends` type with everything else
                     // instantiated.
@@ -1589,14 +1709,13 @@ impl<'p, 's> Checker<'p, 's> {
                 || check_tuples && self.has_generic_element(extends_ty)
             {
                 let deferred = self.deferred_conditional_type(
-                    file,
-                    node,
+                    root,
                     mapper,
                     distributed_over,
                     for_constraint,
                     alias,
                 );
-                self.instantiate_narrowed_check_type(file, node, mapper);
+                self.instantiate_narrowed_check_type(root, mapper);
                 break deferred;
             }
             let extends_is_top = self.has_any_flag(extends_ty) || extends_ty == TypeId::UNKNOWN;
@@ -1617,57 +1736,63 @@ impl<'p, 's> Checker<'p, 's> {
                             .any(|&t| self.is_assignable(t, check_ty))
                     };
                 if with_true {
-                    let yes_declared = self.type_from_node(file, yes);
+                    let yes_declared = self.cond_root_piece(root, 2);
                     extra_types.push(self.instantiate(yes_declared, combined));
                 }
-                (no, mapper, true)
+                (3, mapper, true)
             } else {
                 if !extends_is_top && !self.is_assignable_restrictive(check_ty, extends_ty) {
                     let deferred = self.deferred_conditional_type(
-                        file,
-                        node,
+                        root,
                         mapper,
                         distributed_over,
                         for_constraint,
                         alias,
                     );
-                    self.instantiate_narrowed_check_type(file, node, mapper);
+                    self.instantiate_narrowed_check_type(root, mapper);
                     break deferred;
                 }
-                (yes, combined, false)
+                (2, combined, false)
             };
             match self.tail_recursion_root(
-                file,
+                root,
                 branch,
                 branch_mapper,
                 check_declared,
                 is_false_branch,
             ) {
-                Ok((root, is_tail_call)) => {
+                Ok((next, is_tail_call)) => {
                     // `newRootMapper` is not a merged mapper.
                     if is_tail_call {
                         (alias, distributed_over) = (None, MapperId::IDENTITY);
                     }
                     // A root that is not the branch node itself is reached through a type
                     // reference. The other steps descend in the syntax.
-                    if is_tail_call && (root.0, root.1) != (file, branch) {
+                    if is_tail_call && !self.is_branch_of(root, branch, next.0) {
                         // The loop is deterministic: a root that recurs under the same mapper
                         // recurs until a limit is hit.
-                        if !tail_roots.insert(root) {
+                        if !tail_roots.insert(next) {
                             return self.excessively_deep();
                         }
                         // `newRoot.alias != nil`
                         let known = has_alias
                             .iter()
-                            .find(|known| known.0 == (root.0, root.1))
+                            .find(|known| known.0 == next.0)
                             .map(|known| known.1);
                         let root_has_alias = match known {
                             Some(known) => known,
+                            // A Lua annotation's conditional type reached through a reference is
+                            // the body of an alias.
                             None => {
-                                let scope = self.bound(root.0).type_scope[root.1.idx()];
-                                let found = scope.is_some()
-                                    && self.alias_with_body(root.0, scope, root.1).is_some();
-                                has_alias.push(((root.0, root.1), found));
+                                let found = match next.0 {
+                                    CondRoot::Node(file, node) => {
+                                        let scope = self.bound(file).type_scope[node.idx()];
+                                        scope.is_some()
+                                            && self.alias_with_body(file, scope, node).is_some()
+                                    }
+                                    CondRoot::Native(_) => true,
+                                };
+                                has_alias.push((next.0, found));
                                 found
                             }
                         };
@@ -1675,7 +1800,7 @@ impl<'p, 's> Checker<'p, 's> {
                             tail_count += 1;
                         }
                     }
-                    (file, node, mapper) = root;
+                    (root, mapper) = next;
                 }
                 Err(declared) => break self.instantiate(declared, branch_mapper),
             }
@@ -1694,32 +1819,23 @@ impl<'p, 's> Checker<'p, 's> {
     /// branch of an enclosing conditional type narrows, or an indexed access of one:
     /// instantiating that substitution type compares the base type with the constraint, and when
     /// it does so shows.
-    fn instantiate_narrowed_check_type(
-        &mut self,
-        file: FileId,
-        node: TypeNodeId,
-        mapper: MapperId,
-    ) {
-        if let TypeNodeKind::Cond { check, .. } = self.hir(file)[node].kind {
-            let declared = self.type_from_node(file, check);
-            if self.actual_type_variable(declared) != declared {
-                self.instantiate(declared, mapper);
-            }
+    fn instantiate_narrowed_check_type(&mut self, root: CondRoot, mapper: MapperId) {
+        let declared = self.cond_root_piece(root, 0);
+        if declared != TypeId::UNRESOLVED && self.actual_type_variable(declared) != declared {
+            self.instantiate(declared, mapper);
         }
     }
 
     fn deferred_conditional_type(
         &self,
-        file: FileId,
-        node: TypeNodeId,
+        root: CondRoot,
         mapper: MapperId,
         distributed_over: MapperId,
         for_constraint: MapperId,
         alias: Option<(Sym, &[TypeId])>,
     ) -> TypeId {
         let deferred = self.intern(TypeData::Cond {
-            file,
-            node,
+            root,
             mapper,
             distributed_over,
             for_constraint,
@@ -1730,41 +1846,51 @@ impl<'p, 's> Checker<'p, 's> {
         }
     }
 
+    /// Whether `inner` is the conditional type written as the true (`2`) or false (`3`) branch
+    /// of `outer`. A Lua annotation's branch is a type, not syntax, so it never is.
+    fn is_branch_of(&self, outer: CondRoot, branch: usize, inner: CondRoot) -> bool {
+        let (CondRoot::Node(file, node), CondRoot::Node(inner_file, inner_node)) = (outer, inner)
+        else {
+            return false;
+        };
+        let TypeNodeKind::Cond { yes, no, .. } = self.hir(file)[node].kind else {
+            return false;
+        };
+        (inner_file, inner_node) == (file, if branch == 2 { yes } else { no })
+    }
+
     /// `Ok`: the conditional type that the loop of `getConditionalType` continues with instead of
-    /// instantiating the branch at `branch` under `mapper`, and whether `getTailRecursionRoot`
-    /// returns it. `Err`: the declared type of the branch, which is to be instantiated.
-    /// `outer_check` is the declared check type of the conditional type that has the branch.
+    /// instantiating the true (`2`) or false (`3`) branch of `outer` under `mapper`, and whether
+    /// `getTailRecursionRoot` returns it. `Err`: the declared type of the branch, which is to be
+    /// instantiated. `outer_check` is the declared check type of `outer`.
     fn tail_recursion_root(
         &mut self,
-        file: FileId,
-        branch: TypeNodeId,
+        outer: CondRoot,
+        branch: usize,
         mapper: MapperId,
         outer_check: TypeId,
         is_false_branch: bool,
-    ) -> Result<((FileId, TypeNodeId, MapperId), bool), TypeId> {
-        let declared = self.type_from_node(file, branch);
+    ) -> Result<((CondRoot, MapperId), bool), TypeId> {
+        let declared = self.cond_root_piece(outer, branch);
         let TypeData::Cond {
-            file: root_file,
-            node: root,
-            mapper: own,
-            ..
+            root, mapper: own, ..
         } = *self.data(declared)
         else {
             return Err(declared);
         };
-        let TypeNodeKind::Cond { check, .. } = self.hir(root_file)[root].kind else {
+        let root_check = self.cond_root_piece(root, 0);
+        if root_check == TypeId::UNRESOLVED {
             return Err(declared);
-        };
+        }
         let root_mapper = self.map_mapper(own, mapper);
-        let root_check = self.type_from_node(root_file, check);
-        let is_distributive = self.is_distributive_conditional(root_file, root);
+        let is_distributive = self.is_distributive_conditional(root);
         // A conditional type immediately nested in the false branch is one construct with the outer one, unless it distributes
         // over another check type.
         if is_false_branch
-            && (root_file, root) == (file, branch)
+            && self.is_branch_of(outer, branch, root)
             && (!is_distributive || root_check == outer_check)
         {
-            return Ok(((root_file, root, root_mapper), false));
+            return Ok(((root, root_mapper), false));
         }
         // `getTailRecursionRoot`. A root without outer type parameters has the identity mapper,
         // which `map_mapper` returns unchanged.
@@ -1778,12 +1904,12 @@ impl<'p, 's> Checker<'p, 's> {
         {
             return Err(declared);
         }
-        Ok(((root_file, root, root_mapper), true))
+        Ok(((root, root_mapper), true))
     }
 
     /// `computeBaseConstraint` of the conditional type `this`.
     pub(super) fn constraint_of_conditional(&mut self, this: TypeId) -> Option<TypeId> {
-        let (file, _, mapper, [check, ..]) = self.cond_origin(this);
+        let (root, mapper) = self.cond_origin(this);
         // `conditionalConstraintDepth`. The second test comes before `enter` would refuse a query
         // for lack of capacity on `stack`.
         if self.conditional_constraint_depth >= 100 || self.stack.len() + 20 >= MAX_DEPTH {
@@ -1793,7 +1919,7 @@ impl<'p, 's> Checker<'p, 's> {
         self.conditional_constraint_depth += 1;
         // `getConstraintOfTypeParameter`: a type parameter with a circular constraint has no
         // constraint to substitute.
-        let check_declared = self.type_from_node(file, check);
+        let check_declared = self.cond_root_piece(root, 0);
         let checked = self.instantiate(check_declared, mapper);
         let is_circular = self.flags(check_declared) & tf::TYPE_PARAMETER != 0
             && matches!(
@@ -2459,16 +2585,11 @@ impl<'p, 's> Checker<'p, 's> {
                 }
             }
             // `Exclude<keyof T, "a">`: over the lower bound of `keyof T`.
-            TypeData::Cond {
-                file, node, mapper, ..
-            } => {
-                let TypeNodeKind::Cond { check, .. } = self.hir(file)[node].kind else {
-                    return ty;
-                };
-                if !self.is_distributive_conditional(file, node) {
+            TypeData::Cond { root, mapper, .. } => {
+                if !self.is_distributive_conditional(root) {
                     return ty;
                 }
-                let declared = self.type_from_node(file, check);
+                let declared = self.cond_root_piece(root, 0);
                 let Some(checked) = self.types().map(mapper, declared) else {
                     return ty;
                 };
@@ -2477,7 +2598,7 @@ impl<'p, 's> Checker<'p, 's> {
                     return ty;
                 }
                 let mapper = self.prepend_type_mapping(declared, bound, mapper);
-                self.conditional_type(file, node, mapper)
+                self.conditional_type(root, mapper)
             }
             // `mapTypeEx(.., noReductions)`: `string` from `keyof S` does not absorb the names next
             // to it.

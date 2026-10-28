@@ -269,6 +269,38 @@ the variable's declared type, not one narrowed where the annotation is.
 lua-language-server's `---@enum Name` above a table is this alias, `typeof X[keyof typeof X]` for
 the table `X` it assigns, and `---@enum (key) Name` is `keyof typeof X`.
 
+### Conditional types
+
+`T extends U and X or Y` is EmmyLua Analyzer's spelling of TypeScript's `T extends U ? X : Y`:
+`X` where `T` is assignable to `U`, otherwise `Y`. A conditional type in the false branch chains,
+`infer P` in the extends type declares a type parameter that the true branch sees, and a naked
+type parameter distributes the test over a union:
+
+```lua
+---@alias ElementOf<T> T extends (infer U)[] and U or never
+---@alias NonNil<T> T extends nil and never or T
+---@alias Kind<T> T extends string and "text" or T extends number and "number" or "other"
+---@alias Flatten<T> T extends (infer U)[] and Flatten<U> or T
+
+---@type ElementOf<string[]>
+local first = "ada"     -- string
+---@type NonNil<string | nil>
+local present = nil     -- error: 'nil' is not assignable to 'string'
+---@type Kind<true>
+local kind = "other"
+---@type Flatten<number[][]>
+local deep = 1          -- number
+
+---@type fun<T>(value: T): (T extends string and number or boolean)
+local measure
+local length = measure("ada") -- number
+```
+
+As in TypeScript, the type is deferred while its check or extends type is generic, a branch may
+refer to the alias whose body it is, and recursion that never ends is reported (TS2589).
+`infer P extends C` constrains what is inferred. A `---@return` may be conditional too; without
+`and` after its extends type, `extends` begins the description (v1).
+
 ### Functions
 
 Function types describe parameters, optional parameters, variadic parameters and multiple or

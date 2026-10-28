@@ -158,7 +158,9 @@ impl<'p, 's> Checker<'p, 's> {
                 mapper,
             }
             | TypeData::Cond {
-                file, node, mapper, ..
+                root: CondRoot::Node(file, node),
+                mapper,
+                ..
             } => (file, node, mapper),
             TypeData::Fns { ref decls, mapper } => {
                 let [(file, func)] = decls[..] else {
@@ -334,13 +336,10 @@ impl<'p, 's> Checker<'p, 's> {
                 self.instantiate_indexed_access(ty, mapper, Some(alias))
             }
             &TypeData::Cond {
-                file,
-                node,
-                mapper: own,
-                ..
+                root, mapper: own, ..
             } => {
                 let new = self.map_mapper(own, mapper);
-                self.conditional_type_instantiation(file, node, new, Some(alias))
+                self.conditional_type_instantiation(root, new, Some(alias))
             }
             &TypeData::Anon {
                 origin: Origin::Mapped(file, node),

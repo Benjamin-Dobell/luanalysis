@@ -88,6 +88,11 @@ impl OriginalTypes {
                     self.ty(part);
                 }
             }
+            TypeExprKind::Conditional { check, extends, yes, no } => {
+                for part in [check, extends, yes, no] {
+                    self.ty(part);
+                }
+            }
             TypeExprKind::Record(fields) => {
                 for field in fields {
                     self.key(&field.key);
@@ -113,7 +118,9 @@ impl OriginalTypes {
             | TypeExprKind::CompletionHint(_)
             | TypeExprKind::TypePredicate { ty: None, .. }
             | TypeExprKind::TypeQuery(_)
+            | TypeExprKind::Infer { constraint: None, .. }
             | TypeExprKind::Error => {}
+            TypeExprKind::Infer { constraint: Some(constraint), .. } => self.ty(constraint),
         }
     }
 

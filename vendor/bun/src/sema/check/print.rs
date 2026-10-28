@@ -40,6 +40,17 @@ const FORBID_INDEXED_ACCESS_SYMBOL_REFERENCES: u32 = 1 << 14;
 pub(super) const WRITE_TYPE_PARAMETERS_IN_QUALIFIED_NAME: u32 = 1 << 15;
 pub(super) const WRITE_ARRAY_AS_GENERIC_TYPE: u32 = 1 << 16;
 const NATIVE_LUA_TYPES: u32 = 1 << 17;
+
+/// Whether `bytes` is a Lua name: ASCII letters, digits and `_`, not first a digit, and no keyword.
+fn is_lua_name(bytes: &[u8]) -> bool {
+    bytes.first().is_some_and(|first| first.is_ascii_alphabetic() || *first == b'_')
+        && bytes.iter().all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+        && !matches!(
+            bytes,
+            b"and" | b"break" | b"do" | b"else" | b"elseif" | b"end" | b"false" | b"for" | b"function" | b"goto" | b"if"
+                | b"in" | b"local" | b"nil" | b"not" | b"or" | b"repeat" | b"return" | b"then" | b"true" | b"until" | b"while"
+        )
+}
 /// What `typeToString` hands `typeToStringEx`.
 pub(super) const TYPE_TO_STRING: u32 =
     ALLOW_UNIQUE_ES_SYMBOL_TYPE | USE_ALIAS_DEFINED_OUTSIDE_CURRENT_SCOPE;
@@ -1905,6 +1916,8 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 let mut members = Vec::new();
                 for field in &table.fields {
                     let key = match field.key {
+                        // As the Lua printer names a field: bare where Lua could write `t.name`.
+                        NativeTableKey::String(name) if is_lua_name(self.c.atoms().bytes(name)) => self.c.atoms().bytes(name).to_vec(),
                         NativeTableKey::String(name) => cat!(b"[", self.type_to_node(self.c.string_literal(name, false)).text, b"]"),
                         NativeTableKey::Integer(value) => cat!(b"[", value.to_string().as_bytes(), b"]"),
                         NativeTableKey::Float(bits) => cat!(b"[", f64::from_bits(bits).to_string().as_bytes(), b"]"),
@@ -2007,11 +2020,14 @@ impl<'p, 's> Printer<'_, 'p, 's> {
                 self.approximate_length += 2;
                 Node::new(cat!(object.emit(POSTFIX), b"[", index.text, b"]"), POSTFIX)
             }
-            TypeData::Cond { file, node, .. } => {
-                let (file, node) = (*file, *node);
-                let identity = Some(Identity::Node(file, node));
+            TypeData::Cond { root, .. } => {
+                let root = *root;
+                let identity = Some(match root {
+                    CondRoot::Node(file, node) => Identity::Node(file, node),
+                    CondRoot::Native(root) => Identity::Type(root),
+                });
                 self.visit_and_transform_type(ty, identity, |printer, ty| {
-                    printer.conditional_type_to_node(ty, file, node)
+                    printer.conditional_type_to_node(ty, root)
                 })
             }
             // Written above.
@@ -6139,21 +6155,24 @@ impl<'p, 's> Printer<'_, 'p, 's> {
         self.visit_and_transform_type(ty, None, Self::type_to_node)
     }
 
-    /// `conditionalTypeToTypeNode` for the conditional type `ty` declared at `node`.
-    fn conditional_type_to_node(&mut self, ty: TypeId, file: FileId, node: TypeNodeId) -> Node {
-        let TypeNodeKind::Cond { extends, .. } = self.c.hir(file)[node].kind else {
+    /// `conditionalTypeToTypeNode` for the conditional type `ty` that `root` declares. A Lua
+    /// type is written `check extends E and X or Y`.
+    fn conditional_type_to_node(&mut self, ty: TypeId, root: CondRoot) -> Node {
+        if let CondRoot::Node(file, node) = root
+            && !matches!(self.c.hir(file)[node].kind, TypeNodeKind::Cond { .. })
+        {
             return self.elided_information_placeholder();
-        };
+        }
         if self.check_truncation_length() {
             return self.elided_information_placeholder();
         }
         let check_type = self.c.cond_piece(ty, 0);
         let check = self.type_to_node(check_type);
         self.approximate_length += 15;
-        let (_, _, mut mapper, nodes) = self.c.cond_origin(ty);
+        let (_, mut mapper) = self.c.cond_origin(ty);
         // The check type was a type parameter and no longer is: a new type parameter keeps the type
         // distributive.
-        let root_check_type = self.c.type_from_node(file, nodes[0]);
+        let root_check_type = self.c.cond_root_piece(root, 0);
         let new_type_variable = if self.flags & GENERATE_NAMES_FOR_SHADOWED_TYPE_PARAMS != 0
             && !self.c.is_type_param(check_type)
         {
@@ -6167,15 +6186,10 @@ impl<'p, 's> Printer<'_, 'p, 's> {
             self.type_parameter_to_name(new_param)
         });
         let piece = |printer: &mut Self, which: usize| {
-            let declared = printer.c.type_from_node(file, nodes[which]);
+            let declared = printer.c.cond_root_piece(root, which);
             printer.c.instantiate(declared, mapper)
         };
-        let mut declared = Vec::new();
-        self.c.collect_infer_params(file, extends, &mut declared);
-        let infer_type_parameters = declared
-            .into_iter()
-            .map(|parameter| self.c.type_param(file, parameter))
-            .collect();
+        let infer_type_parameters = self.c.cond_root_infer_params(root);
         let saved = std::mem::replace(&mut self.infer_type_parameters, infer_type_parameters);
         let extends = piece(self, 1);
         let extends = self.type_to_node(extends);
@@ -6187,6 +6201,17 @@ impl<'p, 's> Printer<'_, 'p, 's> {
         let extends = extends.emit_in_extends();
         let (yes, no) = (when_true.text, when_false.text);
         let text = match new_name {
+            Some(t) if self.flags & NATIVE_LUA_TYPES != 0 => {
+                let constraint = check.clone().emit_in_extends();
+                let check = check.emit(UNION);
+                cat! {
+                    check, b" extends infer ", t, b" and ", t, b" extends ", constraint, b" and ", t,
+                    b" extends ", extends, b" and ", yes, b" or ", no, b" or never or never"
+                }
+            }
+            None if self.flags & NATIVE_LUA_TYPES != 0 => {
+                cat! { check.emit(UNION), b" extends ", extends, b" and ", yes, b" or ", no }
+            }
             // The first introduces `T` as a type parameter, the second constrains it to the check
             // type, the third is the test.
             Some(t) => {

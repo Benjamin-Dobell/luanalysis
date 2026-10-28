@@ -1833,28 +1833,16 @@ impl<'p, 's> Checker<'p, 's> {
 
     // ───────────────────────────── conditional types ─────────────────────────────
 
-    pub(super) fn cond_origin(&self, t: TypeId) -> (FileId, TypeNodeId, MapperId, [TypeNodeId; 4]) {
-        let TypeData::Cond {
-            file, node, mapper, ..
-        } = *self.data(t)
-        else {
+    pub(super) fn cond_origin(&self, t: TypeId) -> (CondRoot, MapperId) {
+        let TypeData::Cond { root, mapper, .. } = *self.data(t) else {
             unreachable!()
         };
-        let TypeNodeKind::Cond {
-            check,
-            extends,
-            yes,
-            no,
-        } = self.hir(file)[node].kind
-        else {
-            unreachable!()
-        };
-        (file, node, mapper, [check, extends, yes, no])
+        (root, mapper)
     }
 
     pub(super) fn cond_piece(&mut self, t: TypeId, which: usize) -> TypeId {
-        let (file, _, mapper, nodes) = self.cond_origin(t);
-        let declared = self.type_from_node(file, nodes[which]);
+        let (root, mapper) = self.cond_origin(t);
+        let declared = self.cond_root_piece(root, which);
         self.instantiate(declared, mapper)
     }
 
@@ -1877,20 +1865,15 @@ impl<'p, 's> Checker<'p, 's> {
     }
 
     pub(super) fn cond_infer_params(&mut self, t: TypeId) -> Vec<TypeId> {
-        let (file, _, _, nodes) = self.cond_origin(t);
-        let mut params = Vec::new();
-        self.collect_infer_params(file, nodes[1], &mut params);
-        params
-            .into_iter()
-            .map(|p| self.type_param(file, p))
-            .collect()
+        let (root, _) = self.cond_origin(t);
+        self.cond_root_infer_params(root)
     }
 
     /// The check type, if it is a naked type parameter: the conditional type then distributes over
     /// union members.
     fn cond_distributes_over(&mut self, t: TypeId) -> Option<TypeId> {
-        let (file, _, _, nodes) = self.cond_origin(t);
-        let declared = self.type_from_node(file, nodes[0]);
+        let (root, _) = self.cond_origin(t);
+        let declared = self.cond_root_piece(root, 0);
         (self.flags(declared) & tf::TYPE_PARAMETER != 0).then_some(declared)
     }
 
@@ -1902,14 +1885,12 @@ impl<'p, 's> Checker<'p, 's> {
         if params.is_empty() {
             return self.cond_true(t);
         }
-        let (file, _, mapper, nodes) = self.cond_origin(t);
+        let (root, mapper) = self.cond_origin(t);
         // `instantiateType(getActualTypeVariable(root.checkType), mapper)`
-        let check = self.type_from_node(file, nodes[0]);
+        let check = self.cond_root_piece(root, 0);
         let check = self.actual_type_variable(check);
         let check = self.instantiate(check, mapper);
-        let check_tuples = self
-            .simple_tuple_len(file, nodes[0])
-            .is_some_and(|len| self.simple_tuple_len(file, nodes[1]) == Some(len));
+        let check_tuples = self.cond_root_checks_tuples(root);
         // `isDeferredType(checkType, checkTuples)`
         let check_type_deferred =
             self.is_generic(check) || check_tuples && self.has_generic_element(check);
@@ -1928,7 +1909,7 @@ impl<'p, 's> Checker<'p, 's> {
             pairs.push((param, self.instantiate(inferred, mapper)));
         }
         let combined = self.types().mapper(pairs);
-        let declared = self.type_from_node(file, nodes[2]);
+        let declared = self.cond_root_piece(root, 2);
         self.instantiate(declared, combined)
     }
 
@@ -1967,7 +1948,7 @@ impl<'p, 's> Checker<'p, 's> {
 
     fn constraint_of_distributive_conditional_worker(&mut self, t: TypeId) -> Option<TypeId> {
         let param = self.cond_distributes_over(t)?;
-        let (file, node, mapper, _) = self.cond_origin(t);
+        let (root, mapper) = self.cond_origin(t);
         let check = self.cond_check(t);
         let mut constraint = self.simplified(check, false);
         if constraint == check {
@@ -1977,7 +1958,7 @@ impl<'p, 's> Checker<'p, 's> {
             return None;
         }
         let with_constraint = self.prepend_type_mapping(param, constraint, mapper);
-        let instantiated = self.conditional_type_uncached(file, node, with_constraint, true, None);
+        let instantiated = self.conditional_type_uncached(root, with_constraint, true, None);
         (!instantiated.is_never()).then_some(instantiated)
     }
 
@@ -1986,9 +1967,20 @@ impl<'p, 's> Checker<'p, 's> {
         let Some(param) = self.cond_distributes_over(t) else {
             return false;
         };
-        let (file, _, _, nodes) = self.cond_origin(t);
-        self.is_type_parameter_possibly_referenced(param, file, nodes[2])
-            || self.is_type_parameter_possibly_referenced(param, file, nodes[3])
+        match self.cond_origin(t).0 {
+            CondRoot::Node(file, node) => {
+                let TypeNodeKind::Cond { yes, no, .. } = self.hir(file)[node].kind else {
+                    return false;
+                };
+                self.is_type_parameter_possibly_referenced(param, file, yes)
+                    || self.is_type_parameter_possibly_referenced(param, file, no)
+            }
+            // The declared branches of a Lua annotation are types, which mention what they use.
+            root @ CondRoot::Native(_) => {
+                let (yes, no) = (self.cond_root_piece(root, 2), self.cond_root_piece(root, 3));
+                self.params_mentioned_in(yes, &[param])[0] || self.params_mentioned_in(no, &[param])[0]
+            }
+        }
     }
 
     /// `isTypeParameterPossiblyReferenced`
@@ -4398,7 +4390,14 @@ impl<'p, 's> Checker<'p, 's> {
                 self.write_tuple_target(&mut hasher, flags, *readonly);
                 (5, flags.len() as u32, hasher.finish() as u32)
             }
-            TypeData::Cond { file, node, .. } => (2, file.0, node.0),
+            TypeData::Cond {
+                root: CondRoot::Node(file, node),
+                ..
+            } => (2, file.0, node.0),
+            TypeData::Cond {
+                root: CondRoot::Native(root),
+                ..
+            } => (9, root.0, 0),
             TypeData::IndexedAccess { obj, .. } => {
                 // The leftmost object type: `A` in `A[P1][P2][P3]`.
                 let mut of = *obj;
@@ -5002,13 +5001,13 @@ impl<'p, 's> Checker<'p, 's> {
                     }
                 }
             }
-            TypeData::Cond { file, node, .. } => {
+            TypeData::Cond { root, .. } => {
                 if self.is_deeply_nested_type(target, &r.target_stack, 10) {
                     return Ternary::MAYBE;
                 }
                 // Only without `infer`, when the result does not depend on distribution, and when
                 // the source is not instantiated from the same conditional type.
-                let same_root = matches!(*self.data(source), TypeData::Cond { file: sf, node: sn, .. } if (sf, sn) == (file, node));
+                let same_root = matches!(*self.data(source), TypeData::Cond { root: source_root, .. } if source_root == root);
                 if self.cond_infer_params(target).is_empty()
                     && !self.is_distribution_dependent(target)
                     && !same_root
@@ -5249,7 +5248,7 @@ impl<'p, 's> Checker<'p, 's> {
                             .contains(&false)
                         && !self.inferred_between_same_extends.insert(source_extends);
                     if !source_params.is_empty() && !is_repeated {
-                        let around = self.cond_origin(source).2;
+                        let around = self.cond_origin(source).1;
                         let inferred = self.infer_from_types_comparing(
                             &source_params,
                             target_extends,

@@ -763,6 +763,23 @@ SOURCE_ADAPTATIONS.extend({
     "patch": "vendor/patches/bun-sema-native-overload-failure-report.patch",
     "reason": "When several overloads reject a native call's arguments, report the error of the one that accepts the most of them (the last on a tie, as TypeScript reports the last), with its position and signature, so the frontend says that no overload matches at the argument where the call goes wrong.",
 } for path in ["call.rs", "mod.rs"])
+SOURCE_ADAPTATIONS.extend({
+    "path": path,
+    "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+    "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+} for path in [
+    "src/sema/check/alias.rs",
+    "src/sema/check/decl.rs",
+    "src/sema/check/instantiate.rs",
+    "src/sema/check/mapped.rs",
+    "src/sema/check/mod.rs",
+    "src/sema/check/print.rs",
+    "src/sema/check/relate.rs",
+    "src/sema/check/services/types.rs",
+    "src/sema/check/symbols.rs",
+    "src/sema/check/unions.rs",
+    "src/sema/types.rs",
+])
 
 
 def git(source, *args):

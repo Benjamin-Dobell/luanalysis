@@ -240,18 +240,20 @@ impl<'c, 'p, 's> Services<'c, 'p, 's> {
 
     pub fn structure(&mut self, ty: TypeId) -> Structure<'c> {
         match *self.c.data(ty) {
-            TypeData::Cond { file, node, .. } => {
-                let TypeNodeKind::Cond { check, yes, no, .. } = self.c.hir(file)[node].kind else {
+            TypeData::Cond { root, .. } => {
+                if let CondRoot::Node(file, node) = root
+                    && !matches!(self.c.hir(file)[node].kind, TypeNodeKind::Cond { .. })
+                {
                     return Structure::Other;
-                };
+                }
                 // `root.isDistributive`: the check type is written as a naked type parameter.
-                let declared = self.c.type_from_node(file, check);
+                let declared = self.c.cond_root_piece(root, 0);
                 Structure::Conditional {
                     is_distributive: self.c.flags(declared) & tf::TYPE_PARAMETER != 0,
                     check: self.c.cond_check(ty),
                     extends: self.c.cond_extends(ty),
-                    root_true_type: self.c.type_from_node(file, yes),
-                    root_false_type: self.c.type_from_node(file, no),
+                    root_true_type: self.c.cond_root_piece(root, 2),
+                    root_false_type: self.c.cond_root_piece(root, 3),
                 }
             }
             TypeData::IndexedAccess { obj, index, .. } => {

@@ -143,6 +143,25 @@ pub struct NativeTypeParameterKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidNativeTypeParameterKey(pub NativeTypeParameterKey);
 
+/// A conditional type written in the source `snapshot`, whose true and false types the provider
+/// lowers when they are first read (`NativeTypeProvider::conditional_branch`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeConditionalKey {
+    pub snapshot: u64,
+    pub index: u32,
+}
+
+/// Where a conditional type was lowered, in the provider's terms, for its branches: three
+/// source keys (snapshot, index) whose meaning the provider gives.
+pub type NativeConditionalContext = [Option<(u64, u32)>; 3];
+
+/// The true and false types of a conditional type: lowered when first read, or already.
+#[derive(Debug, Clone)]
+pub enum ConditionalBranches {
+    Written(NativeConditionalKey, NativeConditionalContext),
+    Lowered(Type, Type),
+}
+
 /// An expression in the original source snapshot, never a synthetic TS node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NativeExpressionKey {
@@ -444,6 +463,9 @@ pub trait NativeTypeProvider {
         self.function_declared_scalar_contract(key, queries)
     }
     fn contains_signature(&self, _: NativeSignatureKey) -> bool { false }
+    /// The declared true (`yes`) or false type of the conditional type `key`, lowered where
+    /// `context` says the rest of it was.
+    fn conditional_branch(&self, _: NativeConditionalKey, _: NativeConditionalContext, _: bool, queries: &mut dyn TypeQueries) -> Type { queries.error_type() }
     /// Immutable declaration syntax only. False proves there is no written predicate;
     /// providers without that proof preserve the full metadata query.
     fn signature_may_have_type_predicate(&self, _: NativeSignatureKey) -> bool { true }
@@ -1264,6 +1286,18 @@ pub trait TypeQueries {
     fn template_literal_type(&mut self, texts: &[String], types: &[Type]) -> Type;
     /// `Uppercase<ty>` and its kin: `ty`'s strings mapped, deferred while it is generic.
     fn string_mapping_type(&mut self, mapping: StringMapping, ty: &Type) -> Type;
+    /// The conditional type `check extends extends ? yes : no`, where `infer` are the type
+    /// parameters that `extends` declares with `infer`: `yes` where `check` is assignable to
+    /// `extends`, otherwise `no`, distributed over a union that a naked type parameter `check`
+    /// is, and deferred while either is generic. Each of `infer` has its constraint, if any.
+    /// `outer`: the type parameters that written branches mention.
+    fn conditional_type(&mut self, check: &Type, extends: &Type, infer: &[(NativeTypeParameterKey, Option<Type>)], branches: &ConditionalBranches, outer: &[NativeTypeParameterKey]) -> Type;
+    /// How many limits (2589, 2590, 2799, 2800) the checker has hit that no TypeScript node
+    /// could report: the provider reports each where it is checking.
+    fn unplaced_limits(&mut self) -> u64;
+    /// The TypeScript code of the last such limit, if one was hit since `unplaced_limits` was
+    /// `since` and none since has been taken.
+    fn take_unplaced_limit_since(&mut self, since: u64) -> Option<u32>;
     fn inspect_type(&mut self, ty: &Type) -> Type;
     /// Exact backend recovery type, preserving its error identity across the owned boundary.
     fn error_type(&mut self) -> Type;
@@ -2169,6 +2203,29 @@ impl TypeQueries for SessionQueries<'_, '_, '_> {
         let mapped = self.checker.string_mapping(kind, ty);
         export_type(self.checker, self.handles, mapped)
     }
+    fn unplaced_limits(&mut self) -> u64 {
+        self.checker.unplaced_limits()
+    }
+    fn take_unplaced_limit_since(&mut self, since: u64) -> Option<u32> {
+        self.checker.take_unplaced_limit_since(since)
+    }
+    fn conditional_type(&mut self, check: &Type, extends: &Type, infer: &[(NativeTypeParameterKey, Option<Type>)], branches: &ConditionalBranches, outer: &[NativeTypeParameterKey]) -> Type {
+        let [check, extends] = [check, extends].map(|ty| import_type(self.checker, self.handles, ty));
+        let infer: Vec<_> = infer.iter().map(|(key, constraint)| (
+            import_type(self.checker, self.handles, &Type::NativeTypeParameter(*key)),
+            constraint.as_ref().map(|constraint| import_type(self.checker, self.handles, constraint)),
+        )).collect();
+        let outer: Vec<_> = outer.iter().map(|&key| import_type(self.checker, self.handles, &Type::NativeTypeParameter(key))).collect();
+        let branches = match branches {
+            ConditionalBranches::Written(key, context) => bun_sema::types::NativeConditionalBranches::Written(bun_sema::types::NativeConditionalId { snapshot: key.snapshot, index: key.index, context: *context }),
+            ConditionalBranches::Lowered(yes, no) => bun_sema::types::NativeConditionalBranches::Lowered {
+                yes: import_type(self.checker, self.handles, yes),
+                no: import_type(self.checker, self.handles, no),
+            },
+        };
+        let conditional = self.checker.native_conditional_type(check, extends, &infer, branches, &outer);
+        export_type(self.checker, self.handles, conditional)
+    }
     fn indexed_access_type(&mut self, object: &Type, index: &Type) -> Option<Type> {
         let object = import_type(self.checker, self.handles, object);
         let index = import_type(self.checker, self.handles, index);
@@ -2758,6 +2815,11 @@ impl<P: NativeTypeProvider> NativeFunctionProvider for ProviderAdapter<'_, P> {
         Some(NativeTypeResult::Declaration(checker.native_pack_slot(pack, 0)))
     }
     fn contains_signature(&self, key: bun_sema::types::NativeSignatureId) -> bool { self.provider.contains_signature(source_signature_key(key)) }
+    fn conditional_branch(&self, checker: &mut Checker<'_, '_>, key: bun_sema::types::NativeConditionalId, yes: bool) -> TypeId {
+        let (context, key) = (key.context, NativeConditionalKey { snapshot: key.snapshot, index: key.index });
+        let ty = self.provider.conditional_branch(key, context, yes, &mut SessionQueries { checker, handles: self.handles });
+        import_type(checker, self.handles, &ty)
+    }
     fn signature_may_have_type_predicate(&self, key: bun_sema::types::NativeSignatureId) -> bool {
         self.provider.signature_may_have_type_predicate(source_signature_key(key))
     }

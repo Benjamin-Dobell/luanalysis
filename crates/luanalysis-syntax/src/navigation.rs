@@ -58,11 +58,55 @@ pub fn type_names(file: &File, source: &str) -> Vec<TypeName> {
     names
 }
 
-/// What the documentation visitor finds: a type's name, or the variable a `typeof` names.
+/// What the documentation visitor finds: a type's name, the variable a `typeof` names, or a
+/// conditional type.
 #[derive(Clone, Copy)]
-enum Visited {
+enum Visited<'a> {
     Type(TypeNameKind),
     Value,
+    Conditional(&'a TypeExpr),
+}
+
+/// A conditional type written in a documentation comment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConditionalDeclaration {
+    pub span: Span,
+    pub extends: Span,
+    pub yes: TypeExpr,
+    pub no: TypeExpr,
+    /// `TypeExpr::infer_declarations` of its extends type, which that type and `yes` see.
+    pub infer: Vec<InferDeclaration>,
+}
+
+/// `infer P`, or `infer P extends C`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InferDeclaration {
+    pub name: Name,
+    pub constraint: Option<TypeExpr>,
+}
+
+/// The conditional types in the documentation comments of `file`, in source order, each once.
+pub fn conditional_types(file: &File) -> Vec<ConditionalDeclaration> {
+    let mut found: Vec<ConditionalDeclaration> = Vec::new();
+    for comment in file.comments.iter().filter(|comment| comment.kind == CommentKind::Documentation && comment.text.contains("extends")) {
+        let (parsed, _) = crate::types::annotations(comment);
+        visit_documentation(&parsed, &mut |_, _, visited| {
+            if let Visited::Conditional(ty) = visited
+                && let TypeExprKind::Conditional { extends, yes, no, .. } = &ty.kind
+                && !found.iter().any(|known| known.span == ty.span)
+            {
+                found.push(ConditionalDeclaration {
+                    span: ty.span,
+                    extends: extends.span,
+                    yes: (**yes).clone(),
+                    no: (**no).clone(),
+                    infer: extends.infer_declarations(),
+                });
+            }
+        });
+    }
+    found.sort_by_key(|conditional| (conditional.span.start, conditional.span.end));
+    found
 }
 
 /// The variables `typeof` names in the documentation comments of `file`, in source order: the
@@ -76,7 +120,7 @@ pub fn type_query_roots(file: &File) -> Vec<Name> {
     roots
 }
 
-fn visit_documentation(parsed: &ParsedDocumentation, visit: &mut dyn FnMut(&str, Span, Visited)) {
+fn visit_documentation(parsed: &ParsedDocumentation, visit: &mut dyn FnMut(&str, Span, Visited<'_>)) {
     visit_annotations(&parsed.functions, visit);
     for item in &parsed.declarations {
         match item {
@@ -108,18 +152,18 @@ fn visit_documentation(parsed: &ParsedDocumentation, visit: &mut dyn FnMut(&str,
     for cast in &parsed.casts { visit_annotation(&cast.annotation, visit); }
 }
 
-fn visit_annotations(annotations: &FunctionAnnotations, visit: &mut dyn FnMut(&str, Span, Visited)) {
+fn visit_annotations(annotations: &FunctionAnnotations, visit: &mut dyn FnMut(&str, Span, Visited<'_>)) {
     visit_generics(&annotations.generics, visit);
     for param in &annotations.params { visit_type(&param.ty, visit); }
     if let Some(vararg) = &annotations.vararg { visit_type(&vararg.ty, visit); }
     for annotation in annotations.returns.iter().chain(&annotations.type_annotation) { visit_annotation(annotation, visit); }
 }
 
-fn visit_annotation(annotation: &TypeAnnotation, visit: &mut dyn FnMut(&str, Span, Visited)) {
+fn visit_annotation(annotation: &TypeAnnotation, visit: &mut dyn FnMut(&str, Span, Visited<'_>)) {
     for ty in &annotation.types { visit_type(ty, visit); }
 }
 
-fn visit_generics(generics: &[GenericParameter], visit: &mut dyn FnMut(&str, Span, Visited)) {
+fn visit_generics(generics: &[GenericParameter], visit: &mut dyn FnMut(&str, Span, Visited<'_>)) {
     for generic in generics {
         visit(&generic.name.text, generic.name.span, Visited::Type(TypeNameKind::Generic));
         if let Some(constraint) = &generic.constraint { visit_type(constraint, visit); }
@@ -138,12 +182,12 @@ pub fn referenced_type_names(ty: &TypeExpr) -> Vec<Name> {
     names
 }
 
-fn visit_field(key: &TypeFieldKey, ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited)) {
+fn visit_field(key: &TypeFieldKey, ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited<'_>)) {
     if let TypeFieldKey::Indexed(key) = key { visit_type(key, visit); }
     visit_type(ty, visit);
 }
 
-fn visit_function(function: &FunctionType, visit: &mut dyn FnMut(&str, Span, Visited)) {
+fn visit_function(function: &FunctionType, visit: &mut dyn FnMut(&str, Span, Visited<'_>)) {
     visit_generics(&function.generics, visit);
     for param in &function.params {
         if let Some(ty) = &param.ty { visit_type(ty, visit); }
@@ -152,7 +196,7 @@ fn visit_function(function: &FunctionType, visit: &mut dyn FnMut(&str, Span, Vis
     for ty in &function.returns { visit_type(ty, visit); }
 }
 
-fn visit_type(ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited)) {
+fn visit_type(ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited<'_>)) {
     match &ty.kind {
         TypeExprKind::Named(name) => visit(name, ty.span, Visited::Type(TypeNameKind::Reference)),
         TypeExprKind::Generic { base, args, .. } => {
@@ -165,6 +209,15 @@ fn visit_type(ty: &TypeExpr, visit: &mut dyn FnMut(&str, Span, Visited)) {
         TypeExprKind::IndexedAccess { object, index } => {
             visit_type(object, visit);
             visit_type(index, visit);
+        }
+        TypeExprKind::Conditional { check, extends, yes, no } => {
+            visit("", ty.span, Visited::Conditional(ty));
+            for ty in [check, extends, yes, no] { visit_type(ty, visit); }
+        }
+        // `infer P` declares a type parameter, as `@generic` does.
+        TypeExprKind::Infer { name, constraint } => {
+            visit(&name.text, name.span, Visited::Type(TypeNameKind::Generic));
+            if let Some(constraint) = constraint { visit_type(constraint, visit); }
         }
         TypeExprKind::Record(fields) => for field in fields { visit_field(&field.key, &field.ty, visit); },
         TypeExprKind::Function(function) => visit_function(function, visit),

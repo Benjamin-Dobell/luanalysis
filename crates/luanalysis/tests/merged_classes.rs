@@ -177,7 +177,7 @@ fn a_computed_key_of_one_string_literal_type_names_a_field() {
     let report = text(&output);
     assert!(output.status.success(), "{report}");
     assert!(report.contains("main.lua:11:7: owner: string"), "{report}");
-    assert!(report.contains("main.lua:12:7: stored: { [\"Owner\"]: \"x\" }"), "{report}");
+    assert!(report.contains("main.lua:12:7: stored: { Owner: \"x\" }"), "{report}");
     // A numeric key cannot write a named field.
     assert!(report.contains("main.lua:9:11: kept: boolean"), "{report}");
 }
@@ -240,7 +240,7 @@ fn an_optional_array_table_or_record_field_may_be_nil() {
     let output = fixture.check();
     let report = text(&output);
     assert!(output.status.success(), "{report}");
-    for expected in ["children: nil | Node[]", "index: nil | table<number, string>", "range: nil | { [\"start\"]: number }", "after: Node"] {
+    for expected in ["children: nil | Node[]", "index: nil | table<number, string>", "range: nil | { start: number }", "after: Node"] {
         assert!(report.contains(expected), "{expected}\n{report}");
     }
 }
@@ -253,9 +253,9 @@ fn a_member_no_alternative_has_does_not_narrow_its_table_to_never() {
     ]);
     let report = text(&fixture.check());
     assert!(!report.contains("'never'"), "{report}");
-    assert!(report.contains("main.lua:7:15: inside: { [\"type\"]: \"if\" } | { [\"type\"]: \"else\" }"), "{report}");
+    assert!(report.contains("main.lua:7:15: inside: { type: \"if\" } | { type: \"else\" }"), "{report}");
     // A member one alternative has still selects it.
-    assert!(report.contains("main.lua:10:23: onlyA: { [\"kind\"]: \"a\"; [\"x\"]: 1 }"), "{report}");
+    assert!(report.contains("main.lua:10:23: onlyA: { kind: \"a\"; x: 1 }"), "{report}");
 }
 
 #[test]

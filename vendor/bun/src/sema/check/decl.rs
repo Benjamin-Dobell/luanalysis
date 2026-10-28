@@ -1921,6 +1921,11 @@ impl<'p, 's> Checker<'p, 's> {
             if let Some(Some(kept)) = self.p.type_param_constraints.get(&self.task, &param) {
                 return Some(kept);
             }
+            if mapper == MapperId::IDENTITY
+                && let Some(&constraint) = self.native_infer_constraints.get(&declaration)
+            {
+                return Some(constraint);
+            }
             if mapper != MapperId::IDENTITY {
                 let declared = self.cloned_native_type_param(declaration, MapperId::IDENTITY);
                 let constraint = self.constraint_of_type_param(declared)?;
@@ -3406,7 +3411,7 @@ impl<'p, 's> Checker<'p, 's> {
             }
             TypeNodeKind::Cond { .. } => {
                 let mapper = self.identity_mapper_for_node(file, scope, node);
-                self.conditional_type(file, node, mapper)
+                self.conditional_type(CondRoot::Node(file, node), mapper)
             }
             TypeNodeKind::Infer(param) => self.declared_type_of_type_parameter(file, param),
             TypeNodeKind::IndexedAccess { obj, index } => {

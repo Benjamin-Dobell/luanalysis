@@ -2822,6 +2822,72 @@
       "patch": "vendor/patches/bun-sema-native-overload-failure-report.patch",
       "reason": "When several overloads reject a native call's arguments, report the error of the one that accepts the most of them (the last on a tie, as TypeScript reports the last), with its position and signature, so the frontend says that no overload matches at the argument where the call goes wrong.",
       "patch_sha256": "2831a16afae5b9ef6960ba90340db1328f7973c0854bc70d300341bae1bea348"
+    },
+    {
+      "path": "src/sema/check/alias.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/check/decl.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/check/instantiate.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/check/mapped.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/check/mod.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/check/print.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/check/relate.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/check/services/types.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/check/symbols.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/check/unions.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
+    },
+    {
+      "path": "src/sema/types.rs",
+      "patch": "vendor/patches/bun-sema-native-conditional-types.patch",
+      "reason": "Let a Lua annotation declare a conditional type: a root that is a native type, not a type node, with eager check and extends types and infer parameters and true and false types that the provider lowers when first read, so that a branch may refer to its alias as TypeScript allows. The root carries its infer constraints and the branches' lowering context, so that any task reading it resolves it alike. Exclude a native signature's own type parameters from permissive and restrictive instantiation as tsgo instantiates an anonymous type through its outer parameters alone, let the provider report a limit that no type node can place, and print a Lua table's name keys bare as the Lua printer does.",
+      "patch_sha256": "04b72614a5d243284691fbe4aba0adfb0eded7fd90fbb3df4e1a4b9503be3bf1"
     }
   ],
   "source_additions": {
@@ -3591,7 +3657,7 @@
     "src/sema/check/alias.rs": {
       "upstream": "src/sema/check/alias.rs",
       "sha256": "b7ba227d0b9437fafc433f5651d85bc797a0f8c9b92a3b9fc303ea4b77d58b15",
-      "extracted_sha256": "b7ba227d0b9437fafc433f5651d85bc797a0f8c9b92a3b9fc303ea4b77d58b15"
+      "extracted_sha256": "c4ddec9eabe06dada848e4b9b7d1bd59876a2af6e2966c03c6cf59db7753a09a"
     },
     "src/sema/check/call.rs": {
       "upstream": "src/sema/check/call.rs",
@@ -3611,7 +3677,7 @@
     "src/sema/check/decl.rs": {
       "upstream": "src/sema/check/decl.rs",
       "sha256": "a6aed7eea20886d8bd318f6e1511721deb82afdd9eab91386f12a3e79c132ba9",
-      "extracted_sha256": "133ce5b60930f5b68a4974765200c2f583ed301b3a9d73bff46e956701c6a69a"
+      "extracted_sha256": "34bfb9b5c6716d6b5cb5efea59d24e9d72e981847bcf0f65c1cf006180e228d5"
     },
     "src/sema/check/decorators.rs": {
       "upstream": "src/sema/check/decorators.rs",
@@ -3826,7 +3892,7 @@
     "src/sema/check/instantiate.rs": {
       "upstream": "src/sema/check/instantiate.rs",
       "sha256": "011de7da065e5c1b19dcdcc213804a8251a6c9d63350eead259ae4d7ae35666e",
-      "extracted_sha256": "ecf0fde7cb45cd09149201523884e419271e3ff349b17c38bafaa372944e0f4c"
+      "extracted_sha256": "037428ccfa8e59d5f7fb82f5929dcc57840fc35285f04e273c19be2cfad232b6"
     },
     "src/sema/check/jsdoc.rs": {
       "upstream": "src/sema/check/jsdoc.rs",
@@ -3851,12 +3917,12 @@
     "src/sema/check/mapped.rs": {
       "upstream": "src/sema/check/mapped.rs",
       "sha256": "4dd9deabe9cc5c9e6fd585457addae05eab3311270100ef682f9bbfece820361",
-      "extracted_sha256": "04fed6ea3c50872407e267a3dc20463c9022cc8e6dce06574e5906cf8327111f"
+      "extracted_sha256": "01641bbf39392b38ffd1fcd75efaae89d5abff58b4a9029880e35ef588334d6d"
     },
     "src/sema/check/mod.rs": {
       "upstream": "src/sema/check/mod.rs",
       "sha256": "78fe527888b4b2ab2ae8b29b004a88868024e254e2d1f7ba78c5ef3ad416c05a",
-      "extracted_sha256": "36f23cee22d1275751c742bb80ef581017836273660db296700f4c6d70c90a8a"
+      "extracted_sha256": "14152f279c5a1497d18de0f66df834e0e5325876ab064fc8dfef810af72a992a"
     },
     "src/sema/check/order.rs": {
       "upstream": "src/sema/check/order.rs",
@@ -3866,7 +3932,7 @@
     "src/sema/check/print.rs": {
       "upstream": "src/sema/check/print.rs",
       "sha256": "128e1249f3cade0f3f01bee556068e850dadf3335f7633eaae7cec8fed46c267",
-      "extracted_sha256": "eceff423092a1b9c963b966ec6994b09a2960c391b4844c010b05e403dcae249"
+      "extracted_sha256": "c3eeed48979082085182678bb83ca4068275ec3d43184d048fbf34f763ced718"
     },
     "src/sema/check/print_node_reuse.rs": {
       "upstream": "src/sema/check/print_node_reuse.rs",
@@ -3881,7 +3947,7 @@
     "src/sema/check/relate.rs": {
       "upstream": "src/sema/check/relate.rs",
       "sha256": "b01eadfa01749ff91de89c0f6ff8d40bfcfe01ac1da7d7146b086fc521f2fc18",
-      "extracted_sha256": "d2cfabfdf556c81b67478f3dd04bdb54c46fd41ba92ab343a154e82a7c2fdb33"
+      "extracted_sha256": "d9073278ef57845a2bcbd1460352a5a4ef8122d2166128b26504e2721531c21c"
     },
     "src/sema/check/related.rs": {
       "upstream": "src/sema/check/related.rs",
@@ -3921,7 +3987,7 @@
     "src/sema/check/services/types.rs": {
       "upstream": "src/sema/check/services/types.rs",
       "sha256": "21c08d14db595f88d62e9821a1bacf65afd6313fe0453d1cf87e4d74fbf8b9d3",
-      "extracted_sha256": "21c08d14db595f88d62e9821a1bacf65afd6313fe0453d1cf87e4d74fbf8b9d3"
+      "extracted_sha256": "6a663b1922a0d3a1d2fb0939545c7d9e453f61ad572288afdb03971726ad80bf"
     },
     "src/sema/check/services/visited.rs": {
       "upstream": "src/sema/check/services/visited.rs",
@@ -3956,7 +4022,7 @@
     "src/sema/check/symbols.rs": {
       "upstream": "src/sema/check/symbols.rs",
       "sha256": "ef1c369442929fa1f57e979c571a01d2d7aebbadba0d1f3f8d7e750ca080936b",
-      "extracted_sha256": "d51c48bb789a9a77462386099a6e6b7d93f175c38e2ea2bddbc3637ac42841af"
+      "extracted_sha256": "2e39cd79312a85192982fc7fac60bd5e58ba1bd6ca1ef0c709a07ab2f0cbaae5"
     },
     "src/sema/check/task.rs": {
       "upstream": "src/sema/check/task.rs",
@@ -3971,7 +4037,7 @@
     "src/sema/check/unions.rs": {
       "upstream": "src/sema/check/unions.rs",
       "sha256": "80987181d7283550317b7096535b41e417eab932147592c0524e02c698f40776",
-      "extracted_sha256": "005c46645d9cd4fa1dd9cc2df1c5baaaa2323658e57b105202e208bbbe76ae42"
+      "extracted_sha256": "3faab6c68e9c071174adcf892af4e48b96f791f7c0c1f713e1a932a1bff9c8b9"
     },
     "src/sema/components.rs": {
       "upstream": "src/sema/components.rs",
@@ -4061,7 +4127,7 @@
     "src/sema/types.rs": {
       "upstream": "src/sema/types.rs",
       "sha256": "0732609401a0cca01cff61a60b260fbd2fb3bb886e1ea03542deeab35f8f07f8",
-      "extracted_sha256": "d6d6cdee294cb324ee7c9a799e0caca50ab5e6f030a605e89f48cba9bcb574aa"
+      "extracted_sha256": "1e9b7fb82c6a4a11ca9383337c7bbbb8ac61b50c821d8b17a8594b238161528d"
     },
     "src/sema/util.rs": {
       "upstream": "src/sema/util.rs",

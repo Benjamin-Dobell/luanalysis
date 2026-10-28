@@ -4954,7 +4954,9 @@ impl<'p, 's> Checker<'p, 's> {
     /// `X`, if `ty` is an `Awaited<X>` that is deferred because `X` is generic.
     pub(super) fn awaited_argument(&mut self, ty: TypeId) -> Option<TypeId> {
         let TypeData::Cond {
-            file, node, mapper, ..
+            root: CondRoot::Node(file, node),
+            mapper,
+            ..
         } = *self.data(ty)
         else {
             return None;

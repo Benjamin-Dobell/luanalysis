@@ -327,6 +327,7 @@ impl Checker<'_> {
         expected: Option<&Type>,
     ) -> Type {
         let (callee, arguments, origins) = self.method_call_arguments(receiver, name, args);
+        let limits = self.engine.unplaced_limits();
         let call = self
             .native
             .map(|native| native.expression_key_for_span(span));
@@ -334,6 +335,7 @@ impl Checker<'_> {
             self.engine
                 .call_native_arguments_scalar_in_frame(&callee, call, &arguments, &[], expected,
                     luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
+        self.report_unplaced_limit(limits, span);
         let checked = result.errors.is_empty();
         let ty = self.call_result(result, &callee, &origins, name.span, span);
         match checked.then(|| self.string_pattern_method(&arguments, name, args)).flatten() {
@@ -351,6 +353,7 @@ impl Checker<'_> {
         expected: Option<&ValuePack>,
     ) -> ValuePack {
         let (callee, arguments, origins) = self.method_call_arguments(receiver, name, args);
+        let limits = self.engine.unplaced_limits();
         let call = self
             .native
             .map(|native| native.expression_key_for_span(span));
@@ -358,6 +361,7 @@ impl Checker<'_> {
             .engine
             .call_native_arguments_in_frame(&callee, call, &arguments, &[], expected,
                 luanalysis_engine::NativeCallerFrame { contextual: self.contextual_function, captured: self.captured_function });
+        self.report_unplaced_limit(limits, span);
         let checked = result.errors.is_empty();
         let pack = self.pack_call_result(result, &callee, &origins, name.span, span);
         checked.then(|| self.string_pattern_method(&arguments, name, args)).flatten().unwrap_or(pack)
