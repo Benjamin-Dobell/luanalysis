@@ -502,8 +502,15 @@ for word in text:gmatch("%a+") do end      -- word: string
 
 Luanalysis checks a project as a whole. `require` calls are resolved through module roots and
 `package.path` templates, and each module's exports are inferred, so a value keeps its type as it
-crosses files. Declaration files (`.def.lua`) describe globals and libraries, and standard library
-declarations are included for Lua 5.0 through 5.4.
+crosses files. Standard library declarations are included for Lua 5.0 through 5.4.
+
+A file named `*.def.lua` or `*.def.ttslua` is a declaration file wherever it is found, as
+TypeScript's `*.d.ts` files are. Its stubs describe what other code provides, so they are not
+checked as code that runs: `local Hand` is the class `---@class Hand` declares, not `nil`, and
+`function Hand.getValue() end` declares a function without returning anything. A namespace
+nests through its parents' types, so `---@class ngx__req` on `ngx.req = {}` makes
+`function ngx.req.read_body() end` a member of `ngx__req`. `--library` makes every file in a
+path a declaration file, whatever its name.
 
 A module that no module root provides is, as in Luanalysis v1 and LuaLS, the checked or library
 file whose path ends with the module's path under a template, the shortest such path first: with
@@ -538,7 +545,7 @@ files ignore unless a `.luarc.json` says otherwise.
 | `--lua-version 5.0`…`5.4` | Use that Lua version's standard library declarations. |
 | `--stdlib <list>` | Declare only these standard libraries and members, as a sandbox provides them (repeatable). |
 | `--no-stdlib` | Declare none of the standard library, for a host that declares its own. |
-| `--library <path>` | Include declaration files or directories. |
+| `--library <path>` | Include declaration files or directories, whatever their names. |
 | `--module-root <dir>` | Search this directory for `require`d modules (repeatable, in order). |
 | `--package-path <templates>` | `package.path` templates, such as `?.lua;?/init.lua`. |
 | `--path-strict` | Leave a module that no module root provides unresolved, instead of finding it by its path. |

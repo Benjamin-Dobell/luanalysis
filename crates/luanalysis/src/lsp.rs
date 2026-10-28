@@ -2283,15 +2283,21 @@ fn check(inputs: &CheckInputs, options: ProjectCheckOptions, workspace: &mut Pro
 
 /// The workspace's inputs and every open `.lua` or `.ttslua` document, including one outside
 /// the workspace or with no file on disk (a host such as a game may serve scripts it keeps in
-/// memory).
+/// memory). An open declaration file (`*.def.lua`) is a declaration, as on disk.
 fn with_documents(plan: &ProjectLoadPlan, documents: &HashMap<PathBuf, String>) -> ProjectLoadPlan {
     let mut plan = plan.clone();
     let mut opened: Vec<_> = documents.keys()
-        .filter(|path| !plan.entries.contains(path))
+        .filter(|path| !plan.entries.contains(path) && !plan.libraries.iter().any(|library| &library.path == *path))
         .filter(|path| path.extension().is_some_and(|extension| extension == "lua" || extension == "ttslua"))
         .cloned().collect();
     opened.sort();
-    plan.entries.extend(opened);
+    for path in opened {
+        if crate::cli::is_declaration_file(&path) {
+            plan.libraries.push(luanalysis_project::ProjectInput::new(path, luanalysis_project::SourceRole::Declaration));
+        } else {
+            plan.entries.push(path);
+        }
+    }
     plan
 }
 

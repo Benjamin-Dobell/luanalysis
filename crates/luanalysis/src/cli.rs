@@ -306,6 +306,14 @@ impl CheckInputs {
                 if directory && library_seen.contains(&identity) {
                     continue;
                 }
+                // A declaration file is one wherever it is found, as TypeScript's `.d.ts` is.
+                if is_declaration_file(&file) {
+                    if library_seen.insert(identity.clone()) {
+                        display_paths.entry(identity).or_insert_with(|| file.clone());
+                        library_files.push(ProjectInput::new(file, SourceRole::Declaration));
+                    }
+                    continue;
+                }
                 if seen.insert(identity.clone()) {
                     display_paths
                         .entry(identity)
@@ -380,6 +388,12 @@ pub fn check_once(arguments: &Arguments, workspace: &mut ProjectWorkspace) -> io
     Ok(CliReport::from_project(&result, &discovery.display_paths, discovery.errors.clone(), arguments.dump))
 }
 
+/// Whether `path` names a declaration file, `*.def.lua` or `*.def.ttslua`: its contents describe
+/// what other code provides, as TypeScript's `*.d.ts` files do, rather than run.
+pub fn is_declaration_file(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(".def.lua") || name.ends_with(".def.ttslua"))
+}
+
 pub fn identity(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -408,7 +422,7 @@ fn expand(path: &Path, ignore: IgnoreRules, errors: &mut Vec<HostDiagnostic>) ->
 /// The command line's help text.
 pub fn help() {
     println!(
-        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--lua-version 5.0|5.1|5.2|5.3|5.4] [--stdlib <libraries and members>]... [--no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] [--path-strict] [--module-map <manifest.json>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively, skipping .vscode and what .gitignore files ignore.\nA directory's LuaLS .luarc.json (or .luarc.jsonc) supplies runtime.version, runtime.path, runtime.pathStrict, workspace.library, workspace.ignoreDir and workspace.useGitIgnore where options do not.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--stdlib declares only the named standard libraries and members, as a sandbox provides them, e.g. basic,string,table,math,os.time (repeatable).\n--no-stdlib declares none of the standard library, for a host that declares its own, except type, assert, setmetatable and the builtin types; --stdlib adds parts back.\nWithout --lua-version, --stdlib and --no-stdlib use Lua 5.4.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--library includes original declaration files independently of module search roots.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nA module no root provides is the checked or library file whose path ends with a template's path for it, the shortest first; --path-strict leaves it unresolved.\n--module-map supplies a host's closed module namespace: each source's modules by their exact names (version 1 JSON; paths relative to the manifest). An unmapped module is unresolved, never found by package.path.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
+        "luanalysis check [--format text|json] [--dump-types] [--watch] [--jobs <count>] [--legacy-overloads] [--no-implicit-any] [--lua-version 5.0|5.1|5.2|5.3|5.4] [--stdlib <libraries and members>]... [--no-stdlib] [--library <file|directory>]... [--module-root <directory>]... [--package-path <templates>] [--path-strict] [--module-map <manifest.json>] <file.lua|directory>...\n\nStandalone Lua/Luanalysis type checking in one project session.\nDirectories discover .lua and .ttslua files recursively, skipping .vscode and what .gitignore files ignore.\nA directory's LuaLS .luarc.json (or .luarc.jsonc) supplies runtime.version, runtime.path, runtime.pathStrict, workspace.library, workspace.ignoreDir and workspace.useGitIgnore where options do not.\n--watch checks on source, declaration, discovery or module-resolution changes (250 ms polling).\n--watch --format json streams one complete report per revision as NDJSON.\n--jobs selects a positive worker count; omitted uses available parallelism.\n--lua-version selects the matching Lua standard declaration set (5.0 through 5.4).\n--stdlib declares only the named standard libraries and members, as a sandbox provides them, e.g. basic,string,table,math,os.time (repeatable).\n--no-stdlib declares none of the standard library, for a host that declares its own, except type, assert, setmetatable and the builtin types; --stdlib adds parts back.\nWithout --lua-version, --stdlib and --no-stdlib use Lua 5.4.\nThe standard profile is opt-in; default checking retains legacy compatibility.\n--legacy-overloads exposes implementation signatures alongside explicit overloads (v1 compatibility).\n--no-implicit-any requires written or contextual parameter/rest types; ordinary checking permits unannotated functions.\n--library includes original declaration files independently of module search roots; files named *.def.lua or *.def.ttslua are declarations wherever they are found.\n--module-root sets ordered require roots; --package-path sets package.path templates.\nA module no root provides is the checked or library file whose path ends with a template's path for it, the shortest first; --path-strict leaves it unresolved.\n--module-map supplies a host's closed module namespace: each source's modules by their exact names (version 1 JSON; paths relative to the manifest). An unmapped module is unresolved, never found by package.path.\nDefault require policy is standard Lua 5.4.\nReports diagnostics at original Lua source locations.\n--format json writes one structured report to stdout, including original UTF-8 byte ranges."
     );
     println!(
         "Selected standard profiles preserve reached builtin/environment bindings across unknown calls and property effects; known assignments still apply.\n--strict-standard-effects requires runtime-effect preservation proofs instead."

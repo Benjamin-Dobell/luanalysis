@@ -781,6 +781,28 @@ fn a_require_resolves_by_its_path_suffix_as_the_project_configuration_and_settin
 }
 
 #[test]
+fn an_open_declaration_file_is_a_declaration() {
+    let root = fixture();
+    let hand = root.join("Hand.def.lua");
+    let stub = "---@class Hand\nlocal Hand\n\n---@return string\nfunction Hand.getValue() end\n";
+    fs::write(&hand, stub).unwrap();
+    let main = root.join("main.lua");
+    let source = "---@param hand Hand\nlocal function value(hand)\n    ---@type number\n    local wrong = hand.getValue()\nend\n";
+    fs::write(&main, source).unwrap();
+    let mut server = Server::start(&["--lua-version", "5.4"]);
+    server.initialize(&root);
+    server.open(&hand, stub);
+    server.open(&main, source);
+    let published = server.diagnostics(&main, |message| message.contains("TS2322"));
+    assert!(published.contains("is not assignable to type 'number'"), "{published}");
+    // Its stubs are neither a nil value nor bodies that should return.
+    let published = server.diagnostics(&hand, |_| true);
+    assert!(!published.contains("TS7053") && !published.contains("TS2355") && !published.contains("conflict"), "{published}");
+    server.finish();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn inlay_hints_show_inferred_types_and_literal_arguments_parameters() {
     let root = fixture();
     let main = root.join("main.lua");

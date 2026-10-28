@@ -70,23 +70,28 @@ impl NativeRegistry {
             return Err("namespace declarations require declaration source role");
         }
         let target = source.namespace.as_ref().expect("original dotted target");
-        if target.path.len() != 1 {
-            return Err("nested namespace paths require explicit intermediate owner contracts");
-        }
+        // A member's owner is what its parent path declares: the root's attached type, or for
+        // `a.b.c`, the type attached to `a.b`'s own declaration.
+        let parent = &target.path[..target.path.len() - 1];
         let owners: Vec<_> = self
             .globals
             .declarations
             .iter()
-            .filter(|candidate| {
-                candidate.namespace.is_none() && candidate.name.text == target.root.text
+            .filter(|candidate| match (&candidate.namespace, parent) {
+                (None, []) => candidate.name.text == target.root.text,
+                (Some(declared), _) => declared.root.text == target.root.text
+                    && declared.path.len() == parent.len()
+                    && declared.path.iter().zip(parent).all(|(left, right)| left.text == right.text),
+                (None, _) => false,
             })
             .filter_map(|candidate| self.global_attached_type(candidate))
             .collect();
-        match owners.as_slice() {
-            [owner] => Ok(*owner),
-            [] => Err(
+        match (owners.as_slice(), parent) {
+            ([owner], _) => Ok(*owner),
+            ([], []) => Err(
                 "namespace root needs an original attached named declaration in this source file",
             ),
+            ([], _) => Err("nested namespace paths require explicit intermediate owner contracts"),
             _ => Err("namespace root has multiple original attached declaration owners"),
         }
     }

@@ -154,10 +154,13 @@ fn repeated_library_paths_and_canonical_directory_discovery_do_not_duplicate_typ
 #[test]
 fn an_explicit_implementation_file_conflicting_with_library_role_reports_configuration_error() {
     let fixture = Fixture::new();
+    // A declaration file is one however it is named, so only an ordinary file conflicts.
     fixture.file("count.def.lua", "---@alias Count number\n");
+    passes(&fixture.command().args(["--library", "count.def.lua", "count.def.lua"]).output().unwrap(), 1);
+    fixture.file("count.lua", "---@alias Count number\n");
     let output = fixture
         .command()
-        .args(["--library", "count.def.lua", "count.def.lua"])
+        .args(["--library", "count.lua", "count.lua"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2), "{}", text(&output));
